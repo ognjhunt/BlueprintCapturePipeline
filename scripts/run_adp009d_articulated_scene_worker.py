@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -57,6 +58,7 @@ try:  # flat provider bundle
         build_scene_observations,
         resolve_contact_sensor_rows,
     )
+    from articulated_control_verdict import seal_detent_torque
 except ModuleNotFoundError:  # repository checkout
     import sys as _sys
 
@@ -75,6 +77,7 @@ except ModuleNotFoundError:  # repository checkout
         build_scene_observations,
         resolve_contact_sensor_rows,
     )
+    from blueprint_pipeline.articulated_control_verdict import seal_detent_torque
 
 
 RESULT_SCHEMA_VERSION = "adp009d_articulated_scene_result.v1"
@@ -860,14 +863,79 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["reset_diagnostic"] = reset_diagnostic
         _phase(result, "adapter_wired")
 
+        # A real refrigerator door is held shut by its magnetic gasket, and
+        # rt36 showed what happens without one: 0.8 mm of shell-on-shell
+        # interference between the door and cabinet is enough to swing a free
+        # hinge 34.7 degrees before the arm arrives, so the grasp reaches for a
+        # handle that has moved. The detent is angle-local - cosine-tapered and
+        # gone by 5 degrees - which is exactly why it cannot be a USD drive: a
+        # spring would also drag the door back after release, and the task
+        # requires it to hold at 45-55.
+        #
+        # Same formulation and the same 12 N.m / 5 degree parameters the hinge
+        # probe qualified on hardware.
+        seal = spec.get("seal") or {}
+        seal_peak = float(seal.get("breakaway_torque_n_m") or 0.0)
+        seal_width = float(seal.get("angular_width_degrees") or 0.0)
+        hinge_index = dof_names.index(task_spec_row["target_joint_id"])
+
+        class _SealedEnvironment:
+            """The adapter, with the gasket applied before every step."""
+
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+                self.seal_applications = 0
+
+            def _apply_seal(self) -> None:
+                if seal_peak <= 0.0 or seal_width <= 0.0:
+                    return
+                angle_rad = float(_to_torch(live.data.joint_pos)[0][hinge_index])
+                resist = seal_detent_torque(
+                    math.degrees(angle_rad), seal_peak, seal_width
+                )
+                if resist == 0.0:
+                    return
+                efforts = torch.zeros(
+                    (1, len(dof_names)),
+                    device=env.unwrapped.device,
+                    dtype=torch.float32,
+                )
+                # Opposes motion away from closed, which is what a seal does.
+                efforts[0, hinge_index] = -resist
+                setter = getattr(live, "set_joint_effort_target", None)
+                if setter is None:
+                    raise RuntimeError(
+                        "articulated_scene_joint_effort_api_unavailable:"
+                        f"{sorted(a for a in dir(live) if 'effort' in a)}"
+                    )
+                setter(efforts)
+                self.seal_applications += 1
+
+            def step(self, action):
+                self._apply_seal()
+                return self._inner.step(action)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        sealed = _SealedEnvironment(adapter)
+        # Recorded before the episode: these are configuration, and a run that
+        # fails partway should still show what gasket it was carrying.
+        result["seal_applied"] = {
+            "breakaway_torque_n_m": seal_peak,
+            "angular_width_degrees": seal_width,
+            "applications": 0,
+        }
+
         pair = run_task_neutral_controls(
-            environment=adapter,
+            environment=sealed,
             task_spec=spec["task_spec"],
             control_plan=spec["control_plan"],
             gripper_open_command=float(spec.get("gripper_open_command") or 1.0),
             output_dir=output.parent / "controls",
         )
         result["control_pair"] = pair
+        result["seal_applied"]["applications"] = sealed.seal_applications
         result["controls_qualified"] = bool(
             pair.get("cell_admitted_for_policy_execution")
         )

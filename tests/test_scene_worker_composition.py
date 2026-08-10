@@ -195,6 +195,12 @@ class _FakeArticulation:
     def __init__(self, joint_names=None, body_names=None):
         self.data = _FakeArticulationData(joint_names, body_names)
         self.written_joint_states = []
+        self.applied_efforts = []
+
+    def set_joint_effort_target(self, efforts, *_a, **_kw):
+        # The gasket is applied through this call every step; a fake without
+        # it would let the worker pass while the door stayed unlatched.
+        self.applied_efforts.append([float(v) for v in efforts[0]])
 
     def write_joint_state_to_sim(self, positions, velocities, *_a, **_kw):
         # The call rt35 proved was missing: env.reset does not restore an
@@ -428,6 +434,11 @@ def _write_runtime(tmp_path: Path) -> Path:
         "episode_length_s": 12.0,
         "gripper_open_command": 1.0,
         "support_link_body": "cabinet",
+        "seal": {
+            "breakaway_torque_n_m": 12.0,
+            "angular_width_degrees": 5.0,
+            "applied_by": "runtime_per_step_external_torque",
+        },
         "robot_base": {
             "position_xyz": [1.75, 1.99, 0.0],
             "rotation_xyzw": [0, 0, 0, 1],
@@ -742,3 +753,32 @@ def test_the_reset_restores_the_twins_joints(stubbed_arena, tmp_path):
     assert snapshots, result.get("blockers")
     labels = [s.get("label") for s in snapshots]
     assert "after_adapter_reset" in labels, labels
+
+
+def test_the_gasket_detent_is_carried_into_the_scene(stubbed_arena, tmp_path):
+    """Without it a free hinge swings on any contact impulse.
+
+    rt36: 0.8 mm of shell interference between door and cabinet opened the
+    door 34.7 degrees before the arm arrived, so the grasp reached for a handle
+    that had moved. A real refrigerator is held shut by its gasket; the detent
+    is angle-local so it cannot be a USD drive, which would also drag the door
+    back after release when the task needs it to hold.
+    """
+
+    runtime = _write_runtime(tmp_path)
+    output = tmp_path / "out" / "result.json"
+
+    _load_worker().main(
+        [
+            "--runtime-dir", str(runtime),
+            "--output-dir", str(output.parent),
+            "--spec", str(runtime / "adp009d_articulated_scene_spec.json"),
+            "--output", str(output),
+        ]
+    )
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    seal = result.get("seal_applied")
+    assert seal is not None, result.get("blockers")
+    assert seal["breakaway_torque_n_m"] == 12.0
+    assert seal["angular_width_degrees"] == 5.0
