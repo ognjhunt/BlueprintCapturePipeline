@@ -487,6 +487,55 @@ def _range_check(
     return number
 
 
+def classify_aabb_overlap(
+    a_min: Sequence[float],
+    a_max: Sequence[float],
+    b_min: Sequence[float],
+    b_max: Sequence[float],
+) -> dict[str, Any]:
+    """Separate "inside the cavity" from "driven through the wall".
+
+    An appliance is a shell around a void, and a shell's AABB spans the void.
+    Every door bin, shelf and drawer therefore sits inside the cabinet's box,
+    and a plain overlap test reports each one as a deep penetration - on this
+    twin, 70 mm between a door bin and the cabinet, which is just the bin
+    sitting where a bin goes.
+
+    Containment is the signature of interior geometry, but it is also what a
+    small object driven fully through a wall would look like. An AABB cannot
+    tell those apart, so this reports containment as unresolved rather than
+    asserting either. Only a partial overlap - boxes crossing each other's
+    faces - is penetration evidence an AABB can actually support.
+    """
+
+    for axis in range(3):
+        if min(a_max[axis], b_max[axis]) - max(a_min[axis], b_min[axis]) <= 0.0:
+            return {
+                "kind": "disjoint",
+                "penetration_depth_m": 0.0,
+                "unresolved_by_aabb": False,
+            }
+
+    a_inside_b = all(
+        b_min[axis] <= a_min[axis] and a_max[axis] <= b_max[axis] for axis in range(3)
+    )
+    b_inside_a = all(
+        a_min[axis] <= b_min[axis] and b_max[axis] <= a_max[axis] for axis in range(3)
+    )
+    if a_inside_b or b_inside_a:
+        return {
+            "kind": "contained",
+            "penetration_depth_m": 0.0,
+            "unresolved_by_aabb": True,
+        }
+
+    return {
+        "kind": "partial",
+        "penetration_depth_m": _aabb_overlap_depth(a_min, a_max, b_min, b_max),
+        "unresolved_by_aabb": False,
+    }
+
+
 def _aabb_overlap_depth(
     a_min: Sequence[float],
     a_max: Sequence[float],
@@ -758,6 +807,9 @@ def validate_articulated_replacement_physics(
                 f"articulated_replacement_link_collider_missing:{link_path}"
             )
 
+    # Pairs an AABB cannot adjudicate. Recorded rather than dropped: a receipt
+    # that silently skipped them would read as "no interpenetration found".
+    unresolved_overlaps: list[str] = []
     link_paths = sorted(collider_bounds_by_link)
     for left_index in range(len(link_paths)):
         for right_index in range(left_index + 1, len(link_paths)):
@@ -765,7 +817,12 @@ def validate_articulated_replacement_physics(
             right_link = link_paths[right_index]
             for left_path, left_min, left_max in collider_bounds_by_link[left_link]:
                 for right_path, right_min, right_max in collider_bounds_by_link[right_link]:
-                    depth = _aabb_overlap_depth(left_min, left_max, right_min, right_max)
+                    overlap = classify_aabb_overlap(
+                        left_min, left_max, right_min, right_max
+                    )
+                    if overlap["unresolved_by_aabb"]:
+                        unresolved_overlaps.append(f"{left_path}:{right_path}")
+                    depth = overlap["penetration_depth_m"]
                     if max_overlap >= 0.0 and depth > max_overlap:
                         errors.append(
                             "articulated_replacement_reset_pose_collider_penetration:"

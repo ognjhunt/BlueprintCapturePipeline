@@ -1010,3 +1010,75 @@ def test_omitting_the_object_class_leaves_the_existing_contract_unchanged(
 
     assert receipt["status"] == "physics_statically_admitted"
     assert receipt["dynamics_realism"]["required"] is False
+
+
+def test_aabb_containment_is_not_reported_as_penetration_depth():
+    """A box inside a hollow shell's bounds is not evidence of penetration.
+
+    A refrigerator is a cavity with a shell around it. The shell's AABB spans
+    the whole interior, so every door bin, shelf and drawer sits inside it -
+    and an overlap test reads that as a deep penetration. The check cannot tell
+    "correctly inside the cavity" from "driven through the wall", so it must
+    not assert the second.
+    """
+
+    from blueprint_pipeline.articulated_simready_replacement import (
+        classify_aabb_overlap,
+    )
+
+    shell = ((-0.358, -0.350, 0.022), (0.355, 0.178, 1.632))
+    door_bin = ((-0.286, 0.100, 1.117), (0.286, 0.170, 1.217))
+
+    verdict = classify_aabb_overlap(shell[0], shell[1], door_bin[0], door_bin[1])
+
+    assert verdict["kind"] == "contained"
+    assert verdict["penetration_depth_m"] == 0.0
+    assert verdict["unresolved_by_aabb"] is True
+
+
+def test_partial_overlap_is_still_a_penetration():
+    """Two boxes crossing each other's faces genuinely interpenetrate."""
+
+    from blueprint_pipeline.articulated_simready_replacement import (
+        classify_aabb_overlap,
+    )
+
+    left = ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+    right = ((0.9, 0.5, 0.5), (2.0, 1.5, 1.5))
+
+    verdict = classify_aabb_overlap(left[0], left[1], right[0], right[1])
+
+    assert verdict["kind"] == "partial"
+    assert verdict["penetration_depth_m"] == pytest.approx(0.1)
+    assert verdict["unresolved_by_aabb"] is False
+
+
+def test_disjoint_boxes_do_not_overlap():
+    from blueprint_pipeline.articulated_simready_replacement import (
+        classify_aabb_overlap,
+    )
+
+    verdict = classify_aabb_overlap(
+        (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), (2.0, 2.0, 2.0), (3.0, 3.0, 3.0)
+    )
+
+    assert verdict["kind"] == "disjoint"
+    assert verdict["penetration_depth_m"] == 0.0
+
+
+def test_containment_holds_whichever_box_is_given_first():
+    from blueprint_pipeline.articulated_simready_replacement import (
+        classify_aabb_overlap,
+    )
+
+    outer = ((0.0, 0.0, 0.0), (2.0, 2.0, 2.0))
+    inner = ((0.5, 0.5, 0.5), (1.0, 1.0, 1.0))
+
+    assert (
+        classify_aabb_overlap(outer[0], outer[1], inner[0], inner[1])["kind"]
+        == "contained"
+    )
+    assert (
+        classify_aabb_overlap(inner[0], inner[1], outer[0], outer[1])["kind"]
+        == "contained"
+    )
