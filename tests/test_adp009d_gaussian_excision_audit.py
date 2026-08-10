@@ -331,6 +331,25 @@ def test_gaussian_excision_runtime_closure_pins_all_released_dependencies() -> N
     assert "opencv-python-headless==4.11.0.86" in entrypoint
 
 
+def test_gaussian_excision_provider_identity_is_distinct_per_frozen_target() -> None:
+    first = excision_vast.gaussian_excision_lane_identity(
+        {
+            "scene": {"publisher_scene_id": "840920", "target_instance_id": "165"},
+            "freeze_digest": "sha256:" + "1" * 64,
+        }
+    )
+    second = excision_vast.gaussian_excision_lane_identity(
+        {
+            "scene": {"publisher_scene_id": "840920", "target_instance_id": "385"},
+            "freeze_digest": "sha256:" + "2" * 64,
+        }
+    )
+
+    assert first["object_store_key_prefix"] != second["object_store_key_prefix"]
+    assert first["instance_label_prefix"] != second["instance_label_prefix"]
+    assert first["lane_id"].startswith("840920-165-")
+
+
 def test_provider_output_recognizes_gaussian_excision_result(tmp_path: Path) -> None:
     output_zip = tmp_path / "gaussian-excision-output.zip"
     with zipfile.ZipFile(output_zip, "w") as archive:

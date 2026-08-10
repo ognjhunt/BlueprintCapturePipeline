@@ -71,6 +71,32 @@ _VAST_MUTATION_ENV = (
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
 
+def gaussian_excision_lane_identity(freeze: Mapping[str, Any]) -> dict[str, str]:
+    """Derive collision-free provider identities from frozen task evidence."""
+
+    scene = freeze.get("scene")
+    freeze_digest = str(freeze.get("freeze_digest") or "")
+    if not isinstance(scene, Mapping):
+        raise ValueError("gaussian_excision_lane_identity_invalid")
+    scene_id = str(scene.get("publisher_scene_id") or "").strip()
+    target_id = str(scene.get("target_instance_id") or "").strip()
+    if (
+        not scene_id
+        or not target_id
+        or not freeze_digest.startswith("sha256:")
+        or len(freeze_digest) != 71
+        or any(not value.replace("_", "-").isalnum() for value in (scene_id, target_id))
+    ):
+        raise ValueError("gaussian_excision_lane_identity_invalid")
+    suffix = freeze_digest.removeprefix("sha256:")[:12]
+    lane_id = f"{scene_id}-{target_id}-{suffix}"
+    return {
+        "lane_id": lane_id,
+        "object_store_key_prefix": f"{DEFAULT_KEY_PREFIX}/{lane_id}",
+        "instance_label_prefix": f"blueprint-adp-gaussian-excision-{lane_id}-",
+    }
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -249,6 +275,7 @@ def build_gaussian_excision_vast_bundle(
     if _git(repo, "status", "--short"):
         raise ValueError("gaussian_excision_blueprint_source_not_clean")
     released_source = _source_identity(source)
+    lane_identity = gaussian_excision_lane_identity(freeze)
 
     runtime = destination / "provider_runtime"
     ensure_dir(runtime / "input")
@@ -305,6 +332,7 @@ def build_gaussian_excision_vast_bundle(
         "expected_output_filename": "adp009b_gaussian_excision_result.json",
         "blockers": blockers,
         "raw_secret_values_recorded": False,
+        **lane_identity,
     }
     write_json(runtime / "adp_gaussian_excision_provider_manifest.json", manifest)
     bundle = destination / "adp_gaussian_excision_provider_runtime_bundle.zip"
@@ -478,7 +506,7 @@ def run_gaussian_excision_vast(
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
         bundle_path=str(bundle_path),
-        key_prefix=DEFAULT_KEY_PREFIX,
+        key_prefix=str(bundle.get("object_store_key_prefix") or DEFAULT_KEY_PREFIX),
         expiration_seconds=max(hard_ttl_seconds + 1800, 7200),
     )
     if staging.get("status") != "completed":
@@ -560,7 +588,10 @@ def run_gaussian_excision_vast(
                 machine_avoidlist_path=machine_avoidlist_path,
                 vast_launch_lock_file=job.parent
                 / "gaussian_excision_paid_launch.lock",
-                instance_label_prefix="blueprint-adp-gaussian-excision-",
+                instance_label_prefix=str(
+                    bundle.get("instance_label_prefix")
+                    or "blueprint-adp-gaussian-excision-"
+                ),
                 started_instance_id_path=watchdog_handle.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
@@ -662,5 +693,6 @@ __all__: Sequence[str] = (
     "SOURCE_COMMIT",
     "SOURCE_TREE",
     "build_gaussian_excision_vast_bundle",
+    "gaussian_excision_lane_identity",
     "run_gaussian_excision_vast",
 )
