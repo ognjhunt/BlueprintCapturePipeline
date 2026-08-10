@@ -1,4 +1,5 @@
 from __future__ import annotations
+from pathlib import Path
 
 from blueprint_pipeline.vast_provider_adapter import (
     ADP009D_ARTICULATED_ARENA_REQUIRED_ENTRIES,
@@ -84,3 +85,29 @@ def test_a_non_isaac_kind_is_still_not_one() -> None:
 
     for kind in ("wam", "evaluator", "adp_joint_agent", "adp_content_agents"):
         assert _is_isaac_provider_bundle(kind) is False
+
+
+def test_every_place_the_kind_is_switched_on_knows_about_it() -> None:
+    """Adding a bundle kind means adding it everywhere the kind is branched on.
+
+    This one cost three launches. The contract and the entry table knew about
+    adp009d_articulated_arena; the CUDA-safety predicate did not, so the run
+    got the strict libcudart probe an Isaac image legitimately fails. Fixing
+    that exposed the next site: the on-host extraction branch, which unpacks to
+    adp_arena_provider_bundle and looks for run_adp_arena_provider_runtime.sh -
+    a kind missing from it lands in no branch and reports entrypoint_missing
+    for an entrypoint that is present in the zip.
+
+    Grepping the adapter for the sibling kind is how you find them all.
+    """
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/vast_provider_adapter.py"
+    ).read_text(encoding="utf-8")
+
+    for line in source.splitlines():
+        if '"adp009d_isaac"' in line and "adp_arena" in line and "{" in line:
+            assert '"adp009d_articulated_arena"' in line, (
+                "kind-switch missing the articulated kind: " + line.strip()[:120]
+            )

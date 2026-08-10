@@ -2920,7 +2920,7 @@ def _probe_env(
         "BLUEPRINT_VAST_PROBE": "true",
         "BLUEPRINT_VAST_PROBE_JOB_DIR_BASENAME": job_dir.name,
     }
-    if enable_isaac_smoke or provider_bundle_kind in {"adp_arena", "adp009d_isaac"}:
+    if enable_isaac_smoke or provider_bundle_kind in {"adp_arena", "adp009d_isaac", "adp009d_articulated_arena"}:
         env.update(
             {
                 "ACCEPT_EULA": "Y",
@@ -3453,7 +3453,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
                 "fi; fi; fi; fi; "
             )
-        elif provider_bundle_kind in {"adp_arena", "adp009d_isaac"}:
+        elif provider_bundle_kind in {"adp_arena", "adp009d_isaac", "adp009d_articulated_arena"}:
             script += (
                 common_start + "RUNTIME_PY=/isaac-sim/python.sh; "
                 'if [ ! -x "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
