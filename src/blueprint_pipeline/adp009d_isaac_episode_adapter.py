@@ -597,7 +597,7 @@ class IsaacEpisodeAdapter:
         sample: dict[str, Any] = {
             # Isaac Lab native root_pose_w is position + WXYZ.  New task-neutral
             # contracts use explicit XYZW; retain the raw legacy alias only for
-            # the sealed 840313 compatibility scorer.
+            # the sealed original-scene compatibility scorer.
             "task_object_pose_world": [
                 *[float(v) for v in pose[:3]],
                 float(pose[4]),

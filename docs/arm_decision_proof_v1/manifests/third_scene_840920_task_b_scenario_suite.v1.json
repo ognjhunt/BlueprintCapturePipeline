@@ -1,0 +1,205 @@
+{
+  "schema_version": "third_scene_task_scenario_suite.v1",
+  "scene_id": "840920",
+  "shared_scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
+  "task_id": "task_b_notebook_relocation",
+  "task_freeze_digest": "sha256:c7800fe4cb029f989f88907984e89941f857780a4faf92c3458a4fdf2064e68a",
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "required_controls": [
+    "zero_action_negative",
+    "scripted_positive"
+  ],
+  "overview_camera_policy_input": false,
+  "overview_camera_deterministic_scoring_input": false,
+  "learned_policy_outcomes_consulted": false,
+  "initial_execution_order": [
+    "840920_task_b_canonical",
+    "840920_task_b_start_y"
+  ],
+  "cells": [
+    {
+      "cell_id": "840920_task_b_canonical",
+      "family": "canonical",
+      "seed": 3201,
+      "resolved_parameters": {},
+      "factor_records": [],
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "controls_required_before_candidates": true,
+      "powered_diagnostic": false,
+      "scheduled_initially": true,
+      "applied_parameter_readback_required": true
+    },
+    {
+      "cell_id": "840920_task_b_start_y",
+      "family": "placement_approach",
+      "seed": 3202,
+      "resolved_parameters": {
+        "object_start_y_m": 0.02
+      },
+      "factor_records": [
+        {
+          "parameter_id": "object_start_y_m",
+          "runtime_target": "EventManager.reset.object_start_position_m.y",
+          "unit": "m",
+          "nominal_value": 0,
+          "resolved_value": 0.02,
+          "application_tolerance": 0.0001
+        }
+      ],
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "controls_required_before_candidates": true,
+      "powered_diagnostic": true,
+      "scheduled_initially": true,
+      "applied_parameter_readback_required": true
+    },
+    {
+      "cell_id": "840920_task_b_illumination",
+      "family": "illumination",
+      "seed": 3202,
+      "resolved_parameters": {
+        "light_intensity_scale": 0.9
+      },
+      "factor_records": [
+        {
+          "parameter_id": "light_intensity_scale",
+          "runtime_target": "EventManager.reset.task_light.intensity_scale",
+          "unit": "ratio",
+          "nominal_value": 1,
+          "resolved_value": 0.9,
+          "application_tolerance": 0.000001
+        }
+      ],
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "controls_required_before_candidates": true,
+      "powered_diagnostic": false,
+      "scheduled_initially": false,
+      "applied_parameter_readback_required": true
+    },
+    {
+      "cell_id": "840920_task_b_camera_dx",
+      "family": "camera_sensor",
+      "seed": 3202,
+      "resolved_parameters": {
+        "wrist_camera_extrinsic_dx_m": 0.01
+      },
+      "factor_records": [
+        {
+          "parameter_id": "wrist_camera_extrinsic_dx_m",
+          "runtime_target": "EventManager.reset.wrist_camera.pose.position.x",
+          "unit": "m",
+          "nominal_value": 0,
+          "resolved_value": 0.01,
+          "application_tolerance": 0.0001
+        }
+      ],
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "controls_required_before_candidates": true,
+      "powered_diagnostic": false,
+      "scheduled_initially": false,
+      "applied_parameter_readback_required": true
+    },
+    {
+      "cell_id": "840920_task_b_physics",
+      "family": "bounded_physics",
+      "seed": 3202,
+      "resolved_parameters": {
+        "object_dynamic_friction": 0.45
+      },
+      "factor_records": [
+        {
+          "parameter_id": "object_dynamic_friction",
+          "runtime_target": "EventManager.reset.object_material.dynamic_friction",
+          "unit": "coefficient",
+          "nominal_value": 0.4,
+          "resolved_value": 0.45,
+          "application_tolerance": 0.000001
+        }
+      ],
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "controls_required_before_candidates": true,
+      "powered_diagnostic": false,
+      "scheduled_initially": false,
+      "applied_parameter_readback_required": true
+    },
+    {
+      "cell_id": "840920_task_b_cousin",
+      "family": "admitted_object_cousin",
+      "seed": 3202,
+      "resolved_parameters": {
+        "object_cousin_index": 1
+      },
+      "factor_records": [
+        {
+          "parameter_id": "object_cousin_index",
+          "runtime_target": "AssetResolver.admitted_object_cousin.index",
+          "unit": "index",
+          "nominal_value": 0,
+          "resolved_value": 1,
+          "application_tolerance": 0.1
+        }
+      ],
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "controls_required_before_candidates": true,
+      "powered_diagnostic": false,
+      "scheduled_initially": false,
+      "applied_parameter_readback_required": true
+    },
+    {
+      "cell_id": "840920_task_b_held_out",
+      "family": "held_out_composed",
+      "seed": 3202,
+      "resolved_parameters": {
+        "object_start_y_m": -0.02,
+        "wrist_camera_extrinsic_dx_m": -0.01
+      },
+      "factor_records": [
+        {
+          "parameter_id": "object_start_y_m",
+          "runtime_target": "EventManager.reset.object_start_position_m.y",
+          "unit": "m",
+          "nominal_value": 0,
+          "resolved_value": -0.02,
+          "application_tolerance": 0.0001
+        },
+        {
+          "parameter_id": "wrist_camera_extrinsic_dx_m",
+          "runtime_target": "EventManager.reset.wrist_camera.pose.position.x",
+          "unit": "m",
+          "nominal_value": 0,
+          "resolved_value": -0.01,
+          "application_tolerance": 0.0001
+        }
+      ],
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "controls_required_before_candidates": true,
+      "powered_diagnostic": false,
+      "scheduled_initially": false,
+      "applied_parameter_readback_required": true
+    }
+  ],
+  "suite_digest": "sha256:a203375f810a470aec6cccae475183589b93622f69a4699563b042ee45caeed5"
+}
