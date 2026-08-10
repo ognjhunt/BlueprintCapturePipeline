@@ -30,12 +30,20 @@ from blueprint_pipeline.native_task_arena_controls_bundle import (
     build_native_task_arena_controls_bundle,
     load_verified_native_task_arena_controls_bundle,
 )
-from blueprint_pipeline.native_task_arena_vast import run_native_task_arena_vast
+from blueprint_pipeline.native_task_arena_policy_bundle import (
+    build_native_task_arena_policy_bundle,
+    load_verified_native_task_arena_policy_bundle,
+)
+from blueprint_pipeline.native_task_arena_vast import (
+    run_native_task_arena_policy_vast,
+    run_native_task_arena_vast,
+)
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_PACKAGE_NAMES,
     RUNTIME_DEPENDENCY_WHEELS,
     materialize_native_task_runtime_source_packet,
 )
+from blueprint_pipeline.droid_policy_bridge import OPENPI_SOURCE_REVISION
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
@@ -307,6 +315,7 @@ def _articulated_packet(root: Path) -> tuple[Path, dict]:
     }
     scene = {
         "schema_version": "native_task_arena_scene_plan.v1",
+        "task_id": "fixture_articulated_task",
         "task_kind": "articulated_open_close",
         "scenario": {"cell_id": "articulated-canonical", "seed": 17},
         "articulation": {"motion_geometry": motion},
@@ -367,6 +376,211 @@ def _qualified_construction(root: Path, scene: dict) -> Path:
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return path
+
+
+def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:
+    construction_result = json.loads(construction.read_text())
+    pair = {
+        "schema_version": "adp_task_control_pair.v1",
+        "cell_id": scene["scenario"]["cell_id"],
+        "task_spec_digest": canonical_digest(scene["task_spec"]),
+        "cell_admitted_for_policy_execution": True,
+        "policy_execution_blockers": [],
+        "candidate_policy_queried": False,
+        "pair_digest": "",
+    }
+    pair["pair_digest"] = canonical_digest(pair, digest_field="pair_digest")
+    result = {
+        "schema_version": "native_task_arena_control_result.v1",
+        "status": "completed",
+        "controls_qualified": True,
+        "construction_result_digest": construction_result["result_digest"],
+        "control_pair": pair,
+        "candidate_policy_queried": False,
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    path = root / "native_task_arena_control_result.v1.json"
+    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
+    construction_result = json.loads(construction.read_text())
+    control_result = json.loads(controls.read_text())
+    spec = {
+        "schema_version": "native_task_arena_policy_execution_spec.v1",
+        "candidate_id": "pi05_droid",
+        "task_id": scene["task_id"],
+        "cell_id": scene["scenario"]["cell_id"],
+        "prompt": "Open the articulated fixture.",
+        "scene_plan_digest": scene["plan_digest"],
+        "construction_result_digest": construction_result["result_digest"],
+        "control_result_digest": control_result["result_digest"],
+        "control_pair_digest": control_result["control_pair"]["pair_digest"],
+        "policy_endpoint": {
+            "host": "127.0.0.1",
+            "port": 8000,
+            "credential_env": "BLUEPRINT_PI05_API_KEY",
+        },
+        "policy_spec": {
+            "policy_id": "pi05_droid",
+            "config_name": "pi05_droid",
+            "checkpoint_uri": "gs://openpi-assets/checkpoints/polaris/pi05_droid",
+            "checkpoint_object_manifest_sha256": "1" * 64,
+            "checkpoint_generation_manifest_sha256": "2" * 64,
+            "checkpoint_inventory_sha256": "3" * 64,
+            "checkpoint_object_count": 1,
+            "checkpoint_size_bytes": 1024,
+            "action_space": "joint_position",
+            "action_chunk_rows": 10,
+            "open_loop_horizon": 8,
+            "openpi_revision": OPENPI_SOURCE_REVISION,
+        },
+        "policy_identity_receipt": {"identity_verified": True},
+        "max_policy_queries": 4,
+        "open_loop_horizon": 8,
+        "overview_camera_policy_input": False,
+        "policy_may_grade_itself": False,
+        "execution_spec_digest": "",
+    }
+    spec["execution_spec_digest"] = canonical_digest(
+        spec, digest_field="execution_spec_digest"
+    )
+    return spec
+
+
+def test_policy_bundle_requires_exact_qualified_construction_and_controls(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    receipt = build_native_task_arena_policy_bundle(
+        job_dir=tmp_path / "policy-bundle",
+        packet_dir=packet,
+        construction_result_path=construction,
+        control_result_path=controls,
+        policy_execution_spec=_policy_spec(scene, construction, controls),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="d" * 40,
+        generated_at="fixed",
+    )
+
+    assert receipt["execution_mode"] == "policy"
+    assert receipt["policy_candidate_id"] == "pi05_droid"
+    assert receipt["candidate_policy_queried"] is False
+    assert receipt["expected_output_filename"] == (
+        "native_task_arena_policy_result.v1.json"
+    )
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        assert {
+            "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
+            "provider_runtime/runtime_inputs/native_task_arena_control_result.v1.json",
+            "provider_runtime/runtime_inputs/native_task_arena_policy_execution_spec.v1.json",
+        }.issubset(names)
+        worker = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
+        assert "840313" not in worker
+        assert "840796" not in worker
+        assert "refrigerator" not in worker
+    loaded = load_verified_native_task_arena_policy_bundle(
+        tmp_path
+        / "policy-bundle/native_task_arena_provider_bundle_receipt.v1.json",
+        expected_implementation_commit="d" * 40,
+    )
+    assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
+
+    control_result = json.loads(controls.read_text())
+    control_result["controls_qualified"] = False
+    control_result["result_digest"] = canonical_digest(
+        control_result, digest_field="result_digest"
+    )
+    controls.write_text(json.dumps(control_result))
+    spec = _policy_spec(scene, construction, controls)
+    with pytest.raises(ValueError, match="native_task_policy_controls_not_qualified"):
+        build_native_task_arena_policy_bundle(
+            job_dir=tmp_path / "blocked-policy-bundle",
+            packet_dir=packet,
+            construction_result_path=construction,
+            control_result_path=controls,
+            policy_execution_spec=spec,
+            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+            implementation_commit="d" * 40,
+        )
+
+
+def test_canonical_allocator_routes_native_task_policy_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    execution_spec = _policy_spec(scene, construction, controls)
+    execution_path = tmp_path / "policy-execution.json"
+    execution_path.write_text(json.dumps(execution_spec))
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "d" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_native_task_arena_policy_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        "native-task-arena-policy",
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "policy-admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "policy-adapter.json"),
+        "--pod-name",
+        "native-task-policy",
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(_runtime_source_packet(tmp_path)),
+        "--native-task-arena-construction-result",
+        str(construction),
+        "--native-task-arena-control-result",
+        str(controls),
+        "--native-task-arena-policy-execution-spec",
+        str(execution_path),
+        "--adp-job-dir",
+        str(tmp_path / "policy-job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--adp-allowed-active-vast-instance-id",
+        "47373597",
+    ]
+
+    assert allocator.main(args) == 0
+    assert observed["prepared_bundle"]["execution_mode"] == "policy"
+    assert observed["prepared_bundle"]["policy_candidate_id"] == "pi05_droid"
+    assert observed["allowed_active_instance_ids"] == [47373597]
+    admission = json.loads((tmp_path / "policy-admission.json").read_text())
+    assert admission["candidate_policy_queried"] is True
+    assert admission["allocation_binding"]["execution_mode"] == "policy"
 
 
 def test_qualified_construction_builds_one_complete_controls_bundle(
@@ -603,6 +817,10 @@ def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path)
             "native_task_arena_control_result.v1.json",
             "native_task_arena_control_result.v1",
         ),
+        (
+            "native_task_arena_policy_result.v1.json",
+            "native_task_arena_policy_result.v1",
+        ),
     ),
 )
 def test_provider_output_recognizes_task_neutral_native_result(
@@ -675,6 +893,43 @@ def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
     assert observed[1]["vast_launch_lock_file"] == (
         (tmp_path / "concurrent").resolve()
         / "native_task_arena_paid_launch.lock"
+    )
+
+
+def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_vast as module
+
+    observed: dict = {}
+    monkeypatch.setattr(
+        module,
+        "run_arena_native_control_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    prepared = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "execution_mode": "policy",
+        "policy_candidate_id": "pi05_droid",
+        "candidate_policy_queried": False,
+        "expected_output_filename": "native_task_arena_policy_result.v1.json",
+        "container_image": "image@sha256:" + "a" * 64,
+    }
+
+    run_native_task_arena_policy_vast(
+        job_dir=tmp_path / "policy",
+        prepared_bundle=prepared,
+        paid_resource_admission_grant=None,
+        execute=False,
+        allowed_active_instance_ids=(47373597,),
+    )
+
+    assert observed["candidate_policy_query_expected"] is True
+    assert observed["allowed_active_instance_ids"] == (47373597,)
+    assert observed["object_store_key_prefix"].endswith("/policy/pi05_droid")
+    assert observed["vast_launch_lock_file"] == (
+        (tmp_path / "policy").resolve()
+        / "native_task_arena_policy_paid_launch.lock"
     )
 
 

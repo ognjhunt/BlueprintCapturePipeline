@@ -260,7 +260,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed = int(scene_plan["scenario"]["seed"])
         env.reset(seed=seed)
         robot = env.unwrapped.scene["robot"]
-        readback = NativeArticulatedTaskArenaReadback(built)
+        readback = (
+            NativeArticulatedTaskArenaReadback(built)
+            if scene_plan["task_kind"] == "articulated_open_close"
+            else None
+        )
         result["native_isaac_executed"] = True
         result["phase_reached"] = "environment_built"
         _announce("environment_build", "completed")

@@ -140,8 +140,14 @@ from .native_task_arena_controls_bundle import (
     build_native_task_arena_controls_bundle,
     load_verified_native_task_arena_controls_bundle,
 )
+from .native_task_arena_policy_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
+    build_native_task_arena_policy_bundle,
+    load_verified_native_task_arena_policy_bundle,
+)
 from .native_task_arena_vast import (
     run_native_task_arena_controls_vast,
+    run_native_task_arena_policy_vast,
     run_native_task_arena_vast,
 )
 from .native_task_runtime_source_packet import (
@@ -1060,6 +1066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
+            NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1162,6 +1169,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "zero-action and scripted-positive control plan."
         ),
     )
+    gpu.add_argument("--native-task-arena-control-result")
+    gpu.add_argument("--native-task-arena-policy-execution-spec")
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
     gpu.add_argument(
@@ -3005,10 +3014,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.probe_kind in {
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
+            NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
         }:
             controls_requested = (
                 args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
             )
+            policy_requested = args.probe_kind == NATIVE_TASK_ARENA_POLICY_PROBE_KIND
             missing = [
                 name
                 for name in (
@@ -3018,8 +3029,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if not getattr(args, name, None)
             ]
-            if controls_requested and not args.native_task_arena_construction_result:
+            if (controls_requested or policy_requested) and not (
+                args.native_task_arena_construction_result
+            ):
                 missing.append("native_task_arena_construction_result")
+            if policy_requested and not args.native_task_arena_control_result:
+                missing.append("native_task_arena_control_result")
+            if policy_requested and not args.native_task_arena_policy_execution_spec:
+                missing.append("native_task_arena_policy_execution_spec")
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
             if args.execute and not args.native_task_arena_bundle_receipt:
@@ -3059,7 +3076,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             packet_receipt_path.read_text(encoding="utf-8")
                         )
                         bundle_loader = (
-                            load_verified_native_task_arena_controls_bundle
+                            load_verified_native_task_arena_policy_bundle
+                            if policy_requested
+                            else load_verified_native_task_arena_controls_bundle
                             if controls_requested
                             else load_verified_native_task_arena_construction_bundle
                         )
@@ -3087,7 +3106,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ],
                         }
                         prepared_bundle = (
-                            build_native_task_arena_controls_bundle(
+                            build_native_task_arena_policy_bundle(
+                                **bundle_kwargs,
+                                construction_result_path=(
+                                    args.native_task_arena_construction_result
+                                ),
+                                control_result_path=(
+                                    args.native_task_arena_control_result
+                                ),
+                                policy_execution_spec=json.loads(
+                                    Path(
+                                        args.native_task_arena_policy_execution_spec
+                                    ).read_text(encoding="utf-8")
+                                ),
+                            )
+                            if policy_requested
+                            else build_native_task_arena_controls_bundle(
                                 **bundle_kwargs,
                                 construction_result_path=(
                                     args.native_task_arena_construction_result
@@ -3154,9 +3188,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else None
                 ),
                 "execution_mode": (
-                    "controls" if controls_requested else "construction_canary"
+                    "policy"
+                    if policy_requested
+                    else "controls"
+                    if controls_requested
+                    else "construction_canary"
                 ),
-                "candidate_policy_queried": False,
+                "candidate_policy_queried": policy_requested,
+                "policy_candidate_id": (
+                    prepared_bundle.get("policy_candidate_id")
+                    if prepared_bundle
+                    else None
+                ),
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
@@ -3193,7 +3236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     "private_data_uploaded": True,
                     "raw_dataset_bytes_uploaded": False,
-                    "candidate_policy_queried": False,
+                    "candidate_policy_queried": policy_requested,
                     "physical_outcome_values_uploaded": False,
                     "explicit_concurrent_gpu_authority_bound": bool(
                         args.adp_allowed_active_vast_instance_id
@@ -3228,7 +3271,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             else:
                 run_native = (
-                    run_native_task_arena_controls_vast
+                    run_native_task_arena_policy_vast
+                    if policy_requested
+                    else run_native_task_arena_controls_vast
                     if controls_requested
                     else run_native_task_arena_vast
                 )

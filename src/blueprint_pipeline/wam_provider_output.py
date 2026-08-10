@@ -33,6 +33,7 @@ RUNTIME_RESULT_FILENAMES = (
     "adp009b_gaussian_excision_result.json",
     "native_task_arena_construction_result.v1.json",
     "native_task_arena_control_result.v1.json",
+    "native_task_arena_policy_result.v1.json",
 )
 ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 
