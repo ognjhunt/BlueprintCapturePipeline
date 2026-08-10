@@ -141,6 +141,7 @@ def _articulated_fixture() -> dict:
     ]
     fixture["task_state_binding"] = {
         "moving_link_prim_path": "/Asset/upper_door",
+        "moving_link_native_body_name": "upper_door",
         "handle_prim_paths": [
             "/Asset/upper_door/component_004",
             "/Asset/upper_door/handle_post_a",
@@ -264,6 +265,18 @@ def test_state_binding_rejects_handle_outside_the_moving_link() -> None:
         materialize_native_task_runtime_contract(**fixture)
 
     assert "native_task_runtime_handle_prim_invalid:0" in excinfo.value.errors
+
+
+def test_state_binding_requires_explicit_native_moving_body_name() -> None:
+    fixture = _articulated_fixture()
+    fixture["task_state_binding"]["moving_link_native_body_name"] = ""
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert (
+        "native_task_runtime_moving_link_body_name_invalid" in excinfo.value.errors
+    )
 
 
 def test_task_asset_path_cannot_escape_the_provider_asset_directory() -> None:

@@ -28,6 +28,10 @@ BINDING = {
         "refrigerator_lower_door_hinge": "/Asset/joints/lower_door_hinge",
         "refrigerator_upper_door_hinge": "/Asset/joints/upper_door_hinge",
     },
+    "native_joint_names": {
+        "refrigerator_upper_door_hinge": "upper_door_hinge",
+        "refrigerator_lower_door_hinge": "lower_door_hinge",
+    },
 }
 STATE = {
     "task_contact_minimum_force_n": 0.5,

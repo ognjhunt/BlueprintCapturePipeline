@@ -196,6 +196,9 @@ def _articulation_plan(contract: Mapping[str, Any]) -> dict[str, Any]:
             )
         },
         "task_joint_roles": dict(sample_binding["joint_roles"]),
+        "moving_link_native_body_name": state_binding[
+            "moving_link_native_body_name"
+        ],
         "handle_prim_paths": [
             _source_to_spawned_prim(path, role="task_object")
             for path in state_binding["handle_prim_paths"]
@@ -259,6 +262,9 @@ def materialize_native_task_arena_scene_plan(
         "scene_id": contract["scene_id"],
         "task_id": contract["task_id"],
         "task_kind": contract["task_kind"],
+        "task_spec": contract["task_spec"],
+        "task_sample_binding": contract["task_sample_binding"],
+        "task_state_binding": contract["task_state_binding"],
         "scenario": contract["scenario"],
         "asset_directory": str(asset_directory),
         "objects": objects,

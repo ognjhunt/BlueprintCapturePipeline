@@ -273,6 +273,15 @@ def _articulated_task_state_binding(
         return path
 
     moving_link = _source_prim("moving_link_prim_path")
+    moving_link_native_body_name = str(
+        value.get("moving_link_native_body_name") or ""
+    )
+    if (
+        not moving_link_native_body_name
+        or PurePosixPath(moving_link_native_body_name).name
+        != moving_link_native_body_name
+    ):
+        errors.append("native_task_runtime_moving_link_body_name_invalid")
     handle_paths_raw = value.get("handle_prim_paths")
     handle_paths: list[str] = []
     if not isinstance(handle_paths_raw, Sequence) or isinstance(
@@ -321,6 +330,7 @@ def _articulated_task_state_binding(
     return {
         "schema_version": TASK_STATE_BINDING_SCHEMA_VERSION,
         "moving_link_prim_path": moving_link,
+        "moving_link_native_body_name": moving_link_native_body_name,
         "handle_prim_paths": handle_paths,
         "handle_grasp_point_link_m": _finite_vector(
             value.get("handle_grasp_point_link_m"),
@@ -465,6 +475,11 @@ def materialize_native_task_runtime_contract(
             "robot_id": "franka_panda",
             "base_pose_world": robot_pose,
             "joint_reset_positions_rad": robot_reset_positions,
+            "grasp_frame": {
+                "kind": "body_midpoint",
+                "body_names": ["left_inner_finger", "right_inner_finger"],
+                "measurement_authority": "native_robot_body_pose_readback",
+            },
             "action_seam": {
                 "kind": "joint_position_with_gripper",
                 "arm_joint_count": 7,

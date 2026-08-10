@@ -108,13 +108,13 @@ def compile_native_articulated_task_sample(
             ["native_articulated_task_joint_names_duplicated"]
         )
     index = {name: offset for offset, name in enumerate(names)}
-    prim_paths = dict(task_sample_binding.get("joint_prim_paths") or {})
+    native_name_binding = dict(task_sample_binding.get("native_joint_names") or {})
     expected_ids = list(task_sample_binding.get("joint_ids") or [])
     joint_positions: dict[str, float] = {}
     joint_velocities: dict[str, float] = {}
     errors: list[str] = []
     for joint_id in expected_ids:
-        native_name = str(prim_paths.get(joint_id) or "").rsplit("/", 1)[-1]
+        native_name = str(native_name_binding.get(joint_id) or "")
         if not native_name or native_name not in index:
             errors.append(f"native_articulated_task_joint_unresolved:{joint_id}")
             continue

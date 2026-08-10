@@ -121,6 +121,7 @@ def _contract(tmp_path: Path, *, articulated: bool) -> tuple[dict, Path]:
     state_binding = (
         {
             "moving_link_prim_path": "/Asset/upper_door",
+            "moving_link_native_body_name": "upper_door",
             "handle_prim_paths": [
                 "/Asset/upper_door/component_004",
                 "/Asset/upper_door/handle_post_a",
