@@ -26,6 +26,10 @@ from typing import Any
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import RECEIPT_SCHEMA_VERSION
+from .native_task_dependency_profiles import (
+    CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+    CONSTRUCTION_CONTROLS_EXECUTION_MODES,
+)
 from .native_task_runtime_source_packet import (
     ISAAC_SIM_RUNTIME_IMAGE,
     verify_native_task_runtime_source_packet,
@@ -270,6 +274,7 @@ def build_native_task_arena_bundle(
     implementation_commit: str,
     execution_mode: str = "construction_canary",
     policy_candidate_id: str | None = None,
+    dependency_profile: str | None = None,
     expected_output_filename: str = DEFAULT_EXPECTED_OUTPUT_FILENAME,
     container_image: str = DEFAULT_IMAGE,
     runtime_source_packet_receipt: str | Path | None = None,
@@ -286,6 +291,19 @@ def build_native_task_arena_bundle(
         raise NativeTaskArenaBundleError(["native_task_arena_bundle_execution_mode_invalid"])
     if (execution_mode == "policy") is not bool(str(policy_candidate_id or "").strip()):
         raise NativeTaskArenaBundleError(["native_task_arena_bundle_policy_binding_invalid"])
+    resolved_dependency_profile = str(dependency_profile or "").strip()
+    if execution_mode in CONSTRUCTION_CONTROLS_EXECUTION_MODES:
+        resolved_dependency_profile = (
+            resolved_dependency_profile or CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
+        )
+        if resolved_dependency_profile != CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_dependency_profile_invalid"]
+            )
+    elif not resolved_dependency_profile:
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_dependency_profile_required"]
+        )
     pure_output = PurePosixPath(str(expected_output_filename))
     if pure_output.name != str(expected_output_filename) or str(expected_output_filename) in {
         "",
@@ -412,6 +430,7 @@ def build_native_task_arena_bundle(
         "status": "ready",
         "program_id": "arm-decision-proof-v1",
         "execution_mode": execution_mode,
+        "dependency_profile": resolved_dependency_profile,
         "implementation_commit": implementation_commit,
         "container_image": image,
         "packet_receipt_digest": packet_receipt["receipt_digest"],

@@ -11,6 +11,9 @@ from blueprint_pipeline.native_task_arena_controls_worker import (
     _load_and_verify_manifest,
     _verified_runtime_inputs,
 )
+from blueprint_pipeline.native_task_dependency_profiles import (
+    CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+)
 
 
 def test_controls_worker_source_has_no_scene_task_or_policy_identity() -> None:
@@ -30,12 +33,15 @@ def test_controls_worker_source_has_no_scene_task_or_policy_identity() -> None:
         "groot_n17_droid",
     ):
         assert forbidden not in source
+    assert '_announce("simulation_app")' not in source
+    assert '_announce("pre_app_and_simulation_launch")' in source
 
 
 def test_controls_manifest_rejects_policy_or_construction_mode(tmp_path: Path) -> None:
     manifest = {
         "schema_version": "native_task_arena_provider_bundle.v1",
         "execution_mode": "controls",
+        "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
         "policy_candidate_id": None,
         "candidate_policy_queried": False,
         "input_digest": "",

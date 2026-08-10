@@ -23,6 +23,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from blueprint_pipeline.native_task_dependency_profiles import (
+    CONSTRUCTION_CONTROLS_DEFERRED_MODULES,
+    CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+    construction_controls_deferred_dependencies,
+)
+
 
 RESULT_SCHEMA_VERSION = "native_task_arena_construction_result.v1"
 RESULT_FILENAME = "native_task_arena_construction_result.v1.json"
@@ -47,7 +53,6 @@ DEPENDENCY_IMPORTS = (
     "hydra",
     "hydra.core",
     "msgpack",
-    "zmq",
     "tensordict",
     "importlib_metadata",
     "zipp",
@@ -56,8 +61,6 @@ DEPENDENCY_IMPORTS = (
     "git",
     "gitdb",
     "smmap",
-    "lightwheel_sdk",
-    "lightwheel_sdk.loader",
     "requests",
     "charset_normalizer",
     "idna",
@@ -91,6 +94,8 @@ DEPENDENCY_IMPORTS = (
     "isaaclab_arena.environments.arena_env_builder",
     "isaaclab_arena.environments.arena_env_builder_cfg",
 )
+if set(DEPENDENCY_IMPORTS) & CONSTRUCTION_CONTROLS_DEFERRED_MODULES:
+    raise RuntimeError("native_task_worker_required_deferred_dependency_overlap")
 CAMERA_THRESHOLDS = {
     "external": {"minimum_pixels": 200, "minimum_pixel_fraction": 0.003},
     "wrist": {"minimum_pixels": 120, "minimum_pixel_fraction": 0.002},
@@ -208,6 +213,8 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
             blockers.append(f"native_task_dependency_missing:{executable}")
     return {
         "schema_version": "native_task_dependency_matrix.v1",
+        "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+        "deferred_optional_dependencies": construction_controls_deferred_dependencies(),
         "embodiment_scope": embodiment_scope,
         "imports": imports,
         "tools": tools,
@@ -234,6 +241,8 @@ def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
         not isinstance(manifest, dict)
         or manifest.get("schema_version") != "native_task_arena_provider_bundle.v1"
         or manifest.get("execution_mode") != "construction_canary"
+        or manifest.get("dependency_profile")
+        != CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
         or manifest.get("input_digest")
         != canonical_digest(manifest, digest_field="input_digest")
     ):
@@ -397,7 +406,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "packet_verified"
         _announce("packet_verification", "completed")
 
-        _announce("simulation_app")
+        result["phase_reached"] = "pre_app_and_simulation_launch"
+        _announce("pre_app_and_simulation_launch")
         from blueprint_pipeline.native_task_isaaclab_launch import (
             launch_native_task_isaaclab,
         )
@@ -406,7 +416,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_root / "native_task_runtime_source_provisioning.v1.json"
         )
         result["isaaclab_launch"] = launch_receipt
-        _announce("simulation_app", "completed")
+        result["phase_reached"] = "simulation_app_started"
+        _announce("pre_app_and_simulation_launch", "completed")
         _announce("dependency_matrix")
         dependency_matrix = preflight_native_dependency_matrix(
             robot_id=str(plan["robot"]["robot_id"])

@@ -14,6 +14,7 @@ from .native_task_arena_construction_bundle import (
 from .native_task_arena_controls_bundle import (
     RESULT_FILENAME as CONTROLS_RESULT_FILENAME,
 )
+from .native_task_dependency_profiles import CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
 from .paid_resource_admission import PaidResourceAdmissionGrant
 
 
@@ -41,6 +42,8 @@ def run_native_task_arena_vast(
         prepared_bundle.get("schema_version")
         != "native_task_arena_provider_bundle.v1"
         or prepared_bundle.get("execution_mode") != "construction_canary"
+        or prepared_bundle.get("dependency_profile")
+        != CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
         or prepared_bundle.get("policy_candidate_id") is not None
         or prepared_bundle.get("candidate_policy_queried") is not False
         or prepared_bundle.get("expected_output_filename")
@@ -95,6 +98,8 @@ def run_native_task_arena_controls_vast(
         prepared_bundle.get("schema_version")
         != "native_task_arena_provider_bundle.v1"
         or prepared_bundle.get("execution_mode") != "controls"
+        or prepared_bundle.get("dependency_profile")
+        != CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
         or prepared_bundle.get("policy_candidate_id") is not None
         or prepared_bundle.get("candidate_policy_queried") is not False
         or prepared_bundle.get("expected_output_filename")

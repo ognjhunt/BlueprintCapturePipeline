@@ -17,6 +17,12 @@ from blueprint_pipeline.native_task_isaaclab_launch import (
     preflight_native_task_pre_app_dependencies,
     verify_native_task_isaaclab_launch_contract,
 )
+from blueprint_pipeline.native_task_dependency_profiles import (
+    CONSTRUCTION_CONTROLS_DEFERRED_MODULES,
+    CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+    CONSTRUCTION_CONTROLS_EXECUTION_MODES,
+    construction_controls_deferred_dependencies,
+)
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ARENA_COMMIT,
     ARENA_ISAACLAB_SUBMODULE_PATH,
@@ -128,10 +134,14 @@ def _pre_app_result(
             imports.append({"module": name, "available": True})
     result = {
         "schema_version": PRE_APP_DEPENDENCY_SCHEMA_VERSION,
+        "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+        "execution_modes": list(CONSTRUCTION_CONTROLS_EXECUTION_MODES),
         "status": "qualified" if not errors else "blocked",
         "imports": imports,
         "import_count": len(PRE_APP_DEPENDENCY_IMPORTS),
+        "all_profile_imports_attempted": True,
         "all_declared_imports_attempted": True,
+        "deferred_optional_dependencies": construction_controls_deferred_dependencies(),
         "torch_cuda": {
             "available": True,
             "runtime_version": "12.8",
@@ -190,7 +200,8 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
 
 
 def test_pre_app_matrix_attempts_every_declared_dependency_and_reports_all_gaps() -> None:
-    missing = {"onnxruntime", "vuer", "sbi"}
+    missing = {"gymnasium", "pxr.Usd", "warp"}
+    attempted = []
     versions = {
         "torch": "2.11.0+cu128",
         "torchvision": "0.26.0+cu128",
@@ -216,6 +227,8 @@ def test_pre_app_matrix_attempts_every_declared_dependency_and_reports_all_gaps(
     )
 
     def importer(name: str):
+        attempted.append(name)
+        assert name not in CONSTRUCTION_CONTROLS_DEFERRED_MODULES
         if name in missing:
             raise ModuleNotFoundError(name)
         return torch if name == "torch" else SimpleNamespace(__version__="1.0")
@@ -226,6 +239,8 @@ def test_pre_app_matrix_attempts_every_declared_dependency_and_reports_all_gaps(
     )
 
     assert result["status"] == "blocked"
+    assert result["dependency_profile"] == CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
+    assert result["all_profile_imports_attempted"] is True
     assert result["all_declared_imports_attempted"] is True
     assert result["import_count"] == len(PRE_APP_DEPENDENCY_IMPORTS)
     assert {row["module"] for row in result["imports"] if row["available"] is False} == missing
@@ -233,6 +248,13 @@ def test_pre_app_matrix_attempts_every_declared_dependency_and_reports_all_gaps(
         f"native_task_pre_app_dependency_missing:{name}" for name in missing
     }
     assert result["torch_cuda"]["runtime_version"] == "12.8"
+    assert attempted == list(PRE_APP_DEPENDENCY_IMPORTS)
+    assert result["deferred_optional_dependencies"] == (
+        construction_controls_deferred_dependencies()
+    )
+    packaging = next(row for row in result["imports"] if row["module"] == "packaging")
+    assert packaging["version_constraint"] is None
+    assert packaging["version_matches"] is None
     assert result["matrix_digest"] == canonical_digest(result, digest_field="matrix_digest")
 
 
@@ -327,6 +349,31 @@ def test_pre_app_matrix_requires_each_declared_module_exactly_once(
             pre_app_dependency_probe=lambda: forged,
         )
     assert called is False
+
+
+def test_pre_app_matrix_rejects_profile_or_deferred_capability_tamper(
+    tmp_path: Path,
+) -> None:
+    for mutate in ("profile", "deferred"):
+        forged = _pre_app_result()
+        if mutate == "profile":
+            forged["dependency_profile"] = "native_task_everything.v0"
+        else:
+            forged["deferred_optional_dependencies"] = []
+        forged["matrix_digest"] = canonical_digest(
+            forged, digest_field="matrix_digest"
+        )
+        with pytest.raises(
+            NativeTaskIsaacLabLaunchError,
+            match="native_task_pre_app_dependency_matrix_invalid",
+        ):
+            launch_native_task_isaaclab(
+                _receipt(tmp_path / mutate),
+                simulation_app_factory=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("SimulationApp must not launch")
+                ),
+                pre_app_dependency_probe=lambda forged=forged: forged,
+            )
 
 
 def test_missing_external_warp_fails_before_simulation_app_factory(

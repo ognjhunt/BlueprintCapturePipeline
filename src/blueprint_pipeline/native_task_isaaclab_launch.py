@@ -24,6 +24,12 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from .decision_evidence_contracts import canonical_digest
+from .native_task_dependency_profiles import (
+    CONSTRUCTION_CONTROLS_DEFERRED_MODULES,
+    CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+    CONSTRUCTION_CONTROLS_EXECUTION_MODES,
+    construction_controls_deferred_dependencies,
+)
 from .native_task_runtime_source_packet import (
     ARENA_COMMIT,
     ARENA_ISAACLAB_SUBMODULE_PATH,
@@ -54,17 +60,16 @@ ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG = f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}=
 ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX = "d81d2160220a4401be1d94f871c8f0b62e217acb"
 BUNDLED_WARP_EXTENSION = "omni.warp.core"
 
-# This is the released production dependency surface declared by the pinned
-# Isaac Lab and Arena setup files plus the exact transport imports already used
-# by the harness.  Probe all of it before SimulationApp: Kit extension startup
-# otherwise stops on the first missing module and turns a dependency inventory
-# into a sequence of paid discoveries.
+# This is the pre-SimulationApp-safe portion of the selected Franka
+# construction/control graph.  Arena's complete setup.py union also names UI,
+# remote-provider, analysis, conversion, and unselected-embodiment packages;
+# those are retained explicitly as deferred profile evidence below rather than
+# allowed to block this execution graph.
 PRE_APP_DEPENDENCY_IMPORTS = (
     "torch",
     "torchvision",
     "numpy",
     "onnx",
-    "onnxruntime",
     "prettytable",
     "toml",
     "hid",
@@ -97,19 +102,13 @@ PRE_APP_DEPENDENCY_IMPORTS = (
     "hf_xet",
     "google.protobuf",
     "tensorboard",
-    "vuer",
-    "lightwheel_sdk",
-    "openai",
-    "sbi",
     "scipy",
-    "pandas",
     "cloudpickle",
     "farama_notifications",
     "antlr4",
     "omegaconf",
     "hydra",
     "msgpack",
-    "zmq",
     "tensordict",
     "importlib_metadata",
     "zipp",
@@ -140,8 +139,6 @@ PRE_APP_VERSION_CONSTRAINTS = {
     "PIL": "==12.2.0",
     "typing_extensions": "==4.12.2",
     "h5py": ">=3.16.0",
-    "packaging": "<24",
-    "pandas": "==2.2.3",
     "tqdm": "==4.67.1",
 }
 PRE_APP_DISTRIBUTION_NAMES = {
@@ -156,9 +153,11 @@ PRE_APP_DISTRIBUTION_NAMES = {
     "typing_extensions": "typing_extensions",
     "h5py": "h5py",
     "packaging": "packaging",
-    "pandas": "pandas",
     "tqdm": "tqdm",
 }
+
+if set(PRE_APP_DEPENDENCY_IMPORTS) & CONSTRUCTION_CONTROLS_DEFERRED_MODULES:
+    raise RuntimeError("native_task_dependency_profile_required_deferred_overlap")
 
 
 class NativeTaskIsaacLabLaunchError(ValueError):
@@ -208,7 +207,7 @@ def preflight_native_task_pre_app_dependencies(
     module_importer: Callable[[str], Any] = importlib.import_module,
     distribution_version_reader: Callable[[str], str] = importlib.metadata.version,
 ) -> dict[str, Any]:
-    """Inventory the complete released runtime surface before Kit starts."""
+    """Inventory every pre-app import in the selected execution profile."""
 
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
@@ -285,10 +284,14 @@ def preflight_native_task_pre_app_dependencies(
 
     result: dict[str, Any] = {
         "schema_version": PRE_APP_DEPENDENCY_SCHEMA_VERSION,
+        "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+        "execution_modes": list(CONSTRUCTION_CONTROLS_EXECUTION_MODES),
         "status": "qualified" if not blockers else "blocked",
         "imports": rows,
         "import_count": len(rows),
+        "all_profile_imports_attempted": len(rows) == len(PRE_APP_DEPENDENCY_IMPORTS),
         "all_declared_imports_attempted": len(rows) == len(PRE_APP_DEPENDENCY_IMPORTS),
+        "deferred_optional_dependencies": construction_controls_deferred_dependencies(),
         "torch_cuda": torch_cuda,
         "simulation_app_started": False,
         "candidate_policy_queried": False,
@@ -482,10 +485,14 @@ def launch_native_task_isaaclab(
     except Exception as exc:  # noqa: BLE001 - retain a probe implementation gap
         pre_app = {
             "schema_version": PRE_APP_DEPENDENCY_SCHEMA_VERSION,
+            "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+            "execution_modes": list(CONSTRUCTION_CONTROLS_EXECUTION_MODES),
             "status": "blocked",
             "imports": [],
             "import_count": 0,
+            "all_profile_imports_attempted": False,
             "all_declared_imports_attempted": False,
+            "deferred_optional_dependencies": construction_controls_deferred_dependencies(),
             "torch_cuda": {},
             "simulation_app_started": False,
             "candidate_policy_queried": False,
@@ -504,8 +511,15 @@ def launch_native_task_isaaclab(
     pre_app_modules = [str(row.get("module") or "") for row in pre_app_imports]
     pre_app_valid = bool(
         pre_app.get("schema_version") == PRE_APP_DEPENDENCY_SCHEMA_VERSION
+        and pre_app.get("dependency_profile")
+        == CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
+        and pre_app.get("execution_modes")
+        == list(CONSTRUCTION_CONTROLS_EXECUTION_MODES)
         and pre_app.get("matrix_digest") == canonical_digest(pre_app, digest_field="matrix_digest")
+        and pre_app.get("all_profile_imports_attempted") is True
         and pre_app.get("all_declared_imports_attempted") is True
+        and pre_app.get("deferred_optional_dependencies")
+        == construction_controls_deferred_dependencies()
         and pre_app.get("import_count") == len(PRE_APP_DEPENDENCY_IMPORTS)
         and len(pre_app_imports) == len(PRE_APP_DEPENDENCY_IMPORTS)
         and len(set(pre_app_modules)) == len(PRE_APP_DEPENDENCY_IMPORTS)
@@ -615,6 +629,7 @@ __all__ = [
     "PRE_APP_DEPENDENCY_IMPORTS",
     "PRE_APP_DEPENDENCY_SCHEMA_VERSION",
     "PRE_APP_VERSION_CONSTRAINTS",
+    "CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE",
     "REQUIRED_EXPERIENCE_FILES",
     "SCHEMA_VERSION",
     "launch_native_task_isaaclab",

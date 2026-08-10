@@ -10,6 +10,11 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
     _requested_arm_reset,
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
+from blueprint_pipeline.native_task_dependency_profiles import (
+    CONSTRUCTION_CONTROLS_DEFERRED_MODULES,
+    CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+    construction_controls_deferred_dependencies,
+)
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
 
 
@@ -23,6 +28,8 @@ def test_worker_source_contains_no_scene_or_task_object_identity() -> None:
 
     for forbidden in ("840313", "840796", "refrigerator", "approved_can"):
         assert forbidden not in source
+    assert '_announce("simulation_app")' not in source
+    assert '_announce("pre_app_and_simulation_launch")' in source
 
 
 def test_dependency_matrix_is_declared_as_one_preflight() -> None:
@@ -48,7 +55,6 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "hydra",
         "hydra.core",
         "msgpack",
-        "zmq",
         "rsl_rl",
         "rsl_rl.runners",
         "tensordict",
@@ -58,8 +64,6 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "git",
         "gitdb",
         "smmap",
-        "lightwheel_sdk",
-        "lightwheel_sdk.loader",
         "requests",
         "charset_normalizer",
         "idna",
@@ -77,6 +81,10 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "isaaclab_arena.environments.arena_env_builder",
         "isaaclab_arena.environments.arena_env_builder_cfg",
     }.issubset(DEPENDENCY_IMPORTS)
+    assert set(DEPENDENCY_IMPORTS).isdisjoint(CONSTRUCTION_CONTROLS_DEFERRED_MODULES)
+    assert {row["module"] for row in construction_controls_deferred_dependencies()} == (
+        CONSTRUCTION_CONTROLS_DEFERRED_MODULES
+    )
     assert set(TOP_LEVEL_PACKAGES).issubset(DEPENDENCY_IMPORTS)
     assert DEPENDENCY_IMPORTS.index("isaaclab_contrib") < DEPENDENCY_IMPORTS.index(
         "isaaclab_arena.environments.arena_env_builder"
@@ -90,6 +98,7 @@ def test_manifest_binding_rejects_tamper_before_isaac(tmp_path: Path) -> None:
     manifest = {
         "schema_version": "native_task_arena_provider_bundle.v1",
         "execution_mode": "construction_canary",
+        "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
         "implementation_commit": "a" * 40,
         "input_digest": "",
     }

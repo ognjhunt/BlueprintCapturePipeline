@@ -29,6 +29,9 @@ from blueprint_pipeline.native_task_arena_controls_bundle import (
     load_verified_native_task_arena_controls_bundle,
 )
 from blueprint_pipeline.native_task_arena_vast import run_native_task_arena_vast
+from blueprint_pipeline.native_task_dependency_profiles import (
+    CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+)
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_PACKAGE_NAMES,
     RUNTIME_DEPENDENCY_WHEELS,
@@ -291,6 +294,7 @@ def test_rigid_and_articulated_packets_use_the_same_bundle_contract(
     )
 
     assert receipt["status"] == "ready"
+    assert receipt["dependency_profile"] == CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
     assert receipt["scene_reconstructed_by_bundle"] is False
     assert receipt["packet_receipt_digest"].startswith("sha256:")
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
@@ -581,7 +585,13 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
     assert "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena" in worker
 
 
-def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path) -> None:
+def test_construction_bundle_passes_native_vast_static_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp_isaac_lab_arena_vast._local_evidence_capacity",
+        lambda **kwargs: {"status": "passed", "blockers": []},
+    )
     receipt = build_native_task_arena_construction_bundle(
         job_dir=tmp_path / "bundle",
         packet_dir=_packet(tmp_path, scene_id="840796"),
@@ -640,7 +650,7 @@ def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path)
         paid_resource_admission_grant=None,
         execute=False,
     )
-    assert dry_run["status"] == "dry_run_ready"
+    assert dry_run["status"] == "dry_run_ready", dry_run
     assert dry_run["provider_mutations_performed"] == 0
 
 
@@ -702,6 +712,7 @@ def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
     prepared = {
         "schema_version": "native_task_arena_provider_bundle.v1",
         "execution_mode": "construction_canary",
+        "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
         "policy_candidate_id": None,
         "candidate_policy_queried": False,
         "expected_output_filename": "native_task_arena_construction_result.v1.json",

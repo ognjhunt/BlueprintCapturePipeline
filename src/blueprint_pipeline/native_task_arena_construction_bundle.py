@@ -19,6 +19,7 @@ from .native_task_arena_bundle import (
     DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
     build_native_task_arena_bundle,
 )
+from .native_task_dependency_profiles import CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
 
 
 PROBE_KIND = "native-task-arena-construction"
@@ -43,6 +44,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_arena_runtime.py",
     "native_task_isaaclab_launch.py",
     "native_task_camera_observability.py",
+    "native_task_dependency_profiles.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
     "native_task_usd_import_normalization.py",
@@ -112,6 +114,8 @@ def load_verified_native_task_arena_construction_bundle(
         receipt.get("schema_version") != "native_task_arena_provider_bundle.v1"
         or receipt.get("status") != "ready"
         or receipt.get("execution_mode") != "construction_canary"
+        or receipt.get("dependency_profile")
+        != CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
         or receipt.get("policy_candidate_id") is not None
         or receipt.get("candidate_policy_queried") is not False
     ):

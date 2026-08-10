@@ -19,6 +19,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from blueprint_pipeline.native_task_dependency_profiles import (
+    CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+)
+
 
 RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 RESULT_FILENAME = "native_task_arena_control_result.v1.json"
@@ -66,6 +70,8 @@ def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
         not isinstance(manifest, dict)
         or manifest.get("schema_version") != "native_task_arena_provider_bundle.v1"
         or manifest.get("execution_mode") != "controls"
+        or manifest.get("dependency_profile")
+        != CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
         or manifest.get("policy_candidate_id") is not None
         or manifest.get("candidate_policy_queried") is not False
         or manifest.get("input_digest")
@@ -181,7 +187,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["phase_reached"] = "inputs_verified"
         _announce("input_verification", "completed")
 
-        _announce("simulation_app")
+        result["phase_reached"] = "pre_app_and_simulation_launch"
+        _announce("pre_app_and_simulation_launch")
         from blueprint_pipeline.native_task_isaaclab_launch import (
             launch_native_task_isaaclab,
         )
@@ -190,7 +197,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_root / "native_task_runtime_source_provisioning.v1.json"
         )
         result["isaaclab_launch"] = launch_receipt
-        _announce("simulation_app", "completed")
+        result["phase_reached"] = "simulation_app_started"
+        _announce("pre_app_and_simulation_launch", "completed")
 
         from blueprint_pipeline.native_task_arena_construction_worker import (
             _gripper_convention_probe,
