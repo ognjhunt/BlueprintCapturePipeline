@@ -326,3 +326,49 @@ def test_the_robot_scene_key_matches_the_embodiment_scene_cfg():
     assert "scene[embodiment.name]" not in WORKER.read_text(encoding="utf-8"), (
         "the embodiment's name is not a scene key"
     )
+
+
+def test_the_worker_converts_simulator_arrays_the_way_the_rigid_lane_does():
+    """Isaac Lab hands back Warp arrays, and Warp refuses item indexing.
+
+    rt25: "Item indexing is not supported on wp.array objects", raised reading
+    joint_pos. The rigid runtime has solved this - its _to_torch converts warp
+    arrays explicitly and its docstring states the rule outright: convert
+    simulator-native arrays at the adapter boundary before indexing. The
+    articulated worker had a converter that only knew about torch.
+
+    Not every field is Warp-backed either, which is why this was invisible
+    until now: the gripper probe read body_pose_w and got sensible numbers
+    while joint_pos raised. A converter must be uniform or it is a coin flip.
+    """
+
+    rigid = (
+        REPO_ROOT / "src/blueprint_pipeline/adp009d_isaac_runtime.py"
+    ).read_text(encoding="utf-8")
+    worker = WORKER.read_text(encoding="utf-8")
+
+    assert "wp.to_torch" in rigid, "rigid lane no longer converts warp; anchor gone"
+    assert "wp.to_torch" in worker, (
+        "the worker must convert warp arrays like the hardware-proven lane does"
+    )
+    # And it must refuse an unknown array type rather than guessing.
+    assert "unsupported_sim_array" in worker
+
+
+def test_no_simulator_buffer_is_indexed_before_conversion():
+    """`.data.<field>[` is the shape of the bug; it must not appear."""
+
+    worker = WORKER.read_text(encoding="utf-8")
+
+    offenders = [
+        line.strip()
+        for line in worker.splitlines()
+        if ".data." in line
+        and "[" in line.split(".data.", 1)[1][:40]
+        and "_to_torch" not in line
+        and not line.strip().startswith("#")
+    ]
+
+    assert not offenders, "simulator buffers indexed without conversion:\n  " + "\n  ".join(
+        offenders
+    )

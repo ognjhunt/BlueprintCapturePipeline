@@ -140,6 +140,35 @@ def _spawn_cfg_addon(object_type: str, row: Mapping[str, Any]) -> dict[str, Any]
     return addon
 
 
+
+def _to_torch(value: Any) -> Any:
+    """Convert simulator-native arrays at the boundary before indexing.
+
+    Isaac Lab hands back Warp arrays for some fields and torch tensors for
+    others, and Warp refuses item indexing outright - rt25 died on "Item
+    indexing is not supported on wp.array objects" reading joint_pos, while the
+    gripper probe had read body_pose_w moments earlier without complaint. A
+    converter that only knows torch is a coin flip on which field it meets.
+
+    Same shape as the rigid lane's, including the refusal: an unknown array
+    type is not silently coerced, because a wrong conversion produces numbers
+    rather than an error.
+
+    Module scope on purpose. Nested inside main() it was defined after three of
+    its callers and worked only because closures resolve at call time - true
+    here, and one reordering away from not being.
+    """
+
+    if hasattr(value, "detach"):
+        return value
+    module = type(value).__module__
+    if module == "warp" or module.startswith("warp."):
+        import warp as wp  # type: ignore
+
+        return wp.to_torch(value)
+    raise TypeError(f"unsupported_sim_array:{module}.{type(value).__name__}")
+
+
 def _phase(result: dict[str, Any], name: str) -> None:
     """Record a phase and announce it, in that order.
 
@@ -524,8 +553,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         indices = {name: dof_names.index(name) for name in joint_ids}
 
         def _read_joint_state(joint_id: str):
-            positions = live.data.joint_pos[0]
-            velocities = live.data.joint_vel[0]
+            positions = _to_torch(live.data.joint_pos)[0]
+            velocities = _to_torch(live.data.joint_vel)[0]
             index = indices[joint_id]
             return (float(positions[index]), float(velocities[index]))
 
@@ -549,7 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             """Net contact forces, or None so the predicate refuses loudly."""
 
             try:
-                return scene[sensor_name].data.net_forces_w
+                return _to_torch(scene[sensor_name].data.net_forces_w)
             except (KeyError, AttributeError, TypeError):
                 return None
 
@@ -560,7 +589,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if net is None:
                 return None
             sensor = scene["robot_contact_sensor"]
-            matrix = getattr(sensor.data, "force_matrix_w", None)
+            raw_matrix = getattr(sensor.data, "force_matrix_w", None)
+            matrix = None if raw_matrix is None else _to_torch(raw_matrix)
             if matrix is None:
                 # No filter reported: cannot separate room from twin, and
                 # returning the net force would blame the room for every grasp.
@@ -576,10 +606,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             names = list(getattr(articulation.data, "body_names", []) or [])
             if body_name not in names:
                 return None
-            return [
-                float(value)
-                for value in articulation.data.body_pose_w[0, names.index(body_name), :3]
-            ]
+            poses = _to_torch(articulation.data.body_pose_w)
+            return [float(value) for value in poses[0, names.index(body_name), :3]]
 
         task_spec_row = spec.get("task_spec") or {}
         # Top level, NOT inside task_spec: the control plan is digest-bound to
@@ -625,8 +653,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         # code alone - so rt20 spent a launch on a fact already in hand.
         robot = scene[ROBOT_SCENE_KEY]
 
-        def _to_torch(value):
-            return value.detach() if hasattr(value, "detach") else torch.as_tensor(value)
 
         # Which command closes the fingers is a property of Arena's action
         # convention, not of DROID's, and an inverted one turns every grasp
