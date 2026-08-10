@@ -52,6 +52,13 @@ for so_subdir in python lib extraLibs usdpy; do
   fi
 done
 
+python3 "${SCRIPT_DIR}/content_agents_model_compatibility.py" \
+  --source-root "${SOURCE_DIR}" \
+  --plan "${SCRIPT_DIR}/content_agents_model_compatibility_plan.json" \
+  --receipt "${OUTPUT_DIR}/content_agents_model_compatibility.json" || {
+  write_missing_result "joint_agent_model_parameter_compatibility_failed"; exit 2;
+}
+
 if [ "${BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL:-0}" = "1" ]; then
   python3 - "${OUTPUT_DIR}/provider_bundle_rehearsal.json" <<'PY'
 import json
@@ -63,6 +70,7 @@ Path(sys.argv[1]).write_text(json.dumps({
     "status": "passed",
     "entrypoint": "run_adp_joint_agent_provider_runtime.sh",
     "archive_extraction_executed": True,
+    "model_parameter_compatibility_executed": True,
     "gpu_runtime_started": False,
     "paid_inference_performed": False,
     "provider_mutations_performed": 0,

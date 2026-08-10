@@ -19,6 +19,9 @@ import yaml
 from pxr import Usd, UsdGeom, UsdPhysics
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .content_agents_model_compatibility import (
+    materialize_content_agents_model_compatibility_plan,
+)
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .openai_successor_models import (
@@ -684,6 +687,14 @@ def build_content_agents_vast_bundle(
         repo / "src/blueprint_pipeline/provider_archive.py",
         runtime / "provider_archive.py",
     )
+    shutil.copy2(
+        repo / "src/blueprint_pipeline/content_agents_model_compatibility.py",
+        runtime / "content_agents_model_compatibility.py",
+    )
+    compatibility_plan = materialize_content_agents_model_compatibility_plan(
+        model_ids=(CONTENT_LLM_MODEL, CONTENT_IMAGE_MODEL),
+        destination=runtime / "content_agents_model_compatibility_plan.json",
+    )
     native_probe: dict[str, Any] | None = None
     if variant["variant"] == "match_v2":
         native_probe = materialize_native_probe(
@@ -751,6 +762,7 @@ def build_content_agents_vast_bundle(
         "container_image": DEFAULT_IMAGE,
         "container_platform": "linux/amd64",
         "source_archive_sha256": _sha256(source_zip),
+        "model_parameter_compatibility": compatibility_plan,
         "input_usd_sha256": input_normalization["normalized_input_usd_sha256"],
         "input_usd_normalization": input_normalization,
         "input_variant": variant["variant"],

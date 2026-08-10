@@ -49,6 +49,38 @@ def _fake_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     material_library.parent.mkdir(parents=True)
     material_library.write_text("materials: []\n", encoding="utf-8")
+    vision = source / "world_understanding/functions/models/vision_language_models.py"
+    backend = source / "world_understanding/functions/models/backends/public/openai.py"
+    vision.parent.mkdir(parents=True)
+    backend.parent.mkdir(parents=True)
+    vision.write_text(
+        "from world_understanding.telemetry import traced_vlm\n\n"
+        "class OpenAIVLM(object):\n"
+        + "    def call(self, temperature=None):\n"
+        + "        if temperature is not None:\n"
+        + "            pass\n" * 1
+        + "    def acall(self, temperature=None):\n"
+        + "        if temperature is not None:\n"
+        + "            pass\n"
+        + "    def paired(self, temperature=None):\n"
+        + "        if temperature is not None:\n"
+        + "            pass\n\n"
+        + "class AnthropicVLM(object):\n"
+        + "    pass\n",
+        encoding="utf-8",
+    )
+    backend.write_text(
+        "from world_understanding.functions.models.backends.registry import (\n"
+        "    register_chat_backend,\n"
+        ")\n"
+        "_DEFAULT_OPENAI_MODEL = \"gpt-5.4\"\n"
+        "def create_openai_chat(model=None, temperature=None):\n"
+        "    chat_kwargs = {}\n"
+        "    if temperature is not None:\n"
+        "        chat_kwargs[\"temperature\"] = temperature\n"
+        "    return chat_kwargs\n",
+        encoding="utf-8",
+    )
 
     def fake_git(_repo: Path, *args: str) -> str:
         if args == ("rev-parse", "HEAD"):
@@ -65,8 +97,12 @@ def _fake_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         if command[:4] == ["git", "-C", str(source), "archive"]:
             output = next(item.removeprefix("--output=") for item in command if item.startswith("--output="))
             with zipfile.ZipFile(output, "w") as archive:
-                info = zipfile.ZipInfo("LICENSE", date_time=(1980, 1, 1, 0, 0, 0))
-                archive.writestr(info, "Apache-2.0\n")
+                for path in sorted(item for item in source.rglob("*") if item.is_file()):
+                    info = zipfile.ZipInfo(
+                        path.relative_to(source).as_posix(),
+                        date_time=(1980, 1, 1, 0, 0, 0),
+                    )
+                    archive.writestr(info, path.read_bytes())
             return None
         return original_run(command, **kwargs)
 

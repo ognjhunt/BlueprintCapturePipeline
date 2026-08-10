@@ -18,6 +18,9 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .content_agents_model_compatibility import (
+    materialize_content_agents_model_compatibility_plan,
+)
 from .decision_evidence_contracts import canonical_digest
 from .hosted_model_inference_preflight import (
     BACKENDS as HOSTED_MODEL_BACKENDS,
@@ -571,6 +574,14 @@ def build_joint_agent_vast_bundle(
         repo / "src/blueprint_pipeline/provider_python_build_plan.py",
         runtime / "provider_python_build_plan.py",
     )
+    shutil.copy2(
+        repo / "src/blueprint_pipeline/content_agents_model_compatibility.py",
+        runtime / "content_agents_model_compatibility.py",
+    )
+    compatibility_plan = materialize_content_agents_model_compatibility_plan(
+        model_ids=(model_id,),
+        destination=runtime / "content_agents_model_compatibility_plan.json",
+    )
     for name in (
         "__init__.py",
         "decision_evidence_contracts.py",
@@ -656,6 +667,7 @@ def build_joint_agent_vast_bundle(
                 "receipt_digest": model_preflight["receipt_digest"],
             },
         },
+        "model_parameter_compatibility": compatibility_plan,
         "completion_retries": 0,
         "execution_role": "optional_construction_enrichment",
         "failure_blocks_deterministic_asset_construction": False,
