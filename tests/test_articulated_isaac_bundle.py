@@ -401,3 +401,93 @@ def test_the_entrypoint_points_at_the_spec_the_bundle_actually_carries(
     assert (
         "provider_runtime/native/articulated_controls_probe_spec.json" in names
     )
+
+
+def test_extra_native_files_travel_with_the_bundle(tmp_path: Path) -> None:
+    """A worker that imports repo modules needs them in the zip.
+
+    The stage list is for digest-pinned USD; the flat module closure is a
+    different kind of payload, and leaving it out means the runtime boots and
+    then fails on an import - one missing module per launch.
+    """
+
+    root = tmp_path / "scene_probe"
+    root.mkdir()
+    stage = root / "controls_stage.usda"
+    stage.write_text("#usda 1.0\n", encoding="utf-8")
+    native = root / "native"
+    native.mkdir()
+    (native / "articulated_task_sample.py").write_text("X = 1\n", encoding="utf-8")
+    (native / "adp009d_control_episode.py").write_text("Y = 2\n", encoding="utf-8")
+    (root / "articulated_controls_probe_spec.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "articulated_controls_probe_spec.v1",
+                "status": "frozen_not_executed",
+                "stages": {
+                    "controls_stage": {
+                        "path": str(stage),
+                        "sha256": _digest_of(stage),
+                    }
+                },
+                "required_readbacks": ["zero_action_door_stays_shut"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    receipt = build_articulated_isaac_bundle(
+        probe_root=root,
+        job_dir=tmp_path / "job",
+        worker_source=_worker(tmp_path),
+        source_commit_sha="e" * 40,
+        probe_spec_filename="articulated_controls_probe_spec.json",
+        probe_spec_schema_version="articulated_controls_probe_spec.v1",
+        primary_stage_name="controls_stage",
+        extra_native_paths=sorted(native.glob("*.py")),
+    )
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    assert "provider_runtime/native/articulated_task_sample.py" in names
+    assert "provider_runtime/native/adp009d_control_episode.py" in names
+    assert receipt["extra_native_file_count"] == 2
+
+
+def test_an_extra_native_file_that_does_not_exist_fails_closed(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "probe2"
+    root.mkdir()
+    stage = root / "controls_stage.usda"
+    stage.write_text("#usda 1.0\n", encoding="utf-8")
+    (root / "articulated_controls_probe_spec.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "articulated_controls_probe_spec.v1",
+                "status": "frozen_not_executed",
+                "stages": {
+                    "controls_stage": {
+                        "path": str(stage),
+                        "sha256": _digest_of(stage),
+                    }
+                },
+                "required_readbacks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ArticulatedIsaacBundleError) as excinfo:
+        build_articulated_isaac_bundle(
+            probe_root=root,
+            job_dir=tmp_path / "job2",
+            worker_source=_worker(tmp_path),
+            source_commit_sha="f" * 40,
+            probe_spec_filename="articulated_controls_probe_spec.json",
+            probe_spec_schema_version="articulated_controls_probe_spec.v1",
+            primary_stage_name="controls_stage",
+            extra_native_paths=[root / "absent_module.py"],
+        )
+
+    assert any("extra_native_path_missing" in e for e in excinfo.value.errors)

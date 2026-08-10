@@ -91,6 +91,7 @@ def build_articulated_isaac_bundle(
     probe_spec_filename: str = PROBE_SPEC_FILENAME,
     probe_spec_schema_version: str = PROBE_SPEC_SCHEMA_VERSION,
     primary_stage_name: str = PRIMARY_STAGE_NAME,
+    extra_native_paths: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """Zip the frozen probe plus the articulated worker into a provider bundle."""
 
@@ -146,6 +147,21 @@ def build_articulated_isaac_bundle(
     for path in staged.values():
         shutil.copy2(path, native / path.name)
     shutil.copy2(spec_path, native / spec_path.name)
+    # The stage list is digest-pinned USD; a worker that imports repo modules
+    # needs a different kind of payload alongside it, and leaving it out means
+    # the runtime boots and then dies on an import.
+    extra_missing = [
+        str(item)
+        for item in extra_native_paths
+        if not Path(str(item)).expanduser().resolve().is_file()
+    ]
+    if extra_missing:
+        raise ArticulatedIsaacBundleError(
+            [f"articulated_isaac_bundle_extra_native_path_missing:{p}" for p in extra_missing]
+        )
+    for item in extra_native_paths:
+        source_file = Path(str(item)).expanduser().resolve()
+        shutil.copy2(source_file, native / source_file.name)
     shutil.copy2(worker, runtime / "isaac_realistic_runtime_runner.py")
     entrypoint = runtime / "run_isaac_realistic_runtime.sh"
     # The runner is told which spec to open. Leaving one kind's filename baked
@@ -238,6 +254,7 @@ def build_articulated_isaac_bundle(
         # declares, so an articulated run is checked as strictly as a rigid one
         # without inheriting drop/slide/tip/gripper semantics.
         "probe_names": sorted(str(name) for name in (spec.get("required_readbacks") or [])),
+        "extra_native_file_count": len(list(extra_native_paths)),
         "result_relative_path": "runtime_output/isaac_runtime_result.json",
         "relative_paths": {
             "entrypoint": "provider_runtime/run_isaac_realistic_runtime.sh",
