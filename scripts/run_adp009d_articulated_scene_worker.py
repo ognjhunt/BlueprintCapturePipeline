@@ -59,6 +59,20 @@ def _persist(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _phase(result: dict[str, Any], name: str) -> None:
+    """Record a phase and announce it, in that order.
+
+    The transport watches stdout for progress and kills a run that goes quiet.
+    Writing phases only into the result file made a slow Arena boot
+    indistinguishable from a hang: the heartbeat fired, the container log came
+    back empty, and the launch bought an ambiguity instead of an answer.
+    Flushed, because progress buffered past the timeout is progress nobody saw.
+    """
+
+    result["phase_reached"] = name
+    print(f"BLUEPRINT_WAM_RUNTIME_PHASE:adp009d_scene:{name}:reached", flush=True)
+
+
 def _finalize(*, output: Path, result: dict[str, Any], simulation_app: Any) -> None:
     """Write first, close second - close can end the process."""
 
@@ -125,7 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from isaaclab_arena.tasks.no_task import NoTask  # type: ignore
         from isaaclab_arena.utils.pose import Pose  # type: ignore
 
-        result["phase_reached"] = "arena_imported"
+        _phase(result, "arena_imported")
 
         root = spec_path.parent
         composition = spec.get("composition") or {}
@@ -173,7 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "articulated_scene_task_object_not_articulated:"
                 f"{result.get('task_object_spawn_type')}"
             )
-        result["phase_reached"] = "assets_resolved"
+        _phase(result, "assets_resolved")
 
         base = spec.get("robot_base") or {}
         embodiment = DroidAbsoluteJointPositionEmbodiment(
@@ -188,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             initial_joint_pose=[float(v) for v in (base.get("reset_joints") or [])] or None,
         )
-        result["phase_reached"] = "embodiment_configured"
+        _phase(result, "embodiment_configured")
 
         assets.append(
             type(
@@ -233,7 +247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         env = arena_env.get_env()
         result["scene_composed"] = True
-        result["phase_reached"] = "environment_built"
+        _phase(result, "environment_built")
 
         scene = env.unwrapped.scene
         try:
@@ -251,7 +265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError(
                 f"articulated_scene_joints_absent:{missing}:observed={dof_names}"
             )
-        result["phase_reached"] = "articulation_bound"
+        _phase(result, "articulation_bound")
 
         import torch  # type: ignore
 
@@ -290,7 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             reset_seed=int(spec.get("seed") or 20260810),
             to_torch=lambda value: value.detach() if hasattr(value, "detach") else torch.as_tensor(value),
         )
-        result["phase_reached"] = "adapter_wired"
+        _phase(result, "adapter_wired")
 
         pair = run_task_neutral_controls(
             environment=adapter,
@@ -311,7 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["status"] = (
             "completed" if result["controls_qualified"] else "completed_with_failures"
         )
-        result["phase_reached"] = "controls_complete"
+        _phase(result, "controls_complete")
         result["claim_boundary"] = {
             "robot_present_and_grasping": True,
             "policy_queried": False,
