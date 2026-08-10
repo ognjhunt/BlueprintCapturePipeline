@@ -308,3 +308,57 @@ def test_still_accelerating_away_does_not_hold_however_small_the_motion() -> Non
 
     assert verdict["holds_after_release"]["motion_is_decaying"] is False
     assert verdict["holds_after_release"]["passed"] is False
+
+
+def _settle(trace, **overrides):
+    return _positive(settle_trace_degrees=trace, settled_angle_degrees=trace[-1],
+                     maximum_angle_degrees=max(trace), **overrides)
+
+
+def _hold(trace):
+    return _worker()._evaluate_positive(
+        positive=_settle(trace), window=[45.0, 55.0], hold_tolerance_degrees=0.5
+    )["holds_after_release"]
+
+
+def test_the_coast_into_the_window_is_not_a_failure_to_stay_in_it() -> None:
+    """The settle window opens at release, and release is below the window.
+
+    The schedule lets go early on purpose, so the door spends the first part of
+    settling on its way in. Requiring every settle sample to be inside the
+    window fails the design rather than the door - which is what the real run
+    reported: stayed_inside_window False on a door that came to rest at 51.2.
+    """
+
+    assert _hold([30.7, 38.0, 45.5, 49.0, 50.8, 51.15, 51.19, 51.20])["passed"] is True
+
+
+def test_once_inside_the_door_has_to_stay_inside() -> None:
+    """Entering and then swinging back out is the self-closing failure."""
+
+    assert _hold([30.7, 46.0, 50.0, 48.0, 44.0, 40.0])["passed"] is False
+
+
+def test_overshooting_out_the_far_side_and_returning_is_not_holding() -> None:
+    assert _hold([30.7, 47.0, 53.0, 56.5, 54.0, 51.2])["passed"] is False
+
+
+def test_a_door_that_never_reaches_the_window_never_holds() -> None:
+    assert _hold([5.0, 6.5, 7.5, 8.2, 8.6, 8.73])["passed"] is False
+
+
+def test_entry_is_reported_so_a_failure_says_where_it_went_wrong() -> None:
+    verdict = _hold([30.7, 46.0, 50.0, 48.0, 44.0, 40.0])
+
+    assert verdict["entered_window"] is True
+    assert verdict["stayed_inside_after_entry"] is False
+
+
+def test_constant_speed_inside_the_window_is_not_a_settled_hold() -> None:
+    """Non-increasing motion alone cannot distinguish steady travel from rest."""
+
+    verdict = _hold([45.0, 46.0, 47.0, 48.0, 49.0, 50.0])
+
+    assert verdict["motion_is_decaying"] is True
+    assert verdict["tail_motion_degrees"] == 2.0
+    assert verdict["passed"] is False

@@ -153,18 +153,31 @@ def _evaluate_positive(
     # Judged on the settle window alone. A tail taken from the whole episode
     # still contains the coast, where the door is supposed to be moving, so
     # measuring across it reads deceleration as a failure to hold.
-    stays_in_window: bool | None = None
+    entered: bool | None = None
+    stayed_after_entry: bool | None = None
     decaying: bool | None = None
     tail_motion: float | None = None
     if len(settle) >= 4:
-        stays_in_window = all(low <= value <= high for value in settle)
-        half = len(settle) // 2
-        early = max(settle[:half]) - min(settle[:half])
-        late = max(settle[half:]) - min(settle[half:])
-        # Asymptotic settling never reaches exactly zero, so what matters is
-        # that the motion is shrinking, not that it has stopped.
-        decaying = late <= early
-        tail_motion = late
+        # The settle window opens at release, and release is deliberately below
+        # the window - the door spends its first moments coasting in. Demanding
+        # every sample be inside fails the design, not the door. What holding
+        # means is that once it arrives, it stays.
+        entry = next(
+            (i for i, value in enumerate(settle) if low <= value <= high), None
+        )
+        entered = entry is not None
+        if entry is not None:
+            after = settle[entry:]
+            stayed_after_entry = all(low <= value <= high for value in after)
+            half = max(1, len(after) // 2)
+            early = max(after[:half]) - min(after[:half])
+            late = max(after[half:]) - min(after[half:]) if after[half:] else 0.0
+            # Asymptotic settling never reaches exactly zero, so require both
+            # shrinking motion and the frozen absolute late-motion ceiling.
+            # Decay alone would admit a door moving at constant speed because
+            # equal early/late ranges satisfy a non-increasing check.
+            decaying = late <= early
+            tail_motion = late
 
     return {
         "reaches_success_window": {
@@ -174,13 +187,17 @@ def _evaluate_positive(
         },
         "holds_after_release": {
             "settled_angle_degrees": settled,
-            "stayed_inside_window": stays_in_window,
+            "entered_window": entered,
+            "stayed_inside_after_entry": stayed_after_entry,
             "motion_is_decaying": decaying,
             "tail_motion_degrees": tail_motion,
             "hold_tolerance_degrees": float(hold_tolerance_degrees),
             "passed": bool(
-                stays_in_window
+                entered
+                and stayed_after_entry
                 and decaying
+                and tail_motion is not None
+                and tail_motion <= float(hold_tolerance_degrees)
                 and low <= settled <= high
             ),
         },
