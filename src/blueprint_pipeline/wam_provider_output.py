@@ -31,6 +31,7 @@ RUNTIME_RESULT_FILENAMES = (
     "adp009d_ovrtx_live_camera_result.json",
     "adp009d_aura_native_live_camera_result.json",
     "adp009b_gaussian_excision_result.json",
+    "native_task_arena_construction_result.v1.json",
 )
 ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 

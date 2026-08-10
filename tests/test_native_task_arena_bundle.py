@@ -308,6 +308,36 @@ def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path)
     assert dry_run["provider_mutations_performed"] == 0
 
 
+def test_provider_output_recognizes_task_neutral_construction_result(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.wam_provider_output import (
+        inspect_provider_runtime_output_zip,
+    )
+
+    output_zip = tmp_path / "native-task-output.zip"
+    with zipfile.ZipFile(output_zip, "w") as archive:
+        archive.writestr(
+            "runtime/native_task_arena_construction_result.v1.json",
+            json.dumps(
+                {
+                    "schema_version": "native_task_arena_construction_result.v1",
+                    "status": "blocked",
+                    "blockers": ["native_task_construction_dependency_preflight_failed"],
+                    "candidate_policy_queried": False,
+                }
+            ),
+        )
+
+    inspection = inspect_provider_runtime_output_zip(output_zip)
+
+    assert inspection["runtime_result_present"] is True
+    assert inspection["runtime_result_status"] == "blocked"
+    assert inspection["runtime_result_blockers"] == [
+        "native_task_construction_dependency_preflight_failed"
+    ]
+
+
 def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:
     packet = _packet(tmp_path, scene_id="840796")
     worker = tmp_path / "worker.py"
