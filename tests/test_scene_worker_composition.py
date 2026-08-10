@@ -491,3 +491,45 @@ def test_worker_finds_its_payload_modules_in_the_bundles_native_dir(tmp_path):
     combined = (probe.stderr or "") + (probe.stdout or "")
     assert "No module named 'runtime_asset_resolution'" not in combined, combined[-600:]
     assert "No module named 'gripper_convention_probe'" not in combined, combined[-600:]
+
+
+def test_worker_composes_from_the_real_bundle_layout(stubbed_arena, tmp_path):
+    """Spec in provider_runtime/native/, assets in provider_runtime/assets/.
+
+    The other composition tests use a flat runtime directory, which is not what
+    a bundle looks like - so they could not have caught rt13, where resolution
+    rooted at the spec's own directory never climbed to the sibling assets dir.
+    This one is shaped like the real thing.
+    """
+
+    bundle = tmp_path / "provider_runtime"
+    native = bundle / "native"
+    assets = bundle / "assets"
+    native.mkdir(parents=True)
+    assets.mkdir()
+    for name in ("approved_can.usda", "sage_collision.usd"):
+        (assets / name).write_text("#usda 1.0\n", encoding="utf-8")
+
+    # _write_runtime builds the spec and stages the payload modules; take its
+    # spec and move it into native/ where the bundle actually puts it.
+    staged = _write_runtime(tmp_path)
+    for entry in staged.iterdir():
+        if entry.is_file():
+            entry.replace(native / entry.name)
+
+    output = tmp_path / "out" / "result.json"
+    _load_worker().main(
+        [
+            "--runtime-dir", str(native),
+            "--output-dir", str(output.parent),
+            "--spec", str(native / "adp009d_articulated_scene_spec.json"),
+            "--output", str(output),
+        ]
+    )
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    by_role = {row["role"]: row for row in result.get("asset_resolution") or []}
+    assert set(by_role) == {"scene_collision", "task_object"}, result.get("blockers")
+    for row in by_role.values():
+        assert Path(row["resolved_path"]).parent == assets
+    assert result["phase_reached"] == "adapter_wired", result.get("blockers")
