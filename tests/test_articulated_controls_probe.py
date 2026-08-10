@@ -149,6 +149,40 @@ def test_a_success_window_outside_the_authored_limit_fails_closed(
     assert any("window_beyond_authored_limit" in e for e in excinfo.value.errors)
 
 
+def test_a_twin_that_already_has_a_physics_scene_is_not_given_a_second(
+    tmp_path: Path,
+) -> None:
+    """Two PhysicsScenes stop the run, and the message does not say why.
+
+    PhysX reports "Physics scenes stepping is not the same" and shuts the app
+    down a fraction of a second later. It reads as a stepping-configuration
+    warning, not as "your overlay duplicated a prim the asset already had",
+    and it costs a launch to find out.
+    """
+
+    source = _twin(tmp_path / "with_scene.usda")
+    stage = Usd.Stage.Open(str(source))
+    UsdPhysics.Scene.Define(stage, "/Asset/PhysicsScene")
+    stage.GetRootLayer().Save()
+
+    receipt = _build(tmp_path, twin_usd_path=source, destination=tmp_path / "p2")
+
+    composed = Usd.Stage.Open(receipt["stages"]["controls_stage"]["path"])
+    scenes = [str(p.GetPath()) for p in composed.Traverse() if p.IsA(UsdPhysics.Scene)]
+    assert scenes == ["/Asset/PhysicsScene"]
+    assert receipt["physics_scene"]["authored_by_probe"] is False
+    assert receipt["physics_scene"]["prim_path"] == "/Asset/PhysicsScene"
+
+
+def test_a_twin_without_a_physics_scene_gets_exactly_one(tmp_path: Path) -> None:
+    receipt = _build(tmp_path)
+
+    composed = Usd.Stage.Open(receipt["stages"]["controls_stage"]["path"])
+    scenes = [str(p.GetPath()) for p in composed.Traverse() if p.IsA(UsdPhysics.Scene)]
+    assert len(scenes) == 1
+    assert receipt["physics_scene"]["authored_by_probe"] is True
+
+
 def test_the_probe_stages_the_twin_it_pinned(tmp_path: Path) -> None:
     receipt = _build(tmp_path)
 

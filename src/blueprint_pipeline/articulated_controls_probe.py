@@ -156,6 +156,15 @@ def build_articulated_controls_probe(
             ["articulated_controls_probe_twin_has_no_default_prim"]
         )
     default_prim_name = default_prim.GetName()
+    # A twin may already carry its own PhysicsScene. Adding a second makes
+    # PhysX report "Physics scenes stepping is not the same" and shut the app
+    # down mid-run - a message that reads as a stepping-configuration warning
+    # rather than as a duplicated prim, and costs a launch to diagnose.
+    existing_scenes = sorted(
+        str(prim.GetPath())
+        for prim in stage.Traverse()
+        if prim.IsA(UsdPhysics.Scene)
+    )
     joint_prim = stage.GetPrimAtPath(str(task_joint_prim_path))
     if not joint_prim.IsValid() or not joint_prim.IsA(UsdPhysics.Joint):
         errors.append(
@@ -230,6 +239,17 @@ def build_articulated_controls_probe(
     twin_copy = root / source.name
     shutil.copy2(source, twin_copy)
     controls_stage = root / "controls_stage.usda"
+    physics_block = (
+        ""
+        if existing_scenes
+        else (
+            '    def PhysicsScene "physics_scene"\n'
+            "    {\n"
+            "        vector3f physics:gravityDirection = (0, 0, -1)\n"
+            "        float physics:gravityMagnitude = 9.81\n"
+            "    }\n"
+        )
+    )
     controls_stage.write_text(
         "#usda 1.0\n"
         "(\n"
@@ -241,11 +261,7 @@ def build_articulated_controls_probe(
         "\n"
         f'over "{default_prim_name}"\n'
         "{\n"
-        '    def PhysicsScene "physics_scene"\n'
-        "    {\n"
-        "        vector3f physics:gravityDirection = (0, 0, -1)\n"
-        "        float physics:gravityMagnitude = 9.81\n"
-        "    }\n"
+        f"{physics_block}"
         "}\n",
         encoding="utf-8",
     )
@@ -298,6 +314,13 @@ def build_articulated_controls_probe(
                 axis[0] * radial[1] - axis[1] * radial[0],
             ],
             "lever_arm_m": lever_arm,
+        },
+        "physics_scene": {
+            "prim_path": existing_scenes[0]
+            if existing_scenes
+            else f"/{default_prim_name}/physics_scene",
+            "authored_by_probe": not existing_scenes,
+            "pre_existing_scene_count": len(existing_scenes),
         },
         "seal": {
             "breakaway_torque_n_m": seal_torque,

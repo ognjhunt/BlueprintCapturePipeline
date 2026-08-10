@@ -58,6 +58,27 @@ def _persist(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _finalize(*, output: Path, result: dict[str, Any], simulation_app: Any) -> None:
+    """Write the result first, then shut the simulator down.
+
+    Isaac's close() can end the process outright, and a run that dies after
+    opening the app then takes its own diagnosis with it. That is not
+    hypothetical: a physics-scene conflict killed a launch and the retained
+    evidence said only "process exited without result" - the one thing a paid,
+    no-retry run must never come back with. Persisting first costs nothing and
+    means the worst case is still an explained one.
+    """
+
+    _persist(output, result)
+    try:
+        simulation_app.close()
+    except Exception:  # noqa: BLE001
+        # The result is already on disk, so a messy shutdown is not worth
+        # turning into a failure. SystemExit is deliberately not caught: that
+        # is the simulator ending the process, and there is nothing left to do.
+        pass
+
+
 def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -186,10 +207,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not (joint_prim and joint_prim.IsValid()):
             raise RuntimeError("articulated_controls_task_joint_not_found")
 
-        world = World(stage_units_in_meters=1.0, physics_dt=float(spec.get("physics_dt_s") or 1 / 120))
+        # No physics_dt override. The stage's authored PhysicsScene owns
+        # stepping; passing a different dt makes World author a second scene,
+        # and PhysX answers with "Physics scenes stepping is not the same" and
+        # shuts the app down mid-run.
+        world = World(stage_units_in_meters=1.0)
         world.reset()
         view = Articulation(articulation_root)
-        view.initialize()
+        # Registering with the scene, rather than initialize() alone, is the
+        # path the articulation probe already proved on this image.
+        world.scene.add(view)
+        world.reset()
         names = list(view.dof_names or [])
         joint_name = task_joint_path.rsplit("/", 1)[-1]
         if joint_name not in names:
@@ -333,17 +361,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "no_robot_and_no_grasp_in_this_probe": True,
             "door_dynamics_only": True,
         }
-    except Exception as exc:  # noqa: BLE001 - one launch, one retained result
+    except BaseException as exc:  # noqa: BLE001 - one launch, one retained result
+        # BaseException, not Exception: a SystemExit raised out of the runtime
+        # would otherwise skip straight past the diagnosis.
         result["blockers"].append(
             f"articulated_controls_runtime_failed:{type(exc).__name__}:{exc}"
         )
-    finally:
-        try:
-            simulation_app.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-    _persist(output, result)
+    _finalize(output=output, result=result, simulation_app=simulation_app)
     return 0 if result.get("native_isaac_executed") else 1
 
 
