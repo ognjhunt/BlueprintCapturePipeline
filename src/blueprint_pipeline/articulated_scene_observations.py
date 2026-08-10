@@ -90,6 +90,47 @@ def max_contact_force_n(
     return largest
 
 
+def resolve_contact_sensor_rows(
+    *,
+    sensor_body_names: Sequence[str],
+    finger_body_names: Sequence[str],
+) -> dict[str, Any]:
+    """Row indices into a ContactSensor's arrays, from its own body list.
+
+    A ContactSensor matches bodies by prim-path regex and publishes the subset
+    it found as ``body_names``. Those rows are not the articulation's body
+    indices, and rt29 spent a launch discovering that: index 9 and index 14,
+    both valid on the robot, both out of range on the sensor.
+
+    Two index spaces that happen to both be integers is a bug waiting to be
+    written, so the only supported way to get rows is from the array's own
+    names.
+    """
+
+    names = [str(value) for value in sensor_body_names]
+    if not names:
+        raise ArticulatedSceneObservationError(
+            ["articulated_scene_observation_sensor_body_names_empty"]
+        )
+    fingers = {str(value) for value in finger_body_names}
+    finger_rows = [index for index, name in enumerate(names) if name in fingers]
+    if not finger_rows:
+        raise ArticulatedSceneObservationError(
+            [
+                "articulated_scene_observation_finger_rows_absent:"
+                + ",".join(sorted(fingers))
+                + ":observed=" + ",".join(names)
+            ]
+        )
+    return {
+        "finger_rows": finger_rows,
+        "non_finger_rows": [
+            index for index in range(len(names)) if index not in set(finger_rows)
+        ],
+        "sensor_body_names": names,
+    }
+
+
 def build_scene_observations(
     *,
     read_task_contact_forces: Callable[[], Any],

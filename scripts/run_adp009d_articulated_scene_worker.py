@@ -53,7 +53,10 @@ try:  # flat provider bundle
     )
     from gripper_convention_probe import measure_gripper_convention
     from adp009d_isaac_episode_adapter import END_EFFECTOR_BODY_CANDIDATES
-    from articulated_scene_observations import build_scene_observations
+    from articulated_scene_observations import (
+        build_scene_observations,
+        resolve_contact_sensor_rows,
+    )
 except ModuleNotFoundError:  # repository checkout
     import sys as _sys
 
@@ -70,6 +73,7 @@ except ModuleNotFoundError:  # repository checkout
     )
     from blueprint_pipeline.articulated_scene_observations import (
         build_scene_observations,
+        resolve_contact_sensor_rows,
     )
 
 
@@ -702,10 +706,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         result["end_effector_body"] = end_effector_body
 
+        # Rows into the contact arrays come from the SENSOR's own body list,
+        # never the articulation's. A ContactSensor matches its own subset by
+        # prim-path regex, so the two index spaces differ - rt29 spent a launch
+        # on indices 9 and 14, both valid on the robot, both out of range on
+        # the sensor.
+        robot_sensor = scene["robot_contact_sensor"]
+        sensor_rows = resolve_contact_sensor_rows(
+            sensor_body_names=list(getattr(robot_sensor, "body_names", None) or []),
+            finger_body_names=("left_inner_finger", "right_inner_finger"),
+        )
+        result["contact_sensor_rows"] = {
+            "sensor_body_names": sensor_rows["sensor_body_names"],
+            "finger_rows": sensor_rows["finger_rows"],
+        }
+
+        def _finger_contact_with_task_object():
+            """Filtered per-partner force on the fingers against the twin."""
+
+            matrix = getattr(robot_sensor.data, "force_matrix_w", None)
+            if matrix is None:
+                return None
+            converted = _to_torch(matrix)
+            # (envs, sensors, filters, 3) -> sum the filter axis for the twin's
+            # share of each body's contact.
+            return converted[0].sum(dim=1).unsqueeze(0)
+
         observation_holder["readers"] = build_scene_observations(
-            read_task_contact_forces=lambda: _sensor_forces(
-                "task_object_contact_sensor"
-            ),
+            # Fingers-against-the-twin, from the robot sensor's filtered
+            # matrix. The task object's own sensor cannot answer this: its rows
+            # are the fridge's bodies, so finger indices mean nothing there.
+            read_task_contact_forces=_finger_contact_with_task_object,
             read_robot_contact_forces=lambda: _sensor_forces("robot_contact_sensor"),
             # The room is static and cannot report contact itself. What the
             # robot touches that is NOT the twin is, in this scene, the room:
@@ -728,12 +759,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 robot, end_effector_body
             ),
             read_handle_position_m=lambda: handle_position,
-            finger_body_indices=finger_indices,
-            non_finger_body_indices=[
-                index
-                for index in range(len(body_names))
-                if index not in set(finger_indices)
-            ],
+            finger_body_indices=sensor_rows["finger_rows"],
+            non_finger_body_indices=sensor_rows["non_finger_rows"],
         )
 
         _phase(result, "observations_bound")

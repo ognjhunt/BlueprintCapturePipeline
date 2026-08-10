@@ -123,3 +123,66 @@ def test_a_body_index_outside_the_sensor_refuses():
 def test_an_authored_base_position_must_be_three_dimensional():
     with pytest.raises(ArticulatedSceneObservationError):
         _sources(authored_task_object_base_position_m=(1.0, 2.0))
+
+
+def test_indices_must_be_within_the_array_they_index():
+    """rt29: body_index_out_of_range 9 and 14 on contact-sensor arrays.
+
+    The indices came from the articulation's body list; the arrays came from a
+    ContactSensor, which matches its own subset of bodies by prim-path regex
+    and publishes its own ordering in ContactSensor.body_names. Two different
+    index spaces that happen to be integers.
+
+    The refusal is right - it is the source of the indices that was wrong - so
+    this pins the refusal rather than relaxing it.
+    """
+
+    two_body_array = [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]
+
+    with pytest.raises(ArticulatedSceneObservationError) as excinfo:
+        max_contact_force_n(two_body_array, body_indices=[14])
+
+    assert any("body_index_out_of_range:14" in e for e in excinfo.value.errors)
+
+
+def test_resolving_rows_from_a_sensors_own_body_names():
+    """The helper that makes the two index spaces impossible to confuse."""
+
+    from blueprint_pipeline.articulated_scene_observations import (
+        resolve_contact_sensor_rows,
+    )
+
+    sensor_bodies = ["panda_link5", "left_inner_finger", "right_inner_finger"]
+
+    rows = resolve_contact_sensor_rows(
+        sensor_body_names=sensor_bodies,
+        finger_body_names=("left_inner_finger", "right_inner_finger"),
+    )
+
+    assert rows["finger_rows"] == [1, 2]
+    assert rows["non_finger_rows"] == [0]
+
+
+def test_a_sensor_missing_its_finger_bodies_refuses():
+    """No finger rows means task contact cannot be measured at all."""
+
+    from blueprint_pipeline.articulated_scene_observations import (
+        resolve_contact_sensor_rows,
+    )
+
+    with pytest.raises(ArticulatedSceneObservationError) as excinfo:
+        resolve_contact_sensor_rows(
+            sensor_body_names=["panda_link5", "panda_link6"],
+            finger_body_names=("left_inner_finger", "right_inner_finger"),
+        )
+
+    assert any("finger_rows_absent" in e for e in excinfo.value.errors)
+
+
+def test_an_empty_sensor_body_list_refuses():
+    from blueprint_pipeline.articulated_scene_observations import (
+        resolve_contact_sensor_rows,
+    )
+
+    with pytest.raises(ArticulatedSceneObservationError):
+        resolve_contact_sensor_rows(sensor_body_names=[], finger_body_names=("a",))

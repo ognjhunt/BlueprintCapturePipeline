@@ -142,11 +142,15 @@ class _FakeContactSensorData:
 
         # Resting contact, below the force threshold: present but not a grasp.
         self.net_forces_w = torch.zeros((1, 3, 3))
+        self.force_matrix_w = torch.zeros((1, 3, 1, 3))
 
 
 class _FakeContactSensor:
     def __init__(self):
         self.data = _FakeContactSensorData()
+        # A ContactSensor publishes the bodies its regex matched; the worker
+        # must take its row indices from here and nowhere else.
+        self.body_names = ["panda_link5", "left_inner_finger", "right_inner_finger"]
 
 
 class _FakeCameraData:
