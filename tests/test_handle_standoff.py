@@ -126,6 +126,23 @@ def test_the_link_mass_and_colliders_survive(tmp_path: Path) -> None:
     assert bar.HasAPI(UsdPhysics.CollisionAPI)
 
 
+def test_dynamic_handle_posts_author_an_explicit_convex_hull(tmp_path: Path) -> None:
+    """PhysX must not invent a fallback for dynamic triangle-mesh collision."""
+
+    receipt = _author(tmp_path)
+    stage = Usd.Stage.Open(receipt["standoff_usd_path"])
+
+    for path in receipt["post_prim_paths"]:
+        prim = stage.GetPrimAtPath(path)
+        assert prim.HasAPI(UsdPhysics.CollisionAPI)
+        assert prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+        assert (
+            UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
+            == UsdPhysics.Tokens.convexHull
+        )
+    assert receipt["claim_boundary"]["post_collision_approximation"] == "convexHull"
+
+
 def test_the_source_is_never_written_over(tmp_path: Path) -> None:
     source = _door(tmp_path / "door.usda")
     before = source.read_bytes()

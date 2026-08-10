@@ -178,6 +178,13 @@ def author_handle_standoff(
             [0, 1, 3, 2, 4, 6, 7, 5, 0, 4, 5, 1, 2, 3, 7, 6, 0, 2, 6, 4, 1, 5, 7, 3]
         )
         UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        # These posts live below a dynamic door link. PhysX rejects triangle-
+        # mesh collision on a dynamic body and otherwise silently falls back
+        # to a convex hull at runtime. Author the supported approximation
+        # explicitly so the provider readback matches the USD contract.
+        UsdPhysics.MeshCollisionAPI.Apply(
+            mesh.GetPrim()
+        ).CreateApproximationAttr().Set(UsdPhysics.Tokens.convexHull)
 
     _post("handle_post_a", low[long_axis])
     _post("handle_post_b", high[long_axis] - post_length)
@@ -204,6 +211,7 @@ def author_handle_standoff(
             "posts_are_authored_not_observed": True,
             "form_closure_is_geometric_not_a_grasp_proof": True,
             "link_mass_unchanged_by_this_edit": True,
+            "post_collision_approximation": "convexHull",
         },
         "receipt_path": str(
             Path(receipt_path).expanduser().resolve()
