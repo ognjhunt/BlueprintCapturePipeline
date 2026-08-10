@@ -423,7 +423,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 usd_path=str(asset_path),
                 initial_pose=Pose(
                     position_xyz=tuple(
-                        float(v) for v in (row.get("initial_position_world_m") or (0, 0, 0))
+                        float(v)
+                        for v in (
+                            row.get("spawn_position_world_m")
+                            if row.get("spawn_position_world_m") is not None
+                            else row.get("initial_position_world_m") or (0, 0, 0)
+                        )
                     )
                 ),
                 spawn_cfg_addon=_task_spawn_addon(kind, row),
