@@ -13,7 +13,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
@@ -770,8 +770,19 @@ def build_native_microcheck_bundle(
     aura_particlefield_path: str | Path | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
+    worker_source: str | Path | None = None,
+    runtime_module_source: str | Path | None = None,
+    extra_native_paths: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
-    """Compile a deterministic bundle from materialized, digest-verified bytes."""
+    """Compile a deterministic bundle from materialized, digest-verified bytes.
+
+    The worker and its runtime module may be overridden. This image is the only
+    one carrying isaaclab and Arena, and an articulated task needs them exactly
+    as much as the rigid one does; forking the builder to reach it would fork
+    the image pin, the source provenance and the entrypoint contract along with
+    it. Overriding is opt-in, so the already-qualified rigid lane is untouched
+    when nothing is passed.
+    """
 
     if len(implementation_commit) != 40 or any(ch not in "0123456789abcdef" for ch in implementation_commit):
         raise ValueError("adp009d_implementation_commit_invalid")
@@ -859,8 +870,40 @@ def build_native_microcheck_bundle(
     )
 
     source_dir = Path(__file__).resolve().parent
-    shutil.copy2(source_dir / "adp009d_native_microcheck_worker.py", runtime / "adp_arena_provider_runner.py")
-    shutil.copy2(source_dir / "adp009d_isaac_runtime.py", runtime / "adp009d_isaac_runtime.py")
+    worker_path = (
+        Path(worker_source).expanduser().resolve()
+        if worker_source is not None
+        else source_dir / "adp009d_native_microcheck_worker.py"
+    )
+    runtime_module_path = (
+        Path(runtime_module_source).expanduser().resolve()
+        if runtime_module_source is not None
+        else source_dir / "adp009d_isaac_runtime.py"
+    )
+    for label, candidate in (
+        ("worker", worker_path),
+        ("runtime_module", runtime_module_path),
+    ):
+        if not candidate.is_file():
+            raise ValueError(f"adp009d_{label}_source_missing:{candidate}")
+    shutil.copy2(worker_path, runtime / "adp_arena_provider_runner.py")
+    shutil.copy2(runtime_module_path, runtime / "adp009d_isaac_runtime.py")
+    # The rigid worker's inputs are all assembled here, so nothing needed a
+    # general payload slot until a worker arrived from outside carrying its own
+    # spec and imports. Without one, an override ships a runner that boots and
+    # then cannot find its own input.
+    native_payload: list[dict[str, str]] = []
+    if extra_native_paths:
+        native_dir = runtime / "native"
+        ensure_dir(native_dir)
+        for item in extra_native_paths:
+            candidate = Path(str(item)).expanduser().resolve()
+            if not candidate.is_file():
+                raise ValueError(f"adp009d_extra_native_path_missing:{candidate}")
+            shutil.copy2(candidate, native_dir / candidate.name)
+            native_payload.append(
+                {"name": candidate.name, "sha256": _sha256(candidate)}
+            )
     shutil.copy2(
         source_dir / "adp009d_approach_capture.py",
         runtime / "adp009d_approach_capture.py",
@@ -1034,6 +1077,11 @@ def build_native_microcheck_bundle(
         },
         "asset_bindings": asset_rows,
         "harness_manifest_sha256": _sha256(harness_source),
+        "worker_source_sha256": _sha256(worker_path),
+        "runtime_module_sha256": _sha256(runtime_module_path),
+        "worker_overridden": worker_source is not None,
+        "extra_native_files": native_payload,
+        "extra_native_file_count": len(native_payload),
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "policy_candidate_id": policy_candidate_id,
         "controls_requested": bool(run_controls),
