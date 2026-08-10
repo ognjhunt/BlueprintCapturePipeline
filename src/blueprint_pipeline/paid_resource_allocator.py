@@ -164,6 +164,10 @@ from .teleport_paid_allocator import (
     load_teleport_credentials,
     run_teleport_provider,
 )
+from .task_evaluation_profile_preflight import (
+    PROBE_KIND as TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
+    run_task_evaluation_profile_preflight,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1001,6 +1005,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,
             ADP_INPAINT360_INTERIORGS_PROBE_KIND,
+            TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -1331,6 +1336,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND:
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            if control_blockers or source_blockers:
+                result = {
+                    "schema_version": "task_evaluation_allocator_preflight_result.v1",
+                    "status": "blocked",
+                    "blockers": sorted(set([*control_blockers, *source_blockers])),
+                    "provider_mutation_attempted": False,
+                    "provider_mutations_performed": 0,
+                    "continuing_spend_from_this_run": False,
+                    "retry_cap": 0,
+                }
+            else:
+                result = run_task_evaluation_profile_preflight(
+                    request_path=args.provider_launch_request,
+                    release_evidence_path=args.release_evidence,
+                    readiness_receipt_path=args.model_cache_evidence,
+                    provider_guard_path=args.preflight_bundle,
+                    expected_source_commit=expected_source_commit,
+                    observed_source_commit=str(
+                        control_identity.get("orchestrator_source_commit") or ""
+                    ),
+                    execute=args.execute,
+                )
+            write_json(Path(args.admission_out), result)
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") == "dry_run_ready"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == ADP_INPAINT360_INTERIORGS_PROBE_KIND:
             missing = [
                 name
