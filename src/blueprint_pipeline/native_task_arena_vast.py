@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .adp_isaac_lab_arena_vast import DEFAULT_IMAGE, run_arena_native_control_vast
+from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
 from .native_task_arena_construction_bundle import (
     PROVIDER_BUNDLE_KIND,
     RESULT_SCHEMA_VERSION as EXECUTION_RESULT_SCHEMA_VERSION,
@@ -55,7 +55,7 @@ def run_native_task_arena_vast(
         hard_cap_usd=hard_cap_usd,
         hard_ttl_seconds=hard_ttl_seconds,
         expected_output_filename="native_task_arena_construction_result.v1.json",
-        container_image=DEFAULT_IMAGE,
+        container_image=str(prepared_bundle["container_image"]),
         provider_bundle_kind=PROVIDER_BUNDLE_KIND,
         result_schema_version=RESULT_SCHEMA_VERSION,
         object_store_key_prefix=DEFAULT_KEY_PREFIX,

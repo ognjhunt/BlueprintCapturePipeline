@@ -10,6 +10,9 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline.adp009d_native_microcheck_bundle import (
+    DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_bundle import (
     NativeTaskArenaBundleError,
@@ -200,6 +203,7 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
         implementation_commit="e" * 40,
         generated_at="fixed",
     )
+    assert receipt["container_image"] == QUALIFIED_ADP_IMAGE
     extracted = tmp_path / f"extracted-{scene_id}"
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
@@ -238,6 +242,7 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
     worker = (extracted / "provider_runtime/adp_arena_provider_runner.py").read_text()
     assert "840313" not in worker
     assert "840796" not in worker
+    assert "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena" in worker
 
 
 def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path) -> None:
@@ -300,6 +305,24 @@ def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path)
     )
     assert dry_run["status"] == "dry_run_ready"
     assert dry_run["provider_mutations_performed"] == 0
+
+
+def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:
+    packet = _packet(tmp_path, scene_id="840796")
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+    with pytest.raises(NativeTaskArenaBundleError) as excinfo:
+        build_native_task_arena_bundle(
+            job_dir=tmp_path / "job",
+            packet_dir=packet,
+            worker_source=worker,
+            runtime_module_sources=[],
+            implementation_commit="f" * 40,
+            container_image="nvcr.io/nvidia/isaac-sim:latest",
+        )
+    assert excinfo.value.errors == (
+        "native_task_arena_bundle_container_image_not_digest_pinned",
+    )
 
 
 @pytest.mark.parametrize("execute", [False, True])

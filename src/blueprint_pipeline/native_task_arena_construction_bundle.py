@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .native_task_arena_bundle import build_native_task_arena_bundle
 
 
@@ -59,6 +60,7 @@ def build_native_task_arena_construction_bundle(
         runtime_module_sources=construction_runtime_sources(),
         implementation_commit=implementation_commit,
         execution_mode="construction_canary",
+        container_image=QUALIFIED_ADP_IMAGE,
         generated_at=generated_at,
     )
 

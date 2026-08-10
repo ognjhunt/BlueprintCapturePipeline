@@ -157,6 +157,16 @@ set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${{BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}}"
 mkdir -p "$OUT_DIR"
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:started"
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+fi
+if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:completed"
+else
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:blocked"
+fi
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
 if [ $runner_rc -ne 0 ] && [ ! -f "$OUT_DIR/{expected_output_filename}" ]; then
@@ -194,6 +204,7 @@ def build_native_task_arena_bundle(
     execution_mode: str = "construction_canary",
     policy_candidate_id: str | None = None,
     expected_output_filename: str = DEFAULT_EXPECTED_OUTPUT_FILENAME,
+    container_image: str = DEFAULT_IMAGE,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Package one exact native-task packet without reconstructing its scene."""
@@ -219,6 +230,11 @@ def build_native_task_arena_bundle(
     ):
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_output_filename_invalid"]
+        )
+    image = str(container_image).strip()
+    if "@sha256:" not in image or len(image.rsplit("@sha256:", 1)[-1]) != 64:
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_container_image_not_digest_pinned"]
         )
 
     packet_root, packet_receipt, packet_rows = _verified_packet(packet_dir)
@@ -278,7 +294,7 @@ def build_native_task_arena_bundle(
         "program_id": "arm-decision-proof-v1",
         "execution_mode": execution_mode,
         "implementation_commit": implementation_commit,
-        "container_image": DEFAULT_IMAGE,
+        "container_image": image,
         "packet_receipt_digest": packet_receipt["receipt_digest"],
         "arena_scene_plan_digest": packet_receipt["arena_scene_plan_digest"],
         "runtime_contract_digest": packet_receipt["runtime_contract_digest"],

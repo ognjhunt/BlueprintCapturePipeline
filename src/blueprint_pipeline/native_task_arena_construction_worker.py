@@ -46,6 +46,13 @@ CAMERA_THRESHOLDS = {
 }
 
 
+def _announce(phase: str, status: str = "started") -> None:
+    print(
+        f"BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:{phase}:{status}",
+        flush=True,
+    )
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -302,6 +309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     simulation_app = None
     try:
+        _announce("packet_verification")
         manifest = _load_and_verify_manifest(runtime)
         result["manifest_input_digest"] = manifest["input_digest"]
         result["implementation_commit"] = manifest["implementation_commit"]
@@ -318,18 +326,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["scene_plan_digest"] = plan["plan_digest"]
         result["scenario"] = plan["scenario"]
         result["phase_reached"] = "packet_verified"
+        _announce("packet_verification", "completed")
 
+        _announce("simulation_app")
         from isaacsim.simulation_app import SimulationApp
 
         simulation_app = SimulationApp(
             {"headless": True, "renderer": "RayTracedLighting"}
         )
+        _announce("simulation_app", "completed")
+        _announce("dependency_matrix")
         dependency_matrix = preflight_native_dependency_matrix()
         result["dependency_matrix"] = dependency_matrix
         if not dependency_matrix["all_required_available"]:
             result["blockers"].extend(dependency_matrix["blockers"])
             raise RuntimeError("native_task_construction_dependency_preflight_failed")
         result["phase_reached"] = "dependencies_qualified"
+        _announce("dependency_matrix", "completed")
 
         import torch
 
@@ -346,6 +359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             build_native_task_arena_environment,
         )
 
+        _announce("environment_build")
         built = build_native_task_arena_environment(
             plan, device="cuda:0", bundle_root=packet
         )
@@ -358,6 +372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         readback = NativeArticulatedTaskArenaReadback(built)
         result["native_isaac_executed"] = True
         result["phase_reached"] = "environment_built"
+        _announce("environment_build", "completed")
 
         initial_sample = readback.read_task_sample()
         result["initial_readback"] = {
@@ -384,6 +399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             result["blockers"].append("native_task_initial_penetration_or_contact")
 
+        _announce("gripper_convention")
         gripper = _gripper_convention_probe(
             env=env, robot=robot, seed=seed, torch=torch
         )
@@ -393,6 +409,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("native_task_construction_gripper_convention_unresolved")
         env.reset(seed=seed)
         result["phase_reached"] = "gripper_convention_measured"
+        _announce("gripper_convention", "completed")
 
         servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
         result["franka_pose_binding"] = servo.binding
@@ -424,6 +441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         total_steps = 0
         max_total_steps = int(plan["cadence"]["maximum_action_steps"])
         for phase in phase_plan["phases"]:
+            _announce(f"phase_{phase['phase_id']}")
             servo.reset_command_state()
             stable = 0
             diagnostics = []
@@ -474,6 +492,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     snapshot_id=phase["phase_id"],
                 )
             )
+            _announce(
+                f"phase_{phase['phase_id']}",
+                "completed" if row["target_reached"] else "blocked",
+            )
         result["phase_results"] = phase_results
         result["total_action_steps"] = total_steps
         failed_phases = [
@@ -508,6 +530,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["camera_snapshots"] = snapshots
         result["camera_gates"] = camera_gates
 
+        _announce("reset_replay")
         env.reset(seed=seed)
         reset_sample = readback.read_task_sample()
         reset_arm = servo.read_arm_joint_positions()
@@ -538,6 +561,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         if not reset_passed:
             result["blockers"].append("native_task_reset_replay_mismatch")
+        _announce("reset_replay", "completed" if reset_passed else "blocked")
 
         result["blockers"] = sorted(set(result["blockers"]))
         result["construction_gate_qualified"] = not result["blockers"]
@@ -545,6 +569,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "completed" if result["construction_gate_qualified"] else "blocked"
         )
         result["phase_reached"] = "construction_gate_complete"
+        _announce(
+            "construction_gate",
+            "completed" if result["construction_gate_qualified"] else "blocked",
+        )
     except BaseException as exc:  # noqa: BLE001 - one paid launch retains every failure
         result["blockers"].append(
             f"native_task_construction_failed_at_{result['phase_reached']}:"
@@ -552,6 +580,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result["blockers"] = sorted(set(result["blockers"]))
         result["status"] = "blocked"
+        _announce(str(result["phase_reached"]), "blocked")
     finally:
         result["completed_at_unix_ns"] = time.time_ns()
         _persist(output, result)
