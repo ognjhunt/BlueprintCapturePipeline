@@ -14,6 +14,10 @@ from blueprint_pipeline.native_task_isaaclab_launch import (
     verify_native_task_isaaclab_launch_contract,
 )
 from blueprint_pipeline.native_task_runtime_source_packet import (
+    ARENA_COMMIT,
+    ARENA_ISAACLAB_SUBMODULE_PATH,
+    ARENA_REPOSITORY,
+    ISAAC_SIM_BASE_IMAGE,
     ISAACLAB_REPOSITORY,
     ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
     ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
@@ -33,7 +37,7 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
     apps = (
         extraction
         / "runtime_sources"
-        / "isaaclab_runtime_compatibility"
+        / "isaaclab"
         / "apps"
     )
     apps.mkdir(parents=True)
@@ -41,12 +45,13 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
         '[dependencies]\n"isaacsim.core.simulation_manager" = {}\n'
         '"omni.warp.core" = {}\n'
         if old_conflicting_experience
-        else '[dependencies]\n"omni.physics.physx" = {}\n'
+        else '[dependencies]\n"isaacsim.core.simulation_manager" = {}\n'
+        '"omni.physx.bundle" = {}\n'
         '[settings.app.extensions]\nexcluded = ["omni.warp.core"]\n'
     )
     (apps / "isaaclab.python.kit").write_text(base, encoding="utf-8")
     (apps / "isaaclab.python.headless.kit").write_text(
-        '[dependencies]\n"omni.physics.physx" = {}\n'
+        '[dependencies]\n"omni.physx" = {}\n'
         '[settings]\napp.extensions.excluded = ["omni.warp.core"]\n',
         encoding="utf-8",
     )
@@ -73,10 +78,21 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
             "path": str(experience),
             "sha256": _sha256(experience),
         },
+        "paired_stack": {
+            "arena_repository": ARENA_REPOSITORY,
+            "arena_revision": ARENA_COMMIT,
+            "isaaclab_repository": ISAACLAB_REPOSITORY,
+            "isaaclab_revision": ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
+            "isaaclab_submodule_path": ARENA_ISAACLAB_SUBMODULE_PATH,
+            "simulator_base_image": ISAAC_SIM_BASE_IMAGE,
+            "simulator_dockerfile_path": "docker/Dockerfile.isaaclab_arena",
+            "dockerfile_sha256": "sha256:" + "a" * 64,
+            "gitmodules_sha256": "sha256:" + "b" * 64,
+        },
         "runtime_dependencies_installed": [
             {
                 "package": "warp-lang",
-                "version": "1.12.0",
+                "version": "1.13.0",
                 "pure_python": False,
                 "wheel_tag": "py3-none-manylinux_2_28_x86_64",
             }
@@ -86,8 +102,8 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
             {
                 "module": "warp",
                 "available": True,
-                "expected_version": "1.12.0",
-                "observed_version": "1.12.0",
+                "expected_version": "1.13.0",
+                "observed_version": "1.13.0",
                 "version_matches": True,
             }
         ],
@@ -114,6 +130,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         _receipt(tmp_path),
         simulation_app_factory=factory,
         settings_reader=lambda setting: False,
+        extension_enabled_reader=lambda extension_id: False,
     )
 
     assert app is not None
@@ -124,6 +141,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         )
     ]
     assert receipt["bundled_isaac_sim_warp_extension_loaded"] is False
+    assert receipt["bundled_warp_extension_readback"]["observed_enabled"] is False
     assert receipt["external_warp"]["import_qualified_before_simulation_app"] is True
     assert receipt["simulation_manager_lifecycle"]["observed_value"] is False
     assert receipt["simulation_manager_lifecycle"][
@@ -212,6 +230,7 @@ def test_default_callbacks_are_disabled_before_factory_and_read_back(
         settings_reader=lambda setting: (
             False if setting == ISAAC_SIM_DEFAULT_CALLBACKS_SETTING else None
         ),
+        extension_enabled_reader=lambda extension_id: False,
     )
 
     assert ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG in observed_argv
@@ -264,8 +283,76 @@ def test_default_callback_readback_failure_closes_app(tmp_path: Path) -> None:
                 close=close
             ),
             settings_reader=lambda setting: True,
+            extension_enabled_reader=lambda extension_id: False,
         )
     assert closed is True
+
+
+def test_live_bundled_warp_extension_closes_app_and_fails_typed(
+    tmp_path: Path,
+) -> None:
+    closed = False
+
+    def close():
+        nonlocal closed
+        closed = True
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_bundled_warp_extension_live",
+    ):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            simulation_app_factory=lambda *args, **kwargs: SimpleNamespace(
+                close=close
+            ),
+            settings_reader=lambda setting: False,
+            extension_enabled_reader=lambda extension_id: True,
+        )
+    assert closed is True
+
+
+def test_live_extension_readback_error_closes_app_and_fails_typed(
+    tmp_path: Path,
+) -> None:
+    closed = False
+
+    def close():
+        nonlocal closed
+        closed = True
+
+    def broken_reader(extension_id: str) -> bool:
+        raise RuntimeError(extension_id)
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_live_extension_readback_failed",
+    ):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            simulation_app_factory=lambda *args, **kwargs: SimpleNamespace(
+                close=close
+            ),
+            settings_reader=lambda setting: False,
+            extension_enabled_reader=broken_reader,
+        )
+    assert closed is True
+
+
+def test_unpaired_arena_and_isaaclab_receipt_fails_before_launch(
+    tmp_path: Path,
+) -> None:
+    receipt_path = _receipt(tmp_path)
+    value = json.loads(receipt_path.read_text(encoding="utf-8"))
+    value["paired_stack"]["isaaclab_revision"] = "0" * 40
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    receipt_path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_paired_stack_mismatch",
+    ):
+        verify_native_task_isaaclab_launch_contract(receipt_path)
 
 
 def test_underlying_kit_python_binary_is_rejected_before_launch(

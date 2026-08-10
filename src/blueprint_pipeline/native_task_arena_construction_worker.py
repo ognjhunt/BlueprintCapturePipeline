@@ -89,6 +89,7 @@ DEPENDENCY_IMPORTS = (
     "isaaclab_visualizers",
     "isaaclab_arena",
     "isaaclab_arena.environments.arena_env_builder",
+    "isaaclab_arena.environments.arena_env_builder_cfg",
 )
 CAMERA_THRESHOLDS = {
     "external": {"minimum_pixels": 200, "minimum_pixel_fraction": 0.003},

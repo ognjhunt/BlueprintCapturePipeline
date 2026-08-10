@@ -72,7 +72,7 @@ TOP_LEVEL_PACKAGES = (
     "isaaclab_arena",
 )
 RUNTIME_IMPORT_PROBES = (
-    {"module": "warp", "expected_version": "1.12.0"},
+    {"module": "warp", "expected_version": "1.13.0"},
 )
 
 
@@ -254,6 +254,7 @@ def provision_native_task_runtime_sources(
         "runtime_dependency_target": None,
         "runtime_dependencies_installed": [],
         "runtime_experience": None,
+        "paired_stack": None,
         "all_sources_verified_before_install": False,
         "source_packages_made_importable": False,
         "dependencies_installed": False,
@@ -267,6 +268,7 @@ def provision_native_task_runtime_sources(
             receipt_path, packet_path_override=packet_path
         )
         result["source_receipt_digest"] = verified["receipt_digest"]
+        result["paired_stack"] = verified["paired_stack"]
         result["all_sources_verified_before_install"] = True
         destination.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(packet_path) as archive:

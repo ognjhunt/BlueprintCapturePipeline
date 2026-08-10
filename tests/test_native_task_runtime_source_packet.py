@@ -30,15 +30,27 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
+def _repository(
+    root: Path, *, arena: bool, isaaclab_commit: str | None = None
+) -> tuple[Path, str, str]:
     repo = root / ("arena" if arena else "isaaclab")
     repo.mkdir(parents=True)
     _git(repo, "init")
     _git(repo, "config", "user.email", "fixture@example.com")
     _git(repo, "config", "user.name", "Fixture")
     if arena:
+        assert isaaclab_commit is not None
         files = {
+            ".gitmodules": (
+                "[submodule \"submodules/IsaacLab\"]\n"
+                "\tpath = submodules/IsaacLab\n"
+                "\turl = git@github.com:isaac-sim/IsaacLab.git\n"
+            ),
             "LICENSE.md": "Apache-2.0 fixture\n",
+            "docker/Dockerfile.isaaclab_arena": (
+                "ARG BASE_IMAGE=nvcr.io/nvidia/isaac-sim:6.0.1\n"
+                "FROM ${BASE_IMAGE}\n"
+            ),
             "setup.py": "from setuptools import setup; setup(name='isaaclab_arena')\n",
             "pyproject.toml": "[build-system]\nrequires=['setuptools']\n",
             "extension.toml": "[package]\nversion='fixture'\n",
@@ -49,12 +61,14 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
         files = {
             "LICENSE": "BSD-3-Clause fixture\n",
             "apps/isaaclab.python.kit": (
-                "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                "[dependencies]\n"
+                "\"isaacsim.core.simulation_manager\" = {}\n"
+                "\"omni.physx.bundle\" = {}\n"
                 "[settings.app.extensions]\n"
                 "excluded = [\"omni.warp.core\"]\n"
             ),
             "apps/isaaclab.python.headless.kit": (
-                "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                "[dependencies]\n\"omni.physx\" = {}\n"
                 "[settings]\napp.extensions.excluded = [\"omni.warp.core\"]\n"
             ),
             "apps/isaaclab.python.headless.rendering.kit": (
@@ -67,7 +81,7 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
             files[f"source/{name}/setup.py"] = (
                 "from setuptools import setup; "
                 f"setup(name='{name}', install_requires="
-                f"{['warp-lang==1.12.0'] if name == 'isaaclab' else []!r})\n"
+                f"{['warp-lang==1.13.0'] if name == 'isaaclab' else []!r})\n"
             )
             files[f"source/{name}/pyproject.toml"] = (
                 "[build-system]\nrequires=['setuptools']\n"
@@ -81,6 +95,14 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(value, encoding="utf-8")
     _git(repo, "add", ".")
+    if arena:
+        _git(
+            repo,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{isaaclab_commit},submodules/IsaacLab",
+        )
     _git(repo, "commit", "-m", "fixture")
     return repo, _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "HEAD^{tree}")
 
@@ -89,7 +111,9 @@ def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
     isaaclab, isaaclab_commit, isaaclab_tree = _repository(
         tmp_path / "lab-root", arena=False
     )
-    arena, arena_commit, arena_tree = _repository(tmp_path / "arena-root", arena=True)
+    arena, arena_commit, arena_tree = _repository(
+        tmp_path / "arena-root", arena=True, isaaclab_commit=isaaclab_commit
+    )
     return materialize_native_task_runtime_source_packet(
         output_dir=tmp_path / output_name,
         isaaclab_repo=isaaclab,
@@ -144,7 +168,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     }
     assert verified["install_roots"][-1] == "runtime_sources/arena"
     assert verified["runtime_dependency_basis"]["requirement"] == (
-        "warp-lang==1.12.0"
+        "warp-lang==1.13.0"
     )
     assert verified["runtime_dependency_basis"]["source_repository"] == (
         source_packet.ISAACLAB_REPOSITORY
@@ -154,6 +178,12 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     )
     assert verified["runtime_dependency_basis"]["relative_path"] == (
         "runtime_sources/isaaclab/source/isaaclab/setup.py"
+    )
+    assert verified["paired_stack"]["isaaclab_revision"] == (
+        verified["repositories"][0]["commit"]
+    )
+    assert verified["paired_stack"]["simulator_base_image"] == (
+        "nvcr.io/nvidia/isaac-sim:6.0.1"
     )
     assert {
         ("antlr4-python3-runtime", "4.9.3"),
@@ -167,7 +197,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         ("lightwheel-sdk", "1.0.3"),
         ("requests", "2.34.2"),
         ("PyYAML", "6.0.3"),
-        ("warp-lang", "1.12.0"),
+        ("warp-lang", "1.13.0"),
     }.issubset(
         {
             (row["package"], row["version"])
@@ -216,8 +246,12 @@ def test_source_packet_rejects_revision_and_archive_tamper(tmp_path: Path) -> No
     ):
         verify_native_task_runtime_source_packet(receipt_path)
 
-    isaaclab, _, isaaclab_tree = _repository(tmp_path / "wrong-lab", arena=False)
-    arena, arena_commit, arena_tree = _repository(tmp_path / "right-arena", arena=True)
+    isaaclab, wrong_lab_commit, isaaclab_tree = _repository(
+        tmp_path / "wrong-lab", arena=False
+    )
+    arena, arena_commit, arena_tree = _repository(
+        tmp_path / "right-arena", arena=True, isaaclab_commit=wrong_lab_commit
+    )
     with pytest.raises(
         NativeTaskRuntimeSourcePacketError,
         match="native_task_runtime_source_commit_mismatch:isaaclab",
@@ -249,7 +283,9 @@ def test_source_packet_rejects_warp_wheel_not_bound_by_api_source(
     _git(isaaclab, "commit", "-m", "remove warp contract")
     isaaclab_commit = _git(isaaclab, "rev-parse", "HEAD")
     isaaclab_tree = _git(isaaclab, "rev-parse", "HEAD^{tree}")
-    arena, arena_commit, arena_tree = _repository(tmp_path / "arena", arena=True)
+    arena, arena_commit, arena_tree = _repository(
+        tmp_path / "arena", arena=True, isaaclab_commit=isaaclab_commit
+    )
 
     with pytest.raises(
         NativeTaskRuntimeSourcePacketError,
@@ -257,6 +293,38 @@ def test_source_packet_rejects_warp_wheel_not_bound_by_api_source(
     ):
         materialize_native_task_runtime_source_packet(
             output_dir=tmp_path / "bad-warp-contract",
+            isaaclab_repo=isaaclab,
+            arena_repo=arena,
+            dependency_wheel_dir=_wheelhouse(tmp_path),
+            generated_at="fixed",
+            isaaclab_commit=isaaclab_commit,
+            isaaclab_tree=isaaclab_tree,
+            isaaclab_runtime_compatibility_commit=isaaclab_commit,
+            isaaclab_runtime_compatibility_tree=isaaclab_tree,
+            arena_commit=arena_commit,
+            arena_tree=arena_tree,
+        )
+
+
+def test_source_packet_rejects_arena_pinned_to_another_isaaclab_revision(
+    tmp_path: Path,
+) -> None:
+    isaaclab, first_commit, _ = _repository(tmp_path / "lab", arena=False)
+    arena, arena_commit, arena_tree = _repository(
+        tmp_path / "arena", arena=True, isaaclab_commit=first_commit
+    )
+    (isaaclab / "release-marker.txt").write_text("next\n", encoding="utf-8")
+    _git(isaaclab, "add", "release-marker.txt")
+    _git(isaaclab, "commit", "-m", "next compatible source fixture")
+    isaaclab_commit = _git(isaaclab, "rev-parse", "HEAD")
+    isaaclab_tree = _git(isaaclab, "rev-parse", "HEAD^{tree}")
+
+    with pytest.raises(
+        NativeTaskRuntimeSourcePacketError,
+        match="native_task_runtime_arena_isaaclab_pair_mismatch",
+    ):
+        materialize_native_task_runtime_source_packet(
+            output_dir=tmp_path / "unpaired",
             isaaclab_repo=isaaclab,
             arena_repo=arena,
             dependency_wheel_dir=_wheelhouse(tmp_path),
@@ -297,8 +365,8 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
                         {
                             "module": "warp",
                             "available": True,
-                            "expected_version": "1.12.0",
-                            "observed_version": "1.12.0",
+                            "expected_version": "1.13.0",
+                            "observed_version": "1.13.0",
                             "version_matches": True,
                         }
                     ]
@@ -417,8 +485,8 @@ def test_provisioner_uses_simulator_python_wrapper_for_all_runtime_probes(
                     {
                         "module": "warp",
                         "available": True,
-                        "expected_version": "1.12.0",
-                        "observed_version": "1.12.0",
+                        "expected_version": "1.13.0",
+                        "observed_version": "1.13.0",
                         "version_matches": True,
                     }
                 ]
@@ -469,8 +537,8 @@ def test_explicit_interpreter_runtime_probes_remain_isolated(tmp_path: Path) -> 
                     {
                         "module": "warp",
                         "available": True,
-                        "expected_version": "1.12.0",
-                        "observed_version": "1.12.0",
+                        "expected_version": "1.13.0",
+                        "observed_version": "1.13.0",
                         "version_matches": True,
                     }
                 ]
@@ -543,7 +611,9 @@ def test_materialization_batches_each_repository_into_one_exact_git_archive(
     isaaclab, isaaclab_commit, isaaclab_tree = _repository(
         tmp_path / "lab", arena=False
     )
-    arena, arena_commit, arena_tree = _repository(tmp_path / "arena", arena=True)
+    arena, arena_commit, arena_tree = _repository(
+        tmp_path / "arena", arena=True, isaaclab_commit=isaaclab_commit
+    )
     commands: list[list[str]] = []
     real_run = subprocess.run
 
@@ -566,5 +636,5 @@ def test_materialization_batches_each_repository_into_one_exact_git_archive(
         arena_tree=arena_tree,
     )
 
-    assert sum("archive" in command for command in commands) == 3
-    assert not any("show" in command for command in commands)
+    assert sum("archive" in command for command in commands) == 2
+    assert sum("show" in command for command in commands) == 2

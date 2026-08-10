@@ -9,7 +9,6 @@ scene id, object label, canned-beverage constant, or refrigerator coordinate.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import math
@@ -293,6 +292,7 @@ def build_native_task_arena_environment(
         DroidAbsoluteJointPositionEmbodiment,
     )
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
+    from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
     from isaaclab_arena.environments.isaaclab_arena_environment import (
         IsaacLabArenaEnvironment,
     )
@@ -513,11 +513,13 @@ def build_native_task_arena_environment(
     )
     builder = ArenaEnvBuilder(
         arena_env,
-        argparse.Namespace(
+        ArenaEnvBuilderCfg(
             num_envs=1,
             env_spacing=2.0,
+            seed=int(plan["scenario"]["seed"]),
             solve_relations=False,
             placement_seed=int(plan["scenario"]["seed"]),
+            resolve_on_reset=False,
             mimic=False,
             device=device,
             disable_fabric=False,

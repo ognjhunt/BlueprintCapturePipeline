@@ -146,7 +146,9 @@ def _runtime_source_packet(root: Path) -> Path:
     if receipt_path.is_file():
         return receipt_path
 
-    def repository(path: Path, *, arena: bool) -> tuple[Path, str, str]:
+    def repository(
+        path: Path, *, arena: bool, isaaclab_commit: str | None = None
+    ) -> tuple[Path, str, str]:
         path.mkdir(parents=True)
         subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True)
         subprocess.run(
@@ -158,8 +160,18 @@ def _runtime_source_packet(root: Path) -> Path:
             check=True,
         )
         if arena:
+            assert isaaclab_commit is not None
             files = {
+                ".gitmodules": (
+                    "[submodule \"submodules/IsaacLab\"]\n"
+                    "\tpath = submodules/IsaacLab\n"
+                    "\turl = git@github.com:isaac-sim/IsaacLab.git\n"
+                ),
                 "LICENSE.md": "Apache fixture\n",
+                "docker/Dockerfile.isaaclab_arena": (
+                    "ARG BASE_IMAGE=nvcr.io/nvidia/isaac-sim:6.0.1\n"
+                    "FROM ${BASE_IMAGE}\n"
+                ),
                 "setup.py": "from setuptools import setup; setup(name='isaaclab_arena')\n",
                 "pyproject.toml": "[build-system]\nrequires=['setuptools']\n",
                 "extension.toml": "[package]\nversion='fixture'\n",
@@ -169,12 +181,14 @@ def _runtime_source_packet(root: Path) -> Path:
             files = {
                 "LICENSE": "BSD fixture\n",
                 "apps/isaaclab.python.kit": (
-                    "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                    "[dependencies]\n"
+                    "\"isaacsim.core.simulation_manager\" = {}\n"
+                    "\"omni.physx.bundle\" = {}\n"
                     "[settings.app.extensions]\n"
                     "excluded = [\"omni.warp.core\"]\n"
                 ),
                 "apps/isaaclab.python.headless.kit": (
-                    "[dependencies]\n\"omni.physics.physx\" = {}\n"
+                    "[dependencies]\n\"omni.physx\" = {}\n"
                     "[settings]\n"
                     "app.extensions.excluded = [\"omni.warp.core\"]\n"
                 ),
@@ -186,7 +200,7 @@ def _runtime_source_packet(root: Path) -> Path:
                 files[f"source/{name}/setup.py"] = (
                     "from setuptools import setup; "
                     f"setup(name='{name}', install_requires="
-                    f"{['warp-lang==1.12.0'] if name == 'isaaclab' else []!r})\n"
+                    f"{['warp-lang==1.13.0'] if name == 'isaaclab' else []!r})\n"
                 )
                 files[f"source/{name}/pyproject.toml"] = (
                     "[build-system]\nrequires=['setuptools']\n"
@@ -200,6 +214,19 @@ def _runtime_source_packet(root: Path) -> Path:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(value, encoding="utf-8")
         subprocess.run(["git", "-C", str(path), "add", "."], check=True)
+        if arena:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(path),
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    f"160000,{isaaclab_commit},submodules/IsaacLab",
+                ],
+                check=True,
+            )
         subprocess.run(
             ["git", "-C", str(path), "commit", "-m", "fixture"],
             check=True,
@@ -220,7 +247,9 @@ def _runtime_source_packet(root: Path) -> Path:
         root / "runtime-source-repos/isaaclab", arena=False
     )
     arena, arena_commit, arena_tree = repository(
-        root / "runtime-source-repos/arena", arena=True
+        root / "runtime-source-repos/arena",
+        arena=True,
+        isaaclab_commit=isaaclab_commit,
     )
     wheelhouse = root / "runtime-source-wheelhouse"
     wheelhouse.mkdir()

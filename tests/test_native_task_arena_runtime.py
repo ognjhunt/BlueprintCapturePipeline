@@ -231,9 +231,9 @@ class _ArenaEnvironment:
 class _ArenaBuilder:
     last = None
 
-    def __init__(self, arena_env, args):
+    def __init__(self, arena_env, cfg):
         self.arena_env = arena_env
-        self.args = args
+        self.cfg = cfg
         type(self).last = self
 
     def make_registered_and_return_cfg(self, *, render_mode):
@@ -287,6 +287,9 @@ def _install_fake_native_runtime(monkeypatch) -> None:
         "isaaclab_arena.environments.arena_env_builder": types.ModuleType(
             "isaaclab_arena.environments.arena_env_builder"
         ),
+        "isaaclab_arena.environments.arena_env_builder_cfg": types.ModuleType(
+            "isaaclab_arena.environments.arena_env_builder_cfg"
+        ),
         "isaaclab_arena.environments.isaaclab_arena_environment": types.ModuleType(
             "isaaclab_arena.environments.isaaclab_arena_environment"
         ),
@@ -322,6 +325,9 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     modules[
         "isaaclab_arena.environments.arena_env_builder"
     ].ArenaEnvBuilder = _ArenaBuilder
+    modules[
+        "isaaclab_arena.environments.arena_env_builder_cfg"
+    ].ArenaEnvBuilderCfg = lambda **kwargs: SimpleNamespace(**kwargs)
     modules[
         "isaaclab_arena.environments.isaaclab_arena_environment"
     ].IsaacLabArenaEnvironment = _ArenaEnvironment
@@ -478,7 +484,9 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
     assert reset_owner.event_name == "reset_task_object_joints"
     assert reset_owner.event_cfg.params["asset_cfg"].name == "task_object"
     assert reset_owner.event_cfg.params["position_range"] == (0.0, 0.0)
-    assert _ArenaBuilder.last.args.device == "cuda:0"
+    assert _ArenaBuilder.last.cfg.device == "cuda:0"
+    assert _ArenaBuilder.last.cfg.seed == 17
+    assert _ArenaBuilder.last.cfg.resolve_on_reset is False
 
 
 def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> None:

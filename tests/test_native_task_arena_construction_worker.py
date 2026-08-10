@@ -75,6 +75,7 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "isaaclab_tasks",
         "isaaclab_teleop",
         "isaaclab_arena.environments.arena_env_builder",
+        "isaaclab_arena.environments.arena_env_builder_cfg",
     }.issubset(DEPENDENCY_IMPORTS)
     assert set(TOP_LEVEL_PACKAGES).issubset(DEPENDENCY_IMPORTS)
     assert DEPENDENCY_IMPORTS.index("isaaclab_contrib") < DEPENDENCY_IMPORTS.index(

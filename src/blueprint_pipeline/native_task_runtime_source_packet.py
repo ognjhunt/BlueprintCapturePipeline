@@ -28,35 +28,31 @@ from .decision_evidence_contracts import canonical_digest
 SCHEMA_VERSION = "native_task_runtime_source_packet.v1"
 MANIFEST_SCHEMA_VERSION = "native_task_runtime_source_manifest.v1"
 ISAACLAB_REPOSITORY = "https://github.com/isaac-sim/IsaacLab.git"
-ISAACLAB_COMMIT = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
-ISAACLAB_TREE = "454115265327a80acabd07cbd36e10071fc0c065"
-# Arena 0.2.1 pins the April Isaac Lab source tree above, but that tree's Kit
-# experiences still load Isaac Sim's bundled Warp extension.  Isaac Lab fixed
-# the resulting mixed-Warp tensor devices in the released upstream history by
-# removing those extensions and restoring the direct PhysX registration path.
-# Keep the Python/API source at Arena's exact submodule pin while binding the
-# later official experience files as a separately identified compatibility
-# component.  This is not a mutable local patch: every byte is read from the
-# exact upstream git object below and is independently digest-bound.
-ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT = (
-    "a4abce12625f2f1824bf847e9183c18d7eb8b793"
-)
-ISAACLAB_RUNTIME_COMPATIBILITY_TREE = "64e868800aacf68d497843cfefa2f37ae40433c8"
+ISAACLAB_COMMIT = "ffff603eafc6b74264a5261cc0183d6a65390d78"
+ISAACLAB_TREE = "2f82f1afb2cfaf6816b328e03c7b3ddc12069658"
+# Use one released source tree for both the Python APIs and the Kit
+# experiences.  Keeping these aliases preserves the packet-builder API while
+# making a mixed compatibility revision a typed construction error.
+ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT = ISAACLAB_COMMIT
+ISAACLAB_RUNTIME_COMPATIBILITY_TREE = ISAACLAB_TREE
 ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES = (
-    "03904ab49152d1bae929513529913b9be2e06808",
-    "c4169b2f1c41117b67154c569668b8834519a5ee",
-    "a4abce12625f2f1824bf847e9183c18d7eb8b793",
+    # Fixes the Isaac Sim 6.0 SimulationManager/PhysxManager shared-view
+    # lifecycle and PhysX tensors API compatibility.
+    "ca84d35e009e93b03924073e468449c7977a9499",
 )
 RUNTIME_EXPERIENCE_RELATIVE_PATH = (
-    "runtime_sources/isaaclab_runtime_compatibility/apps/"
+    "runtime_sources/isaaclab/apps/"
     "isaaclab.python.headless.rendering.kit"
 )
 RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH = (
     "runtime_sources/isaaclab/source/isaaclab/setup.py"
 )
 ARENA_REPOSITORY = "https://github.com/isaac-sim/IsaacLab-Arena.git"
-ARENA_COMMIT = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
-ARENA_TREE = "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
+ARENA_COMMIT = "8b82dca224f2b5af08f339f987613c59ce9cdbaa"
+ARENA_TREE = "a52514015a8573ac03b6448688bfa61f9cea18a9"
+ARENA_ISAACLAB_SUBMODULE_PATH = "submodules/IsaacLab"
+ARENA_DOCKERFILE_PATH = "docker/Dockerfile.isaaclab_arena"
+ISAAC_SIM_BASE_IMAGE = "nvcr.io/nvidia/isaac-sim:6.0.1"
 ISAACLAB_PACKAGE_NAMES = (
     "isaaclab",
     "isaaclab_assets",
@@ -76,20 +72,20 @@ INSTALL_ROOTS = tuple(
     f"runtime_sources/isaaclab/source/{name}" for name in ISAACLAB_PACKAGE_NAMES
 ) + ("runtime_sources/arena",)
 RUNTIME_DEPENDENCY_WHEELS = (
-    # Arena's pinned Isaac Lab Python/API tree declares external Warp 1.12.0.
-    # The compatible Kit experience intentionally excludes ``omni.warp.core``
+    # Arena's pinned Isaac Lab tree declares external Warp 1.13.0.  Its Kit
+    # experience intentionally excludes ``omni.warp.core``
     # to prevent a second Warp runtime from moving PhysX tensors across CPU and
     # CUDA devices.  Therefore the external wheel is a required runtime input,
     # not an optional transitive dependency supplied by the simulator image.
     {
-        "filename": "warp_lang-1.12.0-py3-none-manylinux_2_28_x86_64.whl",
+        "filename": "warp_lang-1.13.0-py3-none-manylinux_2_28_x86_64.whl",
         "package": "warp-lang",
-        "version": "1.12.0",
+        "version": "1.13.0",
         "license_spdx": "Apache-2.0",
         "pure_python": False,
         "wheel_tag": "py3-none-manylinux_2_28_x86_64",
         "import_module": "warp",
-        "import_version": "1.12.0",
+        "import_version": "1.13.0",
     },
     # Arena imports Isaac Lab task configuration at builder import time.  That
     # path requires Hydra and its complete pure-Python dependency closure;
@@ -491,6 +487,62 @@ def _repository_rows(
     )
 
 
+def _arena_pairing_contract(
+    *, repo: Path, commit: str, isaaclab_commit: str
+) -> dict[str, Any]:
+    """Prove Arena, Isaac Lab, and the simulator image are one upstream pair."""
+
+    try:
+        submodule_row = _git(
+            repo, "ls-tree", commit, "--", ARENA_ISAACLAB_SUBMODULE_PATH
+        )
+        assert isinstance(submodule_row, str)
+        mode, object_type, observed_commit, observed_path = submodule_row.split(
+            None, 3
+        )
+        dockerfile_bytes = _git(
+            repo, "show", f"{commit}:{ARENA_DOCKERFILE_PATH}", binary=True
+        )
+        gitmodules_bytes = _git(repo, "show", f"{commit}:.gitmodules", binary=True)
+        assert isinstance(dockerfile_bytes, bytes)
+        assert isinstance(gitmodules_bytes, bytes)
+        dockerfile = dockerfile_bytes.decode("utf-8")
+        gitmodules = gitmodules_bytes.decode("utf-8")
+    except (AssertionError, UnicodeDecodeError, ValueError) as exc:
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_arena_pairing_contract_invalid"]
+        ) from exc
+    errors: list[str] = []
+    if (
+        mode != "160000"
+        or object_type != "commit"
+        or observed_path != ARENA_ISAACLAB_SUBMODULE_PATH
+        or observed_commit != isaaclab_commit
+    ):
+        errors.append("native_task_runtime_arena_isaaclab_pair_mismatch")
+    expected_image_line = f"ARG BASE_IMAGE={ISAAC_SIM_BASE_IMAGE}"
+    if expected_image_line not in dockerfile.splitlines():
+        errors.append("native_task_runtime_arena_simulator_image_mismatch")
+    if (
+        f"path = {ARENA_ISAACLAB_SUBMODULE_PATH}" not in gitmodules
+        or "github.com:isaac-sim/IsaacLab.git" not in gitmodules
+    ):
+        errors.append("native_task_runtime_arena_submodule_contract_invalid")
+    if errors:
+        raise NativeTaskRuntimeSourcePacketError(errors)
+    return {
+        "arena_repository": ARENA_REPOSITORY,
+        "arena_revision": commit,
+        "isaaclab_repository": ISAACLAB_REPOSITORY,
+        "isaaclab_revision": isaaclab_commit,
+        "isaaclab_submodule_path": ARENA_ISAACLAB_SUBMODULE_PATH,
+        "simulator_base_image": ISAAC_SIM_BASE_IMAGE,
+        "simulator_dockerfile_path": ARENA_DOCKERFILE_PATH,
+        "dockerfile_sha256": _sha256_bytes(dockerfile_bytes),
+        "gitmodules_sha256": _sha256_bytes(gitmodules_bytes),
+    }
+
+
 def _runtime_dependency_rows(
     wheel_dir: Path,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, bytes]]]:
@@ -587,33 +639,31 @@ def materialize_native_task_runtime_source_packet(
         ),
         b"",
     )
-    if b"warp-lang==1.12.0" not in dependency_manifest:
+    if b"warp-lang==1.13.0" not in dependency_manifest:
         raise NativeTaskRuntimeSourcePacketError(
             ["native_task_runtime_dependency_source_contract_invalid:warp-lang"]
         )
     dependency_basis = {
         "package": "warp-lang",
-        "version": "1.12.0",
-        "requirement": "warp-lang==1.12.0",
+        "version": "1.13.0",
+        "requirement": "warp-lang==1.13.0",
         "source_repository": ISAACLAB_REPOSITORY,
         "source_revision": isaaclab_commit,
         "source_tree": isaaclab_tree,
         "relative_path": RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH,
         "sha256": _sha256_bytes(dependency_manifest),
     }
-    compatibility, compatibility_blobs = _repository_rows(
-        repo=Path(
-            isaaclab_runtime_compatibility_repo or isaaclab_repo
-        ).expanduser().resolve(),
-        repository=ISAACLAB_REPOSITORY,
-        commit=isaaclab_runtime_compatibility_commit,
-        expected_tree=isaaclab_runtime_compatibility_tree,
-        license_id="BSD-3-Clause",
-        license_path="LICENSE",
-        archive_namespace="isaaclab_runtime_compatibility",
-        prefixes=("LICENSE", "apps"),
-        require_head=False,
-    )
+    compatibility_repo = Path(
+        isaaclab_runtime_compatibility_repo or isaaclab_repo
+    ).expanduser().resolve()
+    if (
+        compatibility_repo != Path(isaaclab_repo).expanduser().resolve()
+        or isaaclab_runtime_compatibility_commit != isaaclab_commit
+        or isaaclab_runtime_compatibility_tree != isaaclab_tree
+    ):
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_mixed_isaaclab_source_revisions"]
+        )
     arena, arena_blobs = _repository_rows(
         repo=Path(arena_repo).expanduser().resolve(),
         repository=ARENA_REPOSITORY,
@@ -622,7 +672,20 @@ def materialize_native_task_runtime_source_packet(
         license_id="Apache-2.0",
         license_path="LICENSE.md",
         archive_namespace="arena",
-        prefixes=("LICENSE.md", "setup.py", "pyproject.toml", "extension.toml", "isaaclab_arena"),
+        prefixes=(
+            ".gitmodules",
+            "LICENSE.md",
+            ARENA_DOCKERFILE_PATH,
+            "setup.py",
+            "pyproject.toml",
+            "extension.toml",
+            "isaaclab_arena",
+        ),
+    )
+    paired_stack = _arena_pairing_contract(
+        repo=Path(arena_repo).expanduser().resolve(),
+        commit=arena_commit,
+        isaaclab_commit=isaaclab_commit,
     )
     dependency_rows, dependency_blobs = _runtime_dependency_rows(
         Path(dependency_wheel_dir).expanduser().resolve()
@@ -631,18 +694,19 @@ def materialize_native_task_runtime_source_packet(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at or _utc_now_iso(),
         "status": "ready",
-        "repositories": [isaaclab, compatibility, arena],
+        "repositories": [isaaclab, arena],
+        "paired_stack": paired_stack,
         "runtime_experience": {
             "relative_path": RUNTIME_EXPERIENCE_RELATIVE_PATH,
             "repository": ISAACLAB_REPOSITORY,
-            "source_revision": isaaclab_runtime_compatibility_commit,
-            "source_tree": isaaclab_runtime_compatibility_tree,
+            "source_revision": isaaclab_commit,
+            "source_tree": isaaclab_tree,
             "upstream_fix_revisions": list(
                 ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES
             ),
             "sha256": next(
                 row["sha256"]
-                for row in compatibility["files"]
+                for row in isaaclab["files"]
                 if row["archive_path"] == RUNTIME_EXPERIENCE_RELATIVE_PATH
             ),
         },
@@ -651,7 +715,6 @@ def materialize_native_task_runtime_source_packet(
         "runtime_dependency_basis": dependency_basis,
         "source_file_count": (
             isaaclab["file_count"]
-            + compatibility["file_count"]
             + arena["file_count"]
         ),
         "released_source_only": True,
@@ -673,7 +736,6 @@ def materialize_native_task_runtime_source_packet(
         entries = [
             ("native_task_runtime_source_manifest.v1.json", manifest_bytes),
             *isaaclab_blobs,
-            *compatibility_blobs,
             *arena_blobs,
             *dependency_blobs,
         ]
@@ -694,9 +756,10 @@ def materialize_native_task_runtime_source_packet(
                 "tree": row["tree"],
                 "license": row["license"],
             }
-            for row in (isaaclab, compatibility, arena)
+            for row in (isaaclab, arena)
         ],
         "runtime_experience": manifest["runtime_experience"],
+        "paired_stack": paired_stack,
         "install_roots": list(INSTALL_ROOTS),
         "runtime_dependency_wheels": dependency_rows,
         "runtime_dependency_basis": dependency_basis,
@@ -806,6 +869,44 @@ def verify_native_task_runtime_source_packet(
                 "runtime_experience"
             ):
                 errors.append("native_task_runtime_experience_receipt_manifest_mismatch")
+            if manifest.get("paired_stack") != receipt.get("paired_stack"):
+                errors.append("native_task_runtime_paired_stack_receipt_manifest_mismatch")
+            repositories = {
+                str(row.get("repository") or ""): row
+                for row in manifest.get("repositories") or []
+                if isinstance(row, Mapping)
+            }
+            lab = repositories.get(ISAACLAB_REPOSITORY, {})
+            arena = repositories.get(ARENA_REPOSITORY, {})
+            paired = manifest.get("paired_stack") or {}
+            runtime_experience = manifest.get("runtime_experience") or {}
+            dependency_basis = manifest.get("runtime_dependency_basis") or {}
+            arena_files = {
+                str(row.get("source_path") or ""): row
+                for row in arena.get("files") or []
+                if isinstance(row, Mapping)
+            }
+            if (
+                len(repositories) != 2
+                or paired.get("arena_repository") != ARENA_REPOSITORY
+                or paired.get("arena_revision") != arena.get("commit")
+                or paired.get("isaaclab_repository") != ISAACLAB_REPOSITORY
+                or paired.get("isaaclab_revision") != lab.get("commit")
+                or paired.get("isaaclab_submodule_path")
+                != ARENA_ISAACLAB_SUBMODULE_PATH
+                or paired.get("simulator_base_image") != ISAAC_SIM_BASE_IMAGE
+                or paired.get("simulator_dockerfile_path")
+                != ARENA_DOCKERFILE_PATH
+                or paired.get("dockerfile_sha256")
+                != arena_files.get(ARENA_DOCKERFILE_PATH, {}).get("sha256")
+                or paired.get("gitmodules_sha256")
+                != arena_files.get(".gitmodules", {}).get("sha256")
+                or runtime_experience.get("source_revision") != lab.get("commit")
+                or runtime_experience.get("source_tree") != lab.get("tree")
+                or dependency_basis.get("source_revision") != lab.get("commit")
+                or dependency_basis.get("source_tree") != lab.get("tree")
+            ):
+                errors.append("native_task_runtime_paired_stack_contract_invalid")
             if set(names) != expected_names:
                 errors.append("native_task_runtime_source_archive_members_invalid")
     except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
@@ -844,6 +945,8 @@ if __name__ == "__main__":  # pragma: no cover - CLI seam
 
 __all__ = [
     "ARENA_COMMIT",
+    "ARENA_DOCKERFILE_PATH",
+    "ARENA_ISAACLAB_SUBMODULE_PATH",
     "ARENA_REPOSITORY",
     "ARENA_TREE",
     "INSTALL_ROOTS",
@@ -851,6 +954,7 @@ __all__ = [
     "ISAACLAB_PACKAGE_NAMES",
     "ISAACLAB_REPOSITORY",
     "ISAACLAB_TREE",
+    "ISAAC_SIM_BASE_IMAGE",
     "MANIFEST_SCHEMA_VERSION",
     "NativeTaskRuntimeSourcePacketError",
     "SCHEMA_VERSION",
