@@ -312,6 +312,21 @@ def test_existing_output_is_never_overwritten(tmp_path: Path) -> None:
     assert sentinel.read_text(encoding="utf-8") == "preserve"
 
 
+def test_checked_second_scene_packet_v3_binding_is_canonical() -> None:
+    path = (
+        Path(__file__).parents[1]
+        / "docs/arm_decision_proof_v1/manifests"
+        / "second_scene_840796_native_arena_packet_v3_binding.v1.json"
+    )
+    binding = json.loads(path.read_text(encoding="utf-8"))
+
+    assert binding["binding_digest"] == canonical_digest(
+        binding, digest_field="binding_digest"
+    )
+    assert binding["native_application_claimed"] is False
+    assert binding["motion_geometry"]["derived_from_exact_task_usd"] is True
+
+
 def test_forged_construction_context_fails_before_copy(tmp_path: Path) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()

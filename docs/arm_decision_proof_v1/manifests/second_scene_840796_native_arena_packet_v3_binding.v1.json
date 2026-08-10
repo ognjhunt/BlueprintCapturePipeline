@@ -1,0 +1,39 @@
+{
+  "schema_version": "second_scene_native_arena_packet_binding.v1",
+  "scene_id": "840796",
+  "task_id": "840796_refrigerator_upper_door_open_v1",
+  "packet_version": "native_arena_packet_v3",
+  "evidence_root_relative_path": "second_scene_840796_e2e/native_arena_packet_v3",
+  "packet_receipt_digest": "sha256:78c0ffdde538bd99cc6e0e144783830d7718808efee935f89b9aebfb35392b9d",
+  "arena_scene_plan_digest": "sha256:2af26f17ee55c46f7bed132aa3aae26f4d5dafe620f25a2e4cafb27f35e3ed1c",
+  "runtime_contract_digest": "sha256:e1fd08f85f59b2a8b6e2b68a6f7cee8bf9bb58980ade4843f2ea38eec7cb44cd",
+  "scenario_instance_digest": "sha256:b13ce6ecf0a9792fb52166d8aaf7a51d721b0c5a6de627b2590c129bb386feab",
+  "motion_geometry": {
+    "motion_geometry_digest": "sha256:9c058c3d563420f787fcf0760f5fb435ffc1d20c96ab280db9c24e7e4b373a28",
+    "source_asset_root_prim_path": "/Asset",
+    "hinge_point_world_m": [
+      1.6172481515209198,
+      1.8292181536441803,
+      1.2764970064163208
+    ],
+    "hinge_axis_world_unit": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "handle_grasp_point_closed_world_m": [
+      2.0941762,
+      1.8068521,
+      1.022997
+    ],
+    "scripted_sweep_angle_degrees": 50.0,
+    "derived_from_exact_task_usd": true,
+    "caller_authored_world_hinge_used": false
+  },
+  "materializer_commit": "f027f613372706764a822b622a5855ee460a34d6",
+  "source_bytes_mutated": false,
+  "native_application_claimed": false,
+  "policy_episode_claimed": false,
+  "simulator_execution_is_not_physical_truth": true,
+  "binding_digest": "sha256:379bdc0080756211a7837052c3e35440314f0db5ce4ead28dcd5158dda5b88ec"
+}
