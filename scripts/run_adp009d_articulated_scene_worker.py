@@ -802,6 +802,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             simulation_step_seconds=1.0 / 120.0 * 8,
         )
         adapter_holder["adapter"] = adapter
+
+        # Three hypotheses for the 0.619 rad reset readback have now been
+        # wrong - shelf/bin penetration, an authored drive target, the room
+        # collision - and the value is identical to five decimals across two
+        # different twins, which physics would not reproduce. So stop guessing
+        # and record the state itself: what the runtime calls these joints,
+        # what it reports before a reset, and what it reports after one.
+        def _joint_snapshot(label: str) -> dict[str, Any]:
+            positions = _to_torch(live.data.joint_pos)[0]
+            velocities = _to_torch(live.data.joint_vel)[0]
+            return {
+                "label": label,
+                "dof_names": list(live.data.joint_names or []),
+                "joint_pos_rad": [float(v) for v in positions],
+                "joint_vel_rad_s": [float(v) for v in velocities],
+            }
+
+        reset_diagnostic = [_joint_snapshot("before_adapter_reset")]
+        try:
+            adapter.reset()
+            reset_diagnostic.append(_joint_snapshot("after_adapter_reset"))
+        except Exception as exc:  # noqa: BLE001
+            reset_diagnostic.append(
+                {"label": "adapter_reset_failed", "error": f"{type(exc).__name__}:{exc}"[:200]}
+            )
+        result["reset_diagnostic"] = reset_diagnostic
         _phase(result, "adapter_wired")
 
         pair = run_task_neutral_controls(
