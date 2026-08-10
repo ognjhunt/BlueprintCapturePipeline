@@ -1572,6 +1572,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("maximum_paid_attempts") != 1
                     or prepared_bundle.get("automatic_paid_retry_allowed") is not False
                     or prepared_bundle.get("provider_zero_required_after_return") is not True
+                    or prepared_bundle.get(
+                        "provider_network_dependency_install_required"
+                    )
+                    is not False
+                    or not str(
+                        prepared_bundle.get("dependency_wheelhouse_manifest_digest")
+                        or ""
+                    ).startswith("sha256:")
                     or prepared_bundle.get("raw_interiorgs_downloaded_bytes_included")
                     is not False
                     or prepared_bundle.get(

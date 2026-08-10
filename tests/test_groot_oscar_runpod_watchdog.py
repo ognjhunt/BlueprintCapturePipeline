@@ -778,6 +778,81 @@ def test_vast_owner_cancel_allows_explicit_concurrent_sibling(tmp_path, monkeypa
     assert result["provider_mutations_performed"] == 0
 
 
+def test_vast_owner_cancel_allows_sibling_started_after_watchdog_arm(
+    tmp_path, monkeypatch
+) -> None:
+    now = 100.0
+    prefix = "blueprint-groot-oscar-canary-gaussian-excision-"
+    owned_id = "47393332"
+    later_sibling_id = "47394099"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now)
+
+    def inventory(*, name_prefix: str, **_kwargs):
+        resources = [] if name_prefix else [{"instance_id": later_sibling_id}]
+        return {
+            "status": "observed",
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": len(resources),
+            "resources": resources,
+        }
+
+    monkeypatch.setattr(watchdog_module, "_vast_billable_inventory", inventory)
+    (tmp_path / "started_vast_instance_id.txt").write_text(owned_id)
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION,
+                "requested_by": "qualification_owner_teardown",
+                "provider": "vast",
+                "instance_id": owned_id,
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": (
+                    "provider_api_exact_id_prefix_and_global_inventory"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+
+    class Provider:
+        def inspect(self, instance_id: str) -> dict:
+            assert instance_id == owned_id
+            return {
+                "status": "absent",
+                "provider": "vast",
+                "http": 404,
+                "instance_id": owned_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=200.0,
+        provider_name="vast",
+        allowed_active_instance_ids=[],
+        provider_factory=lambda _name: Provider(),
+        clock=lambda: now,
+        sleeper=lambda _seconds: pytest.fail(
+            "later independent lane must not delay exact-id close"
+        ),
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert result["provider_absence_scope"] == "recorded_instance_and_lane_prefix"
+    assert result["global_inventory_informational_only"] is True
+    assert result["final_global_inventory"]["resources"] == [
+        {"instance_id": later_sibling_id}
+    ]
+    assert result["provider_mutations_performed"] == 0
+
+
 def test_vast_owner_cancel_does_not_hide_recorded_contract(tmp_path, monkeypatch) -> None:
     now = {"value": 100.0}
     deadline = 200.0

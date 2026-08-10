@@ -375,6 +375,10 @@ def test_gaussian_excision_runtime_closure_pins_all_released_dependencies() -> N
     ).read_text(encoding="utf-8")
     assert "submodules/simple-knn" in entrypoint
     assert "opencv-python-headless==4.11.0.86" in entrypoint
+    assert "download.pytorch.org" not in entrypoint
+    assert "PIP_NO_INDEX=1" in entrypoint
+    assert "--find-links" in entrypoint
+    assert excision_vast.DEFAULT_IMAGE.startswith("docker.io/pytorch/pytorch@sha256:")
 
 
 def test_gaussian_excision_provider_identity_is_distinct_per_frozen_target() -> None:
@@ -427,6 +431,8 @@ def _prepared_excision_bundle(tmp_path: Path) -> dict[str, object]:
         "provider_bundle_kind": excision_vast.PROVIDER_BUNDLE_KIND,
         "bundle_path": str(path),
         "bundle_sha256": digest,
+        "dependency_wheelhouse_manifest_digest": "sha256:" + "3" * 64,
+        "provider_network_dependency_install_required": False,
         "exact_bundle_entrypoint_rehearsal": {
             "status": "passed",
             "bundle_sha256": digest,
@@ -472,6 +478,8 @@ def test_canonical_allocator_binds_gaussian_excision_bundle(monkeypatch, tmp_pat
         "maximum_paid_attempts": 1,
         "automatic_paid_retry_allowed": False,
         "provider_zero_required_after_return": True,
+        "dependency_wheelhouse_manifest_digest": "sha256:" + "3" * 64,
+        "provider_network_dependency_install_required": False,
         "raw_interiorgs_downloaded_bytes_included": False,
         "private_scene_derived_standard_splat_included": True,
         "freeze_digest": "sha256:" + "1" * 64,
@@ -662,6 +670,26 @@ def test_vast_adapter_preflights_and_routes_gaussian_excision_root_bundle(
             }
         ),
     }
+    dependency_wheel = b"fixture-wheel"
+    dependency_manifest = {
+        "schema_version": "adp_gaussian_excision_dependency_wheelhouse.v1",
+        "status": "ready",
+        "provider_network_install_required": False,
+        "wheels": [
+            {
+                "filename": "fixture-1.0-py3-none-any.whl",
+                "size_bytes": len(dependency_wheel),
+                "sha256": "sha256:"
+                + hashlib.sha256(dependency_wheel).hexdigest(),
+            }
+        ],
+    }
+    members["dependency_wheelhouse_manifest.json"] = json.dumps(
+        dependency_manifest
+    )
+    members["dependency_wheelhouse/fixture-1.0-py3-none-any.whl"] = (
+        dependency_wheel
+    )
     members.update(
         {
             f"freeze/masks/{camera_id}.{zone}.png": b"fixture"
@@ -988,6 +1016,21 @@ def Xform "Root"
         "_write_source_archive",
         write_fixture_source_archive,
     )
+    wheelhouse = tmp_path / "dependency-wheelhouse"
+    wheelhouse.mkdir()
+    for distribution, version in excision_vast.DEPENDENCY_REQUIREMENTS.items():
+        filename_distribution = distribution.replace("-", "_")
+        wheel_path = wheelhouse / f"{filename_distribution}-{version}-py3-none-any.whl"
+        with zipfile.ZipFile(wheel_path, "w") as archive:
+            archive.writestr(
+                f"{filename_distribution}-{version}.dist-info/METADATA",
+                f"Name: {distribution}\nVersion: {version}\n",
+            )
+    dependency_manifest_path = tmp_path / "dependency-wheelhouse.json"
+    excision_vast.materialize_gaussian_excision_dependency_wheelhouse(
+        wheelhouse_path=wheelhouse,
+        manifest_path=dependency_manifest_path,
+    )
     bundle = excision_vast.build_gaussian_excision_vast_bundle(
         repo_root=Path(__file__).resolve().parents[1],
         flashsplat_root=tmp_path,
@@ -995,13 +1038,17 @@ def Xform "Root"
         source_standard_splat_path=source,
         camera_contract_path=camera_path,
         execution_authority_path=authority_path,
+        dependency_wheelhouse_path=wheelhouse,
+        dependency_manifest_path=dependency_manifest_path,
         job_dir=tmp_path / "bundle",
         generated_at="2026-08-09T00:00:00Z",
     )
     assert bundle["status"] == "ready"
     assert bundle["raw_interiorgs_downloaded_bytes_included"] is False
     assert bundle["private_scene_derived_standard_splat_included"] is True
+    assert bundle["provider_network_dependency_install_required"] is False
     with zipfile.ZipFile(bundle["bundle_path"]) as archive:
         assert "input/scene_standard.ply" in archive.namelist()
         assert "freeze/masks/front.target_core.png" in archive.namelist()
         assert "run_adp_gaussian_excision_provider_runtime.sh" in archive.namelist()
+        assert "dependency_wheelhouse_manifest.json" in archive.namelist()

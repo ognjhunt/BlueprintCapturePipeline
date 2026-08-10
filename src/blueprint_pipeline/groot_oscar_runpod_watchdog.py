@@ -707,20 +707,31 @@ def run_watchdog(
                 second_zero = {}
                 second_global_zero = {}
                 exact_contract_zero = False
+            lane_prefix_zero = all(
+                inventory.get("api_confirmed") is True
+                and inventory.get("live_resource_count") == 0
+                for inventory in (first_zero, second_zero)
+            )
+            global_inventory_admitted = all(
+                _inventory_contains_only_allowed_resources(
+                    inventory,
+                    allowed_instance_ids=allowed_ids,
+                )
+                for inventory in (first_global_zero, second_global_zero)
+            )
+            # Vast exposes a stable instance id and an exact inspect endpoint.
+            # Double absence of that id plus double-zero for this lane's unique
+            # prefix proves lane-owned provider-zero even when an independent
+            # provider lane starts after this watchdog was armed.  Other
+            # providers retain the stricter global-zero/allowlist requirement
+            # because they do not have this exact-id contract here.
             independently_zero = bool(
-                all(
-                    inventory.get("api_confirmed") is True
-                    and inventory.get("live_resource_count") == 0
-                    for inventory in (first_zero, second_zero)
-                )
-                and all(
-                    _inventory_contains_only_allowed_resources(
-                        inventory,
-                        allowed_instance_ids=allowed_ids,
-                    )
-                    for inventory in (first_global_zero, second_global_zero)
-                )
+                lane_prefix_zero
                 and exact_contract_zero
+                and (
+                    resolved_provider == "vast"
+                    or global_inventory_admitted
+                )
             )
             if independently_zero:
                 owner_teardown_cancel = cancel_candidate
@@ -743,6 +754,10 @@ def run_watchdog(
                     cancel_zero_result["recorded_vast_instance_teardown"] = (
                         recorded_vast_verification
                     )
+                    cancel_zero_result["provider_absence_scope"] = (
+                        "recorded_instance_and_lane_prefix"
+                    )
+                    cancel_zero_result["global_inventory_informational_only"] = True
                 break
         sleeper(min(10.0, max(0.0, deadline_epoch - clock())))
     if cancel_zero_result:

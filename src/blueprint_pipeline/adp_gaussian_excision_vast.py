@@ -11,8 +11,12 @@ import stat
 import subprocess
 import zipfile
 from contextlib import contextmanager
+from email.parser import Parser
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from packaging.tags import compatible_tags, cpython_tags
+from packaging.utils import canonicalize_name, parse_wheel_filename
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
@@ -54,9 +58,22 @@ SIMPLE_KNN_PATH = "submodules/simple-knn"
 SIMPLE_KNN_REPOSITORY = "https://gitlab.inria.fr/bkerbl/simple-knn.git"
 SIMPLE_KNN_COMMIT = "86710c2d4b46680c02301765dd79e465819c8f19"
 DEFAULT_IMAGE = (
-    "docker.io/nvidia/cuda@"
-    "sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749"
+    "docker.io/pytorch/pytorch@"
+    "sha256:14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014"
 )
+DEPENDENCY_WHEELHOUSE_SCHEMA = "adp_gaussian_excision_dependency_wheelhouse.v1"
+DEPENDENCY_PYTHON_VERSION = "3.11"
+DEPENDENCY_PLATFORM_TAGS = ("manylinux2014_x86_64", "manylinux_2_17_x86_64")
+DEPENDENCY_REQUIREMENTS = {
+    "ninja": "1.13.0",
+    "numpy": "1.26.4",
+    "opencv-python-headless": "4.11.0.86",
+    "packaging": "25.0",
+    "pillow": "10.2.0",
+    "plyfile": "1.1.3",
+    "setuptools": "80.9.0",
+    "wheel": "0.45.1",
+}
 EXPECTED_SUBMODULES = {
     RASTERIZER_PATH: RASTERIZER_COMMIT,
     DIFF_RASTERIZER_PATH: DIFF_RASTERIZER_COMMIT,
@@ -195,6 +212,132 @@ def _source_identity(source: Path) -> dict[str, Any]:
     }
 
 
+def materialize_gaussian_excision_dependency_wheelhouse(
+    *, wheelhouse_path: str | Path, manifest_path: str | Path
+) -> dict[str, Any]:
+    """Seal the complete offline Python closure used by the provider runtime."""
+
+    wheelhouse = Path(wheelhouse_path).expanduser().resolve()
+    output = Path(manifest_path).expanduser().resolve()
+    if not wheelhouse.is_dir() or wheelhouse.is_symlink() or output.exists():
+        raise ValueError("gaussian_excision_dependency_wheelhouse_invalid")
+    supported_tags = frozenset(
+        [
+            *cpython_tags(
+                python_version=(3, 11), platforms=list(DEPENDENCY_PLATFORM_TAGS)
+            ),
+            *compatible_tags(
+                python_version=(3, 11),
+                interpreter="cp311",
+                platforms=list(DEPENDENCY_PLATFORM_TAGS),
+            ),
+        ]
+    )
+    rows: list[dict[str, Any]] = []
+    observed: dict[str, str] = {}
+    for wheel_path in sorted(wheelhouse.glob("*.whl")):
+        try:
+            name, version, _build, tags = parse_wheel_filename(wheel_path.name)
+        except ValueError as exc:
+            raise ValueError("gaussian_excision_dependency_wheel_invalid") from exc
+        normalized = canonicalize_name(name)
+        expected = DEPENDENCY_REQUIREMENTS.get(normalized)
+        if expected is None or str(version) != expected or not tags & supported_tags:
+            raise ValueError("gaussian_excision_dependency_wheel_invalid")
+        if normalized in observed:
+            raise ValueError("gaussian_excision_dependency_wheel_duplicate")
+        observed[normalized] = str(version)
+        try:
+            with zipfile.ZipFile(wheel_path) as archive:
+                metadata_names = [
+                    value
+                    for value in archive.namelist()
+                    if value.endswith(".dist-info/METADATA")
+                    and value.count("/") == 1
+                ]
+                if len(metadata_names) != 1:
+                    raise ValueError("gaussian_excision_dependency_wheel_invalid")
+                metadata = archive.read(metadata_names[0]).decode("utf-8")
+        except (OSError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+            raise ValueError("gaussian_excision_dependency_wheel_invalid") from exc
+        metadata_fields = Parser().parsestr(metadata)
+        if (
+            canonicalize_name(metadata_fields.get("Name", "")) != normalized
+            or metadata_fields.get("Version") != expected
+        ):
+            raise ValueError("gaussian_excision_dependency_wheel_invalid")
+        rows.append(
+            {
+                "distribution": normalized,
+                "version": expected,
+                "filename": wheel_path.name,
+                "size_bytes": wheel_path.stat().st_size,
+                "sha256": _sha256(wheel_path),
+            }
+        )
+    if observed != DEPENDENCY_REQUIREMENTS:
+        raise ValueError("gaussian_excision_dependency_wheelhouse_incomplete")
+    manifest = {
+        "schema_version": DEPENDENCY_WHEELHOUSE_SCHEMA,
+        "status": "ready",
+        "container_image": DEFAULT_IMAGE,
+        "python_version": DEPENDENCY_PYTHON_VERSION,
+        "platform_tags": list(DEPENDENCY_PLATFORM_TAGS),
+        "base_image_packages": {"torch": "2.5.1", "torchvision": "0.20.1"},
+        "requirements": [
+            {"distribution": name, "version": version}
+            for name, version in sorted(DEPENDENCY_REQUIREMENTS.items())
+        ],
+        "wheels": rows,
+        "provider_network_install_required": False,
+        "sdists_allowed": False,
+        "raw_secret_values_recorded": False,
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    write_json(output, manifest)
+    return manifest
+
+
+def _verified_dependency_wheelhouse(
+    *, wheelhouse_path: Path, manifest_path: Path
+) -> dict[str, Any]:
+    manifest = _read_canonical(
+        manifest_path,
+        field="manifest_digest",
+        code="gaussian_excision_dependency_wheelhouse_invalid",
+    )
+    expected_requirements = [
+        {"distribution": name, "version": version}
+        for name, version in sorted(DEPENDENCY_REQUIREMENTS.items())
+    ]
+    rows = manifest.get("wheels")
+    if (
+        manifest.get("schema_version") != DEPENDENCY_WHEELHOUSE_SCHEMA
+        or manifest.get("status") != "ready"
+        or manifest.get("container_image") != DEFAULT_IMAGE
+        or manifest.get("python_version") != DEPENDENCY_PYTHON_VERSION
+        or manifest.get("requirements") != expected_requirements
+        or manifest.get("provider_network_install_required") is not False
+        or manifest.get("sdists_allowed") is not False
+        or not isinstance(rows, list)
+        or len(rows) != len(DEPENDENCY_REQUIREMENTS)
+    ):
+        raise ValueError("gaussian_excision_dependency_wheelhouse_invalid")
+    for row in rows:
+        path = wheelhouse_path / str(row.get("filename") or "")
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or path.parent != wheelhouse_path
+            or row.get("size_bytes") != path.stat().st_size
+            or row.get("sha256") != _sha256(path)
+        ):
+            raise ValueError("gaussian_excision_dependency_wheelhouse_invalid")
+    return manifest
+
+
 def _validate_authority(
     authority: Mapping[str, Any], *, freeze: Mapping[str, Any]
 ) -> None:
@@ -237,6 +380,8 @@ def build_gaussian_excision_vast_bundle(
     source_standard_splat_path: str | Path,
     camera_contract_path: str | Path,
     execution_authority_path: str | Path,
+    dependency_wheelhouse_path: str | Path,
+    dependency_manifest_path: str | Path,
     job_dir: str | Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -248,6 +393,8 @@ def build_gaussian_excision_vast_bundle(
     splat = Path(source_standard_splat_path).expanduser().resolve()
     cameras = Path(camera_contract_path).expanduser().resolve()
     authority_file = Path(execution_authority_path).expanduser().resolve()
+    dependency_wheelhouse = Path(dependency_wheelhouse_path).expanduser().resolve()
+    dependency_manifest_file = Path(dependency_manifest_path).expanduser().resolve()
     destination = Path(job_dir).expanduser().resolve()
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("gaussian_excision_bundle_job_dir_not_empty")
@@ -276,6 +423,10 @@ def build_gaussian_excision_vast_bundle(
         raise ValueError("gaussian_excision_blueprint_source_not_clean")
     released_source = _source_identity(source)
     lane_identity = gaussian_excision_lane_identity(freeze)
+    dependency_manifest = _verified_dependency_wheelhouse(
+        wheelhouse_path=dependency_wheelhouse,
+        manifest_path=dependency_manifest_file,
+    )
 
     runtime = destination / "provider_runtime"
     ensure_dir(runtime / "input")
@@ -285,6 +436,10 @@ def build_gaussian_excision_vast_bundle(
     shutil.copy2(freeze_file, runtime / "freeze" / freeze_file.name)
     shutil.copytree(freeze_file.parent / "masks", runtime / "freeze" / "masks")
     shutil.copy2(authority_file, runtime / "execution_authority.json")
+    shutil.copytree(dependency_wheelhouse, runtime / "dependency_wheelhouse")
+    shutil.copy2(
+        dependency_manifest_file, runtime / "dependency_wheelhouse_manifest.json"
+    )
     scripts = repo / "scripts"
     for name in (
         "run_adp_gaussian_excision_provider_runtime.sh",
@@ -322,6 +477,10 @@ def build_gaussian_excision_vast_bundle(
         "maximum_paid_attempts": authority["maximum_paid_attempts"],
         "standard_splat_sha256": _sha256(runtime / "input" / "scene_standard.ply"),
         "camera_contract_sha256": _sha256(runtime / "input" / "cameras.v1.json"),
+        "dependency_wheelhouse_manifest_digest": dependency_manifest[
+            "manifest_digest"
+        ],
+        "provider_network_dependency_install_required": False,
         "calibration_camera_ids": freeze["camera_split"]["calibration_camera_ids"],
         "heldout_camera_ids": freeze["camera_split"]["heldout_camera_ids"],
         "deterministic_repetitions": freeze["policy"]["deterministic_repetitions"],
@@ -465,6 +624,10 @@ def run_gaussian_excision_vast(
     if (
         bundle.get("status") != "ready"
         or bundle.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
+        or bundle.get("provider_network_dependency_install_required") is not False
+        or not str(bundle.get("dependency_wheelhouse_manifest_digest") or "").startswith(
+            "sha256:"
+        )
         or not bundle_path.is_file()
         or _sha256(bundle_path) != bundle.get("bundle_sha256")
         or provider_bundle_rehearsal_blockers(

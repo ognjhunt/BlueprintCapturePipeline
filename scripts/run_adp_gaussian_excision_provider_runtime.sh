@@ -56,40 +56,36 @@ Path(sys.argv[1]).write_text(json.dumps({
 PY
   exit 0
 fi
-python3 -m pip install --disable-pip-version-check --no-cache-dir uv==0.10.7 || {
-  write_missing_result "gaussian_excision_uv_install_failed"; exit 2;
-}
-UV_BIN="$(command -v uv)"
-export UV_NATIVE_TLS=true
-"${UV_BIN}" python install 3.10 || {
-  write_missing_result "gaussian_excision_python_install_failed"; exit 2;
-}
-"${UV_BIN}" venv "${SOURCE_DIR}/.venv" --python 3.10 || {
+python3 - <<'PY' || { write_missing_result "gaussian_excision_base_image_invalid"; exit 2; }
+import sys
+import torch
+import torchvision
+
+assert sys.version_info[:2] == (3, 11)
+assert torch.__version__.split("+")[0] == "2.5.1"
+assert torchvision.__version__.split("+")[0] == "0.20.1"
+assert torch.version.cuda == "12.4"
+PY
+python3 -m venv --system-site-packages "${SOURCE_DIR}/.venv" || {
   write_missing_result "gaussian_excision_venv_failed"; exit 2;
 }
 RUNTIME_PY="${SOURCE_DIR}/.venv/bin/python"
 export CUDA_HOME=/usr/local/cuda
-"${UV_BIN}" pip install --python "${RUNTIME_PY}" \
-  torch==2.5.1 torchvision==0.20.1 \
-  --index-url https://download.pytorch.org/whl/cu124 || {
-  write_missing_result "gaussian_excision_torch_install_failed"; exit 2;
+export PIP_NO_INDEX=1
+"${RUNTIME_PY}" -m pip install --disable-pip-version-check --no-index --no-deps \
+  --find-links "${RUNTIME_DIR}/dependency_wheelhouse" \
+  setuptools==80.9.0 wheel==0.45.1 ninja==1.13.0 packaging==25.0 \
+  numpy==1.26.4 pillow==10.2.0 plyfile==1.1.3 \
+  opencv-python-headless==4.11.0.86 || {
+  write_missing_result "gaussian_excision_offline_wheelhouse_install_failed"; exit 2;
 }
-"${UV_BIN}" pip install --python "${RUNTIME_PY}" \
-  setuptools==80.9.0 wheel==0.45.1 ninja==1.13.0 packaging==25.0 || {
-  write_missing_result "gaussian_excision_build_dependencies_failed"; exit 2;
-}
-"${UV_BIN}" pip install --python "${RUNTIME_PY}" --no-build-isolation \
+"${RUNTIME_PY}" -m pip install --disable-pip-version-check --no-index --no-build-isolation \
   "${SOURCE_DIR}/submodules/diff-gaussian-rasterization" \
   "${SOURCE_DIR}/submodules/flashsplat-rasterization" \
   "${SOURCE_DIR}/submodules/simple-knn" || {
   write_missing_result "gaussian_excision_cuda_extensions_failed"; exit 2;
 }
-"${UV_BIN}" pip install --python "${RUNTIME_PY}" \
-  numpy==1.26.4 pillow==10.2.0 plyfile==1.1.3 \
-  opencv-python-headless==4.11.0.86 || {
-  write_missing_result "gaussian_excision_runtime_dependencies_failed"; exit 2;
-}
-"${UV_BIN}" pip freeze --python "${RUNTIME_PY}" > "${OUTPUT_DIR}/pip-freeze.txt"
+"${RUNTIME_PY}" -m pip freeze > "${OUTPUT_DIR}/pip-freeze.txt"
 "${RUNTIME_PY}" "${RUNTIME_DIR}/adp_gaussian_excision_provider_runner.py" \
   --runtime-dir "${RUNTIME_DIR}" --source-dir "${SOURCE_DIR}" \
   --output-dir "${OUTPUT_DIR}"

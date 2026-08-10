@@ -358,7 +358,10 @@ def provider_runtime_contract_blockers(
             in entrypoint_text
             and "blocked_gaussian_excision_process_exited_without_result"
             in entrypoint_text
-            and "torch==2.5.1" in entrypoint_text
+            and 'torch.__version__.split("+")[0] == "2.5.1"' in entrypoint_text
+            and "PIP_NO_INDEX=1" in entrypoint_text
+            and "dependency_wheelhouse" in entrypoint_text
+            and "--no-index" in entrypoint_text
             and "--no-build-isolation" in entrypoint_text
             and "provider_archive.py" in entrypoint_text
             and "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL" in entrypoint_text

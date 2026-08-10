@@ -2213,6 +2213,7 @@ def _blueprint_bundle_preflight(
         "run_adp_gaussian_excision_provider_runtime.sh",
         "adp_gaussian_excision_provider_runner.py",
         "adp_gaussian_excision_provider_manifest.json",
+        "dependency_wheelhouse_manifest.json",
         "execution_authority.json",
         "flashsplat_source.zip",
         "input/scene_standard.ply",
@@ -2523,6 +2524,56 @@ def _blueprint_bundle_preflight(
                         ):
                             blockers.append(
                                 "adp_gaussian_excision_camera_split_invalid"
+                            )
+                        try:
+                            dependency_manifest = json.loads(
+                                archive.read(
+                                    "dependency_wheelhouse_manifest.json"
+                                ).decode("utf-8")
+                            )
+                            dependency_rows = dependency_manifest.get("wheels")
+                            if (
+                                dependency_manifest.get("schema_version")
+                                != "adp_gaussian_excision_dependency_wheelhouse.v1"
+                                or dependency_manifest.get("status") != "ready"
+                                or dependency_manifest.get(
+                                    "provider_network_install_required"
+                                )
+                                is not False
+                                or not isinstance(dependency_rows, list)
+                                or not dependency_rows
+                            ):
+                                raise ValueError(
+                                    "gaussian_excision_dependency_manifest_invalid"
+                                )
+                            for dependency_row in dependency_rows:
+                                if not isinstance(dependency_row, Mapping):
+                                    raise ValueError(
+                                        "gaussian_excision_dependency_manifest_invalid"
+                                    )
+                                filename = str(
+                                    dependency_row.get("filename") or ""
+                                )
+                                member = f"dependency_wheelhouse/{filename}"
+                                body = archive.read(member)
+                                if (
+                                    not filename.endswith(".whl")
+                                    or dependency_row.get("size_bytes") != len(body)
+                                    or dependency_row.get("sha256")
+                                    != "sha256:" + hashlib.sha256(body).hexdigest()
+                                ):
+                                    raise ValueError(
+                                        "gaussian_excision_dependency_manifest_invalid"
+                                    )
+                                required_entries.add(member)
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            json.JSONDecodeError,
+                        ):
+                            blockers.append(
+                                "adp_gaussian_excision_dependency_wheelhouse_invalid"
                             )
                     if (
                         provider_bundle_kind in {"isaac", "adp_simready_isaac"}
