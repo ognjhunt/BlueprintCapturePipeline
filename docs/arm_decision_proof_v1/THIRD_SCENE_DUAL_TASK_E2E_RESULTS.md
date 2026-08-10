@@ -15,9 +15,10 @@ learned policies were therefore not admitted. This is not a policy result.
 
 - Backlog/gate: `ADP-009D`, public-scene day-28 rehearsal, Gate 7.
 - Starting commit: `229b785f69617be543cfc76dcd6944ee3b9f2e49`.
-- Latest pushed reusable implementation commit before this results update:
-  `dd893aaed0adb3ecc5c58e558a7cf639fca09a7c` on
-  `codex/adp-third-scene-dual-task-20260810`.
+- Landed dual-task evidence/abstention commit:
+  `3537430662cb5914977b04ebeb6164aa077cba3e`. Latest preceding provider-runtime
+  implementation commit: `dd893aaed0adb3ecc5c58e558a7cf639fca09a7c`.
+  Both are pushed on `codex/adp-third-scene-dual-task-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
 - External 840796 worktrees and evidence roots were not modified.
