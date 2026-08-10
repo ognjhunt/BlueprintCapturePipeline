@@ -52,6 +52,7 @@ try:  # flat provider bundle
         resolve_runtime_asset,
     )
     from gripper_convention_probe import measure_gripper_convention
+    from adp009d_isaac_episode_adapter import END_EFFECTOR_BODY_CANDIDATES
     from articulated_scene_observations import build_scene_observations
 except ModuleNotFoundError:  # repository checkout
     import sys as _sys
@@ -63,6 +64,9 @@ except ModuleNotFoundError:  # repository checkout
     )
     from blueprint_pipeline.gripper_convention_probe import (
         measure_gripper_convention,
+    )
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import (
+        END_EFFECTOR_BODY_CANDIDATES,
     )
     from blueprint_pipeline.articulated_scene_observations import (
         build_scene_observations,
@@ -687,6 +691,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["gripper_convention_probe"] = gripper
         _phase(result, "gripper_convention_measured")
 
+        end_effector_body = next(
+            (name for name in END_EFFECTOR_BODY_CANDIDATES if name in body_names),
+            "",
+        )
+        if not end_effector_body:
+            raise RuntimeError(
+                "articulated_scene_end_effector_body_absent:"
+                f"{sorted(END_EFFECTOR_BODY_CANDIDATES)}:observed={body_names}"
+            )
+        result["end_effector_body"] = end_effector_body
+
         observation_holder["readers"] = build_scene_observations(
             read_task_contact_forces=lambda: _sensor_forces(
                 "task_object_contact_sensor"
@@ -706,7 +721,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 live, support_link_body
             ),
             authored_task_object_base_position_m=authored_base,
-            read_end_effector_position_m=lambda: _body_position(robot, "panda_hand"),
+            # Resolved against the robot's actual bodies using the adapter's
+            # own candidate list. "panda_hand" was a literal guess and the
+            # adapter already knows the alternatives it accepts.
+            read_end_effector_position_m=lambda: _body_position(
+                robot, end_effector_body
+            ),
             read_handle_position_m=lambda: handle_position,
             finger_body_indices=finger_indices,
             non_finger_body_indices=[

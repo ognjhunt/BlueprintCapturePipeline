@@ -357,3 +357,45 @@ def test_the_cause_is_truncated_not_unbounded():
         )
 
     assert all(len(error) < 400 for error in excinfo.value.errors)
+
+
+def test_a_failed_observation_says_why_too():
+    """The same lesson, third time, in the same function as the second.
+
+    joint_unreadable was taught to carry its cause one commit ago;
+    observation_failed - twenty lines below it - was left discarding one, and
+    rt26 spent a launch reporting three fields failed without saying how.
+    """
+
+    def _explode():
+        raise KeyError("robot_contact_sensor")
+
+    with pytest.raises(ArticulatedTaskSampleError) as excinfo:
+        build_articulated_task_sample(
+            joint_ids=["upper_door_hinge"],
+            read_joint_state=_joint_state({"upper_door_hinge": 0.4}),
+            joint_hard_limits_rad=_LIMITS,
+            **_observations(read_task_contact_active=_explode),
+        )
+
+    joined = ";".join(excinfo.value.errors)
+    assert "observation_failed:task_contact_active" in joined
+    assert "KeyError" in joined
+    assert "robot_contact_sensor" in joined
+
+
+def test_every_swallowed_cause_in_this_module_is_now_carried():
+    """A guard against a fourth instance of the same omission."""
+
+    import inspect
+
+    from blueprint_pipeline import articulated_task_sample as module
+
+    source = inspect.getsource(module)
+    bare = [
+        line.strip()
+        for line in source.splitlines()
+        if line.strip().startswith("except Exception:")
+    ]
+
+    assert not bare, f"exception causes discarded at: {bare}"

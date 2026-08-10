@@ -148,8 +148,13 @@ def build_articulated_task_sample(
             continue
         try:
             value = reader()
-        except Exception:  # noqa: BLE001 - any failure to observe is one fault
-            errors.append(f"articulated_task_sample_observation_failed:{field}")
+        except Exception as exc:  # noqa: BLE001 - any failure to observe is one
+            # Same rule as the joint read twenty lines up, which was taught to
+            # carry its cause one commit before this one was not.
+            detail = f"{type(exc).__name__}:{exc}"[:MAXIMUM_CAUSE_CHARACTERS]
+            errors.append(
+                f"articulated_task_sample_observation_failed:{field}:{detail}"
+            )
             continue
         if not isinstance(value, bool):
             errors.append(f"articulated_task_sample_observation_not_boolean:{field}")
