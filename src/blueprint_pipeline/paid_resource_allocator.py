@@ -136,6 +136,9 @@ from .native_task_arena_construction_bundle import (
     load_verified_native_task_arena_construction_bundle,
 )
 from .native_task_arena_vast import run_native_task_arena_vast
+from .native_task_runtime_source_packet import (
+    verify_native_task_runtime_source_packet,
+)
 from .adp009d_gated_backbone import probe_gated_backbone_access
 from .adp009d_native_microcheck_bundle import (
     PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
@@ -1134,6 +1137,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Previously dry-run native task bundle receipt. Required for execute so "
             "the paid launch cannot rebuild different bytes."
+        ),
+    )
+    gpu.add_argument(
+        "--native-task-arena-runtime-source-packet",
+        help=(
+            "Receipt for the exact released Isaac Lab/Arena source packet installed "
+            "before a task-neutral native construction canary."
         ),
     )
     gpu.add_argument("--adp009d-sage-collision")
@@ -2979,7 +2989,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.probe_kind == NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND:
             missing = [
                 name
-                for name in ("native_task_arena_packet", "adp_job_dir")
+                for name in (
+                    "native_task_arena_packet",
+                    "native_task_arena_runtime_source_packet",
+                    "adp_job_dir",
+                )
                 if not getattr(args, name, None)
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
@@ -3009,6 +3023,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle = None
             if not blockers:
                 try:
+                    source_packet = verify_native_task_runtime_source_packet(
+                        args.native_task_arena_runtime_source_packet
+                    )
                     if args.native_task_arena_bundle_receipt:
                         packet_receipt_path = (
                             Path(args.native_task_arena_packet).expanduser().resolve()
@@ -3026,12 +3043,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 expected_packet_receipt_digest=packet_receipt.get(
                                     "receipt_digest"
                                 ),
+                                expected_runtime_source_packet_digest=source_packet.get(
+                                    "receipt_digest"
+                                ),
                             )
                         )
                     else:
                         prepared_bundle = build_native_task_arena_construction_bundle(
                             job_dir=Path(args.adp_job_dir) / "bundle",
                             packet_dir=args.native_task_arena_packet,
+                            runtime_source_packet_receipt=(
+                                args.native_task_arena_runtime_source_packet
+                            ),
                             implementation_commit=control_identity[
                                 "orchestrator_source_commit"
                             ],
@@ -3059,6 +3082,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "packet_receipt_digest": (
                     prepared_bundle.get("packet_receipt_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "runtime_source_packet_receipt_digest": (
+                    (prepared_bundle.get("runtime_source_packet") or {}).get(
+                        "receipt_digest"
+                    )
+                    if prepared_bundle
+                    else None
+                ),
+                "runtime_source_packet_sha256": (
+                    (prepared_bundle.get("runtime_source_packet") or {}).get(
+                        "packet_sha256"
+                    )
                     if prepared_bundle
                     else None
                 ),

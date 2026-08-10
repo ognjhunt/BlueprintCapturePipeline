@@ -27,6 +27,9 @@ from .adp_isaac_lab_arena_vast import DEFAULT_IMAGE
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import RECEIPT_SCHEMA_VERSION
+from .native_task_runtime_source_packet import (
+    verify_native_task_runtime_source_packet,
+)
 
 
 SCHEMA_VERSION = "native_task_arena_provider_bundle.v1"
@@ -150,13 +153,56 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
     return root, receipt, rows
 
 
-def _entrypoint(*, expected_output_filename: str) -> str:
+def _entrypoint(
+    *, expected_output_filename: str, runtime_source_packet_required: bool
+) -> str:
     quoted = json.dumps(str(expected_output_filename))
+    source_required = "true" if runtime_source_packet_required else "false"
     return f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${{BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}}"
 mkdir -p "$OUT_DIR"
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:runtime_sources:started"
+SOURCE_RECEIPT="$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_source_packet.v1.json"
+SOURCE_PACKET="$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_sources.zip"
+if [ -f "$SOURCE_RECEIPT" ] && [ -f "$SOURCE_PACKET" ]; then
+  cd "$RUNTIME_DIR"
+  /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \
+    --source-receipt "$SOURCE_RECEIPT" \
+    --source-packet "$SOURCE_PACKET" \
+    --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \
+    --output "$OUT_DIR/native_task_runtime_source_provisioning.v1.json" \
+    --simulator-root /isaac-sim
+  provision_rc=$?
+  cd "$RUNTIME_DIR"
+elif {source_required}; then
+  provision_rc=2
+else
+  provision_rc=0
+fi
+if [ $provision_rc -ne 0 ]; then
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:runtime_sources:blocked"
+  /isaac-sim/python.sh - "$OUT_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+out = Path(sys.argv[1])
+out.mkdir(parents=True, exist_ok=True)
+name = {quoted}
+(out / name).write_text(json.dumps({{
+    "schema_version": "native_task_arena_construction_result.v1",
+    "status": "blocked",
+    "blockers": ["native_task_runtime_source_provisioning_failed"],
+    "candidate_policy_queried": False,
+    "candidate_outcomes_accessed": False,
+    "native_isaac_executed": False,
+    "provider_zero_required_after_return": True
+}}, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+PY
+  exit $provision_rc
+fi
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:runtime_sources:completed"
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:started"
 if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
   DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \
@@ -205,6 +251,7 @@ def build_native_task_arena_bundle(
     policy_candidate_id: str | None = None,
     expected_output_filename: str = DEFAULT_EXPECTED_OUTPUT_FILENAME,
     container_image: str = DEFAULT_IMAGE,
+    runtime_source_packet_receipt: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Package one exact native-task packet without reconstructing its scene."""
@@ -238,6 +285,11 @@ def build_native_task_arena_bundle(
         )
 
     packet_root, packet_receipt, packet_rows = _verified_packet(packet_dir)
+    runtime_source_receipt: dict[str, Any] | None = None
+    if runtime_source_packet_receipt is not None:
+        runtime_source_receipt = verify_native_task_runtime_source_packet(
+            runtime_source_packet_receipt
+        )
     worker = Path(worker_source).expanduser().resolve()
     if not worker.is_file():
         raise NativeTaskArenaBundleError(["native_task_arena_bundle_worker_missing"])
@@ -278,9 +330,25 @@ def build_native_task_arena_bundle(
                 "sha256": _sha256(destination),
             }
         )
+    if runtime_source_receipt is not None:
+        runtime_sources = runtime / "native_task_runtime_sources"
+        ensure_dir(runtime_sources)
+        source_receipt_path = Path(runtime_source_packet_receipt).expanduser().resolve()
+        source_packet_path = Path(runtime_source_receipt["verified_packet_path"])
+        shutil.copy2(
+            source_receipt_path,
+            runtime_sources / "native_task_runtime_source_packet.v1.json",
+        )
+        shutil.copy2(
+            source_packet_path,
+            runtime_sources / "native_task_runtime_sources.zip",
+        )
     entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
     entrypoint.write_text(
-        _entrypoint(expected_output_filename=expected_output_filename),
+        _entrypoint(
+            expected_output_filename=expected_output_filename,
+            runtime_source_packet_required=runtime_source_receipt is not None,
+        ),
         encoding="utf-8",
     )
     entrypoint.chmod(
@@ -303,6 +371,19 @@ def build_native_task_arena_bundle(
         "packet_file_count": len(packet_rows),
         "worker_source_sha256": _sha256(worker),
         "runtime_modules": module_rows,
+        "runtime_source_packet": (
+            {
+                "receipt_digest": runtime_source_receipt["receipt_digest"],
+                "packet_sha256": runtime_source_receipt["packet_sha256"],
+                "packet_size_bytes": runtime_source_receipt["packet_size_bytes"],
+                "install_roots": runtime_source_receipt["install_roots"],
+                "redistribution_permitted": runtime_source_receipt[
+                    "redistribution_permitted"
+                ],
+            }
+            if runtime_source_receipt is not None
+            else None
+        ),
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "expected_output_filename": str(expected_output_filename),
         "policy_candidate_id": policy_candidate_id,

@@ -38,6 +38,8 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_arena_readback.py",
     "native_task_arena_runtime.py",
     "native_task_camera_observability.py",
+    "native_task_runtime_source_packet.py",
+    "native_task_runtime_source_provision.py",
 )
 
 
@@ -50,6 +52,7 @@ def build_native_task_arena_construction_bundle(
     *,
     job_dir: str | Path,
     packet_dir: str | Path,
+    runtime_source_packet_receipt: str | Path,
     implementation_commit: str,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -59,6 +62,7 @@ def build_native_task_arena_construction_bundle(
     return build_native_task_arena_bundle(
         job_dir=job_dir,
         packet_dir=packet_dir,
+        runtime_source_packet_receipt=runtime_source_packet_receipt,
         worker_source=package / "native_task_arena_construction_worker.py",
         runtime_module_sources=construction_runtime_sources(),
         implementation_commit=implementation_commit,
@@ -73,6 +77,7 @@ def load_verified_native_task_arena_construction_bundle(
     *,
     expected_implementation_commit: str,
     expected_packet_receipt_digest: str | None = None,
+    expected_runtime_source_packet_digest: str | None = None,
 ) -> dict[str, Any]:
     """Reverify an already dry-run bundle without rebuilding or changing its SHA."""
 
@@ -113,6 +118,13 @@ def load_verified_native_task_arena_construction_bundle(
         receipt.get("packet_receipt_digest") != expected_packet_receipt_digest
     ):
         errors.append("native_task_arena_bundle_packet_receipt_mismatch")
+    source_packet = receipt.get("runtime_source_packet") or {}
+    if not source_packet or source_packet.get("redistribution_permitted") is not True:
+        errors.append("native_task_arena_bundle_runtime_source_packet_missing")
+    if expected_runtime_source_packet_digest and (
+        source_packet.get("receipt_digest") != expected_runtime_source_packet_digest
+    ):
+        errors.append("native_task_arena_bundle_runtime_source_packet_mismatch")
     if receipt.get("input_digest") != canonical_digest(
         manifest, digest_field="input_digest"
     ):

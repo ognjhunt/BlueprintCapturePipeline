@@ -27,7 +27,12 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
     assert {
         "torch",
         "pxr.UsdVol",
+        "gymnasium",
+        "toml",
         "isaaclab.controllers",
+        "isaaclab_assets",
+        "isaaclab_tasks",
+        "isaaclab_teleop",
         "isaaclab_arena.environments.arena_env_builder",
     }.issubset(DEPENDENCY_IMPORTS)
 

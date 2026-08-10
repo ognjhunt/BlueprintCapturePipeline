@@ -25,6 +25,10 @@ from blueprint_pipeline.native_task_arena_construction_bundle import (
     load_verified_native_task_arena_construction_bundle,
 )
 from blueprint_pipeline.native_task_arena_vast import run_native_task_arena_vast
+from blueprint_pipeline.native_task_runtime_source_packet import (
+    ISAACLAB_PACKAGE_NAMES,
+    materialize_native_task_runtime_source_packet,
+)
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
@@ -101,6 +105,84 @@ def _packet(root: Path, *, scene_id: str) -> Path:
         json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return packet
+
+
+def _runtime_source_packet(root: Path) -> Path:
+    destination = root / "runtime-source-packet"
+    receipt_path = destination / "native_task_runtime_source_packet.v1.json"
+    if receipt_path.is_file():
+        return receipt_path
+
+    def repository(path: Path, *, arena: bool) -> tuple[Path, str, str]:
+        path.mkdir(parents=True)
+        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "fixture@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.name", "Fixture"],
+            check=True,
+        )
+        if arena:
+            files = {
+                "LICENSE.md": "Apache fixture\n",
+                "setup.py": "from setuptools import setup; setup(name='isaaclab_arena')\n",
+                "pyproject.toml": "[build-system]\nrequires=['setuptools']\n",
+                "extension.toml": "[package]\nversion='fixture'\n",
+                "isaaclab_arena/__init__.py": "VERSION='fixture'\n",
+            }
+        else:
+            files = {"LICENSE": "BSD fixture\n"}
+            for name in ISAACLAB_PACKAGE_NAMES:
+                files[f"source/{name}/setup.py"] = (
+                    "from setuptools import setup; " f"setup(name='{name}')\n"
+                )
+                files[f"source/{name}/pyproject.toml"] = (
+                    "[build-system]\nrequires=['setuptools']\n"
+                )
+                files[f"source/{name}/config/extension.toml"] = (
+                    "[package]\nversion='fixture'\n"
+                )
+                files[f"source/{name}/{name}/__init__.py"] = "VERSION='fixture'\n"
+        for relative, value in files.items():
+            target = path / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(value, encoding="utf-8")
+        subprocess.run(["git", "-C", str(path), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "-m", "fixture"],
+            check=True,
+            capture_output=True,
+        )
+
+        def git_value(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(path), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        return path, git_value("rev-parse", "HEAD"), git_value("rev-parse", "HEAD^{tree}")
+
+    isaaclab, isaaclab_commit, isaaclab_tree = repository(
+        root / "runtime-source-repos/isaaclab", arena=False
+    )
+    arena, arena_commit, arena_tree = repository(
+        root / "runtime-source-repos/arena", arena=True
+    )
+    materialize_native_task_runtime_source_packet(
+        output_dir=destination,
+        isaaclab_repo=isaaclab,
+        arena_repo=arena,
+        generated_at="fixed",
+        isaaclab_commit=isaaclab_commit,
+        isaaclab_tree=isaaclab_tree,
+        arena_commit=arena_commit,
+        arena_tree=arena_tree,
+    )
+    return receipt_path
 
 
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])
@@ -201,6 +283,7 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
     receipt = build_native_task_arena_construction_bundle(
         job_dir=tmp_path / f"construction-{scene_id}",
         packet_dir=_packet(tmp_path, scene_id=scene_id),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
         implementation_commit="e" * 40,
         generated_at="fixed",
     )
@@ -215,6 +298,11 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
         for name in CONSTRUCTION_RUNTIME_MODULE_NAMES
     }
     assert expected.issubset(names)
+    assert (
+        "provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip"
+        in names
+    )
+    assert receipt["runtime_source_packet"]["redistribution_permitted"] is True
     assert "provider_runtime/blueprint_pipeline/native_task_arena_scene_plan.py" not in names
     assert "provider_runtime/blueprint_pipeline/adp009d_approach_capture.py" not in names
     assert not any(
@@ -250,6 +338,7 @@ def test_construction_bundle_passes_native_vast_static_preflight(tmp_path: Path)
     receipt = build_native_task_arena_construction_bundle(
         job_dir=tmp_path / "bundle",
         packet_dir=_packet(tmp_path, scene_id="840796"),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
         implementation_commit="f" * 40,
         generated_at="fixed",
     )
@@ -362,6 +451,7 @@ def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(
     receipt = build_native_task_arena_construction_bundle(
         job_dir=tmp_path / "bundle",
         packet_dir=_packet(tmp_path, scene_id="840796"),
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
         implementation_commit="a" * 40,
         generated_at="fixed",
     )
@@ -391,6 +481,7 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
     frozen_bundle = build_native_task_arena_construction_bundle(
         job_dir=tmp_path / "frozen-bundle",
         packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
         implementation_commit="a" * 40,
         generated_at="fixed",
     )
@@ -430,6 +521,8 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         "native-task-arena",
         "--native-task-arena-packet",
         str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(_runtime_source_packet(tmp_path)),
         "--adp-job-dir",
         str(tmp_path / "job"),
         "--adp-max-hourly-rate-usd",
@@ -468,3 +561,6 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
     assert admission["allocation_binding"]["packet_receipt_digest"].startswith(
         "sha256:"
     )
+    assert admission["allocation_binding"][
+        "runtime_source_packet_receipt_digest"
+    ].startswith("sha256:")
