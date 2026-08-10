@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 import sysconfig
@@ -32,6 +33,7 @@ TOP_LEVEL_PACKAGES = (
     "prettytable",
     "typing_extensions",
     "wcwidth",
+    "h5py",
     "isaaclab",
     "isaaclab_physx",
     "isaaclab_assets",
@@ -42,7 +44,12 @@ TOP_LEVEL_PACKAGES = (
 
 
 def _extract_runtime_dependency_wheels(
-    *, extraction_root: Path, wheel_rows: Sequence[dict[str, Any]], destination: Path
+    *,
+    extraction_root: Path,
+    wheel_rows: Sequence[dict[str, Any]],
+    destination: Path,
+    runtime_python_tag: str,
+    runtime_platform_tags: Sequence[str],
 ) -> list[dict[str, Any]]:
     destination.mkdir(parents=True, exist_ok=True)
     installed: list[dict[str, Any]] = []
@@ -62,11 +69,22 @@ def _extract_runtime_dependency_wheels(
             wheel_metadata_names = [
                 name for name in names if name.endswith(".dist-info/WHEEL")
             ]
-            if len(wheel_metadata_names) != 1 or (
-                "Root-Is-Purelib: true"
-                not in archive.read(wheel_metadata_names[0]).decode("utf-8")
-            ):
-                raise RuntimeError("native_task_runtime_dependency_wheel_not_pure_python")
+            if len(wheel_metadata_names) != 1:
+                raise RuntimeError("native_task_runtime_dependency_wheel_metadata_invalid")
+            wheel_metadata = archive.read(wheel_metadata_names[0]).decode("utf-8")
+            pure_python = bool(row.get("pure_python"))
+            expected_root = f"Root-Is-Purelib: {str(pure_python).lower()}"
+            wheel_tag = str(row.get("wheel_tag") or "")
+            if expected_root not in wheel_metadata or f"Tag: {wheel_tag}" not in wheel_metadata:
+                raise RuntimeError("native_task_runtime_dependency_wheel_platform_contract_invalid")
+            if not pure_python:
+                interpreter, abi, platform_tag = wheel_tag.split("-", 2)
+                if (
+                    interpreter != runtime_python_tag
+                    or abi != runtime_python_tag
+                    or platform_tag not in runtime_platform_tags
+                ):
+                    raise RuntimeError("native_task_runtime_dependency_binary_wheel_incompatible")
             for name in names:
                 if name.endswith("/"):
                     continue
@@ -84,9 +102,27 @@ def _extract_runtime_dependency_wheels(
                 "version": row["version"],
                 "wheel_sha256": row["sha256"],
                 "license_spdx": row["license_spdx"],
+                "pure_python": row["pure_python"],
+                "wheel_tag": row["wheel_tag"],
             }
         )
     return installed
+
+
+def _runtime_wheel_compatibility() -> tuple[str, tuple[str, ...]]:
+    python_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if sys.platform != "linux" or platform.machine().lower() not in {"x86_64", "amd64"}:
+        return python_tag, ()
+    libc_name, libc_version = platform.libc_ver()
+    tags: list[str] = []
+    if libc_name.lower() == "glibc":
+        try:
+            major, minor = (int(value) for value in libc_version.split(".")[:2])
+        except (TypeError, ValueError):
+            major, minor = (0, 0)
+        if (major, minor) >= (2, 28):
+            tags.append("manylinux_2_28_x86_64")
+    return python_tag, tuple(tags)
 
 
 def _sha256(path: Path) -> str:
@@ -117,6 +153,8 @@ def provision_native_task_runtime_sources(
     simulator_root: str | Path = "/isaac-sim",
     site_packages_dir: str | Path | None = None,
     python_executable: str | Path | None = None,
+    runtime_python_tag: str | None = None,
+    runtime_platform_tags: Sequence[str] | None = None,
     run_command: CommandRunner = subprocess.run,
 ) -> dict[str, Any]:
     """Verify, extract, and install every pinned package in one pip operation."""
@@ -181,10 +219,17 @@ def provision_native_task_runtime_sources(
             link.symlink_to(simulator, target_is_directory=True)
         result["isaac_sim_link"] = {"path": str(link), "target": str(simulator)}
         dependency_target = destination / "runtime_python_dependencies"
+        detected_python_tag, detected_platform_tags = _runtime_wheel_compatibility()
         installed_dependencies = _extract_runtime_dependency_wheels(
             extraction_root=destination,
             wheel_rows=verified["runtime_dependency_wheels"],
             destination=dependency_target,
+            runtime_python_tag=runtime_python_tag or detected_python_tag,
+            runtime_platform_tags=(
+                tuple(runtime_platform_tags)
+                if runtime_platform_tags is not None
+                else detected_platform_tags
+            ),
         )
         result["runtime_dependency_target"] = str(dependency_target)
         result["runtime_dependencies_installed"] = installed_dependencies

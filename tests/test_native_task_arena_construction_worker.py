@@ -36,6 +36,7 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "prettytable",
         "typing_extensions",
         "wcwidth",
+        "h5py",
         "yaml",
         "toml",
         "isaaclab.controllers",

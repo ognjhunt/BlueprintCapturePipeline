@@ -92,6 +92,14 @@ RUNTIME_DEPENDENCY_WHEELS = (
         "version": "0.2.13",
         "license_spdx": "MIT",
     },
+    {
+        "filename": "h5py-3.16.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "package": "h5py",
+        "version": "3.16.0",
+        "license_spdx": "BSD-3-Clause",
+        "pure_python": False,
+        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+    },
 )
 
 
@@ -280,9 +288,12 @@ def _runtime_dependency_rows(
             raise NativeTaskRuntimeSourcePacketError(
                 ["native_task_runtime_dependency_wheel_invalid"]
             ) from exc
-        if "Root-Is-Purelib: true" not in wheel_metadata or "Tag: py3-none-any" not in wheel_metadata:
+        pure_python = bool(contract.get("pure_python", True))
+        expected_root = f"Root-Is-Purelib: {str(pure_python).lower()}"
+        expected_tag = str(contract.get("wheel_tag", "py3-none-any"))
+        if expected_root not in wheel_metadata or f"Tag: {expected_tag}" not in wheel_metadata:
             raise NativeTaskRuntimeSourcePacketError(
-                ["native_task_runtime_dependency_wheel_not_pure_python"]
+                ["native_task_runtime_dependency_wheel_platform_contract_invalid"]
             )
         archive_path = f"runtime_dependencies/wheels/{path.name}"
         row = {
@@ -291,7 +302,8 @@ def _runtime_dependency_rows(
             "archive_path": archive_path,
             "size_bytes": len(data),
             "sha256": _sha256_bytes(data),
-            "pure_python": True,
+            "pure_python": pure_python,
+            "wheel_tag": expected_tag,
             "redistribution_permitted": True,
         }
         rows.append(row)

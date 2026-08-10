@@ -99,10 +99,14 @@ def _wheelhouse(root: Path) -> Path:
             continue
         distribution = contract["filename"].split("-", 1)[0]
         dist_info = f"{distribution}-{contract['version']}.dist-info"
+        pure_python = bool(contract.get("pure_python", True))
+        wheel_tag = str(contract.get("wheel_tag", "py3-none-any"))
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr(
                 f"{dist_info}/WHEEL",
-                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+                "Wheel-Version: 1.0\n"
+                f"Root-Is-Purelib: {str(pure_python).lower()}\n"
+                f"Tag: {wheel_tag}\n",
             )
             archive.writestr(f"{dist_info}/METADATA", "Metadata-Version: 2.1\n")
             archive.writestr(f"{distribution}/__init__.py", "FIXTURE = True\n")
@@ -205,6 +209,8 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
         simulator_root=simulator,
         site_packages_dir=tmp_path / "site-packages",
         python_executable="/isaac-sim/python.sh",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=("manylinux_2_28_x86_64",),
         run_command=fake_run,
     )
 
@@ -215,6 +221,9 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert len(result["runtime_dependencies_installed"]) == len(
         RUNTIME_DEPENDENCY_WHEELS
     )
+    assert next(
+        row for row in result["runtime_dependencies_installed"] if row["package"] == "h5py"
+    )["pure_python"] is False
     assert len(observed) == 1
     assert observed[0][1:3] == ["-I", "-c"]
     assert "pip" not in observed[0]
@@ -223,6 +232,39 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert Path(result["isaac_sim_link"]["path"]).readlink() == simulator
     path_lines = Path(result["path_file"]).read_text(encoding="utf-8").splitlines()
     assert path_lines == [result["runtime_dependency_target"], *result["install_roots"]]
+
+
+def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe(
+    tmp_path: Path,
+) -> None:
+    receipt = _packet(tmp_path)
+    probe_called = False
+
+    def forbidden_probe(*args, **kwargs):
+        nonlocal probe_called
+        probe_called = True
+        raise AssertionError("runtime probe must not run after binary wheel mismatch")
+
+    simulator = tmp_path / "isaac-sim"
+    simulator.mkdir()
+    result = provision_native_task_runtime_sources(
+        source_receipt_path=tmp_path
+        / "packet/native_task_runtime_source_packet.v1.json",
+        source_packet_path=receipt["packet_path"],
+        extraction_dir=tmp_path / "wrong-platform",
+        output_path=tmp_path / "wrong-platform.json",
+        simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
+        runtime_python_tag="cp311",
+        runtime_platform_tags=("macosx_14_0_arm64",),
+        run_command=forbidden_probe,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["exception"] == (
+        "native_task_runtime_dependency_binary_wheel_incompatible"
+    )
+    assert probe_called is False
 
 
 def test_materialization_batches_each_repository_into_one_exact_git_archive(

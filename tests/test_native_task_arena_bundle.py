@@ -181,10 +181,14 @@ def _runtime_source_packet(root: Path) -> Path:
     for contract in RUNTIME_DEPENDENCY_WHEELS:
         distribution = contract["filename"].split("-", 1)[0]
         dist_info = f"{distribution}-{contract['version']}.dist-info"
+        pure_python = bool(contract.get("pure_python", True))
+        wheel_tag = str(contract.get("wheel_tag", "py3-none-any"))
         with zipfile.ZipFile(wheelhouse / contract["filename"], "w") as archive:
             archive.writestr(
                 f"{dist_info}/WHEEL",
-                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+                "Wheel-Version: 1.0\n"
+                f"Root-Is-Purelib: {str(pure_python).lower()}\n"
+                f"Tag: {wheel_tag}\n",
             )
             archive.writestr(f"{distribution}/__init__.py", "FIXTURE = True\n")
     materialize_native_task_runtime_source_packet(

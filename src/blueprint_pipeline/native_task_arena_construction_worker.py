@@ -37,6 +37,7 @@ DEPENDENCY_IMPORTS = (
     "prettytable",
     "typing_extensions",
     "wcwidth",
+    "h5py",
     "yaml",
     "toml",
     "pxr.Usd",
