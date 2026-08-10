@@ -34,6 +34,7 @@ except ModuleNotFoundError:  # repository package
 TASK_SPEC_SCHEMA_VERSION = "adp_task_spec.v1"
 TASK_SPEC_GRAPH_SCHEMA_VERSION = "adp_task_spec.v2"
 ARTICULATED_REPORT_SCHEMA_VERSION = "adp_articulated_task_scoring.v1"
+RIGID_REPORT_SCHEMA_VERSION = "adp_rigid_task_scoring.v2"
 TASK_KIND_RIGID_PICK_PLACE = "rigid_pick_place"
 TASK_KIND_ARTICULATED_OPEN_CLOSE = "articulated_open_close"
 
@@ -581,6 +582,277 @@ def score_articulated_task_episode(
     return report
 
 
+def _vector(value: Any, length: int, *, error: str) -> list[float]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or len(value) != length
+    ):
+        raise TaskNeutralScoringError([error])
+    result = [_finite(item) for item in value]
+    if any(item is None for item in result):
+        raise TaskNeutralScoringError([error])
+    return [float(item) for item in result]
+
+
+def _quaternion_angle(a: Sequence[float], b: Sequence[float]) -> float:
+    qa = _vector(a, 4, error="rigid_task_quaternion_invalid")
+    qb = _vector(b, 4, error="rigid_task_quaternion_invalid")
+    na = math.sqrt(sum(item * item for item in qa))
+    nb = math.sqrt(sum(item * item for item in qb))
+    if min(na, nb) <= 0.0:
+        raise TaskNeutralScoringError(["rigid_task_quaternion_invalid"])
+    dot = abs(sum(x * y for x, y in zip(qa, qb, strict=True)) / (na * nb))
+    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
+
+def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    if (
+        spec.get("schema_version") != TASK_SPEC_GRAPH_SCHEMA_VERSION
+        or spec.get("task_kind") != TASK_KIND_RIGID_PICK_PLACE
+    ):
+        errors.append("rigid_task_spec_schema_invalid")
+    subject = str(spec.get("subject_asset_id") or "")
+    if not subject:
+        errors.append("rigid_task_subject_asset_id_missing")
+    try:
+        start_pose = _vector(
+            spec.get("start_pose_world"), 7, error="rigid_task_start_pose_invalid"
+        )
+        orientation_reference = _vector(
+            spec.get("destination_orientation_xyzw"),
+            4,
+            error="rigid_task_destination_orientation_invalid",
+        )
+        raw_bounds = spec["destination_position_bounds_world_m"]
+        lower = _vector(raw_bounds["minimum"], 3, error="rigid_task_destination_invalid")
+        upper = _vector(raw_bounds["maximum"], 3, error="rigid_task_destination_invalid")
+        support_interval = _vector(
+            spec["support_height_interval_m"],
+            2,
+            error="rigid_task_support_interval_invalid",
+        )
+    except (KeyError, TypeError, TaskNeutralScoringError) as exc:
+        if isinstance(exc, TaskNeutralScoringError):
+            errors.extend(exc.errors)
+        else:
+            errors.append("rigid_task_spec_invalid")
+        start_pose = [0.0] * 7
+        orientation_reference = [0.0, 0.0, 0.0, 1.0]
+        lower = [0.0] * 3
+        upper = [0.0] * 3
+        support_interval = [0.0, 0.0]
+    numeric_fields = (
+        "destination_orientation_tolerance_rad",
+        "minimum_translation_m",
+        "minimum_lift_m",
+        "movement_epsilon_m",
+        "reset_translation_tolerance_m",
+        "reset_orientation_tolerance_rad",
+        "settle_position_tolerance_m",
+        "settle_orientation_tolerance_rad",
+        "release_gripper_width_min_m",
+    )
+    numbers: dict[str, float] = {}
+    for field in numeric_fields:
+        value = _finite(spec.get(field))
+        if value is None or value < 0.0 or (
+            value == 0.0 and field not in {"minimum_lift_m"}
+        ):
+            errors.append(f"rigid_task_{field}_invalid")
+        else:
+            numbers[field] = value
+    settle = spec.get("settle_window_samples")
+    if isinstance(settle, bool) or not isinstance(settle, int) or settle <= 0:
+        errors.append("rigid_task_settle_window_samples_invalid")
+    if spec.get("release_required") is not True:
+        errors.append("rigid_task_release_contract_invalid")
+    if any(low >= high for low, high in zip(lower, upper, strict=True)):
+        errors.append("rigid_task_destination_invalid")
+    if support_interval[0] >= support_interval[1]:
+        errors.append("rigid_task_support_interval_invalid")
+    for quaternion, error in (
+        (start_pose[3:], "rigid_task_start_pose_invalid"),
+        (orientation_reference, "rigid_task_destination_orientation_invalid"),
+    ):
+        if abs(sum(item * item for item in quaternion) - 1.0) > 1.0e-6:
+            errors.append(error)
+    if errors:
+        raise TaskNeutralScoringError(errors)
+    return {
+        "subject_asset_id": subject,
+        "start_pose_world": start_pose,
+        "destination_position_bounds_world_m": {"minimum": lower, "maximum": upper},
+        "destination_orientation_xyzw": orientation_reference,
+        "support_height_interval_m": support_interval,
+        "settle_window_samples": settle,
+        "release_required": True,
+        **numbers,
+    }
+
+
+def score_rigid_task_episode(
+    *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Score a scene-neutral rigid relocation from deterministic native state."""
+
+    spec = _normalize_rigid_task_spec(task_spec)
+    if not isinstance(samples, Sequence) or isinstance(samples, (str, bytes)) or not samples:
+        raise TaskNeutralScoringError(["rigid_task_samples_invalid"])
+    normalized: list[dict[str, Any]] = []
+    previous_step: int | None = None
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, Mapping):
+            raise TaskNeutralScoringError([f"rigid_task_sample_invalid:{index}"])
+        step = sample.get("step_index")
+        if (
+            isinstance(step, bool)
+            or not isinstance(step, int)
+            or (previous_step is not None and step <= previous_step)
+        ):
+            raise TaskNeutralScoringError([f"rigid_task_sample_step_invalid:{index}"])
+        previous_step = step
+        pose = _vector(
+            sample.get("task_object_pose_world"),
+            7,
+            error=f"rigid_task_sample_pose_invalid:{index}",
+        )
+        if abs(sum(item * item for item in pose[3:]) - 1.0) > 1.0e-3:
+            raise TaskNeutralScoringError([f"rigid_task_sample_pose_invalid:{index}"])
+        normalized.append(
+            {
+                "step_index": step,
+                "pose": pose,
+                "gripper_width_m": _finite(sample.get("gripper_width_m")),
+                "task_contact_active": sample.get("task_contact_active"),
+                "robot_collision_failure": sample.get("robot_collision_failure"),
+                "scene_collision_failure": sample.get("scene_collision_failure"),
+                "containment_violation": sample.get("containment_violation"),
+            }
+        )
+
+    start = normalized[0]["pose"]
+    reset_translation_error = math.dist(start[:3], spec["start_pose_world"][:3])
+    reset_orientation_error = _quaternion_angle(
+        start[3:], spec["start_pose_world"][3:]
+    )
+    if (
+        reset_translation_error > spec["reset_translation_tolerance_m"]
+        or reset_orientation_error > spec["reset_orientation_tolerance_rad"]
+    ):
+        raise TaskNeutralScoringError(["rigid_task_reset_readback_mismatch"])
+    positions = [row["pose"][:3] for row in normalized]
+    translation = [math.dist(position[:2], start[:2]) for position in positions]
+    lift = [position[2] - start[2] for position in positions]
+    settle = normalized[-spec["settle_window_samples"] :]
+    settle_available = len(normalized) >= spec["settle_window_samples"]
+    lower = spec["destination_position_bounds_world_m"]["minimum"]
+    upper = spec["destination_position_bounds_world_m"]["maximum"]
+    destination_inside = settle_available and all(
+        all(low <= value <= high for low, value, high in zip(lower, row["pose"][:3], upper, strict=True))
+        for row in settle
+    )
+    orientation_errors = [
+        _quaternion_angle(row["pose"][3:], spec["destination_orientation_xyzw"])
+        for row in settle
+    ]
+    orientation_ok = settle_available and all(
+        error <= spec["destination_orientation_tolerance_rad"]
+        for error in orientation_errors
+    )
+    support_ok = settle_available and all(
+        spec["support_height_interval_m"][0]
+        <= row["pose"][2]
+        <= spec["support_height_interval_m"][1]
+        for row in settle
+    )
+    anchor = settle[-1]["pose"] if settle else start
+    settled = settle_available and all(
+        math.dist(row["pose"][:3], anchor[:3])
+        <= spec["settle_position_tolerance_m"]
+        and _quaternion_angle(row["pose"][3:], anchor[3:])
+        <= spec["settle_orientation_tolerance_rad"]
+        for row in settle
+    )
+    released = settle_available and all(
+        row["gripper_width_m"] is not None
+        and row["gripper_width_m"] >= spec["release_gripper_width_min_m"]
+        and row["task_contact_active"] is False
+        for row in settle
+    )
+    safety_fields = (
+        "robot_collision_failure",
+        "scene_collision_failure",
+        "containment_violation",
+    )
+    safety_complete = all(
+        isinstance(row[field], bool) for row in normalized for field in safety_fields
+    )
+    safety_ok = safety_complete and not any(
+        row[field] for row in normalized for field in safety_fields
+    )
+    moved = max(translation) > spec["movement_epsilon_m"]
+    translated = max(translation) >= spec["minimum_translation_m"]
+    lifted = max(lift) >= spec["minimum_lift_m"]
+    succeeded = (
+        destination_inside
+        and orientation_ok
+        and support_ok
+        and settled
+        and released
+        and safety_ok
+        and translated
+        and lifted
+    )
+    if not safety_complete:
+        status = "undetermined"
+        outcome = "native_safety_readback_missing"
+    elif not safety_ok:
+        status = "scored"
+        outcome = "collision_or_containment_failure"
+    elif succeeded:
+        status = "scored"
+        outcome = "placed_and_settled"
+    elif not moved:
+        status = "scored"
+        outcome = OUTCOME_NEVER_MOVED
+    elif destination_inside and not released:
+        status = "scored"
+        outcome = "release_incomplete"
+    else:
+        status = "scored" if settle_available else "undetermined"
+        outcome = "moved_below_success_contract"
+    report: dict[str, Any] = {
+        "schema_version": RIGID_REPORT_SCHEMA_VERSION,
+        "status": status,
+        "task_kind": TASK_KIND_RIGID_PICK_PLACE,
+        "subject_asset_id": spec["subject_asset_id"],
+        "task_succeeded": succeeded,
+        "outcome": outcome,
+        "measurements": {
+            "sample_count": len(normalized),
+            "reset_translation_error_m": reset_translation_error,
+            "reset_orientation_error_rad": reset_orientation_error,
+            "maximum_translation_m": max(translation),
+            "maximum_lift_m": max(lift),
+            "settle_window_available": settle_available,
+            "settle_destination_inside": destination_inside,
+            "settle_orientation_ok": orientation_ok,
+            "settle_support_height_ok": support_ok,
+            "settled": settled,
+            "released": released,
+            "native_safety_readback_complete": safety_complete,
+            "native_safety_ok": safety_ok,
+        },
+        "learned_judge_consulted": False,
+        "candidate_policy_queried_by_scorer": False,
+        "report_digest": "",
+    }
+    report["report_digest"] = canonical_digest(report, digest_field="report_digest")
+    return report
+
+
 def score_task_episode_from_spec(
     *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
@@ -590,6 +862,8 @@ def score_task_episode_from_spec(
     if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
         return score_articulated_task_episode(task_spec=task_spec, samples=samples)
     if kind == TASK_KIND_RIGID_PICK_PLACE:
+        if task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:
+            return score_rigid_task_episode(task_spec=task_spec, samples=samples)
         if task_spec.get("schema_version") != TASK_SPEC_SCHEMA_VERSION:
             raise TaskNeutralScoringError(["task_spec_schema_invalid"])
         try:
@@ -609,6 +883,7 @@ def score_task_episode_from_spec(
 
 __all__ = [
     "ARTICULATED_REPORT_SCHEMA_VERSION",
+    "RIGID_REPORT_SCHEMA_VERSION",
     "OUTCOME_COLLISION_FAILURE",
     "OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION",
     "OUTCOME_MOVED_BELOW_THRESHOLD",
@@ -623,6 +898,7 @@ __all__ = [
     "TASK_SPEC_GRAPH_SCHEMA_VERSION",
     "TaskNeutralScoringError",
     "score_articulated_task_episode",
+    "score_rigid_task_episode",
     "score_task_episode_from_spec",
     "validate_articulated_task_spec",
 ]

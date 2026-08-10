@@ -313,3 +313,81 @@ def test_dependent_joint_violation_blocks_otherwise_successful_target() -> None:
     assert report["outcome"] == OUTCOME_NON_TASK_JOINT_MOVED
     assert report["task_succeeded"] is False
     assert report["predicates"]["dependent_joints_consistent"] is False
+
+
+def _rigid_v2_spec() -> dict:
+    return {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "rigid_pick_place",
+        "subject_asset_id": "notebook_replacement",
+        "start_pose_world": [1.0, 2.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+        "destination_position_bounds_world_m": {
+            "minimum": [1.14, 1.99, 0.79],
+            "maximum": [1.16, 2.01, 0.81],
+        },
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.1,
+        "support_height_interval_m": [0.79, 0.81],
+        "minimum_translation_m": 0.14,
+        "minimum_lift_m": 0.02,
+        "movement_epsilon_m": 0.001,
+        "reset_translation_tolerance_m": 0.001,
+        "reset_orientation_tolerance_rad": 0.01,
+        "settle_window_samples": 3,
+        "settle_position_tolerance_m": 0.002,
+        "settle_orientation_tolerance_rad": 0.01,
+        "release_required": True,
+        "release_gripper_width_min_m": 0.07,
+    }
+
+
+def _rigid_v2_sample(step: int, position: list[float], *, safety: bool = True) -> dict:
+    sample = {
+        "step_index": step,
+        "task_object_pose_world": [*position, 0.0, 0.0, 0.0, 1.0],
+        "gripper_width_m": 0.08 if step >= 3 else 0.04,
+        "task_contact_active": False if step >= 3 else True,
+    }
+    if safety:
+        sample.update(
+            robot_collision_failure=False,
+            scene_collision_failure=False,
+            containment_violation=False,
+        )
+    return sample
+
+
+def test_scene_neutral_rigid_task_scores_pose_volume_release_and_settle() -> None:
+    report = score_task_episode_from_spec(
+        task_spec=_rigid_v2_spec(),
+        samples=[
+            _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+            _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+            _rigid_v2_sample(2, [1.15, 2.0, 0.83]),
+            _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+        ],
+    )
+
+    assert report["status"] == "scored"
+    assert report["outcome"] == "placed_and_settled"
+    assert report["task_succeeded"] is True
+    assert report["subject_asset_id"] == "notebook_replacement"
+
+
+def test_scene_neutral_rigid_task_abstains_without_native_safety_readback() -> None:
+    report = score_task_episode_from_spec(
+        task_spec=_rigid_v2_spec(),
+        samples=[
+            _rigid_v2_sample(0, [1.0, 2.0, 0.8], safety=False),
+            _rigid_v2_sample(1, [1.15, 2.0, 0.83], safety=False),
+            _rigid_v2_sample(2, [1.15, 2.0, 0.8], safety=False),
+            _rigid_v2_sample(3, [1.15, 2.0, 0.8], safety=False),
+            _rigid_v2_sample(4, [1.15, 2.0, 0.8], safety=False),
+        ],
+    )
+
+    assert report["status"] == "undetermined"
+    assert report["outcome"] == "native_safety_readback_missing"
+    assert report["task_succeeded"] is False

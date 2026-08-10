@@ -90,6 +90,7 @@ try:  # flat provider-bundle layout
     from adp_task_scoring import (
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
         TASK_KIND_RIGID_PICK_PLACE,
+        TASK_SPEC_GRAPH_SCHEMA_VERSION,
         TASK_SPEC_SCHEMA_VERSION,
         TaskNeutralScoringError,
         score_task_episode_from_spec,
@@ -99,6 +100,7 @@ except ModuleNotFoundError:  # repository package
     from .adp_task_scoring import (
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
         TASK_KIND_RIGID_PICK_PLACE,
+        TASK_SPEC_GRAPH_SCHEMA_VERSION,
         TASK_SPEC_SCHEMA_VERSION,
         TaskNeutralScoringError,
         score_task_episode_from_spec,
@@ -580,6 +582,11 @@ def run_policy_episode(
         open_loop_horizon=int(open_loop_horizon),
     )
     task_kind = str(resolved_task_spec["task_kind"])
+    rigid_pose_field = (
+        "task_object_pose_world"
+        if resolved_task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION
+        else "can_pose_world"
+    )
 
     media_root = (
         Path(media_output_dir).expanduser().resolve()
@@ -625,7 +632,7 @@ def run_policy_episode(
             step_index,
             previous_index,
             required_field=(
-                "can_pose_world"
+                rigid_pose_field
                 if task_kind == TASK_KIND_RIGID_PICK_PLACE
                 else "joint_positions_rad"
             ),
@@ -799,7 +806,7 @@ def run_policy_episode(
                     step_index,
                     previous_index,
                     required_field=(
-                        "can_pose_world"
+                        rigid_pose_field
                         if task_kind == TASK_KIND_RIGID_PICK_PLACE
                         else "joint_positions_rad"
                     ),
@@ -883,7 +890,7 @@ def run_policy_episode(
                 step_index,
                 previous_index,
                 required_field=(
-                    "can_pose_world"
+                    rigid_pose_field
                     if task_kind == TASK_KIND_RIGID_PICK_PLACE
                     else "joint_positions_rad"
                 ),

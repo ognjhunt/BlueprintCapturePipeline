@@ -595,6 +595,16 @@ class IsaacEpisodeAdapter:
             self._calibrated_gripper_width(raw_separation)
         )
         sample: dict[str, Any] = {
+            # Isaac Lab native root_pose_w is position + WXYZ.  New task-neutral
+            # contracts use explicit XYZW; retain the raw legacy alias only for
+            # the sealed 840313 compatibility scorer.
+            "task_object_pose_world": [
+                *[float(v) for v in pose[:3]],
+                float(pose[4]),
+                float(pose[5]),
+                float(pose[6]),
+                float(pose[3]),
+            ],
             "can_pose_world": [float(v) for v in pose[:7]],
             "gripper_width_m": width,
             "gripper_body_separation_m": raw_separation,
