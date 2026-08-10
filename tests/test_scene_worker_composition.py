@@ -176,12 +176,21 @@ class _FakeArticulation:
 
 
 class _FakeArenaEnvironment:
-    def __init__(self, *, scene=None, embodiments=None, task=None,
-                 env_config_modifier=None, **_extra):
+    """Signature mirrors the rigid lane's call site, not my first guess.
+
+    The first version accepted embodiments=[...] and env_config_modifier=,
+    which are not Arena's API - so the stub passed while hardware raised
+    TypeError. test_arena_api_parity pins the keywords independently of this
+    file precisely because a fake cannot be trusted to police itself.
+    """
+
+    def __init__(self, *, name=None, scene=None, embodiment=None, task=None,
+                 env_cfg_callback=None):
+        self.name = name
         self.scene_spec = scene
-        self.embodiments = embodiments or []
-        if env_config_modifier is not None:
-            env_config_modifier(_FakeEnvCfg())
+        self.embodiments = [embodiment] if embodiment is not None else []
+        if env_cfg_callback is not None:
+            env_cfg_callback(_FakeEnvCfg())
         runtime_scene = _FakeScene()
         runtime_scene["task_object"] = _FakeArticulation()
         runtime_scene["robot"] = _FakeArticulation(joint_names=ROBOT_JOINT_NAMES)
@@ -192,8 +201,17 @@ class _FakeArenaEnvironment:
             runtime_scene[getattr(embodiment, "name", "robot")] = runtime_scene["robot"]
         self._env = _FakeEnv(runtime_scene)
 
-    def get_env(self):
-        return self._env
+    def get_env(self):  # pragma: no cover - not Arena's API, kept out of use
+        raise AssertionError("Arena builds through ArenaEnvBuilder, not get_env")
+
+
+class _FakeArenaEnvBuilder:
+    def __init__(self, arena_env, builder_args):
+        self._arena_env = arena_env
+        self.builder_args = builder_args
+
+    def make_registered_and_return_cfg(self, render_mode=None):
+        return self._arena_env._env, _FakeEnvCfg()
 
 
 class _FakeSimCfg:
@@ -287,6 +305,10 @@ def stubbed_arena(monkeypatch):
         "isaaclab_arena.environments.isaaclab_arena_environment": _module(
             "isaaclab_arena.environments.isaaclab_arena_environment",
             IsaacLabArenaEnvironment=_FakeArenaEnvironment,
+        ),
+        "isaaclab_arena.environments.arena_env_builder": _module(
+            "isaaclab_arena.environments.arena_env_builder",
+            ArenaEnvBuilder=_FakeArenaEnvBuilder,
         ),
         "isaaclab_arena.scene": _module("isaaclab_arena.scene"),
         "isaaclab_arena.scene.scene": _module(

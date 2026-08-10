@@ -80,6 +80,7 @@ CANDIDATE_POLICY_QUERIED = False
 # cost in an episode and is discarded downstream.
 CAMERA_WIDTH = 320
 CAMERA_HEIGHT = 180
+ARENA_ENVIRONMENT_NAME = "Blueprint-ADP009D-Articulated-Scene-v0"
 
 
 def _sha256(path: Path) -> str:
@@ -258,6 +259,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         from isaaclab_arena.environments.isaaclab_arena_environment import (  # type: ignore
             IsaacLabArenaEnvironment,
         )
+        from isaaclab_arena.environments.arena_env_builder import (  # type: ignore
+            ArenaEnvBuilder,
+        )
         from isaaclab_arena.scene.scene import Scene  # type: ignore
         from isaaclab_arena.tasks.no_task import NoTask  # type: ignore
         from isaaclab_arena.utils.pose import Pose  # type: ignore
@@ -409,13 +413,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return cfg
 
+        # Keywords mirror the rigid lane exactly. The first version of this
+        # used embodiments=[...] and env_config_modifier=..., which are not
+        # Arena's API - they were what I assumed, and the stub accepted them
+        # because I had written the stub from the same assumption. A fake built
+        # from a guess validates the guess. A parity test now pins these
+        # against the rigid runtime's own call site.
         arena_env = IsaacLabArenaEnvironment(
+            name=ARENA_ENVIRONMENT_NAME,
             scene=Scene(assets=assets),
-            embodiments=[embodiment],
+            embodiment=embodiment,
             task=NoTask(),
-            env_config_modifier=configure,
+            env_cfg_callback=configure,
         )
-        env = arena_env.get_env()
+        builder_args = argparse.Namespace(
+            num_envs=1,
+            env_spacing=2.0,
+            solve_relations=False,
+            placement_seed=int(spec.get("seed") or 20260810),
+            mimic=False,
+            device="cuda:0",
+            disable_fabric=False,
+            presets=None,
+        )
+        builder = ArenaEnvBuilder(arena_env, builder_args)
+        env, _env_cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
         result["scene_composed"] = True
         _phase(result, "environment_built")
 
