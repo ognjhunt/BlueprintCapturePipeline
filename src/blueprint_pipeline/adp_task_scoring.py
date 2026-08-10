@@ -242,8 +242,24 @@ def score_articulated_task_episode(
         joint_id: abs(normalized[0]["joint_positions_rad"][joint_id] - reset)
         for joint_id, reset in resets.items()
     }
-    if any(value > reset_tolerance for value in reset_errors.values()):
-        raise TaskNeutralScoringError(["articulated_episode_reset_readback_mismatch"])
+    offending = {
+        joint_id: value
+        for joint_id, value in reset_errors.items()
+        if value > reset_tolerance
+    }
+    if offending:
+        # The deviations are already computed here; dropping them turns a
+        # one-line fix into another launch. Name the joint and the amount.
+        raise TaskNeutralScoringError(
+            [
+                "articulated_episode_reset_readback_mismatch:"
+                + ",".join(
+                    f"{joint_id}={value:.5g}rad"
+                    for joint_id, value in sorted(offending.items())
+                )
+                + f":tolerance={reset_tolerance:.5g}rad"
+            ]
+        )
 
     lower, upper = spec["target_success_interval_rad"]
     target_positions = [sample["joint_positions_rad"][target] for sample in normalized]

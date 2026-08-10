@@ -6,6 +6,7 @@ import pytest
 
 from blueprint_pipeline.adp009d_task_scoring import CAN_START_POSITION_M
 from blueprint_pipeline.adp_task_scoring import (
+    score_articulated_task_episode,
     OUTCOME_NEVER_MOVED,
     OUTCOME_NON_TASK_JOINT_MOVED,
     OUTCOME_OPENED_AND_SETTLED,
@@ -168,3 +169,54 @@ def test_missing_native_velocity_fails_closed() -> None:
         )
 
     assert any("joint_velocities_invalid" in error for error in caught.value.errors)
+
+
+def test_a_reset_mismatch_reports_which_joint_and_by_how_much():
+    """The deviations are computed and were being discarded.
+
+    rt32 reached the control episode - scene composed, all five observations
+    resolving - and returned articulated_episode_reset_readback_mismatch with
+    no numbers, while reset_errors sat in scope holding exactly the answer.
+    Fourth time this session an error has named a symptom and dropped the
+    evidence beside it.
+    """
+
+    spec = {
+        "schema_version": "adp_task_spec.v1",
+        "task_kind": "articulated_open_close",
+        "target_joint_id": "upper_door_hinge",
+        "target_success_interval_rad": [0.785, 0.96],
+        "joint_reset_positions_rad": {"upper_door_hinge": 0.0},
+        "joint_hard_limits_rad": {"upper_door_hinge": [0.0, 1.5708]},
+        "reset_tolerance_rad": 0.005,
+        "movement_epsilon_rad": 0.01,
+        "non_task_joint_motion_tolerance_rad": 0.01,
+        "settle_window_samples": 2,
+        "maximum_settled_target_speed_rad_s": 0.05,
+        "maximum_action_steps": 10,
+    }
+
+    def _sample(position, step_index=0):
+        return {
+            "step_index": step_index,
+            "joint_positions_rad": {"upper_door_hinge": position},
+            "joint_velocities_rad_s": {"upper_door_hinge": 0.0},
+            "task_contact_active": False,
+            "joint_limit_violation": False,
+            "containment_violation": False,
+            "robot_collision_failure": False,
+            "scene_collision_failure": False,
+            "retreat_completed": False,
+        }
+
+    with pytest.raises(TaskNeutralScoringError) as excinfo:
+        score_articulated_task_episode(
+            task_spec=spec, samples=[_sample(0.42, 0), _sample(0.42, 1)]
+        )
+
+    joined = ";".join(excinfo.value.errors)
+    assert "reset_readback_mismatch" in joined
+    assert "upper_door_hinge" in joined
+    # The measured deviation, so the next step is a fix rather than a launch.
+    assert "0.42" in joined
+    assert "tolerance" in joined
