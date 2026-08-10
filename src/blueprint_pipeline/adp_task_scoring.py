@@ -25,6 +25,29 @@ TASK_SPEC_SCHEMA_VERSION = "adp_task_spec.v1"
 ARTICULATED_REPORT_SCHEMA_VERSION = "adp_articulated_task_scoring.v1"
 TASK_KIND_RIGID_PICK_PLACE = "rigid_pick_place"
 TASK_KIND_ARTICULATED_OPEN_CLOSE = "articulated_open_close"
+TASK_KIND_DEFORMABLE_TRANSFER = "deformable_transfer"
+
+_DEFORMABLE_TASK_SPEC_FIELDS = frozenset(
+    {
+        "schema_version",
+        "task_kind",
+        "deformable_entity_id",
+        "destination_entity_id",
+        "robot_entity_id",
+        "destination_interior_obb",
+        "receptacle_reference_pose_world",
+        "minimum_particle_fraction_inside",
+        "settle_window_samples",
+        "maximum_node_speed_mps",
+        "maximum_principal_strain",
+        "maximum_release_contact_force_n",
+        "minimum_robot_clearance_m",
+        "maximum_receptacle_translation_drift_m",
+        "maximum_receptacle_rotation_drift_rad",
+        "maximum_receptacle_linear_speed_mps",
+        "maximum_receptacle_angular_speed_radps",
+    }
+)
 
 OUTCOME_NEVER_MOVED = "never_moved"
 OUTCOME_MOVED_BELOW_THRESHOLD = "moved_below_threshold"
@@ -53,6 +76,39 @@ class TaskNeutralScoringError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def _deformable_scoring_api() -> tuple[Any, Any, type[ValueError]]:
+    """Load the optional deformable scorer only for a deformable dispatch.
+
+    Historical rigid and articulated provider bundles intentionally contain
+    only their frozen runtime closure.  A module-level deformable import would
+    make those already-published flat bundles unrunnable, so this additive task
+    kind owns a lazy, typed dependency boundary.
+    """
+
+    try:  # flat provider-bundle layout
+        from deformable_transfer_scoring import (
+            DeformableTransferScoringError,
+            score_deformable_transfer,
+            validate_deformable_transfer_task_spec,
+        )
+    except ModuleNotFoundError:
+        try:  # repository package
+            from .deformable_transfer_scoring import (
+                DeformableTransferScoringError,
+                score_deformable_transfer,
+                validate_deformable_transfer_task_spec,
+            )
+        except (ImportError, ModuleNotFoundError) as exc:
+            raise TaskNeutralScoringError(
+                ["deformable_scoring_module_missing"]
+            ) from exc
+    return (
+        score_deformable_transfer,
+        validate_deformable_transfer_task_spec,
+        DeformableTransferScoringError,
+    )
 
 
 def _finite(value: Any) -> float | None:
@@ -156,6 +212,39 @@ def validate_articulated_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Public fail-closed validator for a frozen articulated scorer contract."""
 
     return _normalize_articulated_spec(spec)
+
+
+def validate_deformable_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate one exact deformable transfer spec at the shared boundary.
+
+    The exact field set is intentional: outcome, predicate, or success fields
+    supplied by a caller must not be silently accepted as part of the frozen
+    scorer contract.  The task-local validator then owns all entity, geometry,
+    and numeric threshold validation.
+    """
+
+    if not isinstance(spec, Mapping):
+        raise TaskNeutralScoringError(["deformable_task_spec_invalid"])
+
+    errors: list[str] = []
+    if spec.get("schema_version") != TASK_SPEC_SCHEMA_VERSION:
+        errors.append("task_spec_schema_invalid")
+    if spec.get("task_kind") != TASK_KIND_DEFORMABLE_TRANSFER:
+        errors.append("deformable_task_kind_invalid")
+    if set(spec) != _DEFORMABLE_TASK_SPEC_FIELDS:
+        errors.append("deformable_task_spec_fields_invalid")
+
+    _, validate_task_local_spec, scoring_error = _deformable_scoring_api()
+    normalized: dict[str, Any] | None = None
+    try:
+        normalized = validate_task_local_spec(spec)
+    except scoring_error as exc:
+        errors.extend(exc.errors)
+    if errors:
+        raise TaskNeutralScoringError(errors)
+    if normalized is None:  # defensive: validation either returned or raised
+        raise TaskNeutralScoringError(["deformable_task_spec_invalid"])
+    return normalized
 
 
 def _normalize_articulated_samples(
@@ -385,12 +474,48 @@ def score_articulated_task_episode(
     return report
 
 
+def score_deformable_task_episode(
+    *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Score a deformable transfer through the shared task-result contract."""
+
+    normalized_spec = validate_deformable_task_spec(task_spec)
+    score_transfer, _, scoring_error = _deformable_scoring_api()
+    try:
+        report = score_transfer(
+            task_spec=normalized_spec,
+            samples=samples,
+        )
+    except scoring_error as exc:
+        raise TaskNeutralScoringError(exc.errors) from exc
+
+    # Keep the task-local measurements and monotone ladder intact while adding
+    # the four fields every shared scorer consumer can rely on.  An incomplete
+    # settle window is evidence-insufficient; native NaN/divergence or an
+    # integrity violation is instead a scored deterministic non-success.
+    report["status"] = (
+        "scored"
+        if report["measurements"]["settle_window_available"]
+        else "undetermined"
+    )
+    report["task_kind"] = TASK_KIND_DEFORMABLE_TRANSFER
+    report["task_succeeded"] = bool(report["deterministic_success"])
+    report["result_digest"] = canonical_digest(
+        report, digest_field="result_digest"
+    )
+    return report
+
+
 def score_task_episode_from_spec(
     *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
     """Dispatch a frozen task spec without scene- or object-name conditionals."""
 
+    if not isinstance(task_spec, Mapping):
+        raise TaskNeutralScoringError(["task_spec_invalid"])
     kind = task_spec.get("task_kind")
+    if kind == TASK_KIND_DEFORMABLE_TRANSFER:
+        return score_deformable_task_episode(task_spec=task_spec, samples=samples)
     if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
         return score_articulated_task_episode(task_spec=task_spec, samples=samples)
     if kind == TASK_KIND_RIGID_PICK_PLACE:
@@ -422,10 +547,13 @@ __all__ = [
     "OUTCOME_OPENED_THEN_REBOUNDED",
     "OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE",
     "TASK_KIND_ARTICULATED_OPEN_CLOSE",
+    "TASK_KIND_DEFORMABLE_TRANSFER",
     "TASK_KIND_RIGID_PICK_PLACE",
     "TASK_SPEC_SCHEMA_VERSION",
     "TaskNeutralScoringError",
     "score_articulated_task_episode",
+    "score_deformable_task_episode",
     "score_task_episode_from_spec",
     "validate_articulated_task_spec",
+    "validate_deformable_task_spec",
 ]

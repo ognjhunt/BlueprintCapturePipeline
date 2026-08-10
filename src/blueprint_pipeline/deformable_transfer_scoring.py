@@ -326,6 +326,21 @@ def _normalized_spec(task_spec: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_deformable_transfer_task_spec(
+    task_spec: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the normalized, task-local deformable transfer scorer contract.
+
+    The shared task dispatcher owns its envelope (``schema_version`` and
+    ``task_kind``).  This validator deliberately owns only the numeric and
+    entity-keyed contract consumed by :func:`score_deformable_transfer`, so the
+    pure scorer remains usable in a flat provider bundle without importing the
+    wider ADP task dispatcher.
+    """
+
+    return _normalized_spec(task_spec)
+
+
 def _sample_entity(
     entities: Mapping[str, Any], entity_id: str, *, sample_index: int
 ) -> Mapping[str, Any]:
@@ -940,4 +955,5 @@ __all__ = [
     "OUTCOME_LADDER",
     "SCHEMA_VERSION",
     "score_deformable_transfer",
+    "validate_deformable_transfer_task_spec",
 ]

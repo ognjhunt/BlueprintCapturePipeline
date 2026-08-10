@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import copy
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
+import blueprint_pipeline.adp_task_scoring as shared_scoring
 from blueprint_pipeline.adp009d_task_scoring import CAN_START_POSITION_M
 from blueprint_pipeline.adp_task_scoring import (
     OUTCOME_NEVER_MOVED,
@@ -73,7 +78,9 @@ def test_task_neutral_dispatch_preserves_original_rigid_fixture() -> None:
         samples=samples,
     )
 
+    assert report["status"] == "scored"
     assert report["outcome"] == OUTCOME_NEVER_MOVED
+    assert report["outcome_rank"] == 0
     assert report["task_succeeded"] is False
 
 
@@ -83,7 +90,9 @@ def test_articulated_zero_action_is_a_deterministic_negative() -> None:
         samples=[_sample(index, 0.0) for index in range(4)],
     )
 
+    assert report["status"] == "scored"
     assert report["outcome"] == OUTCOME_NEVER_MOVED
+    assert report["outcome_rank"] == 0
     assert report["task_succeeded"] is False
     assert report["judgement_source"] == "deterministic_native_simulator_joint_state"
 
@@ -168,3 +177,35 @@ def test_missing_native_velocity_fails_closed() -> None:
         )
 
     assert any("joint_velocities_invalid" in error for error in caught.value.errors)
+
+
+def test_flat_rigid_articulated_bundle_import_does_not_need_deformable_module(
+    tmp_path: Path,
+) -> None:
+    source_dir = Path(shared_scoring.__file__).resolve().parent
+    for name in (
+        "adp009d_task_scoring.py",
+        "adp_task_scoring.py",
+        "decision_evidence_contracts.py",
+    ):
+        shutil.copy2(source_dir / name, tmp_path / name)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import adp_task_scoring as scorer; "
+                "assert scorer.TASK_KIND_RIGID_PICK_PLACE == 'rigid_pick_place'; "
+                "assert scorer.TASK_KIND_ARTICULATED_OPEN_CLOSE "
+                "== 'articulated_open_close'"
+            ),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert not (tmp_path / "deformable_transfer_scoring.py").exists()
+    assert completed.returncode == 0, completed.stderr
