@@ -174,3 +174,37 @@ def test_the_worker_starts_isaac_the_way_the_proven_runtime_does() -> None:
     assert "from isaaclab.app import AppLauncher" in source
     assert "AppLauncher(" in source
     assert "from isaacsim.simulation_app import SimulationApp" not in source
+
+
+def test_the_worker_accepts_the_provisioners_invocation(tmp_path, monkeypatch) -> None:
+    """It is mounted as the runtime module, so the provisioner's flags apply.
+
+    adp009d_native_microcheck_worker clones and pip-installs IsaacLab-Arena
+    into /isaac-sim/python.sh, then invokes the runtime module with
+    --runtime-dir, --output-dir and Isaac Lab's own app flags. Replacing the
+    worker discarded that provisioning entirely, which is why isaaclab was
+    never importable however Isaac was started. The scene composition belongs
+    in the runtime slot, behind the provisioning, and must take its arguments.
+    """
+
+    module = _worker()
+    runtime = tmp_path / "runtime"
+    (runtime / "native").mkdir(parents=True)
+    spec = runtime / "native" / "adp009d_articulated_scene_spec.json"
+    spec.write_text("{}", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+
+    resolved = module._resolve_paths(
+        [
+            "--runtime-dir", str(runtime),
+            "--output-dir", str(out),
+            "--headless",
+            "--enable_cameras",
+            "--device", "cuda:0",
+        ]
+    )
+
+    assert resolved["spec"] == spec.resolve()
+    assert resolved["output"].parent == out.resolve()
+    assert resolved["output"].name == "adp009d_native_microcheck.json"

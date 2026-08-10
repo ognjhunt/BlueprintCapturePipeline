@@ -109,13 +109,26 @@ def _resolve_paths(argv: Sequence[str] | None) -> dict[str, Any]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec", default=None)
     parser.add_argument("--output", default=None)
-    arguments = parser.parse_args(list(argv) if argv is not None else None)
+    # The provisioner's contract: it installs Arena, then calls the runtime
+    # module with these. Unknown app flags (--headless, --device, ...) belong
+    # to Isaac Lab's launcher and must not make argparse reject the command.
+    parser.add_argument("--runtime-dir", dest="runtime_dir", default=None)
+    parser.add_argument("--output-dir", dest="output_dir", default=None)
+    arguments, _unknown = parser.parse_known_args(
+        list(argv) if argv is not None else None
+    )
 
     if arguments.spec:
         spec = Path(arguments.spec).expanduser().resolve()
     else:
         # Beside the runner, where the bundle stages a worker's payload.
         candidates = [
+            *(
+                [Path(arguments.runtime_dir) / "native"
+                 / "adp009d_articulated_scene_spec.json"]
+                if arguments.runtime_dir
+                else []
+            ),
             Path("native") / "adp009d_articulated_scene_spec.json",
             Path(__file__).resolve().parent / "native"
             / "adp009d_articulated_scene_spec.json",
@@ -125,7 +138,11 @@ def _resolve_paths(argv: Sequence[str] | None) -> dict[str, Any]:
     if arguments.output:
         output = Path(arguments.output).expanduser().resolve()
     else:
-        base = os.environ.get("BLUEPRINT_ADP009D_OUTPUT_DIR") or "."
+        base = (
+            arguments.output_dir
+            or os.environ.get("BLUEPRINT_ADP009D_OUTPUT_DIR")
+            or "."
+        )
         output = (Path(base).expanduser() / RESULT_FILENAME).resolve()
     return {"spec": spec, "output": output}
 
