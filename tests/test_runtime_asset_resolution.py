@@ -118,3 +118,63 @@ def test_a_directory_named_like_the_asset_is_not_the_asset(tmp_path):
         resolve_runtime_asset(
             runtime_dir=tmp_path, declared_filename="scene.usda", role="scene_collision"
         )
+
+
+def test_searches_the_sibling_assets_dir_when_the_spec_lives_in_native(tmp_path):
+    """The spec and the assets are siblings, not parent and child.
+
+    The bundle stages the spec into provider_runtime/native/ and the assets
+    into provider_runtime/assets/. Resolution is rooted at the spec's own
+    directory, so every search relative to it has to climb one level or it
+    looks only inside native/ - which is exactly what rt13 reported.
+    """
+
+    bundle = tmp_path / "provider_runtime"
+    (bundle / "native").mkdir(parents=True)
+    (bundle / "assets").mkdir()
+    _write(bundle / "assets", "sage_collision.usd")
+
+    resolved = resolve_runtime_asset(
+        runtime_dir=bundle / "native",
+        declared_filename="840796_collision_without_refrigerator.usda",
+        aliases=("sage_collision.usd",),
+        role="scene_collision",
+    )
+
+    assert resolved["resolved_path"] == str(bundle / "assets" / "sage_collision.usd")
+    assert resolved["matched_on"] == "alias"
+
+
+def test_a_miss_from_native_lists_the_sibling_assets_it_did_find(tmp_path):
+    bundle = tmp_path / "provider_runtime"
+    (bundle / "native").mkdir(parents=True)
+    (bundle / "assets").mkdir()
+    _write(bundle / "assets", "approved_can.usda")
+
+    with pytest.raises(RuntimeAssetResolutionError) as excinfo:
+        resolve_runtime_asset(
+            runtime_dir=bundle / "native",
+            declared_filename="nothing_like_it.usda",
+            role="scene_collision",
+        )
+
+    joined = ";".join(excinfo.value.errors)
+    assert "approved_can.usda" in joined
+
+
+def test_the_spec_directory_still_wins_over_a_sibling(tmp_path):
+    """A payload that stages an asset beside its spec meant that one."""
+
+    bundle = tmp_path / "provider_runtime"
+    (bundle / "native").mkdir(parents=True)
+    (bundle / "assets").mkdir()
+    _write(bundle / "native", "scene.usda")
+    _write(bundle / "assets", "scene.usda")
+
+    resolved = resolve_runtime_asset(
+        runtime_dir=bundle / "native",
+        declared_filename="scene.usda",
+        role="scene_collision",
+    )
+
+    assert resolved["resolved_path"] == str(bundle / "native" / "scene.usda")

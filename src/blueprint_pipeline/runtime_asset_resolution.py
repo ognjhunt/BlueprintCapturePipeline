@@ -34,6 +34,12 @@ RUNTIME_ASSET_RESOLUTION_SCHEMA_VERSION = "runtime_asset_resolution.v1"
 DEFAULT_RELATIVE_SEARCH_DIRS = (
     ".",
     "assets",
+    # Resolution is rooted at the spec's directory, and the bundle stages the
+    # spec into provider_runtime/native/ while the assets go to
+    # provider_runtime/assets/ - siblings, not parent and child. Without the
+    # climb, a payload searches only native/ and finds nothing.
+    "../assets",
+    "..",
     "provider_runtime/assets",
     "native",
 )
