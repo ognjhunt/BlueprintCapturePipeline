@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -20,6 +22,7 @@ from .scene_placement.interiorgs_index import load_interiorgs_labels
 
 
 SCHEMA_VERSION = "interiorgs_sage_collision_identity.v1"
+SHARED_FRAME_SCHEMA_VERSION = "interiorgs_sage_shared_frame_candidate.v1"
 
 
 class SageCollisionIdentityError(ValueError):
@@ -206,6 +209,144 @@ def inspect_sage_collision_identity(
     return result
 
 
+def build_interiorgs_sage_shared_frame_candidate(
+    identity_receipts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind multiple object correspondences into one conservative frame candidate.
+
+    This is deliberately not independent metrology. It proves that multiple
+    unique publisher objects and SAGE colliders agree under the provider's
+    identity transform while retaining axes, scale, and handedness gaps.
+    """
+
+    receipts = [
+        json.loads(json.dumps(dict(value), allow_nan=False))
+        for value in identity_receipts
+    ]
+    errors: list[str] = []
+    if len(receipts) < 2:
+        errors.append("sage_shared_frame_correspondences_insufficient")
+    target_ids: list[str] = []
+    source_pairs: list[tuple[str, str]] = []
+    correspondences: list[dict[str, Any]] = []
+    for receipt in receipts:
+        if (
+            receipt.get("schema_version") != SCHEMA_VERSION
+            or receipt.get("receipt_digest")
+            != canonical_digest(receipt, digest_field="receipt_digest")
+        ):
+            errors.append("sage_shared_frame_identity_receipt_invalid")
+            continue
+        target = receipt.get("target") or {}
+        target_id = str(target.get("interiorgs_instance_id") or "")
+        matches = receipt.get("whole_object_matches") or []
+        if not target_id:
+            errors.append("sage_shared_frame_target_identity_missing")
+        if (
+            receipt.get("whole_object_collision_identity_passed") is not True
+            or len(matches) != 1
+        ):
+            errors.append("sage_shared_frame_whole_object_match_not_exactly_one")
+            continue
+        source_files = receipt.get("source_files") or {}
+        labels_digest = str(
+            (source_files.get("interiorgs_labels") or {}).get("sha256") or ""
+        )
+        collision_digest = str(
+            (source_files.get("sage_collision_usd") or {}).get("sha256") or ""
+        )
+        source_pairs.append((labels_digest, collision_digest))
+        target_ids.append(target_id)
+        match = matches[0]
+        target_min = [float(value) for value in target.get("world_aabb_min_m") or []]
+        target_max = [float(value) for value in target.get("world_aabb_max_m") or []]
+        collider_min = [
+            float(value) for value in match.get("world_aabb_min_m") or []
+        ]
+        collider_max = [
+            float(value) for value in match.get("world_aabb_max_m") or []
+        ]
+        if any(
+            len(row) != 3 or not all(math.isfinite(value) for value in row)
+            for row in (target_min, target_max, collider_min, collider_max)
+        ):
+            errors.append("sage_shared_frame_correspondence_bounds_invalid")
+            continue
+        center_residual = math.sqrt(
+            sum(
+                (
+                    0.5 * (target_min[index] + target_max[index])
+                    - 0.5 * (collider_min[index] + collider_max[index])
+                )
+                ** 2
+                for index in range(3)
+            )
+        )
+        extent_residuals = [
+            abs(
+                (target_max[index] - target_min[index])
+                - (collider_max[index] - collider_min[index])
+            )
+            for index in range(3)
+        ]
+        correspondences.append(
+            {
+                "interiorgs_instance_id": target_id,
+                "semantic_label": str(target.get("semantic_label") or ""),
+                "sage_prim_path": str(match.get("prim_path") or ""),
+                "aabb_iou": float(match.get("aabb_iou")),
+                "center_residual_m": round(center_residual, 9),
+                "maximum_extent_residual_m": round(max(extent_residuals), 9),
+                "identity_receipt_digest": receipt["receipt_digest"],
+            }
+        )
+    if target_ids and len(target_ids) != len(set(target_ids)):
+        errors.append("sage_shared_frame_target_identities_not_unique")
+    if source_pairs and len(set(source_pairs)) != 1:
+        errors.append("sage_shared_frame_source_bytes_differ")
+    if source_pairs and any(not pair[0] or not pair[1] for pair in source_pairs):
+        errors.append("sage_shared_frame_source_digest_missing")
+    if errors:
+        raise SageCollisionIdentityError(errors)
+    labels_digest, collision_digest = source_pairs[0]
+    result: dict[str, Any] = {
+        "schema_version": SHARED_FRAME_SCHEMA_VERSION,
+        "status": "multi_object_identity_alignment_candidate",
+        "source_digests": {
+            "interiorgs_labels": labels_digest,
+            "sage_collision_usd": collision_digest,
+        },
+        "provider_transform": {
+            "source_to_collision": "identity",
+            "up_axis": "Z",
+            "meters_per_unit": 1.0,
+            "handedness": "not_independently_proven",
+        },
+        "correspondence_count": len(correspondences),
+        "correspondences": sorted(
+            correspondences, key=lambda row: row["interiorgs_instance_id"]
+        ),
+        "maximum_center_residual_m": max(
+            row["center_residual_m"] for row in correspondences
+        ),
+        "maximum_extent_residual_m": max(
+            row["maximum_extent_residual_m"] for row in correspondences
+        ),
+        "shared_frame_status": "provider_declared_not_independently_validated",
+        "metric_scale_status": "provider_declared_not_independently_validated",
+        "claim_boundary": {
+            "multiple_object_correspondences_observed": True,
+            "independent_metric_metrology_completed": False,
+            "handedness_independently_proven": False,
+            "dynamic_registration_proven": False,
+            "physical_equivalence_proven": False,
+        },
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    return result
+
+
 def _resolved_under(path: str | Path, approved_roots: Sequence[str | Path]) -> Path:
     resolved = Path(path).expanduser().resolve()
     roots = [Path(root).expanduser().resolve() for root in approved_roots]
@@ -250,8 +391,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "SHARED_FRAME_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "SageCollisionIdentityError",
+    "build_interiorgs_sage_shared_frame_candidate",
     "inspect_sage_collision_identity",
     "main",
 ]

@@ -8,7 +8,9 @@ import trimesh
 
 from blueprint_pipeline.adp009d_sage_franka_placement import (
     SageFrankaPlacementError,
+    materialize_registered_sage_franka_placement_packet,
     materialize_sage_collision_analysis_glb,
+    materialize_sage_franka_placement_packet,
 )
 
 
@@ -69,3 +71,136 @@ def test_sage_conversion_rejects_nonmetric_stage(tmp_path) -> None:
             sage_usd_path=source,
             output_dir=tmp_path / "conversion",
         )
+
+
+def test_registered_sage_placement_receives_scene_and_task_identity_as_data(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "scene.usda"
+    _write_stage(source)
+    conversion = materialize_sage_collision_analysis_glb(
+        sage_usd_path=source,
+        output_dir=tmp_path / "conversion",
+    )
+    captured = {}
+
+    def _propose(*, collision_glb_path, request, target_analysis):
+        captured.update(
+            collision_glb_path=collision_glb_path,
+            request=request,
+            target_analysis=target_analysis,
+        )
+        return {
+            "placement": {"status": "runtime_visualization_candidate_only"},
+            "render_options": {"robot_id": "franka_panda"},
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp009d_sage_franka_placement."
+        "propose_external_scene_robot_placement",
+        _propose,
+    )
+    digest_a = "sha256:" + "a" * 64
+    digest_b = "sha256:" + "b" * 64
+    digest_c = "sha256:" + "c" * 64
+
+    packet = materialize_registered_sage_franka_placement_packet(
+        conversion_receipt=conversion,
+        output_dir=tmp_path / "placement",
+        source_scene_digest=digest_a,
+        scene_frame_binding_digest=digest_b,
+        target_id="observed_object_17",
+        target_label="observed rigid object",
+        task_family="rigid_object_relocation",
+        target_position_m=(1.0, 2.0, 0.5),
+        target_binding_digest=digest_c,
+        target_spatial_uncertainty_m=0.02,
+        visual_confidence=0.91,
+        metric_scale_status="provider_declared_not_independently_validated",
+        collision_status="candidate_compiled",
+    )
+
+    assert packet["status"] == "placement_candidate_materialized"
+    assert captured["request"]["source_scene_digest"] == digest_a
+    assert captured["request"]["scene_frame_binding_digest"] == digest_b
+    assert captured["request"]["target_binding_digest"] == digest_c
+    assert captured["request"]["target_label"] == "observed rigid object"
+    assert (
+        captured["request"]["metric_scale_status"]
+        == "provider_declared_not_independently_validated"
+    )
+    assert captured["target_analysis"]["selected_target"] == {
+        "target_id": "observed_object_17",
+        "target_label": "observed rigid object",
+        "task_family": "rigid_object_relocation",
+        "position_m": [1.0, 2.0, 0.5],
+    }
+    assert packet["policy_execution_authorized"] is False
+    assert packet["native_contact_reachability_qualified"] is False
+
+
+def test_legacy_placement_adapter_translates_through_registered_api(
+    tmp_path, monkeypatch
+) -> None:
+    captured = {}
+
+    def _registered(**kwargs):
+        captured.update(kwargs)
+        return {"status": "blocked"}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.adp009d_sage_franka_placement."
+        "materialize_registered_sage_franka_placement_packet",
+        _registered,
+    )
+
+    result = materialize_sage_franka_placement_packet(
+        conversion_receipt={"fixture": True},
+        output_dir=tmp_path / "placement",
+    )
+
+    assert result == {"status": "blocked"}
+    assert captured["task_family"] == "rigid_opaque_pick_place"
+    assert captured["target_spatial_uncertainty_m"] == 0.0311
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        ({"source_scene_digest": "bad"}, "sage_franka_source_scene_digest_invalid"),
+        ({"target_id": ""}, "sage_franka_target_id_invalid"),
+        (
+            {"target_spatial_uncertainty_m": -1.0},
+            "sage_franka_target_spatial_uncertainty_invalid",
+        ),
+        ({"visual_confidence": 1.1}, "sage_franka_visual_confidence_invalid"),
+    ],
+)
+def test_registered_sage_placement_rejects_unbound_inputs(
+    tmp_path, override, error
+) -> None:
+    source = tmp_path / "scene.usda"
+    _write_stage(source)
+    conversion = materialize_sage_collision_analysis_glb(
+        sage_usd_path=source,
+        output_dir=tmp_path / "conversion",
+    )
+    arguments = {
+        "conversion_receipt": conversion,
+        "output_dir": tmp_path / "placement",
+        "source_scene_digest": "sha256:" + "a" * 64,
+        "scene_frame_binding_digest": "sha256:" + "b" * 64,
+        "target_id": "observed_object_17",
+        "target_label": "observed rigid object",
+        "task_family": "rigid_object_relocation",
+        "target_position_m": (1.0, 2.0, 0.5),
+        "target_binding_digest": "sha256:" + "c" * 64,
+        "target_spatial_uncertainty_m": 0.02,
+        "visual_confidence": 0.91,
+        "metric_scale_status": "provider_declared_not_independently_validated",
+        "collision_status": "candidate_compiled",
+    }
+    arguments.update(override)
+
+    with pytest.raises(SageFrankaPlacementError, match=error):
+        materialize_registered_sage_franka_placement_packet(**arguments)

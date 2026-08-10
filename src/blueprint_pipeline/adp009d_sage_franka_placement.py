@@ -25,8 +25,8 @@ from .external_scene_robot_placement import (
 )
 
 
-CONVERSION_SCHEMA_VERSION = "adp009d_sage_collision_analysis_glb.v1"
-PLACEMENT_PACKET_SCHEMA_VERSION = "adp009d_sage_franka_placement_packet.v1"
+CONVERSION_SCHEMA_VERSION = "registered_sage_collision_analysis_glb.v1"
+PLACEMENT_PACKET_SCHEMA_VERSION = "registered_sage_franka_placement_packet.v1"
 SEALED_SCENE_RECEIPT_DIGEST = (
     "sha256:b259532be614098a3830aa9945770a96371968f9c68e8087eb21a2ca00e3c3e3"
 )
@@ -155,7 +155,7 @@ def materialize_sage_collision_analysis_glb(
     exported = mesh.export(file_type="glb")
     if not isinstance(exported, bytes) or not exported:
         raise SageFrankaPlacementError(["sage_collision_glb_export_failed"])
-    glb_path = destination / "sage_840313_collision_analysis.glb"
+    glb_path = destination / "sage_collision_analysis.glb"
     glb_path.write_bytes(exported)
     receipt: dict[str, Any] = {
         "schema_version": CONVERSION_SCHEMA_VERSION,
@@ -182,17 +182,32 @@ def materialize_sage_collision_analysis_glb(
         "claim_ceiling": "deterministic_collision_geometry_analysis_intermediate",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
-    write_json(destination / "adp009d_sage_collision_analysis_glb.v1.json", receipt)
+    write_json(destination / "registered_sage_collision_analysis_glb.v1.json", receipt)
     return receipt
 
 
-def materialize_sage_franka_placement_packet(
+def materialize_registered_sage_franka_placement_packet(
     *,
     conversion_receipt: Mapping[str, Any],
     output_dir: str | Path,
-    target_position_m: Sequence[float] = (3.4681748, -3.3100837, 0.6096791),
+    source_scene_digest: str,
+    scene_frame_binding_digest: str,
+    target_id: str,
+    target_label: str,
+    task_family: str,
+    target_position_m: Sequence[float],
+    target_binding_digest: str,
+    target_spatial_uncertainty_m: float,
+    visual_confidence: float,
+    metric_scale_status: str,
+    collision_status: str,
 ) -> dict[str, Any]:
-    """Run the existing placement engine against one admitted SAGE conversion."""
+    """Run the shared placement engine against one registered SAGE target.
+
+    Scene and task identity are caller-supplied evidence, never inferred from a
+    scene literal.  The result remains an analytic construction candidate; this
+    function cannot qualify native reach, contact, reset, or physical placement.
+    """
 
     conversion = json.loads(json.dumps(dict(conversion_receipt)))
     if (
@@ -214,16 +229,57 @@ def materialize_sage_franka_placement_packet(
         np.isfinite(float(item)) for item in target_position_m
     ):
         raise SageFrankaPlacementError(["sage_franka_target_position_invalid"])
+    errors: list[str] = []
+    for field, value in (
+        ("source_scene_digest", source_scene_digest),
+        ("scene_frame_binding_digest", scene_frame_binding_digest),
+        ("target_binding_digest", target_binding_digest),
+    ):
+        if not (
+            isinstance(value, str)
+            and len(value) == 71
+            and value.startswith("sha256:")
+            and all(character in "0123456789abcdef" for character in value[7:])
+        ):
+            errors.append(f"sage_franka_{field}_invalid")
+    for field, value in (
+        ("target_id", target_id),
+        ("target_label", target_label),
+        ("task_family", task_family),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"sage_franka_{field}_invalid")
+    try:
+        uncertainty = float(target_spatial_uncertainty_m)
+        confidence = float(visual_confidence)
+    except (TypeError, ValueError):
+        uncertainty = float("nan")
+        confidence = float("nan")
+    if not np.isfinite(uncertainty) or uncertainty <= 0:
+        errors.append("sage_franka_target_spatial_uncertainty_invalid")
+    if not np.isfinite(confidence) or confidence < 0 or confidence > 1:
+        errors.append("sage_franka_visual_confidence_invalid")
+    if metric_scale_status not in {
+        "validated",
+        "provider_declared_not_independently_validated",
+        "unverified",
+    }:
+        errors.append("sage_franka_metric_scale_status_invalid")
+    if collision_status not in {"candidate_compiled", "qualified"}:
+        errors.append("sage_franka_collision_status_invalid")
+    if errors:
+        raise SageFrankaPlacementError(errors)
     target_analysis: dict[str, Any] = {
-        "schema_version": "adp009d_registered_pick_place_target_analysis.v1",
-        "status": "derived_from_sealed_target_obb",
+        "schema_version": "registered_scene_task_target_analysis.v1",
+        "status": "derived_from_registered_observed_target_bounds",
         "selected_target": {
-            "target_id": "840313_ins160_approved_can",
-            "task_family": "rigid_opaque_pick_place",
+            "target_id": target_id.strip(),
+            "target_label": target_label.strip(),
+            "task_family": task_family.strip(),
             "position_m": [float(item) for item in target_position_m],
         },
-        "sealed_scene_receipt_digest": SEALED_SCENE_RECEIPT_DIGEST,
-        "target_binding_digest": TARGET_BINDING_DIGEST,
+        "scene_frame_binding_digest": scene_frame_binding_digest,
+        "target_binding_digest": target_binding_digest,
         "outcomes_observed_before_selection": False,
     }
     target_analysis["target_analysis_digest"] = canonical_digest(
@@ -233,20 +289,20 @@ def materialize_sage_franka_placement_packet(
         {
             "schema_version": "external_scene_robot_placement_request.v1",
             "robot_id": "franka_panda",
-            "source_scene_digest": SEALED_AURA_DIGEST,
+            "source_scene_digest": source_scene_digest,
             "target_analysis_digest": target_analysis["target_analysis_digest"],
-            "target_binding_digest": TARGET_BINDING_DIGEST,
-            "scene_frame_binding_digest": SEALED_SCENE_RECEIPT_DIGEST,
+            "target_binding_digest": target_binding_digest,
+            "scene_frame_binding_digest": scene_frame_binding_digest,
             "collision_candidate_digest": conversion["receipt_digest"],
             "collision_source_digest": glb_record["sha256"],
             "target_position_collision_stage": [
                 float(item) for item in target_position_m
             ],
-            "target_spatial_uncertainty_stage_units": 0.0311,
-            "target_label": "approved canned beverage",
-            "visual_confidence": 1.0,
-            "metric_scale_status": "validated",
-            "collision_status": "candidate_compiled",
+            "target_spatial_uncertainty_stage_units": uncertainty,
+            "target_label": target_label.strip(),
+            "visual_confidence": confidence,
+            "metric_scale_status": metric_scale_status,
+            "collision_status": collision_status,
             "candidate_may_self_authorize": False,
         }
     )
@@ -270,7 +326,7 @@ def materialize_sage_franka_placement_packet(
         "native_contact_reachability_qualified": False,
         "policy_execution_authorized": False,
         "blockers": [
-            "franka_robotiq_native_reset_contact_reachability_missing",
+            "franka_native_reset_contact_reachability_missing",
             "robot_base_and_camera_calibration_native_probe_missing",
         ],
     }
@@ -279,8 +335,33 @@ def materialize_sage_franka_placement_packet(
     if destination.exists() and any(destination.iterdir()):
         raise SageFrankaPlacementError(["sage_franka_placement_output_not_empty"])
     destination.mkdir(parents=True, exist_ok=True)
-    write_json(destination / "adp009d_sage_franka_placement_packet.v1.json", result)
+    write_json(destination / "registered_sage_franka_placement_packet.v1.json", result)
     return result
+
+
+def materialize_sage_franka_placement_packet(
+    *,
+    conversion_receipt: Mapping[str, Any],
+    output_dir: str | Path,
+    target_position_m: Sequence[float] = (3.4681748, -3.3100837, 0.6096791),
+) -> dict[str, Any]:
+    """Translate the retained 840313 fixture through the registered-scene API."""
+
+    return materialize_registered_sage_franka_placement_packet(
+        conversion_receipt=conversion_receipt,
+        output_dir=output_dir,
+        source_scene_digest=SEALED_AURA_DIGEST,
+        scene_frame_binding_digest=SEALED_SCENE_RECEIPT_DIGEST,
+        target_id="840313_ins160_approved_can",
+        target_label="approved canned beverage",
+        task_family="rigid_opaque_pick_place",
+        target_position_m=target_position_m,
+        target_binding_digest=TARGET_BINDING_DIGEST,
+        target_spatial_uncertainty_m=0.0311,
+        visual_confidence=1.0,
+        metric_scale_status="validated",
+        collision_status="candidate_compiled",
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -305,6 +386,7 @@ __all__ = [
     "PLACEMENT_PACKET_SCHEMA_VERSION",
     "SageFrankaPlacementError",
     "materialize_sage_collision_analysis_glb",
+    "materialize_registered_sage_franka_placement_packet",
     "materialize_sage_franka_placement_packet",
 ]
 

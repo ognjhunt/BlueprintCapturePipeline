@@ -15,8 +15,9 @@ task-correctness. Up-axis and floor are estimated and can be overridden by the c
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -31,6 +32,138 @@ FRANKA_PANDA_CAMERA_IDS = (
 UNITREE_G1_CAMERA_IDS = DEFAULT_CAMERA_IDS
 DEFAULT_EYE_HEIGHT = 1.5      # metres-ish above floor for first-person cameras
 DEFAULT_VISIBLE_OPACITY = 0.18
+
+
+def axis_aligned_bounds_from_corners(
+    corners: Sequence[Mapping[str, Any] | Sequence[float]],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Reduce observed box corners to finite XYZ bounds.
+
+    InteriorGS labels encode corners as ``{"x", "y", "z"}`` mappings while
+    collision readers commonly emit numeric triples.  Keeping this conversion
+    here lets scene survey use one task-neutral registration seam without
+    importing USD or accepting a model-predicted box as physical truth.
+    """
+
+    points: list[tuple[float, float, float]] = []
+    for corner in corners:
+        try:
+            if isinstance(corner, Mapping):
+                point = (float(corner["x"]), float(corner["y"]), float(corner["z"]))
+            else:
+                point = tuple(float(value) for value in corner)
+                if len(point) != 3:
+                    raise ValueError
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("scene_object_bounds_corner_invalid") from exc
+        if not all(math.isfinite(value) for value in point):
+            raise ValueError("scene_object_bounds_corner_nonfinite")
+        points.append(point)
+    if not points:
+        raise ValueError("scene_object_bounds_corners_missing")
+    lower = tuple(min(point[axis] for point in points) for axis in range(3))
+    upper = tuple(max(point[axis] for point in points) for axis in range(3))
+    if any(upper[axis] <= lower[axis] for axis in range(3)):
+        raise ValueError("scene_object_bounds_volume_invalid")
+    return lower, upper
+
+
+def axis_aligned_bounds_iou(
+    first_min: Sequence[float],
+    first_max: Sequence[float],
+    second_min: Sequence[float],
+    second_max: Sequence[float],
+) -> float:
+    """Return finite 3D IoU for two positive-volume axis-aligned bounds."""
+
+    rows = [tuple(float(value) for value in row) for row in (first_min, first_max, second_min, second_max)]
+    if any(len(row) != 3 or not all(math.isfinite(value) for value in row) for row in rows):
+        raise ValueError("scene_object_bounds_invalid")
+    a_min, a_max, b_min, b_max = rows
+    if any(a_max[i] <= a_min[i] or b_max[i] <= b_min[i] for i in range(3)):
+        raise ValueError("scene_object_bounds_volume_invalid")
+    intersection = math.prod(
+        max(0.0, min(a_max[i], b_max[i]) - max(a_min[i], b_min[i]))
+        for i in range(3)
+    )
+    a_volume = math.prod(a_max[i] - a_min[i] for i in range(3))
+    b_volume = math.prod(b_max[i] - b_min[i] for i in range(3))
+    return intersection / (a_volume + b_volume - intersection)
+
+
+def match_observed_collision_candidates(
+    observed_objects: Sequence[Mapping[str, Any]],
+    collision_prims: Sequence[Mapping[str, Any]],
+    *,
+    minimum_iou: float = 0.8,
+    ambiguity_margin: float = 0.05,
+) -> list[dict[str, Any]]:
+    """Survey exact-label bounds against collision prims without forcing a join.
+
+    Every observed object is scored against every collision prim.  A row is
+    ``matched_candidate`` only when the best IoU clears ``minimum_iou`` and is
+    separated from its runner-up by ``ambiguity_margin``.  Results remain
+    registration candidates: camera evidence and source-subtree qualification
+    are still required before removal.
+    """
+
+    if not 0.0 <= float(minimum_iou) <= 1.0:
+        raise ValueError("scene_collision_match_minimum_iou_invalid")
+    if not 0.0 <= float(ambiguity_margin) <= 1.0:
+        raise ValueError("scene_collision_match_ambiguity_margin_invalid")
+    collision_ids = [str(row.get("prim_path") or "") for row in collision_prims]
+    if any(not value for value in collision_ids) or len(collision_ids) != len(set(collision_ids)):
+        raise ValueError("scene_collision_prim_identity_invalid")
+    object_ids = [str(row.get("object_id") or "") for row in observed_objects]
+    if any(not value for value in object_ids) or len(object_ids) != len(set(object_ids)):
+        raise ValueError("scene_observed_object_identity_invalid")
+
+    output: list[dict[str, Any]] = []
+    for observed in observed_objects:
+        scores = sorted(
+            (
+                {
+                    "prim_path": str(collision["prim_path"]),
+                    "iou_3d": axis_aligned_bounds_iou(
+                        observed["bounds_min"],
+                        observed["bounds_max"],
+                        collision["bounds_min"],
+                        collision["bounds_max"],
+                    ),
+                }
+                for collision in collision_prims
+            ),
+            key=lambda row: (-row["iou_3d"], row["prim_path"]),
+        )
+        best = scores[0] if scores else None
+        runner_up = scores[1] if len(scores) > 1 else None
+        best_iou = float(best["iou_3d"]) if best else 0.0
+        runner_up_iou = float(runner_up["iou_3d"]) if runner_up else 0.0
+        clears_iou = best_iou >= float(minimum_iou)
+        clears_margin = best_iou - runner_up_iou >= float(ambiguity_margin)
+        output.append(
+            {
+                "object_id": str(observed["object_id"]),
+                "label": str(observed.get("label") or ""),
+                "status": (
+                    "matched_candidate"
+                    if clears_iou and clears_margin
+                    else "ambiguous_candidate"
+                    if clears_iou
+                    else "unmatched"
+                ),
+                "best_prim_path": best["prim_path"] if best else None,
+                "best_iou_3d": best_iou,
+                "runner_up_prim_path": runner_up["prim_path"] if runner_up else None,
+                "runner_up_iou_3d": runner_up_iou,
+                "minimum_iou": float(minimum_iou),
+                "ambiguity_margin": float(ambiguity_margin),
+                "claim_boundary": (
+                    "bounds_registration_candidate_not_source_subtree_or_physics_proof"
+                ),
+            }
+        )
+    return output
 
 
 def evaluation_camera_ids_for_robot(robot_id: str) -> tuple[str, ...]:

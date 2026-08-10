@@ -10,10 +10,91 @@ from blueprint_pipeline.splat_scene_analysis import (
     DEFAULT_CAMERA_IDS,
     FRANKA_PANDA_CAMERA_IDS,
     analyze_scene,
+    axis_aligned_bounds_from_corners,
+    axis_aligned_bounds_iou,
     derive_eval_cameras,
     evaluation_camera_ids_for_robot,
+    match_observed_collision_candidates,
     suggest_robot_start,
 )
+
+
+def test_observed_bounds_and_collision_candidates_are_scene_neutral() -> None:
+    bounds = axis_aligned_bounds_from_corners(
+        [
+            {"x": 0.0, "y": 0.0, "z": 0.0},
+            {"x": 1.0, "y": 2.0, "z": 3.0},
+        ]
+    )
+    assert bounds == ((0.0, 0.0, 0.0), (1.0, 2.0, 3.0))
+    assert axis_aligned_bounds_iou(*bounds, *bounds) == 1.0
+
+    matches = match_observed_collision_candidates(
+        [
+            {
+                "object_id": "articulated_a",
+                "label": "mechanism",
+                "bounds_min": [0.0, 0.0, 0.0],
+                "bounds_max": [1.0, 1.0, 1.0],
+            },
+            {
+                "object_id": "rigid_b",
+                "label": "freestanding rigid object",
+                "bounds_min": [4.0, 4.0, 0.0],
+                "bounds_max": [4.5, 4.5, 0.5],
+            },
+        ],
+        [
+            {
+                "prim_path": "/World/source_a",
+                "bounds_min": [0.01, 0.01, 0.01],
+                "bounds_max": [1.01, 1.01, 1.01],
+            },
+            {
+                "prim_path": "/World/source_b",
+                "bounds_min": [4.0, 4.0, 0.0],
+                "bounds_max": [4.5, 4.5, 0.5],
+            },
+        ],
+        minimum_iou=0.8,
+    )
+
+    assert [row["status"] for row in matches] == [
+        "matched_candidate",
+        "matched_candidate",
+    ]
+    assert matches[0]["best_prim_path"] == "/World/source_a"
+    assert matches[1]["best_prim_path"] == "/World/source_b"
+    assert all("not_source_subtree" in row["claim_boundary"] for row in matches)
+
+
+def test_collision_candidate_matching_abstains_on_close_runner_up() -> None:
+    observed = [
+        {
+            "object_id": "object",
+            "label": "object",
+            "bounds_min": [0.0, 0.0, 0.0],
+            "bounds_max": [1.0, 1.0, 1.0],
+        }
+    ]
+    collisions = [
+        {
+            "prim_path": "/World/a",
+            "bounds_min": [0.0, 0.0, 0.0],
+            "bounds_max": [1.0, 1.0, 1.0],
+        },
+        {
+            "prim_path": "/World/b",
+            "bounds_min": [0.005, 0.0, 0.0],
+            "bounds_max": [1.005, 1.0, 1.0],
+        },
+    ]
+
+    [result] = match_observed_collision_candidates(
+        observed, collisions, minimum_iou=0.8, ambiguity_margin=0.05
+    )
+
+    assert result["status"] == "ambiguous_candidate"
 
 
 def _box_room(nx=40, ny=60, nz=18) -> SplatData:

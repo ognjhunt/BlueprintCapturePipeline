@@ -7,6 +7,7 @@ import pytest
 
 from blueprint_pipeline.sage_collision_identity import (
     SageCollisionIdentityError,
+    build_interiorgs_sage_shared_frame_candidate,
     inspect_sage_collision_identity,
 )
 
@@ -121,3 +122,42 @@ def test_identity_inspection_fails_closed_for_unknown_instance(tmp_path: Path) -
         )
 
     assert caught.value.errors == ("interiorgs_target_instance_not_exactly_one",)
+
+
+def test_multiple_unique_matches_bind_one_conservative_shared_frame_candidate(
+    tmp_path: Path,
+) -> None:
+    labels, collision = _fixture(tmp_path)
+    receipts = [
+        inspect_sage_collision_identity(
+            labels_path=labels,
+            target_instance_id=target_id,
+            sage_collision_usd_path=collision,
+        )
+        for target_id in ("160", "22")
+    ]
+
+    candidate = build_interiorgs_sage_shared_frame_candidate(receipts)
+
+    assert candidate["correspondence_count"] == 2
+    assert candidate["shared_frame_status"] == (
+        "provider_declared_not_independently_validated"
+    )
+    assert candidate["claim_boundary"]["multiple_object_correspondences_observed"]
+    assert not candidate["claim_boundary"]["independent_metric_metrology_completed"]
+    assert candidate["receipt_digest"].startswith("sha256:")
+
+
+def test_shared_frame_candidate_rejects_duplicate_target(tmp_path: Path) -> None:
+    labels, collision = _fixture(tmp_path)
+    receipt = inspect_sage_collision_identity(
+        labels_path=labels,
+        target_instance_id="160",
+        sage_collision_usd_path=collision,
+    )
+
+    with pytest.raises(
+        SageCollisionIdentityError,
+        match="sage_shared_frame_target_identities_not_unique",
+    ):
+        build_interiorgs_sage_shared_frame_candidate([receipt, receipt])
