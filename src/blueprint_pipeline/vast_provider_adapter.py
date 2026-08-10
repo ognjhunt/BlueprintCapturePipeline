@@ -1390,6 +1390,11 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "num_gpus": offer.get("num_gpus"),
         "reliability": offer.get("reliability"),
+        # Retained so a container_missing can be checked against host disk
+        # after the fact. The Arena image is 9.4 GB compressed before Arena's
+        # own pip install; five failures on that lane could not be tested
+        # against this because the evidence never carried it.
+        "disk_space_gb": _number(offer.get("disk_space")),
         "verified": offer.get("verified"),
         "rentable": offer.get("rentable"),
         "direct_port_count": offer.get("direct_port_count"),
@@ -1642,6 +1647,7 @@ def _select_offer(
     require_known_supported_isaac_driver: bool = False,
     minimum_driver_version: str = "",
     min_reliability: float = 0.0,
+    min_disk_space_gb: float = 0.0,
     require_direct_port: bool = False,
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
@@ -1666,6 +1672,17 @@ def _select_offer(
             or (
                 _number(item.get("reliability")) is not None
                 and float(_number(item.get("reliability")) or 0.0) >= min_reliability
+            )
+        )
+        and (
+            not min_disk_space_gb
+            or (
+                # An unreported size is not a small size, but it is not a
+                # large one either - a floor that passes unknowns is not a
+                # floor.
+                _number(item.get("disk_space_gb")) is not None
+                and float(_number(item.get("disk_space_gb")) or 0.0)
+                >= float(min_disk_space_gb)
             )
         )
         and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)

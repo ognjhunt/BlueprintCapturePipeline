@@ -27,6 +27,7 @@ from blueprint_pipeline.vast_provider_adapter import (
     VAST_INSTANCE_LAUNCH_GATE_ENV,
     _redact_text,
     _offer_selection_manifest,
+    _offer_summary,
     _select_offer,
     _url_secret_values,
     run_vast_provider_adapter,
@@ -6863,3 +6864,73 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     assert ngc_missing["status"] == "completed"
     isaac = _read_json(tmp_path / "ngc-missing" / "vast_isaac_smoke_result.json")
     assert "ngc_api_key_file_missing_or_empty_for_required_ngc_login" in isaac["blockers"]
+
+
+def _disk_offer(machine_id: int, disk_space, rate: float = 0.5) -> dict:
+    return {
+        "ask_contract_id": machine_id,
+        "id": machine_id,
+        "machine_id": machine_id,
+        "dph_total": rate,
+        "disk_space": disk_space,
+        "gpu_name": "RTX 4090",
+        "gpu_ram": 24576,
+        "num_gpus": 1,
+        "cuda_max_good": 12.4,
+        "driver_version": "550.90.07",
+        "reliability2": 0.99,
+        "rentable": True,
+        "has_avx": True,
+        "direct_port_count": 4,
+    }
+
+
+def test_offer_summary_records_disk_space():
+    """Without it, an image-pull failure cannot be attributed after the fact.
+
+    The Arena image is 9.4 GB compressed and Arena's pip install adds several
+    more. Five container_missing failures on this lane could not be checked
+    against host disk because the retained offer evidence never had the field.
+    """
+
+    summary = _offer_summary(_disk_offer(4242, 320))
+
+    assert summary["disk_space_gb"] == 320
+
+
+def test_offer_summary_tolerates_a_missing_disk_field():
+    summary = _offer_summary(_disk_offer(4242, None))
+
+    assert summary["disk_space_gb"] is None
+
+
+def test_min_disk_space_excludes_hosts_too_small_for_the_image():
+    selected = _select_offer(
+        [_disk_offer(1, 40, rate=0.10), _disk_offer(2, 400, rate=0.90)],
+        max_hourly_rate=1.0,
+        min_disk_space_gb=120,
+    )
+
+    assert selected is not None
+    assert selected["machine_id"] == 2
+
+
+def test_min_disk_space_excludes_a_host_that_does_not_report_disk():
+    """An unreported size is not a small size, but it is not a large one either."""
+
+    selected = _select_offer(
+        [_disk_offer(1, None, rate=0.10)],
+        max_hourly_rate=1.0,
+        min_disk_space_gb=120,
+    )
+
+    assert selected is None
+
+
+def test_min_disk_space_defaults_to_no_filter():
+    selected = _select_offer(
+        [_disk_offer(1, None, rate=0.10)],
+        max_hourly_rate=1.0,
+    )
+
+    assert selected is not None
