@@ -213,3 +213,73 @@ def test_the_receipt_round_trips_and_is_deterministic(tmp_path: Path) -> None:
         first["stages"]["controls_stage"]["sha256"]
         == second["stages"]["controls_stage"]["sha256"]
     )
+
+
+from blueprint_pipeline.articulated_controls_probe import (  # noqa: E402
+    coast_after_release_degrees,
+    swept_member_inertia_kg_m2,
+)
+
+
+def test_inertia_comes_from_how_far_the_door_extends_not_where_the_handle_is() -> None:
+    """A door's swing resists by its own span; the handle just marks a radius.
+
+    Using the lever arm instead understated inertia by 2.12x on the real twin
+    and the positive overshot its window by three and a half degrees - the door
+    coasted 18 degrees where the arithmetic promised 9.
+    """
+
+    by_extent = swept_member_inertia_kg_m2(
+        mass_kg=11.0, width_m=0.713, thickness_m=0.107
+    )
+    by_lever = swept_member_inertia_kg_m2(
+        mass_kg=11.0, width_m=0.495, thickness_m=0.0
+    )
+
+    assert by_extent == pytest.approx(1.906, abs=0.01)
+    assert by_lever == pytest.approx(0.898, abs=0.01)
+
+
+def test_the_coast_matches_what_the_hardware_actually_did() -> None:
+    """Pinned against run 47328727: 18.01 degrees of coast, measured."""
+
+    coast = coast_after_release_degrees(
+        inertia_kg_m2=1.906, damping_n_m_s_per_rad=2.87, release_torque_n_m=1.48
+    )
+
+    assert coast == pytest.approx(19.6, abs=0.5)
+
+
+def test_a_stiffer_hinge_coasts_less() -> None:
+    loose = coast_after_release_degrees(
+        inertia_kg_m2=1.9, damping_n_m_s_per_rad=2.0, release_torque_n_m=1.5
+    )
+    stiff = coast_after_release_degrees(
+        inertia_kg_m2=1.9, damping_n_m_s_per_rad=8.0, release_torque_n_m=1.5
+    )
+
+    assert stiff < loose
+
+
+def test_the_release_angle_is_derived_from_the_coast_not_hand_picked(
+    tmp_path: Path,
+) -> None:
+    """Hand-tuning the release angle is how a schedule survives being wrong."""
+
+    receipt = _build(
+        tmp_path,
+        positive_force_schedule=[
+            {"until_angle_degrees": 6.0, "handle_force_n": 30.0},
+            {"handle_force_n": 3.0},
+        ],
+        target_open_angle_degrees=50.0,
+        member_mass_kg=11.0,
+        member_width_m=0.713,
+        member_thickness_m=0.107,
+        joint_damping_n_m_s_per_rad=2.87,
+    )
+
+    positive = receipt["controls"]["forced_positive"]
+    release = positive["force_schedule"][-1]["until_angle_degrees"]
+    assert release == pytest.approx(50.0 - receipt["predicted_coast_degrees"], abs=0.1)
+    assert 25.0 < release < 40.0

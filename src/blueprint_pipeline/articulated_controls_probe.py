@@ -63,6 +63,43 @@ DEFAULT_DRIVE_STEPS = 480
 DEFAULT_PHYSICS_DT_S = 1.0 / 120.0
 
 
+def swept_member_inertia_kg_m2(
+    *, mass_kg: float, width_m: float, thickness_m: float
+) -> float:
+    """Moment of inertia of a hinged panel about its hinge edge.
+
+    A door resists swinging by how far it extends, not by where its handle
+    sits. Substituting the lever arm - the obvious number, because it is the
+    one already on hand - understated inertia by 2.12x on the real twin, and
+    the positive control coasted 18 degrees where the arithmetic promised 9,
+    overshooting its window.
+    """
+
+    width = float(width_m)
+    thickness = float(thickness_m)
+    return (float(mass_kg) / 3.0) * (width * width + thickness * thickness)
+
+
+def coast_after_release_degrees(
+    *, inertia_kg_m2: float, damping_n_m_s_per_rad: float, release_torque_n_m: float
+) -> float:
+    """How far a viscously damped member keeps turning once the push stops.
+
+    Terminal velocity is torque over damping, and a body decaying under pure
+    viscous damping travels inertia times that velocity over damping before it
+    stops. Both are needed to place a release: too late and the door overshoots
+    the window it is being scored against.
+    """
+
+    damping = float(damping_n_m_s_per_rad)
+    if damping <= 0.0:
+        raise ArticulatedControlsProbeError(
+            ["articulated_controls_probe_damping_not_positive"]
+        )
+    velocity = float(release_torque_n_m) / damping
+    return math.degrees(float(inertia_kg_m2) * velocity / damping)
+
+
 class ArticulatedControlsProbeError(ValueError):
     """Stable, sorted controls-probe authoring failures."""
 
@@ -103,6 +140,10 @@ def build_articulated_controls_probe(
     positive_force_schedule: Sequence[dict[str, Any]],
     seal_breakaway_torque_n_m: float = 0.0,
     seal_angular_width_degrees: float = 0.0,
+    member_mass_kg: float | None = None,
+    member_width_m: float | None = None,
+    member_thickness_m: float = 0.0,
+    joint_damping_n_m_s_per_rad: float | None = None,
     drive_steps: int = DEFAULT_DRIVE_STEPS,
     settle_steps: int = DEFAULT_SETTLE_STEPS,
     physics_dt_s: float = DEFAULT_PHYSICS_DT_S,
@@ -195,6 +236,39 @@ def build_articulated_controls_probe(
     if lever_arm <= 1e-6:
         errors.append("articulated_controls_probe_handle_on_hinge_axis")
         lever_arm = 1.0
+    # Derive where to let go, rather than letting someone guess it. The final
+    # phase may omit its angle; the coast the member will make under its own
+    # inertia then decides it.
+    predicted_coast: float | None = None
+    if (
+        member_mass_kg is not None
+        and member_width_m is not None
+        and joint_damping_n_m_s_per_rad
+    ):
+        trailing = [
+            row
+            for row in (positive_force_schedule or [])
+            if isinstance(row, dict) and row.get("until_angle_degrees") is None
+        ]
+        if trailing:
+            inertia = swept_member_inertia_kg_m2(
+                mass_kg=float(member_mass_kg),
+                width_m=float(member_width_m),
+                thickness_m=float(member_thickness_m or 0.0),
+            )
+            predicted_coast = coast_after_release_degrees(
+                inertia_kg_m2=inertia,
+                damping_n_m_s_per_rad=float(joint_damping_n_m_s_per_rad),
+                release_torque_n_m=float(trailing[-1].get("handle_force_n") or 0.0)
+                * lever_arm,
+            )
+            positive_force_schedule = [
+                dict(row) for row in positive_force_schedule
+            ]
+            positive_force_schedule[-1]["until_angle_degrees"] = (
+                float(target_open_angle_degrees) - predicted_coast
+            )
+
     phases: list[dict[str, Any]] = []
     for index, raw in enumerate(positive_force_schedule or []):
         try:
@@ -352,6 +426,7 @@ def build_articulated_controls_probe(
             },
         },
         "success_angle_window_degrees": window,
+        "predicted_coast_degrees": predicted_coast,
         "physics_dt_s": float(physics_dt_s),
         "required_readbacks": list(REQUIRED_CONTROLS_READBACKS),
         "claim_boundary": {
@@ -369,6 +444,8 @@ def build_articulated_controls_probe(
 
 __all__ = [
     "ArticulatedControlsProbeError",
+    "coast_after_release_degrees",
+    "swept_member_inertia_kg_m2",
     "CONTROLS_PROBE_SCHEMA_VERSION",
     "CONTROLS_PROBE_SPEC_FILENAME",
     "FORCED_POSITIVE",
