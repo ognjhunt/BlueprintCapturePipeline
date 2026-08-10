@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.native_task_runtime_contract import (
+    DROID_FRANKA_RESET_JOINT_NAMES,
     FROZEN_CANDIDATES,
     NativeTaskRuntimeContractError,
     load_native_task_runtime_contract,
@@ -86,6 +87,10 @@ def _common(task_spec: dict, *, scene_id: str, task_id: str) -> dict:
             },
         ],
         "robot_base_pose_world": _pose(1.75, 1.99, 0.0),
+        "robot_joint_reset_positions_rad": {
+            name: float(index) / 100.0
+            for index, name in enumerate(DROID_FRANKA_RESET_JOINT_NAMES)
+        },
         "cameras": [_camera(role) for role in ("external", "wrist", "overview")],
         "scenario_cell_id": "canonical_seed_17",
         "scenario_instance_digest": _sha("d"),
@@ -123,11 +128,13 @@ def _articulated_fixture() -> dict:
         {
             "joint_id": "refrigerator_upper_door_hinge",
             "joint_prim_path": "/Asset/joints/upper_door_hinge",
+            "native_joint_name": "upper_door_hinge",
             "role": "task_joint",
         },
         {
             "joint_id": "refrigerator_lower_door_hinge",
             "joint_prim_path": "/Asset/joints/lower_door_hinge",
+            "native_joint_name": "lower_door_hinge",
             "role": "locked_joint",
         },
     ]
@@ -178,6 +185,9 @@ def test_original_and_second_scene_share_one_runtime_contract(
     assert contract["task_sample_binding"]["joint_ids"] == expected_joints
     assert contract["candidate_ids"] == list(FROZEN_CANDIDATES)
     assert contract["robot"]["action_seam"]["action_dimension"] == 8
+    assert set(contract["robot"]["joint_reset_positions_rad"]) == set(
+        DROID_FRANKA_RESET_JOINT_NAMES
+    )
     if expected_type == "ARTICULATION":
         assert contract["task_state_binding"]["measurement_authority"][
             "caller_asserted_booleans_forbidden"
@@ -251,3 +261,18 @@ def test_task_asset_path_cannot_escape_the_provider_asset_directory() -> None:
         materialize_native_task_runtime_contract(**fixture)
 
     assert "native_task_runtime_asset_filename_invalid:task_object" in excinfo.value.errors
+
+
+def test_robot_reset_joint_map_rejects_missing_and_extra_names() -> None:
+    fixture = _articulated_fixture()
+    fixture["robot_joint_reset_positions_rad"].pop("panda_joint7")
+    fixture["robot_joint_reset_positions_rad"]["scene_specific_joint"] = 0.0
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert "native_task_runtime_robot_reset_joint_missing:panda_joint7" in excinfo.value.errors
+    assert (
+        "native_task_runtime_robot_reset_joint_unexpected:scene_specific_joint"
+        in excinfo.value.errors
+    )

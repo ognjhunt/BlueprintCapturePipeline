@@ -27,11 +27,13 @@ def _joint_bindings() -> list[dict]:
         {
             "joint_id": "upper_door_hinge",
             "joint_prim_path": "/Asset/joints/upper_door_hinge",
+            "native_joint_name": "upper_door_hinge",
             "role": "task_joint",
         },
         {
             "joint_id": "lower_door_hinge",
             "joint_prim_path": "/Asset/joints/lower_door_hinge",
+            "native_joint_name": "lower_door_hinge",
             "role": "locked_joint",
         },
     ]
@@ -122,12 +124,33 @@ def test_duplicate_joint_ids_fail_closed() -> None:
                 target_joint_id="hinge", joint_reset_positions_rad={"hinge": 0.0}
             ),
             task_joint_bindings=[
-                {"joint_id": "hinge", "joint_prim_path": "/Asset/joints/a"},
-                {"joint_id": "hinge", "joint_prim_path": "/Asset/joints/b"},
+                {
+                    "joint_id": "hinge",
+                    "joint_prim_path": "/Asset/joints/a",
+                    "native_joint_name": "a",
+                },
+                {
+                    "joint_id": "hinge",
+                    "joint_prim_path": "/Asset/joints/b",
+                    "native_joint_name": "b",
+                },
             ],
         )
 
     assert any("joint_id_duplicated" in error for error in excinfo.value.errors)
+
+
+def test_duplicate_native_joint_names_fail_closed() -> None:
+    bindings = _joint_bindings()
+    bindings[1]["native_joint_name"] = bindings[0]["native_joint_name"]
+
+    with pytest.raises(ArticulatedRuntimeCompositionError) as excinfo:
+        _plan(task_joint_bindings=bindings)
+
+    assert excinfo.value.errors == (
+        "articulated_runtime_composition_joint_binding_missing:lower_door_hinge",
+        "articulated_runtime_composition_native_joint_name_duplicated:upper_door_hinge",
+    )
 
 
 def test_an_absent_appearance_leaves_the_scene_collidable_but_unrendered() -> None:
@@ -149,6 +172,7 @@ def test_scorer_and_runtime_joint_sets_must_match_exactly() -> None:
                 {
                     "joint_id": "unscored_hinge",
                     "joint_prim_path": "/Asset/joints/unscored_hinge",
+                    "native_joint_name": "unscored_hinge",
                 },
             ]
         )

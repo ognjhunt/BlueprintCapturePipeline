@@ -31,6 +31,21 @@ ASSET_ROLES = ("scene_collision", "scene_appearance", "task_object")
 CAMERA_ROLES = ("external", "wrist", "overview")
 TASK_KINDS = ("rigid_pick_place", "articulated_open_close")
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
+DROID_FRANKA_RESET_JOINT_NAMES = (
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7",
+    "finger_joint",
+    "right_outer_knuckle_joint",
+    "right_inner_finger_joint",
+    "right_inner_finger_knuckle_joint",
+    "left_inner_finger_knuckle_joint",
+    "left_inner_finger_joint",
+)
 
 
 class NativeTaskRuntimeContractError(ValueError):
@@ -293,6 +308,30 @@ def _articulated_task_state_binding(
     }
 
 
+def _robot_joint_reset_positions(
+    value: Any, *, errors: list[str]
+) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        errors.append("native_task_runtime_robot_reset_joints_missing")
+        return {}
+    observed = {str(name) for name in value}
+    expected = set(DROID_FRANKA_RESET_JOINT_NAMES)
+    for name in sorted(expected - observed):
+        errors.append(f"native_task_runtime_robot_reset_joint_missing:{name}")
+    for name in sorted(observed - expected):
+        errors.append(f"native_task_runtime_robot_reset_joint_unexpected:{name}")
+    resolved: dict[str, float] = {}
+    for name in DROID_FRANKA_RESET_JOINT_NAMES:
+        try:
+            number = float(value[name])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(number):
+            errors.append(f"native_task_runtime_robot_reset_joint_invalid:{name}")
+        resolved[name] = number
+    return resolved
+
+
 def materialize_native_task_runtime_contract(
     *,
     scene_id: str,
@@ -302,6 +341,7 @@ def materialize_native_task_runtime_contract(
     task_state_binding: Mapping[str, Any] | None = None,
     assets: Sequence[Mapping[str, Any]],
     robot_base_pose_world: Mapping[str, Any],
+    robot_joint_reset_positions_rad: Mapping[str, float],
     cameras: Sequence[Mapping[str, Any]],
     scenario_cell_id: str,
     scenario_instance_digest: str,
@@ -363,6 +403,9 @@ def materialize_native_task_runtime_contract(
         error="native_task_runtime_robot_base_pose_invalid",
         errors=errors,
     )
+    robot_reset_positions = _robot_joint_reset_positions(
+        robot_joint_reset_positions_rad, errors=errors
+    )
     camera_rows = _camera_rows(cameras, errors=errors)
     state_binding = _articulated_task_state_binding(
         task_state_binding, task_kind=task_kind, errors=errors
@@ -388,6 +431,7 @@ def materialize_native_task_runtime_contract(
         "robot": {
             "robot_id": "franka_panda",
             "base_pose_world": robot_pose,
+            "joint_reset_positions_rad": robot_reset_positions,
             "action_seam": {
                 "kind": "joint_position_with_gripper",
                 "arm_joint_count": 7,
@@ -451,6 +495,7 @@ def load_native_task_runtime_contract(path: str | Path) -> dict[str, Any]:
 
 
 __all__ = [
+    "DROID_FRANKA_RESET_JOINT_NAMES",
     "FROZEN_CANDIDATES",
     "NativeTaskRuntimeContractError",
     "SCHEMA_VERSION",

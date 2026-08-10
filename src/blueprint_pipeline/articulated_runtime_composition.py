@@ -22,6 +22,7 @@ missing id or an extra prim before any paid run.
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
 
@@ -102,13 +103,22 @@ def plan_articulated_runtime_composition(
 
     joints: list[dict[str, Any]] = []
     seen: set[str] = set()
+    seen_native_names: set[str] = set()
     for index, row in enumerate(raw_joints):
         if not isinstance(row, Mapping):
             errors.append(f"articulated_runtime_composition_joint_invalid:{index}")
             continue
         joint_id = str(row.get("joint_id") or "")
         prim_path = str(row.get("joint_prim_path") or "")
-        if not joint_id or not prim_path:
+        native_joint_name = str(row.get("native_joint_name") or "")
+        if binding_source == "legacy_task_spec" and not native_joint_name:
+            native_joint_name = PurePosixPath(prim_path).name
+        if (
+            not joint_id
+            or not prim_path.startswith("/Asset/")
+            or not native_joint_name
+            or PurePosixPath(native_joint_name).name != native_joint_name
+        ):
             errors.append(f"articulated_runtime_composition_joint_invalid:{index}")
             continue
         if joint_id in seen:
@@ -119,10 +129,18 @@ def plan_articulated_runtime_composition(
             )
             continue
         seen.add(joint_id)
+        if native_joint_name in seen_native_names:
+            errors.append(
+                "articulated_runtime_composition_native_joint_name_duplicated:"
+                + native_joint_name
+            )
+            continue
+        seen_native_names.add(native_joint_name)
         joints.append(
             {
                 "joint_id": joint_id,
                 "joint_prim_path": prim_path,
+                "native_joint_name": native_joint_name,
                 "role": str(row.get("role") or "unspecified"),
             }
         )
@@ -185,6 +203,9 @@ def plan_articulated_runtime_composition(
             "joint_ids": sorted(row["joint_id"] for row in joints),
             "joint_prim_paths": {
                 row["joint_id"]: row["joint_prim_path"] for row in joints
+            },
+            "native_joint_names": {
+                row["joint_id"]: row["native_joint_name"] for row in joints
             },
             "joint_roles": {row["joint_id"]: row["role"] for row in joints},
         },
