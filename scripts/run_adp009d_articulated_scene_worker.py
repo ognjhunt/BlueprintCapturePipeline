@@ -887,6 +887,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 self.seal_applications = 0
                 self.achieved_joint_trace: list[list[float]] = []
                 self.fingertip_mid_trace: list[list[float]] = []
+                self.finger_pair_trace: list[list[float]] = []
+                self.door_pose_trace: list[list[float]] = []
 
             def _apply_seal(self) -> None:
                 if seal_peak <= 0.0 or seal_width <= 0.0:
@@ -940,6 +942,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         self.fingertip_mid_trace.append(
                             [round(float(v), 4) for v in mid]
                         )
+                        # Both origins separately: the pinch axis and the
+                        # empty-closure geometry fall straight out of the
+                        # pair, where the midpoint alone hides them.
+                        self.finger_pair_trace.append(
+                            [round(float(v), 4) for v in poses[li, :3]]
+                            + [round(float(v), 4) for v in poses[ri, :3]]
+                        )
+                    # The door link's world pose, so the handle's LIVE position
+                    # is measured rather than trusted from the authoring
+                    # transform - the one assumption three bracketing runs
+                    # never tested.
+                    door_names = list(getattr(live.data, "body_names", []) or [])
+                    if "upper_door" in door_names:
+                        dpose = _to_torch(live.data.body_pose_w)[0]
+                        self.door_pose_trace.append(
+                            [round(float(v), 4) for v in dpose[door_names.index("upper_door")][:7]]
+                        )
                 except Exception:  # noqa: BLE001 - tracing must not fail a step
                     pass
                 return outcome
@@ -975,6 +994,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["achieved_joint_trace_tail"] = sealed.achieved_joint_trace[-40:]
         result["achieved_joint_trace_length"] = len(sealed.achieved_joint_trace)
         result["fingertip_mid_trace"] = sealed.fingertip_mid_trace
+        result["finger_pair_trace_tail"] = sealed.finger_pair_trace[95:115]
+        result["door_pose_trace_sample"] = sealed.door_pose_trace[95:115]
         result["handle_target_world_m"] = list(handle_position)
         result["controls_qualified"] = bool(
             pair.get("cell_admitted_for_policy_execution")
