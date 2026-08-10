@@ -26,6 +26,9 @@ TASK_FREEZE_SCHEMA_VERSION = "dual_task_task_freeze.v1"
 JOIN_SCHEMA_VERSION = "dual_task_freeze_join.v1"
 FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
 TASK_KINDS = frozenset({"articulated_interaction", "rigid_object_manipulation"})
+SELECTION_CRITERION_STATUSES = frozenset(
+    {"observed_pass", "conditional_construction_gate", "typed_abstention"}
+)
 REQUIRED_SELECTION_CRITERIA = frozenset(
     {
         "complete_topology_around_two_distinct_task_regions",
@@ -87,6 +90,15 @@ def _digest(value: Any) -> bool:
 
 def _identifier(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _finite_vector(value: Any, length: int) -> list[float] | None:
+    if not isinstance(value, list) or len(value) != length:
+        return None
+    result = [_finite(item) for item in value]
+    if any(item is None for item in result):
+        return None
+    return [float(item) for item in result]
 
 
 def validate_selection_preregistration(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -188,11 +200,46 @@ def validate_scene_freeze(value: Mapping[str, Any]) -> dict[str, Any]:
                 or row.get("rights_admitted") is not True
             ):
                 errors.append(f"dual_task_scene_freeze_source_invalid:{role}")
+            restrictions = row.get("restrictions")
+            if (
+                not isinstance(restrictions, Mapping)
+                or set(restrictions)
+                != {
+                    "redistribution",
+                    "raw_private_upload",
+                    "derived_private_upload",
+                    "retention",
+                    "training",
+                    "publication",
+                }
+                or any(not _identifier(value) for value in restrictions.values())
+            ):
+                errors.append(
+                    f"dual_task_scene_freeze_source_restrictions_invalid:{role}"
+                )
     criterion_results = payload.get("criterion_results")
-    if not isinstance(criterion_results, Mapping) or set(criterion_results) != REQUIRED_SELECTION_CRITERIA:
+    if (
+        not isinstance(criterion_results, Mapping)
+        or set(criterion_results) != REQUIRED_SELECTION_CRITERIA
+    ):
         errors.append("dual_task_scene_freeze_criterion_results_invalid")
-    elif any(value is not True for value in criterion_results.values()):
-        errors.append("dual_task_scene_freeze_unpassed_criterion")
+    else:
+        for criterion_id, result in criterion_results.items():
+            if (
+                not isinstance(result, Mapping)
+                or result.get("status") not in SELECTION_CRITERION_STATUSES
+                or not _digest(result.get("evidence_digest"))
+                or not _identifier(result.get("remaining_gate"))
+            ):
+                errors.append(
+                    f"dual_task_scene_freeze_criterion_result_invalid:{criterion_id}"
+                )
+        if any(
+            isinstance(result, Mapping)
+            and result.get("status") == "typed_abstention"
+            for result in criterion_results.values()
+        ):
+            errors.append("dual_task_scene_freeze_selected_scene_has_abstained_criterion")
     if not _digest(payload.get("topology_survey_digest")):
         errors.append("dual_task_scene_freeze_topology_digest_invalid")
     if not _digest(payload.get("reconnaissance_render_digest")):
@@ -212,6 +259,8 @@ def validate_task_freeze(value: Mapping[str, Any]) -> dict[str, Any]:
         errors.append("dual_task_task_freeze_schema_invalid")
     if not _identifier(payload.get("task_id")):
         errors.append("dual_task_task_id_invalid")
+    if not _identifier(payload.get("prompt")):
+        errors.append("dual_task_task_prompt_invalid")
     task_kind = _identifier(payload.get("task_kind"))
     if task_kind not in TASK_KINDS:
         errors.append("dual_task_task_kind_invalid")
@@ -240,6 +289,26 @@ def validate_task_freeze(value: Mapping[str, Any]) -> dict[str, Any]:
             or not _identifier(source.get("support_or_attachment_id"))
         ):
             errors.append("dual_task_source_object_invalid")
+        pose = source.get("observed_pose_world")
+        if not isinstance(pose, Mapping):
+            errors.append("dual_task_source_pose_invalid")
+        else:
+            position = _finite_vector(pose.get("position_world_m"), 3)
+            orientation = _finite_vector(pose.get("orientation_xyzw"), 4)
+            if (
+                position is None
+                or orientation is None
+                or abs(sum(item * item for item in orientation) - 1.0) > 1e-6
+            ):
+                errors.append("dual_task_source_pose_invalid")
+        for field in (
+            "collision_identity_receipt_digest",
+            "support_receipt_digest",
+            "franka_placement_packet_digest",
+            "visibility_receipt_digest",
+        ):
+            if not _digest(source.get(field)):
+                errors.append(f"dual_task_source_evidence_invalid:{field}")
     removal = payload.get("removal_plan")
     removal_fields = (
         "removal_id",
@@ -289,6 +358,54 @@ def validate_task_freeze(value: Mapping[str, Any]) -> dict[str, Any]:
         not _identifier(item) for item in failures
     ):
         errors.append("dual_task_failure_rungs_invalid")
+    target = payload.get("target_configuration")
+    if not isinstance(target, Mapping):
+        errors.append("dual_task_target_configuration_missing")
+    elif task_kind == "articulated_interaction":
+        joint_ids = target.get("target_joint_ids")
+        intervals = target.get("joint_intervals")
+        if (
+            target.get("kind") != "joint_interval"
+            or not isinstance(joint_ids, list)
+            or not joint_ids
+            or len(joint_ids) != len(set(joint_ids))
+            or not isinstance(intervals, Mapping)
+            or set(intervals) != set(joint_ids)
+            or any(
+                _finite_vector(intervals[joint_id], 2) is None
+                or float(intervals[joint_id][0]) >= float(intervals[joint_id][1])
+                for joint_id in joint_ids
+            )
+        ):
+            errors.append("dual_task_articulated_target_configuration_invalid")
+    elif target.get("kind") != "pose_volume":
+        errors.append("dual_task_rigid_target_configuration_invalid")
+    else:
+        position_bounds = target.get("position_bounds_world_m")
+        lower = (
+            _finite_vector(position_bounds.get("minimum"), 3)
+            if isinstance(position_bounds, Mapping)
+            else None
+        )
+        upper = (
+            _finite_vector(position_bounds.get("maximum"), 3)
+            if isinstance(position_bounds, Mapping)
+            else None
+        )
+        orientation = _finite_vector(target.get("orientation_reference_xyzw"), 4)
+        orientation_tolerance = _finite(target.get("maximum_orientation_error_rad"))
+        if (
+            lower is None
+            or upper is None
+            or any(lower[index] >= upper[index] for index in range(3))
+            or orientation is None
+            or abs(sum(item * item for item in orientation) - 1.0) > 1e-6
+            or orientation_tolerance is None
+            or orientation_tolerance <= 0
+            or not _identifier(target.get("support_id"))
+            or target.get("release_required") is not True
+        ):
+            errors.append("dual_task_rigid_target_configuration_invalid")
     if task_kind == "articulated_interaction":
         graph = payload.get("articulation_graph")
         if not isinstance(graph, Mapping):
@@ -298,8 +415,16 @@ def validate_task_freeze(value: Mapping[str, Any]) -> dict[str, Any]:
                 validate_articulation_graph(graph)
             except ArticulationGraphContractError as exc:
                 errors.extend(exc.errors)
-    elif payload.get("articulation_graph") not in (None, {}):
-        errors.append("dual_task_rigid_articulation_graph_present")
+    else:
+        graph = payload.get("articulation_graph")
+        if graph not in (None, {}):
+            if not isinstance(graph, Mapping):
+                errors.append("dual_task_rigid_articulation_graph_invalid")
+            else:
+                try:
+                    validate_articulation_graph(graph, require_target_joint=False)
+                except ArticulationGraphContractError as exc:
+                    errors.extend(exc.errors)
     expected = canonical_digest(payload, digest_field="task_freeze_digest")
     if payload.get("task_freeze_digest") != expected:
         errors.append("dual_task_task_freeze_digest_invalid")

@@ -86,8 +86,16 @@ def _has_cycle(parent_by_child: Mapping[str, str]) -> bool:
     return False
 
 
-def validate_articulation_graph(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate and normalize a complete link/joint graph without a size cap."""
+def validate_articulation_graph(
+    value: Mapping[str, Any], *, require_target_joint: bool = True
+) -> dict[str, Any]:
+    """Validate and normalize a complete link/joint graph without a size cap.
+
+    ``require_target_joint=False`` is reserved for a mechanically articulated
+    asset used as a rigid task subject. In that mode every joint must be locked
+    and the deterministic joint predicate must be empty; the task scorer must
+    use the separate rigid-object predicate.
+    """
 
     payload = json.loads(json.dumps(value))
     errors: list[str] = []
@@ -269,8 +277,12 @@ def validate_articulation_graph(value: Mapping[str, Any]) -> dict[str, Any]:
     target_joint_ids = [
         row["joint_id"] for row in normalized_joints if row["role"] == "target"
     ]
-    if not target_joint_ids:
+    if require_target_joint and not target_joint_ids:
         errors.append("articulation_graph_target_joint_missing")
+    if not require_target_joint and any(
+        row["role"] != "locked" for row in normalized_joints
+    ):
+        errors.append("articulation_graph_rigid_subject_joint_not_locked")
     predicate = payload.get("success_predicate")
     normalized_predicate: dict[str, Any]
     if not isinstance(predicate, Mapping):

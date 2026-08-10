@@ -1,0 +1,175 @@
+{
+  "scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "frozen_before_learned_policy_execution": true,
+  "learned_policy_outcomes_accessed": false,
+  "overview_camera_policy_input": false,
+  "overview_camera_deterministic_scoring_input": false,
+  "schema_version": "dual_task_task_freeze.v1",
+  "task_id": "task_b_notebook_relocation",
+  "prompt": "Relocate the open notebook 0.15 meters along the observed desk support, preserve its locked-open orientation, release, settle, and retreat.",
+  "task_kind": "rigid_object_manipulation",
+  "source_object": {
+    "instance_id": "385",
+    "semantic_label": "notebook_computer",
+    "observed_bounds_world_m": {
+      "minimum": [
+        13.402415986,
+        6.957194486,
+        0.824999996
+      ],
+      "maximum": [
+        13.758676014,
+        7.386825514,
+        1.124764004
+      ]
+    },
+    "observed_pose_world": {
+      "position_world_m": [
+        13.580546,
+        7.17201,
+        0.974882
+      ],
+      "orientation_xyzw": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    "support_or_attachment_id": "interiorgs_101_wardrobe_top",
+    "collision_identity_receipt_digest": "sha256:cf15a57f9efe32e3a7629996112fdbdd32adefc7971149c0ec1661d2c262824f",
+    "support_receipt_digest": "sha256:b5b06eebc56339a97a797f9f3f6a824a893be97277e21437d9c459b7f7f2ee68",
+    "franka_placement_packet_digest": "sha256:f2caf980b4ee82368d3b3300082abec61a0dcad209e8f6783570bacf37180511",
+    "visibility_receipt_digest": "sha256:d807864a2f057fe505e519ba2a5dda317cf8b867bef6d1022362a6ab9afc9347"
+  },
+  "removal_plan": {
+    "removal_id": "840920_removal_notebook_385",
+    "mask_set_id": "840920_mask_set_notebook_385",
+    "source_collider_prim_path": "/Root/ZFUHSLMTQ3RUOPTUKM888888",
+    "collider_deletion_id": "840920_collider_delete_notebook_385",
+    "replacement_asset_id": "840920_simready_notebook_candidate",
+    "replacement_qualification_id": "840920_notebook_native_qualification"
+  },
+  "cameras": {
+    "external": "task_b_external",
+    "wrist": "task_b_wrist",
+    "overview": "task_b_overview_review_only"
+  },
+  "execution_contract": {
+    "control_frequency_hz": 20,
+    "maximum_steps": 400,
+    "settle_window_steps": 20,
+    "seeds": [
+      3201,
+      3202
+    ],
+    "canonical_scenario_cell_id": "840920_task_b_canonical",
+    "reset_state": {
+      "robot": "task_b_base_home",
+      "washer": "all_joint_resets",
+      "notebook": "locked_hinge_source_pose",
+      "cameras": "task_b_calibrated"
+    }
+  },
+  "deterministic_success_predicates": [
+    "root_pose_inside_destination_volume",
+    "orientation_within_tolerance",
+    "supported_contact_observed",
+    "released",
+    "stable_for_settle_window",
+    "retreated"
+  ],
+  "failure_rungs": [
+    "never_moved",
+    "actions_not_delivered",
+    "robot_moved_task_did_not",
+    "outside_destination_volume",
+    "orientation_failure",
+    "support_failure",
+    "collision_failure",
+    "reset_failure"
+  ],
+  "target_configuration": {
+    "kind": "pose_volume",
+    "position_bounds_world_m": {
+      "minimum": [
+        13.550546,
+        7.29201,
+        0.954882
+      ],
+      "maximum": [
+        13.610546,
+        7.35201,
+        0.994882
+      ]
+    },
+    "orientation_reference_xyzw": [
+      0,
+      0,
+      0,
+      1
+    ],
+    "maximum_orientation_error_rad": 0.12,
+    "support_id": "interiorgs_101_wardrobe_top",
+    "release_required": true
+  },
+  "articulation_graph": {
+    "schema_version": "adp_articulation_graph.v1",
+    "links": [
+      {
+        "link_id": "base",
+        "is_root": true,
+        "semantic_role": "rigid_task_body_observed_exterior"
+      },
+      {
+        "link_id": "display",
+        "is_root": false,
+        "semantic_role": "locked_display_observed_exterior_generated_hinge"
+      }
+    ],
+    "joints": [
+      {
+        "joint_id": "display_hinge",
+        "parent_link_id": "base",
+        "child_link_id": "display",
+        "joint_type": "revolute",
+        "role": "locked",
+        "axis": [
+          0,
+          1,
+          0
+        ],
+        "limits": [
+          0,
+          2.2
+        ],
+        "reset_position": 1.745329252,
+        "reset_tolerance": 0.001,
+        "drive": {
+          "drive_type": "force",
+          "stiffness": 200,
+          "damping": 20,
+          "maximum_force": 100
+        },
+        "dependency": null
+      }
+    ],
+    "collision_pairs": [
+      {
+        "link_a": "base",
+        "link_b": "display",
+        "collision_enabled": true
+      }
+    ],
+    "success_predicate": {
+      "combination": "all",
+      "joint_intervals": {}
+    }
+  },
+  "mechanism_provenance": "observed open notebook exterior; display hinge geometry is generated candidate content and locked for the rigid task",
+  "task_freeze_digest": "sha256:c7800fe4cb029f989f88907984e89941f857780a4faf92c3458a4fdf2064e68a"
+}

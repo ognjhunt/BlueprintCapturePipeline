@@ -1,0 +1,26 @@
+{
+  "schema_version": "dual_task_freeze_join.v1",
+  "scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
+  "task_freeze_digests": [
+    "sha256:8c158cfcb8834dba25148b3999c9abf61137f2ca4b4317f470f5596755933684",
+    "sha256:c7800fe4cb029f989f88907984e89941f857780a4faf92c3458a4fdf2064e68a"
+  ],
+  "task_ids": [
+    "task_a_washer_door_open",
+    "task_b_notebook_relocation"
+  ],
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "independence_fields": [
+    "removal_id",
+    "mask_set_id",
+    "source_collider_prim_path",
+    "collider_deletion_id",
+    "replacement_asset_id",
+    "replacement_qualification_id"
+  ],
+  "independent": true,
+  "join_digest": "sha256:06d86fb596879ebb47f40673c94d734e35a108be5d9cc52db2635ba9d4401414"
+}

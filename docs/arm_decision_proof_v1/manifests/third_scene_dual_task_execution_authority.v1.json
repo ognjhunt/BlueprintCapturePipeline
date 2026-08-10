@@ -1,0 +1,36 @@
+{
+  "schema_version": "third_scene_dual_task_execution_authority.v1",
+  "program_id": "arm-decision-proof-v1",
+  "authority_kind": "explicit_user_direction_in_current_goal",
+  "authorized_by": "nijelhunt_1",
+  "authorized_on": "2026-08-10",
+  "scope": "one_development_only_third_scene_two_independent_tasks",
+  "publisher_scene_id": "840920",
+  "private_rights_admitted_scene_derived_uploads_authorized": true,
+  "raw_interiorgs_upload_authorized": false,
+  "raw_sage_upload_authorized": false,
+  "training_authorized": false,
+  "public_dataset_bytes_publication_authorized": false,
+  "derived_receipt_publication_authorized": true,
+  "retention": "bounded_to_goal_then_provider_zero",
+  "paid_compute": {
+    "provider": "vast",
+    "hard_total_spend_cap_usd": 12.0,
+    "maximum_concurrent_instances": 2,
+    "zero_retry": true,
+    "provider_zero_required_for_lane": true,
+    "external_instance_allowlist": [
+      47373597
+    ],
+    "external_instance_owner": "ongoing_840796_refrigerator_lane_do_not_touch"
+  },
+  "terms": {
+    "interiorgs_terms_text_digest": "sha256:508b0ec62ff1b5bee3c47524dd36f2402f5f70a09afbe62a4d0041078856356b",
+    "interiorgs_commercial_use_authorized": false,
+    "interiorgs_redistribution_authorized": false,
+    "sage_license": "CC-BY-NC-4.0",
+    "sage_commercial_use_authorized": false
+  },
+  "claim_ceiling": "development_only_public_dataset_simulator_rehearsal",
+  "authority_digest": "sha256:a425829398dca6e83313b37487672fc02588161d0d7662829c50d97c9db0bc2b"
+}

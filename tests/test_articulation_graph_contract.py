@@ -118,3 +118,28 @@ def test_success_predicate_must_name_exact_target_set() -> None:
         validate_articulation_graph(graph)
 
     assert "articulation_graph_success_joint_set_invalid" in caught.value.errors
+
+
+def test_rigid_task_subject_may_bind_an_all_locked_articulation_graph() -> None:
+    graph = complete_graph()
+    graph["links"] = graph["links"][:2]
+    graph["links"][1]["semantic_role"] = "locked_panel"
+    [joint] = graph["joints"][:1]
+    joint["role"] = "locked"
+    graph["joints"] = [joint]
+    graph["collision_pairs"] = [
+        {"link_a": "body", "link_b": "door", "collision_enabled": True}
+    ]
+    graph["success_predicate"]["joint_intervals"] = {}
+
+    locked = validate_articulation_graph(graph, require_target_joint=False)
+
+    assert locked["joints"][0]["role"] == "locked"
+    assert locked["success_predicate"]["joint_intervals"] == {}
+
+    graph["joints"][0]["role"] = "passive"
+    with pytest.raises(
+        ArticulationGraphContractError,
+        match="articulation_graph_rigid_subject_joint_not_locked",
+    ):
+        validate_articulation_graph(graph, require_target_joint=False)
