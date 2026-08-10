@@ -130,3 +130,52 @@ def test_an_absent_appearance_leaves_the_scene_collidable_but_unrendered() -> No
 
 def test_planning_is_deterministic() -> None:
     assert _plan() == _plan()
+
+
+def test_composition_carries_bundle_aliases_for_each_asset():
+    """The provider renames assets; the spec must say what to also look for.
+
+    Bindings ship the task object as ``approved_can.usda`` and the scene
+    collision as ``sage_collision.usd`` regardless of authoring names, so a
+    composition that only records the authoring name cannot be resolved on the
+    provider.
+    """
+
+    plan = plan_articulated_runtime_composition(
+        task_spec=_task_spec(),
+        twin_usd_filename="twin.usda",
+        scene_collision_filename="scene.usda",
+        asset_filename_aliases={
+            "task_object": ["approved_can.usda"],
+            "scene_collision": ["sage_collision.usd"],
+        },
+    )
+
+    by_role = {row["semantic_role"]: row for row in plan["objects"]}
+    assert by_role["task_object"]["usd_filename_aliases"] == ["approved_can.usda"]
+    assert by_role["scene_collision"]["usd_filename_aliases"] == ["sage_collision.usd"]
+
+
+def test_composition_defaults_to_no_aliases():
+    plan = plan_articulated_runtime_composition(
+        task_spec=_task_spec(),
+        twin_usd_filename="twin.usda",
+        scene_collision_filename="scene.usda",
+    )
+
+    for row in plan["objects"]:
+        assert row["usd_filename_aliases"] == []
+
+
+def test_composition_refuses_an_alias_for_an_unknown_role():
+    """A typo in a role name must not silently leave the asset unaliased."""
+
+    with pytest.raises(ArticulatedRuntimeCompositionError) as excinfo:
+        plan_articulated_runtime_composition(
+            task_spec=_task_spec(),
+            twin_usd_filename="twin.usda",
+            scene_collision_filename="scene.usda",
+            asset_filename_aliases={"taskobject": ["approved_can.usda"]},
+        )
+
+    assert any("alias_role_unknown" in error for error in excinfo.value.errors)

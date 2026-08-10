@@ -42,6 +42,7 @@ def plan_articulated_runtime_composition(
     scene_collision_filename: str,
     appearance_filename: str | None = None,
     twin_position_world_m: Sequence[float] | None = None,
+    asset_filename_aliases: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Resolve spawn types, visibility, and the joint binding for one task."""
 
@@ -97,6 +98,25 @@ def plan_articulated_runtime_composition(
     articulated = task_kind == TASK_KIND_ARTICULATED
     if articulated and not joints:
         errors.append("articulated_runtime_composition_joints_missing")
+
+    # A bundle renames assets, so the authoring filename recorded here is often
+    # not the filename on the provider. Aliases travel with the object rather
+    # than being guessed at load time, and an alias for a role that does not
+    # exist is an error - a typo that silently left an asset unaliased would
+    # surface as a missing file on paid hardware.
+    known_roles = {"scene_collision", "task_object"}
+    if appearance_filename:
+        known_roles.add("scene_appearance")
+    aliases_by_role: dict[str, list[str]] = {}
+    for role, values in dict(asset_filename_aliases or {}).items():
+        if str(role) not in known_roles:
+            errors.append(
+                "articulated_runtime_composition_alias_role_unknown:"
+                f"{role}:{sorted(known_roles)}"
+            )
+            continue
+        aliases_by_role[str(role)] = [str(value) for value in values if str(value)]
+
     if errors:
         raise ArticulatedRuntimeCompositionError(errors)
 
@@ -106,6 +126,7 @@ def plan_articulated_runtime_composition(
             "semantic_role": "scene_collision",
             "object_type": "BASE",
             "usd_filename": str(scene_collision_filename),
+            "usd_filename_aliases": list(aliases_by_role.get("scene_collision", [])),
             "visible": False,
             "initial_position_world_m": [0.0, 0.0, 0.0],
         }
@@ -117,6 +138,9 @@ def plan_articulated_runtime_composition(
                 "semantic_role": "scene_appearance",
                 "object_type": "BASE",
                 "usd_filename": str(appearance_filename),
+                "usd_filename_aliases": list(
+                    aliases_by_role.get("scene_appearance", [])
+                ),
                 "visible": True,
                 "initial_position_world_m": [0.0, 0.0, 0.0],
             }
@@ -128,6 +152,7 @@ def plan_articulated_runtime_composition(
             # An articulated twin spawned rigid has frozen joints and no error.
             "object_type": "ARTICULATION" if articulated else "RIGID",
             "usd_filename": str(twin_usd_filename),
+            "usd_filename_aliases": list(aliases_by_role.get("task_object", [])),
             "visible": True,
             "initial_position_world_m": position,
         }

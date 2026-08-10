@@ -32,6 +32,20 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+try:  # flat provider bundle
+    from runtime_asset_resolution import (
+        RuntimeAssetResolutionError,
+        resolve_runtime_asset,
+    )
+except ModuleNotFoundError:  # repository checkout
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from blueprint_pipeline.runtime_asset_resolution import (
+        RuntimeAssetResolutionError,
+        resolve_runtime_asset,
+    )
+
 
 RESULT_SCHEMA_VERSION = "adp009d_articulated_scene_result.v1"
 # The Arena lane reads a runner before it will launch it, and these are the
@@ -246,11 +260,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise RuntimeError(
                     f"articulated_scene_object_type_unknown:{kind}:{sorted(available)}"
                 )
-            asset_path = root / str(row.get("usd_filename") or "")
-            if not asset_path.is_file():
-                raise RuntimeError(
-                    f"articulated_scene_asset_missing:{row.get('name')}:{asset_path.name}"
+            # Asset bindings rename files into the bundle, so the authoring
+            # name in the spec is often not the name on the provider. Resolve
+            # by declared name, then by the bundle's binding names, and on a
+            # miss report the whole layout - a bare missing filename costs one
+            # launch to learn the name and another to use it.
+            try:
+                resolution = resolve_runtime_asset(
+                    runtime_dir=root,
+                    declared_filename=str(row.get("usd_filename") or ""),
+                    aliases=[str(value) for value in (row.get("usd_filename_aliases") or ())],
+                    role=str(row.get("name") or "asset"),
                 )
+            except RuntimeAssetResolutionError as exc:
+                raise RuntimeError(
+                    f"articulated_scene_asset_missing:{';'.join(exc.errors)}"
+                ) from exc
+            asset_path = Path(resolution["resolved_path"])
+            result.setdefault("asset_resolution", []).append(
+                {
+                    "role": resolution["role"],
+                    "declared_filename": resolution["declared_filename"],
+                    "matched_on": resolution["matched_on"],
+                    "resolved_path": resolution["resolved_path"],
+                }
+            )
             obj = Object(
                 name=str(row.get("name")),
                 object_type=getattr(ObjectType, kind),
