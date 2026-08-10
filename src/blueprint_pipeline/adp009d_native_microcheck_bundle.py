@@ -1154,8 +1154,18 @@ def build_native_microcheck_bundle_isolated(
     aura_particlefield_path: str | Path | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
+    worker_source: str | Path | None = None,
+    runtime_module_source: str | Path | None = None,
+    extra_native_paths: Sequence[str | Path] = (),
+    build_task_collision_derivative: bool = True,
 ) -> dict[str, Any]:
-    """Build the large USD bundle in a fresh, bounded process."""
+    """Build the large USD bundle in a fresh, bounded process.
+
+    Every parameter has to be rebuilt as a command line here. One added to the
+    builder and forgotten in this list is silently dropped - the parent asks
+    for an overridden worker, the child builds the rigid one, and the bundle
+    looks entirely correct.
+    """
 
     job = Path(job_dir).expanduser().resolve()
     command = [
@@ -1189,6 +1199,23 @@ def build_native_microcheck_bundle_isolated(
         command.extend(
             ("--aura-particlefield-path", str(Path(aura_particlefield_path).resolve()))
         )
+    if worker_source is not None:
+        command.extend(
+            ("--worker-source", str(Path(worker_source).expanduser().resolve()))
+        )
+    if runtime_module_source is not None:
+        command.extend(
+            (
+                "--runtime-module-source",
+                str(Path(runtime_module_source).expanduser().resolve()),
+            )
+        )
+    for item in extra_native_paths:
+        command.extend(
+            ("--extra-native-path", str(Path(str(item)).expanduser().resolve()))
+        )
+    if not build_task_collision_derivative:
+        command.append("--skip-task-collision-derivative")
     if generated_at is not None:
         command.extend(("--generated-at", generated_at))
     if expected_asset_bindings is not None:
@@ -1241,6 +1268,10 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--aura-particlefield-path", default=None)
     parser.add_argument("--generated-at")
     parser.add_argument("--expected-asset-bindings-json")
+    parser.add_argument("--worker-source", default=None)
+    parser.add_argument("--runtime-module-source", default=None)
+    parser.add_argument("--extra-native-path", action="append", default=[])
+    parser.add_argument("--skip-task-collision-derivative", action="store_true")
     args = parser.parse_args(argv)
     expected_bindings = (
         json.loads(args.expected_asset_bindings_json)
@@ -1259,6 +1290,10 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
         aura_particlefield_path=args.aura_particlefield_path,
         generated_at=args.generated_at,
         expected_asset_bindings=expected_bindings,
+        worker_source=args.worker_source,
+        runtime_module_source=args.runtime_module_source,
+        extra_native_paths=args.extra_native_path,
+        build_task_collision_derivative=not args.skip_task_collision_derivative,
     )
     return 0
 

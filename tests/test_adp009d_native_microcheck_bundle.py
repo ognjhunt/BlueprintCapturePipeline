@@ -2917,3 +2917,44 @@ def test_the_sage_audits_still_run_by_default(tmp_path: Path) -> None:
     )
 
     assert receipt["sage_profile"] is not None
+
+
+def test_the_isolated_wrapper_forwards_the_new_parameters(tmp_path: Path) -> None:
+    """The wrapper rebuilds the call as a subprocess command line.
+
+    A parameter added to the builder but not to that command line is silently
+    dropped: the parent asks for an overridden worker, the child builds the
+    rigid one, and the bundle looks correct. Only running the real wrapper
+    catches it.
+    """
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    worker = tmp_path / "w.py"
+    worker.write_text("PAYLOAD = 'articulated'\n", encoding="utf-8")
+    payload = tmp_path / "p"
+    payload.mkdir()
+    (payload / "scene_spec.json").write_text("{}\n", encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle_isolated(
+        job_dir=tmp_path / "job",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="5" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+        worker_source=worker,
+        extra_native_paths=[payload / "scene_spec.json"],
+        build_task_collision_derivative=False,
+    )
+
+    import zipfile
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        shipped = archive.read(
+            "provider_runtime/adp_arena_provider_runner.py"
+        ).decode()
+    assert shipped == "PAYLOAD = 'articulated'\n"
+    assert "provider_runtime/native/scene_spec.json" in names
+    assert receipt["sage_profile"] is None
