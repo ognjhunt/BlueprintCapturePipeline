@@ -52,7 +52,7 @@ RUNTIME_EXPERIENCE_RELATIVE_PATH = (
     "isaaclab.python.headless.rendering.kit"
 )
 RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH = (
-    "runtime_sources/isaaclab/pyproject.toml"
+    "runtime_sources/isaaclab/source/isaaclab/setup.py"
 )
 ARENA_REPOSITORY = "https://github.com/isaac-sim/IsaacLab-Arena.git"
 ARENA_COMMIT = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
@@ -566,7 +566,7 @@ def materialize_native_task_runtime_source_packet(
     # root at import time.  They are runtime inputs, not optional developer
     # metadata, so keep the complete released ``apps`` directory in the exact
     # source closure alongside the Python packages.
-    isaaclab_prefixes = ["LICENSE", "pyproject.toml", "apps"] + [
+    isaaclab_prefixes = ["LICENSE", "apps"] + [
         f"source/{name}" for name in ISAACLAB_PACKAGE_NAMES
     ]
     isaaclab, isaaclab_blobs = _repository_rows(
@@ -587,7 +587,7 @@ def materialize_native_task_runtime_source_packet(
         ),
         b"",
     )
-    if b'"warp-lang==1.12.0"' not in dependency_manifest:
+    if b"warp-lang==1.12.0" not in dependency_manifest:
         raise NativeTaskRuntimeSourcePacketError(
             ["native_task_runtime_dependency_source_contract_invalid:warp-lang"]
         )

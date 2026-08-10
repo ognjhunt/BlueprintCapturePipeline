@@ -48,10 +48,6 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
     else:
         files = {
             "LICENSE": "BSD-3-Clause fixture\n",
-            "pyproject.toml": (
-                "[project]\nname='isaaclab-fixture'\n"
-                'dependencies=["warp-lang==1.12.0"]\n'
-            ),
             "apps/isaaclab.python.kit": (
                 "[dependencies]\n\"omni.physics.physx\" = {}\n"
                 "[settings.app.extensions]\n"
@@ -69,7 +65,9 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
         }
         for name in ISAACLAB_PACKAGE_NAMES:
             files[f"source/{name}/setup.py"] = (
-                "from setuptools import setup; " f"setup(name='{name}')\n"
+                "from setuptools import setup; "
+                f"setup(name='{name}', install_requires="
+                f"{['warp-lang==1.12.0'] if name == 'isaaclab' else []!r})\n"
             )
             files[f"source/{name}/pyproject.toml"] = (
                 "[build-system]\nrequires=['setuptools']\n"
@@ -155,7 +153,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         verified["repositories"][0]["commit"]
     )
     assert verified["runtime_dependency_basis"]["relative_path"] == (
-        "runtime_sources/isaaclab/pyproject.toml"
+        "runtime_sources/isaaclab/source/isaaclab/setup.py"
     )
     assert {
         ("antlr4-python3-runtime", "4.9.3"),
@@ -243,10 +241,11 @@ def test_source_packet_rejects_warp_wheel_not_bound_by_api_source(
     tmp_path: Path,
 ) -> None:
     isaaclab, _, _ = _repository(tmp_path / "lab", arena=False)
-    (isaaclab / "pyproject.toml").write_text(
-        "[project]\nname='fixture'\ndependencies=[]\n", encoding="utf-8"
+    (isaaclab / "source/isaaclab/setup.py").write_text(
+        "from setuptools import setup; setup(name='isaaclab')\n",
+        encoding="utf-8",
     )
-    _git(isaaclab, "add", "pyproject.toml")
+    _git(isaaclab, "add", "source/isaaclab/setup.py")
     _git(isaaclab, "commit", "-m", "remove warp contract")
     isaaclab_commit = _git(isaaclab, "rev-parse", "HEAD")
     isaaclab_tree = _git(isaaclab, "rev-parse", "HEAD^{tree}")
