@@ -29,6 +29,7 @@ PROGRAM_ID = "arm-decision-proof-v1"
 FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
 ASSET_ROLES = ("scene_collision", "scene_appearance", "task_object")
 CAMERA_ROLES = ("external", "wrist", "overview")
+CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
 TASK_KINDS = ("rigid_pick_place", "articulated_open_close")
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
 DROID_FRANKA_RESET_JOINT_NAMES = (
@@ -182,6 +183,37 @@ def _camera_rows(
             error=f"native_task_runtime_camera_pose_invalid:{role}",
             errors=errors,
         )
+        optical_convention = str(source.get("optical_convention") or "")
+        if optical_convention not in CAMERA_OPTICAL_CONVENTIONS:
+            errors.append(f"native_task_runtime_camera_convention_invalid:{role}")
+        if matrix:
+            rotation = [matrix[0:3], matrix[4:7], matrix[8:11]]
+            bottom = matrix[12:16]
+            row_norms = [sum(item * item for item in row) for row in rotation]
+            pair_dots = [
+                sum(rotation[left][axis] * rotation[right][axis] for axis in range(3))
+                for left, right in ((0, 1), (0, 2), (1, 2))
+            ]
+            determinant = (
+                rotation[0][0]
+                * (rotation[1][1] * rotation[2][2] - rotation[1][2] * rotation[2][1])
+                - rotation[0][1]
+                * (rotation[1][0] * rotation[2][2] - rotation[1][2] * rotation[2][0])
+                + rotation[0][2]
+                * (rotation[1][0] * rotation[2][1] - rotation[1][1] * rotation[2][0])
+            )
+            if (
+                any(abs(norm - 1.0) > 1e-6 for norm in row_norms)
+                or any(abs(dot) > 1e-6 for dot in pair_dots)
+                or abs(determinant - 1.0) > 1e-6
+                or any(
+                    abs(actual - expected) > 1e-9
+                    for actual, expected in zip(
+                        bottom, (0.0, 0.0, 0.0, 1.0), strict=True
+                    )
+                )
+            ):
+                errors.append(f"native_task_runtime_camera_pose_invalid:{role}")
         intrinsics = source.get("intrinsics")
         if not isinstance(intrinsics, Mapping):
             errors.append(f"native_task_runtime_camera_intrinsics_invalid:{role}")
@@ -215,6 +247,7 @@ def _camera_rows(
                 "review_only": role == "overview",
                 "scoring_input": False,
                 "pose_frame": frame,
+                "optical_convention": optical_convention,
                 "frame_from_camera_matrix": matrix,
                 "intrinsics": intrinsic_values,
             }

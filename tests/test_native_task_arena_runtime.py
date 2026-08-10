@@ -1,0 +1,439 @@
+from __future__ import annotations
+
+import enum
+import math
+import sys
+import types
+from types import SimpleNamespace
+
+import pytest
+
+from blueprint_pipeline.native_task_arena_runtime import (
+    NativeTaskArenaRuntimeError,
+    build_native_task_arena_environment,
+    camera_runtime_parameters,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+
+def _camera(role: str, matrix: list[float] | None = None) -> dict:
+    return {
+        "role": role,
+        "policy_input": role in {"external", "wrist"},
+        "review_only": role == "overview",
+        "optical_convention": "opencv",
+        "frame_from_camera_matrix": matrix
+        or [
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            2.0,
+            0.0,
+            0.0,
+            1.0,
+            3.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        "intrinsics": {
+            "fx": 300.0,
+            "fy": 300.0,
+            "cx": 159.5,
+            "cy": 89.5,
+            "width": 320,
+            "height": 180,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("role", "runtime_name", "prim_path"),
+    [
+        ("external", "external_camera", "{ENV_REGEX_NS}/external_camera"),
+        (
+            "wrist",
+            "wrist_camera",
+            "{ENV_REGEX_NS}/Robot/panda_hand/wrist_camera",
+        ),
+        ("overview", "external_camera_2", "{ENV_REGEX_NS}/external_camera_2"),
+    ],
+)
+def test_calibrated_cameras_map_to_role_neutral_native_cfg(
+    role: str, runtime_name: str, prim_path: str
+) -> None:
+    parameters = camera_runtime_parameters(_camera(role))
+
+    assert parameters["runtime_name"] == runtime_name
+    assert parameters["prim_path"] == prim_path
+    assert parameters["offset_position_m"] == [1.0, 2.0, 3.0]
+    assert parameters["offset_rotation_xyzw"] == [0.0, 0.0, 0.0, 1.0]
+    assert parameters["isaac_offset_convention"] == "ros"
+    assert parameters["focal_length_mm"] == pytest.approx(
+        300.0 * 20.955 / 320.0
+    )
+    assert parameters["vertical_aperture_mm"] == pytest.approx(
+        20.955 * 180.0 / 320.0
+    )
+
+
+def test_rotation_is_converted_to_xyzw_not_legacy_wxyz() -> None:
+    angle = math.pi / 2.0
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    matrix = [
+        cosine,
+        -sine,
+        0.0,
+        0.0,
+        sine,
+        cosine,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+
+    parameters = camera_runtime_parameters(_camera("external", matrix))
+
+    assert parameters["offset_rotation_xyzw"] == pytest.approx(
+        [0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5)]
+    )
+
+
+def test_off_center_or_non_square_intrinsics_fail_before_gpu() -> None:
+    camera = _camera("external")
+    camera["intrinsics"]["cx"] = 160.0
+
+    with pytest.raises(NativeTaskArenaRuntimeError) as excinfo:
+        camera_runtime_parameters(camera)
+
+    assert excinfo.value.errors == (
+        "native_task_arena_camera_intrinsics_not_representable:external",
+    )
+
+
+class _Replaceable(SimpleNamespace):
+    def replace(self, **kwargs):
+        values = dict(vars(self))
+        values.update(kwargs)
+        return _Replaceable(**values)
+
+
+class _ObjectType(enum.Enum):
+    BASE = "BASE"
+    RIGID = "RIGID"
+    ARTICULATION = "ARTICULATION"
+    SPAWNER = "SPAWNER"
+
+
+class _Asset:
+    def __init__(self, name: str, **_kwargs):
+        self.name = name
+
+
+class _Object(_Asset):
+    def __init__(
+        self,
+        *,
+        name,
+        prim_path=None,
+        object_type=None,
+        usd_path=None,
+        initial_pose=None,
+        spawn_cfg_addon=None,
+        **_kwargs,
+    ):
+        super().__init__(name)
+        self.prim_path = prim_path
+        self.object_type = object_type
+        self.usd_path = usd_path
+        self.initial_pose = initial_pose
+        self.spawn_cfg_addon = spawn_cfg_addon or {}
+        self.object_cfg = SimpleNamespace(init_state=_Replaceable(joint_pos={}))
+
+
+class _Pose:
+    def __init__(self, *, position_xyz, rotation_xyzw):
+        self.position_xyz = position_xyz
+        self.rotation_xyzw = rotation_xyzw
+
+
+class _CameraCfg:
+    def __init__(self):
+        self.prim_path = ""
+        self.offset = SimpleNamespace(pos=(), rot=(), convention="")
+        self.spawn = SimpleNamespace(
+            focal_length=0.0, horizontal_aperture=0.0, vertical_aperture=0.0
+        )
+
+
+class _Embodiment:
+    def __init__(self, *, enable_cameras, initial_pose, initial_joint_pose):
+        assert enable_cameras is True
+        self.initial_pose = initial_pose
+        self.initial_joint_pose = initial_joint_pose
+        self.event_config = SimpleNamespace(
+            init_franka_arm_pose=SimpleNamespace(params={}),
+            randomize_franka_joint_state=SimpleNamespace(params={}),
+        )
+        self.scene_config = SimpleNamespace(
+            stand=object(),
+            robot=SimpleNamespace(
+                init_state=_Replaceable(joint_pos={}),
+                spawn=SimpleNamespace(semantic_tags=[]),
+            ),
+        )
+        self.camera_config = SimpleNamespace(
+            external_camera=_CameraCfg(),
+            wrist_camera=_CameraCfg(),
+            external_camera_2=_CameraCfg(),
+        )
+
+    def get_scene_cfg(self):
+        return self.scene_config
+
+
+class _Scene:
+    def __init__(self, *, assets):
+        self.assets = assets
+
+
+class _ArenaEnvironment:
+    def __init__(self, **kwargs):
+        vars(self).update(kwargs)
+
+
+class _ArenaBuilder:
+    last = None
+
+    def __init__(self, arena_env, args):
+        self.arena_env = arena_env
+        self.args = args
+        type(self).last = self
+
+    def make_registered_and_return_cfg(self, *, render_mode):
+        assert render_mode == "rgb_array"
+        cfg = SimpleNamespace(
+            sim=SimpleNamespace(), seed=None, decimation=None, episode_length_s=None
+        )
+        self.arena_env.env_cfg_callback(cfg)
+        return "native-env", cfg
+
+
+def _install_fake_native_runtime(monkeypatch) -> None:
+    modules = {
+        "isaaclab": types.ModuleType("isaaclab"),
+        "isaaclab.envs": types.ModuleType("isaaclab.envs"),
+        "isaaclab.envs.mdp": types.ModuleType("isaaclab.envs.mdp"),
+        "isaaclab.sim": types.ModuleType("isaaclab.sim"),
+        "isaaclab.managers": types.ModuleType("isaaclab.managers"),
+        "isaaclab.sensors": types.ModuleType("isaaclab.sensors"),
+        "isaaclab_arena": types.ModuleType("isaaclab_arena"),
+        "isaaclab_arena.assets": types.ModuleType("isaaclab_arena.assets"),
+        "isaaclab_arena.assets.asset": types.ModuleType(
+            "isaaclab_arena.assets.asset"
+        ),
+        "isaaclab_arena.assets.object": types.ModuleType(
+            "isaaclab_arena.assets.object"
+        ),
+        "isaaclab_arena.assets.object_base": types.ModuleType(
+            "isaaclab_arena.assets.object_base"
+        ),
+        "isaaclab_arena.embodiments": types.ModuleType(
+            "isaaclab_arena.embodiments"
+        ),
+        "isaaclab_arena.embodiments.droid": types.ModuleType(
+            "isaaclab_arena.embodiments.droid"
+        ),
+        "isaaclab_arena.embodiments.droid.droid": types.ModuleType(
+            "isaaclab_arena.embodiments.droid.droid"
+        ),
+        "isaaclab_arena.environments": types.ModuleType(
+            "isaaclab_arena.environments"
+        ),
+        "isaaclab_arena.environments.arena_env_builder": types.ModuleType(
+            "isaaclab_arena.environments.arena_env_builder"
+        ),
+        "isaaclab_arena.environments.isaaclab_arena_environment": types.ModuleType(
+            "isaaclab_arena.environments.isaaclab_arena_environment"
+        ),
+        "isaaclab_arena.scene": types.ModuleType("isaaclab_arena.scene"),
+        "isaaclab_arena.scene.scene": types.ModuleType("isaaclab_arena.scene.scene"),
+        "isaaclab_arena.tasks": types.ModuleType("isaaclab_arena.tasks"),
+        "isaaclab_arena.tasks.no_task": types.ModuleType(
+            "isaaclab_arena.tasks.no_task"
+        ),
+        "isaaclab_arena.utils": types.ModuleType("isaaclab_arena.utils"),
+        "isaaclab_arena.utils.pose": types.ModuleType("isaaclab_arena.utils.pose"),
+        "isaaclab_physx": types.ModuleType("isaaclab_physx"),
+        "isaaclab_physx.physics": types.ModuleType("isaaclab_physx.physics"),
+    }
+    modules["isaaclab.envs.mdp"].reset_joints_by_offset = object()
+    modules["isaaclab.sim"].DomeLightCfg = lambda **kwargs: SimpleNamespace(**kwargs)
+    modules["isaaclab.managers"].EventTermCfg = (
+        lambda **kwargs: SimpleNamespace(**kwargs)
+    )
+    modules["isaaclab.managers"].SceneEntityCfg = (
+        lambda name: SimpleNamespace(name=name)
+    )
+    modules["isaaclab.sensors"].ContactSensorCfg = (
+        lambda **kwargs: SimpleNamespace(**kwargs)
+    )
+    modules["isaaclab_arena.assets.asset"].Asset = _Asset
+    modules["isaaclab_arena.assets.object"].Object = _Object
+    modules["isaaclab_arena.assets.object_base"].ObjectType = _ObjectType
+    modules[
+        "isaaclab_arena.embodiments.droid.droid"
+    ].DroidAbsoluteJointPositionEmbodiment = _Embodiment
+    modules[
+        "isaaclab_arena.environments.arena_env_builder"
+    ].ArenaEnvBuilder = _ArenaBuilder
+    modules[
+        "isaaclab_arena.environments.isaaclab_arena_environment"
+    ].IsaacLabArenaEnvironment = _ArenaEnvironment
+    modules["isaaclab_arena.scene.scene"].Scene = _Scene
+    modules["isaaclab_arena.tasks.no_task"].NoTask = object
+    modules["isaaclab_arena.utils.pose"].Pose = _Pose
+    modules["isaaclab_physx.physics"].PhysxCfg = (
+        lambda **kwargs: SimpleNamespace(**kwargs)
+    )
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def _sealed_scene_plan() -> dict:
+    cameras = [_camera(role) for role in ("external", "wrist", "overview")]
+    plan = {
+        "schema_version": "native_task_arena_scene_plan.v1",
+        "scene_id": "fixture_scene",
+        "task_id": "fixture_task",
+        "task_kind": "articulated_open_close",
+        "runtime_contract_digest": "sha256:" + "a" * 64,
+        "scenario": {"seed": 17},
+        "asset_directory": "/provider/assets",
+        "objects": [
+            {
+                "semantic_role": "scene_collision",
+                "prim_path": "{ENV_REGEX_NS}/scene_collision",
+                "object_type": "BASE",
+                "usd_path": "/provider/assets/collision.usd",
+                "visible": False,
+                "pose_world": {
+                    "position_world_m": [0.0, 0.0, 0.0],
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+            },
+            {
+                "semantic_role": "task_object",
+                "prim_path": "{ENV_REGEX_NS}/task_object",
+                "object_type": "ARTICULATION",
+                "usd_path": "/provider/assets/task.usda",
+                "visible": True,
+                "pose_world": {
+                    "position_world_m": [1.0, 2.0, 0.0],
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+            },
+        ],
+        "robot": {
+            "base_pose_world": {
+                "position_world_m": [1.75, 1.99, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "joint_reset_positions_rad": {
+                "panda_joint1": 0.0,
+                "panda_joint2": -0.6,
+            },
+        },
+        "cameras": cameras,
+        "cadence": {
+            "physics_dt_seconds": 1.0 / 120.0,
+            "control_decimation": 8,
+            "episode_length_seconds": 32.0,
+        },
+        "articulation": {
+            "contact_sensors": [
+                {
+                    "sensor_id": "task_robot_contact",
+                    "prim_path": "{ENV_REGEX_NS}/task_object/upper_door",
+                    "filter_prim_paths_expr": ["{ENV_REGEX_NS}/Robot/gripper/.*"],
+                },
+                {
+                    "sensor_id": "task_scene_contact",
+                    "prim_path": "{ENV_REGEX_NS}/task_object/upper_door",
+                    "filter_prim_paths_expr": [
+                        "{ENV_REGEX_NS}/scene_collision/.*"
+                    ],
+                },
+                {
+                    "sensor_id": "robot_scene_contact",
+                    "prim_path": "{ENV_REGEX_NS}/Robot/.*",
+                    "filter_prim_paths_expr": [
+                        "{ENV_REGEX_NS}/scene_collision/.*"
+                    ],
+                },
+            ]
+        },
+        "reset": {
+            "task_joint_positions_rad": {
+                "upper_door_hinge": 0.0,
+                "lower_door_hinge": 0.0,
+            }
+        },
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> None:
+    _install_fake_native_runtime(monkeypatch)
+
+    built = build_native_task_arena_environment(_sealed_scene_plan())
+
+    assert built.env == "native-env"
+    assert built.cfg.sim.dt == pytest.approx(1.0 / 120.0)
+    assert built.cfg.decimation == 8
+    assert built.cfg.episode_length_s == 32.0
+    assert built.scene_asset_names == {
+        "scene_collision": "scene_collision",
+        "task_object": "task_object",
+    }
+    assert set(built.contact_sensor_names) == {
+        "task_robot_contact",
+        "task_scene_contact",
+        "robot_scene_contact",
+    }
+    assert built.camera_scene_names == {
+        "external": "external_camera",
+        "wrist": "wrist_camera",
+        "overview": "external_camera_2",
+    }
+    arena_env = _ArenaBuilder.last.arena_env
+    task_object = next(
+        asset for asset in arena_env.scene.assets if asset.name == "task_object"
+    )
+    assert task_object.object_type is _ObjectType.ARTICULATION
+    assert task_object.object_cfg.init_state.joint_pos == {
+        "upper_door_hinge": 0.0,
+        "lower_door_hinge": 0.0,
+    }
+    reset_owner = next(
+        asset for asset in arena_env.scene.assets if asset.name == "task_robot_contact"
+    )
+    assert reset_owner.event_name == "reset_task_object_joints"
+    assert reset_owner.event_cfg.params["asset_cfg"].name == "task_object"
+    assert reset_owner.event_cfg.params["position_range"] == (0.0, 0.0)
+    assert _ArenaBuilder.last.args.device == "cuda:0"

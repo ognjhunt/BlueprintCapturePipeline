@@ -32,6 +32,7 @@ def _camera(role: str) -> dict:
         "policy_input": role in {"external", "wrist"},
         "scoring_input": False,
         "pose_frame": "panda_hand" if wrist else "world",
+        "optical_convention": "opencv",
         "frame_from_camera_matrix": [
             1.0,
             0.0,
@@ -204,6 +205,18 @@ def test_policy_and_review_camera_roles_cannot_be_swapped() -> None:
         materialize_native_task_runtime_contract(**fixture)
 
     assert "native_task_runtime_camera_policy_role_invalid:overview" in excinfo.value.errors
+
+
+def test_camera_pose_must_be_rigid_and_opencv_calibrated() -> None:
+    fixture = _articulated_fixture()
+    fixture["cameras"][0]["frame_from_camera_matrix"][0] = 2.0
+    fixture["cameras"][1]["optical_convention"] = "unspecified"
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert "native_task_runtime_camera_pose_invalid:external" in excinfo.value.errors
+    assert "native_task_runtime_camera_convention_invalid:wrist" in excinfo.value.errors
 
 
 def test_runtime_contract_round_trip_and_tamper_rejection(tmp_path: Path) -> None:

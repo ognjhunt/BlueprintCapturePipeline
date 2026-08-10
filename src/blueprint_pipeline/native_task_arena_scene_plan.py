@@ -125,6 +125,10 @@ def _cadence(contract: Mapping[str, Any], *, physics_frequency_hz: float) -> dic
         control_frequency = float(contract["task_spec"]["control_frequency_hz"])
         physics_frequency = float(physics_frequency_hz)
         ratio = physics_frequency / control_frequency
+        maximum_action_steps = int(contract["task_spec"]["maximum_action_steps"])
+        settle_window_samples = int(
+            contract["task_spec"].get("settle_window_samples", 0)
+        )
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_control_cadence_invalid"]
@@ -136,6 +140,8 @@ def _cadence(contract: Mapping[str, Any], *, physics_frequency_hz: float) -> dic
         or control_frequency <= 0.0
         or physics_frequency <= 0.0
         or rounded < 1
+        or maximum_action_steps <= 0
+        or settle_window_samples < 0
         or not math.isclose(ratio, rounded, rel_tol=0.0, abs_tol=1e-9)
     ):
         raise NativeTaskArenaScenePlanError(
@@ -146,6 +152,12 @@ def _cadence(contract: Mapping[str, Any], *, physics_frequency_hz: float) -> dic
         "physics_frequency_hz": physics_frequency,
         "physics_dt_seconds": 1.0 / physics_frequency,
         "control_decimation": int(rounded),
+        "maximum_action_steps": maximum_action_steps,
+        "settle_window_samples": settle_window_samples,
+        "episode_length_seconds": (
+            maximum_action_steps + settle_window_samples + 1
+        )
+        / control_frequency,
     }
 
 

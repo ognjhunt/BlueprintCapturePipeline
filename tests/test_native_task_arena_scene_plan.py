@@ -33,6 +33,7 @@ def _camera(role: str) -> dict:
         "policy_input": role in {"external", "wrist"},
         "scoring_input": False,
         "pose_frame": "panda_hand" if role == "wrist" else "world",
+        "optical_convention": "opencv",
         "frame_from_camera_matrix": [
             1.0,
             0.0,
@@ -96,6 +97,7 @@ def _contract(tmp_path: Path, *, articulated: bool) -> tuple[dict, Path]:
             "task_kind": "rigid_pick_place",
             "prompt": "Pick and place the object.",
             "control_frequency_hz": 15,
+            "maximum_action_steps": 450,
         }
     )
     joint_bindings = (
