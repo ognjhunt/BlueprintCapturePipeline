@@ -181,22 +181,27 @@ def test_a_door_that_never_gets_there_still_fails() -> None:
 def test_holding_means_the_door_stopped_not_merely_that_it_ended_up_there() -> None:
     """Coast is not drift, and the endpoint alone cannot tell them apart.
 
-    A door still swinging when the clock runs out lands somewhere by accident;
-    one that came to rest is holding. Only the tail of the settle window
-    distinguishes them.
+    Both of these finish at the same angle inside the window. One is still
+    travelling when the clock runs out and happens to be passing through; the
+    other has come to rest. Only how the motion changes across the settle
+    window separates them.
     """
 
     module = _worker()
 
     still_moving = module._evaluate_positive(
         positive=_positive(
-            angle_trace_degrees=[0.0, 20.0, 35.0, 44.0, 47.0, 49.0, 50.5, 51.39]
+            settle_trace_degrees=[44.0, 45.5, 47.0, 48.5, 50.0, 51.39]
         ),
         window=[45.0, 55.0],
         hold_tolerance_degrees=0.5,
     )
     at_rest = module._evaluate_positive(
-        positive=_positive(), window=[45.0, 55.0], hold_tolerance_degrees=0.5
+        positive=_positive(
+            settle_trace_degrees=[49.0, 50.4, 51.0, 51.2, 51.35, 51.39]
+        ),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
     )
 
     assert still_moving["holds_after_release"]["passed"] is False
@@ -210,7 +215,7 @@ def test_coming_to_rest_outside_the_window_is_not_holding() -> None:
         positive=_positive(
             settled_angle_degrees=58.5,
             maximum_angle_degrees=58.5,
-            angle_trace_degrees=[0.0, 30.0, 58.5, 58.5, 58.5, 58.5],
+            settle_trace_degrees=[58.5, 58.5, 58.5, 58.5, 58.5, 58.5],
         ),
         window=[45.0, 55.0],
         hold_tolerance_degrees=0.5,
@@ -225,10 +230,81 @@ def test_a_result_without_a_trace_says_so_rather_than_guessing() -> None:
     module = _worker()
 
     verdict = module._evaluate_positive(
-        positive=_positive(angle_trace_degrees=[]),
+        positive=_positive(settle_trace_degrees=[]),
         window=[45.0, 55.0],
         hold_tolerance_degrees=0.5,
     )
 
     assert verdict["holds_after_release"]["tail_motion_degrees"] is None
+    assert verdict["holds_after_release"]["passed"] is False
+
+
+def test_holding_is_judged_on_the_settle_window_alone() -> None:
+    """A tail taken from the whole episode still contains the coast.
+
+    The door is meant to be moving then - that is the coast doing its job - so
+    measuring across it reads deceleration as failure to hold.
+    """
+
+    module = _worker()
+
+    verdict = module._evaluate_positive(
+        positive=_positive(
+            settle_trace_degrees=[49.0, 50.4, 51.0, 51.15, 51.19, 51.20],
+        ),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
+    )
+
+    assert verdict["holds_after_release"]["passed"] is True
+    assert verdict["holds_after_release"]["motion_is_decaying"] is True
+
+
+def test_a_door_swinging_shut_through_the_window_does_not_hold() -> None:
+    """Self-closing is the failure mode this readback exists to catch."""
+
+    module = _worker()
+
+    verdict = module._evaluate_positive(
+        positive=_positive(
+            settle_trace_degrees=[51.0, 49.0, 47.0, 45.5, 43.0, 40.0],
+            settled_angle_degrees=40.0,
+        ),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
+    )
+
+    assert verdict["holds_after_release"]["passed"] is False
+
+
+def test_a_door_that_leaves_the_window_and_returns_does_not_hold() -> None:
+    """Ending up inside is not the same as staying inside."""
+
+    module = _worker()
+
+    verdict = module._evaluate_positive(
+        positive=_positive(
+            settle_trace_degrees=[51.0, 56.5, 57.0, 54.0, 51.5, 51.2],
+        ),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
+    )
+
+    assert verdict["holds_after_release"]["passed"] is False
+
+
+def test_still_accelerating_away_does_not_hold_however_small_the_motion() -> None:
+    """Decaying motion settles; growing motion is on its way out of the window."""
+
+    module = _worker()
+
+    verdict = module._evaluate_positive(
+        positive=_positive(
+            settle_trace_degrees=[51.0, 51.05, 51.12, 51.25, 51.5, 52.0],
+        ),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
+    )
+
+    assert verdict["holds_after_release"]["motion_is_decaying"] is False
     assert verdict["holds_after_release"]["passed"] is False

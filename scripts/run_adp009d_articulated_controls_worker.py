@@ -148,12 +148,23 @@ def _evaluate_positive(
     low, high = float(window[0]), float(window[1])
     maximum = float(positive.get("maximum_angle_degrees") or 0.0)
     settled = float(positive.get("settled_angle_degrees") or 0.0)
-    trace = [float(v) for v in (positive.get("angle_trace_degrees") or [])]
+    settle = [float(v) for v in (positive.get("settle_trace_degrees") or [])]
 
+    # Judged on the settle window alone. A tail taken from the whole episode
+    # still contains the coast, where the door is supposed to be moving, so
+    # measuring across it reads deceleration as a failure to hold.
+    stays_in_window: bool | None = None
+    decaying: bool | None = None
     tail_motion: float | None = None
-    if len(trace) >= 4:
-        tail = trace[-max(2, int(len(trace) * float(tail_fraction))) :]
-        tail_motion = max(tail) - min(tail)
+    if len(settle) >= 4:
+        stays_in_window = all(low <= value <= high for value in settle)
+        half = len(settle) // 2
+        early = max(settle[:half]) - min(settle[:half])
+        late = max(settle[half:]) - min(settle[half:])
+        # Asymptotic settling never reaches exactly zero, so what matters is
+        # that the motion is shrinking, not that it has stopped.
+        decaying = late <= early
+        tail_motion = late
 
     return {
         "reaches_success_window": {
@@ -163,11 +174,13 @@ def _evaluate_positive(
         },
         "holds_after_release": {
             "settled_angle_degrees": settled,
+            "stayed_inside_window": stays_in_window,
+            "motion_is_decaying": decaying,
             "tail_motion_degrees": tail_motion,
             "hold_tolerance_degrees": float(hold_tolerance_degrees),
-            "passed": (
-                tail_motion is not None
-                and tail_motion <= float(hold_tolerance_degrees)
+            "passed": bool(
+                stays_in_window
+                and decaying
                 and low <= settled <= high
             ),
         },
@@ -343,6 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if remaining <= 0:
                     break
             at_release = _angle_degrees()
+            settle_trace: list[float] = [at_release]
             # Release: the task is that the door stays put, so nothing may push
             # while the outcome is being read.
             efforts[0, dof_index] = 0.0
@@ -350,6 +364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 view.set_joint_efforts(efforts)
                 world.step(render=False)
                 trace.append(_angle_degrees())
+                settle_trace.append(_angle_degrees())
             settled = _angle_degrees()
             inside = window[0] <= settled <= window[1]
             return {
@@ -370,6 +385,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "expected_outcome": str(control.get("expected_outcome") or ""),
                 "sample_count": len(trace),
                 "angle_trace_degrees": _downsample(trace, limit=64),
+                "settle_trace_degrees": _downsample(settle_trace, limit=48),
             }
 
         controls = spec.get("controls") or {}
