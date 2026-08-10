@@ -491,3 +491,83 @@ def test_an_extra_native_file_that_does_not_exist_fails_closed(
         )
 
     assert any("extra_native_path_missing" in e for e in excinfo.value.errors)
+
+
+def _probe_with_worker(tmp_path: Path, worker_body: str, name: str) -> tuple[Path, Path]:
+    root = tmp_path / name
+    root.mkdir()
+    stage = root / "controls_stage.usda"
+    stage.write_text("#usda 1.0\n", encoding="utf-8")
+    (root / "articulated_controls_probe_spec.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "articulated_controls_probe_spec.v1",
+                "status": "frozen_not_executed",
+                "stages": {
+                    "controls_stage": {
+                        "path": str(stage),
+                        "sha256": _digest_of(stage),
+                    }
+                },
+                "required_readbacks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker = root / "worker.py"
+    worker.write_text(worker_body, encoding="utf-8")
+    return root, worker
+
+
+def test_an_arena_worker_on_the_bare_isaac_image_fails_closed(tmp_path: Path) -> None:
+    """The base Isaac image has no isaaclab, and the failure is late and total.
+
+    It boots, spends four minutes bringing Isaac up, and then dies on the first
+    Arena import. Nothing before that point can tell - the bundle is
+    well-formed, the digests match, the dry run is clean - so the mismatch
+    between a worker that needs Arena and an image that lacks it is worth
+    refusing at build time.
+    """
+
+    root, worker = _probe_with_worker(
+        tmp_path,
+        "from isaaclab_arena.scene.scene import Scene\n",
+        "arena_worker",
+    )
+
+    with pytest.raises(ArticulatedIsaacBundleError) as excinfo:
+        build_articulated_isaac_bundle(
+            probe_root=root,
+            job_dir=tmp_path / "job",
+            worker_source=worker,
+            source_commit_sha="1" * 40,
+            probe_spec_filename="articulated_controls_probe_spec.json",
+            probe_spec_schema_version="articulated_controls_probe_spec.v1",
+            primary_stage_name="controls_stage",
+        )
+
+    assert any(
+        "worker_needs_arena_image" in error for error in excinfo.value.errors
+    )
+
+
+def test_a_raw_physx_worker_still_ships_on_the_bare_image(tmp_path: Path) -> None:
+    """The articulation probe uses isaacsim only and must keep working."""
+
+    root, worker = _probe_with_worker(
+        tmp_path,
+        "from isaacsim.core.api import World\n",
+        "physx_worker",
+    )
+
+    receipt = build_articulated_isaac_bundle(
+        probe_root=root,
+        job_dir=tmp_path / "job2",
+        worker_source=worker,
+        source_commit_sha="2" * 40,
+        probe_spec_filename="articulated_controls_probe_spec.json",
+        probe_spec_schema_version="articulated_controls_probe_spec.v1",
+        primary_stage_name="controls_stage",
+    )
+
+    assert receipt["worker_requires_arena"] is False

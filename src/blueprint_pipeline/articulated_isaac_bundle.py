@@ -111,6 +111,24 @@ def build_articulated_isaac_bundle(
     # Probe kinds multiply; the transport does not. Forking this builder per
     # kind would fork the slot layout, the image pin and the digest checks with
     # it, and those are the parts whose drift costs a launch to discover.
+    # The base Isaac image carries isaacsim but not isaaclab or Arena. A worker
+    # that needs them boots, spends four minutes bringing Isaac up, and dies on
+    # its first import - and nothing before that can tell, because the bundle is
+    # well-formed and the dry run is clean. Refuse the pairing at build time.
+    worker_source_text = worker.read_text(encoding="utf-8", errors="ignore")
+    requires_arena = any(
+        token in worker_source_text
+        for token in ("isaaclab_arena", "import isaaclab", "from isaaclab")
+    )
+    if requires_arena and container_image == DEFAULT_IMAGE:
+        raise ArticulatedIsaacBundleError(
+            [
+                "articulated_isaac_bundle_worker_needs_arena_image:"
+                "worker imports isaaclab but the bare isaac-sim image does not "
+                "provide it; use the Arena-provisioned lane image"
+            ]
+        )
+
     spec_path = root / str(probe_spec_filename)
     if not spec_path.is_file():
         raise ArticulatedIsaacBundleError(["articulated_isaac_bundle_probe_spec_missing"])
@@ -255,6 +273,7 @@ def build_articulated_isaac_bundle(
         # without inheriting drop/slide/tip/gripper semantics.
         "probe_names": sorted(str(name) for name in (spec.get("required_readbacks") or [])),
         "extra_native_file_count": len(list(extra_native_paths)),
+        "worker_requires_arena": requires_arena,
         "result_relative_path": "runtime_output/isaac_runtime_result.json",
         "relative_paths": {
             "entrypoint": "provider_runtime/run_isaac_realistic_runtime.sh",
