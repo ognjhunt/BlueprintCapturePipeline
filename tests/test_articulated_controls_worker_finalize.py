@@ -133,3 +133,102 @@ def test_the_peak_is_never_lost_to_downsampling() -> None:
     kept = module._downsample(trace, limit=16)
 
     assert max(kept) == 88.0
+
+
+def _positive(**overrides):
+    row = {
+        "control_id": "forced_positive",
+        "angle_at_release_degrees": 30.79,
+        "settled_angle_degrees": 51.39,
+        "maximum_angle_degrees": 51.39,
+        "drift_after_release_degrees": 20.60,
+        "angle_trace_degrees": [0.0, 6.2, 30.8, 45.0, 51.3, 51.39, 51.39, 51.39],
+    }
+    row.update(overrides)
+    return row
+
+
+def test_reaching_the_window_is_about_where_the_door_gets_to() -> None:
+    """The release angle is deliberately below the window, not inside it.
+
+    The schedule lets go early on purpose and lets the door coast in, so
+    checking the release angle against the window contradicts the design by
+    construction - it can only pass if the coast model is wrong.
+    """
+
+    module = _worker()
+
+    verdict = module._evaluate_positive(
+        positive=_positive(), window=[45.0, 55.0], hold_tolerance_degrees=0.5
+    )
+
+    assert verdict["reaches_success_window"]["passed"] is True
+    assert verdict["reaches_success_window"]["maximum_angle_degrees"] == 51.39
+
+
+def test_a_door_that_never_gets_there_still_fails() -> None:
+    module = _worker()
+
+    verdict = module._evaluate_positive(
+        positive=_positive(maximum_angle_degrees=8.73, settled_angle_degrees=8.73),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
+    )
+
+    assert verdict["reaches_success_window"]["passed"] is False
+
+
+def test_holding_means_the_door_stopped_not_merely_that_it_ended_up_there() -> None:
+    """Coast is not drift, and the endpoint alone cannot tell them apart.
+
+    A door still swinging when the clock runs out lands somewhere by accident;
+    one that came to rest is holding. Only the tail of the settle window
+    distinguishes them.
+    """
+
+    module = _worker()
+
+    still_moving = module._evaluate_positive(
+        positive=_positive(
+            angle_trace_degrees=[0.0, 20.0, 35.0, 44.0, 47.0, 49.0, 50.5, 51.39]
+        ),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
+    )
+    at_rest = module._evaluate_positive(
+        positive=_positive(), window=[45.0, 55.0], hold_tolerance_degrees=0.5
+    )
+
+    assert still_moving["holds_after_release"]["passed"] is False
+    assert at_rest["holds_after_release"]["passed"] is True
+
+
+def test_coming_to_rest_outside_the_window_is_not_holding() -> None:
+    module = _worker()
+
+    verdict = module._evaluate_positive(
+        positive=_positive(
+            settled_angle_degrees=58.5,
+            maximum_angle_degrees=58.5,
+            angle_trace_degrees=[0.0, 30.0, 58.5, 58.5, 58.5, 58.5],
+        ),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
+    )
+
+    assert verdict["holds_after_release"]["passed"] is False
+
+
+def test_a_result_without_a_trace_says_so_rather_than_guessing() -> None:
+    """Older runs carry no trace; inferring stillness from an endpoint would lie."""
+
+    module = _worker()
+
+    verdict = module._evaluate_positive(
+        positive=_positive(angle_trace_degrees=[]),
+        window=[45.0, 55.0],
+        hold_tolerance_degrees=0.5,
+    )
+
+    assert verdict["holds_after_release"]["tail_motion_degrees"] is None
+    assert verdict["holds_after_release"]["passed"] is False
