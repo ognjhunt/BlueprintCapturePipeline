@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 
 import pytest
 
@@ -95,6 +96,17 @@ def test_complete_graph_has_no_universal_joint_count_cap() -> None:
         "dependent",
         "passive",
         "locked",
+    }
+    assert len(graph["collision_pairs"]) == 21
+    assert sum(not row["collision_enabled"] for row in graph["collision_pairs"]) == 1
+    assert {
+        (row["link_a"], row["link_b"])
+        for row in graph["collision_pairs"]
+    } == {
+        tuple(pair)
+        for pair in itertools.combinations(
+            sorted(row["link_id"] for row in graph["links"]), 2
+        )
     }
 
 

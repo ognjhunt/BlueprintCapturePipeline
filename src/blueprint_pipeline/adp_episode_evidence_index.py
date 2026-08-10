@@ -15,6 +15,8 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -96,6 +98,28 @@ def _verify_artifact(
 
 def _prefixed_sha256(path: Path) -> str:
     return "sha256:" + _sha256(path)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Replace one owned artifact without exposing partially written bytes."""
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def materialize_supporting_evidence_inventory(
@@ -398,6 +422,7 @@ def materialize_episode_evidence_index(
     run_identity: Mapping[str, Any],
     abstention_receipt: Mapping[str, Any] | None = None,
     supporting_receipt_paths: Sequence[str | Path] = (),
+    replace_existing: bool = False,
 ) -> dict[str, Any]:
     """Verify episode evidence and emit portable JSON plus HTML navigation."""
 
@@ -475,12 +500,34 @@ def materialize_episode_evidence_index(
     payload["index_digest"] = canonical_digest(payload, digest_field="index_digest")
     json_path = root / INDEX_FILENAME
     html_path = root / HTML_FILENAME
-    if json_path.exists() or json_path.is_symlink() or html_path.exists() or html_path.is_symlink():
+    paths_exist = json_path.exists() or html_path.exists()
+    paths_are_symlinks = json_path.is_symlink() or html_path.is_symlink()
+    if paths_are_symlinks:
+        raise EpisodeEvidenceIndexError("episode_evidence_index_symlink_forbidden")
+    if paths_exist and not replace_existing:
         raise EpisodeEvidenceIndexError("episode_evidence_index_overwrite_forbidden")
-    json_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    html_path.write_text(_render_html(payload), encoding="utf-8")
+    if replace_existing:
+        if not json_path.is_file() or not html_path.is_file():
+            raise EpisodeEvidenceIndexError(
+                "episode_evidence_index_refresh_source_incomplete"
+            )
+        previous = _load_json(json_path)
+        if (
+            previous.get("schema_version") != INDEX_SCHEMA_VERSION
+            or previous.get("index_digest")
+            != canonical_digest(previous, digest_field="index_digest")
+        ):
+            raise EpisodeEvidenceIndexError(
+                "episode_evidence_index_refresh_source_invalid"
+            )
+    json_content = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    html_content = _render_html(payload)
+    if replace_existing:
+        _atomic_write_text(json_path, json_content)
+        _atomic_write_text(html_path, html_content)
+    else:
+        json_path.write_text(json_content, encoding="utf-8")
+        html_path.write_text(html_content, encoding="utf-8")
     return {
         "index": payload,
         "artifacts": [

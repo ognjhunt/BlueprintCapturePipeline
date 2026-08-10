@@ -18,6 +18,8 @@ learned policies were therefore not admitted. This is not a policy result.
 - Landed dual-task evidence/abstention commit:
   `3537430662cb5914977b04ebeb6164aa077cba3e`. Latest preceding provider-runtime
   implementation commit: `dd893aaed0adb3ecc5c58e558a7cf639fca09a7c`.
+  Latest reusable construction-gate hardening commit:
+  `84268ee16881673aed5de44f79b285538e9381e1`.
   Both are pushed on `codex/adp-third-scene-dual-task-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
@@ -183,25 +185,35 @@ decidable**. The authored notebook candidate has not passed the rigid pose range
 or replacement-depth coverage. Neither task is labeled
 `inpainting_not_required`, and no image edit was used as evidence.
 
-Task A SimReady candidate: **authored, not simulator-qualified**. Its general
-graph compiler emitted six links, five joints, ten primitive colliders, complete
-mass/COM/inertia and material parameters, joint limits/drives/reset metadata,
-and an explicit runtime dependency-controller requirement. USD SHA-256:
-`9c52d9fa3e9e52b1ce2bf8c166f7f65aaf325113ee41fcadeb5e72280c249c3a`;
+Task A SimReady candidate: **authored and statically structure-qualified, not
+simulator-qualified**. Its general graph compiler emitted six links, five
+joints, ten primitive colliders, complete mass/COM/inertia and material
+parameters, joint limits/drives/reset metadata, an explicit runtime
+dependency-controller requirement, and the complete 15-pair collision matrix.
+USD SHA-256:
+`4e5caad7fb233f0560ae91d84b1911f9c27eeb1ad85201236f41c0e9c9f2c9ad`;
 authoring receipt digest:
-`sha256:82397cc60d1c1f9375ed0e133967477f10b14498425643a2caab9c321f79453a`.
+`sha256:be6d8579eb620365585fc71476f9eb29c02e317a09d5bac5b5c445bb8da1dc18`;
+static qualification receipt digest:
+`sha256:939ca95f40f976d802f8c3a6a84deff0d889a1d7a1f973cf63b7c63f6d120515`.
 
-Task B SimReady candidate: **authored, not simulator-qualified**. It contains a
-dynamic two-link body with a locked-open hinge and explicit rest frames. USD
+Task B SimReady candidate: **authored and statically structure-qualified, not
+simulator-qualified**. It contains a dynamic two-link body with a locked-open
+hinge, explicit rest frames, and a complete one-pair collision matrix. USD
 SHA-256:
-`21bb119a4ef2ec63741f7deaedece9ccff3312c0fc6da4cf57de61f23337c12a`;
+`821a28dc468cdc3f1b38d92bc7f0e158a63fc1432a54942b2144f5cb0416b7b4`;
 authoring receipt digest:
-`sha256:ee9673d9482f1c5a1cd2c7d8142e20d07ccf88dbdd1fdd01baed6492473c7f99`.
+`sha256:531e3c6d843a2e068a50dfdf1854d3f7d12449aaffb5750716e672b683ea69cf`;
+static qualification receipt digest:
+`sha256:ca503260890021524e9db54b9e6859ffd560b30fceff45cc3b3c47a9545495ee`.
 All dimensions derive from observed bounds or exterior evidence; hidden
 mechanisms and all physics values remain labeled generated/authored estimates.
-Native import, joint/physics behavior, appearance, placement, reach/contact,
-cameras, reset, zero-action, scripted-positive, and policy execution remain
-blocked.
+The static readback reopens exact USD bytes and checks every authored link,
+primitive, transform, mass/COM/inertia, joint, drive, reset, physics material,
+and collision pair. It does not establish collision-approximation quality,
+native import, joint/physics behavior, appearance, placement, reach/contact,
+cameras, reset execution, zero-action, scripted-positive, or policy execution;
+those remain blocked.
 
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
@@ -245,6 +257,12 @@ forks:
 - `dd893aaed`: exact-ID/prefix-scoped concurrent Vast teardown, immutable
   PyTorch/CUDA base-image admission, and digest-bound offline dependency
   wheelhouses.
+- `84268ee1`: single-use paid-attempt lineage, atomic authority consumption,
+  static graph-asset qualification, authored transform/drive corrections, and
+  digest-verified evidence refresh foundations.
+- Current follow-up: complete collision-pair normalization and opt-in atomic
+  refresh of an already-valid portable evidence index. Both are scene-neutral;
+  task-specific values remain in checked-in manifests.
 
 Hermetic regressions preserve the 840313 rigid fixture, 840796 articulated
 fixture, and dual-task shared-asset fixture. Scene-specific values remain in
@@ -283,18 +301,20 @@ scenario, scoring, and evidence contracts.
 
 Portable evidence index:
 [`third_scene_dual_task_evidence/index.html`](third_scene_dual_task_evidence/index.html).
-Each task index links its attempt and recovery receipts plus a digest-verified
-supporting-evidence inventory. Those inventories cover all eight source masks,
+Each task index links its attempt and recovery receipts plus its current
+digest-verified `supporting_evidence_inventory.v2.json`. Those inventories cover
+all eight source masks,
 the authorized render/mask receipt, excision freeze, exact collider removal,
-authored replacement, paid run/teardown/watchdog evidence, and repaired-bundle
-closure without embedding rights-bounded dataset-derived bytes.
+authored replacement, static authored-structure qualification, paid
+run/teardown/watchdog evidence, and repaired-bundle closure without embedding
+rights-bounded dataset-derived bytes.
 
 ## Verification
 
 Before the final reusable-code commit:
 
 - `PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode or nurec or aura"`
-  — `1132 passed, 9809 deselected` before the final evidence-receipt/doc commit.
+  — `1138 passed, 9819 deselected` before this evidence-refresh commit.
 - `.venv/bin/ruff check src/ tests/` — passed.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
@@ -303,7 +323,7 @@ Before the final reusable-code commit:
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; generic rigid scoring/state; task-neutral native policy lane; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring; complete collision-pair normalization; static authored-structure qualification; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; generic rigid scoring/state; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Two exact Gaussian removals, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |

@@ -1,0 +1,62 @@
+{
+    "asset_id": "840920_simready_notebook_candidate",
+    "authored_structure_statically_qualified": true,
+    "authoring_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/replacement_graph_v2/simready_graph_asset_receipt.v1.json",
+        "receipt_digest": "sha256:531e3c6d843a2e068a50dfdf1854d3f7d12449aaffb5750716e672b683ea69cf",
+        "sha256": "sha256:1593aed87db2a52dee9adb79b49c3750a1d31538d896df151680a17cf4a999b2"
+    },
+    "claim_boundary": {
+        "appearance_materially_qualified": false,
+        "authored_usd_structure_only": true,
+        "collision_approximation_qualified": false,
+        "contact_or_support_qualified": false,
+        "joint_physics_behavior_qualified": false,
+        "native_simulator_import_qualified": false,
+        "physical_equivalence_proven": false
+    },
+    "collision_pair_readback": {
+        "complete_pair_count": 1,
+        "declared_pair_count": 1,
+        "filtered_pairs": []
+    },
+    "contract_blockers": [
+        "collision_approximation_contract_unbound",
+        "joint_physics_behavior_unexecuted",
+        "native_simulator_import_unexecuted",
+        "texture_artifact_unbound",
+        "visual_material_artifact_unbound"
+    ],
+    "joint_readback": [
+        {
+            "finding_codes": [],
+            "joint_id": "display_hinge"
+        }
+    ],
+    "link_readback": [
+        {
+            "center_of_mass_inside_collision_aabb": true,
+            "finding_codes": [],
+            "inertia_triangle_inequality_passed": true,
+            "link_id": "base"
+        },
+        {
+            "center_of_mass_inside_collision_aabb": true,
+            "finding_codes": [],
+            "inertia_triangle_inequality_passed": true,
+            "link_id": "display"
+        }
+    ],
+    "receipt_digest": "sha256:ca503260890021524e9db54b9e6859ffd560b30fceff45cc3b3c47a9545495ee",
+    "replacement_usd": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/replacement_graph_v2/replacement.usda",
+        "sha256": "sha256:821a28dc468cdc3f1b38d92bc7f0e158a63fc1432a54942b2144f5cb0416b7b4",
+        "size_bytes": 5866
+    },
+    "schema_version": "simready_graph_asset_static_qualification.v1",
+    "spec_digest": "sha256:db3f07dccef96433340a6b2ebd84c9cc832cc7400dc8bb7b3a991ddb5ccf2f0f",
+    "status": "authored_structure_statically_qualified",
+    "structural_findings": [],
+    "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+    "task_id": "task_b_notebook_relocation"
+}

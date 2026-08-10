@@ -341,3 +341,51 @@ def test_joint_frames_must_author_the_graph_axis(tmp_path: Path) -> None:
         "graph_asset_joint_frame_axis_mismatch:hinge:parent",
         "graph_asset_joint_frame_axis_mismatch:hinge:child",
     }
+
+
+@pytest.mark.parametrize(
+    ("task", "expected_task_id", "expected_pair_count"),
+    [
+        ("a", "task_a_washer_door_open", 15),
+        ("b", "task_b_notebook_relocation", 1),
+    ],
+)
+def test_third_scene_checked_in_graph_assets_retain_static_claim_boundary(
+    task: str, expected_task_id: str, expected_pair_count: int
+) -> None:
+    manifest_root = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "arm_decision_proof_v1"
+        / "manifests"
+    )
+    prefix = f"third_scene_840920_task_{task}_simready_graph_asset"
+    spec = json.loads((manifest_root / f"{prefix}_spec.v1.json").read_text())
+    receipt = json.loads((manifest_root / f"{prefix}_receipt.v1.json").read_text())
+    qualification = json.loads(
+        (manifest_root / f"{prefix}_static_qualification.v1.json").read_text()
+    )
+
+    normalized = validate_simready_graph_asset_spec(spec)
+    assert normalized["spec_digest"] == spec["spec_digest"]
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert qualification["receipt_digest"] == canonical_digest(
+        qualification, digest_field="receipt_digest"
+    )
+    assert receipt["task_id"] == qualification["task_id"] == expected_task_id
+    assert receipt["spec_digest"] == qualification["spec_digest"] == spec["spec_digest"]
+    assert (
+        receipt["output_usd"]["sha256"]
+        == qualification["replacement_usd"]["sha256"]
+    )
+    assert qualification["authored_structure_statically_qualified"] is True
+    assert qualification["structural_findings"] == []
+    assert (
+        qualification["collision_pair_readback"]["complete_pair_count"]
+        == expected_pair_count
+    )
+    assert qualification["claim_boundary"]["native_simulator_import_qualified"] is False
+    assert qualification["claim_boundary"]["appearance_materially_qualified"] is False
+    assert qualification["claim_boundary"]["physical_equivalence_proven"] is False

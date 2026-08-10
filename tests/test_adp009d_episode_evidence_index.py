@@ -370,3 +370,75 @@ def test_supporting_inventory_and_index_reject_symlinks(tmp_path: Path) -> None:
             abstention_receipt=abstention,
             supporting_receipt_paths=["linked.json"],
         )
+
+
+def test_episode_index_refresh_is_opt_in_and_validates_owned_source(
+    tmp_path: Path,
+) -> None:
+    abstention = {
+        "schema_version": "adp_task_evaluation_run_abstention.v1",
+        "status": "typed_evidence_backed_abstention",
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_capability": "first_blocker",
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "receipt_digest": "",
+    }
+    abstention["receipt_digest"] = canonical_digest(
+        abstention, digest_field="receipt_digest"
+    )
+    identity = {
+        "scene_id": "fixture_scene",
+        "task_id": "fixture_task",
+        "scenario_suite_digest": "sha256:frozen-suite",
+    }
+    materialize_episode_evidence_index(
+        run_root=tmp_path,
+        episode_receipt_paths=[],
+        run_identity=identity,
+        abstention_receipt=abstention,
+    )
+
+    abstention["smallest_missing_capability"] = "corrected_blocker"
+    abstention["receipt_digest"] = canonical_digest(
+        abstention, digest_field="receipt_digest"
+    )
+    with pytest.raises(
+        EpisodeEvidenceIndexError, match="episode_evidence_index_overwrite_forbidden"
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[],
+            run_identity=identity,
+            abstention_receipt=abstention,
+        )
+
+    refreshed = materialize_episode_evidence_index(
+        run_root=tmp_path,
+        episode_receipt_paths=[],
+        run_identity=identity,
+        abstention_receipt=abstention,
+        replace_existing=True,
+    )
+    assert (
+        refreshed["index"]["typed_abstention"]["smallest_missing_capability"]
+        == "corrected_blocker"
+    )
+    assert "corrected_blocker" in (tmp_path / HTML_FILENAME).read_text(
+        encoding="utf-8"
+    )
+
+    existing = json.loads((tmp_path / INDEX_FILENAME).read_text(encoding="utf-8"))
+    existing["index_digest"] = "sha256:tampered"
+    (tmp_path / INDEX_FILENAME).write_text(json.dumps(existing), encoding="utf-8")
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="episode_evidence_index_refresh_source_invalid",
+    ):
+        materialize_episode_evidence_index(
+            run_root=tmp_path,
+            episode_receipt_paths=[],
+            run_identity=identity,
+            abstention_receipt=abstention,
+            replace_existing=True,
+        )

@@ -1,1 +1,103 @@
-{"articulation_graph_digest":"sha256:c8c9f552d2add71f72a193deec6ca654d0ae8ec76b2881686e0d2c7b1c611502","asset_id":"840920_simready_washer_candidate","claim_boundary":{"appearance_materially_qualified":false,"generated_geometry_is_observed_truth":false,"joint_physics_behavior_qualified":false,"native_simulator_import_qualified":false,"physical_equivalence_proven":false,"simready_candidate_authored":true},"dependencies":[{"driver_joint_id":"door_hinge","joint_id":"latch_coupler","multiplier":0.05,"native_dependency_controller_required":true,"offset":0.0,"tolerance":0.002}],"joint_paths":{"door_hinge":"/Asset/joints/door_hinge","drawer_slide":"/Asset/joints/drawer_slide","drum_bearing":"/Asset/joints/drum_bearing","latch_coupler":"/Asset/joints/latch_coupler","selector_axis":"/Asset/joints/selector_axis"},"link_paths":{"body":"/Asset/links/body","door":"/Asset/links/door","drawer":"/Asset/links/drawer","drum":"/Asset/links/drum","latch":"/Asset/links/latch","selector":"/Asset/links/selector"},"output_usd":{"default_prim":"/Asset","meters_per_unit":1.0,"path":"/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/replacement_graph_v1/replacement.usda","sha256":"sha256:9c52d9fa3e9e52b1ce2bf8c166f7f65aaf325113ee41fcadeb5e72280c249c3a","size_bytes":21644,"up_axis":"Z"},"physics_authored":{"dependency_controller_required":true,"friction_restitution_materials":true,"joint_limits_drives_and_reset_metadata":true,"mass_com_inertia":true,"physics_values_are_authored_estimates":true,"primitive_collision":true},"provenance_counts":{"generated_candidate":3,"observed_bounds_derived_candidate":4,"observed_exterior_derived_candidate":3},"receipt_digest":"sha256:82397cc60d1c1f9375ed0e133967477f10b14498425643a2caab9c321f79453a","root_body_mode":"fixed","schema_version":"simready_graph_asset_receipt.v1","source_asset_receipt":{"receipt_digest":"sha256:218a5dedb95cb11bfa790beaac10cc0c3d35f5f28dfaaa06271661a69b71bb48","source_asset_sha256":"sha256:607411e0bbf2bd4850321f4ca5f635fa2095a54cdf0dd3df1c95152be8f616cc","source_collision_prim_path":"/Root/ZFAVSKZVAJTGUPTUKM888888"},"spec_digest":"sha256:0825c5a13fefeb9de42dacb3de4d29667319c5b62596b813ee6a4e7cf7e45b98","status":"simready_candidate_authored","task_freeze_digest":"sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152","task_freeze_schema":"dual_task_task_freeze.v1","task_id":"task_a_washer_door_open"}
+{
+    "articulation_graph_digest": "sha256:35c8f9129ca6b717bd73306babd43e26960877c744e92c37c872e7680987e2a6",
+    "asset_id": "840920_simready_washer_candidate",
+    "claim_boundary": {
+        "appearance_materially_qualified": false,
+        "generated_geometry_is_observed_truth": false,
+        "joint_physics_behavior_qualified": false,
+        "native_simulator_import_qualified": false,
+        "physical_equivalence_proven": false,
+        "simready_candidate_authored": true
+    },
+    "dependencies": [
+        {
+            "driver_joint_id": "door_hinge",
+            "joint_id": "latch_coupler",
+            "multiplier": 0.05,
+            "native_dependency_controller_required": true,
+            "offset": 0.0,
+            "tolerance": 0.002
+        }
+    ],
+    "joint_drive_implementations": {
+        "door_hinge": {
+            "declared_drive_type": "force",
+            "implementation": "usd_force_drive",
+            "usd_drive_authored": true,
+            "usd_drive_type": "force"
+        },
+        "drawer_slide": {
+            "declared_drive_type": "force",
+            "implementation": "usd_force_drive",
+            "usd_drive_authored": true,
+            "usd_drive_type": "force"
+        },
+        "drum_bearing": {
+            "declared_drive_type": "none",
+            "implementation": "passive_force_damper",
+            "usd_drive_authored": true,
+            "usd_drive_type": "force"
+        },
+        "latch_coupler": {
+            "declared_drive_type": "force",
+            "implementation": "usd_force_drive",
+            "usd_drive_authored": true,
+            "usd_drive_type": "force"
+        },
+        "selector_axis": {
+            "declared_drive_type": "force",
+            "implementation": "usd_force_drive",
+            "usd_drive_authored": true,
+            "usd_drive_type": "force"
+        }
+    },
+    "joint_paths": {
+        "door_hinge": "/Asset/joints/door_hinge",
+        "drawer_slide": "/Asset/joints/drawer_slide",
+        "drum_bearing": "/Asset/joints/drum_bearing",
+        "latch_coupler": "/Asset/joints/latch_coupler",
+        "selector_axis": "/Asset/joints/selector_axis"
+    },
+    "link_paths": {
+        "body": "/Asset/links/body",
+        "door": "/Asset/links/door",
+        "drawer": "/Asset/links/drawer",
+        "drum": "/Asset/links/drum",
+        "latch": "/Asset/links/latch",
+        "selector": "/Asset/links/selector"
+    },
+    "output_usd": {
+        "default_prim": "/Asset",
+        "meters_per_unit": 1.0,
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/replacement_graph_v2/replacement.usda",
+        "sha256": "sha256:4e5caad7fb233f0560ae91d84b1911f9c27eeb1ad85201236f41c0e9c9f2c9ad",
+        "size_bytes": 22261,
+        "up_axis": "Z"
+    },
+    "physics_authored": {
+        "dependency_controller_required": true,
+        "friction_restitution_materials": true,
+        "joint_limits_drives_and_reset_metadata": true,
+        "mass_com_inertia": true,
+        "physics_values_are_authored_estimates": true,
+        "primitive_collision": true
+    },
+    "provenance_counts": {
+        "generated_candidate": 3,
+        "observed_bounds_derived_candidate": 4,
+        "observed_exterior_derived_candidate": 3
+    },
+    "receipt_digest": "sha256:be6d8579eb620365585fc71476f9eb29c02e317a09d5bac5b5c445bb8da1dc18",
+    "root_body_mode": "fixed",
+    "schema_version": "simready_graph_asset_receipt.v1",
+    "source_asset_receipt": {
+        "receipt_digest": "sha256:218a5dedb95cb11bfa790beaac10cc0c3d35f5f28dfaaa06271661a69b71bb48",
+        "source_asset_sha256": "sha256:607411e0bbf2bd4850321f4ca5f635fa2095a54cdf0dd3df1c95152be8f616cc",
+        "source_collision_prim_path": "/Root/ZFAVSKZVAJTGUPTUKM888888"
+    },
+    "spec_digest": "sha256:406f6162ae4c04266a7c6257a9c814fcc460bece32e39ed3ac2445de1f421fca",
+    "status": "simready_candidate_authored",
+    "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+    "task_freeze_schema": "dual_task_task_freeze.v1",
+    "task_id": "task_a_washer_door_open"
+}

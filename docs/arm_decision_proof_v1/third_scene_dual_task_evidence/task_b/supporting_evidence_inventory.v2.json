@@ -1,0 +1,229 @@
+{
+  "artifact_bytes_embedded": false,
+  "artifact_count": 24,
+  "artifacts": [
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/public_scene_interiorgs_edit_input_receipt.v2.json",
+      "role": "authorized_render_and_mask_receipt",
+      "sha256": "sha256:6827f04557b18e0abdf1d3cdfad19362dbc0dea706830f5ad82f78a8e0685ddd",
+      "size_bytes": 12749,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/excision_freeze_v1/adp009b_gaussian_excision_audit_freeze.v1.json",
+      "role": "gaussian_excision_freeze",
+      "sha256": "sha256:d81c576e2874949d8108520ec4d64835a2fa88c85e1bac3a936b26c2b35a3d1c",
+      "size_bytes": 17699,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/flashsplat_bundle_v2/adp_gaussian_excision_bundle_receipt.json",
+      "role": "paid_attempt:bundle_receipt",
+      "sha256": "sha256:b767af6508734516f5c6ba9af599126dea04e1faa210fdedf7b14cbe913f76ae",
+      "size_bytes": 8079,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/flashsplat_run_v2/run/immutable_execution/adp009b_gaussian_excision_result.json",
+      "role": "paid_attempt:execution_result",
+      "sha256": "sha256:7541d6cf77b3efb42ade854debca2d45e946c7fe418cd8977e5f0b44c36fdf26",
+      "size_bytes": 380,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/flashsplat_run_v2/run/gaussian_excision_vast_result.json",
+      "role": "paid_attempt:run_result",
+      "sha256": "sha256:ef56d01742108b0002c54b0f49998646823047634c762507aa2ec1d34b772444",
+      "size_bytes": 1695,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/flashsplat_run_v2/run/vast_provider_run/vast_teardown_manifest.json",
+      "role": "paid_attempt:teardown_manifest",
+      "sha256": "sha256:ca0938a6b2712ada7810c7184435ce5a23654ff0c0c2c1f7fc0a3661bc38bb04",
+      "size_bytes": 1358,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/flashsplat_run_v2/run/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json",
+      "role": "paid_attempt:watchdog_evidence",
+      "sha256": "sha256:7e5ca59595c2c689c4c2139e8aacf402c1089c2061be4e9ace964c389841324d",
+      "size_bytes": 3282,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/flashsplat_bundle_v3/admission_dry_run.json",
+      "role": "repaired_bundle:admission",
+      "sha256": "sha256:2f50ba1e657e3b1db29571d46761dc6c1786758fb6d3bfd23b2d822b07bef301",
+      "size_bytes": 2190,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/flashsplat_bundle_v3/adp_gaussian_excision_bundle_receipt.json",
+      "role": "repaired_bundle:bundle_receipt",
+      "sha256": "sha256:45e8abd2fac8392c246674cd63a4c207bba8ae26a207cbb1cc21c08803faf833",
+      "size_bytes": 8259,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "shared_scene/gaussian_excision_dependency_wheelhouse_v1/dependency_wheelhouse_manifest.v1.json",
+      "role": "repaired_bundle:dependency_manifest",
+      "sha256": "sha256:07afaff2bc1617f4c997cb523b1840b298c35d5535e65467bf134dcaa0b8c048",
+      "size_bytes": 3390,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/flashsplat_bundle_v3/adapter_dry_run.json",
+      "role": "repaired_bundle:dry_run_result",
+      "sha256": "sha256:8ea4dd523d5940c43701452ac1bff1da251ea6cb1bf25c2fabd40c646fbc3beb",
+      "size_bytes": 8634,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/replacement_graph_v2/simready_graph_asset_receipt.v1.json",
+      "role": "simready_candidate_authoring_receipt",
+      "sha256": "sha256:1593aed87db2a52dee9adb79b49c3750a1d31538d896df151680a17cf4a999b2",
+      "size_bytes": 2183,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/replacement_graph_v2/simready_graph_asset_static_qualification.v1.json",
+      "role": "simready_candidate_static_qualification",
+      "sha256": "sha256:4903001b1a5b60998452dcfbab07a57be8b56d8a5eb9c90f4b740b7292814312",
+      "size_bytes": 2131,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/replacement_graph_v2/replacement.usda",
+      "role": "simready_candidate_usd",
+      "sha256": "sha256:821a28dc468cdc3f1b38d92bc7f0e158a63fc1432a54942b2144f5cb0416b7b4",
+      "size_bytes": 5866,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "shared_scene/collider_removal_v1/independent/840920_collider_delete_notebook_385.receipt.json",
+      "role": "source_collider_removal_receipt",
+      "sha256": "sha256:b252cd6bba3973a849f8f757a052e3520faa943ab198d2f4f45843203083b2cd",
+      "size_bytes": 1697,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "shared_scene/collider_removal_v1/independent/840920_collider_delete_notebook_385.removed.usda",
+      "role": "source_collider_removed_stage",
+      "sha256": "sha256:794ca52aadd42bb710c6ad1faf58ef2a5fa07ebd59c9faae188a01bd6ba1e7cb",
+      "size_bytes": 67396640,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/masks/front_left.png",
+      "role": "source_mask:front_left",
+      "sha256": "sha256:acabe6c8f5563cf5032d91d1f40b937357e2433e699b77bf456a72b307f7daab",
+      "size_bytes": 3100,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/masks/front_mid.png",
+      "role": "source_mask:front_mid",
+      "sha256": "sha256:e1507ea513cfe7e4be57ee92ff024a7d2e173281b18ff297d51a3223165d3f23",
+      "size_bytes": 3362,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/masks/front_right.png",
+      "role": "source_mask:front_right",
+      "sha256": "sha256:b350bae8055831f6d99d11ce7cb928bec9260310e69b138f8d43845f80d2a226",
+      "size_bytes": 3245,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/masks/front_wide.png",
+      "role": "source_mask:front_wide",
+      "sha256": "sha256:b601feba75d8c23228c3b49f4640919f87c04d04d3a400f7a79e742d6a3a84f3",
+      "size_bytes": 2810,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/masks/high_front.png",
+      "role": "source_mask:high_front",
+      "sha256": "sha256:e18328c9e9cb3f0aa93aae9a54bd587fd93eaa7e8d9c9f002d04d6fdd3cd85ab",
+      "size_bytes": 2813,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/masks/low_oblique.png",
+      "role": "source_mask:low_oblique",
+      "sha256": "sha256:464d5ca9e63eae881b418d8fd294ad3f1a0058befbf147c2f6f389db90950a40",
+      "size_bytes": 3377,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/masks/side_high.png",
+      "role": "source_mask:side_high",
+      "sha256": "sha256:6815e1ca858da64ee222e8be861c4965fbc16df96cac35d4969d1198022b4c80",
+      "size_bytes": 3727,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/removal/edit_inputs_v2/masks/side_low.png",
+      "role": "source_mask:side_low",
+      "sha256": "sha256:a4ae94192eb226327d11e5d0b90f62a7dce7d26244a5ba7e04bd12201c5e2712",
+      "size_bytes": 3218,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    }
+  ],
+  "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+  "inventory_digest": "sha256:4404526e6906909814ed2effadd0b1ad650ad441f71bafc17d0e2d576728c7bc",
+  "publication_authority_inferred": false,
+  "schema_version": "adp_supporting_evidence_inventory.v1",
+  "source_root_absolute_path_recorded": false,
+  "source_root_id": "third_scene_rights_bounded_construction_root",
+  "status": "digest_verified_external_evidence_inventory"
+}

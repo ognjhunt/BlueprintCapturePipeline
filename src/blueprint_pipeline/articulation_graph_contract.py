@@ -10,6 +10,7 @@ provenance in the task freeze.
 from __future__ import annotations
 
 import json
+import itertools
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -19,6 +20,7 @@ SCHEMA_VERSION = "adp_articulation_graph.v1"
 JOINT_ROLES = frozenset({"target", "dependent", "passive", "locked"})
 JOINT_TYPES = frozenset({"revolute", "prismatic", "continuous", "fixed"})
 DRIVE_TYPES = frozenset({"force", "acceleration", "none"})
+COLLISION_PAIR_DEFAULT_ENABLED = True
 
 
 class ArticulationGraphContractError(ValueError):
@@ -90,6 +92,13 @@ def validate_articulation_graph(
     value: Mapping[str, Any], *, require_target_joint: bool = True
 ) -> dict[str, Any]:
     """Validate and normalize a complete link/joint graph without a size cap.
+
+    The v1 collision contract has one schema-level default: an unlisted
+    unordered link pair is collision-enabled.  Normalization expands that
+    default into a complete pair matrix so downstream USD authoring, static
+    readback, and runtime receipts bind every pair explicitly.  Callers list
+    only exceptions when authoring input manifests; no simulator default is
+    inferred downstream.
 
     ``require_target_joint=False`` is reserved for a mechanically articulated
     asset used as a rigid task subject. In that mode every joint must be locked
@@ -287,6 +296,20 @@ def validate_articulation_graph(
                 "collision_enabled": row.get("collision_enabled") is True,
             }
         )
+    explicit_pairs = {
+        tuple(sorted((row["link_a"], row["link_b"]))): row["collision_enabled"]
+        for row in normalized_pairs
+    }
+    normalized_pairs = [
+        {
+            "link_a": link_a,
+            "link_b": link_b,
+            "collision_enabled": explicit_pairs.get(
+                (link_a, link_b), COLLISION_PAIR_DEFAULT_ENABLED
+            ),
+        }
+        for link_a, link_b in itertools.combinations(sorted(link_ids), 2)
+    ]
 
     target_joint_ids = [
         row["joint_id"] for row in normalized_joints if row["role"] == "target"
@@ -345,6 +368,7 @@ def validate_articulation_graph(
 
 __all__ = [
     "ArticulationGraphContractError",
+    "COLLISION_PAIR_DEFAULT_ENABLED",
     "DRIVE_TYPES",
     "JOINT_ROLES",
     "JOINT_TYPES",
