@@ -28,6 +28,8 @@ ARTICULATED_TASK_SAMPLE_SCHEMA_VERSION = "articulated_task_sample.v1"
 # anything past this is a unit slip rather than a pose.
 MAXIMUM_PLAUSIBLE_JOINT_RAD = 4.0 * math.pi
 MAXIMUM_PLAUSIBLE_JOINT_RATE_RAD_S = 50.0
+# Enough to name the fault and its frame, short of pasting a stack.
+MAXIMUM_CAUSE_CHARACTERS = 220
 # The scorer requires every one of these on every sample. They are supplied,
 # never defaulted: False on a collision flag is not "we did not look", it is
 # the positive claim that the robot did not collide, and this program must
@@ -77,8 +79,15 @@ def build_articulated_task_sample(
     for joint_id in sorted(set(ids)):
         try:
             reading = read_joint_state(joint_id)
-        except Exception:  # noqa: BLE001 - any failure to read is the same fault
-            errors.append(f"articulated_task_sample_joint_unreadable:{joint_id}")
+        except Exception as exc:  # noqa: BLE001 - any failure to read is one fault
+            # Carry the cause. rt23 returned this label for both joints and
+            # nothing else, from inside a physics buffer read, and the launch
+            # bought a symptom. Truncated because a physics traceback in an
+            # error string is unreadable rather than helpful.
+            detail = f"{type(exc).__name__}:{exc}"[:MAXIMUM_CAUSE_CHARACTERS]
+            errors.append(
+                f"articulated_task_sample_joint_unreadable:{joint_id}:{detail}"
+            )
             continue
         try:
             position, velocity = (float(reading[0]), float(reading[1]))

@@ -314,3 +314,46 @@ def test_an_observation_that_raises_is_reported_not_swallowed():
         "observation_failed:scene_collision_failure" in error
         for error in excinfo.value.errors
     )
+
+
+def test_an_unreadable_joint_says_why_it_was_unreadable():
+    """A label without a cause costs a launch to diagnose.
+
+    rt23 returned joint_unreadable for both joints and nothing else - no
+    exception type, no message - from inside a physics buffer read. That is the
+    same defect already fixed at the worker's top level, repeated one layer
+    down: an error that names the symptom and discards the evidence.
+    """
+
+    def _explode(joint_id):
+        raise IndexError("index 2 is out of bounds for dimension 0 with size 2")
+
+    with pytest.raises(ArticulatedTaskSampleError) as excinfo:
+        build_articulated_task_sample(
+            joint_ids=["upper_door_hinge"],
+            read_joint_state=_explode,
+            joint_hard_limits_rad=_LIMITS,
+            **_observations(),
+        )
+
+    joined = ";".join(excinfo.value.errors)
+    assert "joint_unreadable:upper_door_hinge" in joined
+    assert "IndexError" in joined
+    assert "out of bounds" in joined
+
+
+def test_the_cause_is_truncated_not_unbounded():
+    """A physics traceback in an error string is unreadable, not helpful."""
+
+    def _explode(joint_id):
+        raise RuntimeError("x" * 4000)
+
+    with pytest.raises(ArticulatedTaskSampleError) as excinfo:
+        build_articulated_task_sample(
+            joint_ids=["upper_door_hinge"],
+            read_joint_state=_explode,
+            joint_hard_limits_rad=_LIMITS,
+            **_observations(),
+        )
+
+    assert all(len(error) < 400 for error in excinfo.value.errors)
