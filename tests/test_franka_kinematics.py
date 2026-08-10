@@ -10,7 +10,9 @@ from blueprint_pipeline.franka_kinematics import (
     forward_kinematics,
     manipulability,
     radial_force_capability_n,
+    radial_force_capability_world_n,
     solve_position_ik,
+    solve_world_position_ik,
 )
 
 
@@ -129,3 +131,62 @@ def test_kinematics_are_deterministic() -> None:
         target_position_world_m=[0.45, 0.10, 0.60], seed_joint_positions=None
     )
     assert a == b
+
+
+@pytest.mark.parametrize(
+    ("fixture_id", "base", "yaw", "target"),
+    [
+        (
+            "840313_rigid_pick_place",
+            [3.4681748, -2.8100837, 0.2766791],
+            -math.pi / 2.0,
+            [3.4681748, -3.3100837, 0.65],
+        ),
+        (
+            "840796_articulated_refrigerator",
+            [1.75, 1.99, 0.0],
+            -math.pi / 2.0,
+            [2.0937, 1.8068, 1.0225],
+        ),
+    ],
+)
+def test_registered_world_targets_join_the_actual_robot_base_before_ik(
+    fixture_id: str,
+    base: list[float],
+    yaw: float,
+    target: list[float],
+) -> None:
+    """Both ADP fixtures place a rotated robot away from the world origin."""
+
+    del fixture_id
+    quaternion = [0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)]
+    result = solve_world_position_ik(
+        target_position_world_m=target,
+        robot_base_position_world_m=base,
+        robot_base_quaternion_world_xyzw=quaternion,
+    )
+
+    assert result["solved"] is True
+    assert math.dist(result["reached_position_world_m"], target) < 1e-3
+    assert result["target_position_base_m"] != pytest.approx(target)
+    assert result["native_pose_ik_required"] is True
+    assert result["orientation_solved"] is False
+
+
+def test_world_force_direction_is_rotated_into_the_jacobian_frame() -> None:
+    joints = solve_position_ik(
+        target_position_world_m=[0.65, 0.0, 0.45]
+    )["joint_positions"]
+    yaw = -math.pi / 2.0
+    quaternion = [0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)]
+
+    world_value = radial_force_capability_world_n(
+        joints,
+        direction_world=[0.0, -1.0, 0.0],
+        robot_base_quaternion_world_xyzw=quaternion,
+    )
+    base_value = radial_force_capability_n(
+        joints, direction_world=[1.0, 0.0, 0.0]
+    )
+
+    assert world_value == pytest.approx(base_value)

@@ -26,6 +26,12 @@ from __future__ import annotations
 import math
 from typing import Any, Sequence
 
+from .rigid_frame_transforms import (
+    position_base_to_world,
+    position_world_to_base,
+    vector_world_to_base,
+)
+
 
 FRANKA_KINEMATICS_SCHEMA_VERSION = "franka_kinematics.v1"
 ARM_JOINT_COUNT = 7
@@ -284,6 +290,73 @@ def solve_position_ik(
     }
 
 
+def solve_world_position_ik(
+    *,
+    target_position_world_m: Sequence[float],
+    robot_base_position_world_m: Sequence[float],
+    robot_base_quaternion_world_xyzw: Sequence[float],
+    seed_joint_positions: Sequence[float] | None = None,
+    quaternion_world_xyzw: Sequence[float] | None = None,
+) -> dict[str, Any]:
+    """Solve a registered-world target after explicitly joining the base pose.
+
+    ``solve_position_ik`` is deliberately the robot-frame numeric primitive.
+    This wrapper is the task-runtime entry point: it records both coordinate
+    frames so a receipt cannot silently pass world coordinates to a base-frame
+    solver.  Orientation is retained as an unresolved input because the local
+    solver is position-only; native pose IK remains the qualification gate.
+    """
+
+    target_base = position_world_to_base(
+        position_world_m=target_position_world_m,
+        base_position_world_m=robot_base_position_world_m,
+        base_quaternion_world_xyzw=robot_base_quaternion_world_xyzw,
+    )
+    result = solve_position_ik(
+        target_position_world_m=target_base,
+        seed_joint_positions=seed_joint_positions,
+        quaternion_world_xyzw=quaternion_world_xyzw,
+    )
+    reached_base = list(result["reached_position_world_m"])
+    reached_world = position_base_to_world(
+        position_base_m=reached_base,
+        base_position_world_m=robot_base_position_world_m,
+        base_quaternion_world_xyzw=robot_base_quaternion_world_xyzw,
+    )
+    return {
+        **result,
+        "target_position_base_m": target_base,
+        "reached_position_base_m": reached_base,
+        "target_position_world_m": [float(value) for value in target_position_world_m],
+        "reached_position_world_m": reached_world,
+        "robot_base_position_world_m": [
+            float(value) for value in robot_base_position_world_m
+        ],
+        "robot_base_quaternion_world_xyzw": [
+            float(value) for value in robot_base_quaternion_world_xyzw
+        ],
+        "orientation_solved": False,
+        "native_pose_ik_required": True,
+    }
+
+
+def radial_force_capability_world_n(
+    joint_positions: Sequence[float],
+    *,
+    direction_world: Sequence[float],
+    robot_base_quaternion_world_xyzw: Sequence[float],
+) -> float:
+    """Evaluate a world-frame task load with the base-frame Jacobian."""
+
+    direction_base = vector_world_to_base(
+        vector_world=direction_world,
+        base_quaternion_world_xyzw=robot_base_quaternion_world_xyzw,
+    )
+    return radial_force_capability_n(
+        joint_positions, direction_world=direction_base
+    )
+
+
 def _solve_3x3(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
     rows = [list(matrix[index]) + [vector[index]] for index in range(3)]
     for column in range(3):
@@ -312,5 +385,7 @@ __all__ = [
     "manipulability",
     "position_jacobian",
     "radial_force_capability_n",
+    "radial_force_capability_world_n",
     "solve_position_ik",
+    "solve_world_position_ik",
 ]
