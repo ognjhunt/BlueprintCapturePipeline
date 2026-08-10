@@ -839,20 +839,43 @@ def validate_task_control_plan(
             errors.append(f"task_control_scripted_action_invalid:{index}")
             continue
         phase_id = str(raw.get("phase_id") or "")
-        values = raw.get("isaac_action")
+        if "isaac_action" in raw:
+            values = raw.get("isaac_action")
+            try:
+                action = [float(value) for value in values]
+            except (TypeError, ValueError):
+                action = []
+            if (
+                not phase_id
+                or len(action) != 8
+                or not all(math.isfinite(value) for value in action)
+            ):
+                errors.append(f"task_control_scripted_action_invalid:{index}")
+            else:
+                normalized_actions.append(
+                    {"phase_id": phase_id, "isaac_action": action}
+                )
+            continue
+        values = raw.get("arm_joint_positions")
+        gripper_state = str(raw.get("gripper_state") or "")
         try:
-            action = [float(value) for value in values]
+            arm = [float(value) for value in values]
         except (TypeError, ValueError):
-            action = []
+            arm = []
         if (
             not phase_id
-            or len(action) != 8
-            or not all(math.isfinite(value) for value in action)
+            or len(arm) != 7
+            or not all(math.isfinite(value) for value in arm)
+            or gripper_state not in {"open", "closed"}
         ):
             errors.append(f"task_control_scripted_action_invalid:{index}")
         else:
             normalized_actions.append(
-                {"phase_id": phase_id, "isaac_action": action}
+                {
+                    "phase_id": phase_id,
+                    "arm_joint_positions": arm,
+                    "gripper_state": gripper_state,
+                }
             )
     kind = task.get("task_kind")
     if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
@@ -891,6 +914,7 @@ def _run_task_control_episode(
     plan: Mapping[str, Any],
     control_id: str,
     gripper_open_command: float,
+    gripper_closed_command: float | None,
     output: Path,
     episode_id: str,
 ) -> dict[str, Any]:
@@ -931,13 +955,24 @@ def _run_task_control_episode(
         )
     for row in trajectory:
         before = [float(value) for value in environment.read_arm_joint_positions()]
-        action = (
-            environment.hold_action(
+        if row.get("mode") == "hold_current_joint_positions":
+            action = environment.hold_action(
                 gripper_command=float(gripper_open_command)
             )
-            if row.get("mode") == "hold_current_joint_positions"
-            else row["isaac_action"]
-        )
+        elif "isaac_action" in row:
+            action = row["isaac_action"]
+        else:
+            state = str(row["gripper_state"])
+            if state == "closed" and gripper_closed_command is None:
+                raise ControlEpisodeError(
+                    ["task_control_gripper_closed_command_missing"]
+                )
+            command = (
+                float(gripper_open_command)
+                if state == "open"
+                else float(gripper_closed_command)
+            )
+            action = [*row["arm_joint_positions"], command]
         action = [float(value) for value in action]
         environment.step(action)
         step_index += 1
@@ -1040,6 +1075,7 @@ def run_task_neutral_controls(
     task_spec: Mapping[str, Any],
     control_plan: Mapping[str, Any],
     gripper_open_command: float,
+    gripper_closed_command: float | None = None,
     output_dir: str | Path,
 ) -> dict[str, Any]:
     """Run zero then scripted controls for rigid or articulated task state."""
@@ -1056,6 +1092,11 @@ def run_task_neutral_controls(
             plan=plan,
             control_id=control_id,
             gripper_open_command=float(gripper_open_command),
+            gripper_closed_command=(
+                None
+                if gripper_closed_command is None
+                else float(gripper_closed_command)
+            ),
             output=output,
             episode_id=f"{plan['cell_id']}-{control_id}",
         )

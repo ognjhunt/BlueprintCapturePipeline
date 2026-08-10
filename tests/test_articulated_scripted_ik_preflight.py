@@ -98,6 +98,44 @@ def test_the_gripper_closes_at_grasp_and_opens_at_release() -> None:
     assert by_phase["release"][-1] == 1.0
 
 
+def test_semantic_gripper_states_are_frozen_without_guessing_native_polarity() -> None:
+    poses = [
+        {
+            "phase_id": "approach",
+            "position_world_m": [0.10, 0.10, 0.10],
+            "gripper_state": "open",
+        },
+        {
+            "phase_id": "grasp",
+            "position_world_m": [0.10, 0.12, 0.10],
+            "gripper_state": "closed",
+        },
+    ]
+
+    result = _resolve(poses=poses)
+
+    assert all("isaac_action" not in row for row in result["actions"])
+    assert result["actions"][0]["gripper_state"] == "open"
+    assert result["actions"][-1]["gripper_state"] == "closed"
+    assert result["claim_boundary"][
+        "semantic_gripper_states_require_native_convention_readback"
+    ] is True
+
+
+def test_a_gripper_state_and_numeric_command_cannot_both_be_frozen() -> None:
+    poses = [
+        {
+            "phase_id": "ambiguous",
+            "position_world_m": [0.10, 0.10, 0.10],
+            "gripper_state": "open",
+            "gripper_command": 1.0,
+        }
+    ]
+
+    with pytest.raises(ScriptedIkPreflightError, match="gripper_ambiguous"):
+        _resolve(poses=poses)
+
+
 def test_an_unreachable_pose_fails_closed_and_names_the_phase() -> None:
     """A silently dropped waypoint would look like a control that simply missed."""
 

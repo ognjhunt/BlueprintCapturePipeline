@@ -152,6 +152,32 @@ def _plan(task: dict) -> dict:
     return plan
 
 
+def _semantic_articulated_plan(task: dict) -> dict:
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": "articulated-open-close-semantic-gripper",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "b" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": [
+            {
+                "phase_id": "open",
+                "arm_joint_positions": [0.9, 0, 0, 0, 0, 0, 0],
+                "gripper_state": "closed",
+            },
+            {
+                "phase_id": "retreat",
+                "arm_joint_positions": [0.9, 1, 0, 0, 0, 0, 0],
+                "gripper_state": "open",
+            },
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
 @pytest.mark.parametrize("task_kind", ["rigid_pick_place", "articulated_open_close"])
 def test_same_control_contract_passes_original_and_second_scene_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_kind: str
@@ -223,3 +249,39 @@ def test_task_control_plan_rejects_unbound_or_over_budget_trajectory(
             gripper_open_command=0.0,
             output_dir=tmp_path,
         )
+
+
+def test_semantic_gripper_states_use_the_native_measured_command_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+    task = _task("articulated_open_close")
+    environment = _Environment("articulated_open_close")
+
+    pair = run_task_neutral_controls(
+        environment=environment,
+        task_spec=task,
+        control_plan=_semantic_articulated_plan(task),
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    assert environment.steps[0][-1] == 1.0
+    assert environment.steps[1][-1] == 0.0

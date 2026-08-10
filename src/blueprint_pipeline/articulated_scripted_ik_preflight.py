@@ -94,15 +94,27 @@ def resolve_scripted_joint_trajectory(
             errors.append(f"scripted_ik_preflight_pose_invalid:{phase_id}")
             continue
         orientation = raw.get("quaternion_world_xyzw")
-        gripper = raw.get("gripper_command", 0.0)
-        try:
-            gripper_command = float(gripper)
-        except (TypeError, ValueError):
-            errors.append(f"scripted_ik_preflight_gripper_invalid:{phase_id}")
+        gripper_state = raw.get("gripper_state")
+        has_gripper_command = "gripper_command" in raw
+        if gripper_state is not None and has_gripper_command:
+            errors.append(f"scripted_ik_preflight_gripper_ambiguous:{phase_id}")
             continue
-        if not math.isfinite(gripper_command):
-            errors.append(f"scripted_ik_preflight_gripper_invalid:{phase_id}")
-            continue
+        if gripper_state is not None:
+            gripper_state = str(gripper_state)
+            if gripper_state not in {"open", "closed"}:
+                errors.append(f"scripted_ik_preflight_gripper_invalid:{phase_id}")
+                continue
+            gripper_command = None
+        else:
+            gripper = raw.get("gripper_command", 0.0)
+            try:
+                gripper_command = float(gripper)
+            except (TypeError, ValueError):
+                errors.append(f"scripted_ik_preflight_gripper_invalid:{phase_id}")
+                continue
+            if not math.isfinite(gripper_command):
+                errors.append(f"scripted_ik_preflight_gripper_invalid:{phase_id}")
+                continue
 
         result = solve_pose(
             position_world_m=position,
@@ -139,6 +151,7 @@ def resolve_scripted_joint_trajectory(
                 "phase_id": phase_id,
                 "joint_positions": joints,
                 "gripper_command": gripper_command,
+                "gripper_state": gripper_state,
                 "position_error_m": float(result.get("position_error_m") or 0.0),
             }
         )
@@ -169,12 +182,19 @@ def resolve_scripted_joint_trajectory(
                 previous[index] + (target[index] - previous[index]) * fraction
                 for index in range(ARM_JOINT_COUNT)
             ]
-            actions.append(
-                {
-                    "phase_id": row["phase_id"],
-                    "isaac_action": [*joints, row["gripper_command"]],
-                }
-            )
+            action = {
+                "phase_id": row["phase_id"],
+            }
+            if row["gripper_state"] is not None:
+                action.update(
+                    {
+                        "arm_joint_positions": joints,
+                        "gripper_state": row["gripper_state"],
+                    }
+                )
+            else:
+                action["isaac_action"] = [*joints, row["gripper_command"]]
+            actions.append(action)
         previous = target
 
     return {
@@ -191,6 +211,9 @@ def resolve_scripted_joint_trajectory(
             "solutions_are_seeded_so_the_elbow_cannot_flip": True,
             "replay_is_open_loop_not_servoed": True,
             "reachability_is_the_solver_s_claim_not_a_contact_proof": True,
+            "semantic_gripper_states_require_native_convention_readback": any(
+                row["gripper_state"] is not None for row in solved
+            ),
         },
     }
 
