@@ -78,7 +78,9 @@ def test_the_task_joint_gets_friction_not_a_position_servo(tmp_path: Path) -> No
     assert float(drive.GetDampingAttr().Get()) == 12.0
     row = next(r for r in receipt["drives"] if r["role"] == "task_joint_free_with_friction")
     assert row["stiffness"] == 0.0
-    assert row["holds_position_without_actuation"] is True
+    assert row["position_servo_enabled"] is False
+    assert row["holds_position_without_actuation"] is False
+    assert row["resists_velocity_without_position_target"] is True
 
 
 def test_the_locked_joint_is_held_closed(tmp_path: Path) -> None:
@@ -90,6 +92,10 @@ def test_the_locked_joint_is_held_closed(tmp_path: Path) -> None:
     )
     assert float(drive.GetStiffnessAttr().Get()) == 4000.0
     assert float(drive.GetTargetPositionAttr().Get()) == 0.0
+    row = next(r for r in receipt["drives"] if r["role"] == "locked_joint_held_closed")
+    assert row["position_servo_enabled"] is True
+    assert row["holds_position_without_actuation"] is True
+    assert row["resists_velocity_without_position_target"] is False
 
 
 def test_a_task_joint_given_position_stiffness_fails_closed(tmp_path: Path) -> None:

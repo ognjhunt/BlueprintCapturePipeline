@@ -74,6 +74,14 @@ def _write_json(path: Path, value: dict[str, object]) -> None:
     path.write_text(canonical_json(value) + "\n", encoding="utf-8")
 
 
+def _binding(path: Path) -> dict[str, object]:
+    return {
+        "path": str(path.resolve()),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
 def _render_manifest(
     root: Path,
     name: str,
@@ -132,19 +140,27 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
         source_paths[camera_id] = source_path
     freeze: dict[str, object] = {
         "schema_version": "adp009b_gaussian_excision_audit_freeze.v1",
-        "scene": {"publisher_scene_id": scene_id},
+        "scene": {
+            "publisher_scene_id": scene_id,
+            "task_id": f"task-{scene_id}",
+        },
+        "camera_contract": {"sha256": "sha256:fixture-camera-contract"},
         "camera_split": {
             "calibration_camera_ids": ["calibration"],
             "heldout_camera_ids": ["far_left", "far_right"],
+            "camera_count": 3,
+            "calibration_camera_count": 1,
+            "heldout_camera_count": 2,
+            "camera_contract_sha256": "sha256:fixture-camera-contract",
         },
         "source_images": [
-            {"camera_id": camera_id, "path": str(source_paths[camera_id])}
+            {"camera_id": camera_id, **_binding(source_paths[camera_id])}
             for camera_id in camera_ids
         ],
         "masks": [
             {
                 "camera_id": camera_id,
-                "historical_outer_mask": {"path": str(mask_paths[camera_id])},
+                "historical_outer_mask": _binding(mask_paths[camera_id]),
             }
             for camera_id in camera_ids
         ],
@@ -156,6 +172,9 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
         },
         "historical_baseline": {"selected_gaussian_count": 4},
     }
+    freeze["camera_split"]["camera_split_digest"] = canonical_digest(
+        freeze["camera_split"], digest_field="camera_split_digest"
+    )
     freeze["freeze_digest"] = canonical_digest(freeze, digest_field="freeze_digest")
     freeze_path = tmp_path / "freeze.json"
     _write_json(freeze_path, freeze)
@@ -251,6 +270,46 @@ def test_materialize_heldout_audit_is_scene_neutral_and_fail_closed(
     index = index_path.read_text(encoding="utf-8")
     assert "original | exact mask | OBB removed-only" in index
     assert all(camera_id in index for camera_id in camera_ids)
+    assert scene_id in index
+    assert f"task-{scene_id}" in index
+    assert receipt["scene_label"] == scene_id
+    assert receipt["task_label"] == f"task-{scene_id}"
+
+    original_source_bytes = source_paths["calibration"].read_bytes()
+    source_paths["calibration"].write_bytes(b"changed-after-freeze")
+    with pytest.raises(GaussianExcisionHeldoutError) as exc:
+        materialize_gaussian_excision_heldout_audit(
+            freeze_path=freeze_path,
+            ownership_receipt_path=ownership_path,
+            ownership_replay_receipt_path=replay_path,
+            obb_black_manifest_path=obb_black,
+            obb_white_manifest_path=obb_white,
+            owned_black_manifest_path=owned_black,
+            owned_white_manifest_path=owned_white,
+            ambiguous_black_manifest_path=ambiguous_black,
+            ambiguous_white_manifest_path=ambiguous_white,
+            retained_scene_manifest_path=retained,
+            output_root=tmp_path / "audit-tampered",
+        )
+    assert exc.value.codes == ("heldout_frozen_source_image_changed",)
+
+    source_paths["calibration"].write_bytes(original_source_bytes)
+    mask_paths["far_left"].write_bytes(b"changed-after-freeze")
+    with pytest.raises(GaussianExcisionHeldoutError) as exc:
+        materialize_gaussian_excision_heldout_audit(
+            freeze_path=freeze_path,
+            ownership_receipt_path=ownership_path,
+            ownership_replay_receipt_path=replay_path,
+            obb_black_manifest_path=obb_black,
+            obb_white_manifest_path=obb_white,
+            owned_black_manifest_path=owned_black,
+            owned_white_manifest_path=owned_white,
+            ambiguous_black_manifest_path=ambiguous_black,
+            ambiguous_white_manifest_path=ambiguous_white,
+            retained_scene_manifest_path=retained,
+            output_root=tmp_path / "audit-mask-tampered",
+        )
+    assert exc.value.codes == ("heldout_frozen_mask_changed",)
 
 
 def test_checked_in_840796_abstention_seals_failed_science_and_passed_integrity() -> None:

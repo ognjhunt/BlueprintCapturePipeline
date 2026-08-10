@@ -87,14 +87,14 @@ an evaluation-authorized renderer qualification.
 | Stress | Articulated contact with target/dependent/passive/locked joints | Rigid grasp/place with position, orientation, support, release, and settle |
 | Source instance | `165` | `385` |
 | Collider subtree | `/Root/ZFAVSKZVAJTGUPTUKM888888` | `/Root/ZFUHSLMTQ3RUOPTUKM888888` |
-| Task-freeze digest | `sha256:8c158cfcb8834dba25148b3999c9abf61137f2ca4b4317f470f5596755933684` | `sha256:c7800fe4cb029f989f88907984e89941f857780a4faf92c3458a4fdf2064e68a` |
-| Scenario-suite digest | `sha256:8930745f70b0881e70d363c7b796e738cf50edb00387023d63348774269d922f` | `sha256:a203375f810a470aec6cccae475183589b93622f69a4699563b042ee45caeed5` |
+| Task-freeze digest | `sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152` | `sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6` |
+| Scenario-suite digest | `sha256:3dc59d61a659131921e6e279315d36765348eceb2a70d87d4c0733572124035a` | `sha256:b9e79b2bc3ddb9a24b066567ae4404f7289a707f27032424971624adecba86e4` |
 | Initial cells | canonical, external-camera dx | canonical, object-start y |
 
 Shared scene-freeze digest:
 `sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c`.
 Dual-task join digest:
-`sha256:06d86fb596879ebb47f40673c94d734e35a108be5d9cc52db2635ba9d4401414`.
+`sha256:d9ab18e48c2962f0fc4ba963000cad8bb3deafbd1a250468f278c907ff6fe0bb`.
 Both suites freeze exactly `pi05_droid` and `groot_n17_droid`, all seven required
 families, identical per-candidate cells/seeds, controls-first admission, and
 native applied-parameter readback. No learned outcome influenced either freeze.

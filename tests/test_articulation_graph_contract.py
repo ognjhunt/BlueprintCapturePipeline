@@ -43,7 +43,7 @@ def complete_graph() -> dict:
             "reset_tolerance": 0.0001,
             "drive": {
                 "drive_type": "none" if role == "passive" else "force",
-                "stiffness": 0.0 if role == "passive" else 20.0,
+                "stiffness": 0.0 if role in {"target", "passive"} else 20.0,
                 "damping": 0.1,
                 "maximum_force": 0.0 if role == "passive" else 100.0,
             },
@@ -118,6 +118,19 @@ def test_success_predicate_must_name_exact_target_set() -> None:
         validate_articulation_graph(graph)
 
     assert "articulation_graph_success_joint_set_invalid" in caught.value.errors
+
+
+def test_target_joint_may_not_be_position_servoed() -> None:
+    graph = complete_graph()
+    graph["joints"][0]["drive"]["stiffness"] = 1.0
+
+    with pytest.raises(ArticulationGraphContractError) as caught:
+        validate_articulation_graph(graph)
+
+    assert (
+        "articulation_graph_target_joint_position_servo_forbidden:door_hinge"
+        in caught.value.errors
+    )
 
 
 def test_rigid_task_subject_may_bind_an_all_locked_articulation_graph() -> None:

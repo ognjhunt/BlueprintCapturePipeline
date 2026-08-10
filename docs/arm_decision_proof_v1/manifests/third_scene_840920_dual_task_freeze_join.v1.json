@@ -2,8 +2,8 @@
   "schema_version": "dual_task_freeze_join.v1",
   "scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
   "task_freeze_digests": [
-    "sha256:8c158cfcb8834dba25148b3999c9abf61137f2ca4b4317f470f5596755933684",
-    "sha256:c7800fe4cb029f989f88907984e89941f857780a4faf92c3458a4fdf2064e68a"
+    "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+    "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152"
   ],
   "task_ids": [
     "task_a_washer_door_open",
@@ -22,5 +22,5 @@
     "replacement_qualification_id"
   ],
   "independent": true,
-  "join_digest": "sha256:06d86fb596879ebb47f40673c94d734e35a108be5d9cc52db2635ba9d4401414"
+  "join_digest": "sha256:d9ab18e48c2962f0fc4ba963000cad8bb3deafbd1a250468f278c907ff6fe0bb"
 }

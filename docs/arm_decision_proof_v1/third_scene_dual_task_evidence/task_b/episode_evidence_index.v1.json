@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:4aeb768844f167bd042e5f30d38ebd0d24d5849d4dad43497fe6d9d9ac9e6bd2",
+  "index_digest": "sha256:f8b244211724c35fba6276f1fc5523c3b7074e3ec2e66bc54aebd7f0a66fbc22",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -10,7 +10,7 @@
   ],
   "review_videos_are_not_physical_truth": true,
   "run_identity": {
-    "scenario_suite_digest": "sha256:a203375f810a470aec6cccae475183589b93622f69a4699563b042ee45caeed5",
+    "scenario_suite_digest": "sha256:b9e79b2bc3ddb9a24b066567ae4404f7289a707f27032424971624adecba86e4",
     "scene_id": "840920",
     "task_id": "task_b_notebook_relocation"
   },

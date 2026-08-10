@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import struct
 from pathlib import Path
 
@@ -108,6 +109,163 @@ def test_exact_camera_render_rejects_unbound_background_rgb(
     assert exc.value.codes == ("render_background_rgb_invalid",)
 
 
+def test_evaluation_authorized_render_requires_durable_camera_calibration(
+    tmp_path: Path,
+) -> None:
+    splat = tmp_path / "scene.ply"
+    _write_standard_3dgs_ply(splat, [(0.0, 0.0, 2.0, 1.0, 1.0, 1.0)])
+
+    with pytest.raises(SealedCameraRenderError) as exc:
+        render_splat_at_exact_cameras(
+            splat_path=splat,
+            cameras=[
+                {
+                    "camera_id": "fixture",
+                    "T_world_camera_provider_frame": np.eye(4).tolist(),
+                    "intrinsics": {
+                        "fx": 32.0,
+                        "fy": 32.0,
+                        "cx": 16.0,
+                        "cy": 16.0,
+                        "width": 32,
+                        "height": 32,
+                    },
+                }
+            ],
+            output_dir=tmp_path / "render",
+            provider_splat_import_receipt_digest=DIGEST,
+            alignment_digest=DIGEST,
+            camera_set_label="fixture",
+            authorization_class="evaluation_authorized",
+        )
+
+    assert exc.value.codes == (
+        "render_evaluation_calibrated_camera_file_missing",
+        "render_evaluation_purpose_missing",
+    )
+
+
+@pytest.mark.parametrize("authorization_class", ["method_input", "review_only"])
+def test_other_qualified_render_classes_require_durable_camera_calibration(
+    tmp_path: Path, authorization_class: str
+) -> None:
+    splat = tmp_path / "scene.ply"
+    _write_standard_3dgs_ply(splat, [(0.0, 0.0, 2.0, 1.0, 1.0, 1.0)])
+
+    with pytest.raises(SealedCameraRenderError) as exc:
+        render_splat_at_exact_cameras(
+            splat_path=splat,
+            cameras=[
+                {
+                    "camera_id": "fixture",
+                    "T_world_camera_provider_frame": np.eye(4).tolist(),
+                    "intrinsics": {
+                        "fx": 32.0,
+                        "fy": 32.0,
+                        "cx": 16.0,
+                        "cy": 16.0,
+                        "width": 32,
+                        "height": 32,
+                    },
+                }
+            ],
+            output_dir=tmp_path / "render",
+            provider_splat_import_receipt_digest=DIGEST,
+            alignment_digest=DIGEST,
+            camera_set_label="fixture",
+            authorization_class=authorization_class,
+        )
+
+    assert exc.value.codes == (
+        "render_evaluation_calibrated_camera_file_missing",
+        "render_evaluation_purpose_missing",
+    )
+
+
+def test_render_rejects_unknown_authorization_class(tmp_path: Path) -> None:
+    splat = tmp_path / "scene.ply"
+    _write_standard_3dgs_ply(splat, [(0.0, 0.0, 2.0, 1.0, 1.0, 1.0)])
+
+    with pytest.raises(SealedCameraRenderError) as exc:
+        render_splat_at_exact_cameras(
+            splat_path=splat,
+            cameras=[
+                {
+                    "camera_id": "fixture",
+                    "T_world_camera_provider_frame": np.eye(4).tolist(),
+                    "intrinsics": {
+                        "fx": 32.0,
+                        "fy": 32.0,
+                        "cx": 16.0,
+                        "cy": 16.0,
+                        "width": 32,
+                        "height": 32,
+                    },
+                }
+            ],
+            output_dir=tmp_path / "render",
+            provider_splat_import_receipt_digest=DIGEST,
+            alignment_digest=DIGEST,
+            camera_set_label="fixture",
+            authorization_class="evaluation-ish",
+        )
+
+    assert exc.value.codes == ("render_authorization_class_invalid",)
+
+
+def test_evaluation_authorized_render_rejects_camera_file_mismatch(tmp_path: Path) -> None:
+    splat = tmp_path / "scene.ply"
+    _write_standard_3dgs_ply(splat, [(0.0, 0.0, 2.0, 1.0, 1.0, 1.0)])
+    camera_file = tmp_path / "calibrated_cameras.json"
+    camera_file.write_text(
+        json.dumps(
+            [
+                {
+                    "camera_id": "fixture",
+                    "T_world_camera_provider_frame": np.eye(4).tolist(),
+                    "intrinsics": {
+                        "fx": 31.0,
+                        "fy": 32.0,
+                        "cx": 16.0,
+                        "cy": 16.0,
+                        "width": 32,
+                        "height": 32,
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SealedCameraRenderError) as exc:
+        render_splat_at_exact_cameras(
+            splat_path=splat,
+            cameras=[
+                {
+                    "camera_id": "fixture",
+                    "T_world_camera_provider_frame": np.eye(4).tolist(),
+                    "intrinsics": {
+                        "fx": 32.0,
+                        "fy": 32.0,
+                        "cx": 16.0,
+                        "cy": 16.0,
+                        "width": 32,
+                        "height": 32,
+                    },
+                }
+            ],
+            output_dir=tmp_path / "render",
+            provider_splat_import_receipt_digest=DIGEST,
+            alignment_digest=DIGEST,
+            camera_set_label="fixture",
+            calibrated_camera_file=camera_file,
+            purpose="source_object_ownership",
+            authorization_class="evaluation_authorized",
+        )
+
+    assert "render_calibrated_camera_file_mismatch" in exc.value.codes
+
+
 @pytest.mark.slow
 def test_exact_camera_render_places_known_gaussians_at_predicted_pixels(tmp_path: Path) -> None:
     splat = tmp_path / "scene.ply"
@@ -138,6 +296,8 @@ def test_exact_camera_render_places_known_gaussians_at_predicted_pixels(tmp_path
             },
         }
     ]
+    calibrated_camera_file = tmp_path / "calibrated_cameras.json"
+    calibrated_camera_file.write_text(json.dumps(cameras), encoding="utf-8")
     manifest = render_splat_at_exact_cameras(
         splat_path=splat,
         cameras=cameras,
@@ -145,11 +305,33 @@ def test_exact_camera_render_places_known_gaussians_at_predicted_pixels(tmp_path
         provider_splat_import_receipt_digest=DIGEST,
         alignment_digest=DIGEST,
         camera_set_label="fixture_exact_check",
+        calibrated_camera_file=calibrated_camera_file,
+        purpose="renderer_projection_conformance",
+        authorization_class="evaluation_authorized",
         background_rgb=0x102030,
     )
     assert manifest["status"] == "rendered_exact_cameras"
     assert manifest["render_count"] == 1
     assert manifest["renderer_identity"]["background_rgb"] == "#102030"
+    assert manifest["renderer_identity"]["repository_revision"]
+    assert manifest["renderer_identity"]["repository_renderer_files_clean"] is True
+    assert manifest["renderer_identity"]["package_version"] == "0.0.0"
+    assert manifest["renderer_identity"]["dependency_versions"]["@sparkjsdev/spark"] == "2.1.0"
+    assert manifest["source_splat"]["retained_gaussian_count"] == 3
+    assert manifest["source_splat"]["retained_count_source"] == "verified_standard_ply_header"
+    assert manifest["calibrated_camera_file"]["binding"] == "caller_file_exact_match"
+    assert manifest["calibrated_camera_file"]["digest"].startswith("sha256:")
+    assert manifest["calibrated_cameras"][0]["id"] == "sealed_check"
+    assert manifest["render_settings"] == {
+        "dimensions": {"width": width, "height": height},
+        "supersampling": 1,
+        "color_space": "srgb",
+        "alpha_mode": "opaque_rgb",
+        "background_rgb": "#102030",
+        "exposure": {"mode": "renderer_default_unmodified", "ev": None},
+    }
+    assert manifest["purpose"] == "renderer_projection_conformance"
+    assert manifest["authorization_class"] == "evaluation_authorized"
     frame = np.asarray(
         Image.open(tmp_path / "render" / manifest["renders"][0]["relative_path"]).convert("RGB")
     ).astype(np.float64)

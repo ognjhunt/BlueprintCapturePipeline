@@ -199,6 +199,10 @@ def validate_articulation_graph(
                 "damping": float(damping or 0.0),
                 "maximum_force": float(maximum_force or 0.0),
             }
+            if role == "target" and float(stiffness or 0.0) > 0.0:
+                errors.append(
+                    f"articulation_graph_target_joint_position_servo_forbidden:{joint_id}"
+                )
         dependency = row.get("dependency")
         normalized_dependency = None
         if role == "dependent":

@@ -60,6 +60,55 @@ def _read_json(path: Path, code: str) -> dict[str, Any]:
     return value
 
 
+def _frozen_artifact_path(
+    binding: object, *, freeze_file: Path, code: str
+) -> Path:
+    if not isinstance(binding, dict):
+        raise GaussianExcisionHeldoutError([code])
+    raw_path = binding.get("path")
+    if isinstance(raw_path, str) and raw_path:
+        path = Path(raw_path).expanduser().resolve()
+    else:
+        relative_path = binding.get("relative_path")
+        if not isinstance(relative_path, str) or not relative_path:
+            raise GaussianExcisionHeldoutError([code])
+        path = (freeze_file.parent / relative_path).resolve()
+    if (
+        not path.is_file()
+        or path.is_symlink()
+        or isinstance(binding.get("size_bytes"), bool)
+        or binding.get("size_bytes") != path.stat().st_size
+        or binding.get("sha256") != _sha256(path)
+    ):
+        raise GaussianExcisionHeldoutError([code])
+    return path
+
+
+def _freeze_labels(freeze: dict[str, Any]) -> tuple[str, str]:
+    scene = freeze.get("scene")
+    if not isinstance(scene, dict):
+        raise GaussianExcisionHeldoutError(["heldout_scene_binding_invalid"])
+    scene_label = next(
+        (
+            str(scene[key]).strip()
+            for key in ("publisher_scene_id", "scene_id", "id")
+            if str(scene.get(key) or "").strip()
+        ),
+        "",
+    )
+    task_label = next(
+        (
+            str(scene[key]).strip()
+            for key in ("task_id", "target_semantic_label", "target_instance_id")
+            if str(scene.get(key) or "").strip()
+        ),
+        "",
+    )
+    if not scene_label:
+        raise GaussianExcisionHeldoutError(["heldout_scene_binding_invalid"])
+    return scene_label, task_label or "source-object excision"
+
+
 def derive_alpha_from_background_pair(black_rgb: np.ndarray, white_rgb: np.ndarray) -> np.ndarray:
     """Recover alpha from identical RGB-over-black and RGB-over-white renders."""
 
@@ -184,7 +233,12 @@ def _contact_sheet(
 
 
 def _contact_sheet_index(
-    rows: Sequence[dict[str, Any]], output: Path, *, heldout_passed: bool
+    rows: Sequence[dict[str, Any]],
+    output: Path,
+    *,
+    heldout_passed: bool,
+    scene_label: str,
+    task_label: str,
 ) -> None:
     cards = []
     for row in rows:
@@ -198,13 +252,15 @@ def _contact_sheet_index(
             f'alt="{camera_id} six-panel Gaussian excision contact sheet"></a></section>'
         )
     status = "PASS" if heldout_passed else "FAIL / ABSTAIN"
+    escaped_scene = html.escape(scene_label)
+    escaped_task = html.escape(task_label)
     document = (
         '<!doctype html><html><head><meta charset="utf-8">'
-        "<title>840796 Gaussian excision audit</title>"
+        f"<title>{escaped_scene} {escaped_task} Gaussian excision audit</title>"
         "<style>body{font-family:-apple-system,sans-serif;margin:2rem}"
         "img{max-width:100%;border:1px solid #ccc}small{font-weight:normal}"
         "section{margin:2rem 0}</style></head><body>"
-        f"<h1>840796 held-out Gaussian excision audit: {status}</h1>"
+        f"<h1>{escaped_scene} {escaped_task} held-out Gaussian excision audit: {status}</h1>"
         "<p>Each lossless sheet is: original | exact mask | OBB removed-only | "
         "contribution removed-only | retained scene | ambiguity heatmap.</p>"
         + "".join(cards)
@@ -270,6 +326,28 @@ def materialize_gaussian_excision_heldout_audit(
     ):
         raise GaussianExcisionHeldoutError(["heldout_ownership_replay_invalid"])
 
+    camera_split = freeze.get("camera_split")
+    if not isinstance(camera_split, dict):
+        raise GaussianExcisionHeldoutError(["heldout_camera_split_invalid"])
+    calibration_ids = camera_split.get("calibration_camera_ids")
+    heldout_ids = camera_split.get("heldout_camera_ids")
+    if (
+        not isinstance(calibration_ids, list)
+        or not isinstance(heldout_ids, list)
+        or not calibration_ids
+        or not heldout_ids
+        or not all(isinstance(value, str) and value for value in calibration_ids + heldout_ids)
+        or camera_split.get("camera_count") != len(calibration_ids) + len(heldout_ids)
+        or camera_split.get("calibration_camera_count") != len(calibration_ids)
+        or camera_split.get("heldout_camera_count") != len(heldout_ids)
+        or camera_split.get("camera_split_digest")
+        != canonical_digest(camera_split, digest_field="camera_split_digest")
+        or camera_split.get("camera_contract_sha256")
+        != (freeze.get("camera_contract") or {}).get("sha256")
+        or len(set(calibration_ids + heldout_ids)) != len(calibration_ids) + len(heldout_ids)
+    ):
+        raise GaussianExcisionHeldoutError(["heldout_camera_split_invalid"])
+
     manifests = {
         "obb_black": Path(obb_black_manifest_path).resolve(),
         "obb_white": Path(obb_white_manifest_path).resolve(),
@@ -288,23 +366,56 @@ def materialize_gaussian_excision_heldout_audit(
         "ambiguous_white": _render_frames(manifests["ambiguous_white"], "#ffffff"),
         "retained_scene": _render_frames(manifests["retained_scene"], "#000000"),
     }
-    camera_ids = [str(row["camera_id"]) for row in freeze.get("masks") or []]
+    mask_rows = freeze.get("masks") or []
+    image_rows = freeze.get("source_images") or []
+    if (
+        not isinstance(mask_rows, list)
+        or not isinstance(image_rows, list)
+        or not all(isinstance(row, dict) for row in mask_rows + image_rows)
+    ):
+        raise GaussianExcisionHeldoutError(["heldout_frozen_artifact_binding_invalid"])
+    camera_ids = [str(row["camera_id"]) for row in mask_rows]
+    expected_camera_ids = set(calibration_ids + heldout_ids)
+    if (
+        len(camera_ids) != len(set(camera_ids))
+        or set(camera_ids) != expected_camera_ids
+        or len(image_rows) != len(expected_camera_ids)
+        or {str(row.get("camera_id") or "") for row in image_rows} != expected_camera_ids
+    ):
+        raise GaussianExcisionHeldoutError(["heldout_frozen_camera_set_mismatch"])
     if any(set(layer) != set(camera_ids) for layer in frames.values()):
         raise GaussianExcisionHeldoutError(["heldout_render_camera_set_mismatch"])
     source_images = {
-        str(row["camera_id"]): Path(row["path"]).resolve()
-        for row in freeze.get("source_images") or []
+        str(row["camera_id"]): _frozen_artifact_path(
+            row, freeze_file=freeze_file, code="heldout_frozen_source_image_changed"
+        )
+        for row in image_rows
     }
     masks = {
-        str(row["camera_id"]): Path(row["historical_outer_mask"]["path"]).resolve()
-        for row in freeze.get("masks") or []
+        str(row["camera_id"]): _frozen_artifact_path(
+            row.get("historical_outer_mask"),
+            freeze_file=freeze_file,
+            code="heldout_frozen_mask_changed",
+        )
+        for row in mask_rows
     }
+    for row in mask_rows:
+        zones = row.get("zones")
+        if zones is not None:
+            if not isinstance(zones, dict) or not zones:
+                raise GaussianExcisionHeldoutError(["heldout_frozen_mask_binding_invalid"])
+            for binding in zones.values():
+                _frozen_artifact_path(
+                    binding,
+                    freeze_file=freeze_file,
+                    code="heldout_frozen_mask_changed",
+                )
     policy = freeze.get("policy") or {}
     threshold = float(policy["heldout_significant_alpha_threshold"])
     band = int(policy["heldout_rasterization_band_pixels"])
     maximum_component = int(policy["heldout_maximum_residual_connected_component_pixels"])
     maximum_protected = int(policy["heldout_maximum_protected_significant_pixels"])
-    heldout = set(freeze["camera_split"]["heldout_camera_ids"])
+    heldout = set(heldout_ids)
     rows: list[dict[str, Any]] = []
     sheets: list[Path] = []
     for camera_id in camera_ids:
@@ -411,7 +522,14 @@ def materialize_gaussian_excision_heldout_audit(
         )
     )
     index_path = output / "OPEN_ME_gaussian_excision_contact_sheets.html"
-    _contact_sheet_index(rows, index_path, heldout_passed=passed)
+    scene_label, task_label = _freeze_labels(freeze)
+    _contact_sheet_index(
+        rows,
+        index_path,
+        heldout_passed=passed,
+        scene_label=scene_label,
+        task_label=task_label,
+    )
     receipt: dict[str, Any] = {
         "schema_version": HELDOUT_AUDIT_SCHEMA,
         "program_id": "arm-decision-proof-v1",
@@ -424,6 +542,8 @@ def materialize_gaussian_excision_heldout_audit(
         "freeze_digest": freeze["freeze_digest"],
         "ownership_receipt_digest": ownership.get("receipt_digest"),
         "ownership_replay_digest": replay.get("replay_digest"),
+        "scene_label": scene_label,
+        "task_label": task_label,
         "heldout_camera_ids": sorted(heldout),
         "policy": {
             "significant_alpha_threshold": threshold,

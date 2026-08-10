@@ -132,16 +132,96 @@ def select_maximally_diverse_holdout_pair(
     score, selected = sorted(scored, key=lambda item: (-item[0], item[1][0]))[0]
     heldout = list(selected[0])
     calibration = sorted(seen - set(heldout))
-    return {
+    split = {
         "method": "maximum_normalized_position_angle_and_quarter_scale_diversity.v1",
         "heldout_camera_ids": heldout,
         "calibration_camera_ids": calibration,
+        "camera_count": len(seen),
+        "heldout_camera_count": len(heldout),
+        "calibration_camera_count": len(calibration),
         "selected_score": round(float(score), 12),
         "selected_position_distance_m": round(selected[1], 12),
         "selected_view_direction_distance_deg": round(selected[2], 12),
         "selected_projected_target_fraction_distance": round(selected[3], 12),
         "outcome_fields_accessed": False,
     }
+    split["camera_split_digest"] = canonical_digest(
+        split, digest_field="camera_split_digest"
+    )
+    return split
+
+
+def _registered_frame_binding(
+    receipt_path: Path,
+) -> tuple[dict[str, Any], np.ndarray]:
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GaussianExcisionAuditError(["excision_registered_frame_receipt_invalid"]) from exc
+    if not isinstance(receipt, dict):
+        raise GaussianExcisionAuditError(["excision_registered_frame_receipt_invalid"])
+    digest_fields = tuple(
+        field
+        for field in (
+            "receipt_digest",
+            "registration_digest",
+            "scene_frame_binding_digest",
+            "manifest_digest",
+        )
+        if field in receipt
+    )
+    if len(digest_fields) != 1:
+        raise GaussianExcisionAuditError(["excision_registered_frame_receipt_invalid"])
+    digest_field = digest_fields[0]
+    if receipt.get(digest_field) != canonical_digest(receipt, digest_field=digest_field):
+        raise GaussianExcisionAuditError(["excision_registered_frame_receipt_digest_mismatch"])
+
+    provider_transform = receipt.get("provider_transform")
+    if not isinstance(provider_transform, Mapping):
+        provider_transform = {}
+    source_to_collision_value = provider_transform.get("source_to_collision")
+    if source_to_collision_value is None:
+        source_to_collision_value = receipt.get("source_to_collision_stage_matrix")
+    if source_to_collision_value == "identity":
+        source_to_collision = np.eye(4, dtype=np.float64)
+    else:
+        source_to_collision = np.asarray(source_to_collision_value, dtype=np.float64)
+        if source_to_collision.shape == (16,):
+            source_to_collision = source_to_collision.reshape((4, 4))
+    if (
+        source_to_collision.shape != (4, 4)
+        or not np.isfinite(source_to_collision).all()
+        or not np.allclose(
+            source_to_collision[3], [0.0, 0.0, 0.0, 1.0], atol=1e-9, rtol=0.0
+        )
+        or abs(float(np.linalg.det(source_to_collision[:3, :3]))) <= 1e-12
+    ):
+        raise GaussianExcisionAuditError(["excision_registered_frame_transform_invalid"])
+
+    shared_frame_status = receipt.get("shared_frame_status") or receipt.get("status")
+    metric_scale_status = receipt.get("metric_scale_status")
+    if metric_scale_status is None and isinstance(receipt.get("metric_scale_proven"), bool):
+        metric_scale_status = "proven" if receipt["metric_scale_proven"] else "not_proven"
+    metric_scale_status = metric_scale_status or receipt.get("status")
+    if (
+        not isinstance(shared_frame_status, str)
+        or not shared_frame_status.strip()
+        or not isinstance(metric_scale_status, str)
+        or not metric_scale_status.strip()
+    ):
+        raise GaussianExcisionAuditError(["excision_registered_frame_status_missing"])
+    binding = {
+        "receipt": _record(receipt_path),
+        "schema_version": receipt.get("schema_version"),
+        "digest_field": digest_field,
+        "digest": receipt[digest_field],
+        "shared_frame_status": shared_frame_status,
+        "metric_scale_status": metric_scale_status,
+        "provider_transform": dict(provider_transform),
+        "source_to_collision_transform": source_to_collision.tolist(),
+        "claim_boundary": dict(receipt.get("claim_boundary") or {}),
+    }
+    return binding, np.linalg.inv(source_to_collision)
 
 
 def _load_target_mesh(
@@ -175,16 +255,18 @@ def _load_target_mesh(
     ).T
     homogeneous = np.concatenate([points, np.ones((len(points), 1))], axis=1)
     world = (matrix @ homogeneous.T).T[:, :3]
+    meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+    if not math.isfinite(meters_per_unit) or meters_per_unit <= 0.0:
+        raise GaussianExcisionAuditError(["excision_collision_stage_scale_invalid"])
+    world *= meters_per_unit
     stage_info = {
-        "meters_per_unit": float(UsdGeom.GetStageMetersPerUnit(stage)),
+        "collision_stage_meters_per_unit": meters_per_unit,
         "up_axis": str(UsdGeom.GetStageUpAxis(stage)).upper(),
         "target_point_count": int(len(points)),
         "target_triangle_count": int(len(counts)),
         "target_world_aabb_min_m": world.min(axis=0).tolist(),
         "target_world_aabb_max_m": world.max(axis=0).tolist(),
     }
-    if stage_info["meters_per_unit"] != 1.0 or stage_info["up_axis"] != "Z":
-        raise GaussianExcisionAuditError(["excision_collision_stage_metric_frame_invalid"])
     return world, indices.reshape((-1, 3)), stage_info
 
 
@@ -231,6 +313,7 @@ def materialize_excision_audit_freeze(
     source_standard_splat_path: str | Path,
     source_collision_path: str | Path,
     target_collision_prim_path: str,
+    registered_frame_receipt_path: str | Path,
     camera_contract_path: str | Path,
     source_image_root: str | Path,
     historical_outer_mask_root: str | Path,
@@ -240,10 +323,11 @@ def materialize_excision_audit_freeze(
     output_root: str | Path,
     supersample: int = 2,
 ) -> dict[str, Any]:
-    """Freeze independent mask zones and the six/two split before execution."""
+    """Freeze independent mask zones and a digest-bound split before execution."""
 
     source_path = Path(source_standard_splat_path).expanduser().resolve()
     collision_path = Path(source_collision_path).expanduser().resolve()
+    registered_frame_path = Path(registered_frame_receipt_path).expanduser().resolve()
     camera_path = Path(camera_contract_path).expanduser().resolve()
     image_root = Path(source_image_root).expanduser().resolve()
     outer_root = Path(historical_outer_mask_root).expanduser().resolve()
@@ -251,6 +335,7 @@ def materialize_excision_audit_freeze(
     for path, code in (
         (source_path, "excision_source_splat_missing"),
         (collision_path, "excision_source_collision_missing"),
+        (registered_frame_path, "excision_registered_frame_receipt_missing"),
         (camera_path, "excision_camera_contract_missing"),
     ):
         if not path.is_file() or path.is_symlink():
@@ -259,14 +344,21 @@ def materialize_excision_audit_freeze(
         cameras_value = json.loads(camera_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise GaussianExcisionAuditError(["excision_camera_contract_invalid"]) from exc
-    if not isinstance(cameras_value, list) or len(cameras_value) != 8:
-        raise GaussianExcisionAuditError(["excision_exact_eight_cameras_required"])
+    if not isinstance(cameras_value, list) or len(cameras_value) < 4:
+        raise GaussianExcisionAuditError(["excision_camera_count_below_four"])
     cameras = [dict(row) for row in cameras_value if isinstance(row, Mapping)]
-    if len(cameras) != 8:
+    if len(cameras) != len(cameras_value):
         raise GaussianExcisionAuditError(["excision_camera_contract_invalid"])
 
     splat = read_standard_3dgs_ply(source_path)
     world, faces, stage_info = _load_target_mesh(collision_path, target_collision_prim_path)
+    registered_frame, collision_to_source = _registered_frame_binding(registered_frame_path)
+    world_homogeneous = np.concatenate(
+        [world, np.ones((len(world), 1), dtype=np.float64)], axis=1
+    )
+    world = (collision_to_source @ world_homogeneous.T).T[:, :3]
+    stage_info["target_world_aabb_min_m"] = world.min(axis=0).tolist()
+    stage_info["target_world_aabb_max_m"] = world.max(axis=0).tolist()
     output.mkdir(parents=True, exist_ok=True)
     mask_root = output / "masks"
     mask_root.mkdir(parents=True, exist_ok=True)
@@ -320,6 +412,10 @@ def materialize_excision_audit_freeze(
     split = select_maximally_diverse_holdout_pair(
         cameras, projected_target_fraction=target_fractions
     )
+    split["camera_contract_sha256"] = _sha256(camera_path)
+    split["camera_split_digest"] = canonical_digest(
+        split, digest_field="camera_split_digest"
+    )
     baseline_method = historical_baseline.get("method")
     baseline_min = np.asarray(historical_baseline.get("center_aabb_min_m"), dtype=np.float64)
     baseline_max = np.asarray(historical_baseline.get("center_aabb_max_m"), dtype=np.float64)
@@ -353,16 +449,14 @@ def materialize_excision_audit_freeze(
         "source_standard_splat": _record(source_path),
         "source_collision": _record(collision_path),
         "target_collision_prim_path": target_collision_prim_path,
+        "registered_frame": registered_frame,
         "camera_contract": _record(camera_path),
         "source_images": image_rows,
         "masks": mask_rows,
         "camera_split": split,
         "scale_and_bounds": {
-            "coordinate_frame": "InteriorGS_world_and_SAGE_world",
-            "handedness": "right_handed",
-            "up_axis": "Z",
-            "meters_per_unit": 1.0,
-            "interiorgs_to_sage_transform": np.eye(4).tolist(),
+            "coordinate_frame": "registered_appearance_world",
+            "collision_to_appearance_transform": collision_to_source.tolist(),
             "source_gaussian_count": int(splat.count),
             "source_center_aabb_min_m": bounds_min.astype(float).tolist(),
             "source_center_aabb_max_m": bounds_max.astype(float).tolist(),

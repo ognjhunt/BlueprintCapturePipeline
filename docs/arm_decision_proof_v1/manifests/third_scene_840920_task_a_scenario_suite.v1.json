@@ -3,7 +3,7 @@
   "scene_id": "840920",
   "shared_scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
   "task_id": "task_a_washer_door_open",
-  "task_freeze_digest": "sha256:8c158cfcb8834dba25148b3999c9abf61137f2ca4b4317f470f5596755933684",
+  "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
   "candidate_ids": [
     "pi05_droid",
     "groot_n17_droid"
@@ -201,5 +201,5 @@
       "applied_parameter_readback_required": true
     }
   ],
-  "suite_digest": "sha256:8930745f70b0881e70d363c7b796e738cf50edb00387023d63348774269d922f"
+  "suite_digest": "sha256:3dc59d61a659131921e6e279315d36765348eceb2a70d87d4c0733572124035a"
 }

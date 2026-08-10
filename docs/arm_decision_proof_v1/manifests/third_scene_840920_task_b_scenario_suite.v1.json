@@ -3,7 +3,7 @@
   "scene_id": "840920",
   "shared_scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
   "task_id": "task_b_notebook_relocation",
-  "task_freeze_digest": "sha256:c7800fe4cb029f989f88907984e89941f857780a4faf92c3458a4fdf2064e68a",
+  "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
   "candidate_ids": [
     "pi05_droid",
     "groot_n17_droid"
@@ -201,5 +201,5 @@
       "applied_parameter_readback_required": true
     }
   ],
-  "suite_digest": "sha256:a203375f810a470aec6cccae475183589b93622f69a4699563b042ee45caeed5"
+  "suite_digest": "sha256:b9e79b2bc3ddb9a24b066567ae4404f7289a707f27032424971624adecba86e4"
 }

@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:d482e6ca8a0a06cdf86d9c6e14e19e3ce466ae6637e8433af087bccc0169872f",
+  "index_digest": "sha256:e7698b4832087951eccff838ffb4c26b88b2e08ec5937988c6ae2c16015339e6",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -10,7 +10,7 @@
   ],
   "review_videos_are_not_physical_truth": true,
   "run_identity": {
-    "scenario_suite_digest": "sha256:8930745f70b0881e70d363c7b796e738cf50edb00387023d63348774269d922f",
+    "scenario_suite_digest": "sha256:3dc59d61a659131921e6e279315d36765348eceb2a70d87d4c0733572124035a",
     "scene_id": "840920",
     "task_id": "task_a_washer_door_open"
   },

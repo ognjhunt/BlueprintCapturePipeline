@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.replacement_construction_bindings import (
+    GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
+    MASK_SET_QUALIFICATION_SCHEMA_VERSION,
+    REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
     ReplacementConstructionBindingsError,
+    materialize_replacement_construction_bindings,
     seal_replacement_construction_bindings,
     validate_replacement_construction_bindings,
 )
@@ -72,9 +79,7 @@ def test_two_independent_removal_replacement_lanes_seal() -> None:
 def test_shared_removal_or_replacement_identity_is_rejected(field: str) -> None:
     sealed = _sealed()
     sealed["bindings"][1][field] = sealed["bindings"][0][field]
-    sealed["construction_digest"] = canonical_digest(
-        sealed, digest_field="construction_digest"
-    )
+    sealed["construction_digest"] = canonical_digest(sealed, digest_field="construction_digest")
 
     with pytest.raises(ReplacementConstructionBindingsError) as excinfo:
         validate_replacement_construction_bindings(sealed)
@@ -99,9 +104,7 @@ def test_unqualified_receipt_and_digest_mutation_fail_closed() -> None:
 def test_swapped_task_freeze_binding_changes_construction_seal() -> None:
     sealed = _sealed()
     swapped = copy.deepcopy(sealed)
-    swapped["bindings"][0]["task_freeze_digest"], swapped["bindings"][1][
-        "task_freeze_digest"
-    ] = (
+    swapped["bindings"][0]["task_freeze_digest"], swapped["bindings"][1]["task_freeze_digest"] = (
         swapped["bindings"][1]["task_freeze_digest"],
         swapped["bindings"][0]["task_freeze_digest"],
     )
@@ -110,3 +113,278 @@ def test_swapped_task_freeze_binding_changes_construction_seal() -> None:
         validate_replacement_construction_bindings(swapped)
 
     assert excinfo.value.errors == ("replacement_construction_digest_invalid",)
+
+
+def _write_receipt(path: Path, payload: dict) -> Path:
+    payload["receipt_digest"] = canonical_digest(payload, digest_field="receipt_digest")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _file_sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _path_backed_packet(tmp_path: Path) -> tuple[Path, list[dict[str, str]]]:
+    root = Path(__file__).resolve().parents[1]
+    manifests = root / "docs/arm_decision_proof_v1/manifests"
+    scene_path = manifests / "third_scene_840920_dual_task_scene_freeze.v1.json"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    task_paths = [
+        manifests / "third_scene_840920_task_a_freeze.v1.json",
+        manifests / "third_scene_840920_task_b_freeze.v1.json",
+    ]
+    lanes: list[dict[str, str]] = []
+    collider_rows: list[dict] = []
+    for index, task_path in enumerate(task_paths):
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        removal = task["removal_plan"]
+        common = {
+            "scene_id": scene["selected_scene_id"],
+            "scene_freeze_digest": scene["scene_freeze_digest"],
+            "task_id": task["task_id"],
+            "task_freeze_digest": task["task_freeze_digest"],
+            "source_object_instance_id": task["source_object"]["instance_id"],
+            "removal_id": removal["removal_id"],
+            "mask_set_id": removal["mask_set_id"],
+        }
+        lane_root = tmp_path / f"lane_{index}"
+        mask = _write_receipt(
+            lane_root / "mask.json",
+            {
+                "schema_version": MASK_SET_QUALIFICATION_SCHEMA_VERSION,
+                "status": "calibrated_mask_set_qualified",
+                **common,
+                "source_scene_sha256": scene["source_components"]["interiorgs"]["sha256"],
+                "calibrated_masks_qualified": True,
+                "receipt_digest": "",
+            },
+        )
+        mask_value = json.loads(mask.read_text(encoding="utf-8"))
+        gaussian = _write_receipt(
+            lane_root / "gaussian.json",
+            {
+                "schema_version": GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
+                "status": "source_gaussian_removal_qualified",
+                **common,
+                "source_scene_sha256": scene["source_components"]["interiorgs"]["sha256"],
+                "mask_set_receipt_digest": mask_value["receipt_digest"],
+                "source_removal_qualified": True,
+                "retained_records_byte_exact": True,
+                "protected_geometry_deleted": False,
+                "receipt_digest": "",
+            },
+        )
+        collider = _write_receipt(
+            lane_root / "collider.json",
+            {
+                "schema_version": "source_collider_subtree_removal.v1",
+                "status": "exact_source_collider_subtree_removed",
+                "sage_collision_usd_sha256": scene["source_components"]["sage_collision"]["sha256"],
+                "removed_prim_path": removal["source_collider_prim_path"],
+                "source_bytes_unchanged": True,
+                "unrelated_prim_inventory_unchanged": True,
+                "remaining_target_collision_prim_count": 0,
+                "removed_prim_count": 1,
+                "replacement_inserted": False,
+                "receipt_digest": "",
+            },
+        )
+        collider_value = json.loads(collider.read_text(encoding="utf-8"))
+        collider_rows.append(
+            {
+                "removal_id": removal["collider_deletion_id"],
+                "target_prim_path": removal["source_collider_prim_path"],
+                "source_scene_sha256": scene["source_components"]["sage_collision"]["sha256"],
+                "removed_prim_count": 1,
+                "removed_prim_paths_digest": _sha(str(index + 7)),
+                "removed_scene": {
+                    "relative_path": f"lane_{index}/removed.usda",
+                    "size_bytes": 1,
+                    "sha256": _sha(str(index + 5)),
+                },
+                "receipt": {
+                    "relative_path": collider.relative_to(tmp_path).as_posix(),
+                    "size_bytes": collider.stat().st_size,
+                    "sha256": _file_sha256(collider),
+                },
+                "receipt_digest": collider_value["receipt_digest"],
+            }
+        )
+        replacement = _write_receipt(
+            lane_root / "replacement.json",
+            {
+                "schema_version": REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
+                "status": "native_simulator_import_qualified",
+                **{
+                    key: common[key]
+                    for key in (
+                        "scene_id",
+                        "scene_freeze_digest",
+                        "task_id",
+                        "task_freeze_digest",
+                        "source_object_instance_id",
+                    )
+                },
+                "asset_id": removal["replacement_asset_id"],
+                "replacement_qualification_id": removal["replacement_qualification_id"],
+                "replacement_asset_sha256": _sha(str(index + 3)),
+                "native_simulator_import_qualified": True,
+                "receipt_digest": "",
+            },
+        )
+        lanes.append(
+            {
+                "task_freeze_receipt_path": str(task_path),
+                "mask_set_receipt_path": str(mask),
+                "gaussian_removal_receipt_path": str(gaussian),
+                "source_collider_deletion_receipt_path": str(collider),
+                "replacement_qualification_receipt_path": str(replacement),
+            }
+        )
+    batch = _write_receipt(
+        tmp_path / "collider_batch.json",
+        {
+            "schema_version": "source_collider_batch_removal.v1",
+            "status": "independent_and_shared_source_colliders_removed",
+            "source_scene_usd": {
+                "path": "/fixture/source.usda",
+                "size_bytes": 100,
+                "sha256": scene["source_components"]["sage_collision"]["sha256"],
+            },
+            "source_bytes_unchanged": True,
+            "unrelated_prim_inventory_unchanged": True,
+            "remaining_target_collision_prim_count": 0,
+            "replacement_inserted": False,
+            "independent_receipts_share_exact_source_digest": True,
+            "independent_removed_scenes_are_distinct": True,
+            "target_count": 2,
+            "target_removals": collider_rows,
+            "receipt_digest": "",
+        },
+    )
+    for lane in lanes:
+        lane["source_collider_deletion_receipt_path"] = str(batch)
+    return scene_path, lanes
+
+
+def test_path_backed_materializer_derives_all_claims_from_receipts(
+    tmp_path: Path,
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path)
+    output = tmp_path / "result" / "construction.json"
+
+    result = materialize_replacement_construction_bindings(
+        scene_freeze_receipt_path=scene_path,
+        evidence_lanes=lanes,
+        output_path=output,
+    )
+
+    assert output.is_file()
+    assert json.loads(output.read_text(encoding="utf-8")) == result
+    assert len(result["bindings"]) == 2
+    assert all(row["source_removal_qualified"] for row in result["bindings"])
+    assert all(row["collider_deletion_qualified"] for row in result["bindings"])
+    assert all(row["replacement_simulator_import_qualified"] for row in result["bindings"])
+    assert all(
+        set(row["evidence_receipts"])
+        == {
+            "task_freeze",
+            "mask_set",
+            "gaussian_removal",
+            "source_collider_deletion",
+            "replacement_qualification",
+        }
+        for row in result["bindings"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("path_field", "expected_error"),
+    [
+        ("mask_set_receipt_path", "mask_set:1_identity_mismatch"),
+        (
+            "replacement_qualification_receipt_path",
+            "replacement_qualification:1_identity_mismatch",
+        ),
+    ],
+)
+def test_path_backed_materializer_rejects_shared_or_swapped_task_evidence(
+    tmp_path: Path, path_field: str, expected_error: str
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path)
+    lanes[1][path_field] = lanes[0][path_field]
+
+    with pytest.raises(ReplacementConstructionBindingsError) as excinfo:
+        materialize_replacement_construction_bindings(
+            scene_freeze_receipt_path=scene_path,
+            evidence_lanes=lanes,
+        )
+
+    assert any(expected_error in error for error in excinfo.value.errors)
+
+
+def test_path_backed_materializer_rejects_swapped_collider_deletion_ids(
+    tmp_path: Path,
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path)
+    batch_path = Path(lanes[0]["source_collider_deletion_receipt_path"])
+    batch = json.loads(batch_path.read_text(encoding="utf-8"))
+    first, second = batch["target_removals"]
+    first["removal_id"], second["removal_id"] = (
+        second["removal_id"],
+        first["removal_id"],
+    )
+    _write_receipt(batch_path, batch)
+
+    with pytest.raises(ReplacementConstructionBindingsError) as excinfo:
+        materialize_replacement_construction_bindings(
+            scene_freeze_receipt_path=scene_path,
+            evidence_lanes=lanes,
+        )
+
+    assert any(
+        "source_collider_deletion:0_identity_mismatch" in error for error in excinfo.value.errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_removal_qualified", True),
+        ("source_removal_receipt_digest", _sha("f")),
+        ("replacement_simulator_import_qualified", True),
+    ],
+)
+def test_path_backed_materializer_rejects_caller_authored_claims(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path)
+    lanes[0][field] = value  # type: ignore[assignment]
+
+    with pytest.raises(ReplacementConstructionBindingsError) as excinfo:
+        materialize_replacement_construction_bindings(
+            scene_freeze_receipt_path=scene_path,
+            evidence_lanes=lanes,
+        )
+
+    assert "replacement_construction_lane_paths_invalid:0" in excinfo.value.errors
+
+
+def test_path_backed_materializer_rejects_stale_hand_authored_receipt_digest(
+    tmp_path: Path,
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path)
+    gaussian_path = Path(lanes[0]["gaussian_removal_receipt_path"])
+    gaussian = json.loads(gaussian_path.read_text(encoding="utf-8"))
+    gaussian["source_removal_qualified"] = False
+    gaussian_path.write_text(json.dumps(gaussian), encoding="utf-8")
+
+    with pytest.raises(ReplacementConstructionBindingsError) as excinfo:
+        materialize_replacement_construction_bindings(
+            scene_freeze_receipt_path=scene_path,
+            evidence_lanes=lanes,
+        )
+
+    assert "replacement_construction_gaussian_removal:0_digest_invalid" in (excinfo.value.errors)

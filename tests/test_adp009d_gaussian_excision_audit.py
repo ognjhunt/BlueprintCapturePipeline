@@ -594,9 +594,6 @@ def Xform "Root"
         _camera("near_right", 0.2, -1.0),
         _camera("far_left", -0.5, 3.0),
         _camera("far_right", 0.5, -3.0),
-        _camera("raised", 0.1, 2.0),
-        _camera("low", -0.1, -2.0),
-        _camera("working", 0.05, 0.5),
     ]
     camera_path = tmp_path / "cameras.json"
     camera_path.write_text(json.dumps(cameras), encoding="utf-8")
@@ -613,11 +610,35 @@ def Xform "Root"
             np.zeros((48, 64, 3), dtype=np.uint8),
         )
         assert cv2.imwrite(str(outer_root / f"{camera_id}.png"), outer)
+    registered_frame = {
+        "schema_version": "interiorgs_sage_shared_frame_candidate.v1",
+        "status": "multi_object_identity_alignment_candidate",
+        "shared_frame_status": "provider_declared_not_independently_validated",
+        "metric_scale_status": "provider_declared_not_independently_validated",
+        "provider_transform": {
+            "source_to_collision": "identity",
+            "up_axis": "Z",
+            "meters_per_unit": 1.0,
+            "handedness": "not_independently_proven",
+        },
+        "claim_boundary": {
+            "independent_metric_metrology_completed": False,
+            "handedness_independently_proven": False,
+        },
+    }
+    registered_frame["receipt_digest"] = canonical_digest(
+        registered_frame, digest_field="receipt_digest"
+    )
+    registered_frame_path = tmp_path / "registered-frame.json"
+    registered_frame_path.write_text(
+        canonical_json(registered_frame) + "\n", encoding="utf-8"
+    )
 
     freeze = materialize_excision_audit_freeze(
         source_standard_splat_path=source,
         source_collision_path=collision,
         target_collision_prim_path="/Root/Target",
+        registered_frame_receipt_path=registered_frame_path,
         camera_contract_path=camera_path,
         source_image_root=image_root,
         historical_outer_mask_root=outer_root,
@@ -639,8 +660,20 @@ def Xform "Root"
     assert freeze["schema_version"] == FREEZE_SCHEMA
     assert freeze["camera_split"]["outcome_fields_accessed"] is False
     assert len(freeze["camera_split"]["heldout_camera_ids"]) == 2
-    assert len(freeze["camera_split"]["calibration_camera_ids"]) == 6
-    assert freeze["scale_and_bounds"]["meters_per_unit"] == 1.0
+    assert len(freeze["camera_split"]["calibration_camera_ids"]) == 3
+    assert freeze["camera_split"]["camera_count"] == 5
+    assert freeze["camera_split"]["calibration_camera_count"] == 3
+    assert freeze["camera_split"]["heldout_camera_count"] == 2
+    assert freeze["camera_split"]["camera_split_digest"] == canonical_digest(
+        freeze["camera_split"], digest_field="camera_split_digest"
+    )
+    assert freeze["registered_frame"]["shared_frame_status"] == (
+        "provider_declared_not_independently_validated"
+    )
+    assert freeze["registered_frame"]["provider_transform"]["handedness"] == (
+        "not_independently_proven"
+    )
+    assert freeze["scale_and_bounds"]["collision_stage_meters_per_unit"] == 1.0
     assert freeze["scale_and_bounds"]["source_gaussian_count"] == 4
     assert freeze["contribution_method"]["depth_anything_3_used"] is False
     assert freeze["historical_baseline"]["selected_gaussian_count"] == 4

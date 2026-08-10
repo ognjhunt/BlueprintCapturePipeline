@@ -157,7 +157,7 @@
         "reset_tolerance": 0.001,
         "drive": {
           "drive_type": "force",
-          "stiffness": 8,
+          "stiffness": 0,
           "damping": 2,
           "maximum_force": 80
         },
@@ -199,11 +199,11 @@
         "child_link_id": "drum",
         "joint_type": "continuous",
         "role": "passive",
-        "axis": [
-          1,
-          0,
-          0
-        ],
+      "axis": [
+        0,
+        1,
+        0
+      ],
         "limits": [
           -100,
           100
@@ -307,5 +307,5 @@
     }
   },
   "mechanism_provenance": "observed washer exterior and circular door; all hidden hinge latch drum and interior geometry are generated candidate content",
-  "task_freeze_digest": "sha256:8c158cfcb8834dba25148b3999c9abf61137f2ca4b4317f470f5596755933684"
+  "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152"
 }

@@ -138,11 +138,11 @@
         "child_link_id": "display",
         "joint_type": "revolute",
         "role": "locked",
-        "axis": [
-          0,
-          1,
-          0
-        ],
+      "axis": [
+        1,
+        0,
+        0
+      ],
         "limits": [
           0,
           2.2
@@ -171,5 +171,5 @@
     }
   },
   "mechanism_provenance": "observed open notebook exterior; display hinge geometry is generated candidate content and locked for the rigid task",
-  "task_freeze_digest": "sha256:c7800fe4cb029f989f88907984e89941f857780a4faf92c3458a4fdf2064e68a"
+  "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6"
 }

@@ -135,7 +135,9 @@ def author_articulated_joint_drives(
                     0.0,
                     "articulated_joint_drive_max_force_invalid",
                 ),
-                "holds_position_without_actuation": role == ROLE_TASK_JOINT,
+                "position_servo_enabled": role == ROLE_LOCKED_JOINT,
+                "holds_position_without_actuation": role == ROLE_LOCKED_JOINT,
+                "resists_velocity_without_position_target": role == ROLE_TASK_JOINT,
             }
         )
     if errors:

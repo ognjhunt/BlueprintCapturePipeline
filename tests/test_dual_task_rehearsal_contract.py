@@ -149,11 +149,15 @@ def scene_freeze() -> dict:
 
 
 def _articulation_graph() -> dict:
-    drive = {
+    locked_drive = {
         "drive_type": "force",
         "stiffness": 20.0,
         "damping": 1.0,
         "maximum_force": 100.0,
+    }
+    target_drive = {
+        **locked_drive,
+        "stiffness": 0.0,
     }
     return {
         "schema_version": "adp_articulation_graph.v1",
@@ -173,7 +177,7 @@ def _articulation_graph() -> dict:
                 "limits": [0.0, 1.2],
                 "reset_position": 0.0,
                 "reset_tolerance": 0.0001,
-                "drive": drive,
+                "drive": target_drive,
                 "dependency": None,
             },
             {
@@ -186,7 +190,7 @@ def _articulation_graph() -> dict:
                 "limits": [-3.2, 3.2],
                 "reset_position": 0.0,
                 "reset_tolerance": 0.0001,
-                "drive": drive,
+                "drive": locked_drive,
                 "dependency": None,
             },
         ],
