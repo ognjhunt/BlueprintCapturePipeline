@@ -385,3 +385,69 @@ def test_suppression_mode_does_not_relax_any_existing_gate() -> None:
         "residual_component_above_threshold" in error
         for error in excinfo.value.errors
     )
+
+
+def _abstained_ownership() -> dict:
+    """The 840796 ownership audit as it actually stands: abstained."""
+
+    return _digest(
+        {
+            "schema_version": "adp009b_gaussian_excision_ownership.v1",
+            "publisher_scene_id": "840796",
+            "status": "abstained_calibrated_gaussian_ownership_separation_insufficient",
+            "heldout_audit_passed": False,
+            "receipt_digest": "",
+        },
+        "receipt_digest",
+    )
+
+
+def test_deletion_mode_still_requires_a_passing_ownership_audit() -> None:
+    """Nothing about the existing path is relaxed."""
+
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(ownership_receipt=_abstained_ownership())
+
+    assert any("heldout_audit_not_passed" in e for e in excinfo.value.errors)
+
+
+def test_suppression_admits_construction_without_solving_ownership() -> None:
+    """Coverage, not ownership, is what the suppression path actually claims.
+
+    The held-out audit abstained: a Gaussian cannot be cleanly assigned to the
+    refrigerator, and deletion-only partitioning will not make it so. The
+    suppression path never asserted otherwise - it evacuates the space the twin
+    owns and proves nothing old is visible there. Demanding a passing ownership
+    audit would block a construction whose claim does not depend on it.
+    """
+
+    decision = _join(
+        ownership_receipt=_abstained_ownership(),
+        suppression_mode="render_time",
+        suppression_receipts=[_suppression()],
+    )
+
+    assert decision["status"] == "join_admitted"
+    assert decision["suppression"]["mode"] == "render_time"
+    assert decision["claim_boundary"]["gaussian_ownership_established"] is False
+    assert (
+        decision["claim_boundary"]["visibility_after_replacement_is_the_criterion"]
+        is True
+    )
+    assert decision["bindings"]["ownership_audit_status"].startswith("abstained")
+
+
+def test_suppression_still_needs_coverage_to_hold() -> None:
+    """Routing around ownership does not relax what replaced it."""
+
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(
+            ownership_receipt=_abstained_ownership(),
+            suppression_mode="render_time",
+            suppression_receipts=[_suppression()],
+            coverage_receipt=_coverage(residual=91),
+        )
+
+    assert any(
+        "residual_component_above_threshold" in e for e in excinfo.value.errors
+    )

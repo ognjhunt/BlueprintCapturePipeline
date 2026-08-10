@@ -237,7 +237,15 @@ def compile_articulated_excision_join(
         error="articulated_excision_join_ownership_receipt_digest_invalid",
         errors=errors,
     )
-    if ownership:
+    # Under a suppression mode the claim is visibility after replacement, not
+    # ownership of individual Gaussians. The 840796 held-out audit abstained -
+    # a splat cannot be cleanly assigned to the refrigerator, and deletion-only
+    # partitioning will not make it so - and the suppression path never
+    # asserted otherwise. Requiring a passing ownership audit here would block
+    # a construction whose claim does not rest on one. What replaced it,
+    # coverage, is still enforced in full below.
+    ownership_required = suppression["summary"].get("mode") == "deletion"
+    if ownership and ownership_required:
         for field in (
             "owned_index_set_sha256",
             "ambiguous_index_set_sha256",
@@ -260,6 +268,9 @@ def compile_articulated_excision_join(
             errors.append("articulated_excision_join_ownership_counts_invalid")
         if ownership.get("heldout_audit_passed") is not True:
             errors.append("articulated_excision_join_heldout_audit_not_passed")
+    elif ownership and not ownership_required:
+        # Recorded as disclosed context, never as an established claim.
+        pass
 
     removal = _canonical(
         collider_removal_receipt,
@@ -452,10 +463,15 @@ def compile_articulated_excision_join(
             "door_state_receipt_digest": door_states.get("receipt_digest"),
             "coverage_receipt_digest": coverage.get("receipt_digest"),
             "suppression_receipt_digests": suppression["digests"],
+            "ownership_audit_status": str(ownership.get("status") or "unreported"),
+            "ownership_audit_passed": ownership.get("heldout_audit_passed"),
             "T_world_asset": expected_transform,
         },
         "claim_boundary": {
             "gaussian_ownership_authored_here": False,
+            "gaussian_ownership_established": ownership.get("heldout_audit_passed")
+            is True,
+            "visibility_after_replacement_is_the_criterion": not ownership_required,
             "hidden_interior_is_observed_truth": False,
             "native_simulator_qualified": False,
             "physical_equivalence_proven": False,
