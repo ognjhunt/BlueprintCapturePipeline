@@ -16,6 +16,7 @@ import importlib.metadata
 import importlib.util
 import json
 import sys
+import tomllib
 import traceback
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -61,6 +62,18 @@ ISAAC_SIM_DEFAULT_CALLBACKS_SETTING = (
 )
 ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG = f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}=false"
 ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX = "d81d2160220a4401be1d94f871c8f0b62e217acb"
+ISAAC_LAB_CAMERAS_SETTING = "/isaaclab/cameras_enabled"
+ISAAC_LAB_CAMERAS_KIT_ARG = f"--{ISAAC_LAB_CAMERAS_SETTING}=true"
+ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS = {
+    "/isaaclab/render/offscreen": True,
+    "/isaaclab/render/active_viewport": False,
+    "/isaaclab/xr/enabled": False,
+    "/isaaclab/xr/auto_start": False,
+    "/isaaclab/video/enabled": False,
+    "/isaaclab/render/rtx_sensors": False,
+    "/physics/fabricUpdateTransformations": True,
+    "/app/player/useFixedTimeStepping": False,
+}
 BUNDLED_WARP_EXTENSION = "omni.warp.core"
 
 # Compatibility name retained for existing callers.  v2 discovers these names
@@ -359,6 +372,7 @@ def verify_native_task_isaaclab_launch_contract(
         )
     base = texts.get("isaaclab.python.kit", "")
     headless = texts.get("isaaclab.python.headless.kit", "")
+    rendering = texts.get("isaaclab.python.headless.rendering.kit", "")
     if (
         '"isaacsim.core.simulation_manager" = {}' not in base
         or '"omni.warp.core" = {}' in base
@@ -368,6 +382,17 @@ def verify_native_task_isaaclab_launch_contract(
         or BUNDLED_WARP_EXTENSION not in headless
     ):
         errors.append("native_task_isaaclab_experience_warp_contract_invalid")
+    try:
+        rendering_config = tomllib.loads(rendering)
+        rendering_cameras_enabled = (
+            rendering_config.get("settings", {})
+            .get("isaaclab", {})
+            .get("cameras_enabled")
+        )
+    except (tomllib.TOMLDecodeError, AttributeError):
+        rendering_cameras_enabled = None
+    if rendering_cameras_enabled is not True:
+        errors.append("native_task_isaaclab_rendering_experience_cameras_disabled")
     if (
         provisioning.get("runtime_dependency_owner") != "official_isaac_lab_complete_runtime"
         or provisioning.get("runtime_dependency_overlay_required") is not False
@@ -417,6 +442,7 @@ def launch_native_task_isaaclab(
     settings_reader: Callable[[str], Any] | None = None,
     extension_enabled_reader: Callable[[str], bool] | None = None,
     pre_app_dependency_probe: Callable[[], Mapping[str, Any]] | None = None,
+    isaaclab_settings_manager_factory: Callable[[], Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Launch SimulationApp with one verified PhysX lifecycle owner.
 
@@ -428,11 +454,19 @@ def launch_native_task_isaaclab(
     """
 
     receipt = verify_native_task_isaaclab_launch_contract(provisioning_receipt_path)
-    setting_prefix = f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}="
-    existing = [arg for arg in sys.argv if arg.startswith(setting_prefix)]
-    if existing and existing != [ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG]:
+    callback_setting_prefix = f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}="
+    callback_existing = [
+        arg for arg in sys.argv if arg.startswith(callback_setting_prefix)
+    ]
+    if callback_existing and callback_existing != [ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG]:
         raise NativeTaskIsaacLabLaunchError(
             ["native_task_isaaclab_default_callbacks_setting_conflict"]
+        )
+    camera_setting_prefix = f"--{ISAAC_LAB_CAMERAS_SETTING}="
+    camera_existing = [arg for arg in sys.argv if arg.startswith(camera_setting_prefix)]
+    if camera_existing and camera_existing != [ISAAC_LAB_CAMERAS_KIT_ARG]:
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_camera_setting_conflict"]
         )
     try:
         pre_app = dict((pre_app_dependency_probe or preflight_native_task_pre_app_dependencies)())
@@ -544,17 +578,20 @@ def launch_native_task_isaaclab(
         from isaacsim.simulation_app import SimulationApp
 
         simulation_app_factory = SimulationApp
-    inserted = not existing
-    if inserted:
-        sys.argv.append(ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG)
+    inserted_args = []
+    if not callback_existing:
+        inserted_args.append(ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG)
+    if not camera_existing:
+        inserted_args.append(ISAAC_LAB_CAMERAS_KIT_ARG)
+    sys.argv.extend(inserted_args)
     try:
         app = simulation_app_factory(
             {"headless": True, "renderer": "RayTracedLighting"},
             experience=receipt["experience"]["path"],
         )
     finally:
-        if inserted:
-            sys.argv.remove(ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG)
+        for inserted_arg in inserted_args:
+            sys.argv.remove(inserted_arg)
 
     if settings_reader is None:
         import carb
@@ -575,7 +612,38 @@ def launch_native_task_isaaclab(
         raise NativeTaskIsaacLabLaunchError(
             ["native_task_isaaclab_live_extension_readback_failed"]
         ) from exc
-    if observed is not False or bundled_warp_loaded:
+    try:
+        if isaaclab_settings_manager_factory is None:
+            from isaaclab.app.settings_manager import (
+                get_settings_manager,
+                initialize_carb_settings,
+            )
+
+            initialize_carb_settings()
+            isaaclab_settings_manager = get_settings_manager()
+        else:
+            isaaclab_settings_manager = isaaclab_settings_manager_factory()
+        omniverse_mode = bool(isaaclab_settings_manager.is_omniverse_mode)
+        camera_enabled = isaaclab_settings_manager.get(ISAAC_LAB_CAMERAS_SETTING)
+        for setting, value in ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS.items():
+            isaaclab_settings_manager.set_bool(setting, value)
+        post_app_setting_readback = {
+            setting: isaaclab_settings_manager.get(setting)
+            for setting in ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS
+        }
+    except Exception as exc:
+        close = getattr(app, "close", None)
+        if callable(close):
+            close()
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_camera_runtime_configuration_failed"]
+        ) from exc
+    camera_settings_valid = bool(
+        omniverse_mode
+        and camera_enabled is True
+        and post_app_setting_readback == ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS
+    )
+    if observed is not False or bundled_warp_loaded or not camera_settings_valid:
         close = getattr(app, "close", None)
         if callable(close):
             close()
@@ -584,6 +652,8 @@ def launch_native_task_isaaclab(
             errors.append("native_task_isaaclab_default_callbacks_readback_failed")
         if bundled_warp_loaded:
             errors.append("native_task_isaaclab_bundled_warp_extension_live")
+        if not camera_settings_valid:
+            errors.append("native_task_isaaclab_camera_enablement_readback_failed")
         raise NativeTaskIsaacLabLaunchError(errors)
     receipt["bundled_isaac_sim_warp_extension_loaded"] = bundled_warp_loaded
     receipt["bundled_warp_extension_readback"] = {
@@ -599,6 +669,18 @@ def launch_native_task_isaaclab(
         "applied_before_extension_startup": True,
         "upstream_fix_revision": ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX,
     }
+    receipt["camera_runtime"] = {
+        "app_launcher_cli_equivalent": "--enable_cameras",
+        "direct_kit_setting": ISAAC_LAB_CAMERAS_SETTING,
+        "direct_kit_argument": ISAAC_LAB_CAMERAS_KIT_ARG,
+        "requested_before_extension_startup": True,
+        "rendering_experience_cameras_enabled": True,
+        "settings_manager_omniverse_mode": omniverse_mode,
+        "observed_cameras_enabled": camera_enabled,
+        "post_app_boolean_settings": dict(ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS),
+        "post_app_boolean_setting_readback": post_app_setting_readback,
+        "qualified_before_environment_build": True,
+    }
     receipt["launch_receipt_digest"] = canonical_digest(
         receipt, digest_field="launch_receipt_digest"
     )
@@ -611,6 +693,9 @@ __all__ = [
     "ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG",
     "ISAAC_SIM_DEFAULT_CALLBACKS_SETTING",
     "ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX",
+    "ISAAC_LAB_CAMERAS_KIT_ARG",
+    "ISAAC_LAB_CAMERAS_SETTING",
+    "ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS",
     "PRE_APP_DEPENDENCY_FILENAME",
     "PRE_APP_DEPENDENCY_IMPORTS",
     "PRE_APP_DEPENDENCY_SCHEMA_VERSION",

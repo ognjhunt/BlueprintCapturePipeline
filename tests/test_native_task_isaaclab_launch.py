@@ -9,6 +9,9 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_isaaclab_launch import (
+    ISAAC_LAB_CAMERAS_KIT_ARG,
+    ISAAC_LAB_CAMERAS_SETTING,
+    ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS,
     NativeTaskIsaacLabLaunchError,
     PRE_APP_DEPENDENCY_FILENAME,
     PRE_APP_DEPENDENCY_IMPORTS,
@@ -44,7 +47,12 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Path:
+def _receipt(
+    tmp_path: Path,
+    *,
+    old_conflicting_experience: bool = False,
+    cameras_enabled: bool = True,
+) -> Path:
     extraction = tmp_path / "extracted"
     apps = extraction / "runtime_sources" / "isaaclab" / "apps"
     apps.mkdir(parents=True)
@@ -62,7 +70,12 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
         encoding="utf-8",
     )
     experience = apps / "isaaclab.python.headless.rendering.kit"
-    experience.write_text('[dependencies]\n"isaaclab.python.headless" = {}\n', encoding="utf-8")
+    experience.write_text(
+        '[dependencies]\n"isaaclab.python.headless" = {}\n'
+        "[settings.isaaclab]\n"
+        f"cameras_enabled = {str(cameras_enabled).lower()}\n",
+        encoding="utf-8",
+    )
     result = {
         "schema_version": "native_task_runtime_source_provisioning.v1",
         "status": "completed",
@@ -103,6 +116,22 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
     path = tmp_path / "native_task_runtime_source_provisioning.v1.json"
     path.write_text(json.dumps(result), encoding="utf-8")
     return path
+
+
+def _isaaclab_settings_manager(
+    *, cameras_enabled: bool = True, omniverse_mode: bool = True
+) -> SimpleNamespace:
+    values = {ISAAC_LAB_CAMERAS_SETTING: cameras_enabled}
+
+    def set_bool(setting: str, value: bool) -> None:
+        values[setting] = value
+
+    return SimpleNamespace(
+        is_omniverse_mode=omniverse_mode,
+        get=values.get,
+        set_bool=set_bool,
+        values=values,
+    )
 
 
 def _pre_app_result(
@@ -197,6 +226,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         settings_reader=lambda setting: False,
         extension_enabled_reader=lambda extension_id: False,
         pre_app_dependency_probe=_pre_app_result,
+        isaaclab_settings_manager_factory=_isaaclab_settings_manager,
     )
 
     assert app is not None
@@ -214,6 +244,20 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     assert Path(receipt["pre_app_dependency_matrix"]["path"]).name == (PRE_APP_DEPENDENCY_FILENAME)
     assert receipt["simulation_manager_lifecycle"]["observed_value"] is False
     assert receipt["simulation_manager_lifecycle"]["applied_before_extension_startup"] is True
+    assert receipt["camera_runtime"] == {
+        "app_launcher_cli_equivalent": "--enable_cameras",
+        "direct_kit_setting": ISAAC_LAB_CAMERAS_SETTING,
+        "direct_kit_argument": ISAAC_LAB_CAMERAS_KIT_ARG,
+        "requested_before_extension_startup": True,
+        "rendering_experience_cameras_enabled": True,
+        "settings_manager_omniverse_mode": True,
+        "observed_cameras_enabled": True,
+        "post_app_boolean_settings": dict(ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS),
+        "post_app_boolean_setting_readback": dict(
+            ISAAC_LAB_POST_APP_BOOLEAN_SETTINGS
+        ),
+        "qualified_before_environment_build": True,
+    }
     assert receipt["launch_receipt_digest"] == canonical_digest(
         receipt, digest_field="launch_receipt_digest"
     )
@@ -486,7 +530,7 @@ def test_default_callbacks_are_disabled_before_factory_and_read_back(
         observed_argv.extend(sys.argv)
         return SimpleNamespace(close=lambda: None)
 
-    launch_native_task_isaaclab(
+    _app, receipt = launch_native_task_isaaclab(
         _receipt(tmp_path),
         simulation_app_factory=factory,
         settings_reader=lambda setting: (
@@ -494,10 +538,14 @@ def test_default_callbacks_are_disabled_before_factory_and_read_back(
         ),
         extension_enabled_reader=lambda extension_id: False,
         pre_app_dependency_probe=_pre_app_result,
+        isaaclab_settings_manager_factory=_isaaclab_settings_manager,
     )
 
     assert ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG in observed_argv
+    assert ISAAC_LAB_CAMERAS_KIT_ARG in observed_argv
     assert ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG not in sys.argv
+    assert ISAAC_LAB_CAMERAS_KIT_ARG not in sys.argv
+    assert receipt["camera_runtime"]["qualified_before_environment_build"] is True
 
 
 def test_conflicting_default_callback_setting_fails_before_factory(
@@ -527,6 +575,29 @@ def test_conflicting_default_callback_setting_fails_before_factory(
     assert called is False
 
 
+def test_conflicting_camera_setting_fails_before_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["worker", f"--{ISAAC_LAB_CAMERAS_SETTING}=false"],
+    )
+    called = False
+
+    def factory(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("factory must not run with camera conflict")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_camera_setting_conflict",
+    ):
+        launch_native_task_isaaclab(_receipt(tmp_path), simulation_app_factory=factory)
+    assert called is False
+
+
 def test_default_callback_readback_failure_closes_app(tmp_path: Path) -> None:
     closed = False
 
@@ -544,6 +615,7 @@ def test_default_callback_readback_failure_closes_app(tmp_path: Path) -> None:
             settings_reader=lambda setting: True,
             extension_enabled_reader=lambda extension_id: False,
             pre_app_dependency_probe=_pre_app_result,
+            isaaclab_settings_manager_factory=_isaaclab_settings_manager,
         )
     assert closed is True
 
@@ -567,6 +639,7 @@ def test_live_bundled_warp_extension_closes_app_and_fails_typed(
             settings_reader=lambda setting: False,
             extension_enabled_reader=lambda extension_id: True,
             pre_app_dependency_probe=_pre_app_result,
+            isaaclab_settings_manager_factory=_isaaclab_settings_manager,
         )
     assert closed is True
 
@@ -593,8 +666,87 @@ def test_live_extension_readback_error_closes_app_and_fails_typed(
             settings_reader=lambda setting: False,
             extension_enabled_reader=broken_reader,
             pre_app_dependency_probe=_pre_app_result,
+            isaaclab_settings_manager_factory=_isaaclab_settings_manager,
         )
     assert closed is True
+
+
+@pytest.mark.parametrize(
+    ("manager", "reason"),
+    [
+        (
+            lambda: _isaaclab_settings_manager(cameras_enabled=False),
+            "camera_setting_false",
+        ),
+        (
+            lambda: _isaaclab_settings_manager(omniverse_mode=False),
+            "settings_manager_not_bound_to_carb",
+        ),
+    ],
+)
+def test_camera_runtime_readback_failure_closes_app(
+    tmp_path: Path,
+    manager,
+    reason: str,
+) -> None:
+    del reason
+    closed = False
+
+    def close() -> None:
+        nonlocal closed
+        closed = True
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_camera_enablement_readback_failed",
+    ):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            simulation_app_factory=lambda *args, **kwargs: SimpleNamespace(close=close),
+            settings_reader=lambda setting: False,
+            extension_enabled_reader=lambda extension_id: False,
+            pre_app_dependency_probe=_pre_app_result,
+            isaaclab_settings_manager_factory=manager,
+        )
+    assert closed is True
+
+
+def test_camera_runtime_configuration_error_closes_app_and_fails_typed(
+    tmp_path: Path,
+) -> None:
+    closed = False
+
+    def close() -> None:
+        nonlocal closed
+        closed = True
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_camera_runtime_configuration_failed",
+    ):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            simulation_app_factory=lambda *args, **kwargs: SimpleNamespace(close=close),
+            settings_reader=lambda setting: False,
+            extension_enabled_reader=lambda extension_id: False,
+            pre_app_dependency_probe=_pre_app_result,
+            isaaclab_settings_manager_factory=lambda: (_ for _ in ()).throw(
+                RuntimeError("settings bridge unavailable")
+            ),
+        )
+    assert closed is True
+
+
+def test_rendering_experience_without_camera_enablement_fails_before_launch(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_rendering_experience_cameras_disabled",
+    ):
+        verify_native_task_isaaclab_launch_contract(
+            _receipt(tmp_path, cameras_enabled=False)
+        )
 
 
 def test_unpaired_arena_and_isaaclab_receipt_fails_before_launch(
