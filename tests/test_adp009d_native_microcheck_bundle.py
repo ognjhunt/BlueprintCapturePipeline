@@ -1475,6 +1475,13 @@ def test_every_module_the_episode_imports_is_shipped() -> None:
                     f"{module} imports {node.module}, which the bundle does not ship"
                 )
 
+    scoring_tree = ast.parse((root / "adp_task_scoring.py").read_text(encoding="utf-8"))
+    for node in ast.walk(scoring_tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+            assert f'"{node.module}.py"' in bundle_source, (
+                f"adp_task_scoring imports {node.module}, which the bundle does not ship"
+            )
+
 
 def test_the_particlefield_declares_a_default_prim(tmp_path) -> None:
     """Without one, a USD reference resolves to nothing.

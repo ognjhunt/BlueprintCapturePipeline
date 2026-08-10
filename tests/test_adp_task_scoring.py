@@ -168,3 +168,148 @@ def test_missing_native_velocity_fails_closed() -> None:
         )
 
     assert any("joint_velocities_invalid" in error for error in caught.value.errors)
+
+
+def _graph_spec() -> dict:
+    link_ids = ["body", "door", "latch", "drum", "selector", "drawer", "panel"]
+
+    def joint(
+        joint_id: str,
+        child: str,
+        joint_type: str,
+        role: str,
+        limits: list[float],
+        *,
+        parent: str = "body",
+        dependency: dict | None = None,
+    ) -> dict:
+        return {
+            "joint_id": joint_id,
+            "parent_link_id": parent,
+            "child_link_id": child,
+            "joint_type": joint_type,
+            "role": role,
+            "axis": [0.0, 0.0, 0.0] if joint_type == "fixed" else [0.0, 0.0, 1.0],
+            "limits": limits,
+            "reset_position": 0.0,
+            "reset_tolerance": 0.0001,
+            "drive": {
+                "drive_type": "none" if role == "passive" else "force",
+                "stiffness": 0.0 if role == "passive" else 20.0,
+                "damping": 0.1,
+                "maximum_force": 0.0 if role == "passive" else 100.0,
+            },
+            "dependency": dependency,
+        }
+
+    graph = {
+        "schema_version": "adp_articulation_graph.v1",
+        "links": [
+            {
+                "link_id": link_id,
+                "is_root": link_id == "body",
+                "semantic_role": link_id,
+            }
+            for link_id in link_ids
+        ],
+        "joints": [
+            joint("door_hinge", "door", "revolute", "target", [0.0, 1.2]),
+            joint(
+                "latch_coupler",
+                "latch",
+                "revolute",
+                "dependent",
+                [-0.2, 0.2],
+                parent="door",
+                dependency={
+                    "driver_joint_id": "door_hinge",
+                    "multiplier": 0.1,
+                    "offset": 0.0,
+                    "tolerance": 0.001,
+                },
+            ),
+            joint("drum_bearing", "drum", "continuous", "passive", [-100.0, 100.0]),
+            joint("selector_axis", "selector", "revolute", "locked", [-3.2, 3.2]),
+            joint("detergent_slide", "drawer", "prismatic", "locked", [0.0, 0.2]),
+            joint("service_panel_weld", "panel", "fixed", "locked", [0.0, 0.0]),
+        ],
+        "collision_pairs": [
+            {"link_a": "body", "link_b": "door", "collision_enabled": True},
+            {"link_a": "door", "link_b": "latch", "collision_enabled": False},
+        ],
+        "success_predicate": {
+            "combination": "all",
+            "joint_intervals": {"door_hinge": [0.7, 1.0]},
+        },
+    }
+    return {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "articulated_open_close",
+        "articulation_graph": graph,
+        "settle_window_samples": 3,
+        "maximum_settled_target_speed": 0.05,
+        "locked_joint_motion_tolerance": 0.001,
+        "movement_epsilon": 0.0001,
+    }
+
+
+def _graph_sample(
+    step: int,
+    door: float,
+    *,
+    latch_error: float = 0.0,
+    drum: float = 0.0,
+) -> dict:
+    positions = {
+        "door_hinge": door,
+        "latch_coupler": door * 0.1 + latch_error,
+        "drum_bearing": drum,
+        "selector_axis": 0.0,
+        "detergent_slide": 0.0,
+        "service_panel_weld": 0.0,
+    }
+    return {
+        "step_index": step,
+        "joint_positions": positions,
+        "joint_velocities_per_s": {joint_id: 0.0 for joint_id in positions},
+        "task_contact_active": False,
+        "joint_limit_violation": False,
+        "containment_violation": False,
+        "robot_collision_failure": False,
+        "scene_collision_failure": False,
+        "retreat_completed": step >= 2,
+    }
+
+
+def test_general_graph_scores_target_dependent_passive_and_locked_roles() -> None:
+    report = score_task_episode_from_spec(
+        task_spec=_graph_spec(),
+        samples=[
+            _graph_sample(0, 0.0),
+            _graph_sample(1, 0.8, drum=0.1),
+            _graph_sample(2, 0.8, drum=0.2),
+            _graph_sample(3, 0.8, drum=0.3),
+            _graph_sample(4, 0.8, drum=0.4),
+        ],
+    )
+
+    assert report["outcome"] == OUTCOME_OPENED_AND_SETTLED
+    assert report["task_succeeded"] is True
+    assert report["predicates"]["dependent_joints_consistent"] is True
+    assert report["predicates"]["locked_joints_stable"] is True
+
+
+def test_dependent_joint_violation_blocks_otherwise_successful_target() -> None:
+    report = score_task_episode_from_spec(
+        task_spec=_graph_spec(),
+        samples=[
+            _graph_sample(0, 0.0),
+            _graph_sample(1, 0.8, latch_error=0.01),
+            _graph_sample(2, 0.8, latch_error=0.01),
+            _graph_sample(3, 0.8, latch_error=0.01),
+        ],
+    )
+
+    assert report["outcome"] == OUTCOME_NON_TASK_JOINT_MOVED
+    assert report["task_succeeded"] is False
+    assert report["predicates"]["dependent_joints_consistent"] is False

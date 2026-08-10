@@ -27,6 +27,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "adp009d_isaac_episode_adapter.py",
     "adp009d_task_scoring.py",
     "adp_task_scoring.py",
+    "articulation_graph_contract.py",
     "decision_evidence_contracts.py",
     "episode_visual_evidence.py",
     "groot_n17_droid_policy_runtime.py",

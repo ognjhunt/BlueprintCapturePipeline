@@ -19,9 +19,20 @@ try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
+try:  # flat provider-bundle layout
+    from articulation_graph_contract import (
+        ArticulationGraphContractError,
+        validate_articulation_graph,
+    )
+except ModuleNotFoundError:  # repository package
+    from .articulation_graph_contract import (
+        ArticulationGraphContractError,
+        validate_articulation_graph,
+    )
 
 
 TASK_SPEC_SCHEMA_VERSION = "adp_task_spec.v1"
+TASK_SPEC_GRAPH_SCHEMA_VERSION = "adp_task_spec.v2"
 ARTICULATED_REPORT_SCHEMA_VERSION = "adp_articulated_task_scoring.v1"
 TASK_KIND_RIGID_PICK_PLACE = "rigid_pick_place"
 TASK_KIND_ARTICULATED_OPEN_CLOSE = "articulated_open_close"
@@ -65,7 +76,7 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _normalize_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+def _normalize_legacy_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
     if spec.get("schema_version") != TASK_SPEC_SCHEMA_VERSION:
         errors.append("task_spec_schema_invalid")
@@ -85,8 +96,8 @@ def _normalize_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             errors.append("articulated_joint_resets_invalid")
         else:
             normalized_resets[str(joint_id)] = value
-    if not 1 <= len(normalized_resets) <= 4:
-        errors.append("articulated_joint_count_outside_frozen_scope")
+    if not normalized_resets:
+        errors.append("articulated_joint_resets_invalid")
     interval = spec.get("target_success_interval_rad")
     if (
         not isinstance(interval, Sequence)
@@ -144,12 +155,113 @@ def _normalize_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     if errors:
         raise TaskNeutralScoringError(errors)
     return {
+        "schema_version": TASK_SPEC_SCHEMA_VERSION,
         "target_joint_id": target,
+        "target_joint_ids": [target],
         "joint_reset_positions_rad": normalized_resets,
+        "joint_reset_positions": normalized_resets,
         "target_success_interval_rad": normalized_interval,
+        "target_success_intervals": {target: normalized_interval},
         "joint_hard_limits_rad": normalized_limits,
+        "joint_hard_limits": normalized_limits,
+        "joint_roles": {
+            joint_id: "target" if joint_id == target else "locked"
+            for joint_id in normalized_resets
+        },
+        "dependent_joints": {},
         **normalized_fields,
     }
+
+
+def _normalize_graph_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    if spec.get("schema_version") != TASK_SPEC_GRAPH_SCHEMA_VERSION:
+        errors.append("task_spec_schema_invalid")
+    if spec.get("task_kind") != TASK_KIND_ARTICULATED_OPEN_CLOSE:
+        errors.append("articulated_task_kind_invalid")
+    graph = spec.get("articulation_graph")
+    if not isinstance(graph, Mapping):
+        errors.append("articulated_graph_missing")
+        normalized_graph: dict[str, Any] = {}
+    else:
+        try:
+            normalized_graph = validate_articulation_graph(graph)
+        except ArticulationGraphContractError as exc:
+            errors.extend(exc.errors)
+            normalized_graph = {}
+    fields = {
+        "settle_window_samples": spec.get("settle_window_samples"),
+        "maximum_settled_target_speed": spec.get(
+            "maximum_settled_target_speed"
+        ),
+        "locked_joint_motion_tolerance": spec.get(
+            "locked_joint_motion_tolerance"
+        ),
+        "movement_epsilon": spec.get("movement_epsilon"),
+    }
+    normalized_fields: dict[str, float | int] = {}
+    for field, raw in fields.items():
+        value = _finite(raw)
+        if value is None or value <= 0:
+            errors.append(f"articulated_{field}_invalid")
+        elif field == "settle_window_samples" and (
+            isinstance(raw, bool) or not isinstance(raw, int)
+        ):
+            errors.append("articulated_settle_window_samples_invalid")
+        else:
+            normalized_fields[field] = (
+                int(raw) if field == "settle_window_samples" else value
+            )
+    joints = normalized_graph.get("joints") or []
+    resets = {str(row["joint_id"]): float(row["reset_position"]) for row in joints}
+    limits = {str(row["joint_id"]): list(row["limits"]) for row in joints}
+    roles = {str(row["joint_id"]): str(row["role"]) for row in joints}
+    reset_tolerances = {
+        str(row["joint_id"]): float(row["reset_tolerance"]) for row in joints
+    }
+    dependent = {
+        str(row["joint_id"]): dict(row["dependency"])
+        for row in joints
+        if row["role"] == "dependent"
+    }
+    success = (
+        normalized_graph.get("success_predicate", {}).get("joint_intervals") or {}
+    )
+    targets = sorted(success)
+    if errors:
+        raise TaskNeutralScoringError(errors)
+    return {
+        "schema_version": TASK_SPEC_GRAPH_SCHEMA_VERSION,
+        "articulation_graph": normalized_graph,
+        "target_joint_id": targets[0],
+        "target_joint_ids": targets,
+        "joint_reset_positions": resets,
+        "joint_reset_positions_rad": resets,
+        "joint_reset_tolerances": reset_tolerances,
+        "reset_tolerance_rad": max(reset_tolerances.values()),
+        "target_success_intervals": {
+            str(joint_id): list(interval) for joint_id, interval in success.items()
+        },
+        "target_success_interval_rad": list(success[targets[0]]),
+        "joint_hard_limits": limits,
+        "joint_hard_limits_rad": limits,
+        "joint_roles": roles,
+        "dependent_joints": dependent,
+        "maximum_settled_target_speed_rad_s": normalized_fields[
+            "maximum_settled_target_speed"
+        ],
+        "non_task_joint_motion_tolerance_rad": normalized_fields[
+            "locked_joint_motion_tolerance"
+        ],
+        "movement_epsilon_rad": normalized_fields["movement_epsilon"],
+        **normalized_fields,
+    }
+
+
+def _normalize_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    if spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:
+        return _normalize_graph_articulated_spec(spec)
+    return _normalize_legacy_articulated_spec(spec)
 
 
 def validate_articulated_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -159,7 +271,7 @@ def validate_articulated_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_articulated_samples(
-    samples: Sequence[Mapping[str, Any]], *, joint_ids: set[str]
+    samples: Sequence[Mapping[str, Any]], *, joint_ids: set[str], generic_units: bool = False
 ) -> list[dict[str, Any]]:
     if isinstance(samples, (str, bytes)) or not isinstance(samples, Sequence) or not samples:
         raise TaskNeutralScoringError(["articulated_samples_invalid"])
@@ -179,8 +291,12 @@ def _normalize_articulated_samples(
             if previous_step is not None and step <= previous_step:
                 errors.append(f"articulated_sample_{index}_step_not_increasing")
             previous_step = step
-        positions = sample.get("joint_positions_rad")
-        velocities = sample.get("joint_velocities_rad_s")
+        position_field = "joint_positions" if generic_units else "joint_positions_rad"
+        velocity_field = (
+            "joint_velocities_per_s" if generic_units else "joint_velocities_rad_s"
+        )
+        positions = sample.get(position_field)
+        velocities = sample.get(velocity_field)
         if not isinstance(positions, Mapping) or set(positions) != joint_ids:
             errors.append(f"articulated_sample_{index}_joint_positions_invalid")
             continue
@@ -236,45 +352,112 @@ def score_articulated_task_episode(
     spec = _normalize_articulated_spec(task_spec)
     resets = spec["joint_reset_positions_rad"]
     target = spec["target_joint_id"]
-    normalized = _normalize_articulated_samples(samples, joint_ids=set(resets))
+    targets = list(spec["target_joint_ids"])
+    normalized = _normalize_articulated_samples(
+        samples,
+        joint_ids=set(resets),
+        generic_units=spec["schema_version"] == TASK_SPEC_GRAPH_SCHEMA_VERSION,
+    )
     reset_tolerance = float(spec["reset_tolerance_rad"])
+    reset_tolerances = spec.get("joint_reset_tolerances") or {
+        joint_id: reset_tolerance for joint_id in resets
+    }
     reset_errors = {
         joint_id: abs(normalized[0]["joint_positions_rad"][joint_id] - reset)
         for joint_id, reset in resets.items()
     }
-    if any(value > reset_tolerance for value in reset_errors.values()):
+    if any(
+        value > float(reset_tolerances[joint_id])
+        for joint_id, value in reset_errors.items()
+    ):
         raise TaskNeutralScoringError(["articulated_episode_reset_readback_mismatch"])
 
-    lower, upper = spec["target_success_interval_rad"]
-    target_positions = [sample["joint_positions_rad"][target] for sample in normalized]
-    target_reset = resets[target]
-    target_displacements = [abs(value - target_reset) for value in target_positions]
-    maximum_displacement = max(target_displacements)
-    reached_success_interval = any(lower <= value <= upper for value in target_positions)
+    success_intervals = spec["target_success_intervals"]
+    lower, upper = success_intervals[target]
+    target_positions_by_joint = {
+        joint_id: [
+            sample["joint_positions_rad"][joint_id] for sample in normalized
+        ]
+        for joint_id in targets
+    }
+    target_positions = target_positions_by_joint[target]
+    target_displacements_by_joint = {
+        joint_id: [
+            abs(value - resets[joint_id])
+            for value in target_positions_by_joint[joint_id]
+        ]
+        for joint_id in targets
+    }
+    maximum_displacement_by_joint = {
+        joint_id: max(values)
+        for joint_id, values in target_displacements_by_joint.items()
+    }
+    maximum_displacement = max(maximum_displacement_by_joint.values())
+    reached_success_interval = any(
+        all(
+            success_intervals[joint_id][0]
+            <= sample["joint_positions_rad"][joint_id]
+            <= success_intervals[joint_id][1]
+            for joint_id in targets
+        )
+        for sample in normalized
+    )
     window_count = int(spec["settle_window_samples"])
     settle_available = len(normalized) >= window_count
     settle = normalized[-window_count:] if settle_available else normalized
     settle_target_positions = [sample["joint_positions_rad"][target] for sample in settle]
     settle_target_velocities = [sample["joint_velocities_rad_s"][target] for sample in settle]
     settle_in_interval = settle_available and all(
-        lower <= value <= upper for value in settle_target_positions
+        all(
+            success_intervals[joint_id][0]
+            <= sample["joint_positions_rad"][joint_id]
+            <= success_intervals[joint_id][1]
+            for joint_id in targets
+        )
+        for sample in settle
     )
     settle_speed_ok = settle_available and all(
-        abs(value) <= float(spec["maximum_settled_target_speed_rad_s"])
-        for value in settle_target_velocities
+        abs(sample["joint_velocities_rad_s"][joint_id])
+        <= float(spec["maximum_settled_target_speed_rad_s"])
+        for sample in settle
+        for joint_id in targets
     )
-    non_target = sorted(set(resets) - {target})
-    non_target_max_delta = {
+    roles = spec["joint_roles"]
+    locked_joint_ids = sorted(
+        joint_id for joint_id, role in roles.items() if role == "locked"
+    )
+    locked_max_delta = {
         joint_id: max(
             abs(sample["joint_positions_rad"][joint_id] - resets[joint_id])
             for sample in normalized
         )
-        for joint_id in non_target
+        for joint_id in locked_joint_ids
     }
-    non_task_locked = all(
+    locked_joints_stable = all(
         value <= float(spec["non_task_joint_motion_tolerance_rad"])
-        for value in non_target_max_delta.values()
+        for value in locked_max_delta.values()
     )
+    dependent_max_error: dict[str, float] = {}
+    for joint_id, dependency in spec["dependent_joints"].items():
+        driver = dependency["driver_joint_id"]
+        multiplier = float(dependency["multiplier"])
+        offset = float(dependency["offset"])
+        dependent_max_error[joint_id] = max(
+            abs(
+                sample["joint_positions_rad"][joint_id]
+                - (
+                    multiplier * sample["joint_positions_rad"][driver]
+                    + offset
+                )
+            )
+            for sample in normalized
+        )
+    dependent_joints_consistent = all(
+        dependent_max_error[joint_id]
+        <= float(spec["dependent_joints"][joint_id]["tolerance"])
+        for joint_id in dependent_max_error
+    )
+    non_task_locked = locked_joints_stable and dependent_joints_consistent
     hard_limit_violation = any(
         sample["joint_limit_violation"]
         or any(
@@ -340,6 +523,14 @@ def score_articulated_task_episode(
             "target_start_position_rad": target_positions[0],
             "target_final_position_rad": target_positions[-1],
             "target_maximum_displacement_rad": maximum_displacement,
+            "target_positions_by_joint": {
+                joint_id: {
+                    "start": values[0],
+                    "final": values[-1],
+                    "maximum_displacement": maximum_displacement_by_joint[joint_id],
+                }
+                for joint_id, values in target_positions_by_joint.items()
+            },
             "target_reached_success_interval": reached_success_interval,
             "settle_window_available": settle_available,
             "settle_target_min_position_rad": min(settle_target_positions),
@@ -347,7 +538,9 @@ def score_articulated_task_episode(
             "settle_target_max_abs_velocity_rad_s": max(
                 abs(value) for value in settle_target_velocities
             ),
-            "non_target_max_delta_rad": non_target_max_delta,
+            "non_target_max_delta_rad": locked_max_delta,
+            "locked_joint_max_delta": locked_max_delta,
+            "dependent_joint_max_error": dependent_max_error,
             "released_in_settle": released_in_settle,
             "retreat_completed": retreat_completed,
         },
@@ -355,6 +548,8 @@ def score_articulated_task_episode(
             "settle_in_success_interval": settle_in_interval,
             "settle_speed_within_limit": settle_speed_ok,
             "non_task_joints_locked": non_task_locked,
+            "locked_joints_stable": locked_joints_stable,
+            "dependent_joints_consistent": dependent_joints_consistent,
             "joint_hard_limits_respected": not hard_limit_violation,
             "containment_respected": not containment_violation,
             "collision_failure_absent": not collision_failure,
@@ -363,6 +558,7 @@ def score_articulated_task_episode(
         },
         "thresholds": {
             "target_success_interval_rad": [lower, upper],
+            "target_success_intervals": success_intervals,
             "maximum_settled_target_speed_rad_s": spec[
                 "maximum_settled_target_speed_rad_s"
             ],
@@ -424,6 +620,7 @@ __all__ = [
     "TASK_KIND_ARTICULATED_OPEN_CLOSE",
     "TASK_KIND_RIGID_PICK_PLACE",
     "TASK_SPEC_SCHEMA_VERSION",
+    "TASK_SPEC_GRAPH_SCHEMA_VERSION",
     "TaskNeutralScoringError",
     "score_articulated_task_episode",
     "score_task_episode_from_spec",

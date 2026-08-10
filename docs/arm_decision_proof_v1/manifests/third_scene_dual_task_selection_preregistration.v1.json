@@ -1,0 +1,98 @@
+{
+  "adp_item": "ADP-009D",
+  "articulation_rule": "complete_joint_graph_no_universal_joint_count_cap_reject_only_if_unbounded_uncontrollable_unresettable_unscoreable_or_collision_unqualified",
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "candidate_scenes": [
+    {"method_outcomes_consulted": false, "publisher_scene_id": "840076"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "840313"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "840411"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "840796"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "840873"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "840874"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "840920"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "841151"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "841193"},
+    {"method_outcomes_consulted": false, "publisher_scene_id": "841757"}
+  ],
+  "claim_ceiling": "development_only_public_dataset_rehearsal",
+  "criteria": [
+    {
+      "criterion_id": "admissible_rights_and_provider_disclosure",
+      "evidence_rule": "Bind publisher repository, exact revision, license, byte size, digest, redistribution, retention, training, private-upload, and publication restrictions before selection.",
+      "required": true
+    },
+    {
+      "criterion_id": "complete_topology_around_two_distinct_task_regions",
+      "evidence_rule": "Execute a full known-room survey before close-ups and retain explicit unseen, uncaptured, occluded, and unrenderable-region disclosures.",
+      "required": true
+    },
+    {
+      "criterion_id": "external_wrist_and_review_overview_camera_coverage",
+      "evidence_rule": "Resolve external and wrist policy views plus a review-only overview; the overview is forbidden from policy input and deterministic scoring.",
+      "required": true
+    },
+    {
+      "criterion_id": "independent_masks_colliders_replacements_and_task_assumptions",
+      "evidence_rule": "The two tasks must bind different source instances, mask sets, collider subtrees, collider deletions, replacement assets, qualifications, and task-specific assumptions.",
+      "required": true
+    },
+    {
+      "criterion_id": "interiorgs_appearance_availability",
+      "evidence_rule": "Materialize exact InteriorGS bytes and bind full-retention reconnaissance separately from later evaluation-authorized rendering.",
+      "required": true
+    },
+    {
+      "criterion_id": "one_mechanically_distinct_articulated_task",
+      "evidence_rule": "Observed appearance must support a bounded controllable resettable scoreable mechanism; generated hidden geometry is labeled candidate content, never observed truth.",
+      "required": true
+    },
+    {
+      "criterion_id": "one_rigid_object_manipulation_task",
+      "evidence_rule": "Bind a distinct freestanding rigid source object, support, start state, destination or target pose range, and deterministic release-settle predicate.",
+      "required": true
+    },
+    {
+      "criterion_id": "per_task_franka_reachability_and_collision_free_base_space",
+      "evidence_rule": "Resolve separate bases and prove base, approach, contact, path, release, retreat, recovery, limits, containment, penetration, and reset gates without moving unrelated geometry.",
+      "required": true
+    },
+    {
+      "criterion_id": "sage_collision_availability",
+      "evidence_rule": "Open the exact SAGE collision stage, bind its digest, and require a unique separately removable whole-source collider subtree for each task.",
+      "required": true
+    },
+    {
+      "criterion_id": "shared_frame_metric_scale_axes_handedness_or_typed_abstention",
+      "evidence_rule": "Prove or explicitly abstain on InteriorGS-to-SAGE frame, metric scale, axes, handedness, source-to-world, and asset-to-world transforms.",
+      "required": true
+    },
+    {
+      "criterion_id": "support_or_destination_geometry",
+      "evidence_rule": "Observed collision and appearance must bind attachment or support geometry plus a collision-qualified destination volume, pose range, or target joint set.",
+      "required": true
+    },
+    {
+      "criterion_id": "two_distinct_observed_source_objects",
+      "evidence_rule": "Both task objects must originate in publisher observations and require independent source removal and replacement pipelines.",
+      "required": true
+    }
+  ],
+  "day_gate": "public_scene_day_28",
+  "forbidden_selection_signals": [
+    "candidate_self_grading",
+    "inpainting_quality_outcomes",
+    "learned_policy_outcomes",
+    "moving_unrelated_geometry_for_robot_fit",
+    "scene_id_specific_thresholds"
+  ],
+  "frozen_before_learned_policy_execution": true,
+  "learned_policy_outcomes_accessed": false,
+  "preregistration_digest": "sha256:5a3a9b9e8ff3493f45de80495482948f690e9d6963ca1af9854e7341759e4519",
+  "program_id": "arm-decision-proof-v1",
+  "schema_version": "dual_task_scene_selection_preregistration.v1",
+  "selected_scene_id": null,
+  "task_count": 2
+}
