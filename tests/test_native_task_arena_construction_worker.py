@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_construction_worker import (
     DEPENDENCY_IMPORTS,
     _load_and_verify_manifest,
     _requested_arm_reset,
+    preflight_native_dependency_matrix,
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
 from blueprint_pipeline.native_task_dependency_profiles import (
     CONSTRUCTION_CONTROLS_DEFERRED_MODULES,
     CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+    CONSTRUCTION_CONTROLS_REQUIRED_MODULES,
+    SIMULATION_APP_OWNED_MODULE_ROOTS,
     construction_controls_deferred_dependencies,
 )
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
@@ -30,6 +34,9 @@ def test_worker_source_contains_no_scene_or_task_object_identity() -> None:
         assert forbidden not in source
     assert '_announce("simulation_app")' not in source
     assert '_announce("pre_app_and_simulation_launch")' in source
+    assert source.index(
+        "simulation_app, launch_receipt = launch_native_task_isaaclab("
+    ) < source.index("dependency_matrix = preflight_native_dependency_matrix(")
 
 
 def test_dependency_matrix_is_declared_as_one_preflight() -> None:
@@ -82,6 +89,7 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "isaaclab_arena.environments.arena_env_builder_cfg",
     }.issubset(DEPENDENCY_IMPORTS)
     assert set(DEPENDENCY_IMPORTS).isdisjoint(CONSTRUCTION_CONTROLS_DEFERRED_MODULES)
+    assert set(CONSTRUCTION_CONTROLS_REQUIRED_MODULES).issubset(DEPENDENCY_IMPORTS)
     assert {row["module"] for row in construction_controls_deferred_dependencies()} == (
         CONSTRUCTION_CONTROLS_DEFERRED_MODULES
     )
@@ -92,6 +100,56 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
     assert DEPENDENCY_IMPORTS.index("isaaclab_newton") < DEPENDENCY_IMPORTS.index(
         "isaaclab_arena.environments.arena_env_builder"
     )
+
+
+def test_complete_dependency_import_and_cuda_probe_run_only_in_post_app_matrix() -> None:
+    attempted: list[str] = []
+    torch = SimpleNamespace(
+        __version__="2.10.0+cu128",
+        version=SimpleNamespace(cuda="12.8"),
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            device_count=lambda: 1,
+            get_device_name=lambda index: f"fixture-gpu-{index}",
+        ),
+    )
+
+    def importer(name: str):
+        attempted.append(name)
+        return torch if name == "torch" else SimpleNamespace(__version__="fixture")
+
+    result = preflight_native_dependency_matrix(
+        robot_id="franka_panda",
+        module_importer=importer,
+        run_command=lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="fixture tool 1.0\n", stderr=""
+        ),
+        loaded_module_names_reader=lambda: set(SIMULATION_APP_OWNED_MODULE_ROOTS),
+        embodiment_installer=lambda robot_id: {
+            "schema_version": "native_task_arena_embodiment_scope.v1",
+            "robot_id": robot_id,
+            "status": "installed",
+        },
+    )
+
+    assert result["probe_phase"] == "post_simulation_app"
+    assert result["simulation_app_started"] is True
+    assert result["post_app_module_execution_performed"] is True
+    assert result["all_required_imports_attempted"] is True
+    assert result["runtime_owned_namespace_roots_missing"] == []
+    assert result["runtime_owned_namespace_roots_present"] == sorted(
+        SIMULATION_APP_OWNED_MODULE_ROOTS
+    )
+    assert result["torch_cuda"] == {
+        "probe_phase": "post_simulation_app",
+        "available": True,
+        "runtime_version": "12.8",
+        "device_count": 1,
+        "device_name": "fixture-gpu-0",
+    }
+    assert result["all_required_available"] is True
+    assert result["blockers"] == []
+    assert attempted == list(DEPENDENCY_IMPORTS)
 
 
 def test_manifest_binding_rejects_tamper_before_isaac(tmp_path: Path) -> None:

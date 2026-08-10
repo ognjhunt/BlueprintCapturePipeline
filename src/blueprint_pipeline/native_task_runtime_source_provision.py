@@ -26,9 +26,9 @@ from .native_task_runtime_source_packet import (
 SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 # Provisioning proves only that the exact released source roots are visible.
-# Runtime dependencies are owned by the paired image and are all imported by
-# ``native_task_pre_app_dependency_matrix.v1``.  Requiring them here would stop
-# at an earlier path probe and lose the one-pass inventory the paid gate needs.
+# Runtime dependencies are owned by the paired image.  Provisioning performs no
+# imports: v2 discovers package locations before SimulationApp, then the worker
+# imports the complete exact graph only after Kit/USD startup.
 TOP_LEVEL_PACKAGES = (*ISAACLAB_PACKAGE_NAMES, "isaaclab_arena")
 RUNTIME_IMPORT_PROBES: tuple[dict[str, str], ...] = ()
 

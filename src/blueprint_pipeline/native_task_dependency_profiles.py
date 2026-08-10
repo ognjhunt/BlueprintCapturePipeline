@@ -16,8 +16,81 @@ from __future__ import annotations
 from typing import Any
 
 
-CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE = "native_task_construction_controls.v1"
+CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE = "native_task_construction_controls.v2"
 CONSTRUCTION_CONTROLS_EXECUTION_MODES = ("construction_canary", "controls")
+
+# Every third-party module reachable from the selected construction/control
+# graph.  Before SimulationApp starts these names are *discovered* without
+# executing module code.  The native workers import this entire tuple only
+# after SimulationApp has established Kit/Carbonite/USD ownership.
+CONSTRUCTION_CONTROLS_REQUIRED_MODULES = (
+    "torch",
+    "torchvision",
+    "numpy",
+    "onnx",
+    "prettytable",
+    "toml",
+    "hid",
+    "gymnasium",
+    "trimesh",
+    "pyglet",
+    "transformers",
+    "einops",
+    "warp",
+    "matplotlib",
+    "PIL",
+    "botocore",
+    "starlette",
+    "debugpy",
+    "flatdict",
+    "flaky",
+    "packaging",
+    "psutil",
+    "filelock",
+    "h5py",
+    "typing_extensions",
+    "pydantic",
+    "lazy_loader",
+    "pinocchio",
+    "pink",
+    "daqp",
+    "pxr.Usd",
+    "usdex",
+    "pytetwild",
+    "hf_xet",
+    "google.protobuf",
+    "tensorboard",
+    "scipy",
+    "cloudpickle",
+    "farama_notifications",
+    "antlr4",
+    "omegaconf",
+    "hydra",
+    "msgpack",
+    "tensordict",
+    "importlib_metadata",
+    "zipp",
+    "orjson",
+    "pyvers",
+    "git",
+    "gitdb",
+    "smmap",
+    "requests",
+    "charset_normalizer",
+    "idna",
+    "urllib3",
+    "certifi",
+    "tqdm",
+    "termcolor",
+    "yaml",
+    "click",
+    "rsl_rl",
+)
+
+# Importing any of these namespaces before SimulationApp is unsupported.  The
+# v25 paid canary proved that a pre-app ``pxr.Usd`` import can make Kit abort in
+# native code before a Python result can be written.
+SIMULATION_APP_OWNED_MODULE_ROOTS = frozenset(("carb", "isaacsim", "omni", "pxr"))
 
 # (module, capability owner, stable reason code).  A submodule gets its own row
 # when an older worker explicitly imported it, even if the root package already
@@ -90,5 +163,7 @@ __all__ = [
     "CONSTRUCTION_CONTROLS_DEFERRED_MODULES",
     "CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE",
     "CONSTRUCTION_CONTROLS_EXECUTION_MODES",
+    "CONSTRUCTION_CONTROLS_REQUIRED_MODULES",
+    "SIMULATION_APP_OWNED_MODULE_ROOTS",
     "construction_controls_deferred_dependencies",
 ]

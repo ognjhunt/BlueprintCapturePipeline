@@ -429,7 +429,7 @@ def materialize_native_task_runtime_source_packet(
         "runtime_owner": "official_isaac_lab_complete_runtime",
         "runtime_image": ISAACLAB_RUNTIME_IMAGE,
         "packet_overlay_required": False,
-        "qualification_gate": "native_task_pre_app_dependency_matrix.v1",
+        "qualification_gate": "native_task_pre_app_dependency_matrix.v2",
         "source_repository": ISAACLAB_REPOSITORY,
         "source_revision": isaaclab_commit,
         "source_tree": isaaclab_tree,

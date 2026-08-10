@@ -201,7 +201,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
     )
     assert verified["runtime_dependency_basis"]["packet_overlay_required"] is False
     assert verified["runtime_dependency_basis"]["qualification_gate"] == (
-        "native_task_pre_app_dependency_matrix.v1"
+        "native_task_pre_app_dependency_matrix.v2"
     )
     assert any(path.endswith("isaaclab_teleop") for path in verified["install_roots"])
     assert any(path.endswith("isaaclab_contrib") for path in verified["install_roots"])

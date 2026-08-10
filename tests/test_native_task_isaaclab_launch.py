@@ -21,6 +21,7 @@ from blueprint_pipeline.native_task_dependency_profiles import (
     CONSTRUCTION_CONTROLS_DEFERRED_MODULES,
     CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
     CONSTRUCTION_CONTROLS_EXECUTION_MODES,
+    SIMULATION_APP_OWNED_MODULE_ROOTS,
     construction_controls_deferred_dependencies,
 )
 from blueprint_pipeline.native_task_runtime_source_packet import (
@@ -109,21 +110,26 @@ def _pre_app_result(
 ) -> dict:
     errors = list(blockers or [])
     missing = set(missing_modules or ())
-    imports = []
+    discoveries = []
     for name in PRE_APP_DEPENDENCY_IMPORTS:
+        row = {
+            "module": name,
+            "discovery_target": name.split(".", 1)[0],
+            "module_executed": False,
+        }
         if name in missing:
-            imports.append(
+            discoveries.append(
                 {
-                    "module": name,
+                    **row,
                     "available": False,
                     "error_type": "ModuleNotFoundError",
                     "error": name,
                 }
             )
         elif name == "warp":
-            imports.append(
+            discoveries.append(
                 {
-                    "module": "warp",
+                    **row,
                     "available": True,
                     "observed_version": "1.13.0",
                     "version_constraint": "==1.13.0",
@@ -131,22 +137,40 @@ def _pre_app_result(
                 }
             )
         else:
-            imports.append({"module": name, "available": True})
+            discoveries.append(
+                {
+                    **row,
+                    "available": True,
+                    "observed_version": "unreported_without_import",
+                    "version_constraint": None,
+                    "version_matches": None,
+                }
+            )
     result = {
         "schema_version": PRE_APP_DEPENDENCY_SCHEMA_VERSION,
         "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
         "execution_modes": list(CONSTRUCTION_CONTROLS_EXECUTION_MODES),
         "status": "qualified" if not errors else "blocked",
-        "imports": imports,
-        "import_count": len(PRE_APP_DEPENDENCY_IMPORTS),
-        "all_profile_imports_attempted": True,
-        "all_declared_imports_attempted": True,
+        "dependency_probe_mode": "non_executing_top_level_spec_and_distribution_metadata",
+        "discoveries": discoveries,
+        "discovery_count": len(PRE_APP_DEPENDENCY_IMPORTS),
+        "all_profile_modules_discovered": True,
+        "all_declared_modules_discovered": True,
+        "pre_app_module_execution_performed": False,
+        "runtime_owned_namespace_guard": {
+            "owned_roots": sorted(SIMULATION_APP_OWNED_MODULE_ROOTS),
+            "loaded_before": [],
+            "newly_loaded_by_probe": [],
+            "passed": True,
+        },
         "deferred_optional_dependencies": construction_controls_deferred_dependencies(),
         "torch_cuda": {
-            "available": True,
-            "runtime_version": "12.8",
-            "device_count": 1,
-            "device_name": "fixture-gpu",
+            "probe_phase": "post_simulation_app_dependency_matrix",
+            "available": None,
+            "runtime_version": None,
+            "device_count": None,
+            "device_name": None,
+            "module_executed_before_simulation_app": False,
         },
         "simulation_app_started": False,
         "candidate_policy_queried": False,
@@ -184,7 +208,8 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     ]
     assert receipt["bundled_isaac_sim_warp_extension_loaded"] is False
     assert receipt["bundled_warp_extension_readback"]["observed_enabled"] is False
-    assert receipt["external_warp"]["import_qualified_before_simulation_app"] is True
+    assert receipt["external_warp"]["package_discovered_before_simulation_app"] is True
+    assert receipt["external_warp"]["import_qualified_before_simulation_app"] is False
     assert receipt["pre_app_dependency_matrix"]["status"] == "qualified"
     assert Path(receipt["pre_app_dependency_matrix"]["path"]).name == (PRE_APP_DEPENDENCY_FILENAME)
     assert receipt["simulation_manager_lifecycle"]["observed_value"] is False
@@ -199,7 +224,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     }
 
 
-def test_pre_app_matrix_attempts_every_declared_dependency_and_reports_all_gaps() -> None:
+def test_pre_app_matrix_discovers_every_dependency_without_executing_modules() -> None:
     missing = {"gymnasium", "pxr.Usd", "warp"}
     attempted = []
     versions = {
@@ -217,45 +242,89 @@ def test_pre_app_matrix_attempts_every_declared_dependency_and_reports_all_gaps(
         "pandas": "2.2.3",
         "tqdm": "4.67.1",
     }
-    torch = SimpleNamespace(
-        version=SimpleNamespace(cuda="12.8"),
-        cuda=SimpleNamespace(
-            is_available=lambda: True,
-            device_count=lambda: 1,
-            get_device_name=lambda index: f"fixture-{index}",
-        ),
-    )
+    missing_targets = {name.split(".", 1)[0] for name in missing}
 
-    def importer(name: str):
+    def finder(name: str):
         attempted.append(name)
         assert name not in CONSTRUCTION_CONTROLS_DEFERRED_MODULES
-        if name in missing:
-            raise ModuleNotFoundError(name)
-        return torch if name == "torch" else SimpleNamespace(__version__="1.0")
+        return None if name in missing_targets else SimpleNamespace()
 
     result = preflight_native_task_pre_app_dependencies(
-        module_importer=importer,
+        module_spec_finder=finder,
         distribution_version_reader=lambda name: versions[name],
+        loaded_module_names_reader=set,
     )
 
     assert result["status"] == "blocked"
     assert result["dependency_profile"] == CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE
-    assert result["all_profile_imports_attempted"] is True
-    assert result["all_declared_imports_attempted"] is True
-    assert result["import_count"] == len(PRE_APP_DEPENDENCY_IMPORTS)
-    assert {row["module"] for row in result["imports"] if row["available"] is False} == missing
+    assert result["all_profile_modules_discovered"] is True
+    assert result["all_declared_modules_discovered"] is True
+    assert result["pre_app_module_execution_performed"] is False
+    assert result["discovery_count"] == len(PRE_APP_DEPENDENCY_IMPORTS)
+    assert {
+        row["module"]
+        for row in result["discoveries"]
+        if row["available"] is False
+    } == missing
+    assert all(row["module_executed"] is False for row in result["discoveries"])
     assert set(result["blockers"]) == {
         f"native_task_pre_app_dependency_missing:{name}" for name in missing
     }
-    assert result["torch_cuda"]["runtime_version"] == "12.8"
-    assert attempted == list(PRE_APP_DEPENDENCY_IMPORTS)
+    assert result["torch_cuda"]["probe_phase"] == (
+        "post_simulation_app_dependency_matrix"
+    )
+    assert result["torch_cuda"]["available"] is None
+    assert attempted == [name.split(".", 1)[0] for name in PRE_APP_DEPENDENCY_IMPORTS]
     assert result["deferred_optional_dependencies"] == (
         construction_controls_deferred_dependencies()
     )
-    packaging = next(row for row in result["imports"] if row["module"] == "packaging")
+    packaging = next(
+        row for row in result["discoveries"] if row["module"] == "packaging"
+    )
     assert packaging["version_constraint"] is None
     assert packaging["version_matches"] is None
     assert result["matrix_digest"] == canonical_digest(result, digest_field="matrix_digest")
+
+
+def test_pre_app_discovery_fails_if_a_runtime_owned_namespace_is_loaded() -> None:
+    loaded: set[str] = set()
+    versions = {
+        "torch": "2.11.0+cu128",
+        "torchvision": "0.26.0+cu128",
+        "numpy": "2.4.4",
+        "prettytable": "3.3.0",
+        "gymnasium": "1.2.1",
+        "transformers": "4.57.6",
+        "warp-lang": "1.13.0",
+        "Pillow": "12.2.0",
+        "typing_extensions": "4.12.2",
+        "h5py": "3.16.0",
+        "packaging": "26.0",
+        "tqdm": "4.67.1",
+    }
+
+    def unsafe_finder(name: str):
+        if name == "pxr":
+            loaded.add("pxr")
+            loaded.add("pxr.Usd")
+        return SimpleNamespace()
+
+    result = preflight_native_task_pre_app_dependencies(
+        module_spec_finder=unsafe_finder,
+        distribution_version_reader=lambda name: versions[name],
+        loaded_module_names_reader=lambda: set(loaded),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "native_task_pre_app_probe_loaded_runtime_namespace:pxr"
+    ]
+    assert result["runtime_owned_namespace_guard"] == {
+        "owned_roots": sorted(SIMULATION_APP_OWNED_MODULE_ROOTS),
+        "loaded_before": [],
+        "newly_loaded_by_probe": ["pxr", "pxr.Usd"],
+        "passed": False,
+    }
 
 
 def test_pre_app_failure_is_persisted_and_blocks_before_simulation_app(
@@ -330,7 +399,7 @@ def test_pre_app_matrix_requires_each_declared_module_exactly_once(
     tmp_path: Path,
 ) -> None:
     forged = _pre_app_result()
-    forged["imports"][-1] = dict(forged["imports"][0])
+    forged["discoveries"][-1] = dict(forged["discoveries"][0])
     forged["matrix_digest"] = canonical_digest(forged, digest_field="matrix_digest")
     called = False
 

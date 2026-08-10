@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 import sys
 import traceback
@@ -28,6 +29,8 @@ from .native_task_dependency_profiles import (
     CONSTRUCTION_CONTROLS_DEFERRED_MODULES,
     CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
     CONSTRUCTION_CONTROLS_EXECUTION_MODES,
+    CONSTRUCTION_CONTROLS_REQUIRED_MODULES,
+    SIMULATION_APP_OWNED_MODULE_ROOTS,
     construction_controls_deferred_dependencies,
 )
 from .native_task_runtime_source_packet import (
@@ -45,8 +48,8 @@ from .native_task_runtime_source_packet import (
 
 
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
-PRE_APP_DEPENDENCY_SCHEMA_VERSION = "native_task_pre_app_dependency_matrix.v1"
-PRE_APP_DEPENDENCY_FILENAME = "native_task_pre_app_dependency_matrix.v1.json"
+PRE_APP_DEPENDENCY_SCHEMA_VERSION = "native_task_pre_app_dependency_matrix.v2"
+PRE_APP_DEPENDENCY_FILENAME = "native_task_pre_app_dependency_matrix.v2.json"
 PROVISIONING_SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 REQUIRED_EXPERIENCE_FILES = (
     "isaaclab.python.kit",
@@ -60,74 +63,10 @@ ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG = f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}=
 ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX = "d81d2160220a4401be1d94f871c8f0b62e217acb"
 BUNDLED_WARP_EXTENSION = "omni.warp.core"
 
-# This is the pre-SimulationApp-safe portion of the selected Franka
-# construction/control graph.  Arena's complete setup.py union also names UI,
-# remote-provider, analysis, conversion, and unselected-embodiment packages;
-# those are retained explicitly as deferred profile evidence below rather than
-# allowed to block this execution graph.
-PRE_APP_DEPENDENCY_IMPORTS = (
-    "torch",
-    "torchvision",
-    "numpy",
-    "onnx",
-    "prettytable",
-    "toml",
-    "hid",
-    "gymnasium",
-    "trimesh",
-    "pyglet",
-    "transformers",
-    "einops",
-    "warp",
-    "matplotlib",
-    "PIL",
-    "botocore",
-    "starlette",
-    "debugpy",
-    "flatdict",
-    "flaky",
-    "packaging",
-    "psutil",
-    "filelock",
-    "h5py",
-    "typing_extensions",
-    "pydantic",
-    "lazy_loader",
-    "pinocchio",
-    "pink",
-    "daqp",
-    "pxr.Usd",
-    "usdex",
-    "pytetwild",
-    "hf_xet",
-    "google.protobuf",
-    "tensorboard",
-    "scipy",
-    "cloudpickle",
-    "farama_notifications",
-    "antlr4",
-    "omegaconf",
-    "hydra",
-    "msgpack",
-    "tensordict",
-    "importlib_metadata",
-    "zipp",
-    "orjson",
-    "pyvers",
-    "git",
-    "gitdb",
-    "smmap",
-    "requests",
-    "charset_normalizer",
-    "idna",
-    "urllib3",
-    "certifi",
-    "tqdm",
-    "termcolor",
-    "yaml",
-    "click",
-    "rsl_rl",
-)
+# Compatibility name retained for existing callers.  v2 discovers these names
+# without importing them; exact imports happen in the post-SimulationApp worker
+# matrix.
+PRE_APP_DEPENDENCY_IMPORTS = CONSTRUCTION_CONTROLS_REQUIRED_MODULES
 PRE_APP_VERSION_CONSTRAINTS = {
     "torch": ">=2.10",
     "torchvision": ">=0.25.0",
@@ -185,11 +124,8 @@ def _has_symlink_component(path: Path, *, root: Path) -> bool:
     return False
 
 
-def _module_version(
-    name: str,
-    module: Any,
-    *,
-    distribution_version_reader: Callable[[str], str],
+def _module_version_without_import(
+    name: str, *, distribution_version_reader: Callable[[str], str]
 ) -> str:
     distribution = PRE_APP_DISTRIBUTION_NAMES.get(name)
     if distribution:
@@ -197,29 +133,48 @@ def _module_version(
             return str(distribution_version_reader(distribution))
         except importlib.metadata.PackageNotFoundError:
             pass
-    return str(
-        getattr(module, "__version__", None) or getattr(module, "VERSION", None) or "unreported"
+    return "unreported_without_import"
+
+
+def _runtime_owned_modules(names: set[str]) -> list[str]:
+    return sorted(
+        name
+        for name in names
+        if name.split(".", 1)[0] in SIMULATION_APP_OWNED_MODULE_ROOTS
     )
 
 
 def preflight_native_task_pre_app_dependencies(
     *,
-    module_importer: Callable[[str], Any] = importlib.import_module,
+    module_spec_finder: Callable[[str], Any] = importlib.util.find_spec,
     distribution_version_reader: Callable[[str], str] = importlib.metadata.version,
+    loaded_module_names_reader: Callable[[], set[str]] = lambda: set(sys.modules),
 ) -> dict[str, Any]:
-    """Inventory every pre-app import in the selected execution profile."""
+    """Discover every dependency without executing module code before Kit.
+
+    ``find_spec`` on a dotted name may import its parent package, so discovery
+    intentionally resolves only each top-level package.  Exact dotted-module
+    imports are retained by the worker after SimulationApp starts.
+    """
 
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
-    imported: dict[str, Any] = {}
+    loaded_before = set(loaded_module_names_reader())
+    preexisting_runtime_modules = _runtime_owned_modules(loaded_before)
+    for root in sorted(
+        {name.split(".", 1)[0] for name in preexisting_runtime_modules}
+    ):
+        blockers.append(
+            f"native_task_runtime_namespace_loaded_before_simulation_app:{root}"
+        )
     for name in PRE_APP_DEPENDENCY_IMPORTS:
+        discovery_target = name.split(".", 1)[0]
         try:
-            module = module_importer(name)
-            imported[name] = module
-            observed = _module_version(
-                name,
-                module,
-                distribution_version_reader=distribution_version_reader,
+            spec = module_spec_finder(discovery_target)
+            if spec is None:
+                raise ModuleNotFoundError(name)
+            observed = _module_version_without_import(
+                name, distribution_version_reader=distribution_version_reader
             )
             constraint = PRE_APP_VERSION_CONSTRAINTS.get(name)
             version_matches: bool | None = None
@@ -233,7 +188,9 @@ def preflight_native_task_pre_app_dependencies(
             rows.append(
                 {
                     "module": name,
+                    "discovery_target": discovery_target,
                     "available": True,
+                    "module_executed": False,
                     "observed_version": observed,
                     "version_constraint": constraint,
                     "version_matches": version_matches,
@@ -243,7 +200,9 @@ def preflight_native_task_pre_app_dependencies(
             rows.append(
                 {
                     "module": name,
+                    "discovery_target": discovery_target,
                     "available": False,
+                    "module_executed": False,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                     "traceback": traceback.format_exc(),
@@ -251,46 +210,39 @@ def preflight_native_task_pre_app_dependencies(
             )
             blockers.append(f"native_task_pre_app_dependency_missing:{name}")
 
-    torch = imported.get("torch")
-    torch_cuda: dict[str, Any] = {
-        "available": False,
-        "runtime_version": None,
-        "device_count": 0,
-        "device_name": None,
+    loaded_after = set(loaded_module_names_reader())
+    newly_loaded_runtime_modules = _runtime_owned_modules(loaded_after - loaded_before)
+    for root in sorted(
+        {name.split(".", 1)[0] for name in newly_loaded_runtime_modules}
+    ):
+        blockers.append(f"native_task_pre_app_probe_loaded_runtime_namespace:{root}")
+    runtime_namespace_guard = {
+        "owned_roots": sorted(SIMULATION_APP_OWNED_MODULE_ROOTS),
+        "loaded_before": preexisting_runtime_modules,
+        "newly_loaded_by_probe": newly_loaded_runtime_modules,
+        "passed": not preexisting_runtime_modules and not newly_loaded_runtime_modules,
     }
-    if torch is not None:
-        try:
-            cuda = torch.cuda
-            available = bool(cuda.is_available())
-            device_count = int(cuda.device_count())
-            runtime_version = str(getattr(torch.version, "cuda", None) or "")
-            torch_cuda = {
-                "available": available,
-                "runtime_version": runtime_version,
-                "device_count": device_count,
-                "device_name": (
-                    str(cuda.get_device_name(0)) if available and device_count > 0 else None
-                ),
-            }
-            if not available or device_count < 1:
-                blockers.append("native_task_pre_app_torch_cuda_unavailable")
-            if runtime_version != "12.8":
-                blockers.append("native_task_pre_app_torch_cuda_version_mismatch")
-        except Exception as exc:  # noqa: BLE001 - exact CUDA probe is evidence
-            torch_cuda["error_type"] = type(exc).__name__
-            torch_cuda["error"] = str(exc)
-            torch_cuda["traceback"] = traceback.format_exc()
-            blockers.append("native_task_pre_app_torch_cuda_probe_failed")
+    torch_cuda: dict[str, Any] = {
+        "probe_phase": "post_simulation_app_dependency_matrix",
+        "available": None,
+        "runtime_version": None,
+        "device_count": None,
+        "device_name": None,
+        "module_executed_before_simulation_app": False,
+    }
 
     result: dict[str, Any] = {
         "schema_version": PRE_APP_DEPENDENCY_SCHEMA_VERSION,
         "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
         "execution_modes": list(CONSTRUCTION_CONTROLS_EXECUTION_MODES),
         "status": "qualified" if not blockers else "blocked",
-        "imports": rows,
-        "import_count": len(rows),
-        "all_profile_imports_attempted": len(rows) == len(PRE_APP_DEPENDENCY_IMPORTS),
-        "all_declared_imports_attempted": len(rows) == len(PRE_APP_DEPENDENCY_IMPORTS),
+        "dependency_probe_mode": "non_executing_top_level_spec_and_distribution_metadata",
+        "discoveries": rows,
+        "discovery_count": len(rows),
+        "all_profile_modules_discovered": len(rows) == len(PRE_APP_DEPENDENCY_IMPORTS),
+        "all_declared_modules_discovered": len(rows) == len(PRE_APP_DEPENDENCY_IMPORTS),
+        "pre_app_module_execution_performed": False,
+        "runtime_owned_namespace_guard": runtime_namespace_guard,
         "deferred_optional_dependencies": construction_controls_deferred_dependencies(),
         "torch_cuda": torch_cuda,
         "simulation_app_started": False,
@@ -449,7 +401,9 @@ def verify_native_task_isaaclab_launch_contract(
             "runtime_owner": "official_isaac_lab_complete_runtime",
             "runtime_image": ISAAC_SIM_RUNTIME_IMAGE,
             "import_module": "warp",
+            "package_discovered_before_simulation_app": False,
             "import_qualified_before_simulation_app": False,
+            "import_qualification_phase": "post_simulation_app_dependency_matrix",
         },
         "direct_physx_registration_required": True,
         "device_coherence_still_requires_native_readback": True,
@@ -488,12 +442,25 @@ def launch_native_task_isaaclab(
             "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
             "execution_modes": list(CONSTRUCTION_CONTROLS_EXECUTION_MODES),
             "status": "blocked",
-            "imports": [],
-            "import_count": 0,
-            "all_profile_imports_attempted": False,
-            "all_declared_imports_attempted": False,
+            "dependency_probe_mode": (
+                "non_executing_top_level_spec_and_distribution_metadata"
+            ),
+            "discoveries": [],
+            "discovery_count": 0,
+            "all_profile_modules_discovered": False,
+            "all_declared_modules_discovered": False,
+            "pre_app_module_execution_performed": False,
+            "runtime_owned_namespace_guard": {
+                "owned_roots": sorted(SIMULATION_APP_OWNED_MODULE_ROOTS),
+                "loaded_before": [],
+                "newly_loaded_by_probe": [],
+                "passed": False,
+            },
             "deferred_optional_dependencies": construction_controls_deferred_dependencies(),
-            "torch_cuda": {},
+            "torch_cuda": {
+                "probe_phase": "post_simulation_app_dependency_matrix",
+                "module_executed_before_simulation_app": False,
+            },
             "simulation_app_started": False,
             "candidate_policy_queried": False,
             "blockers": [f"native_task_pre_app_dependency_probe_failed:{type(exc).__name__}"],
@@ -507,8 +474,16 @@ def launch_native_task_isaaclab(
         provisioning_receipt_path,
         pre_app,
     )
-    pre_app_imports = [row for row in pre_app.get("imports") or [] if isinstance(row, Mapping)]
-    pre_app_modules = [str(row.get("module") or "") for row in pre_app_imports]
+    pre_app_discoveries = [
+        row for row in pre_app.get("discoveries") or [] if isinstance(row, Mapping)
+    ]
+    pre_app_modules = [str(row.get("module") or "") for row in pre_app_discoveries]
+    runtime_guard = pre_app.get("runtime_owned_namespace_guard") or {}
+    discovery_rows_valid = all(
+        row.get("module_executed") is False
+        and row.get("discovery_target") == str(row.get("module") or "").split(".", 1)[0]
+        for row in pre_app_discoveries
+    )
     pre_app_valid = bool(
         pre_app.get("schema_version") == PRE_APP_DEPENDENCY_SCHEMA_VERSION
         and pre_app.get("dependency_profile")
@@ -516,14 +491,24 @@ def launch_native_task_isaaclab(
         and pre_app.get("execution_modes")
         == list(CONSTRUCTION_CONTROLS_EXECUTION_MODES)
         and pre_app.get("matrix_digest") == canonical_digest(pre_app, digest_field="matrix_digest")
-        and pre_app.get("all_profile_imports_attempted") is True
-        and pre_app.get("all_declared_imports_attempted") is True
+        and pre_app.get("dependency_probe_mode")
+        == "non_executing_top_level_spec_and_distribution_metadata"
+        and pre_app.get("all_profile_modules_discovered") is True
+        and pre_app.get("all_declared_modules_discovered") is True
+        and pre_app.get("pre_app_module_execution_performed") is False
+        and isinstance(runtime_guard, Mapping)
+        and runtime_guard.get("owned_roots")
+        == sorted(SIMULATION_APP_OWNED_MODULE_ROOTS)
+        and runtime_guard.get("loaded_before") == []
+        and runtime_guard.get("newly_loaded_by_probe") == []
+        and runtime_guard.get("passed") is True
         and pre_app.get("deferred_optional_dependencies")
         == construction_controls_deferred_dependencies()
-        and pre_app.get("import_count") == len(PRE_APP_DEPENDENCY_IMPORTS)
-        and len(pre_app_imports) == len(PRE_APP_DEPENDENCY_IMPORTS)
+        and pre_app.get("discovery_count") == len(PRE_APP_DEPENDENCY_IMPORTS)
+        and len(pre_app_discoveries) == len(PRE_APP_DEPENDENCY_IMPORTS)
         and len(set(pre_app_modules)) == len(PRE_APP_DEPENDENCY_IMPORTS)
         and set(pre_app_modules) == set(PRE_APP_DEPENDENCY_IMPORTS)
+        and discovery_rows_valid
         and pre_app.get("simulation_app_started") is False
         and pre_app.get("candidate_policy_queried") is False
     )
@@ -536,7 +521,7 @@ def launch_native_task_isaaclab(
         **pre_app,
         "path": str(pre_app_path),
     }
-    warp_rows = [row for row in pre_app_imports if row.get("module") == "warp"]
+    warp_rows = [row for row in pre_app_discoveries if row.get("module") == "warp"]
     if (
         len(warp_rows) != 1
         or warp_rows[0].get("available") is not True
@@ -545,13 +530,14 @@ def launch_native_task_isaaclab(
         or warp_rows[0].get("version_matches") is not True
     ):
         raise NativeTaskIsaacLabLaunchError(
-            ["native_task_isaaclab_external_warp_import_unqualified"]
+            ["native_task_isaaclab_external_warp_discovery_unqualified"]
         )
     receipt["external_warp"].update(
         {
             "observed_version": warp_rows[0]["observed_version"],
-            "import_qualified_before_simulation_app": True,
-            "qualification_matrix_digest": pre_app["matrix_digest"],
+            "package_discovered_before_simulation_app": True,
+            "import_qualified_before_simulation_app": False,
+            "discovery_matrix_digest": pre_app["matrix_digest"],
         }
     )
     if simulation_app_factory is None:

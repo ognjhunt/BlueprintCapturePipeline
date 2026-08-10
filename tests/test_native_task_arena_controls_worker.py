@@ -35,6 +35,9 @@ def test_controls_worker_source_has_no_scene_task_or_policy_identity() -> None:
         assert forbidden not in source
     assert '_announce("simulation_app")' not in source
     assert '_announce("pre_app_and_simulation_launch")' in source
+    assert source.index(
+        "simulation_app, launch_receipt = launch_native_task_isaaclab("
+    ) < source.index("dependency_matrix = preflight_native_dependency_matrix(")
 
 
 def test_controls_manifest_rejects_policy_or_construction_mode(tmp_path: Path) -> None:

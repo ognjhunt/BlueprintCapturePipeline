@@ -19,20 +19,22 @@ import subprocess
 import sys
 import time
 import traceback
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from blueprint_pipeline.native_task_dependency_profiles import (
     CONSTRUCTION_CONTROLS_DEFERRED_MODULES,
     CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+    CONSTRUCTION_CONTROLS_REQUIRED_MODULES,
+    SIMULATION_APP_OWNED_MODULE_ROOTS,
     construction_controls_deferred_dependencies,
 )
 
 
 RESULT_SCHEMA_VERSION = "native_task_arena_construction_result.v1"
 RESULT_FILENAME = "native_task_arena_construction_result.v1.json"
-DEPENDENCY_IMPORTS = (
+_WORKER_RUNTIME_IMPORTS = (
     "warp",
     "torch",
     "numpy",
@@ -94,6 +96,9 @@ DEPENDENCY_IMPORTS = (
     "isaaclab_arena.environments.arena_env_builder",
     "isaaclab_arena.environments.arena_env_builder_cfg",
 )
+DEPENDENCY_IMPORTS = tuple(
+    dict.fromkeys((*CONSTRUCTION_CONTROLS_REQUIRED_MODULES, *_WORKER_RUNTIME_IMPORTS))
+)
 if set(DEPENDENCY_IMPORTS) & CONSTRUCTION_CONTROLS_DEFERRED_MODULES:
     raise RuntimeError("native_task_worker_required_deferred_dependency_overlap")
 CAMERA_THRESHOLDS = {
@@ -138,17 +143,28 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
-    """Probe all worker imports and media tools in one retained receipt."""
+def preflight_native_dependency_matrix(
+    *,
+    robot_id: str,
+    module_importer: Callable[[str], Any] = importlib.import_module,
+    run_command: Callable[..., Any] = subprocess.run,
+    loaded_module_names_reader: Callable[[], set[str]] = lambda: set(sys.modules),
+    embodiment_installer: Callable[[str], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Import the complete execution graph after SimulationApp owns Kit/USD."""
 
     imports = []
     blockers = []
+    imported_modules: dict[str, Any] = {}
     try:
-        from blueprint_pipeline.native_task_arena_import_scope import (
-            install_scoped_arena_embodiment,
-        )
+        if embodiment_installer is None:
+            from blueprint_pipeline.native_task_arena_import_scope import (
+                install_scoped_arena_embodiment,
+            )
 
-        embodiment_scope = install_scoped_arena_embodiment(robot_id)
+            embodiment_installer = install_scoped_arena_embodiment
+
+        embodiment_scope = embodiment_installer(robot_id)
     except Exception as exc:  # noqa: BLE001 - exact scope failure is evidence
         embodiment_scope = {
             "schema_version": "native_task_arena_embodiment_scope.v1",
@@ -160,7 +176,8 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
         blockers.append(f"native_task_arena_embodiment_scope_failed:{robot_id}")
     for name in DEPENDENCY_IMPORTS:
         try:
-            module = importlib.import_module(name)
+            module = module_importer(name)
+            imported_modules[name] = module
             imports.append(
                 {
                     "module": name,
@@ -179,10 +196,58 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
                 }
             )
             blockers.append(f"native_task_dependency_missing:{name}")
+    runtime_roots_present = sorted(
+        {
+            name.split(".", 1)[0]
+            for name in loaded_module_names_reader()
+            if name.split(".", 1)[0] in SIMULATION_APP_OWNED_MODULE_ROOTS
+        }
+    )
+    missing_runtime_roots = sorted(
+        SIMULATION_APP_OWNED_MODULE_ROOTS - set(runtime_roots_present)
+    )
+    blockers.extend(
+        f"native_task_post_app_runtime_namespace_missing:{root}"
+        for root in missing_runtime_roots
+    )
+    torch_cuda: dict[str, Any] = {
+        "probe_phase": "post_simulation_app",
+        "available": False,
+        "runtime_version": None,
+        "device_count": 0,
+        "device_name": None,
+    }
+    torch = imported_modules.get("torch")
+    if torch is not None:
+        try:
+            cuda = torch.cuda
+            available = bool(cuda.is_available())
+            device_count = int(cuda.device_count())
+            runtime_version = str(getattr(torch.version, "cuda", None) or "")
+            torch_cuda = {
+                "probe_phase": "post_simulation_app",
+                "available": available,
+                "runtime_version": runtime_version,
+                "device_count": device_count,
+                "device_name": (
+                    str(cuda.get_device_name(0))
+                    if available and device_count > 0
+                    else None
+                ),
+            }
+            if not available or device_count < 1:
+                blockers.append("native_task_post_app_torch_cuda_unavailable")
+            if runtime_version != "12.8":
+                blockers.append("native_task_post_app_torch_cuda_version_mismatch")
+        except Exception as exc:  # noqa: BLE001 - retain exact post-app CUDA gap
+            torch_cuda["error_type"] = type(exc).__name__
+            torch_cuda["error"] = str(exc)
+            torch_cuda["traceback"] = traceback.format_exc()
+            blockers.append("native_task_post_app_torch_cuda_probe_failed")
     tools = []
     for executable in ("ffmpeg", "ffprobe"):
         try:
-            completed = subprocess.run(
+            completed = run_command(
                 [executable, "-version"],
                 check=False,
                 capture_output=True,
@@ -212,11 +277,19 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
         if completed.returncode != 0:
             blockers.append(f"native_task_dependency_missing:{executable}")
     return {
-        "schema_version": "native_task_dependency_matrix.v1",
+        "schema_version": "native_task_dependency_matrix.v2",
         "dependency_profile": CONSTRUCTION_CONTROLS_DEPENDENCY_PROFILE,
+        "probe_phase": "post_simulation_app",
+        "simulation_app_started": True,
+        "post_app_module_execution_performed": True,
+        "runtime_owned_namespace_roots_present": runtime_roots_present,
+        "runtime_owned_namespace_roots_missing": missing_runtime_roots,
         "deferred_optional_dependencies": construction_controls_deferred_dependencies(),
         "embodiment_scope": embodiment_scope,
         "imports": imports,
+        "import_count": len(imports),
+        "all_required_imports_attempted": len(imports) == len(DEPENDENCY_IMPORTS),
+        "torch_cuda": torch_cuda,
         "tools": tools,
         "all_required_available": not blockers,
         "blockers": sorted(set(blockers)),
