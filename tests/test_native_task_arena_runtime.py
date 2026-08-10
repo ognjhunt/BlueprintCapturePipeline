@@ -244,6 +244,33 @@ class _ArenaBuilder:
 
 
 def _install_fake_native_runtime(monkeypatch) -> None:
+    from blueprint_pipeline import native_task_arena_preconstruction
+
+    preconstruction = {
+        "schema_version": "native_task_arena_preconstruction.v1",
+        "upstream_contract": {
+            "simulation_lifecycle_ownership_fix": (
+                "03904ab49152d1bae929513529913b9be2e06808"
+            ),
+            "warp_extension_exclusion_fix": (
+                "c4169b2f1c41117b67154c569668b8834519a5ee"
+            ),
+        },
+        "expected_device": "cuda:0",
+        "observed": {},
+        "passed": True,
+        "blockers": [],
+        "postconstruction_native_view_readback_still_required": True,
+        "receipt_digest": "",
+    }
+    preconstruction["receipt_digest"] = canonical_digest(
+        preconstruction, digest_field="receipt_digest"
+    )
+    monkeypatch.setattr(
+        native_task_arena_preconstruction,
+        "prepare_native_task_arena_preconstruction",
+        lambda *, expected_device: preconstruction,
+    )
     modules = {
         "isaaclab": types.ModuleType("isaaclab"),
         "isaaclab.envs": types.ModuleType("isaaclab.envs"),
@@ -432,6 +459,7 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
 
     assert built.env == "native-env"
     assert built.cfg.sim.dt == pytest.approx(1.0 / 120.0)
+    assert built.cfg.sim.device == "cuda:0"
     assert built.cfg.decimation == 8
     assert built.cfg.episode_length_s == 32.0
     assert built.scene_asset_names == {
@@ -469,6 +497,7 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
     assert reset_owner.event_cfg.params["asset_cfg"].name == "task_object"
     assert reset_owner.event_cfg.params["position_range"] == (0.0, 0.0)
     assert _ArenaBuilder.last.args.device == "cuda:0"
+    assert built.preconstruction_device_binding["passed"] is True
 
 
 def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> None:

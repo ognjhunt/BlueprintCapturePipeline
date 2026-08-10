@@ -38,6 +38,7 @@ class NativeTaskArenaEnvironment:
     scene_asset_names: Mapping[str, str]
     contact_sensor_names: Mapping[str, tuple[str, ...]]
     camera_scene_names: Mapping[str, str]
+    preconstruction_device_binding: Mapping[str, Any] | None = None
 
 
 def _validated_plan(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -257,11 +258,31 @@ def build_native_task_arena_environment(
     *,
     device: str = "cuda:0",
     bundle_root: str | Path | None = None,
+    preconstruction_receipt: Mapping[str, Any] | None = None,
 ) -> NativeTaskArenaEnvironment:
     """Instantiate the pinned Arena environment from one immutable plan."""
 
     plan = _validated_plan(scene_plan)
     runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
+
+    from blueprint_pipeline.native_task_arena_preconstruction import (
+        prepare_native_task_arena_preconstruction,
+        validate_native_task_arena_preconstruction_receipt,
+    )
+
+    if preconstruction_receipt is None:
+        preconstruction_receipt = prepare_native_task_arena_preconstruction(
+            expected_device=device
+        )
+    try:
+        preconstruction = validate_native_task_arena_preconstruction_receipt(
+            preconstruction_receipt, expected_device=device
+        )
+    except ValueError as exc:
+        blockers = list(preconstruction_receipt.get("blockers") or [])
+        raise NativeTaskArenaRuntimeError(
+            blockers or ["native_task_arena_preconstruction_receipt_invalid"]
+        ) from exc
 
     from blueprint_pipeline.native_task_arena_import_scope import (
         install_scoped_arena_embodiment,
@@ -479,6 +500,10 @@ def build_native_task_arena_environment(
     def configure(cfg: Any) -> Any:
         from isaaclab_physx.physics import PhysxCfg
 
+        # Arena applies this callback before parse_env_cfg/gym.make.  Bind the
+        # same qualified device here so SimulationContext and PhysxManager
+        # cannot silently diverge before the first reset.
+        cfg.sim.device = str(preconstruction["expected_device"])
         cfg.sim.dt = cadence["physics_dt_seconds"]
         cfg.seed = int(plan["scenario"]["seed"])
         cfg.sim.render_interval = cadence["control_decimation"]
@@ -520,6 +545,7 @@ def build_native_task_arena_environment(
         scene_asset_names=scene_asset_names,
         contact_sensor_names=contact_sensor_names,
         camera_scene_names=camera_names,
+        preconstruction_device_binding=preconstruction,
     )
 
 

@@ -431,13 +431,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         from blueprint_pipeline.native_task_arena_device_readback import (
             read_native_task_arena_device_binding,
         )
+        from blueprint_pipeline.native_task_arena_preconstruction import (
+            prepare_native_task_arena_preconstruction,
+        )
         from blueprint_pipeline.native_task_arena_runtime import (
             build_native_task_arena_environment,
         )
 
+        _announce("preconstruction_device_binding")
+        preconstruction = prepare_native_task_arena_preconstruction(
+            expected_device="cuda:0"
+        )
+        result["preconstruction_device_binding"] = preconstruction
+        if not preconstruction["passed"]:
+            result["blockers"].extend(preconstruction["blockers"])
+            raise RuntimeError("native_task_arena_preconstruction_failed")
+        _announce("preconstruction_device_binding", "completed")
+
         _announce("environment_build")
         built = build_native_task_arena_environment(
-            plan, device="cuda:0", bundle_root=packet
+            plan,
+            device="cuda:0",
+            bundle_root=packet,
+            preconstruction_receipt=preconstruction,
         )
         device_readback = read_native_task_arena_device_binding(
             built, expected_device="cuda:0"

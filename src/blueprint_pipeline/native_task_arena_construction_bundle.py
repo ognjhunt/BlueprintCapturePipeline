@@ -38,6 +38,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_arena_readback.py",
     "native_task_arena_device_readback.py",
     "native_task_arena_import_scope.py",
+    "native_task_arena_preconstruction.py",
     "native_task_arena_runtime.py",
     "native_task_isaaclab_launch.py",
     "native_task_camera_observability.py",
