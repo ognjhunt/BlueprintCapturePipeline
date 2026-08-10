@@ -94,6 +94,25 @@ def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
     return payload
 
 
+def _downsample(trace: Sequence[float], *, limit: int) -> list[float]:
+    """Keep the shape of a motion without keeping every step of it.
+
+    Start, release and settle are three numbers; they cannot say whether the
+    door crept open, slammed and bounced, or oscillated through the seal, and
+    that is what separates a good positive from a lucky one. The extremes are
+    kept explicitly - a transient overshoot that decays away is the entire
+    story of a bad release, and it is exactly what uniform sampling drops.
+    """
+
+    values = [float(value) for value in trace]
+    if len(values) <= limit:
+        return values
+    step = (len(values) - 1) / float(limit - 1)
+    kept = {0, len(values) - 1, values.index(max(values)), values.index(min(values))}
+    kept.update(int(round(index * step)) for index in range(limit))
+    return [values[index] for index in sorted(kept) if index < len(values)]
+
+
 def _seal_torque(angle_degrees: float, peak: float, width: float) -> float:
     if peak <= 0.0 or width <= 0.0:
         return 0.0
@@ -300,6 +319,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "inside_success_window": inside,
                 "expected_outcome": str(control.get("expected_outcome") or ""),
                 "sample_count": len(trace),
+                "angle_trace_degrees": _downsample(trace, limit=64),
             }
 
         controls = spec.get("controls") or {}

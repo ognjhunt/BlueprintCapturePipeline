@@ -89,3 +89,47 @@ def test_the_persisted_result_always_carries_both_digest_fields(tmp_path) -> Non
     stored = json.loads(output.read_text(encoding="utf-8"))
     assert stored["result_digest"] == stored["_canonical_digest"]
     assert stored["result_digest"].startswith("sha256:")
+
+
+def test_the_angle_trace_survives_into_the_result_at_bounded_size() -> None:
+    """Summary angles cannot show how the door got there.
+
+    Start, release and settle are three numbers; whether the door crept, slammed
+    and bounced, or oscillated through the seal is invisible in them, and that
+    is exactly what distinguishes a good positive from a lucky one. The trace
+    has to come back - bounded, because a 600-step run at full rate bloats
+    every retained receipt for no extra information.
+    """
+
+    module = _worker()
+    trace = [float(i) * 0.1 for i in range(600)]
+
+    kept = module._downsample(trace, limit=64)
+
+    assert len(kept) <= 64
+    assert kept[0] == trace[0]
+    assert kept[-1] == trace[-1]
+
+
+def test_a_short_trace_is_returned_whole() -> None:
+    module = _worker()
+    trace = [0.0, 1.0, 2.0]
+
+    assert module._downsample(trace, limit=64) == trace
+
+
+def test_an_empty_trace_does_not_explode() -> None:
+    module = _worker()
+
+    assert module._downsample([], limit=64) == []
+
+
+def test_the_peak_is_never_lost_to_downsampling() -> None:
+    """A transient overshoot that decays is the whole story of a bad release."""
+
+    module = _worker()
+    trace = [0.0] * 50 + [88.0] + [50.0] * 50
+
+    kept = module._downsample(trace, limit=16)
+
+    assert max(kept) == 88.0
