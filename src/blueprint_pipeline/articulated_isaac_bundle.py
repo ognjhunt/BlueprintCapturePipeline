@@ -16,6 +16,7 @@ edited after freezing would prove nothing.
 from __future__ import annotations
 
 import hashlib
+import ast
 import json
 import shutil
 import zipfile
@@ -115,11 +116,24 @@ def build_articulated_isaac_bundle(
     # that needs them boots, spends four minutes bringing Isaac up, and dies on
     # its first import - and nothing before that can tell, because the bundle is
     # well-formed and the dry run is clean. Refuse the pairing at build time.
-    worker_source_text = worker.read_text(encoding="utf-8", errors="ignore")
-    requires_arena = any(
-        token in worker_source_text
-        for token in ("isaaclab_arena", "import isaaclab", "from isaaclab")
-    )
+    # Parsed, not grepped. A capability probe names isaaclab in a list of
+    # modules to look for without importing it, and text matching cannot tell a
+    # mention from an import - it would refuse the one worker whose whole job is
+    # discovering whether Arena is there. Deferred imports inside a function are
+    # the normal shape here, so the whole tree is walked rather than the header.
+    try:
+        tree = ast.parse(worker.read_text(encoding="utf-8", errors="ignore"))
+    except SyntaxError as exc:
+        raise ArticulatedIsaacBundleError(
+            [f"articulated_isaac_bundle_worker_unparsable:{exc.lineno}"]
+        ) from exc
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            imported.add(node.module.split(".")[0])
+    requires_arena = bool(imported & {"isaaclab", "isaaclab_arena"})
     if requires_arena and container_image == DEFAULT_IMAGE:
         raise ArticulatedIsaacBundleError(
             [

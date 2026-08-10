@@ -571,3 +571,57 @@ def test_a_raw_physx_worker_still_ships_on_the_bare_image(tmp_path: Path) -> Non
     )
 
     assert receipt["worker_requires_arena"] is False
+
+
+def test_merely_naming_arena_in_a_string_is_not_importing_it(tmp_path: Path) -> None:
+    """A capability probe checks for isaaclab by name without importing it.
+
+    Text matching cannot tell a mention from an import, so it refuses a worker
+    whose entire job is to discover whether Arena is present - on the image
+    where that question most needs asking. Parsing knows the difference.
+    """
+
+    root, worker = _probe_with_worker(
+        tmp_path,
+        "import importlib.util\n"
+        "CANDIDATE_MODULES = ('isaacsim', 'isaaclab', 'isaaclab_arena')\n"
+        "found = [n for n in CANDIDATE_MODULES if importlib.util.find_spec(n)]\n",
+        "inventory_worker",
+    )
+
+    receipt = build_articulated_isaac_bundle(
+        probe_root=root,
+        job_dir=tmp_path / "job",
+        worker_source=worker,
+        source_commit_sha="3" * 40,
+        probe_spec_filename="articulated_controls_probe_spec.json",
+        probe_spec_schema_version="articulated_controls_probe_spec.v1",
+        primary_stage_name="controls_stage",
+    )
+
+    assert receipt["worker_requires_arena"] is False
+
+
+def test_an_arena_import_nested_inside_a_function_still_counts(
+    tmp_path: Path,
+) -> None:
+    """Deferred imports are the normal shape in these workers, not an evasion."""
+
+    root, worker = _probe_with_worker(
+        tmp_path,
+        "def build():\n    from isaaclab_arena.scene.scene import Scene\n    return Scene\n",
+        "deferred_worker",
+    )
+
+    with pytest.raises(ArticulatedIsaacBundleError) as excinfo:
+        build_articulated_isaac_bundle(
+            probe_root=root,
+            job_dir=tmp_path / "job2",
+            worker_source=worker,
+            source_commit_sha="4" * 40,
+            probe_spec_filename="articulated_controls_probe_spec.json",
+            probe_spec_schema_version="articulated_controls_probe_spec.v1",
+            primary_stage_name="controls_stage",
+        )
+
+    assert any("worker_needs_arena_image" in e for e in excinfo.value.errors)
