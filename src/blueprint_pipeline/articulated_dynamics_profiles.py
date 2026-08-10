@@ -23,10 +23,17 @@ Entries here are reviewable data, deliberately not constructible at call time.
 from __future__ import annotations
 
 import copy
+import difflib
 from typing import Any, Sequence
 
 
 DYNAMICS_PROFILE_REGISTRY_VERSION = "articulated_dynamics_profiles.v1"
+BAND_FIELDS = (
+    "breakaway_torque_n_m",
+    "breakaway_angular_width_degrees",
+    "sustained_torque_n_m",
+    "lever_arm_m",
+)
 
 _REGISTRY: dict[str, dict[str, Any]] = {
     "household_refrigerator_door": {
@@ -83,18 +90,27 @@ def resolve_dynamics_profile(object_class: str) -> dict[str, Any]:
         )
     profile = _REGISTRY.get(key)
     if profile is None:
-        raise ArticulatedDynamicsProfileError(
-            [
-                f"articulated_dynamics_profile_not_researched:{key}",
-                "articulated_dynamics_profile_researched_classes:"
-                + ",".join(available_profile_ids()),
-            ]
-        )
+        errors = [
+            f"articulated_dynamics_profile_not_researched:{key}",
+            "articulated_dynamics_profile_researched_classes:"
+            + ",".join(available_profile_ids()),
+            # The error is the work order, so it states the job rather than
+            # leaving whoever hits it to reverse-engineer the schema.
+            "articulated_dynamics_profile_required_fields:"
+            + ",".join(("measurement_source", "sample_description") + BAND_FIELDS),
+        ]
+        # Failing closed identically for a typo and for a class nobody has ever
+        # measured sends a person off to redo a search that was already done.
+        near = difflib.get_close_matches(key, available_profile_ids(), n=1, cutoff=0.6)
+        if near:
+            errors.append(f"articulated_dynamics_profile_did_you_mean:{near[0]}")
+        raise ArticulatedDynamicsProfileError(errors)
     # Deep copy: a caller that edits what it resolved must not reach the next.
     return copy.deepcopy(profile)
 
 
 __all__ = [
+    "BAND_FIELDS",
     "DYNAMICS_PROFILE_REGISTRY_VERSION",
     "ArticulatedDynamicsProfileError",
     "available_profile_ids",

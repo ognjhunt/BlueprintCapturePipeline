@@ -88,3 +88,39 @@ def test_the_registry_declares_its_version() -> None:
     assert DYNAMICS_PROFILE_REGISTRY_VERSION.startswith(
         "articulated_dynamics_profiles."
     )
+
+
+def test_a_near_miss_is_named_so_a_typo_does_not_read_as_unresearched() -> None:
+    """"refrigerator_door" and the real key differ by one word.
+
+    Failing closed is right, but failing closed identically for "someone
+    mistyped a key" and "nobody has ever measured this class" sends a person
+    off to do a literature search that was already done.
+    """
+
+    with pytest.raises(ArticulatedDynamicsProfileError) as excinfo:
+        resolve_dynamics_profile("refrigerator_door")
+
+    joined = ";".join(excinfo.value.errors)
+    assert "did_you_mean:household_refrigerator_door" in joined
+
+
+def test_a_genuinely_new_class_is_not_given_a_bogus_suggestion() -> None:
+    """Suggesting the only entry we have would be worse than saying nothing."""
+
+    with pytest.raises(ArticulatedDynamicsProfileError) as excinfo:
+        resolve_dynamics_profile("pallet_jack_lever")
+
+    assert not any("did_you_mean" in error for error in excinfo.value.errors)
+
+
+def test_a_miss_states_what_a_new_profile_has_to_supply() -> None:
+    """The error is the work order, so it should say what the job is."""
+
+    with pytest.raises(ArticulatedDynamicsProfileError) as excinfo:
+        resolve_dynamics_profile("pallet_jack_lever")
+
+    joined = ";".join(excinfo.value.errors)
+    for field in ("breakaway_torque_n_m", "sustained_torque_n_m", "lever_arm_m"):
+        assert field in joined
+    assert "measurement_source" in joined
