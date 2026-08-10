@@ -886,6 +886,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 self._inner = inner
                 self.seal_applications = 0
                 self.achieved_joint_trace: list[list[float]] = []
+                self.fingertip_mid_trace: list[list[float]] = []
 
             def _apply_seal(self) -> None:
                 if seal_peak <= 0.0 or seal_width <= 0.0:
@@ -925,6 +926,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     self.achieved_joint_trace.append(
                         [round(float(v), 4) for v in achieved][:9]
                     )
+                    # Fingertip midpoint in world. rt44 closed the fingers to
+                    # their empty-hand stop mid-sweep and touched nothing, so
+                    # the pinch centre is not where the local FK model says it
+                    # is; this records where it actually is, making the miss a
+                    # vector instead of a hypothesis.
+                    names = list(getattr(robot.data, "body_names", []) or [])
+                    if "left_inner_finger" in names and "right_inner_finger" in names:
+                        poses = _to_torch(robot.data.body_pose_w)[0]
+                        li = names.index("left_inner_finger")
+                        ri = names.index("right_inner_finger")
+                        mid = (poses[li, :3] + poses[ri, :3]) / 2.0
+                        self.fingertip_mid_trace.append(
+                            [round(float(v), 4) for v in mid]
+                        )
                 except Exception:  # noqa: BLE001 - tracing must not fail a step
                     pass
                 return outcome
@@ -945,13 +960,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             environment=sealed,
             task_spec=spec["task_spec"],
             control_plan=spec["control_plan"],
-            gripper_open_command=float(spec.get("gripper_open_command") or 1.0),
+            # Not `or 1.0`: zero is a real command here - Arena's binary
+            # gripper opens at 0.0 - and rt44 executed its zero-action hold
+            # and settle with a closed fist because `0.0 or 1.0` is 1.0.
+            gripper_open_command=(
+                1.0
+                if spec.get("gripper_open_command") is None
+                else float(spec["gripper_open_command"])
+            ),
             output_dir=output.parent / "controls",
         )
         result["control_pair"] = pair
         result["seal_applied"]["applications"] = sealed.seal_applications
         result["achieved_joint_trace_tail"] = sealed.achieved_joint_trace[-40:]
         result["achieved_joint_trace_length"] = len(sealed.achieved_joint_trace)
+        result["fingertip_mid_trace"] = sealed.fingertip_mid_trace
+        result["handle_target_world_m"] = list(handle_position)
         result["controls_qualified"] = bool(
             pair.get("cell_admitted_for_policy_execution")
         )
