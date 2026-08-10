@@ -8,6 +8,7 @@ import hashlib
 import importlib
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +41,7 @@ RUNTIME_IMPORT_MODULES = (
     "scene.cameras",
     "scene.gaussian_model",
 )
+SAFE_FAILURE_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 
 
 def _sha256(path: Path) -> str:
@@ -139,9 +141,30 @@ def runtime_import_preflight(
 
 
 def camera_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
-    """Convert the frozen OpenCV camera-to-world pose to FlashSplat inputs."""
+    """Convert a frozen camera-to-world pose to canonical FlashSplat inputs.
 
-    transform = np.asarray(camera.get("T_world_camera_opencv"), dtype=np.float64)
+    Method-input packets historically named the already calibrated pose
+    ``T_world_camera_provider_frame`` while newer freezes normalize the same
+    pose to ``T_world_camera_opencv``.  Accept either contract spelling, but
+    fail closed if a caller supplies conflicting aliases.
+    """
+
+    opencv_transform = camera.get("T_world_camera_opencv")
+    provider_transform = camera.get("T_world_camera_provider_frame")
+    if opencv_transform is None and provider_transform is None:
+        raise ValueError("gaussian_excision_camera_transform_missing")
+    if opencv_transform is not None and provider_transform is not None:
+        opencv_array = np.asarray(opencv_transform, dtype=np.float64)
+        provider_array = np.asarray(provider_transform, dtype=np.float64)
+        if (
+            opencv_array.shape != provider_array.shape
+            or not np.array_equal(opencv_array, provider_array)
+        ):
+            raise ValueError("gaussian_excision_camera_transform_alias_conflict")
+    transform = np.asarray(
+        opencv_transform if opencv_transform is not None else provider_transform,
+        dtype=np.float64,
+    )
     intrinsics = camera.get("intrinsics")
     if transform.shape != (4, 4) or not isinstance(intrinsics, Mapping):
         raise ValueError("gaussian_excision_camera_invalid")
@@ -166,6 +189,18 @@ def camera_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
         "FoVy": 2.0 * math.atan(height / (2.0 * fy)),
         "width": width,
         "height": height,
+    }
+
+
+def _failure_diagnostics(exc: Exception) -> dict[str, Any]:
+    """Retain deterministic, non-secret diagnostics for a paid worker failure."""
+
+    message = str(exc)
+    return {
+        "failure_type": type(exc).__name__,
+        "failure_code": message if SAFE_FAILURE_CODE.fullmatch(message) else None,
+        "failure_message_sha256": "sha256:"
+        + hashlib.sha256(message.encode("utf-8")).hexdigest(),
     }
 
 
@@ -388,6 +423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "depth_anything_3_used": False,
             "retry_cap": 0,
             "raw_secret_values_recorded": False,
+            **_failure_diagnostics(exc),
         }
         result["result_digest"] = _canonical_digest(result, field="result_digest")
         (output / "adp009b_gaussian_excision_result.json").write_text(

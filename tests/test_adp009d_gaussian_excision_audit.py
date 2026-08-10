@@ -286,6 +286,52 @@ def test_provider_runner_camera_and_zone_conversion_are_exact(tmp_path: Path) ->
     ]
 
 
+def test_provider_runner_accepts_provider_frame_camera_alias() -> None:
+    runner = _provider_runner_module()
+    camera = _camera("front", 0.4, 12.0)
+    provider_camera = dict(camera)
+    provider_camera["T_world_camera_provider_frame"] = provider_camera.pop(
+        "T_world_camera_opencv"
+    )
+
+    expected = runner.camera_parameters(camera)
+    actual = runner.camera_parameters(provider_camera)
+
+    assert np.array_equal(actual["R"], expected["R"])
+    assert np.array_equal(actual["T"], expected["T"])
+    assert actual["FoVx"] == expected["FoVx"]
+    assert actual["FoVy"] == expected["FoVy"]
+
+
+def test_provider_runner_rejects_conflicting_camera_aliases() -> None:
+    runner = _provider_runner_module()
+    camera = _camera("front", 0.0, 0.0)
+    conflicting = dict(camera)
+    conflicting_transform = np.asarray(camera["T_world_camera_opencv"]).copy()
+    conflicting_transform[0, 3] = 1.0
+    conflicting["T_world_camera_provider_frame"] = conflicting_transform.tolist()
+
+    with pytest.raises(
+        ValueError, match="gaussian_excision_camera_transform_alias_conflict"
+    ):
+        runner.camera_parameters(conflicting)
+
+
+def test_provider_runner_failure_diagnostics_are_stable_and_sanitized() -> None:
+    runner = _provider_runner_module()
+
+    stable = runner._failure_diagnostics(
+        ValueError("gaussian_excision_camera_transform_missing")
+    )
+    unsafe = runner._failure_diagnostics(ValueError("token=secret value /tmp/input"))
+
+    assert stable["failure_type"] == "ValueError"
+    assert stable["failure_code"] == "gaussian_excision_camera_transform_missing"
+    assert stable["failure_message_sha256"].startswith("sha256:")
+    assert unsafe["failure_code"] is None
+    assert "secret" not in json.dumps(unsafe)
+
+
 def test_provider_runner_import_preflight_reports_full_missing_set(
     tmp_path: Path,
 ) -> None:
