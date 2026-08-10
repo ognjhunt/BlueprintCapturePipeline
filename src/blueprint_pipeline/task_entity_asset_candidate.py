@@ -29,8 +29,13 @@ AUTHORING_METHODS = (
     "released_code_parametric",
     "checked_in_manual_parametric",
     "released_code_geometry_conversion",
+    "released_code_registered_engineered_twin",
 )
 DEFORMABLE_REPRESENTATION = "closed_tetrahedral_volumetric_fem"
+DEFORMABLE_TOPOLOGY_STAGES = (
+    "explicit_tetrahedral_mesh",
+    "surface_mesh_pending_native_cook",
+)
 RIGID_COLLISION_REPRESENTATIONS = (
     "static_open_triangle_mesh",
     "multi_part_convex_open_receptacle",
@@ -75,17 +80,13 @@ def _clone(value: Mapping[str, Any]) -> dict[str, Any]:
     try:
         result = json.loads(json.dumps(value, allow_nan=False))
     except (TypeError, ValueError) as exc:
-        raise TaskEntityAssetCandidateError(
-            ["task_entity_asset_candidate_not_json"]
-        ) from exc
+        raise TaskEntityAssetCandidateError(["task_entity_asset_candidate_not_json"]) from exc
     if not isinstance(result, dict):
         raise TaskEntityAssetCandidateError(["task_entity_asset_candidate_invalid"])
     return result
 
 
-def _mapping(
-    value: Any, *, field: str, errors: list[str]
-) -> Mapping[str, Any]:
+def _mapping(value: Any, *, field: str, errors: list[str]) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         errors.append(f"task_entity_asset_{field}_invalid")
         return {}
@@ -93,21 +94,21 @@ def _mapping(
 
 
 def _identifier(value: Any, *, field: str, errors: list[str]) -> str:
-    result = str(value or "").strip()
+    result = value.strip() if isinstance(value, str) else ""
     if not _IDENTIFIER.fullmatch(result):
         errors.append(f"task_entity_asset_{field}_invalid")
     return result
 
 
 def _string(value: Any, *, field: str, errors: list[str]) -> str:
-    result = str(value or "").strip()
+    result = value.strip() if isinstance(value, str) else ""
     if not result:
         errors.append(f"task_entity_asset_{field}_invalid")
     return result
 
 
 def _digest(value: Any, *, field: str, errors: list[str]) -> str:
-    result = str(value or "").strip()
+    result = value.strip() if isinstance(value, str) else ""
     if not _DIGEST.fullmatch(result):
         errors.append(f"task_entity_asset_{field}_invalid")
     return result
@@ -150,9 +151,7 @@ def _number(
     return result
 
 
-def _integer(
-    value: Any, *, field: str, errors: list[str], minimum: int = 1
-) -> int:
+def _integer(value: Any, *, field: str, errors: list[str], minimum: int = 1) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         errors.append(f"task_entity_asset_{field}_invalid")
         return 0
@@ -212,10 +211,7 @@ def _pose(value: Any, *, field: str, errors: list[str]) -> dict[str, Any]:
 
 
 def _string_list(value: Any, *, field: str, errors: list[str]) -> list[str]:
-    if (
-        isinstance(value, (str, bytes, Mapping))
-        or not isinstance(value, Sequence)
-    ):
+    if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Sequence):
         errors.append(f"task_entity_asset_{field}_invalid")
         return []
     result = [str(item).strip() for item in value]
@@ -224,13 +220,9 @@ def _string_list(value: Any, *, field: str, errors: list[str]) -> list[str]:
     return result
 
 
-def _normalise_observation(
-    value: Any, *, asset_class: str, errors: list[str]
-) -> dict[str, Any]:
+def _normalise_observation(value: Any, *, asset_class: str, errors: list[str]) -> dict[str, Any]:
     source = _mapping(value, field="source_observation", errors=errors)
-    bounds = _mapping(
-        source.get("bounds_world"), field="source_bounds", errors=errors
-    )
+    bounds = _mapping(source.get("bounds_world"), field="source_bounds", errors=errors)
     minimum = _vector(
         bounds.get("minimum_m"),
         length=3,
@@ -253,15 +245,12 @@ def _normalise_observation(
     if minimum and maximum and dimensions:
         observed_dimensions = [maximum[i] - minimum[i] for i in range(3)]
         if any(
-            observed_dimensions[i] <= 0.0
-            or abs(observed_dimensions[i] - dimensions[i]) > 1.0e-6
+            observed_dimensions[i] <= 0.0 or abs(observed_dimensions[i] - dimensions[i]) > 1.0e-6
             for i in range(3)
         ):
             errors.append("task_entity_asset_source_bounds_dimension_mismatch")
 
-    coverage = _mapping(
-        source.get("coverage"), field="source_coverage", errors=errors
-    )
+    coverage = _mapping(source.get("coverage"), field="source_coverage", errors=errors)
     full_surface_observed = _boolean(
         coverage.get("full_surface_observed"),
         field="source_coverage_full_surface",
@@ -331,9 +320,7 @@ def _normalise_observation(
             field="source_reference",
             errors=errors,
         ),
-        "source_sha256": _digest(
-            source.get("source_sha256"), field="source_digest", errors=errors
-        ),
+        "source_sha256": _digest(source.get("source_sha256"), field="source_digest", errors=errors),
         "source_size_bytes": source_size_bytes,
         "bounds_world": {"minimum_m": minimum, "maximum_m": maximum},
         "metric_dimensions_m": dimensions,
@@ -373,9 +360,7 @@ def _normalise_rights(value: Any, *, errors: list[str]) -> dict[str, Any]:
         "provider_retention_permitted",
         "provider_training_permitted",
     ):
-        result[key] = _boolean(
-            source.get(key), field=f"rights_{key}", errors=errors
-        )
+        result[key] = _boolean(source.get(key), field=f"rights_{key}", errors=errors)
     if result["provider_training_permitted"]:
         errors.append("task_entity_asset_provider_training_forbidden")
     return result
@@ -424,13 +409,8 @@ def _normalise_authoring(value: Any, *, errors: list[str]) -> dict[str, Any]:
     }
 
 
-def _normalise_files(
-    value: Any, *, asset_class: str, errors: list[str]
-) -> list[dict[str, Any]]:
-    if (
-        isinstance(value, (str, bytes, Mapping))
-        or not isinstance(value, Sequence)
-    ):
+def _normalise_files(value: Any, *, asset_class: str, errors: list[str]) -> list[dict[str, Any]]:
+    if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Sequence):
         errors.append("task_entity_asset_files_invalid")
         return []
     rows: list[dict[str, Any]] = []
@@ -444,12 +424,7 @@ def _normalise_files(
         roles.add(role)
         path = str(source.get("path") or "")
         pure = PurePosixPath(path)
-        if (
-            not path
-            or pure.is_absolute()
-            or ".." in pure.parts
-            or path in paths
-        ):
+        if not path or pure.is_absolute() or ".." in pure.parts or path in paths:
             errors.append(f"task_entity_asset_file_path_invalid:{role or index}")
         paths.add(path)
         size_bytes = source.get("size_bytes")
@@ -497,9 +472,7 @@ def _normalise_transform(value: Any, *, errors: list[str]) -> dict[str, Any]:
             errors=errors,
         ),
         "scale_xyz": scale,
-        "world_pose": _pose(
-            source.get("world_pose"), field="transform_world_pose", errors=errors
-        ),
+        "world_pose": _pose(source.get("world_pose"), field="transform_world_pose", errors=errors),
         "meters_per_unit": _number(
             source.get("meters_per_unit"),
             field="transform_meters_per_unit",
@@ -507,9 +480,7 @@ def _normalise_transform(value: Any, *, errors: list[str]) -> dict[str, Any]:
             minimum=0.0,
             minimum_inclusive=False,
         ),
-        "up_axis": _string(
-            source.get("up_axis"), field="transform_up_axis", errors=errors
-        ),
+        "up_axis": _string(source.get("up_axis"), field="transform_up_axis", errors=errors),
     }
 
 
@@ -518,22 +489,60 @@ def _normalise_deformable(value: Any, *, errors: list[str]) -> dict[str, Any]:
     representation = str(source.get("representation") or "")
     if representation != DEFORMABLE_REPRESENTATION:
         errors.append("task_entity_asset_deformable_representation_invalid")
-    topology = _mapping(
-        source.get("rest_topology"), field="deformable_topology", errors=errors
-    )
-    topology_result = {
+    topology = _mapping(source.get("rest_topology"), field="deformable_topology", errors=errors)
+    topology_stage_declared = "topology_stage" in topology
+    topology_stage = str(topology.get("topology_stage") or "explicit_tetrahedral_mesh")
+    if topology_stage not in DEFORMABLE_TOPOLOGY_STAGES:
+        errors.append("task_entity_asset_deformable_topology_stage_invalid")
+
+    tetrahedron_count: int | None
+    native_simulation_topology_sha256: str | None
+    surface_triangle_count: int | None
+    if topology_stage == "surface_mesh_pending_native_cook":
+        tetrahedron_count = None
+        native_simulation_topology_sha256 = None
+        surface_triangle_count = _integer(
+            topology.get("surface_triangle_count"),
+            field="deformable_surface_triangle_count",
+            errors=errors,
+            minimum=4,
+        )
+        if (
+            topology.get("tetrahedron_count") is not None
+            or topology.get("native_simulation_topology_sha256") is not None
+        ):
+            errors.append("task_entity_asset_deformable_native_topology_premature")
+    else:
+        tetrahedron_count = _integer(
+            topology.get("tetrahedron_count"),
+            field="deformable_tetrahedron_count",
+            errors=errors,
+            minimum=1,
+        )
+        native_simulation_topology_sha256 = _digest(
+            topology.get("native_simulation_topology_sha256") or topology.get("topology_sha256"),
+            field="deformable_native_simulation_topology_digest",
+            errors=errors,
+        )
+        raw_surface_triangle_count = topology.get("surface_triangle_count")
+        surface_triangle_count = (
+            None
+            if raw_surface_triangle_count is None
+            else _integer(
+                raw_surface_triangle_count,
+                field="deformable_surface_triangle_count",
+                errors=errors,
+                minimum=4,
+            )
+        )
+    topology_result: dict[str, Any] = {
         "vertex_count": _integer(
             topology.get("vertex_count"),
             field="deformable_vertex_count",
             errors=errors,
             minimum=4,
         ),
-        "tetrahedron_count": _integer(
-            topology.get("tetrahedron_count"),
-            field="deformable_tetrahedron_count",
-            errors=errors,
-            minimum=1,
-        ),
+        "tetrahedron_count": tetrahedron_count,
         "closed_volume": _boolean(
             topology.get("closed_volume"),
             field="deformable_closed_volume",
@@ -550,12 +559,28 @@ def _normalise_deformable(value: Any, *, errors: list[str]) -> dict[str, Any]:
             errors=errors,
         ),
     }
+    if topology_stage_declared:
+        topology_result = {
+            "topology_stage": topology_stage,
+            "vertex_count": topology_result["vertex_count"],
+            "surface_triangle_count": surface_triangle_count,
+            "tetrahedron_count": topology_result["tetrahedron_count"],
+            "closed_volume": topology_result["closed_volume"],
+            "manifold_surface": topology_result["manifold_surface"],
+            "topology_sha256": topology_result["topology_sha256"],
+            "native_simulation_topology_sha256": (native_simulation_topology_sha256),
+            "native_topology_readback_required": _boolean(
+                topology.get("native_topology_readback_required"),
+                field="deformable_native_topology_readback",
+                errors=errors,
+            ),
+        }
     if not topology_result["closed_volume"] or not topology_result["manifold_surface"]:
         errors.append("task_entity_asset_deformable_topology_not_closed_manifold")
+    if topology_stage_declared and not topology_result["native_topology_readback_required"]:
+        errors.append("task_entity_asset_deformable_native_topology_readback_required")
 
-    material = _mapping(
-        source.get("material"), field="deformable_material", errors=errors
-    )
+    material = _mapping(source.get("material"), field="deformable_material", errors=errors)
     material_result = {
         "mass_kg": _number(
             material.get("mass_kg"),
@@ -633,12 +658,8 @@ def _normalise_deformable(value: Any, *, errors: list[str]) -> dict[str, Any]:
     ):
         errors.append("task_entity_asset_unsupported_cloth_parameter_claim")
 
-    solver = _mapping(
-        source.get("solver"), field="deformable_solver", errors=errors
-    )
-    collision = _mapping(
-        source.get("collision"), field="deformable_collision", errors=errors
-    )
+    solver = _mapping(source.get("solver"), field="deformable_solver", errors=errors)
+    collision = _mapping(source.get("collision"), field="deformable_collision", errors=errors)
     reset = _mapping(source.get("reset"), field="deformable_reset", errors=errors)
     solver_result = {
         "mesh_resolution": _integer(
@@ -754,18 +775,10 @@ def _normalise_deformable(value: Any, *, errors: list[str]) -> dict[str, Any]:
 
 def _normalise_receptacle(value: Any, *, errors: list[str]) -> dict[str, Any]:
     source = _mapping(value, field="receptacle_configuration", errors=errors)
-    geometry = _mapping(
-        source.get("geometry"), field="receptacle_geometry", errors=errors
-    )
-    collision = _mapping(
-        source.get("collision"), field="receptacle_collision", errors=errors
-    )
-    material = _mapping(
-        source.get("material"), field="receptacle_material", errors=errors
-    )
-    anchoring = _mapping(
-        source.get("anchoring"), field="receptacle_anchoring", errors=errors
-    )
+    geometry = _mapping(source.get("geometry"), field="receptacle_geometry", errors=errors)
+    collision = _mapping(source.get("collision"), field="receptacle_collision", errors=errors)
+    material = _mapping(source.get("material"), field="receptacle_material", errors=errors)
+    anchoring = _mapping(source.get("anchoring"), field="receptacle_anchoring", errors=errors)
     representation = str(collision.get("representation") or "")
     if representation not in RIGID_COLLISION_REPRESENTATIONS:
         errors.append("task_entity_asset_receptacle_collision_representation_invalid")
@@ -820,6 +833,37 @@ def _normalise_receptacle(value: Any, *, errors: list[str]) -> dict[str, Any]:
     )
     if dynamic_friction > static_friction:
         errors.append("task_entity_asset_receptacle_friction_invalid")
+    wall_thickness = _number(
+        geometry.get("wall_thickness_m"),
+        field="receptacle_wall_thickness",
+        errors=errors,
+        minimum=0.0,
+        minimum_inclusive=False,
+    )
+    raw_wall_clearances = geometry.get("wall_clearances_m")
+    if raw_wall_clearances is None:
+        wall_clearances = {side: wall_thickness for side in ("x_min", "x_max", "y_min", "y_max")}
+    else:
+        clearances = _mapping(
+            raw_wall_clearances,
+            field="receptacle_wall_clearances",
+            errors=errors,
+        )
+        expected_sides = {"x_min", "x_max", "y_min", "y_max"}
+        if set(clearances) != expected_sides:
+            errors.append("task_entity_asset_receptacle_wall_clearances_invalid")
+        wall_clearances = {
+            side: _number(
+                clearances.get(side),
+                field=f"receptacle_wall_clearance_{side}",
+                errors=errors,
+                minimum=0.0,
+                minimum_inclusive=False,
+            )
+            for side in sorted(expected_sides)
+        }
+    if wall_clearances and abs(min(wall_clearances.values()) - wall_thickness) > 1.0e-9:
+        errors.append("task_entity_asset_receptacle_minimum_wall_clearance_mismatch")
     return {
         "geometry": {
             "open_interior": open_interior,
@@ -831,13 +875,8 @@ def _normalise_receptacle(value: Any, *, errors: list[str]) -> dict[str, Any]:
                 errors=errors,
                 positive=True,
             ),
-            "wall_thickness_m": _number(
-                geometry.get("wall_thickness_m"),
-                field="receptacle_wall_thickness",
-                errors=errors,
-                minimum=0.0,
-                minimum_inclusive=False,
-            ),
+            "wall_thickness_m": wall_thickness,
+            "wall_clearances_m": wall_clearances,
             "floor_thickness_m": _number(
                 geometry.get("floor_thickness_m"),
                 field="receptacle_floor_thickness",
@@ -908,9 +947,7 @@ def _normalise_import_identity(value: Any, *, errors: list[str]) -> dict[str, An
     if not _REVISION.fullmatch(revision):
         errors.append("task_entity_asset_simulator_import_revision_invalid")
     return {
-        "simulator": _string(
-            source.get("simulator"), field="simulator_import_name", errors=errors
-        ),
+        "simulator": _string(source.get("simulator"), field="simulator_import_name", errors=errors),
         "simulator_version": _string(
             source.get("simulator_version"),
             field="simulator_import_version",
@@ -964,9 +1001,7 @@ def materialize_task_entity_asset_candidate(value: Mapping[str, Any]) -> dict[st
     authoring = _normalise_authoring(source.get("authoring"), errors=errors)
     files = _normalise_files(source.get("files"), asset_class=asset_class, errors=errors)
     transform = _normalise_transform(source.get("transform"), errors=errors)
-    simulator_import = _normalise_import_identity(
-        source.get("simulator_import"), errors=errors
-    )
+    simulator_import = _normalise_import_identity(source.get("simulator_import"), errors=errors)
 
     class_configuration: dict[str, Any]
     if asset_class == "deformable_volume":
@@ -991,14 +1026,16 @@ def materialize_task_entity_asset_candidate(value: Mapping[str, Any]) -> dict[st
             outer = observation["metric_dimensions_m"]
             receptacle = class_configuration["receptacle_configuration"]
             interior = receptacle["geometry"]["interior_dimensions_m"]
-            wall = receptacle["geometry"]["wall_thickness_m"]
+            wall_clearances = receptacle["geometry"]["wall_clearances_m"]
             floor = receptacle["geometry"]["floor_thickness_m"]
             if (
                 len(outer) == 3
                 and len(interior) == 3
                 and (
-                    interior[0] + 2.0 * wall > outer[0] + 1.0e-9
-                    or interior[1] + 2.0 * wall > outer[1] + 1.0e-9
+                    interior[0] + wall_clearances["x_min"] + wall_clearances["x_max"]
+                    > outer[0] + 1.0e-9
+                    or interior[1] + wall_clearances["y_min"] + wall_clearances["y_max"]
+                    > outer[1] + 1.0e-9
                     or interior[2] + floor > outer[2] + 1.0e-9
                 )
             ):
@@ -1028,6 +1065,19 @@ def materialize_task_entity_asset_candidate(value: Mapping[str, Any]) -> dict[st
     if errors:
         raise TaskEntityAssetCandidateError(errors)
 
+    pending_native_topology_cook = (
+        asset_class == "deformable_volume"
+        and class_configuration["deformable_configuration"]["rest_topology"].get("topology_stage")
+        == "surface_mesh_pending_native_cook"
+    )
+    pending_gates = [
+        "native_import_and_schema_readback",
+        "native_contact_support_reset_and_settling",
+        "native_render_alignment_and_coverage",
+    ]
+    if pending_native_topology_cook:
+        pending_gates.insert(0, "native_deformable_topology_cook_and_readback")
+
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "entity_id": entity_id,
@@ -1041,20 +1091,20 @@ def materialize_task_entity_asset_candidate(value: Mapping[str, Any]) -> dict[st
         "simulator_import": simulator_import,
         **class_configuration,
         "retained_diagnostic_requirements": sorted(retained_diagnostics),
-        "status": "simready_candidate_pending_native_qualification",
+        "status": (
+            "geometry_candidate_pending_native_topology_cook"
+            if pending_native_topology_cook
+            else "simready_candidate_pending_native_qualification"
+        ),
         "claims": {
             "generated_candidate": authoring["generated_geometry_used"],
-            "simready_candidate": True,
+            "simready_candidate": not pending_native_topology_cook,
             "native_simulator_qualified": False,
             "visually_aligned_replacement": False,
             "physically_equivalent_real_material": False,
             "execution_authorized": False,
         },
-        "pending_gates": [
-            "native_import_and_schema_readback",
-            "native_contact_support_reset_and_settling",
-            "native_render_alignment_and_coverage",
-        ],
+        "pending_gates": pending_gates,
         "physically_unresolved": [
             "real_material_constitutive_equivalence",
             "real_robot_grasp_performance",
@@ -1068,15 +1118,14 @@ def materialize_task_entity_asset_candidate(value: Mapping[str, Any]) -> dict[st
                 "independent_bend_and_shear_equivalence",
             ]
         )
-    result["candidate_digest"] = canonical_digest(
-        result, digest_field="candidate_digest"
-    )
+    result["candidate_digest"] = canonical_digest(result, digest_field="candidate_digest")
     return result
 
 
 __all__ = [
     "ASSET_CLASSES",
     "DEFORMABLE_REPRESENTATION",
+    "DEFORMABLE_TOPOLOGY_STAGES",
     "SCHEMA_VERSION",
     "TaskEntityAssetCandidateError",
     "materialize_task_entity_asset_candidate",

@@ -173,9 +173,7 @@ def _deformable() -> dict:
             "self_collision_enabled": True,
             "contact_offset_m": 0.005,
             "rest_offset_m": 0.002,
-            "requested_grasp_contact_representation": (
-                "native_finger_to_deformable_collision"
-            ),
+            "requested_grasp_contact_representation": ("native_finger_to_deformable_collision"),
             "hidden_kinematic_attachment_allowed": False,
         },
         "reset": {
@@ -237,17 +235,103 @@ def test_both_asset_classes_are_candidates_not_qualified_claims(source: dict) ->
         "physically_equivalent_real_material": False,
         "execution_authorized": False,
     }
-    assert result["candidate_digest"] == canonical_digest(
-        result, digest_field="candidate_digest"
-    )
+    assert result["candidate_digest"] == canonical_digest(result, digest_field="candidate_digest")
+
+
+def test_surface_mesh_candidate_defers_native_tetrahedral_topology_truthfully() -> None:
+    source = _deformable()
+    source["deformable_configuration"]["rest_topology"] = {
+        "topology_stage": "surface_mesh_pending_native_cook",
+        "vertex_count": 98,
+        "surface_triangle_count": 192,
+        "tetrahedron_count": None,
+        "closed_volume": True,
+        "manifold_surface": True,
+        "topology_sha256": SHA_B,
+        "native_simulation_topology_sha256": None,
+        "native_topology_readback_required": True,
+    }
+
+    result = materialize_task_entity_asset_candidate(source)
+
+    topology = result["deformable_configuration"]["rest_topology"]
+    assert topology == {
+        "topology_stage": "surface_mesh_pending_native_cook",
+        "vertex_count": 98,
+        "surface_triangle_count": 192,
+        "tetrahedron_count": None,
+        "closed_volume": True,
+        "manifold_surface": True,
+        "topology_sha256": SHA_B,
+        "native_simulation_topology_sha256": None,
+        "native_topology_readback_required": True,
+    }
+    assert result["status"] == "geometry_candidate_pending_native_topology_cook"
+    assert result["claims"]["generated_candidate"] is True
+    assert result["claims"]["simready_candidate"] is False
+    assert result["claims"]["native_simulator_qualified"] is False
+    assert result["pending_gates"][0] == ("native_deformable_topology_cook_and_readback")
+
+
+def test_legacy_v1_explicit_tetrahedral_topology_shape_is_unchanged() -> None:
+    result = materialize_task_entity_asset_candidate(_deformable())
+
+    assert result["deformable_configuration"]["rest_topology"] == {
+        "vertex_count": 100,
+        "tetrahedron_count": 240,
+        "closed_volume": True,
+        "manifold_surface": True,
+        "topology_sha256": SHA_B,
+    }
+    assert result["status"] == "simready_candidate_pending_native_qualification"
+    assert result["claims"]["simready_candidate"] is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        (
+            "tetrahedron_count",
+            240,
+            "task_entity_asset_deformable_native_topology_premature",
+        ),
+        (
+            "native_simulation_topology_sha256",
+            SHA_A,
+            "task_entity_asset_deformable_native_topology_premature",
+        ),
+        (
+            "native_topology_readback_required",
+            False,
+            "task_entity_asset_deformable_native_topology_readback_required",
+        ),
+    ],
+)
+def test_surface_mesh_candidate_cannot_invent_pre_cook_native_topology(
+    field: str, value: object, error: str
+) -> None:
+    source = _deformable()
+    source["deformable_configuration"]["rest_topology"] = {
+        "topology_stage": "surface_mesh_pending_native_cook",
+        "vertex_count": 98,
+        "surface_triangle_count": 192,
+        "tetrahedron_count": None,
+        "closed_volume": True,
+        "manifold_surface": True,
+        "topology_sha256": SHA_B,
+        "native_simulation_topology_sha256": None,
+        "native_topology_readback_required": True,
+    }
+    source["deformable_configuration"]["rest_topology"][field] = value
+
+    with pytest.raises(TaskEntityAssetCandidateError, match=error):
+        materialize_task_entity_asset_candidate(source)
 
 
 def test_volumetric_surrogate_cannot_claim_thin_shell_or_independent_bend() -> None:
     source = _deformable()
     source["deformable_configuration"]["material"]["thin_shell_cloth_claimed"] = True
-    source["deformable_configuration"]["material"][
-        "independent_bend_parameter_available"
-    ] = True
+    source["deformable_configuration"]["material"]["independent_bend_parameter_available"] = True
 
     with pytest.raises(
         TaskEntityAssetCandidateError,
@@ -258,9 +342,7 @@ def test_volumetric_surrogate_cannot_claim_thin_shell_or_independent_bend() -> N
 
 def test_deformable_forbids_hidden_attachment_and_post_start_writes() -> None:
     source = _deformable()
-    source["deformable_configuration"]["collision"][
-        "hidden_kinematic_attachment_allowed"
-    ] = True
+    source["deformable_configuration"]["collision"]["hidden_kinematic_attachment_allowed"] = True
     source["deformable_configuration"]["reset"][
         "direct_state_write_after_episode_start_allowed"
     ] = True
@@ -274,9 +356,7 @@ def test_deformable_forbids_hidden_attachment_and_post_start_writes() -> None:
 
 def test_receptacle_cannot_truthify_an_unobserved_engineered_interior() -> None:
     source = _receptacle()
-    source["source_observation"]["coverage"][
-        "engineered_interior_not_factual"
-    ] = False
+    source["source_observation"]["coverage"]["engineered_interior_not_factual"] = False
 
     with pytest.raises(
         TaskEntityAssetCandidateError,
@@ -332,3 +412,73 @@ def test_receptacle_interior_must_fit_outer_observed_bounds() -> None:
         match="task_entity_asset_receptacle_dimensions_inconsistent",
     ):
         materialize_task_entity_asset_candidate(source)
+
+
+def test_receptacle_preserves_asymmetric_wall_clearances() -> None:
+    source = _receptacle()
+    source["receptacle_configuration"]["geometry"]["wall_clearances_m"] = {
+        "x_min": 0.01,
+        "x_max": 0.04,
+        "y_min": 0.01,
+        "y_max": 0.03,
+    }
+    source["receptacle_configuration"]["geometry"]["interior_dimensions_m"] = [
+        0.25,
+        0.16,
+        0.08,
+    ]
+
+    result = materialize_task_entity_asset_candidate(source)
+
+    assert result["receptacle_configuration"]["geometry"]["wall_clearances_m"] == {
+        "x_min": 0.01,
+        "x_max": 0.04,
+        "y_min": 0.01,
+        "y_max": 0.03,
+    }
+
+
+def test_receptacle_scalar_wall_is_minimum_of_per_side_clearances() -> None:
+    source = _receptacle()
+    source["receptacle_configuration"]["geometry"]["wall_clearances_m"] = {
+        "x_min": 0.02,
+        "x_max": 0.04,
+        "y_min": 0.02,
+        "y_max": 0.03,
+    }
+
+    with pytest.raises(
+        TaskEntityAssetCandidateError,
+        match="task_entity_asset_receptacle_minimum_wall_clearance_mismatch",
+    ):
+        materialize_task_entity_asset_candidate(source)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_error"),
+    [
+        (("entity_id",), "task_entity_asset_entity_id_invalid"),
+        (("asset_id",), "task_entity_asset_asset_id_invalid"),
+        (
+            ("simulator_import", "simulator"),
+            "task_entity_asset_simulator_import_name_invalid",
+        ),
+        (
+            ("simulator_import", "simulator_version"),
+            "task_entity_asset_simulator_import_version_invalid",
+        ),
+    ],
+)
+def test_identifiers_and_strings_never_coerce_non_string_values(
+    path: tuple[str, ...],
+    expected_error: str,
+) -> None:
+    source = _receptacle()
+    target = source
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = 7
+
+    with pytest.raises(TaskEntityAssetCandidateError) as caught:
+        materialize_task_entity_asset_candidate(source)
+    assert expected_error in caught.value.errors

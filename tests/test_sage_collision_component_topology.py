@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+import blueprint_pipeline.sage_collision_component_topology as topology_module
 from blueprint_pipeline.sage_collision_component_topology import (
     SageCollisionComponentTopologyError,
+    _opening_probe,
     inspect_sage_collision_component_topology,
+    read_sage_collision_component_geometry,
 )
 
 
@@ -82,6 +86,25 @@ def _add_open_receptacle(points: list, faces: list) -> None:
     )
 
 
+def _add_floor_patch(
+    points: list,
+    faces: list,
+    *,
+    minimum_xy: tuple[float, float],
+    maximum_xy: tuple[float, float],
+) -> None:
+    start = len(points)
+    points.extend(
+        [
+            (minimum_xy[0], minimum_xy[1], 0.0),
+            (maximum_xy[0], minimum_xy[1], 0.0),
+            (maximum_xy[0], maximum_xy[1], 0.0),
+            (minimum_xy[0], maximum_xy[1], 0.0),
+        ]
+    )
+    faces.append(tuple(start + value for value in (0, 1, 2, 3)))
+
+
 def _fixture(tmp_path: Path, *, capped: bool = False) -> tuple[Path, Path]:
     from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -145,9 +168,60 @@ def test_matches_transformed_components_and_proves_open_collision_cavity(
     assert opening["open_collision_cavity_passed"] is True
     assert opening["center_first_hit_band"] == "floor"
     assert opening["cavity_depth_m"] == pytest.approx(0.9)
-    assert result["coordinate_frame"][
-        "authored_prim_local_to_world_transforms_applied"
-    ] is True
+    assert result["coordinate_frame"]["authored_prim_local_to_world_transforms_applied"] is True
+
+
+def test_labels_are_parsed_and_identified_from_one_immutable_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    labels, collision = _fixture(tmp_path)
+    original_bytes = labels.read_bytes()
+    original_loader = topology_module.load_interiorgs_labels
+    swapped = False
+
+    def swap_source_then_parse(snapshot_path: Path) -> list:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            labels.write_text(
+                json.dumps(
+                    [
+                        _label_box(
+                            "bin",
+                            "basket",
+                            (100.0, 100.0, 100.0),
+                            (101.0, 101.0, 101.0),
+                        )
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        return original_loader(snapshot_path)
+
+    monkeypatch.setattr(
+        topology_module,
+        "load_interiorgs_labels",
+        swap_source_then_parse,
+    )
+
+    result = inspect_sage_collision_component_topology(
+        labels_path=labels,
+        target_instance_ids=["bin"],
+        opening_probe_instance_ids=["bin"],
+        sage_collision_usd_path=collision,
+    )
+
+    assert swapped is True
+    assert result["source_files"]["interiorgs_labels"]["size_bytes"] == len(
+        original_bytes
+    )
+    assert result["source_files"]["interiorgs_labels"]["sha256"] == (
+        "sha256:" + hashlib.sha256(original_bytes).hexdigest()
+    )
+    assert result["targets"][0]["label_world_aabb_min_m"] == pytest.approx(
+        [10.0, 0.0, 0.0]
+    )
 
 
 def test_closed_cap_fails_open_cavity_probe(tmp_path: Path) -> None:
@@ -166,6 +240,74 @@ def test_closed_cap_fails_open_cavity_probe(tmp_path: Path) -> None:
     assert opening["center_first_hit_band"] == "cap"
 
 
+def test_sparse_disconnected_floor_hits_cannot_claim_spanning_opening() -> None:
+    points: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, ...]] = []
+    for x, y in ((0.5, 0.5), (0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)):
+        _add_floor_patch(
+            points,
+            faces,
+            minimum_xy=(x - 0.04, y - 0.04),
+            maximum_xy=(x + 0.04, y + 0.04),
+        )
+
+    opening = _opening_probe(
+        vertices=points,
+        faces=faces,
+        bounds_min=[0.0, 0.0, 0.0],
+        bounds_max=[1.0, 1.0, 1.0],
+        grid_size=5,
+        margin_fraction=0.0,
+        floor_band_fraction=0.25,
+        cap_band_fraction=0.75,
+    )
+
+    assert opening["floor_hit_count"] == 5
+    assert opening["floor_hit_fraction"] == pytest.approx(0.2)
+    assert opening["center_connected_floor_rectangle_cell_count"] == 1
+    assert opening["center_connected_floor_rectangle_fraction"] == pytest.approx(0.04)
+    assert opening["open_collision_cavity_passed"] is False
+    assert opening["conservative_clear_opening"] is None
+
+
+def test_asymmetric_all_floor_rectangle_preserves_measured_offset() -> None:
+    points: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, ...]] = []
+    _add_floor_patch(
+        points,
+        faces,
+        minimum_xy=(0.45, 0.2),
+        maximum_xy=(0.8, 0.8),
+    )
+    _add_box(points, faces, (0.0, 0.0, 0.0), (0.05, 1.0, 1.0))
+    _add_box(points, faces, (0.95, 0.0, 0.0), (1.0, 1.0, 1.0))
+    _add_box(points, faces, (0.05, 0.0, 0.0), (0.95, 0.05, 1.0))
+    _add_box(points, faces, (0.05, 0.95, 0.0), (0.95, 1.0, 1.0))
+
+    opening = _opening_probe(
+        vertices=points,
+        faces=faces,
+        bounds_min=[0.0, 0.0, 0.0],
+        bounds_max=[1.0, 1.0, 1.0],
+        grid_size=5,
+        margin_fraction=0.0,
+        floor_band_fraction=0.25,
+        cap_band_fraction=0.75,
+    )
+
+    clear = opening["conservative_clear_opening"]
+    assert opening["open_collision_cavity_passed"] is True
+    assert opening["center_connected_floor_rectangle_cell_count"] == 6
+    assert clear["world_xy_min_m"] == pytest.approx([0.5, 0.25])
+    assert clear["world_xy_max_m"] == pytest.approx([0.75, 0.75])
+    assert clear["size_xy_m"] == pytest.approx([0.25, 0.5])
+    assert clear["boundary_clearances_m"] == pytest.approx(
+        {"x_min": 0.5, "x_max": 0.25, "y_min": 0.25, "y_max": 0.25}
+    )
+    assert opening["side_wall_probe"]["all_four_sides_passed"] is True
+    assert opening["overhead_clearance_probe"]["clear_of_above_floor_projected_geometry"] is True
+
+
 def test_rejects_unrequested_opening_probe_target(tmp_path: Path) -> None:
     labels, collision = _fixture(tmp_path)
 
@@ -178,3 +320,121 @@ def test_rejects_unrequested_opening_probe_target(tmp_path: Path) -> None:
         )
 
     assert caught.value.errors == ("opening_probe_target_not_in_requested_targets",)
+
+
+def test_opening_probe_grid_is_bounded() -> None:
+    with pytest.raises(SageCollisionComponentTopologyError) as caught:
+        _opening_probe(
+            vertices=[],
+            faces=[],
+            bounds_min=[0.0, 0.0, 0.0],
+            bounds_max=[1.0, 1.0, 1.0],
+            grid_size=103,
+            margin_fraction=0.1,
+            floor_band_fraction=0.25,
+            cap_band_fraction=0.75,
+        )
+    assert caught.value.errors == ("opening_probe_grid_size_must_be_odd_between_three_and_maximum",)
+
+
+def test_replays_exact_component_in_bottom_center_local_frame(tmp_path: Path) -> None:
+    labels, collision = _fixture(tmp_path)
+    topology = inspect_sage_collision_component_topology(
+        labels_path=labels,
+        target_instance_ids=["bin"],
+        opening_probe_instance_ids=["bin"],
+        sage_collision_usd_path=collision,
+    )
+    best = topology["targets"][0]["best_component"]
+
+    component = read_sage_collision_component_geometry(
+        sage_collision_usd_path=collision,
+        expected_source_sha256=topology["source_files"]["sage_collision_usd"]["sha256"],
+        expected_source_size_bytes=topology["source_files"]["sage_collision_usd"]["size_bytes"],
+        prim_path=best["prim_path"],
+        component_index=best["component_index"],
+        expected_geometry_digest=best["geometry_digest"],
+    )
+
+    assert component["source"]["geometry_digest"] == best["geometry_digest"]
+    assert component["source"]["collision_api_applied"] is True
+    assert component["world_aabb_size_m"] == pytest.approx([1.0, 1.0, 1.0])
+    assert component["coordinate_frame"]["local_origin_world_m"] == pytest.approx([10.5, 0.5, 0.0])
+    local_minimum = [
+        min(point[axis] for point in component["vertices_local_m"]) for axis in range(3)
+    ]
+    local_maximum = [
+        max(point[axis] for point in component["vertices_local_m"]) for axis in range(3)
+    ]
+    assert local_minimum == pytest.approx([-0.5, -0.5, 0.0])
+    assert local_maximum == pytest.approx([0.5, 0.5, 1.0])
+    assert component["vertex_count"] > 0
+    assert component["face_count"] > 0
+    assert component["receipt_digest"].startswith("sha256:")
+
+
+def test_component_replay_rejects_source_drift_and_symlink(tmp_path: Path) -> None:
+    labels, collision = _fixture(tmp_path)
+    topology = inspect_sage_collision_component_topology(
+        labels_path=labels,
+        target_instance_ids=["bin"],
+        sage_collision_usd_path=collision,
+    )
+    best = topology["targets"][0]["best_component"]
+
+    with pytest.raises(SageCollisionComponentTopologyError) as invalid_prim:
+        read_sage_collision_component_geometry(
+            sage_collision_usd_path=collision,
+            expected_source_sha256=topology["source_files"]["sage_collision_usd"]["sha256"],
+            expected_source_size_bytes=topology["source_files"]["sage_collision_usd"]["size_bytes"],
+            prim_path=7,  # type: ignore[arg-type]
+            component_index=best["component_index"],
+            expected_geometry_digest=best["geometry_digest"],
+        )
+    assert invalid_prim.value.errors == ("sage_collision_component_prim_path_invalid",)
+
+    with pytest.raises(SageCollisionComponentTopologyError) as drifted:
+        read_sage_collision_component_geometry(
+            sage_collision_usd_path=collision,
+            expected_source_sha256=topology["source_files"]["sage_collision_usd"]["sha256"],
+            expected_source_size_bytes=topology["source_files"]["sage_collision_usd"]["size_bytes"],
+            prim_path=best["prim_path"],
+            component_index=best["component_index"],
+            expected_geometry_digest="sha256:" + "0" * 64,
+        )
+    assert drifted.value.errors == ("sage_collision_component_geometry_digest_mismatch",)
+
+    with pytest.raises(SageCollisionComponentTopologyError) as source_drifted:
+        read_sage_collision_component_geometry(
+            sage_collision_usd_path=collision,
+            expected_source_sha256="sha256:" + "0" * 64,
+            expected_source_size_bytes=topology["source_files"]["sage_collision_usd"]["size_bytes"],
+            prim_path=best["prim_path"],
+            component_index=best["component_index"],
+            expected_geometry_digest=best["geometry_digest"],
+        )
+    assert source_drifted.value.errors == ("sage_collision_source_identity_mismatch",)
+
+    with pytest.raises(SageCollisionComponentTopologyError) as malformed:
+        read_sage_collision_component_geometry(
+            sage_collision_usd_path=collision,
+            expected_source_sha256=topology["source_files"]["sage_collision_usd"]["sha256"],
+            expected_source_size_bytes=topology["source_files"]["sage_collision_usd"]["size_bytes"],
+            prim_path=best["prim_path"],
+            component_index=best["component_index"],
+            expected_geometry_digest="sha256:" + "z" * 64,
+        )
+    assert malformed.value.errors == ("sage_collision_expected_geometry_digest_invalid",)
+
+    linked = tmp_path / "linked.usda"
+    linked.symlink_to(collision)
+    with pytest.raises(SageCollisionComponentTopologyError) as symlinked:
+        read_sage_collision_component_geometry(
+            sage_collision_usd_path=linked,
+            expected_source_sha256=topology["source_files"]["sage_collision_usd"]["sha256"],
+            expected_source_size_bytes=topology["source_files"]["sage_collision_usd"]["size_bytes"],
+            prim_path=best["prim_path"],
+            component_index=best["component_index"],
+            expected_geometry_digest=best["geometry_digest"],
+        )
+    assert symlinked.value.errors == ("sage_collision_usd_missing",)
