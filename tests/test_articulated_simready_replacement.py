@@ -904,3 +904,147 @@ def test_agent_enriched_asset_must_keep_blueprint_authored_link_masses(
     assert any(
         "link_mass_missing_or_out_of_range" in error for error in excinfo.value.errors
     )
+
+
+def test_a_commanded_joint_without_a_drive_is_rejected(tmp_path: Path) -> None:
+    """A position target on an undriven joint does nothing at all.
+
+    Isaac proved this the expensive way: every other readback passed - axis,
+    limits, locked joint, contact, reset, determinism - while the commanded
+    door stayed at 0.0 degrees through all twelve steps, because the joint
+    carried no DriveAPI. NVIDIA documents that the Joint Agent authors topology
+    and not drives, so nothing upstream would have supplied one.
+    """
+
+    asset = _apply_physics(_author_topology(tmp_path / "asset.usda"))
+    contract = dict(_physics_contract())
+    contract["require_task_joint_drive"] = True
+    contract["task_joint_prim_path"] = "/Asset/joints/upper_hinge"
+
+    with pytest.raises(ArticulatedSimReadyReplacementError) as excinfo:
+        validate_articulated_replacement_physics(
+            replacement_usd_path=asset, contract=contract
+        )
+
+    assert any(
+        "task_joint_missing_drive" in error for error in excinfo.value.errors
+    )
+
+
+def test_a_commanded_joint_with_a_drive_is_admitted(tmp_path: Path) -> None:
+    asset = _apply_physics(_author_topology(tmp_path / "asset.usda"))
+    stage = Usd.Stage.Open(str(asset))
+    drive = UsdPhysics.DriveAPI.Apply(
+        stage.GetPrimAtPath("/Asset/joints/upper_hinge"), "angular"
+    )
+    drive.CreateStiffnessAttr().Set(400.0)
+    drive.CreateDampingAttr().Set(40.0)
+    drive.CreateMaxForceAttr().Set(200.0)
+    stage.GetRootLayer().Save()
+    contract = dict(_physics_contract())
+    contract["require_task_joint_drive"] = True
+    contract["task_joint_prim_path"] = "/Asset/joints/upper_hinge"
+
+    receipt = validate_articulated_replacement_physics(
+        replacement_usd_path=asset, contract=contract
+    )
+
+    assert receipt["status"] == "physics_statically_admitted"
+    assert receipt["task_joint_drive"]["present"] is True
+    assert receipt["task_joint_drive"]["stiffness"] == 400.0
+
+
+def _drive_contract(stiffness: float, damping: float) -> dict:
+    return {
+        "require_task_joint_drive": True,
+        "task_joint_prim_path": "/Asset/joints/upper_hinge",
+        "dynamics_profile_object_class": "household_refrigerator_door",
+        "dynamics_lever_arm_m": 0.495,
+        "dynamics_nominal_open_angle_degrees": 50.0,
+        "dynamics_nominal_sweep_duration_s": 2.0,
+        "dynamics_breakaway_torque_n_m": 12.0,
+        "dynamics_breakaway_angular_width_degrees": 5.0,
+    }
+
+
+def _driven(tmp_path: Path, stiffness: float, damping: float) -> Path:
+    asset = _apply_physics(_author_topology(tmp_path / "asset.usda"))
+    stage = Usd.Stage.Open(str(asset))
+    drive = UsdPhysics.DriveAPI.Apply(
+        stage.GetPrimAtPath("/Asset/joints/upper_hinge"), "angular"
+    )
+    drive.CreateStiffnessAttr().Set(stiffness)
+    drive.CreateDampingAttr().Set(damping)
+    stage.GetRootLayer().Save()
+    return asset
+
+
+def test_a_declared_object_class_forces_the_drive_through_its_measured_band(
+    tmp_path: Path,
+) -> None:
+    """Declaring the class is what makes the research step non-optional.
+
+    Without this the band exists but nothing obliges an asset to meet it, and
+    the twin that shipped three times too stiff would ship again.
+    """
+
+    asset = _driven(tmp_path, 0.0, 14.0)
+    contract = {**_physics_contract(), **_drive_contract(0.0, 14.0)}
+
+    with pytest.raises(ArticulatedSimReadyReplacementError) as excinfo:
+        validate_articulated_replacement_physics(
+            replacement_usd_path=asset, contract=contract
+        )
+
+    assert any(
+        "dynamics_outside_measured_band" in error for error in excinfo.value.errors
+    )
+
+
+def test_an_in_band_drive_records_the_citation_it_was_judged_against(
+    tmp_path: Path,
+) -> None:
+    asset = _driven(tmp_path, 0.0, 3.0)
+    contract = {**_physics_contract(), **_drive_contract(0.0, 3.0)}
+
+    receipt = validate_articulated_replacement_physics(
+        replacement_usd_path=asset, contract=contract
+    )
+
+    realism = receipt["dynamics_realism"]
+    assert realism["within_measured_band"] is True
+    assert "BioRob 2010" in realism["reference_profile"]["measurement_source"]
+
+
+def test_an_unresearched_object_class_blocks_rather_than_waving_through(
+    tmp_path: Path,
+) -> None:
+    """A new class must send someone to measure, not silently skip the check."""
+
+    asset = _driven(tmp_path, 0.0, 3.0)
+    contract = {**_physics_contract(), **_drive_contract(0.0, 3.0)}
+    contract["dynamics_profile_object_class"] = "dishwasher_door"
+
+    with pytest.raises(ArticulatedSimReadyReplacementError) as excinfo:
+        validate_articulated_replacement_physics(
+            replacement_usd_path=asset, contract=contract
+        )
+
+    assert any("profile_not_researched" in error for error in excinfo.value.errors)
+
+
+def test_omitting_the_object_class_leaves_the_existing_contract_unchanged(
+    tmp_path: Path,
+) -> None:
+    """Assets that never declared a class must not start failing."""
+
+    asset = _driven(tmp_path, 0.0, 14.0)
+    contract = {**_physics_contract(), **_drive_contract(0.0, 14.0)}
+    contract.pop("dynamics_profile_object_class")
+
+    receipt = validate_articulated_replacement_physics(
+        replacement_usd_path=asset, contract=contract
+    )
+
+    assert receipt["status"] == "physics_statically_admitted"
+    assert receipt["dynamics_realism"]["required"] is False

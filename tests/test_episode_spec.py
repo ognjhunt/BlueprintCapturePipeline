@@ -289,3 +289,23 @@ def test_episode_spec_main_success_and_failure(
     monkeypatch.setattr(ep, "build_episode_specs", failing_build_episode_specs)
     assert ep.main(["--capture-root", str(tmp_path / "capture")]) == 1
     assert "FAILED: bad capture" in capsys.readouterr().out
+
+
+def test_an_articulated_task_is_not_classified_as_navigation() -> None:
+    """'Open the refrigerator door' is a task family, not a walk to a waypoint."""
+
+    from blueprint_pipeline.episode_spec import _task_category_from_text
+
+    assert (
+        _task_category_from_text("Open the upper refrigerator door to 45 degrees")
+        == "articulated_open_close"
+    )
+    assert _task_category_from_text("Pull the drawer open") == "articulated_open_close"
+    # the existing families are unchanged
+    assert _task_category_from_text("Pick the can and place it") == "pick_place"
+    assert _task_category_from_text("Inspect the bench target zone") == "inspection_route"
+    assert _task_category_from_text("Drive to the loading bay") == "navigation"
+    # pre-existing precedence, recorded rather than silently changed here:
+    # "bin" is a pick_place token, so an inspection phrased around bins already
+    # classified as pick_place before articulation was added.
+    assert _task_category_from_text("Inspect the labeled bins") == "pick_place"

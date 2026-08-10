@@ -26,6 +26,14 @@ from .simready_render_appearance import (
     bind_minimal_render_materials_to_stage,
     inspect_simready_render_appearance,
 )
+from .articulated_dynamics_profiles import (
+    ArticulatedDynamicsProfileError,
+    resolve_dynamics_profile,
+)
+from .articulated_dynamics_realism import (
+    ArticulatedDynamicsRealismError,
+    evaluate_articulated_dynamics_realism,
+)
 
 
 TOPOLOGY_SCHEMA_VERSION = "articulated_replacement_topology_validation.v1"
@@ -829,17 +837,108 @@ def validate_articulated_replacement_physics(
     for prim_path in sorted(untagged):
         errors.append(f"articulated_replacement_geometry_provenance_untagged:{prim_path}")
 
+    # A commanded joint with no drive accepts a position target and ignores it.
+    # Isaac proved that the expensive way on 840796: every other readback
+    # passed while the door stayed at 0.0 degrees through the whole sweep,
+    # because no drive existed to act on the target. NVIDIA's Joint Agent
+    # authors topology and not drives, so nothing upstream supplies one.
+    drive_review: dict[str, Any] = {"required": False, "present": None}
+    if contract.get("require_task_joint_drive"):
+        task_joint_path = str(contract.get("task_joint_prim_path") or "")
+        joint_prim = stage.GetPrimAtPath(task_joint_path) if task_joint_path else None
+        drive_review = {
+            "required": True,
+            "task_joint_prim_path": task_joint_path,
+            "present": False,
+            "stiffness": None,
+            "damping": None,
+        }
+        if joint_prim is None or not joint_prim.IsValid():
+            errors.append(
+                "articulated_replacement_task_joint_not_found_for_drive:"
+                f"{task_joint_path}"
+            )
+        else:
+            for name in ("angular", "linear", "rotX", "rotY", "rotZ"):
+                drive = UsdPhysics.DriveAPI.Get(joint_prim, name)
+                if not drive:
+                    continue
+                stiffness = drive.GetStiffnessAttr().Get()
+                damping = drive.GetDampingAttr().Get()
+                if float(stiffness or 0.0) > 0.0 or float(damping or 0.0) > 0.0:
+                    drive_review.update(
+                        {
+                            "present": True,
+                            "drive_name": name,
+                            "stiffness": float(stiffness or 0.0),
+                            "damping": float(damping or 0.0),
+                        }
+                    )
+                    break
+            if not drive_review["present"]:
+                errors.append(
+                    "articulated_replacement_task_joint_missing_drive:"
+                    f"{task_joint_path}"
+                )
+
+    # A drive that exists is not a drive that is plausible. Declaring the
+    # object class is what turns the researched band into an obligation; an
+    # asset that declares nothing keeps the contract it already had.
+    realism_review: dict[str, Any] = {"required": False}
+    object_class = str(contract.get("dynamics_profile_object_class") or "").strip()
+    if object_class:
+        try:
+            profile = resolve_dynamics_profile(object_class)
+        except ArticulatedDynamicsProfileError as exc:
+            errors.extend(exc.errors)
+        else:
+            try:
+                realism_review = {
+                    "required": True,
+                    **evaluate_articulated_dynamics_realism(
+                        lever_arm_m=contract.get("dynamics_lever_arm_m"),
+                        joint_damping_n_m_s_per_rad=(
+                            drive_review.get("damping")
+                            if drive_review.get("present")
+                            else 0.0
+                        ),
+                        breakaway_torque_n_m=contract.get(
+                            "dynamics_breakaway_torque_n_m"
+                        ),
+                        breakaway_angular_width_degrees=contract.get(
+                            "dynamics_breakaway_angular_width_degrees"
+                        ),
+                        nominal_open_angle_degrees=contract.get(
+                            "dynamics_nominal_open_angle_degrees"
+                        ),
+                        nominal_sweep_duration_s=contract.get(
+                            "dynamics_nominal_sweep_duration_s"
+                        ),
+                        reference_profile=profile,
+                    ),
+                }
+            except ArticulatedDynamicsRealismError as exc:
+                errors.extend(exc.errors)
+            else:
+                if not realism_review["within_measured_band"]:
+                    errors.append(
+                        "articulated_replacement_dynamics_outside_measured_band:"
+                        + ",".join(realism_review["findings"])
+                    )
+
     if errors:
         raise ArticulatedSimReadyReplacementError(errors)
 
     receipt: dict[str, Any] = {
         "schema_version": PHYSICS_SCHEMA_VERSION,
         "status": "physics_statically_admitted",
+        "dynamics_realism": realism_review,
         "replacement_usd_path": str(path),
         "replacement_usd_sha256": _sha256(path),
         "link_review": link_rows,
         "collider_review": collider_rows,
         "handle_prim_paths": sorted(set(handle_paths)),
+        "task_joint_drive": drive_review,
         "generated_interior_prim_paths": sorted(
             prim_path
             for paths in generated_interior_by_link.values()

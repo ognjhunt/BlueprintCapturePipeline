@@ -254,6 +254,13 @@ def _site_type_notes(site_text: str, scene_hints: Sequence[Mapping[str, Any]]) -
 
 def _task_category_from_text(text: str) -> str:
     lower = text.lower()
+    # Articulation is checked first: "open the storage bin lid" names both a
+    # container and a hinge, and the hinge is what decides the task family.
+    if any(
+        token in lower
+        for token in ("open", "close", "door", "drawer", "lid", "hinge", "handle")
+    ):
+        return "articulated_open_close"
     if any(token in lower for token in ("pick", "place", "grasp", "bin", "tote")):
         return "pick_place"
     if any(token in lower for token in ("inspect", "check", "scan")):

@@ -31,7 +31,7 @@ from .decision_evidence_contracts import canonical_digest
 
 
 RENDER_MATERIAL_SCAFFOLD_SCHEMA_VERSION = "articulated_render_material_scaffold.v1"
-RENDER_MATERIAL_SCOPE = "/Asset/Looks/Render"
+RENDER_MATERIAL_SCOPE_SUFFIX = "Looks/Render"
 DEFAULT_BASE_COLOR = (0.72, 0.72, 0.74)
 DEFAULT_ROUGHNESS = 0.5
 DEFAULT_METALLIC = 0.0
@@ -183,8 +183,17 @@ def ensure_render_material_scaffold(
         output.unlink(missing_ok=True)
         raise ArticulatedRenderMaterialError(errors)
 
+    # The material scope hangs off whatever the stage calls its default prim,
+    # so an asset that does not happen to be named /Asset still works.
+    default_prim = stage.GetDefaultPrim()
+    if not default_prim or not default_prim.IsValid():
+        output.unlink(missing_ok=True)
+        raise ArticulatedRenderMaterialError(
+            ["render_material_default_prim_missing"]
+        )
+    scope = f"{default_prim.GetPath()}/{RENDER_MATERIAL_SCOPE_SUFFIX}"
     for spec in specs:
-        material_path = f"{RENDER_MATERIAL_SCOPE}/{spec['material_id']}"
+        material_path = f"{scope}/{spec['material_id']}"
         material = UsdShade.Material.Define(stage, material_path)
         shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
         shader.CreateIdAttr("UsdPreviewSurface")
@@ -270,6 +279,6 @@ __all__ = [
     "ArticulatedRenderMaterialError",
     "DEFAULT_BASE_COLOR",
     "RENDER_MATERIAL_SCAFFOLD_SCHEMA_VERSION",
-    "RENDER_MATERIAL_SCOPE",
+    "RENDER_MATERIAL_SCOPE_SUFFIX",
     "ensure_render_material_scaffold",
 ]

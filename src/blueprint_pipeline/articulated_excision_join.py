@@ -366,7 +366,11 @@ def compile_articulated_excision_join(
         ownership.get("schema_version")
         == COVERAGE_CONDITIONED_CUTOUT_SCHEMA_VERSION
     )
-    if ownership:
+    # A suppression mode makes a visibility claim, not a factual Gaussian-
+    # ownership claim. Deletion still needs either a passed ownership audit or
+    # the separately admitted byte-exact, coverage-conditioned cutout.
+    ownership_required = suppression["summary"].get("mode") == "deletion"
+    if ownership and ownership_required:
         required_digest_fields = (
             ("deleted_index_set_sha256", "retained_scene_ply_sha256")
             if coverage_conditioned_ownership
@@ -405,6 +409,9 @@ def compile_articulated_excision_join(
                 )
         elif ownership.get("heldout_audit_passed") is not True:
             errors.append("articulated_excision_join_heldout_audit_not_passed")
+    elif ownership and not ownership_required:
+        # Recorded as disclosed context, never as an established claim.
+        pass
 
     removal = _canonical(
         collider_removal_receipt,
@@ -571,7 +578,7 @@ def compile_articulated_excision_join(
                 if residual_total == 0
                 else "narrow_mask_contained_seam_repair_only"
             )
-        if coverage_conditioned_ownership and ownership.get(
+        if ownership_required and coverage_conditioned_ownership and ownership.get(
             "coverage_receipt_digest"
         ) != coverage.get("receipt_digest"):
             errors.append(
@@ -605,10 +612,15 @@ def compile_articulated_excision_join(
             "door_state_receipt_digest": door_states.get("receipt_digest"),
             "coverage_receipt_digest": coverage.get("receipt_digest"),
             "suppression_receipt_digests": suppression["digests"],
+            "ownership_audit_status": str(ownership.get("status") or "unreported"),
+            "ownership_audit_passed": ownership.get("heldout_audit_passed"),
             "T_world_asset": expected_transform,
         },
         "claim_boundary": {
             "gaussian_ownership_authored_here": False,
+            "gaussian_ownership_established": ownership.get("heldout_audit_passed")
+            is True,
+            "visibility_after_replacement_is_the_criterion": not ownership_required,
             "hidden_interior_is_observed_truth": False,
             "native_simulator_qualified": False,
             "physical_equivalence_proven": False,

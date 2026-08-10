@@ -264,7 +264,7 @@ def _adapter(env=None):
     return IsaacEpisodeAdapter(
         env=env or _Env(),
         robot=_Robot(),
-        approved_can=_Can(),
+        rigid_task_object=_Can(),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -335,7 +335,7 @@ def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -
     adapter = IsaacEpisodeAdapter(
         env=_Env(),
         robot=_Robot(),
-        approved_can=None,
+        rigid_task_object=None,
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -358,7 +358,7 @@ def test_adapter_requires_rigid_object_or_native_task_state_source() -> None:
         IsaacEpisodeAdapter(
             env=_Env(),
             robot=_Robot(),
-            approved_can=None,
+            rigid_task_object=None,
             action_dim=8,
             reset_seed=20260806,
             to_torch=_to_torch,
@@ -415,7 +415,7 @@ def test_linkage_overtravel_is_bounded_and_raw_measurement_is_retained() -> None
     adapter = IsaacEpisodeAdapter(
         env=_Env(),
         robot=robot,
-        approved_can=_Can(),
+        rigid_task_object=_Can(),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -448,7 +448,7 @@ def test_droid_gripper_state_is_closed_fraction_from_the_measured_probe_span() -
     adapter = IsaacEpisodeAdapter(
         env=_Env(),
         robot=robot,
-        approved_can=_Can(),
+        rigid_task_object=_Can(),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -500,7 +500,7 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
     adapter = IsaacEpisodeAdapter(
         env=env,
         robot=_Robot(),
-        approved_can=_Can(),
+        rigid_task_object=_Can(),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -542,7 +542,7 @@ def test_reset_clears_stateful_scripted_pose_controller() -> None:
     adapter = IsaacEpisodeAdapter(
         env=_Env(),
         robot=_Robot(),
-        approved_can=_Can(),
+        rigid_task_object=_Can(),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -572,7 +572,7 @@ def test_control_metadata_uses_live_wrist_mount_pose_callback() -> None:
     adapter = IsaacEpisodeAdapter(
         env=_Env(),
         robot=_Robot(),
-        approved_can=_Can(),
+        rigid_task_object=_Can(),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -605,7 +605,7 @@ def test_reset_callback_can_restore_a_wrist_observable_episode_start() -> None:
     adapter = IsaacEpisodeAdapter(
         env=env,
         robot=_Robot(),
-        approved_can=_Can(),
+        rigid_task_object=_Can(),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -632,7 +632,7 @@ def test_a_missing_finger_body_is_refused_at_construction() -> None:
         IsaacEpisodeAdapter(
             env=_Env(),
             robot=_NoFingers(),
-            approved_can=_Can(),
+            rigid_task_object=_Can(),
             action_dim=8,
             reset_seed=1,
             to_torch=_to_torch,
@@ -646,7 +646,7 @@ def test_unmeasured_gripper_width_span_is_refused() -> None:
         IsaacEpisodeAdapter(
             env=_Env(),
             robot=_Robot(),
-            approved_can=_Can(),
+            rigid_task_object=_Can(),
             action_dim=8,
             reset_seed=1,
             to_torch=_to_torch,
@@ -759,3 +759,16 @@ def test_module_imports_without_isaac_or_torch() -> None:
     assert "import torch" not in header
     assert "import isaaclab" not in header
     assert "from pxr" not in header
+
+
+def test_the_rigid_task_object_is_not_assumed_to_be_a_can() -> None:
+    """An oven or drawer task passes its own rigid body, not a 'can'."""
+
+    import inspect
+
+    signature = inspect.signature(IsaacEpisodeAdapter.__init__)
+    assert "rigid_task_object" in signature.parameters
+    # no can-shaped alias survives: it had no callers and would keep the old
+    # vocabulary alive in an otherwise task-neutral seam
+    assert "approved_can" not in signature.parameters
+    assert signature.parameters["rigid_task_object"].default is None

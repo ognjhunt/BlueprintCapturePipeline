@@ -2443,7 +2443,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 adapter = IsaacEpisodeAdapter(
                     env=env,
                     robot=robot,
-                    approved_can=approved_can,
+                    rigid_task_object=approved_can,
                     action_dim=int(env.unwrapped.action_manager.total_action_dim),
                     reset_seed=20260806,
                     to_torch=_to_torch,

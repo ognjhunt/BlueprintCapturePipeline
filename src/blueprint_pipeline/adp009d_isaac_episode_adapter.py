@@ -280,7 +280,7 @@ class IsaacEpisodeAdapter:
         *,
         env: Any,
         robot: Any,
-        approved_can: Any,
+        rigid_task_object: Any = None,
         action_dim: int,
         reset_seed: int,
         to_torch: Any,
@@ -298,7 +298,7 @@ class IsaacEpisodeAdapter:
     ) -> None:
         self._env = env
         self._robot = robot
-        self._can = approved_can
+        self._rigid_object = rigid_task_object
         self._action_dim = int(action_dim)
         self._reset_seed = int(reset_seed)
         self._to_torch = to_torch
@@ -317,7 +317,7 @@ class IsaacEpisodeAdapter:
         self._camera_pose_callback = camera_pose_callback
         self._task_sample_callback = task_sample_callback
         self._control_step_index = 0
-        if self._can is None and self._task_sample_callback is None:
+        if self._rigid_object is None and self._task_sample_callback is None:
             raise IsaacEpisodeAdapterError(
                 ["isaac_episode_task_state_source_missing"]
             )
@@ -553,11 +553,11 @@ class IsaacEpisodeAdapter:
         }
 
     def read_object_sample(self) -> dict[str, Any]:
-        if self._can is None:
+        if self._rigid_object is None:
             raise IsaacEpisodeAdapterError(
                 ["isaac_episode_rigid_task_object_missing"]
             )
-        pose = self._to_torch(self._can.data.root_pose_w)[0]
+        pose = self._to_torch(self._rigid_object.data.root_pose_w)[0]
         controlled_body_pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._end_effector_index, :7
         ]

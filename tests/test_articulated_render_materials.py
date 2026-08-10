@@ -226,3 +226,30 @@ def test_receipt_file_round_trips(tmp_path: Path) -> None:
         Path(receipt["receipt_path"]).read_text(encoding="utf-8")
     )
     assert stored == receipt
+
+
+def test_scaffold_follows_the_stage_default_prim_not_a_fixed_name(
+    tmp_path: Path,
+) -> None:
+    """An asset whose root is not /Asset must still get bound materials."""
+
+    path = tmp_path / "oven.usda"
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    root = UsdGeom.Xform.Define(stage, "/Oven")
+    stage.SetDefaultPrim(root.GetPrim())
+    _box(stage, "/Oven/door", 0.0, 0.9)
+    stage.GetRootLayer().Save()
+
+    receipt = ensure_render_material_scaffold(
+        source_usd_path=path,
+        destination=tmp_path / "oven_render_ready.usda",
+        surfaces=[{"material_id": "door_shell", "prim_paths": ["/Oven/door"]}],
+    )
+
+    assert receipt["surfaces"][0]["material_path"] == "/Oven/Looks/Render/door_shell"
+    opened = Usd.Stage.Open(receipt["render_ready_usd_path"])
+    bound, _ = UsdShade.MaterialBindingAPI(
+        opened.GetPrimAtPath("/Oven/door")
+    ).ComputeBoundMaterial()
+    assert bound and bound.GetPrim().IsValid()
