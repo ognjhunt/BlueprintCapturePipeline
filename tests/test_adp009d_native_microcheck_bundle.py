@@ -2738,3 +2738,75 @@ def test_a_worker_override_that_does_not_exist_fails_closed(tmp_path: Path) -> N
             expected_asset_bindings=bindings,
             worker_source=tmp_path / "absent_worker.py",
         )
+
+
+def test_the_bundle_carries_an_overridden_workers_own_payload(tmp_path: Path) -> None:
+    """A worker brought from outside brings its spec and imports with it.
+
+    The rigid worker's inputs are all assembled by this builder, so nothing
+    needed a general payload slot until a different worker arrived. Without one
+    the override ships a runner that boots and then cannot find its own spec.
+    """
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    worker = tmp_path / "my_worker.py"
+    worker.write_text("PAYLOAD = 1\n", encoding="utf-8")
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    (payload / "scene_spec.json").write_text("{}\n", encoding="utf-8")
+    (payload / "helper_module.py").write_text("H = 1\n", encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="e" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+        worker_source=worker,
+        extra_native_paths=sorted(payload.iterdir()),
+    )
+
+    import zipfile
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    assert "provider_runtime/native/scene_spec.json" in names
+    assert "provider_runtime/native/helper_module.py" in names
+    assert receipt["extra_native_file_count"] == 2
+
+
+def test_a_payload_file_that_does_not_exist_fails_closed(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    with pytest.raises(ValueError):
+        build_native_microcheck_bundle(
+            job_dir=tmp_path / "job",
+            approved_can_path=approved,
+            sage_collision_path=sage,
+            harness_manifest_path=harness,
+            implementation_commit="f" * 40,
+            generated_at="fixed",
+            expected_asset_bindings=bindings,
+            extra_native_paths=[tmp_path / "absent.json"],
+        )
+
+
+def test_no_payload_leaves_the_rigid_bundle_exactly_as_it_was(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    kwargs = {
+        "approved_can_path": approved,
+        "sage_collision_path": sage,
+        "harness_manifest_path": harness,
+        "implementation_commit": "0" * 40,
+        "generated_at": "fixed",
+        "expected_asset_bindings": bindings,
+    }
+
+    plain = build_native_microcheck_bundle(job_dir=tmp_path / "a", **kwargs)
+    empty = build_native_microcheck_bundle(
+        job_dir=tmp_path / "b", extra_native_paths=[], **kwargs
+    )
+
+    assert plain["bundle_sha256"] == empty["bundle_sha256"]

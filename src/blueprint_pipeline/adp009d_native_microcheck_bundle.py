@@ -13,7 +13,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
@@ -772,6 +772,7 @@ def build_native_microcheck_bundle(
     expected_asset_bindings: Mapping[str, str] | None = None,
     worker_source: str | Path | None = None,
     runtime_module_source: str | Path | None = None,
+    extra_native_paths: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """Compile a deterministic bundle from materialized, digest-verified bytes.
 
@@ -887,6 +888,22 @@ def build_native_microcheck_bundle(
             raise ValueError(f"adp009d_{label}_source_missing:{candidate}")
     shutil.copy2(worker_path, runtime / "adp_arena_provider_runner.py")
     shutil.copy2(runtime_module_path, runtime / "adp009d_isaac_runtime.py")
+    # The rigid worker's inputs are all assembled here, so nothing needed a
+    # general payload slot until a worker arrived from outside carrying its own
+    # spec and imports. Without one, an override ships a runner that boots and
+    # then cannot find its own input.
+    native_payload: list[dict[str, str]] = []
+    if extra_native_paths:
+        native_dir = runtime / "native"
+        ensure_dir(native_dir)
+        for item in extra_native_paths:
+            candidate = Path(str(item)).expanduser().resolve()
+            if not candidate.is_file():
+                raise ValueError(f"adp009d_extra_native_path_missing:{candidate}")
+            shutil.copy2(candidate, native_dir / candidate.name)
+            native_payload.append(
+                {"name": candidate.name, "sha256": _sha256(candidate)}
+            )
     shutil.copy2(
         source_dir / "adp009d_approach_capture.py",
         runtime / "adp009d_approach_capture.py",
@@ -1063,6 +1080,8 @@ def build_native_microcheck_bundle(
         "worker_source_sha256": _sha256(worker_path),
         "runtime_module_sha256": _sha256(runtime_module_path),
         "worker_overridden": worker_source is not None,
+        "extra_native_files": native_payload,
+        "extra_native_file_count": len(native_payload),
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "policy_candidate_id": policy_candidate_id,
         "controls_requested": bool(run_controls),
