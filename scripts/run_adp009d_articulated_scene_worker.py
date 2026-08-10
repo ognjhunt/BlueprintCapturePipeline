@@ -97,6 +97,10 @@ ARENA_ENVIRONMENT_NAME = "Blueprint-ADP009D-Articulated-Scene-v0"
 # "robot"; the prim it spawns is "{ENV_REGEX_NS}/Robot". The two differ in
 # case and neither is embodiment.name.
 ROBOT_SCENE_KEY = "robot"
+# Where the Robotiq fingers actually are. droid.py declares them at
+# {ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/<side>_inner_finger, which
+# Robot/.* does not reach.
+FINGER_CONTACT_PRIM_PATH = "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/.*"
 
 
 def _sha256(path: Path) -> str:
@@ -478,12 +482,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             # say so: Isaac Lab indexes _parent_prims[0] and raises a bare
             # IndexError from inside the physics callback, which is what rt16
             # and rt17 returned.
+            # Two sensors, because one cannot span both. Robot/.* matches the
+            # arm links only - rt31 observed panda_link0 through panda_link8
+            # and no fingers - since the Robotiq fingers sit two levels deeper
+            # at Robot/Gripper/Robotiq_2F_85/, exactly where droid.py declares
+            # them. Splitting them also makes the semantics honest: the arm
+            # sensor IS the collision sensor, with no finger rows to exclude,
+            # and the finger sensor IS the grasp sensor.
             cfg.scene.robot_contact_sensor = ContactSensorCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/.*",
                 history_length=1,
                 track_air_time=False,
-                # Per-partner forces against the twin, so "gripper on handle"
-                # and "elbow into the room" can be told apart at all.
+            )
+            cfg.scene.finger_contact_sensor = ContactSensorCfg(
+                prim_path=FINGER_CONTACT_PRIM_PATH,
+                history_length=1,
+                track_air_time=False,
+                # Per-partner, so "gripper on the handle" is distinguishable
+                # from "gripper on anything else".
                 filter_prim_paths_expr=["{ENV_REGEX_NS}/task_object/.*"],
             )
             cfg.scene.task_object_contact_sensor = ContactSensorCfg(
@@ -593,11 +609,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         def _residual_scene_forces():
             """Robot net contact minus the part the twin explains."""
 
-            net = _sensor_forces("robot_contact_sensor")
+            # Both terms from the finger sensor, or the shapes do not line up:
+            # the arm sensor matched nine links and the finger sensor a
+            # handful of gripper bodies. What the fingers touch that is NOT the
+            # twin is, in this scene, the room.
+            net = _sensor_forces("finger_contact_sensor")
             if net is None:
                 return None
-            sensor = scene["robot_contact_sensor"]
-            raw_matrix = getattr(sensor.data, "force_matrix_w", None)
+            raw_matrix = getattr(finger_sensor.data, "force_matrix_w", None)
             matrix = None if raw_matrix is None else _to_torch(raw_matrix)
             if matrix is None:
                 # No filter reported: cannot separate room from twin, and
@@ -712,19 +731,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         # on indices 9 and 14, both valid on the robot, both out of range on
         # the sensor.
         robot_sensor = scene["robot_contact_sensor"]
-        sensor_rows = resolve_contact_sensor_rows(
-            sensor_body_names=list(getattr(robot_sensor, "body_names", None) or []),
+        finger_sensor = scene["finger_contact_sensor"]
+        finger_rows = resolve_contact_sensor_rows(
+            sensor_body_names=list(getattr(finger_sensor, "body_names", None) or []),
             finger_body_names=("left_inner_finger", "right_inner_finger"),
         )
         result["contact_sensor_rows"] = {
-            "sensor_body_names": sensor_rows["sensor_body_names"],
-            "finger_rows": sensor_rows["finger_rows"],
+            "arm_sensor_body_names": list(
+                getattr(robot_sensor, "body_names", None) or []
+            ),
+            "finger_sensor_body_names": finger_rows["sensor_body_names"],
+            "finger_rows": finger_rows["finger_rows"],
         }
 
         def _finger_contact_with_task_object():
             """Filtered per-partner force on the fingers against the twin."""
 
-            matrix = getattr(robot_sensor.data, "force_matrix_w", None)
+            matrix = getattr(finger_sensor.data, "force_matrix_w", None)
             if matrix is None:
                 return None
             converted = _to_torch(matrix)
@@ -759,8 +782,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 robot, end_effector_body
             ),
             read_handle_position_m=lambda: handle_position,
-            finger_body_indices=sensor_rows["finger_rows"],
-            non_finger_body_indices=sensor_rows["non_finger_rows"],
+            finger_body_indices=finger_rows["finger_rows"],
+            # The arm sensor has no finger rows to exclude; every body it
+            # matched is a link whose contact is a collision.
+            non_finger_body_indices=None,
         )
 
         _phase(result, "observations_bound")

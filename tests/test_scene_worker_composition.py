@@ -137,20 +137,24 @@ ROBOT_JOINT_NAMES = [f"panda_joint{index}" for index in range(1, 8)] + [
 
 
 class _FakeContactSensorData:
-    def __init__(self):
+    def __init__(self, body_count=3):
         import torch
 
         # Resting contact, below the force threshold: present but not a grasp.
-        self.net_forces_w = torch.zeros((1, 3, 3))
-        self.force_matrix_w = torch.zeros((1, 3, 1, 3))
+        self.net_forces_w = torch.zeros((1, body_count, 3))
+        self.force_matrix_w = torch.zeros((1, body_count, 1, 3))
 
 
 class _FakeContactSensor:
-    def __init__(self):
-        self.data = _FakeContactSensorData()
+    def __init__(self, body_names=None):
         # A ContactSensor publishes the bodies its regex matched; the worker
         # must take its row indices from here and nowhere else.
-        self.body_names = ["panda_link5", "left_inner_finger", "right_inner_finger"]
+        self.body_names = list(
+            body_names
+            if body_names is not None
+            else ["panda_link5", "left_inner_finger", "right_inner_finger"]
+        )
+        self.data = _FakeContactSensorData(len(self.body_names))
 
 
 class _FakeCameraData:
@@ -209,12 +213,15 @@ class _FakeArenaEnvironment:
         if env_cfg_callback is not None:
             env_cfg_callback(_FakeEnvCfg())
         runtime_scene = _FakeScene()
-        for sensor_name in (
-            "robot_contact_sensor",
-            "task_object_contact_sensor",
-            "scene_collision_contact_sensor",
-        ):
-            runtime_scene[sensor_name] = _FakeContactSensor()
+        # The arm sensor matches links only; the finger sensor matches the
+        # gripper subtree. rt31 proved Robot/.* does not reach the fingers.
+        runtime_scene["robot_contact_sensor"] = _FakeContactSensor(
+            body_names=[f"panda_link{index}" for index in range(9)]
+        )
+        runtime_scene["finger_contact_sensor"] = _FakeContactSensor(
+            body_names=["left_inner_finger", "right_inner_finger"]
+        )
+        runtime_scene["task_object_contact_sensor"] = _FakeContactSensor()
         runtime_scene["task_object"] = _FakeArticulation(
             body_names=["cabinet", "upper_door", "lower_door"]
         )
