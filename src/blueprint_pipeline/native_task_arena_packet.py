@@ -80,10 +80,11 @@ def _asset_source(
     row: Mapping[str, Any], *, evidence_root: Path
 ) -> tuple[Path, str, int]:
     role = str(row.get("semantic_role") or "")
+    identity = str(row.get("entity_id") or role)
     source = row.get("source")
     if not isinstance(source, Mapping) or source.get("root") != "evidence":
         raise NativeTaskArenaPacketError(
-            [f"native_task_arena_packet_asset_source_invalid:{role}"]
+            [f"native_task_arena_packet_asset_source_invalid:{identity}"]
         )
     relative = str(source.get("relative_path") or "")
     pure = PurePosixPath(relative)
@@ -94,7 +95,7 @@ def _asset_source(
         or pure.name in {"", ".", ".."}
     ):
         raise NativeTaskArenaPacketError(
-            [f"native_task_arena_packet_asset_source_invalid:{role}"]
+            [f"native_task_arena_packet_asset_source_invalid:{identity}"]
         )
     candidate = evidence_root.joinpath(*pure.parts)
     resolved = candidate.resolve()
@@ -105,18 +106,18 @@ def _asset_source(
         or outside
     ):
         raise NativeTaskArenaPacketError(
-            [f"native_task_arena_packet_asset_source_missing:{role}"]
+            [f"native_task_arena_packet_asset_source_missing:{identity}"]
         )
     try:
         size = int(source["size_bytes"])
         digest = str(source["sha256"])
     except (KeyError, TypeError, ValueError) as exc:
         raise NativeTaskArenaPacketError(
-            [f"native_task_arena_packet_asset_identity_invalid:{role}"]
+            [f"native_task_arena_packet_asset_identity_invalid:{identity}"]
         ) from exc
     if size <= 0 or resolved.stat().st_size != size or _sha256(resolved) != digest:
         raise NativeTaskArenaPacketError(
-            [f"native_task_arena_packet_asset_identity_mismatch:{role}"]
+            [f"native_task_arena_packet_asset_identity_mismatch:{identity}"]
         )
     return resolved, digest, size
 
@@ -203,10 +204,12 @@ def materialize_native_task_arena_packet(
                     ["native_task_arena_packet_assets_invalid"]
                 )
             role = str(raw.get("semantic_role") or "")
+            entity_id = str(raw.get("entity_id") or "")
+            identity = entity_id or role
             filename = str(raw.get("filename") or "")
             if PurePosixPath(filename).name != filename or not filename:
                 raise NativeTaskArenaPacketError(
-                    [f"native_task_arena_packet_asset_filename_invalid:{role}"]
+                    [f"native_task_arena_packet_asset_filename_invalid:{identity}"]
                 )
             source_path, source_digest, source_size = _asset_source(
                 raw, evidence_root=evidence
@@ -222,27 +225,28 @@ def materialize_native_task_arena_packet(
                 or _sha256(destination) != source_digest
             ):
                 raise NativeTaskArenaPacketError(
-                    [f"native_task_arena_packet_asset_copy_mismatch:{role}"]
+                    [f"native_task_arena_packet_asset_copy_mismatch:{identity}"]
                 )
             source = dict(raw["source"])
-            source_bindings.append(
-                {
-                    "semantic_role": role,
-                    "source": source,
-                    "staged_relative_path": f"assets/{filename}",
-                    "staged_size_bytes": source_size,
-                    "staged_sha256": source_digest,
-                }
-            )
-            runtime_assets.append(
-                {
-                    "semantic_role": role,
-                    "name": str(raw.get("name") or role),
-                    "filename": filename,
-                    "sha256": source_digest,
-                    "pose_world": raw.get("pose_world"),
-                }
-            )
+            source_binding = {
+                "semantic_role": role,
+                "source": source,
+                "staged_relative_path": f"assets/{filename}",
+                "staged_size_bytes": source_size,
+                "staged_sha256": source_digest,
+            }
+            runtime_asset = {
+                "semantic_role": role,
+                "name": str(raw.get("name") or identity),
+                "filename": filename,
+                "sha256": source_digest,
+                "pose_world": raw.get("pose_world"),
+            }
+            if entity_id:
+                source_binding["entity_id"] = entity_id
+                runtime_asset["entity_id"] = entity_id
+            source_bindings.append(source_binding)
+            runtime_assets.append(runtime_asset)
 
         scenario = _validated_scenario_context(frozen.get("scenario"))
         contract_path = output / "native_task_runtime_contract.v1.json"
@@ -264,6 +268,7 @@ def materialize_native_task_arena_packet(
             scenario_context_kind=str(
                 scenario.get("context_kind") or "evaluation_cell"
             ),
+            task_entities=frozen.get("task_entities"),
             destination=contract_path,
         )
         plan_path = output / "native_task_arena_scene_plan.v1.json"
@@ -305,6 +310,10 @@ def materialize_native_task_arena_packet(
             "simulator_execution_is_not_physical_truth": True,
             "receipt_digest": "",
         }
+        if "task_entity_contract_digest" in contract:
+            receipt["task_entity_contract_digest"] = contract[
+                "task_entity_contract_digest"
+            ]
         for binding, raw in zip(source_bindings, raw_assets, strict=True):
             path, digest, size = _asset_source(raw, evidence_root=evidence)
             if (

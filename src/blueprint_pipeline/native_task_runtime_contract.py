@@ -22,16 +22,25 @@ from typing import Any, Mapping, Sequence
 from .articulated_runtime_composition import plan_articulated_runtime_composition
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .native_task_entity_contract import (
+    NativeTaskEntityContractError,
+    TASK_KINDS as ENTITY_TASK_KINDS,
+    TASK_KIND_ARTICULATED_OPEN_CLOSE,
+    TASK_KIND_DEFORMABLE_TRANSFER,
+    TASK_KIND_RIGID_PICK_PLACE,
+    materialize_native_task_entity_contract,
+)
 
 
 SCHEMA_VERSION = "native_task_runtime_contract.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
 ASSET_ROLES = ("scene_collision", "scene_appearance", "task_object")
+SCENE_ASSET_ROLES = ("scene_collision", "scene_appearance")
 CAMERA_ROLES = ("external", "wrist", "overview")
 CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
 ENV_ROOT = "{ENV_REGEX_NS}"
-TASK_KINDS = ("rigid_pick_place", "articulated_open_close")
+TASK_KINDS = ENTITY_TASK_KINDS
 SCENARIO_CONTEXT_KINDS = ("construction_canary", "evaluation_cell")
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
 DROID_FRANKA_RESET_JOINT_NAMES = (
@@ -147,6 +156,168 @@ def _asset_rows(
             }
         )
     return rows, by_role
+
+
+_OBJECT_TYPE_BY_PHYSICS_TYPE = {
+    "rigid_body": "RIGID",
+    "articulation": "ARTICULATION",
+    "deformable_volume": "DEFORMABLE",
+    "static_collider": "BASE",
+}
+
+
+def _entity_asset_rows(
+    assets: Sequence[Mapping[str, Any]],
+    *,
+    entity_contract: Mapping[str, Any],
+    task_kind: str,
+    errors: list[str],
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Mapping[str, Any]],
+    dict[str, Mapping[str, Any]],
+]:
+    """Bind staged assets to logical entities without role-key uniqueness."""
+
+    entities = {
+        str(row["entity_id"]): row for row in entity_contract["task_entities"]
+    }
+    scene_assets: dict[str, Mapping[str, Any]] = {}
+    entity_assets: dict[str, Mapping[str, Any]] = {}
+    legacy_target_roles = {
+        TASK_KIND_RIGID_PICK_PLACE: {"movable_rigid"},
+        TASK_KIND_ARTICULATED_OPEN_CLOSE: {"articulated_fixture"},
+    }.get(task_kind, set())
+    legacy_targets = [
+        row for row in entities.values() if row["semantic_role"] in legacy_target_roles
+    ]
+
+    for index, row in enumerate(assets):
+        if not isinstance(row, Mapping):
+            errors.append(f"native_task_runtime_asset_invalid:{index}")
+            continue
+        role = str(row.get("semantic_role") or "")
+        supplied_entity_id = str(row.get("entity_id") or "")
+        if role in SCENE_ASSET_ROLES:
+            if supplied_entity_id or role in scene_assets:
+                errors.append(f"native_task_runtime_asset_role_invalid:{role}")
+                continue
+            scene_assets[role] = row
+            continue
+
+        entity_id = supplied_entity_id
+        if role == "task_object" and not entity_id and len(legacy_targets) == 1:
+            entity_id = str(legacy_targets[0]["entity_id"])
+        entity = entities.get(entity_id)
+        if entity is None:
+            errors.append(
+                f"native_task_runtime_asset_entity_invalid:{entity_id or role or index}"
+            )
+            continue
+        if role not in {entity["semantic_role"], "task_object"}:
+            errors.append(f"native_task_runtime_asset_role_invalid:{entity_id}")
+            continue
+        if role == "task_object" and entity["semantic_role"] not in legacy_target_roles:
+            errors.append(f"native_task_runtime_asset_role_invalid:{entity_id}")
+            continue
+        if entity_id in entity_assets:
+            errors.append(f"native_task_runtime_asset_entity_duplicate:{entity_id}")
+            continue
+        entity_assets[entity_id] = row
+
+    if "scene_collision" not in scene_assets:
+        errors.append("native_task_runtime_asset_missing:scene_collision")
+
+    required_entity_ids = {
+        entity_id
+        for entity_id, entity in entities.items()
+        if entity["runtime_asset"]["binding_kind"] == "usd_asset"
+        and entity["semantic_role"] != "robot"
+    }
+    for entity_id in sorted(required_entity_ids - set(entity_assets)):
+        errors.append(f"native_task_runtime_asset_missing:{entity_id}")
+    for entity_id in sorted(set(entity_assets) - required_entity_ids):
+        errors.append(f"native_task_runtime_asset_unexpected:{entity_id}")
+
+    rows: list[dict[str, Any]] = []
+    filenames: set[str] = set()
+    for role in SCENE_ASSET_ROLES:
+        if role not in scene_assets:
+            continue
+        source = scene_assets[role]
+        filename = str(source.get("filename") or "")
+        if (
+            not filename
+            or PurePosixPath(filename).name != filename
+            or filename in {".", ".."}
+        ):
+            errors.append(f"native_task_runtime_asset_filename_invalid:{role}")
+        if filename in filenames:
+            errors.append(f"native_task_runtime_asset_filename_duplicate:{filename}")
+        filenames.add(filename)
+        digest = str(source.get("sha256") or "")
+        if not _digest(digest):
+            errors.append(f"native_task_runtime_asset_digest_invalid:{role}")
+        rows.append(
+            {
+                "name": str(source.get("name") or role),
+                "semantic_role": role,
+                "filename": filename,
+                "sha256": digest,
+                "pose_world": _pose(
+                    source.get("pose_world"),
+                    error=f"native_task_runtime_asset_pose_invalid:{role}",
+                    errors=errors,
+                ),
+                "object_type": "BASE",
+                "visible": role == "scene_appearance",
+            }
+        )
+
+    for entity_id in sorted(entity_assets):
+        source = entity_assets[entity_id]
+        entity = entities[entity_id]
+        filename = str(source.get("filename") or "")
+        if (
+            not filename
+            or PurePosixPath(filename).name != filename
+            or filename in {".", ".."}
+        ):
+            errors.append(f"native_task_runtime_asset_filename_invalid:{entity_id}")
+        if filename in filenames:
+            errors.append(f"native_task_runtime_asset_filename_duplicate:{filename}")
+        filenames.add(filename)
+        digest = str(source.get("sha256") or "")
+        expected_digest = str(entity["runtime_asset"]["sha256"])
+        if not _digest(digest) or digest != expected_digest:
+            errors.append(f"native_task_runtime_asset_digest_invalid:{entity_id}")
+        source_reference = str(entity["runtime_asset"]["source_reference"])
+        if PurePosixPath(source_reference).name != filename:
+            errors.append(f"native_task_runtime_asset_reference_invalid:{entity_id}")
+        pose = _pose(
+            source.get("pose_world"),
+            error=f"native_task_runtime_asset_pose_invalid:{entity_id}",
+            errors=errors,
+        )
+        if pose != entity["initial_state"]["pose_world"]:
+            errors.append(f"native_task_runtime_asset_pose_mismatch:{entity_id}")
+        object_type = _OBJECT_TYPE_BY_PHYSICS_TYPE.get(entity["physics_type"])
+        if object_type is None:
+            errors.append(f"native_task_runtime_asset_physics_invalid:{entity_id}")
+            object_type = "INVALID"
+        rows.append(
+            {
+                "name": entity_id,
+                "entity_id": entity_id,
+                "semantic_role": entity["semantic_role"],
+                "filename": filename,
+                "sha256": digest,
+                "pose_world": pose,
+                "object_type": object_type,
+                "visible": True,
+            }
+        )
+    return rows, scene_assets, entity_assets
 
 
 def _camera_rows(
@@ -410,6 +581,7 @@ def materialize_native_task_runtime_contract(
     scenario_instance_digest: str,
     seed: int,
     scenario_context_kind: str = "evaluation_cell",
+    task_entities: Sequence[Mapping[str, Any]] | None = None,
     destination: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate and freeze one native scene/task request before execution."""
@@ -426,6 +598,8 @@ def materialize_native_task_runtime_contract(
     task_kind = str(task_spec.get("task_kind") or "")
     if task_kind not in TASK_KINDS:
         errors.append("native_task_runtime_task_kind_invalid")
+    if task_kind == TASK_KIND_DEFORMABLE_TRANSFER and task_entities is None:
+        errors.append("native_task_runtime_task_entities_missing")
     if not str(scenario_cell_id or "").strip():
         errors.append("native_task_runtime_scenario_cell_missing")
     context_kind = str(scenario_context_kind or "").strip()
@@ -436,14 +610,57 @@ def materialize_native_task_runtime_contract(
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
         errors.append("native_task_runtime_seed_invalid")
 
-    asset_rows, by_asset_role = _asset_rows(assets, errors=errors)
+    entity_contract: dict[str, Any] | None = None
+    if task_entities is not None:
+        try:
+            entity_contract = materialize_native_task_entity_contract(
+                task_kind=task_kind,
+                task_entities=task_entities,
+            )
+        except NativeTaskEntityContractError as exc:
+            errors.extend(exc.errors)
+
+    by_entity_id: dict[str, Mapping[str, Any]] = {}
+    if task_entities is None:
+        asset_rows, by_asset_role = _asset_rows(assets, errors=errors)
+    elif entity_contract is not None:
+        asset_rows, by_asset_role, by_entity_id = _entity_asset_rows(
+            assets,
+            entity_contract=entity_contract,
+            task_kind=task_kind,
+            errors=errors,
+        )
+    else:
+        asset_rows = []
+        by_asset_role = {}
+
     composition: dict[str, Any] = {}
-    if {"scene_collision", "task_object"}.issubset(by_asset_role):
+    composition_target: Mapping[str, Any] | None = None
+    if task_entities is None:
+        composition_target = by_asset_role.get("task_object")
+    elif entity_contract is not None and task_kind in {
+        TASK_KIND_RIGID_PICK_PLACE,
+        TASK_KIND_ARTICULATED_OPEN_CLOSE,
+    }:
+        target_role = (
+            "movable_rigid"
+            if task_kind == TASK_KIND_RIGID_PICK_PLACE
+            else "articulated_fixture"
+        )
+        target_ids = entity_contract["semantic_role_index"].get(target_role, [])
+        if len(target_ids) != 1:
+            errors.append(
+                f"native_task_runtime_target_entity_cardinality_invalid:{target_role}"
+            )
+        elif target_ids[0] in by_entity_id:
+            composition_target = by_entity_id[target_ids[0]]
+
+    if "scene_collision" in by_asset_role and composition_target is not None:
         try:
             composition = plan_articulated_runtime_composition(
                 task_spec=task_spec,
                 task_joint_bindings=task_joint_bindings,
-                twin_usd_filename=str(by_asset_role["task_object"].get("filename") or ""),
+                twin_usd_filename=str(composition_target.get("filename") or ""),
                 scene_collision_filename=str(
                     by_asset_role["scene_collision"].get("filename") or ""
                 ),
@@ -453,17 +670,27 @@ def materialize_native_task_runtime_contract(
                     else None
                 ),
                 twin_position_world_m=(
-                    by_asset_role["task_object"].get("pose_world") or {}
+                    composition_target.get("pose_world") or {}
                 ).get("position_world_m"),
             )
         except ValueError as exc:
             errors.append(f"native_task_runtime_composition_invalid:{exc}")
-    if composition:
+    if composition and task_entities is None:
         planned = {row["semantic_role"]: row for row in composition["objects"]}
         for row in asset_rows:
             role = row["semantic_role"]
             row["object_type"] = planned[role]["object_type"]
             row["visible"] = planned[role]["visible"]
+    if entity_contract is not None and task_kind == TASK_KIND_DEFORMABLE_TRANSFER:
+        composition = {
+            "task_sample_binding": {
+                "binding_source": "native_task_entity_contract",
+                "entity_ids": [
+                    row["entity_id"] for row in entity_contract["task_entities"]
+                ],
+                "semantic_role_index": entity_contract["semantic_role_index"],
+            }
+        }
 
     robot_pose = _pose(
         robot_base_pose_world,
@@ -473,6 +700,38 @@ def materialize_native_task_runtime_contract(
     robot_reset_positions = _robot_joint_reset_positions(
         robot_joint_reset_positions_rad, errors=errors
     )
+    if entity_contract is not None:
+        robot_ids = entity_contract["semantic_role_index"].get("robot", [])
+        if len(robot_ids) != 1:
+            errors.append("native_task_runtime_robot_entity_cardinality_invalid")
+        else:
+            robot_entity = next(
+                row
+                for row in entity_contract["task_entities"]
+                if row["entity_id"] == robot_ids[0]
+            )
+            if robot_entity["runtime_asset"]["binding_kind"] != "runtime_embodiment":
+                errors.append("native_task_runtime_robot_entity_asset_invalid")
+            if robot_entity["initial_state"]["pose_world"] != robot_pose:
+                errors.append("native_task_runtime_robot_entity_pose_mismatch")
+        if task_kind == TASK_KIND_DEFORMABLE_TRANSFER:
+            expected_roles = {
+                "deformable_entity_id": "movable_deformable",
+                "destination_entity_id": "destination_receptacle",
+                "robot_entity_id": "robot",
+            }
+            entities_by_id = {
+                row["entity_id"]: row for row in entity_contract["task_entities"]
+            }
+            for field, expected_role in expected_roles.items():
+                entity_id = str(task_spec.get(field) or "")
+                if (
+                    entity_id not in entities_by_id
+                    or entities_by_id[entity_id]["semantic_role"] != expected_role
+                ):
+                    errors.append(
+                        f"native_task_runtime_task_entity_binding_invalid:{field}"
+                    )
     camera_rows = _camera_rows(cameras, errors=errors)
     state_binding = _articulated_task_state_binding(
         task_state_binding, task_kind=task_kind, errors=errors
@@ -533,7 +792,7 @@ def materialize_native_task_runtime_contract(
             "world_poses": True,
             "camera_transforms_and_intrinsics": True,
             "scenario_parameters": True,
-            "task_joint_indices": task_kind == "articulated_open_close",
+            "task_joint_indices": task_kind == TASK_KIND_ARTICULATED_OPEN_CLOSE,
         },
         "claim_boundary": {
             "valid_contract_is_not_native_application_proof": True,
@@ -542,6 +801,23 @@ def materialize_native_task_runtime_contract(
         },
         "contract_digest": "",
     }
+    if entity_contract is not None:
+        document.update(
+            {
+                "task_entities": entity_contract["task_entities"],
+                "task_entity_role_index": entity_contract["semantic_role_index"],
+                "task_entity_contract_digest": entity_contract["contract_digest"],
+            }
+        )
+        document["runtime_readback_required"]["task_entities_by_id"] = True
+        if task_kind == TASK_KIND_DEFORMABLE_TRANSFER:
+            document["runtime_readback_required"].update(
+                {
+                    "deformable_nodal_state_and_strain": True,
+                    "deformable_native_contact": True,
+                    "destination_pose_and_velocity": True,
+                }
+            )
     document["contract_digest"] = canonical_digest(
         document, digest_field="contract_digest"
     )

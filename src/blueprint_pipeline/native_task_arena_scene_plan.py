@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -45,7 +46,7 @@ def _sha256(path: Path) -> str:
 
 
 def _source_to_spawned_prim(
-    source_path: str, *, role: str, source_root_prim_path: str
+    source_path: str, *, spawned_root_prim_path: str, source_root_prim_path: str
 ) -> str:
     if source_path == source_root_prim_path:
         suffix = ""
@@ -55,7 +56,19 @@ def _source_to_spawned_prim(
         raise NativeTaskArenaScenePlanError(
             [f"native_task_arena_source_prim_invalid:{source_path}"]
         )
-    return f"{ENV_ROOT}/{role}{suffix}"
+    return f"{spawned_root_prim_path}{suffix}"
+
+
+def _entity_runtime_name(entity_id: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_]", "_", entity_id)
+    if not normalized or normalized[0].isdigit():
+        normalized = f"entity_{normalized}"
+    suffix = hashlib.sha256(entity_id.encode("utf-8")).hexdigest()[:8]
+    return f"{normalized}_{suffix}"
+
+
+def _entity_prim_path(entity_id: str) -> str:
+    return f"{ENV_ROOT}/task_entities/{_entity_runtime_name(entity_id)}"
 
 
 def _validate_contract(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -97,37 +110,50 @@ def _stage_assets(
     rows: list[dict[str, Any]] = []
     for row in objects:
         role = str(row["semantic_role"])
+        entity_id = str(row.get("entity_id") or "")
+        identity = entity_id or role
         candidate = provider_asset_directory / str(row["filename"])
         path = candidate.resolve()
         if provider_asset_directory != path.parent:
-            errors.append(f"native_task_arena_asset_outside_directory:{role}")
+            errors.append(f"native_task_arena_asset_outside_directory:{identity}")
             continue
         if candidate.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
-            errors.append(f"native_task_arena_asset_missing:{role}")
+            errors.append(f"native_task_arena_asset_missing:{identity}")
             continue
         observed = _sha256(path)
         if observed != row["sha256"]:
-            errors.append(f"native_task_arena_asset_digest_mismatch:{role}")
+            errors.append(f"native_task_arena_asset_digest_mismatch:{identity}")
             continue
-        rows.append(
-            {
-                "name": role,
-                "semantic_role": role,
-                "prim_path": f"{ENV_ROOT}/{role}",
-                "object_type": row["object_type"],
-                "usd_path": (
-                    f"{published_asset_directory}/{row['filename']}"
-                    if published_asset_directory is not None
-                    else str(path)
-                ),
-                "sha256": observed,
-                "size_bytes": path.stat().st_size,
-                "visible": bool(row["visible"]),
-                "pose_world": row["pose_world"],
-                "activate_contact_sensors": row["object_type"]
-                in {"RIGID", "ARTICULATION"},
-            }
-        )
+        staged = {
+            "name": _entity_runtime_name(entity_id) if entity_id else identity,
+            "semantic_role": role,
+            "prim_path": (
+                _entity_prim_path(entity_id)
+                if entity_id
+                else f"{ENV_ROOT}/{role}"
+            ),
+            "object_type": row["object_type"],
+            "usd_path": (
+                f"{published_asset_directory}/{row['filename']}"
+                if published_asset_directory is not None
+                else str(path)
+            ),
+            "sha256": observed,
+            "size_bytes": path.stat().st_size,
+            "visible": bool(row["visible"]),
+            "pose_world": row["pose_world"],
+            # Arena's existing ContactSensor seam is rigid-body based.  A
+            # deformable entity must use a separately qualified native
+            # soft-body contact readback instead of being silently routed
+            # through that sensor.
+            "activate_contact_sensors": row["object_type"]
+            in {"RIGID", "ARTICULATION"},
+        }
+        if entity_id:
+            staged["entity_id"] = entity_id
+        if row["object_type"] == "DEFORMABLE":
+            staged["requires_native_deformable_contact_readback"] = True
+        rows.append(staged)
     if errors:
         raise NativeTaskArenaScenePlanError(errors)
     return rows
@@ -175,7 +201,10 @@ def _cadence(contract: Mapping[str, Any], *, physics_frequency_hz: float) -> dic
 
 
 def _articulation_plan(
-    contract: Mapping[str, Any], *, task_object_asset_path: Path | None
+    contract: Mapping[str, Any],
+    *,
+    staged_objects: list[dict[str, Any]],
+    asset_directory: Path,
 ) -> dict[str, Any]:
     task_kind = contract["task_kind"]
     if task_kind != "articulated_open_close":
@@ -198,19 +227,59 @@ def _articulation_plan(
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_task_joint_reset_invalid"]
         ) from exc
-    if task_object_asset_path is None:
+    articulated_entity_ids = contract.get("task_entity_role_index", {}).get(
+        "articulated_fixture", []
+    )
+    if articulated_entity_ids:
+        if len(articulated_entity_ids) != 1:
+            raise NativeTaskArenaScenePlanError(
+                ["native_task_arena_articulated_entity_cardinality_invalid"]
+            )
+        articulated_entity_id = str(articulated_entity_ids[0])
+        contract_object = next(
+            (
+                row
+                for row in contract["objects"]
+                if row.get("entity_id") == articulated_entity_id
+            ),
+            None,
+        )
+        staged_object = next(
+            (
+                row
+                for row in staged_objects
+                if row.get("entity_id") == articulated_entity_id
+            ),
+            None,
+        )
+    else:
+        contract_object = next(
+            (
+                row
+                for row in contract["objects"]
+                if row["semantic_role"] == "task_object"
+            ),
+            None,
+        )
+        staged_object = next(
+            (
+                row
+                for row in staged_objects
+                if row["semantic_role"] == "task_object"
+            ),
+            None,
+        )
+    if contract_object is None or staged_object is None:
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_task_object_asset_missing"]
         )
+    task_object_asset_path = asset_directory / str(contract_object["filename"])
+    spawned_root_prim_path = str(staged_object["prim_path"])
     target_joint_id = str(contract["task_spec"]["target_joint_id"])
     try:
         motion_geometry = derive_native_articulated_motion_geometry(
             task_object_usd_path=task_object_asset_path,
-            task_object_sha256=next(
-                row["sha256"]
-                for row in contract["objects"]
-                if row["semantic_role"] == "task_object"
-            ),
+            task_object_sha256=contract_object["sha256"],
             target_joint_id=target_joint_id,
             target_joint_prim_path=sample_binding["joint_prim_paths"][
                 target_joint_id
@@ -219,11 +288,7 @@ def _articulation_plan(
             handle_grasp_point_moving_link_m=state_binding[
                 "handle_grasp_point_link_m"
             ],
-            task_object_pose_world=next(
-                row["pose_world"]
-                for row in contract["objects"]
-                if row["semantic_role"] == "task_object"
-            ),
+            task_object_pose_world=contract_object["pose_world"],
             reset_angle_rad=contract["task_spec"]["joint_reset_positions_rad"][
                 target_joint_id
             ],
@@ -241,7 +306,7 @@ def _articulation_plan(
     source_root = motion_geometry["source_asset_root_prim_path"]
     moving_link = _source_to_spawned_prim(
         str(state_binding["moving_link_prim_path"]),
-        role="task_object",
+        spawned_root_prim_path=spawned_root_prim_path,
         source_root_prim_path=source_root,
     )
     scene_filter = f"{ENV_ROOT}/scene_collision/.*"
@@ -250,7 +315,7 @@ def _articulation_plan(
         "task_joint_prim_paths": {
             joint_id: _source_to_spawned_prim(
                 path,
-                role="task_object",
+                spawned_root_prim_path=spawned_root_prim_path,
                 source_root_prim_path=source_root,
             )
             for joint_id, path in sorted(
@@ -264,7 +329,7 @@ def _articulation_plan(
         "handle_prim_paths": [
             _source_to_spawned_prim(
                 path,
-                role="task_object",
+                spawned_root_prim_path=spawned_root_prim_path,
                 source_root_prim_path=source_root,
             )
             for path in state_binding["handle_prim_paths"]
@@ -337,16 +402,10 @@ def materialize_native_task_arena_scene_plan(
         provider_asset_directory=asset_directory,
         published_asset_directory=published_asset_directory,
     )
-    task_object_asset_path = next(
-        (
-            asset_directory / str(row["filename"])
-            for row in contract["objects"]
-            if row["semantic_role"] == "task_object"
-        ),
-        None,
-    )
     articulation = _articulation_plan(
-        contract, task_object_asset_path=task_object_asset_path
+        contract,
+        staged_objects=objects,
+        asset_directory=asset_directory,
     )
     plan: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -382,6 +441,16 @@ def materialize_native_task_arena_scene_plan(
         },
         "plan_digest": "",
     }
+    if "task_entities" in contract:
+        plan.update(
+            {
+                "task_entities": contract["task_entities"],
+                "task_entity_role_index": contract["task_entity_role_index"],
+                "task_entity_contract_digest": contract[
+                    "task_entity_contract_digest"
+                ],
+            }
+        )
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     if destination is not None:
         write_json(Path(destination), plan)
