@@ -1129,7 +1129,7 @@ def test_task_evaluation_launch_is_immutably_queued_before_async_dispatch(
         "blueprint-task-evaluation-launch-dispatcher.service",
     )
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
-    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, "true")
+    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, raising=False)
     monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
     systemctl_calls: list[list[str]] = []
 
@@ -1209,7 +1209,7 @@ def test_task_evaluation_launch_systemd_path_mode_never_shells_out(
     profile_dir.mkdir()
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
-    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, "true")
+    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, raising=False)
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV, "systemd_path")
     monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV, raising=False)
     monkeypatch.setattr(

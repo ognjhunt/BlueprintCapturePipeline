@@ -1412,7 +1412,6 @@ def _trigger_task_evaluation_launch_dispatcher() -> Dict[str, Any]:
     unit = _string(os.getenv(TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV))
     mode = _string(os.getenv(TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV)) or "systemctl"
     allowed = _truthy(os.getenv(TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV))
-    execute_allowed = _truthy(os.getenv(TASK_EVALUATION_LAUNCH_EXECUTE_ENV))
     profile_dir = _string(os.getenv(TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV))
     blockers: list[str] = []
     if not profile_dir:
@@ -1427,8 +1426,6 @@ def _trigger_task_evaluation_launch_dispatcher() -> Dict[str, Any]:
         blockers.append("task_evaluation_launch_trigger_systemd_unit_invalid")
     if not allowed:
         blockers.append(f"missing_env_{TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV}")
-    if not execute_allowed:
-        blockers.append(f"missing_env_{TASK_EVALUATION_LAUNCH_EXECUTE_ENV}")
     if blockers:
         return {
             "status": "blocked",
