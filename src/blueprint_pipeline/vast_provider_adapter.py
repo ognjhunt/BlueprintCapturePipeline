@@ -268,6 +268,35 @@ VAST_TERMINAL_INSTANCE_STATUSES = (
 logger = logging.getLogger(__name__)
 
 
+
+# Hoisted to module scope so the difference between the two Arena payloads is
+# reviewable and testable, rather than buried as locals in a long function.
+ADP009D_ISAAC_REQUIRED_ENTRIES = frozenset(
+    {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/adp_arena_provider_runner.py",
+        "provider_runtime/adp_arena_provider_manifest.json",
+        "provider_runtime/adp009d_isaac_runtime.py",
+        "provider_runtime/adp009d_franka_eval_harness_manifest.v1.json",
+        "provider_runtime/assets/approved_can.usda",
+        "provider_runtime/assets/sage_collision.usd",
+        "provider_runtime/assets/sage_collision_overlay.usda",
+    }
+)
+# Same transport, different payload. No sealed can, and no SAGE overlay -
+# that file is produced by an inspector which exists to identify one specific
+# scene, so a different scene cannot ship one. What it must ship instead is the
+# scene spec its worker reads.
+ADP009D_ARTICULATED_ARENA_REQUIRED_ENTRIES = frozenset(
+    {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/adp_arena_provider_runner.py",
+        "provider_runtime/adp_arena_provider_manifest.json",
+        "provider_runtime/native/adp009d_articulated_scene_spec.json",
+    }
+)
+
+
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -2010,16 +2039,10 @@ def _blueprint_bundle_preflight(
         "provider_runtime/founder_sim_approval_receipt.json",
         "provider_runtime/arena_worker_request.json",
     }
-    adp009d_isaac_required_entries = {
-        "provider_runtime/run_adp_arena_provider_runtime.sh",
-        "provider_runtime/adp_arena_provider_runner.py",
-        "provider_runtime/adp_arena_provider_manifest.json",
-        "provider_runtime/adp009d_isaac_runtime.py",
-        "provider_runtime/adp009d_franka_eval_harness_manifest.v1.json",
-        "provider_runtime/assets/approved_can.usda",
-        "provider_runtime/assets/sage_collision.usd",
-        "provider_runtime/assets/sage_collision_overlay.usda",
-    }
+    adp009d_isaac_required_entries = ADP009D_ISAAC_REQUIRED_ENTRIES
+    adp009d_articulated_arena_required_entries = (
+        ADP009D_ARTICULATED_ARENA_REQUIRED_ENTRIES
+    )
     adp009d_ovrtx_required_entries = {
         "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh",
         "provider_runtime/adp009d_ovrtx_provider_runner.py",
@@ -2104,6 +2127,11 @@ def _blueprint_bundle_preflight(
         readiness_name = "adp_arena_provider_manifest.json"
     elif provider_bundle_kind == "adp009d_isaac":
         required_entries = adp009d_isaac_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_arena_provider_runner.py"
+        readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "adp009d_articulated_arena":
+        required_entries = adp009d_articulated_arena_required_entries
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
