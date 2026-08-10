@@ -309,6 +309,12 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp_simready_isaac",
         "adp_arena",
         "adp009d_isaac",
+        # Same Isaac image and runtime as adp009d_isaac, so it needs the same
+        # CUDA-safety path. Omitting it here gave the strict standalone-libcudart
+        # probe, which Isaac images legitimately fail: they prove driver
+        # compatibility through SimulationApp plus Warp, not through exposing
+        # libcudart to their bundled Python.
+        "adp009d_articulated_arena",
     }
 
 

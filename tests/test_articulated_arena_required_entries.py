@@ -53,3 +53,34 @@ def test_the_articulated_set_is_not_a_superset_of_the_rigid_one() -> None:
     assert not ADP009D_ISAAC_REQUIRED_ENTRIES.issubset(
         ADP009D_ARTICULATED_ARENA_REQUIRED_ENTRIES
     )
+
+
+from blueprint_pipeline.vast_provider_adapter import (  # noqa: E402
+    _is_isaac_provider_bundle,
+)
+
+
+def test_the_articulated_kind_is_recognised_as_an_isaac_bundle() -> None:
+    """It runs the Isaac image, so it needs the Isaac CUDA-safety path.
+
+    Isaac images do not necessarily expose a standalone libcudart to their
+    bundled Python; they prove driver compatibility through SimulationApp plus
+    Warp device enumeration instead. A bundle missing from this predicate gets
+    the strict standalone probe, reports cudart_missing, and is refused - after
+    booting Isaac and initialising the GPU perfectly well. Two launches died
+    that way, on different hosts, reading as host faults.
+    """
+
+    assert _is_isaac_provider_bundle("adp009d_articulated_arena") is True
+
+
+def test_the_other_isaac_kinds_are_unchanged() -> None:
+    for kind in ("isaac", "adp_simready_isaac", "adp_arena", "adp009d_isaac"):
+        assert _is_isaac_provider_bundle(kind) is True
+
+
+def test_a_non_isaac_kind_is_still_not_one() -> None:
+    """The predicate selects a safety path; it must stay narrow."""
+
+    for kind in ("wam", "evaluator", "adp_joint_agent", "adp_content_agents"):
+        assert _is_isaac_provider_bundle(kind) is False
