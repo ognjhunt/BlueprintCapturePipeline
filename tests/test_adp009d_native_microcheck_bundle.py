@@ -2958,3 +2958,59 @@ def test_the_isolated_wrapper_forwards_the_new_parameters(tmp_path: Path) -> Non
     assert shipped == "PAYLOAD = 'articulated'\n"
     assert "provider_runtime/native/scene_spec.json" in names
     assert receipt["sage_profile"] is None
+
+
+def test_a_declared_digest_that_does_not_match_still_fails(tmp_path: Path) -> None:
+    """Letting a caller declare digests must not stop the digests being checked.
+
+    The pin exists so a sealed asset cannot be swapped silently. Allowing a
+    different scene to declare its own digests keeps that guarantee only if a
+    declaration that does not match the bytes is still refused - otherwise the
+    override quietly turns the check off.
+    """
+
+    approved, sage, harness, _ = _inputs(tmp_path)
+
+    with pytest.raises(ValueError):
+        build_native_microcheck_bundle(
+            job_dir=tmp_path / "job",
+            approved_can_path=approved,
+            sage_collision_path=sage,
+            harness_manifest_path=harness,
+            implementation_commit="6" * 40,
+            generated_at="fixed",
+            expected_asset_bindings={
+                "approved_can.usda": "sha256:" + "0" * 64,
+                "sage_collision.usd": _digest(sage),
+            },
+            build_task_collision_derivative=False,
+        )
+
+
+def test_declared_digests_that_match_a_different_asset_are_accepted(
+    tmp_path: Path,
+) -> None:
+    """A scene that is not the sealed can is allowed, held to its own bytes."""
+
+    approved, sage, harness, _ = _inputs(tmp_path)
+    other = tmp_path / "other.usda"
+    other.write_text(
+        '#usda 1.0\n(\n    defaultPrim = "Asset"\n)\n\ndef Xform "Asset"\n{\n}\n',
+        encoding="utf-8",
+    )
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job",
+        approved_can_path=other,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="7" * 40,
+        generated_at="fixed",
+        expected_asset_bindings={
+            "approved_can.usda": _digest(other),
+            "sage_collision.usd": _digest(sage),
+        },
+        build_task_collision_derivative=False,
+    )
+
+    assert receipt["bundle_sha256"].startswith("sha256:")
