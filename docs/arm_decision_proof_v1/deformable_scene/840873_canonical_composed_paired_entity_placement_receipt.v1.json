@@ -1,0 +1,572 @@
+{
+  "blockers": [],
+  "blocking_stage": null,
+  "claim_boundary": {
+    "geometry_plausibility_only": true,
+    "native_camera_visibility_qualified": false,
+    "native_contact_qualified": false,
+    "native_ik_qualified": false,
+    "physical_task_performance_proven": false,
+    "simulator_execution_authorized": false
+  },
+  "enumeration": {
+    "canonical_order": "entity_id, support_region_id, x, y, z; paired entity rows; robot support_region_id, x, y, z",
+    "entity_pairs": {
+      "admissible_count": 42,
+      "pairs_considered": 132,
+      "potential_count": 132,
+      "rejected_count": 90,
+      "rejection_reason_counts": {
+        "entity_pair_clearance": 90
+      },
+      "rejection_signature_counts": {
+        "entity_pair_clearance": 90
+      }
+    },
+    "entity_placements": {
+      "840873_inserted_basket_twin": {
+        "admissible_count": 6,
+        "grid_points_considered": 72,
+        "rejected_count": 66,
+        "rejection_reason_counts": {
+          "entity_obstacle_clearance": 66
+        },
+        "rejection_signature_counts": {
+          "entity_obstacle_clearance": 66
+        },
+        "support_regions_without_grid_fit": []
+      },
+      "840873_inserted_towel_twin": {
+        "admissible_count": 22,
+        "grid_points_considered": 84,
+        "rejected_count": 62,
+        "rejection_reason_counts": {
+          "entity_obstacle_clearance": 62
+        },
+        "rejection_signature_counts": {
+          "entity_obstacle_clearance": 62
+        },
+        "support_regions_without_grid_fit": []
+      }
+    },
+    "paired_entity_robot_candidates": {
+      "admissible_count": 145,
+      "considered_count": 840,
+      "potential_count": 840,
+      "rejected_count": 695,
+      "rejection_reason_counts": {
+        "robot_reach_outer_radius": 695
+      },
+      "rejection_signature_counts": {
+        "robot_reach_outer_radius": 695
+      }
+    },
+    "robot_base_placements": {
+      "admissible_before_pair_count": 20,
+      "grid_points_considered": 20,
+      "rejected_count": 0,
+      "rejection_reason_counts": {},
+      "rejection_signature_counts": {},
+      "support_regions_without_grid_fit": []
+    }
+  },
+  "pending_native_gates": [
+    "native_full_phase_ik",
+    "native_contact_and_stable_support",
+    "native_policy_and_review_camera_visibility"
+  ],
+  "receipt_digest": "sha256:c6554726e9fcb32f2a96267bb5daeecf337888bd7c0a7b76117686cb391b24d4",
+  "request": {
+    "canonical_task_centers_m": [
+      [
+        -5.106401839,
+        -3.411822009,
+        1.718399969
+      ],
+      [
+        -5.037919771,
+        -4.490491702,
+        1.179488061
+      ]
+    ],
+    "coordinate_precision_decimal_places": 9,
+    "entity_specs": [
+      {
+        "entity_id": "840873_inserted_basket_twin",
+        "footprint_xy_m": [
+          0.463817139,
+          0.28394346
+        ],
+        "height_m": 0.122188391
+      },
+      {
+        "entity_id": "840873_inserted_towel_twin",
+        "footprint_xy_m": [
+          0.370025854,
+          0.119487516
+        ],
+        "height_m": 0.11305281
+      }
+    ],
+    "frozen_seed_uint64": 2026081001,
+    "grid_origin_world_xy_m": [
+      0.0,
+      0.0
+    ],
+    "grid_spacing_m": 0.1,
+    "maximum_combination_count": 2000000,
+    "minimum_separations_m": {
+      "canonical_region": 0.0,
+      "entity_entity": 0.08,
+      "entity_obstacle": 0.03,
+      "robot_entity": 0.08,
+      "robot_obstacle": 0.05,
+      "support_edge": 0.03
+    },
+    "obstacle_aabbs": [
+      {
+        "aabb_max_m": [
+          -4.42392208,
+          2.074877765,
+          0.696779021
+        ],
+        "aabb_min_m": [
+          -4.42492208,
+          2.070877765,
+          0.695779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component116"
+      },
+      {
+        "aabb_max_m": [
+          -4.62892209,
+          2.08487776,
+          0.696779021
+        ],
+        "aabb_min_m": [
+          -4.63292209,
+          2.08487776,
+          0.695779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component117"
+      },
+      {
+        "aabb_max_m": [
+          -4.758922092,
+          1.94587775,
+          0.696779021
+        ],
+        "aabb_min_m": [
+          -4.758922092,
+          1.94187775,
+          0.695779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component118"
+      },
+      {
+        "aabb_max_m": [
+          -4.753922096,
+          2.084877757,
+          0.710779021
+        ],
+        "aabb_min_m": [
+          -4.754922096,
+          2.084877757,
+          0.706779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component119"
+      },
+      {
+        "aabb_max_m": [
+          -4.423922075,
+          2.085877766,
+          0.729779022
+        ],
+        "aabb_min_m": [
+          -4.759922096,
+          1.892877748,
+          0.69077902
+        ],
+        "obstacle_id": "840873_sage_room0_local_component12"
+      },
+      {
+        "aabb_max_m": [
+          -4.658922088,
+          1.963877753,
+          0.772779024
+        ],
+        "aabb_min_m": [
+          -4.673922089,
+          1.946877753,
+          0.706779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component14"
+      },
+      {
+        "aabb_max_m": [
+          -4.624922086,
+          1.982877755,
+          0.832779027
+        ],
+        "aabb_min_m": [
+          -4.696922089,
+          1.909877751,
+          0.700779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component15"
+      },
+      {
+        "aabb_max_m": [
+          -4.499922082,
+          2.080877762,
+          0.88677903
+        ],
+        "aabb_min_m": [
+          -4.625922088,
+          1.954877756,
+          0.700779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component16"
+      },
+      {
+        "aabb_max_m": [
+          -3.869922066,
+          2.857877811,
+          0.821779027
+        ],
+        "aabb_min_m": [
+          -4.397922094,
+          2.315877785,
+          0.399779007
+        ],
+        "obstacle_id": "840873_sage_room0_local_component17"
+      },
+      {
+        "aabb_max_m": [
+          -4.602922074,
+          1.750877738,
+          0.821779027
+        ],
+        "aabb_min_m": [
+          -5.131922097,
+          1.207877713,
+          0.399779007
+        ],
+        "obstacle_id": "840873_sage_room0_local_component18"
+      },
+      {
+        "aabb_max_m": [
+          -4.708922105,
+          2.602877776,
+          0.821779027
+        ],
+        "aabb_min_m": [
+          -5.116922125,
+          2.103877754,
+          0.398779006
+        ],
+        "obstacle_id": "840873_sage_room0_local_component19"
+      },
+      {
+        "aabb_max_m": [
+          -3.898922035,
+          1.708877757,
+          0.821779027
+        ],
+        "aabb_min_m": [
+          -4.319922062,
+          1.202877731,
+          0.398779006
+        ],
+        "obstacle_id": "840873_sage_room0_local_component20"
+      },
+      {
+        "aabb_max_m": [
+          -4.585922085,
+          1.989877757,
+          0.708779021
+        ],
+        "aabb_min_m": [
+          -4.619922087,
+          1.960877756,
+          0.700779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component22"
+      },
+      {
+        "aabb_max_m": [
+          -3.879922058,
+          2.226877787,
+          0.644779018
+        ],
+        "aabb_min_m": [
+          -5.218922122,
+          2.18787775,
+          0.573779015
+        ],
+        "obstacle_id": "840873_sage_room0_local_component25"
+      },
+      {
+        "aabb_max_m": [
+          -3.749922054,
+          2.320877794,
+          0.647779018
+        ],
+        "aabb_min_m": [
+          -3.894922058,
+          2.174877785,
+          0.001778988
+        ],
+        "obstacle_id": "840873_sage_room0_local_component26"
+      },
+      {
+        "aabb_max_m": [
+          -5.20392212,
+          2.320877753,
+          0.648779018
+        ],
+        "aabb_min_m": [
+          -5.34792213,
+          2.174877748,
+          0.000778988
+        ],
+        "obstacle_id": "840873_sage_room0_local_component27"
+      },
+      {
+        "aabb_max_m": [
+          -5.203922106,
+          1.688877725,
+          0.648779018
+        ],
+        "aabb_min_m": [
+          -5.34792211,
+          1.542877716,
+          0.002778988
+        ],
+        "obstacle_id": "840873_sage_room0_local_component32"
+      },
+      {
+        "aabb_max_m": [
+          -5.215922107,
+          2.189877749,
+          0.644779018
+        ],
+        "aabb_min_m": [
+          -5.254922123,
+          1.674877724,
+          0.573779015
+        ],
+        "obstacle_id": "840873_sage_room0_local_component33"
+      },
+      {
+        "aabb_max_m": [
+          -3.879922042,
+          1.675877761,
+          0.644779018
+        ],
+        "aabb_min_m": [
+          -5.218922106,
+          1.636877723,
+          0.573779015
+        ],
+        "obstacle_id": "840873_sage_room0_local_component34"
+      },
+      {
+        "aabb_max_m": [
+          -3.842922042,
+          2.189877786,
+          0.644779018
+        ],
+        "aabb_min_m": [
+          -3.882922057,
+          1.674877761,
+          0.573779015
+        ],
+        "obstacle_id": "840873_sage_room0_local_component35"
+      },
+      {
+        "aabb_max_m": [
+          -3.748922034,
+          1.688877762,
+          0.648779018
+        ],
+        "aabb_min_m": [
+          -3.894922044,
+          1.542877758,
+          0.000778988
+        ],
+        "obstacle_id": "840873_sage_room0_local_component36"
+      },
+      {
+        "aabb_max_m": [
+          -4.624922086,
+          1.982877755,
+          0.767779024
+        ],
+        "aabb_min_m": [
+          -4.69292209,
+          1.912877751,
+          0.702779021
+        ],
+        "obstacle_id": "840873_sage_room0_local_component37"
+      },
+      {
+        "aabb_max_m": [
+          -4.527922083,
+          2.03287776,
+          0.89677903
+        ],
+        "aabb_min_m": [
+          -4.584922086,
+          1.994877758,
+          0.766779024
+        ],
+        "obstacle_id": "840873_sage_room0_local_component74"
+      },
+      {
+        "aabb_max_m": [
+          -5.375721191,
+          3.631179688,
+          2.8
+        ],
+        "aabb_min_m": [
+          -5.615721191,
+          -3.135933594,
+          0.0
+        ],
+        "obstacle_id": "840873_structure_wall29"
+      }
+    ],
+    "request_digest": "sha256:19afee1c63041e683044e3b6c3da9a5d803d01aca2923df3bb1ec46a02a9ffef",
+    "robot_spec": {
+      "base_clearance_height_m": 0.75,
+      "base_footprint_xy_m": [
+        0.32,
+        0.32
+      ],
+      "reach_annulus_m": [
+        0.3,
+        0.855
+      ],
+      "reach_distance_definition": "horizontal_base_center_to_entity_center_xy"
+    },
+    "schema_version": "composed_paired_entity_placement_request.v1",
+    "separation_distance_definitions": {
+      "all_other_clearances": "euclidean_distance_between_3d_axis_aligned_aabbs",
+      "canonical_region": "horizontal_point_to_entity_footprint_aabb"
+    },
+    "support_regions": [
+      {
+        "aabb_max_m": [
+          -2.9,
+          2.35,
+          0.0
+        ],
+        "aabb_min_m": [
+          -3.7,
+          1.55,
+          0.0
+        ],
+        "support_region_id": "840873_registered_room0_floor_base_patch",
+        "supports_entities": false,
+        "supports_robot_base": true
+      },
+      {
+        "aabb_max_m": [
+          -3.724922031,
+          2.382877799,
+          0.69177902
+        ],
+        "aabb_min_m": [
+          -5.372922133,
+          1.481877712,
+          0.69177902
+        ],
+        "support_region_id": "840873_sage_table169_top_component13",
+        "supports_entities": true,
+        "supports_robot_base": false
+      }
+    ]
+  },
+  "schema_version": "composed_paired_entity_placement_receipt.v1",
+  "selection": {
+    "admissible_candidate_count": 145,
+    "entity_placements": [
+      {
+        "aabb_max_m": [
+          -3.86809143,
+          2.04197173,
+          0.813967411
+        ],
+        "aabb_min_m": [
+          -4.331908569,
+          1.75802827,
+          0.69177902
+        ],
+        "center_world_m": [
+          -4.1,
+          1.9,
+          0.752873215
+        ],
+        "subject_id": "840873_inserted_basket_twin",
+        "support_region_id": "840873_sage_table169_top_component13"
+      },
+      {
+        "aabb_max_m": [
+          -3.914987073,
+          2.259743758,
+          0.80483183
+        ],
+        "aabb_min_m": [
+          -4.285012927,
+          2.140256242,
+          0.69177902
+        ],
+        "center_world_m": [
+          -4.1,
+          2.2,
+          0.748305425
+        ],
+        "subject_id": "840873_inserted_towel_twin",
+        "support_region_id": "840873_sage_table169_top_component13"
+      }
+    ],
+    "geometry_checks": {
+      "both_entities_supported": true,
+      "canonical_region_excluded": true,
+      "entity_pair_clearance_passed": true,
+      "obstacle_clearance_passed": true,
+      "robot_base_clearance_passed": true,
+      "robot_base_supported": true,
+      "robot_reach_annulus_passed": true
+    },
+    "reach_distance_xy_m": {
+      "840873_inserted_basket_twin": 0.632455532,
+      "840873_inserted_towel_twin": 0.608276253
+    },
+    "robot_base_placement": {
+      "aabb_max_m": [
+        -3.34,
+        2.26,
+        0.75
+      ],
+      "aabb_min_m": [
+        -3.66,
+        1.94,
+        0.0
+      ],
+      "center_world_m": [
+        -3.5,
+        2.1,
+        0.375
+      ],
+      "subject_id": "robot_base",
+      "support_region_id": "840873_registered_room0_floor_base_patch"
+    },
+    "selected_index": 13,
+    "selection_algorithm": "canonical-sort admissible candidates; sha256 schema version, frozen seed, request digest, and admissible count; interpret as a big-endian integer modulo admissible_candidate_count",
+    "selection_digest": "sha256:2203a224d515d42e60251708dd6b3defc54c541e546a52707a958ecc75d13ab8",
+    "selection_seed_digest": "sha256:b07d5a631dbd5e99a176cae2cbfb3036722358811e01ffbd807a7599ec6ec2c2"
+  },
+  "status": "geometry_plausibility_candidate_selected"
+}

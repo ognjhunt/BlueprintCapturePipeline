@@ -1,0 +1,1630 @@
+{
+  "cells": [
+    {
+      "cell_id": "840873_canonical",
+      "frozen_seed": 2026081001,
+      "planner_receipt_digest": "sha256:c6554726e9fcb32f2a96267bb5daeecf337888bd7c0a7b76117686cb391b24d4",
+      "planner_receipt_path": "docs/arm_decision_proof_v1/deformable_scene/840873_canonical_composed_paired_entity_placement_receipt.v1.json",
+      "resolved_geometry_summary": {
+        "admissible_candidate_count": 145,
+        "minimum_entity_obstacle_aabb_clearance_m": 0.047000002,
+        "minimum_entity_pair_aabb_clearance_m": 0.098284512,
+        "minimum_robot_entity_aabb_clearance_m": 0.20809143,
+        "minimum_robot_obstacle_aabb_clearance_m": 0.089922054,
+        "minimum_support_edge_margin_m": 0.04,
+        "reach_distance_xy_m": {
+          "840873_inserted_basket_twin": 0.632455532,
+          "840873_inserted_towel_twin": 0.608276253
+        },
+        "robot_to_admitted_table_support_component_clearance_m": 0.064922031
+      },
+      "robot_base_geometry": {
+        "aabb_max_m": [
+          -3.34,
+          2.26,
+          0.75
+        ],
+        "aabb_min_m": [
+          -3.66,
+          1.94,
+          0.0
+        ],
+        "center_world_m": [
+          -3.5,
+          2.1,
+          0.375
+        ],
+        "orientation_status": "pending_native_full_phase_ik",
+        "subject_id": "robot_base",
+        "support_region_id": "840873_registered_room0_floor_base_patch"
+      },
+      "scenario_family": "canonical",
+      "task_entity_pose_binding_digest": "sha256:6aa390894d01d40bf00876a7aa29749a16ce31642087294d2477a2aff80da38c",
+      "task_entity_pose_bindings": [
+        {
+          "asset_binding_id": "840873_basket87_inserted_twin_asset.v1",
+          "design_basis_digest": "sha256:02c67f14aebe0e4db8384216b1bdf17e45787c0894318a26a7e0a3bb6ecf4d2c",
+          "entity_id": "840873_inserted_basket_twin",
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.7071067811865475,
+            0.7071067811865475
+          ],
+          "position_world_m": [
+            -4.1,
+            1.9,
+            0.752873215
+          ]
+        },
+        {
+          "asset_binding_id": "840873_towel79_inserted_twin_asset.v1",
+          "design_basis_digest": "sha256:574d34e92dcc20e5588da0be293e12cfc500b563fdbcc89157ce7ae5e5000183",
+          "entity_id": "840873_inserted_towel_twin",
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "position_world_m": [
+            -4.1,
+            2.2,
+            0.748305425
+          ]
+        }
+      ]
+    },
+    {
+      "cell_id": "840873_held_out_composed_relocation_seed_2026081001",
+      "frozen_seed": 2026081001,
+      "planner_receipt_digest": "sha256:6fb7a985f0bf2834fc5ae54a9e5677a52c30d6cfbcf8927dc3786e9c175dc098",
+      "planner_receipt_path": "docs/arm_decision_proof_v1/deformable_scene/840873_held_out_composed_relocation_paired_entity_placement_receipt.v1.json",
+      "resolved_geometry_summary": {
+        "admissible_candidate_count": 18,
+        "minimum_canonical_point_to_entity_aabb_clearance_xy_m": 5.045864764,
+        "minimum_entity_obstacle_aabb_clearance_m": 0.037471473,
+        "minimum_entity_pair_aabb_clearance_m": 0.098284512,
+        "minimum_inter_cell_task_aabb_clearance_xy_m": 4.776490474,
+        "minimum_robot_entity_aabb_clearance_m": 0.280256242,
+        "minimum_robot_obstacle_aabb_clearance_m": 0.128384033,
+        "minimum_support_edge_margin_m": 0.04,
+        "reach_distance_xy_m": {
+          "840873_inserted_basket_twin": 0.806225775,
+          "840873_inserted_towel_twin": 0.583095189
+        }
+      },
+      "robot_base_geometry": {
+        "aabb_max_m": [
+          1.16,
+          -0.54,
+          0.75
+        ],
+        "aabb_min_m": [
+          0.84,
+          -0.86,
+          0.0
+        ],
+        "center_world_m": [
+          1.0,
+          -0.7,
+          0.375
+        ],
+        "orientation_status": "pending_native_full_phase_ik",
+        "subject_id": "robot_base",
+        "support_region_id": "840873_registered_room2_floor_relocation_base_patch"
+      },
+      "scenario_family": "held_out_composed_relocation",
+      "task_entity_pose_binding_digest": "sha256:da4a836d0254680428ed611b0ce78fb0e8dbd53bb425b49c5a8f505e1ef521c3",
+      "task_entity_pose_bindings": [
+        {
+          "asset_binding_id": "840873_basket87_inserted_twin_asset.v1",
+          "design_basis_digest": "sha256:02c67f14aebe0e4db8384216b1bdf17e45787c0894318a26a7e0a3bb6ecf4d2c",
+          "entity_id": "840873_inserted_basket_twin",
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.7071067811865475,
+            0.7071067811865475
+          ],
+          "position_world_m": [
+            0.9,
+            0.1,
+            0.061094195
+          ]
+        },
+        {
+          "asset_binding_id": "840873_towel79_inserted_twin_asset.v1",
+          "design_basis_digest": "sha256:574d34e92dcc20e5588da0be293e12cfc500b563fdbcc89157ce7ae5e5000183",
+          "entity_id": "840873_inserted_towel_twin",
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "position_world_m": [
+            0.7,
+            -0.2,
+            0.056526405
+          ]
+        }
+      ]
+    }
+  ],
+  "claim_boundary": {
+    "geometry_plausibility_only": true,
+    "inserted_pose_is_source_truth": false,
+    "native_camera_visibility_qualified": false,
+    "native_contact_qualified": false,
+    "native_ik_qualified": false,
+    "physical_material_equivalence_proven": false,
+    "real_franka_performance_proven": false,
+    "runtime_assets_authored": false,
+    "simulator_execution_authorized": false
+  },
+  "collision_inventory": {
+    "algorithm": "apply authored transforms; split all active nonempty SAGE meshes by face connectivity; retain every non-floorplan component intersecting conservative candidate query volumes; classify floorplan z0 components as admitted supports; add exact nearby labeled components and conservative structure wall AABBs",
+    "floorplan_connected_component_count": 3766,
+    "non_floorplan_exact_query_hit_count": 25,
+    "obstacles": [
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 12,
+          "face_count": 94,
+          "geometry_digest": "sha256:a9b43e15a596e5b55edd85e5d8c652f09ecb5e455892457e76422c574c051583",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "174",
+          "vertex_count": 49
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.423922075,
+            2.085877766,
+            0.729779022
+          ],
+          "aabb_min_m": [
+            -4.759922096,
+            1.892877748,
+            0.69077902
+          ],
+          "obstacle_id": "840873_sage_room0_local_component12"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 14,
+          "face_count": 8,
+          "geometry_digest": "sha256:576126728fdb1bf5755d0db36b3c8abee26236d1881e7d60415031864f9b7831",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 6
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.658922088,
+            1.963877753,
+            0.772779024
+          ],
+          "aabb_min_m": [
+            -4.673922089,
+            1.946877753,
+            0.706779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component14"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 15,
+          "face_count": 132,
+          "geometry_digest": "sha256:b9f586677fa8d9205ce4cc6a9d130823ab0980f576599236c8fadad1ae9fff18",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "175",
+          "vertex_count": 68
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.624922086,
+            1.982877755,
+            0.832779027
+          ],
+          "aabb_min_m": [
+            -4.696922089,
+            1.909877751,
+            0.700779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component15"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 16,
+          "face_count": 392,
+          "geometry_digest": "sha256:78e996b02a718c750f417a300f360f98ed8fb05eefb72d3e99db995a7e47e235",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "176",
+          "vertex_count": 199
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.499922082,
+            2.080877762,
+            0.88677903
+          ],
+          "aabb_min_m": [
+            -4.625922088,
+            1.954877756,
+            0.700779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component16"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 17,
+          "face_count": 554,
+          "geometry_digest": "sha256:dd062ac1b480643384db398b5d7cab76cb77ff633b7d711f2e9a6d07b96c3ad0",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "170",
+          "vertex_count": 279
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -3.869922066,
+            2.857877811,
+            0.821779027
+          ],
+          "aabb_min_m": [
+            -4.397922094,
+            2.315877785,
+            0.399779007
+          ],
+          "obstacle_id": "840873_sage_room0_local_component17"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 18,
+          "face_count": 566,
+          "geometry_digest": "sha256:d0f56336b28274ef3648d1bf717a2d5f58a1e5f4a3ea86425c9aeca940f5ec7f",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "172",
+          "vertex_count": 285
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.602922074,
+            1.750877738,
+            0.821779027
+          ],
+          "aabb_min_m": [
+            -5.131922097,
+            1.207877713,
+            0.399779007
+          ],
+          "obstacle_id": "840873_sage_room0_local_component18"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 19,
+          "face_count": 560,
+          "geometry_digest": "sha256:5b472da79481173da449b26824aaa723672d660a23a45cf7dc84c2676fd8eec5",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "171",
+          "vertex_count": 282
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.708922105,
+            2.602877776,
+            0.821779027
+          ],
+          "aabb_min_m": [
+            -5.116922125,
+            2.103877754,
+            0.398779006
+          ],
+          "obstacle_id": "840873_sage_room0_local_component19"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 20,
+          "face_count": 558,
+          "geometry_digest": "sha256:ea3a431e033017e874008be4ed8a569d6f6b7ee412b873684c19a1de5d36eeaa",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "173",
+          "vertex_count": 281
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -3.898922035,
+            1.708877757,
+            0.821779027
+          ],
+          "aabb_min_m": [
+            -4.319922062,
+            1.202877731,
+            0.398779006
+          ],
+          "obstacle_id": "840873_sage_room0_local_component20"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 22,
+          "face_count": 4,
+          "geometry_digest": "sha256:779a8b595d74cf65c5aacc82a43e79840be899be2799b4970fb487c1dab2af25",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 5
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.585922085,
+            1.989877757,
+            0.708779021
+          ],
+          "aabb_min_m": [
+            -4.619922087,
+            1.960877756,
+            0.700779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component22"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 25,
+          "face_count": 32,
+          "geometry_digest": "sha256:124f8dad45a205aa91001b827d01ea4057da8b999d1afa65dd4b1b2401180756",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 18
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -3.879922058,
+            2.226877787,
+            0.644779018
+          ],
+          "aabb_min_m": [
+            -5.218922122,
+            2.18787775,
+            0.573779015
+          ],
+          "obstacle_id": "840873_sage_room0_local_component25"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 26,
+          "face_count": 36,
+          "geometry_digest": "sha256:ad36688861d8abe441114e24db52e18d6404f075246807a32b9c8d96aef71ab2",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 25
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -3.749922054,
+            2.320877794,
+            0.647779018
+          ],
+          "aabb_min_m": [
+            -3.894922058,
+            2.174877785,
+            0.001778988
+          ],
+          "obstacle_id": "840873_sage_room0_local_component26"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 27,
+          "face_count": 40,
+          "geometry_digest": "sha256:c665743b5ce963e4379d16eeb7fc499b6aed76b20c21718426e3d394bce9ed27",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 27
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -5.20392212,
+            2.320877753,
+            0.648779018
+          ],
+          "aabb_min_m": [
+            -5.34792213,
+            2.174877748,
+            0.000778988
+          ],
+          "obstacle_id": "840873_sage_room0_local_component27"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 32,
+          "face_count": 39,
+          "geometry_digest": "sha256:81acd025bc0c5cbd43e70e0e8b99c522b0ce64594e0dd0b38650d1450b132268",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 26
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -5.203922106,
+            1.688877725,
+            0.648779018
+          ],
+          "aabb_min_m": [
+            -5.34792211,
+            1.542877716,
+            0.002778988
+          ],
+          "obstacle_id": "840873_sage_room0_local_component32"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 33,
+          "face_count": 12,
+          "geometry_digest": "sha256:e4b62ab3b5294c9c85a0293fea770fcf1c39aefe300c62b27b73b0b2fb014c84",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 8
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -5.215922107,
+            2.189877749,
+            0.644779018
+          ],
+          "aabb_min_m": [
+            -5.254922123,
+            1.674877724,
+            0.573779015
+          ],
+          "obstacle_id": "840873_sage_room0_local_component33"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 34,
+          "face_count": 14,
+          "geometry_digest": "sha256:0ae13c6d5e8b3da5eff65671083601633fd23683125980f6f06c835153b8eaa8",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 9
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -3.879922042,
+            1.675877761,
+            0.644779018
+          ],
+          "aabb_min_m": [
+            -5.218922106,
+            1.636877723,
+            0.573779015
+          ],
+          "obstacle_id": "840873_sage_room0_local_component34"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 35,
+          "face_count": 12,
+          "geometry_digest": "sha256:737751dac350c7f3d6b5132e327047cae7a38283978040d0950aeaa234af0364",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 8
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -3.842922042,
+            2.189877786,
+            0.644779018
+          ],
+          "aabb_min_m": [
+            -3.882922057,
+            1.674877761,
+            0.573779015
+          ],
+          "obstacle_id": "840873_sage_room0_local_component35"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 36,
+          "face_count": 36,
+          "geometry_digest": "sha256:ad0d5402dee210d2f420601555647e598f8b40a8de8e0be89c652f5fc2881971",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 24
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -3.748922034,
+            1.688877762,
+            0.648779018
+          ],
+          "aabb_min_m": [
+            -3.894922044,
+            1.542877758,
+            0.000778988
+          ],
+          "obstacle_id": "840873_sage_room0_local_component36"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 37,
+          "face_count": 48,
+          "geometry_digest": "sha256:cc37774280add3a59c6808627a41047b60f3552bf2f575a71a5d823c637ba178",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 26
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.624922086,
+            1.982877755,
+            0.767779024
+          ],
+          "aabb_min_m": [
+            -4.69292209,
+            1.912877751,
+            0.702779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component37"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 74,
+          "face_count": 26,
+          "geometry_digest": "sha256:900eb4add19d40efb7f37d578ddc83bde6f5df68e3d4be85ccd0b0444d4c6304",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 16
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.527922083,
+            2.03287776,
+            0.89677903
+          ],
+          "aabb_min_m": [
+            -4.584922086,
+            1.994877758,
+            0.766779024
+          ],
+          "obstacle_id": "840873_sage_room0_local_component74"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 116,
+          "face_count": 2,
+          "geometry_digest": "sha256:6ac15117f1df6992f80f5529bb242b1d6b6071f898c77212a1b89a460b5fa5e5",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 3
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.42392208,
+            2.074877765,
+            0.696779021
+          ],
+          "aabb_min_m": [
+            -4.42492208,
+            2.070877765,
+            0.695779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component116"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 117,
+          "face_count": 2,
+          "geometry_digest": "sha256:77a9fc7af2b76e833893e85d3b10e5cac5137dd45fb38e7837f4a92ac7d5150c",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 3
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.62892209,
+            2.08487776,
+            0.696779021
+          ],
+          "aabb_min_m": [
+            -4.63292209,
+            2.08487776,
+            0.695779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component117"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 118,
+          "face_count": 2,
+          "geometry_digest": "sha256:ede66c758cde7330293d2846a89fe15d928108c1465644ce843eb5f03316ecb3",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 3
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.758922092,
+            1.94587775,
+            0.696779021
+          ],
+          "aabb_min_m": [
+            -4.758922092,
+            1.94187775,
+            0.695779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component118"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 119,
+          "face_count": 2,
+          "geometry_digest": "sha256:158c966188f0021a144ede1b81ec3d3df8a3a732eeca2c4ed14e9bb13f4952e9",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 3
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -4.753922096,
+            2.084877757,
+            0.710779021
+          ],
+          "aabb_min_m": [
+            -4.754922096,
+            2.084877757,
+            0.706779021
+          ],
+          "obstacle_id": "840873_sage_room0_local_component119"
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "claim": "conservative_registered_wall_box_not_exact_mesh_surface",
+          "sage_floorplan_wall_corroboration": {
+            "component_index": 2679,
+            "geometry_digest": "sha256:723f2cf450b9d928bd10b01997399092cdf2c71c258415ed06e9284dfcf09bff"
+          },
+          "source_kind": "interiorgs_structure_conservative_wall_aabb",
+          "structure_sha256": "sha256:a55eabf1fea1e46cee78af46350be855a1b5f337cb0f62943cd42a562b7d29b6",
+          "structure_wall_index": 29
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            -5.375721191,
+            3.631179688,
+            2.8
+          ],
+          "aabb_min_m": [
+            -5.615721191,
+            -3.135933594,
+            0.0
+          ],
+          "obstacle_id": "840873_structure_wall29"
+        }
+      },
+      {
+        "cells": [
+          "840873_held_out_composed_relocation_seed_2026081001"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 0,
+          "face_count": 12,
+          "geometry_digest": "sha256:cf142dd59135cff21a44a76e135d87415a1cdaa6f8c73f64adf637bc7388b814",
+          "inventory_role": "exact_query_hit",
+          "prim_path": "/Root/Door_A5245107f664d4c88B0bd49a5e4f90900",
+          "semantic_binding_claimed": false,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": null,
+          "vertex_count": 8
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            1.209380043,
+            0.396120015,
+            1.959000093
+          ],
+          "aabb_min_m": [
+            1.169380042,
+            -0.303880018,
+            0.01
+          ],
+          "obstacle_id": "840873_sage_door_room2_local_component0"
+        }
+      },
+      {
+        "cells": [
+          "840873_held_out_composed_relocation_seed_2026081001"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 37,
+          "face_count": 6812,
+          "geometry_digest": "sha256:a9aa50c862ccde29051c8b38a03bfa01183447cd8ce4763ba8515c4378d3c289",
+          "inventory_role": "context_neighbor_retained_conservatively",
+          "prim_path": "/Root/ZTEOSGRVAUEHIPTUJU888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "186",
+          "vertex_count": 3408
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            0.635218303,
+            -0.46675998,
+            0.62864291
+          ],
+          "aabb_min_m": [
+            -0.684645526,
+            -2.117075649,
+            0.008559638
+          ],
+          "obstacle_id": "840873_sage_quilt186_component37"
+        }
+      },
+      {
+        "cells": [
+          "840873_held_out_composed_relocation_seed_2026081001"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 36,
+          "face_count": 968,
+          "geometry_digest": "sha256:b4ca7c4dc8acc807b1c1974c67300b67fb770b0b1b64bf54581c05dc87e161d2",
+          "inventory_role": "context_neighbor_retained_conservatively",
+          "prim_path": "/Root/ZTEOSGRVAUEHIPTUJU888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "185",
+          "vertex_count": 486
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            0.337811586,
+            -0.441490138,
+            0.621839488
+          ],
+          "aabb_min_m": [
+            -0.218125202,
+            -2.111244153,
+            0.258342398
+          ],
+          "obstacle_id": "840873_sage_blanket185_component36"
+        }
+      },
+      {
+        "cells": [
+          "840873_held_out_composed_relocation_seed_2026081001"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_index": 17,
+          "face_count": 84,
+          "geometry_digest": "sha256:c2fe3176efa8c2119e3ca20af87d57b106b608930c4e100f4a18dc400b14a2e6",
+          "inventory_role": "context_neighbor_retained_conservatively",
+          "prim_path": "/Root/_IYEUPBVAVCMSPTUKY888888",
+          "semantic_binding_claimed": true,
+          "source_kind": "sage_connected_component",
+          "source_label_instance_id": "211",
+          "vertex_count": 46
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            0.334575306,
+            0.397359888,
+            2.401500032
+          ],
+          "aabb_min_m": [
+            -1.426683296,
+            -0.138250081,
+            0.001499918
+          ],
+          "obstacle_id": "840873_sage_wardrobe211_component17"
+        }
+      },
+      {
+        "cells": [
+          "840873_held_out_composed_relocation_seed_2026081001"
+        ],
+        "derivation": {
+          "claim": "conservative_registered_wall_box_not_exact_mesh_surface",
+          "source_kind": "interiorgs_structure_conservative_wall_aabb",
+          "structure_sha256": "sha256:a55eabf1fea1e46cee78af46350be855a1b5f337cb0f62943cd42a562b7d29b6",
+          "structure_wall_index": 5
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            1.528384033,
+            0.57612439,
+            2.8
+          ],
+          "aabb_min_m": [
+            1.288384033,
+            -3.135933594,
+            0.0
+          ],
+          "obstacle_id": "840873_structure_wall5"
+        }
+      },
+      {
+        "cells": [
+          "840873_held_out_composed_relocation_seed_2026081001"
+        ],
+        "derivation": {
+          "claim": "conservative_registered_wall_box_not_exact_mesh_surface",
+          "source_kind": "interiorgs_structure_conservative_wall_aabb",
+          "structure_sha256": "sha256:a55eabf1fea1e46cee78af46350be855a1b5f337cb0f62943cd42a562b7d29b6",
+          "structure_wall_index": 10
+        },
+        "planner_obstacle": {
+          "aabb_max_m": [
+            1.468384033,
+            0.51612439,
+            2.8
+          ],
+          "aabb_min_m": [
+            -1.607977661,
+            0.39612439,
+            0.0
+          ],
+          "obstacle_id": "840873_structure_wall10"
+        }
+      }
+    ],
+    "query_hit_classification": {
+      "admitted_table_support_component_count": 1,
+      "planner_obstacle_component_count": 24
+    },
+    "query_volumes_world_aabb_m": [
+      {
+        "aabb_max_m": [
+          -3.694922031,
+          2.412877799,
+          0.85
+        ],
+        "aabb_min_m": [
+          -5.402922133,
+          1.451877712,
+          0.64
+        ],
+        "cell_id": "840873_canonical",
+        "role": "entity_candidates_plus_clearance"
+      },
+      {
+        "aabb_max_m": [
+          -2.85,
+          2.4,
+          0.8
+        ],
+        "aabb_min_m": [
+          -3.75,
+          1.5,
+          -0.05
+        ],
+        "cell_id": "840873_canonical",
+        "role": "robot_base_candidates_plus_clearance"
+      },
+      {
+        "aabb_max_m": [
+          1.25,
+          0.35,
+          0.2
+        ],
+        "aabb_min_m": [
+          0.35,
+          -0.4,
+          -0.05
+        ],
+        "cell_id": "840873_held_out_composed_relocation_seed_2026081001",
+        "role": "entity_candidates_plus_clearance"
+      },
+      {
+        "aabb_max_m": [
+          1.25,
+          -0.4,
+          0.8
+        ],
+        "aabb_min_m": [
+          0.65,
+          -1.15,
+          -0.05
+        ],
+        "cell_id": "840873_held_out_composed_relocation_seed_2026081001",
+        "role": "robot_base_candidates_plus_clearance"
+      }
+    ],
+    "stage_active_nonempty_mesh_count": 95,
+    "stage_connected_component_count": 11594,
+    "support_contact_exception": {
+      "admitted_supports_are_not_obstacles_for_supported_subjects": true,
+      "canonical_robot_base_to_table_support_component_clearance_m": 0.064922031,
+      "passed": true,
+      "required_robot_obstacle_clearance_m": 0.05
+    },
+    "supports": [
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "collision_api_applied": true,
+          "component_coverage_fraction": 0.970802195,
+          "component_face_count": 26,
+          "component_geometry_digest": "sha256:c002127e7cc6976a232551073d792a7b1b2b885bfddbc19b8ee10ff5ba1fd91d",
+          "component_index": 13,
+          "component_vertex_count": 15,
+          "component_world_aabb_max_m": [
+            -3.724922031,
+            2.382877799,
+            0.69177902
+          ],
+          "component_world_aabb_min_m": [
+            -5.372922133,
+            1.481877712,
+            0.644779018
+          ],
+          "prim_path": "/Root/_HWMNHMTDD52EPTUKA888888",
+          "registration_claim": "registered_tabletop_support_component_not_whole_table_identity",
+          "source_kind": "sage_connected_component_top_plane",
+          "source_label_instance_id": "169",
+          "source_semantic_label": "dining_table",
+          "top_plane_z_m": 0.69177902,
+          "whole_table_label_aabb_iou": 0.065931635
+        },
+        "planner_region": {
+          "aabb_max_m": [
+            -3.724922031,
+            2.382877799,
+            0.69177902
+          ],
+          "aabb_min_m": [
+            -5.372922133,
+            1.481877712,
+            0.69177902
+          ],
+          "support_region_id": "840873_sage_table169_top_component13",
+          "supports_entities": true,
+          "supports_robot_base": false
+        }
+      },
+      {
+        "cells": [
+          "840873_canonical"
+        ],
+        "derivation": {
+          "all_samples_hit_exact_sage_floor_at_z0": true,
+          "all_samples_inside_exact_room_polygon": true,
+          "corner_and_center_samples": [
+            {
+              "interiorgs_room_index": 0,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                -3.7,
+                1.55
+              ]
+            },
+            {
+              "interiorgs_room_index": 0,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                -3.7,
+                2.35
+              ]
+            },
+            {
+              "interiorgs_room_index": 0,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                -2.9,
+                1.55
+              ]
+            },
+            {
+              "interiorgs_room_index": 0,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                -2.9,
+                2.35
+              ]
+            },
+            {
+              "interiorgs_room_index": 0,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                -3.3,
+                1.95
+              ]
+            }
+          ],
+          "interiorgs_room_index": 0,
+          "probe_direction": "negative_z",
+          "probe_origin_z_m": 0.5,
+          "room_polygon_digest": "sha256:81cb7b107d7bb961c8f7db3840e94d00d956175a3bf49bab5e6dd8ffd2b30f97",
+          "room_polygon_vertex_count": 23,
+          "sage_collision_api_applied": true,
+          "sage_floor_mesh_face_count": 44687,
+          "sage_floor_mesh_geometry_digest": "sha256:979e3c2f5f6b4f35cae2de1bc1ba9252f072cc14268fe2440ba4c408c8c9f0ad",
+          "sage_floor_mesh_vertex_count": 46418,
+          "sage_floor_prim_path": "/Root/SM_floorplan",
+          "source_kind": "registered_interiorgs_room_patch_and_sage_floor_ray",
+          "source_structure_sha256": "sha256:a55eabf1fea1e46cee78af46350be855a1b5f337cb0f62943cd42a562b7d29b6"
+        },
+        "planner_region": {
+          "aabb_max_m": [
+            -2.9,
+            2.35,
+            0.0
+          ],
+          "aabb_min_m": [
+            -3.7,
+            1.55,
+            0.0
+          ],
+          "support_region_id": "840873_registered_room0_floor_base_patch",
+          "supports_entities": false,
+          "supports_robot_base": true
+        }
+      },
+      {
+        "cells": [
+          "840873_held_out_composed_relocation_seed_2026081001"
+        ],
+        "derivation": {
+          "all_samples_hit_exact_sage_floor_at_z0": true,
+          "all_samples_inside_exact_room_polygon": true,
+          "corner_and_center_samples": [
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                0.4,
+                -0.35
+              ]
+            },
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                0.4,
+                0.3
+              ]
+            },
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                1.2,
+                -0.35
+              ]
+            },
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                1.2,
+                0.3
+              ]
+            },
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                0.8,
+                -0.025
+              ]
+            }
+          ],
+          "interiorgs_room_index": 2,
+          "probe_direction": "negative_z",
+          "probe_origin_z_m": 0.5,
+          "room_polygon_digest": "sha256:14a236f4d831fd36e7a780e9d81c66084df1d430dbb029853d13b03d9b978ddd",
+          "room_polygon_vertex_count": 7,
+          "sage_collision_api_applied": true,
+          "sage_floor_mesh_face_count": 44687,
+          "sage_floor_mesh_geometry_digest": "sha256:979e3c2f5f6b4f35cae2de1bc1ba9252f072cc14268fe2440ba4c408c8c9f0ad",
+          "sage_floor_mesh_vertex_count": 46418,
+          "sage_floor_prim_path": "/Root/SM_floorplan",
+          "source_kind": "registered_interiorgs_room_patch_and_sage_floor_ray",
+          "source_structure_sha256": "sha256:a55eabf1fea1e46cee78af46350be855a1b5f337cb0f62943cd42a562b7d29b6"
+        },
+        "planner_region": {
+          "aabb_max_m": [
+            1.2,
+            0.3,
+            0.0
+          ],
+          "aabb_min_m": [
+            0.4,
+            -0.35,
+            0.0
+          ],
+          "support_region_id": "840873_registered_room2_floor_relocation_entity_patch",
+          "supports_entities": true,
+          "supports_robot_base": false
+        }
+      },
+      {
+        "cells": [
+          "840873_held_out_composed_relocation_seed_2026081001"
+        ],
+        "derivation": {
+          "all_samples_hit_exact_sage_floor_at_z0": true,
+          "all_samples_inside_exact_room_polygon": true,
+          "corner_and_center_samples": [
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                0.7,
+                -1.1
+              ]
+            },
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                0.7,
+                -0.45
+              ]
+            },
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                1.2,
+                -1.1
+              ]
+            },
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                1.2,
+                -0.45
+              ]
+            },
+            {
+              "interiorgs_room_index": 2,
+              "sage_floor_hit_z_m": 0.0,
+              "xy_world_m": [
+                0.95,
+                -0.775
+              ]
+            }
+          ],
+          "interiorgs_room_index": 2,
+          "probe_direction": "negative_z",
+          "probe_origin_z_m": 0.5,
+          "room_polygon_digest": "sha256:14a236f4d831fd36e7a780e9d81c66084df1d430dbb029853d13b03d9b978ddd",
+          "room_polygon_vertex_count": 7,
+          "sage_collision_api_applied": true,
+          "sage_floor_mesh_face_count": 44687,
+          "sage_floor_mesh_geometry_digest": "sha256:979e3c2f5f6b4f35cae2de1bc1ba9252f072cc14268fe2440ba4c408c8c9f0ad",
+          "sage_floor_mesh_vertex_count": 46418,
+          "sage_floor_prim_path": "/Root/SM_floorplan",
+          "source_kind": "registered_interiorgs_room_patch_and_sage_floor_ray",
+          "source_structure_sha256": "sha256:a55eabf1fea1e46cee78af46350be855a1b5f337cb0f62943cd42a562b7d29b6"
+        },
+        "planner_region": {
+          "aabb_max_m": [
+            1.2,
+            -0.45,
+            0.0
+          ],
+          "aabb_min_m": [
+            0.7,
+            -1.1,
+            0.0
+          ],
+          "support_region_id": "840873_registered_room2_floor_relocation_base_patch",
+          "supports_entities": false,
+          "supports_robot_base": true
+        }
+      }
+    ]
+  },
+  "coordinate_registration": {
+    "authored_prim_local_to_world_transforms_applied": true,
+    "claim_boundary": "publisher_frame_registration_consistency_not_measurement_authoritative_surface_truth",
+    "frame": "interiorgs_world_right_back_up",
+    "interiorgs_to_sage_world_transform": "identity_after_authored_prim_transforms",
+    "meters_per_unit": 1.0,
+    "up_axis": "Z"
+  },
+  "cross_cell_checks": {
+    "exactly_one_canonical_cell": true,
+    "exactly_one_held_out_composed_relocation_cell": true,
+    "minimum_required_task_region_separation_m": 1.5,
+    "minimum_resolved_task_aabb_separation_xy_m": 4.776490474,
+    "passed": true,
+    "same_asset_binding_ids": true,
+    "same_design_basis_digests": true,
+    "same_entity_ids": true,
+    "same_entity_orientations": true,
+    "task_entities_differ_only_in_positions": true
+  },
+  "development_only": true,
+  "excision_and_inpainting": {
+    "collider_removal_required": false,
+    "gaussian_excision_required": false,
+    "inpainting_required": false,
+    "reason": "source_originals_remain_unscored_background_and_both_task_entities_are_separate_inserted_twins"
+  },
+  "manifest_digest": "sha256:baa01dc3322231be059d9c78067439432935778522b77a89bcbce4416e809a66",
+  "outcome_blind_resolution": {
+    "frozen_seed": 2026081001,
+    "learned_policy_outcomes_inspected": false,
+    "manual_post_outcome_repositioning_allowed": false,
+    "policy_outcomes_used_for_selection": false,
+    "protocol_amendment_path": "docs/arm_decision_proof_v1/deformable_scene/scene_composed_relocation_protocol_amendment.v1.json",
+    "protocol_amendment_sha256": "sha256:ad20a16879729b0666b6b991118626a7285691d1220aef5e48770dbd8d5639bd",
+    "recorded_before_learned_policy_outcome_inspection": true,
+    "runtime_resampling_allowed": false
+  },
+  "pending_native_gates": [
+    "runtime_asset_files_and_digests_bound_for_both_inserted_entities",
+    "native_deformable_and_receptacle_import_qualification",
+    "native_full_phase_ik",
+    "native_contact_and_stable_support",
+    "native_policy_and_review_camera_visibility",
+    "native_resolved_pose_readback",
+    "zero_action_failure_and_scripted_positive_success_in_each_cell"
+  ],
+  "planner_identity": {
+    "claim": "geometry_plausibility_only",
+    "module": "blueprint_pipeline.composed_paired_entity_placement",
+    "receipt_schema_version": "composed_paired_entity_placement_receipt.v1",
+    "request_schema_version": "composed_paired_entity_placement_request.v1",
+    "source_commit": "001bc900873ce21b1588994f7d26146b7c5e9b51",
+    "source_file_sha256": "sha256:cfaa41b401b2595b79b97e6309ce67a5eab72f1e62431170fe9cc7956362050a"
+  },
+  "planner_parameters": {
+    "canonical_minimum_separation_m": 0.0,
+    "frozen_seed": 2026081001,
+    "grid_spacing_m": 0.1,
+    "held_out_composed_relocation_minimum_separation_m": 1.5,
+    "minimum_separations_m": {
+      "entity_entity": 0.08,
+      "entity_obstacle": 0.03,
+      "robot_entity": 0.08,
+      "robot_obstacle": 0.05,
+      "support_edge": 0.03
+    }
+  },
+  "program_id": "arm-decision-proof-v1",
+  "resolved_at": "2026-08-10T14:48:15Z",
+  "robot_geometry_contract": {
+    "base_clearance_height_m": 0.75,
+    "base_footprint_source": "published_generalized_franka_geometry_screen",
+    "base_footprint_xy_m": [
+      0.32,
+      0.32
+    ],
+    "claim": "horizontal_geometry_plausibility_only",
+    "reach_annulus_m": [
+      0.3,
+      0.855
+    ]
+  },
+  "run_id": "adp-deformable-scene-e2e-v1",
+  "scene_id": "840873",
+  "schema_version": "adp_deformable_scene_composed_paired_entity_placement_manifest.v1",
+  "source_identity": {
+    "component_topology_receipt": {
+      "receipt_digest": "sha256:4dcf34d7ffbd2141a340813afde6b020236fe6ca7320164cb20bf5f8dc9ff36a",
+      "relative_path": "docs/arm_decision_proof_v1/deformable_scene/840873_sage_component_topology.v1.json"
+    },
+    "interiorgs_labels": {
+      "path": "labels.json",
+      "sha256": "sha256:30007f1d46d37f4fd2e4c181df7fa474af081b59b56dee90d5bbf8c0bc683f2f",
+      "size_bytes": 198732
+    },
+    "interiorgs_structure": {
+      "path": "structure.json",
+      "sha256": "sha256:a55eabf1fea1e46cee78af46350be855a1b5f337cb0f62943cd42a562b7d29b6",
+      "size_bytes": 35839
+    },
+    "sage_collision": {
+      "path": "840873_collision.usd",
+      "sha256": "sha256:a3a2fb4010d4969ce8b5647d8c167209630877946fdeeddd5cee50ab371fe703",
+      "size_bytes": 20030048
+    }
+  },
+  "source_originals_retained": [
+    {
+      "appearance_gaussians_removed": false,
+      "center_world_m": [
+        -5.037919771,
+        -4.490491702,
+        1.179488061
+      ],
+      "inpainting_applied": false,
+      "replacement_relationship": "observation_design_basis_only",
+      "source_collider_removed": false,
+      "source_entity_id": "840873_source_towel_79",
+      "source_instance_id": "79",
+      "task_scoring_role": "unscored_background"
+    },
+    {
+      "appearance_gaussians_removed": false,
+      "center_world_m": [
+        -5.106401839,
+        -3.411822009,
+        1.718399969
+      ],
+      "inpainting_applied": false,
+      "replacement_relationship": "observation_design_basis_only",
+      "source_collider_removed": false,
+      "source_entity_id": "840873_source_basket_87",
+      "source_instance_id": "87",
+      "task_scoring_role": "unscored_background"
+    }
+  ],
+  "task_entity_asset_bindings": [
+    {
+      "asset_binding_id": "840873_basket87_inserted_twin_asset.v1",
+      "asset_binding_status": "design_basis_bound_runtime_asset_pending",
+      "design_basis_digest": "sha256:02c67f14aebe0e4db8384216b1bdf17e45787c0894318a26a7e0a3bb6ecf4d2c",
+      "entity_id": "840873_inserted_basket_twin",
+      "observed_design_basis": {
+        "open_collision_cavity_receipt_digest": "sha256:4dcf34d7ffbd2141a340813afde6b020236fe6ca7320164cb20bf5f8dc9ff36a",
+        "source_component_geometry_digest": "sha256:e1c1704b3504a6bd5780f5eb4da2880f9a8b28db07430592ca29892cbf20c76e",
+        "source_component_index": 60,
+        "source_component_prim_path": "/Root/Z2F6AOBVAJ33MPTULY888888",
+        "source_component_world_aabb_size_m": [
+          0.28394346,
+          0.463817139,
+          0.122188391
+        ],
+        "source_instance_id": "87",
+        "source_semantic_label": "storage_basket"
+      },
+      "physics_type_candidate": "rigid_static_receptacle",
+      "planner_geometry": {
+        "fixed_yaw_degrees": 90.0,
+        "footprint_xy_m": [
+          0.463817139,
+          0.28394346
+        ],
+        "height_m": 0.122188391,
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.7071067811865475,
+          0.7071067811865475
+        ]
+      },
+      "runtime_asset": {
+        "digest": null,
+        "native_simulator_qualified": false,
+        "relative_path": null
+      },
+      "semantic_role": "destination_receptacle",
+      "shared_across_cells": true
+    },
+    {
+      "asset_binding_id": "840873_towel79_inserted_twin_asset.v1",
+      "asset_binding_status": "design_basis_bound_runtime_asset_pending",
+      "design_basis_digest": "sha256:574d34e92dcc20e5588da0be293e12cfc500b563fdbcc89157ce7ae5e5000183",
+      "entity_id": "840873_inserted_towel_twin",
+      "observed_design_basis": {
+        "source_component_geometry_digest": "sha256:d4d2af2d5837d39a87584b1e74b442f31a8af8cc431b09fb51c016038151ac5b",
+        "source_component_index": 63,
+        "source_component_prim_path": "/Root/Z2F6AOBVAJ33MPTULY888888",
+        "source_component_world_aabb_size_m": [
+          0.370025854,
+          0.119487516,
+          0.11305281
+        ],
+        "source_instance_id": "79",
+        "source_semantic_label": "towel"
+      },
+      "physics_type_candidate": "deformable",
+      "planner_geometry": {
+        "fixed_yaw_degrees": 0.0,
+        "footprint_xy_m": [
+          0.370025854,
+          0.119487516
+        ],
+        "height_m": 0.11305281,
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "runtime_asset": {
+        "digest": null,
+        "native_simulator_qualified": false,
+        "relative_path": null
+      },
+      "semantic_role": "movable_deformable",
+      "shared_across_cells": true
+    }
+  ]
+}

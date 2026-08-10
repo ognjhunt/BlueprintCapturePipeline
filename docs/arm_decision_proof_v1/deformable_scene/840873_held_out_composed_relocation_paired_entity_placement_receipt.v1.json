@@ -1,0 +1,340 @@
+{
+  "blockers": [],
+  "blocking_stage": null,
+  "claim_boundary": {
+    "geometry_plausibility_only": true,
+    "native_camera_visibility_qualified": false,
+    "native_contact_qualified": false,
+    "native_ik_qualified": false,
+    "physical_task_performance_proven": false,
+    "simulator_execution_authorized": false
+  },
+  "enumeration": {
+    "canonical_order": "entity_id, support_region_id, x, y, z; paired entity rows; robot support_region_id, x, y, z",
+    "entity_pairs": {
+      "admissible_count": 18,
+      "pairs_considered": 135,
+      "potential_count": 135,
+      "rejected_count": 117,
+      "rejection_reason_counts": {
+        "entity_pair_clearance": 117
+      },
+      "rejection_signature_counts": {
+        "entity_pair_clearance": 117
+      }
+    },
+    "entity_placements": {
+      "840873_inserted_basket_twin": {
+        "admissible_count": 9,
+        "grid_points_considered": 9,
+        "rejected_count": 0,
+        "rejection_reason_counts": {},
+        "rejection_signature_counts": {},
+        "support_regions_without_grid_fit": []
+      },
+      "840873_inserted_towel_twin": {
+        "admissible_count": 15,
+        "grid_points_considered": 15,
+        "rejected_count": 0,
+        "rejection_reason_counts": {},
+        "rejection_signature_counts": {},
+        "support_regions_without_grid_fit": []
+      }
+    },
+    "paired_entity_robot_candidates": {
+      "admissible_count": 18,
+      "considered_count": 108,
+      "potential_count": 108,
+      "rejected_count": 90,
+      "rejection_reason_counts": {
+        "robot_reach_outer_radius": 90
+      },
+      "rejection_signature_counts": {
+        "robot_reach_outer_radius": 90
+      }
+    },
+    "robot_base_placements": {
+      "admissible_before_pair_count": 6,
+      "grid_points_considered": 6,
+      "rejected_count": 0,
+      "rejection_reason_counts": {},
+      "rejection_signature_counts": {},
+      "support_regions_without_grid_fit": []
+    }
+  },
+  "pending_native_gates": [
+    "native_full_phase_ik",
+    "native_contact_and_stable_support",
+    "native_policy_and_review_camera_visibility"
+  ],
+  "receipt_digest": "sha256:6fb7a985f0bf2834fc5ae54a9e5677a52c30d6cfbcf8927dc3786e9c175dc098",
+  "request": {
+    "canonical_task_centers_m": [
+      [
+        -5.106401839,
+        -3.411822009,
+        1.718399969
+      ],
+      [
+        -5.037919771,
+        -4.490491702,
+        1.179488061
+      ],
+      [
+        -4.1,
+        1.9,
+        0.752873215
+      ],
+      [
+        -4.1,
+        2.2,
+        0.748305425
+      ]
+    ],
+    "coordinate_precision_decimal_places": 9,
+    "entity_specs": [
+      {
+        "entity_id": "840873_inserted_basket_twin",
+        "footprint_xy_m": [
+          0.463817139,
+          0.28394346
+        ],
+        "height_m": 0.122188391
+      },
+      {
+        "entity_id": "840873_inserted_towel_twin",
+        "footprint_xy_m": [
+          0.370025854,
+          0.119487516
+        ],
+        "height_m": 0.11305281
+      }
+    ],
+    "frozen_seed_uint64": 2026081001,
+    "grid_origin_world_xy_m": [
+      0.0,
+      0.0
+    ],
+    "grid_spacing_m": 0.1,
+    "maximum_combination_count": 2000000,
+    "minimum_separations_m": {
+      "canonical_region": 1.5,
+      "entity_entity": 0.08,
+      "entity_obstacle": 0.03,
+      "robot_entity": 0.08,
+      "robot_obstacle": 0.05,
+      "support_edge": 0.03
+    },
+    "obstacle_aabbs": [
+      {
+        "aabb_max_m": [
+          0.337811586,
+          -0.441490138,
+          0.621839488
+        ],
+        "aabb_min_m": [
+          -0.218125202,
+          -2.111244153,
+          0.258342398
+        ],
+        "obstacle_id": "840873_sage_blanket185_component36"
+      },
+      {
+        "aabb_max_m": [
+          1.209380043,
+          0.396120015,
+          1.959000093
+        ],
+        "aabb_min_m": [
+          1.169380042,
+          -0.303880018,
+          0.01
+        ],
+        "obstacle_id": "840873_sage_door_room2_local_component0"
+      },
+      {
+        "aabb_max_m": [
+          0.635218303,
+          -0.46675998,
+          0.62864291
+        ],
+        "aabb_min_m": [
+          -0.684645526,
+          -2.117075649,
+          0.008559638
+        ],
+        "obstacle_id": "840873_sage_quilt186_component37"
+      },
+      {
+        "aabb_max_m": [
+          0.334575306,
+          0.397359888,
+          2.401500032
+        ],
+        "aabb_min_m": [
+          -1.426683296,
+          -0.138250081,
+          0.001499918
+        ],
+        "obstacle_id": "840873_sage_wardrobe211_component17"
+      },
+      {
+        "aabb_max_m": [
+          1.468384033,
+          0.51612439,
+          2.8
+        ],
+        "aabb_min_m": [
+          -1.607977661,
+          0.39612439,
+          0.0
+        ],
+        "obstacle_id": "840873_structure_wall10"
+      },
+      {
+        "aabb_max_m": [
+          1.528384033,
+          0.57612439,
+          2.8
+        ],
+        "aabb_min_m": [
+          1.288384033,
+          -3.135933594,
+          0.0
+        ],
+        "obstacle_id": "840873_structure_wall5"
+      }
+    ],
+    "request_digest": "sha256:c90f1cd3bf59bbc9b8eae1871ac0df73a8c773204605403543e25a0a63e21fde",
+    "robot_spec": {
+      "base_clearance_height_m": 0.75,
+      "base_footprint_xy_m": [
+        0.32,
+        0.32
+      ],
+      "reach_annulus_m": [
+        0.3,
+        0.855
+      ],
+      "reach_distance_definition": "horizontal_base_center_to_entity_center_xy"
+    },
+    "schema_version": "composed_paired_entity_placement_request.v1",
+    "separation_distance_definitions": {
+      "all_other_clearances": "euclidean_distance_between_3d_axis_aligned_aabbs",
+      "canonical_region": "horizontal_point_to_entity_footprint_aabb"
+    },
+    "support_regions": [
+      {
+        "aabb_max_m": [
+          1.2,
+          -0.45,
+          0.0
+        ],
+        "aabb_min_m": [
+          0.7,
+          -1.1,
+          0.0
+        ],
+        "support_region_id": "840873_registered_room2_floor_relocation_base_patch",
+        "supports_entities": false,
+        "supports_robot_base": true
+      },
+      {
+        "aabb_max_m": [
+          1.2,
+          0.3,
+          0.0
+        ],
+        "aabb_min_m": [
+          0.4,
+          -0.35,
+          0.0
+        ],
+        "support_region_id": "840873_registered_room2_floor_relocation_entity_patch",
+        "supports_entities": true,
+        "supports_robot_base": false
+      }
+    ]
+  },
+  "schema_version": "composed_paired_entity_placement_receipt.v1",
+  "selection": {
+    "admissible_candidate_count": 18,
+    "entity_placements": [
+      {
+        "aabb_max_m": [
+          1.131908569,
+          0.24197173,
+          0.122188391
+        ],
+        "aabb_min_m": [
+          0.668091431,
+          -0.04197173,
+          0.0
+        ],
+        "center_world_m": [
+          0.9,
+          0.1,
+          0.061094195
+        ],
+        "subject_id": "840873_inserted_basket_twin",
+        "support_region_id": "840873_registered_room2_floor_relocation_entity_patch"
+      },
+      {
+        "aabb_max_m": [
+          0.885012927,
+          -0.140256242,
+          0.11305281
+        ],
+        "aabb_min_m": [
+          0.514987073,
+          -0.259743758,
+          0.0
+        ],
+        "center_world_m": [
+          0.7,
+          -0.2,
+          0.056526405
+        ],
+        "subject_id": "840873_inserted_towel_twin",
+        "support_region_id": "840873_registered_room2_floor_relocation_entity_patch"
+      }
+    ],
+    "geometry_checks": {
+      "both_entities_supported": true,
+      "canonical_region_excluded": true,
+      "entity_pair_clearance_passed": true,
+      "obstacle_clearance_passed": true,
+      "robot_base_clearance_passed": true,
+      "robot_base_supported": true,
+      "robot_reach_annulus_passed": true
+    },
+    "reach_distance_xy_m": {
+      "840873_inserted_basket_twin": 0.806225775,
+      "840873_inserted_towel_twin": 0.583095189
+    },
+    "robot_base_placement": {
+      "aabb_max_m": [
+        1.16,
+        -0.54,
+        0.75
+      ],
+      "aabb_min_m": [
+        0.84,
+        -0.86,
+        0.0
+      ],
+      "center_world_m": [
+        1.0,
+        -0.7,
+        0.375
+      ],
+      "subject_id": "robot_base",
+      "support_region_id": "840873_registered_room2_floor_relocation_base_patch"
+    },
+    "selected_index": 13,
+    "selection_algorithm": "canonical-sort admissible candidates; sha256 schema version, frozen seed, request digest, and admissible count; interpret as a big-endian integer modulo admissible_candidate_count",
+    "selection_digest": "sha256:e4295ddc55c6fa3e33785a0a9f73eb6677f55aded9ed784b6e3118b545cfae60",
+    "selection_seed_digest": "sha256:c621b3d0b409c3cfb382944d3ca4b02b7ade44338df179966a827ffb8790fd8f"
+  },
+  "status": "geometry_plausibility_candidate_selected"
+}
