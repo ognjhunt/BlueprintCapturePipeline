@@ -3,8 +3,8 @@
 The scenario suite is policy neutral.  Before either learned candidate may run
 on one resolved cell, this module proves two properties through the same native
 8D action seam: holding the current joints cannot complete the task, and a
-fixed differential-IK pick/place program can.  A failed positive blocks the
-cell; it is never counted as a learned-policy failure.
+frozen joint or Cartesian differential-IK program can.  A failed positive
+blocks the cell; it is never counted as a learned-policy failure.
 
 Isaac remains injected.  The plan, sequencing, scoring, retained state/action
 trace, and dual-camera evidence are all hermetically testable off GPU.
@@ -834,11 +834,84 @@ def validate_task_control_plan(
         errors.append("task_control_scripted_actions_missing")
         actions = []
     normalized_actions: list[dict[str, Any]] = []
+    maximum_scripted_steps = 0
     for index, raw in enumerate(actions):
         if not isinstance(raw, Mapping):
             errors.append(f"task_control_scripted_action_invalid:{index}")
             continue
         phase_id = str(raw.get("phase_id") or "")
+        if raw.get("mode") == "ik_pose" or "target_position_world_m" in raw:
+            try:
+                position = [float(value) for value in raw["target_position_world_m"]]
+                quaternion_raw = raw.get("target_quaternion_world_xyzw")
+                quaternion = (
+                    None
+                    if quaternion_raw is None
+                    else [float(value) for value in quaternion_raw]
+                )
+                minimum_steps = int(raw["minimum_steps"])
+                maximum_steps = int(raw["maximum_steps"])
+                arrival_tolerance_m = float(raw["arrival_tolerance_m"])
+                arrival_stability_steps = int(raw["arrival_stability_steps"])
+                max_joint_delta_rad = float(raw["max_joint_delta_rad"])
+                max_joint_setpoint_lead_rad = float(
+                    raw["max_joint_setpoint_lead_rad"]
+                )
+            except (KeyError, TypeError, ValueError):
+                position = []
+                quaternion = []
+                minimum_steps = 0
+                maximum_steps = 0
+                arrival_tolerance_m = 0.0
+                arrival_stability_steps = 0
+                max_joint_delta_rad = 0.0
+                max_joint_setpoint_lead_rad = 0.0
+            gripper_state = str(raw.get("gripper_state") or "")
+            quaternion_valid = quaternion is None or (
+                len(quaternion) == 4
+                and all(math.isfinite(value) for value in quaternion)
+                and math.isclose(
+                    math.sqrt(sum(value * value for value in quaternion)),
+                    1.0,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-5,
+                )
+            )
+            if (
+                not phase_id
+                or len(position) != 3
+                or not all(math.isfinite(value) for value in position)
+                or not quaternion_valid
+                or gripper_state not in {"open", "closed"}
+                or minimum_steps < 1
+                or maximum_steps < minimum_steps
+                or arrival_tolerance_m <= 0.0
+                or not math.isfinite(arrival_tolerance_m)
+                or arrival_stability_steps < 1
+                or max_joint_delta_rad <= 0.0
+                or not math.isfinite(max_joint_delta_rad)
+                or max_joint_setpoint_lead_rad < max_joint_delta_rad
+                or not math.isfinite(max_joint_setpoint_lead_rad)
+            ):
+                errors.append(f"task_control_scripted_pose_invalid:{index}")
+            else:
+                normalized_actions.append(
+                    {
+                        "phase_id": phase_id,
+                        "mode": "ik_pose",
+                        "target_position_world_m": position,
+                        "target_quaternion_world_xyzw": quaternion,
+                        "gripper_state": gripper_state,
+                        "minimum_steps": minimum_steps,
+                        "maximum_steps": maximum_steps,
+                        "arrival_tolerance_m": arrival_tolerance_m,
+                        "arrival_stability_steps": arrival_stability_steps,
+                        "max_joint_delta_rad": max_joint_delta_rad,
+                        "max_joint_setpoint_lead_rad": max_joint_setpoint_lead_rad,
+                    }
+                )
+                maximum_scripted_steps += maximum_steps
+            continue
         if "isaac_action" in raw:
             values = raw.get("isaac_action")
             try:
@@ -855,6 +928,7 @@ def validate_task_control_plan(
                 normalized_actions.append(
                     {"phase_id": phase_id, "isaac_action": action}
                 )
+                maximum_scripted_steps += 1
             continue
         values = raw.get("arm_joint_positions")
         gripper_state = str(raw.get("gripper_state") or "")
@@ -877,6 +951,7 @@ def validate_task_control_plan(
                     "gripper_state": gripper_state,
                 }
             )
+            maximum_scripted_steps += 1
     kind = task.get("task_kind")
     if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
         try:
@@ -897,7 +972,7 @@ def validate_task_control_plan(
     if maximum_steps is not None and (
         isinstance(maximum_steps, bool)
         or not isinstance(maximum_steps, int)
-        or len(normalized_actions) + int(settle_steps) > maximum_steps
+        or maximum_scripted_steps + int(settle_steps) > maximum_steps
         or int(zero_steps or 0) > maximum_steps
     ):
         errors.append("task_control_action_budget_exceeds_task_spec")
@@ -934,6 +1009,8 @@ def _run_task_control_episode(
     ]
     review_observations: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
+    phase_arrivals: list[dict[str, Any]] = []
+    phase_execution_blocker: str | None = None
     observation_index = 1
     step_index = 0
     if control_id == ZERO_ACTION_NEGATIVE:
@@ -954,54 +1031,141 @@ def _run_task_control_episode(
             for _ in range(int(task_spec["settle_window_samples"]))
         )
     for row in trajectory:
-        before = [float(value) for value in environment.read_arm_joint_positions()]
-        if row.get("mode") == "hold_current_joint_positions":
-            action = environment.hold_action(
-                gripper_command=float(gripper_open_command)
-            )
-        elif "isaac_action" in row:
-            action = row["isaac_action"]
-        else:
-            state = str(row["gripper_state"])
-            if state == "closed" and gripper_closed_command is None:
-                raise ControlEpisodeError(
-                    ["task_control_gripper_closed_command_missing"]
+        pose_mode = row.get("mode") == "ik_pose"
+        phase_steps = int(row["maximum_steps"]) if pose_mode else 1
+        phase_steps_executed = 0
+        stable_steps = 0
+        termination_reason = "fixed_steps_completed"
+        start_sample = samples[-1]
+        for _ in range(phase_steps):
+            before = [float(value) for value in environment.read_arm_joint_positions()]
+            if row.get("mode") == "hold_current_joint_positions":
+                action = environment.hold_action(
+                    gripper_command=float(gripper_open_command)
                 )
-            command = (
-                float(gripper_open_command)
-                if state == "open"
-                else float(gripper_closed_command)
-            )
-            action = [*row["arm_joint_positions"], command]
-        action = [float(value) for value in action]
-        environment.step(action)
-        step_index += 1
-        after = [float(value) for value in environment.read_arm_joint_positions()]
-        actions.append(
-            _record_action(
-                step_index=step_index,
-                phase_id=str(row["phase_id"]),
-                action=action,
-                observed_before=before,
-                observed_after=after,
-            )
-        )
-        samples.append(
-            _task_neutral_sample(
-                environment, task_kind=task_kind, step_index=step_index
-            )
-        )
-        if step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS == 0:
-            review_observations.append(
-                _persist_observation(
-                    environment,
-                    output_dir=output,
-                    episode_id=episode_id,
-                    observation_index=observation_index,
-                    kind="review-sample",
+            elif pose_mode:
+                state = str(row["gripper_state"])
+                if state == "closed" and gripper_closed_command is None:
+                    raise ControlEpisodeError(
+                        ["task_control_gripper_closed_command_missing"]
+                    )
+                command = (
+                    float(gripper_open_command)
+                    if state == "open"
+                    else float(gripper_closed_command)
+                )
+                action = environment.scripted_action_for_pose(
+                    target_position_world_m=row["target_position_world_m"],
+                    target_quaternion_world_xyzw=row[
+                        "target_quaternion_world_xyzw"
+                    ],
+                    gripper_command=command,
+                    max_joint_delta_rad=float(row["max_joint_delta_rad"]),
+                    max_joint_setpoint_lead_rad=float(
+                        row["max_joint_setpoint_lead_rad"]
+                    ),
+                )
+            elif "isaac_action" in row:
+                action = row["isaac_action"]
+            else:
+                state = str(row["gripper_state"])
+                if state == "closed" and gripper_closed_command is None:
+                    raise ControlEpisodeError(
+                        ["task_control_gripper_closed_command_missing"]
+                    )
+                command = (
+                    float(gripper_open_command)
+                    if state == "open"
+                    else float(gripper_closed_command)
+                )
+                action = [*row["arm_joint_positions"], command]
+            action = [float(value) for value in action]
+            environment.step(action)
+            step_index += 1
+            phase_steps_executed += 1
+            after = [float(value) for value in environment.read_arm_joint_positions()]
+            actions.append(
+                _record_action(
+                    step_index=step_index,
+                    phase_id=str(row["phase_id"]),
+                    action=action,
+                    observed_before=before,
+                    observed_after=after,
                 )
             )
-            observation_index += 1
+            samples.append(
+                _task_neutral_sample(
+                    environment, task_kind=task_kind, step_index=step_index
+                )
+            )
+            if step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS == 0:
+                review_observations.append(
+                    _persist_observation(
+                        environment,
+                        output_dir=output,
+                        episode_id=episode_id,
+                        observation_index=observation_index,
+                        kind="review-sample",
+                    )
+                )
+                observation_index += 1
+            if pose_mode:
+                measured = samples[-1].get("grasp_frame_position_world_m")
+                if not isinstance(measured, Sequence) or isinstance(
+                    measured, (str, bytes)
+                ):
+                    raise ControlEpisodeError(
+                        ["task_control_grasp_frame_readback_missing"]
+                    )
+                try:
+                    error = math.dist(
+                        [float(value) for value in measured],
+                        row["target_position_world_m"],
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ControlEpisodeError(
+                        ["task_control_grasp_frame_readback_invalid"]
+                    ) from exc
+                stable_steps = (
+                    stable_steps + 1
+                    if error <= float(row["arrival_tolerance_m"])
+                    else 0
+                )
+                if (
+                    phase_steps_executed >= int(row["minimum_steps"])
+                    and stable_steps >= int(row["arrival_stability_steps"])
+                ):
+                    termination_reason = "stable_arrival"
+                    break
+        if pose_mode:
+            measured = samples[-1].get("grasp_frame_position_world_m")
+            terminal_error = math.dist(
+                [float(value) for value in measured], row["target_position_world_m"]
+            )
+            arrival = {
+                "phase_id": str(row["phase_id"]),
+                "start_position_world_m": start_sample.get(
+                    "grasp_frame_position_world_m"
+                ),
+                "target_position_world_m": row["target_position_world_m"],
+                "terminal_position_world_m": measured,
+                "terminal_position_error_m": terminal_error,
+                "arrival_tolerance_m": float(row["arrival_tolerance_m"]),
+                "arrival_stability_steps_required": int(
+                    row["arrival_stability_steps"]
+                ),
+                "arrival_stability_steps_observed": stable_steps,
+                "termination_reason": termination_reason,
+                "target_reached": termination_reason == "stable_arrival",
+            }
+            phase_arrivals.append(arrival)
+            if not arrival["target_reached"]:
+                phase_execution_blocker = (
+                    f"{BLOCKER_PHASE_NOT_REACHED}:{row['phase_id']}:"
+                    f"error_m={terminal_error:.6f}:stability_steps="
+                    f"{stable_steps}/{row['arrival_stability_steps']}"
+                )
+                break
     terminal = _persist_observation(
         environment,
         output_dir=output,
@@ -1037,6 +1201,9 @@ def _run_task_control_episode(
     else:
         passed = score.get("status") == "scored" and score.get("task_succeeded") is True
         blockers = [] if passed else [f"{BLOCKER_POSITIVE_FAILED}:{score.get('outcome')}"]
+        if phase_execution_blocker is not None:
+            blockers.append(phase_execution_blocker)
+            passed = False
     if visual.get("status") != "complete":
         blockers.append(BLOCKER_MEDIA_INCOMPLETE)
         passed = False
@@ -1056,6 +1223,9 @@ def _run_task_control_episode(
         "state_trace_digest": canonical_digest({"samples": samples}),
         "action_trace": actions,
         "action_trace_digest": canonical_digest({"actions": actions}),
+        "environment_steps": step_index,
+        "phase_arrivals": phase_arrivals,
+        "phase_execution_blocker": phase_execution_blocker,
         "visual_evidence": visual,
         "media_artifacts": artifacts,
         "grader_authority": "deterministic_simulator_state",

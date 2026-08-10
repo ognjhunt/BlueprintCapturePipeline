@@ -65,6 +65,7 @@ class _Environment:
             "robot_collision_failure": False,
             "scene_collision_failure": False,
             "retreat_completed": self.joints[1] > 0.5,
+            "grasp_frame_position_world_m": self.joints[:3],
         }
 
     def read_object_sample(self):
@@ -178,6 +179,55 @@ def _semantic_articulated_plan(task: dict) -> dict:
     return plan
 
 
+def _cartesian_articulated_plan(task: dict) -> dict:
+    def phase(phase_id, target, gripper_state):
+        return {
+            "phase_id": phase_id,
+            "mode": "ik_pose",
+            "target_position_world_m": target,
+            "target_quaternion_world_xyzw": None,
+            "gripper_state": gripper_state,
+            "minimum_steps": 1,
+            "maximum_steps": 2,
+            "arrival_tolerance_m": 1.0e-6,
+            "arrival_stability_steps": 1,
+            "max_joint_delta_rad": 0.03,
+            "max_joint_setpoint_lead_rad": 0.2,
+        }
+
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": "articulated-open-close-cartesian",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "c" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": [
+            phase("open", [0.9, 0.0, 0.0], "closed"),
+            phase("retreat", [0.9, 1.0, 0.0], "open"),
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+class _CartesianEnvironment(_Environment):
+    def scripted_action_for_pose(
+        self,
+        *,
+        target_position_world_m,
+        target_quaternion_world_xyzw,
+        gripper_command,
+        max_joint_delta_rad,
+        max_joint_setpoint_lead_rad,
+    ):
+        del target_quaternion_world_xyzw
+        assert max_joint_delta_rad == pytest.approx(0.03)
+        assert max_joint_setpoint_lead_rad == pytest.approx(0.2)
+        return [*target_position_world_m, 0.0, 0.0, 0.0, 0.0, gripper_command]
+
+
 @pytest.mark.parametrize("task_kind", ["rigid_pick_place", "articulated_open_close"])
 def test_same_control_contract_passes_original_and_second_scene_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_kind: str
@@ -285,3 +335,45 @@ def test_semantic_gripper_states_use_the_native_measured_command_mapping(
     assert pair["cell_admitted_for_policy_execution"] is True
     assert environment.steps[0][-1] == 1.0
     assert environment.steps[1][-1] == 0.0
+
+
+def test_cartesian_articulated_phases_use_measured_arrival_and_native_action_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as module
+
+    monkeypatch.setattr(
+        module,
+        "_persist_observation",
+        lambda *_args, **kwargs: {
+            "observation_index": 0,
+            "kind": kwargs["kind"],
+            "views": {},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: ({"status": "complete"}, []),
+    )
+    task = _task("articulated_open_close")
+    pair = run_task_neutral_controls(
+        environment=_CartesianEnvironment("articulated_open_close"),
+        task_spec=task,
+        control_plan=_cartesian_articulated_plan(task),
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    assert pair["cell_admitted_for_policy_execution"] is True
+    positive = copy.deepcopy(
+        __import__("json").loads(
+            (tmp_path / "adp_task_control_episode.deterministic_scripted_positive.json").read_text()
+        )
+    )
+    assert [row["phase_id"] for row in positive["phase_arrivals"]] == [
+        "open",
+        "retreat",
+    ]
+    assert all(row["target_reached"] for row in positive["phase_arrivals"])

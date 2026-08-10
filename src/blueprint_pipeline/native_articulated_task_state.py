@@ -188,6 +188,13 @@ def compile_native_articulated_task_sample(
         "schema_version": SCHEMA_VERSION,
         "joint_positions_rad": joint_positions,
         "joint_velocities_rad_s": joint_velocities,
+        # Retain the exact measured geometry used to derive retreat.  The
+        # deterministic scorer ignores these additional fields, while the
+        # task-neutral Cartesian control loop uses the same native finger
+        # midpoint to gate phase arrival instead of trusting its commanded
+        # target.
+        "grasp_frame_position_world_m": grasp,
+        "handle_reference_position_world_m": handle,
         "task_contact_active": task_contact,
         "joint_limit_violation": joint_limit_violation,
         "containment_violation": containment_violation,

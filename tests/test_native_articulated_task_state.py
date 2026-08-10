@@ -83,6 +83,8 @@ def test_exact_frozen_task_sample_is_derived_from_numeric_readback() -> None:
     assert sample["containment_violation"] is False
     assert sample["robot_collision_failure"] is False
     assert sample["scene_collision_failure"] is False
+    assert sample["grasp_frame_position_world_m"] == [2.10, 2.30, 1.02]
+    assert sample["handle_reference_position_world_m"] == [1.94, 2.18, 1.02]
     assert sample["native_readback"]["caller_asserted_booleans_used"] is False
 
 
