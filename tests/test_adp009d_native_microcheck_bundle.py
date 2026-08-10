@@ -2661,3 +2661,80 @@ def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> No
     episode = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert "isinstance(response, dict)" in probe
     assert "isinstance(response, dict)" in episode
+
+
+def test_the_bundle_can_carry_a_different_worker_and_runtime(tmp_path: Path) -> None:
+    """The Arena image is the only one with isaaclab, and this builder owns it.
+
+    An articulated task needs Arena exactly as much as the rigid one does, but
+    it cannot reach this image without being allowed to bring its own worker.
+    Forking the builder instead would fork the image pin, the source
+    provenance, and the entrypoint contract with it.
+    """
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    worker = tmp_path / "my_worker.py"
+    worker.write_text("PAYLOAD = 'articulated'\n", encoding="utf-8")
+    runtime = tmp_path / "my_runtime.py"
+    runtime.write_text("RUNTIME = 'articulated'\n", encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="b" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+        worker_source=worker,
+        runtime_module_source=runtime,
+    )
+
+    import zipfile
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        assert archive.read(
+            "provider_runtime/adp_arena_provider_runner.py"
+        ).decode() == "PAYLOAD = 'articulated'\n"
+        assert archive.read(
+            "provider_runtime/adp009d_isaac_runtime.py"
+        ).decode() == "RUNTIME = 'articulated'\n"
+    assert receipt["worker_source_sha256"].startswith("sha256:")
+
+
+def test_the_default_worker_and_runtime_are_unchanged(tmp_path: Path) -> None:
+    """The rigid lane is already qualified; overriding must be opt-in only."""
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="c" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    import zipfile
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        shipped = archive.read("provider_runtime/adp009d_isaac_runtime.py").decode()
+    assert "approved_can" in shipped
+
+
+def test_a_worker_override_that_does_not_exist_fails_closed(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    with pytest.raises((ValueError, FileNotFoundError)):
+        build_native_microcheck_bundle(
+            job_dir=tmp_path / "job",
+            approved_can_path=approved,
+            sage_collision_path=sage,
+            harness_manifest_path=harness,
+            implementation_commit="d" * 40,
+            generated_at="fixed",
+            expected_asset_bindings=bindings,
+            worker_source=tmp_path / "absent_worker.py",
+        )
