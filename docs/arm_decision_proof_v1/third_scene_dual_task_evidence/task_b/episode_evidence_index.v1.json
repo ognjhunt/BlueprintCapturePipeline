@@ -1,0 +1,31 @@
+{
+  "episode_count": 0,
+  "episodes": [],
+  "index_digest": "sha256:4aeb768844f167bd042e5f30d38ebd0d24d5849d4dad43497fe6d9d9ac9e6bd2",
+  "overview_is_review_only": true,
+  "required_camera_ids": [
+    "external",
+    "wrist",
+    "overview"
+  ],
+  "review_videos_are_not_physical_truth": true,
+  "run_identity": {
+    "scenario_suite_digest": "sha256:a203375f810a470aec6cccae475183589b93622f69a4699563b042ee45caeed5",
+    "scene_id": "840920",
+    "task_id": "task_b_notebook_relocation"
+  },
+  "schema_version": "adp_manipulation_episode_evidence_index.v1",
+  "scores_are_deterministic_simulator_state": true,
+  "typed_abstention": {
+    "candidate_ids": [
+      "pi05_droid",
+      "groot_n17_droid"
+    ],
+    "controls_executed": false,
+    "learned_candidate_episodes_executed": false,
+    "receipt_digest": "sha256:40d2271fe626c02ce71886cb6e2986e0b96d1aa7b3c8cd06eb111da05c36bb78",
+    "schema_version": "adp_task_evaluation_run_abstention.v1",
+    "smallest_missing_capability": "exact_notebook_replacement_usd_and_independent_calibrated_gaussian_removal_collider_receipts",
+    "status": "typed_evidence_backed_abstention"
+  }
+}

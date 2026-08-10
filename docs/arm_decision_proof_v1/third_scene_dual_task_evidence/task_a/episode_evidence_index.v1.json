@@ -1,0 +1,31 @@
+{
+  "episode_count": 0,
+  "episodes": [],
+  "index_digest": "sha256:d482e6ca8a0a06cdf86d9c6e14e19e3ce466ae6637e8433af087bccc0169872f",
+  "overview_is_review_only": true,
+  "required_camera_ids": [
+    "external",
+    "wrist",
+    "overview"
+  ],
+  "review_videos_are_not_physical_truth": true,
+  "run_identity": {
+    "scenario_suite_digest": "sha256:8930745f70b0881e70d363c7b796e738cf50edb00387023d63348774269d922f",
+    "scene_id": "840920",
+    "task_id": "task_a_washer_door_open"
+  },
+  "schema_version": "adp_manipulation_episode_evidence_index.v1",
+  "scores_are_deterministic_simulator_state": true,
+  "typed_abstention": {
+    "candidate_ids": [
+      "pi05_droid",
+      "groot_n17_droid"
+    ],
+    "controls_executed": false,
+    "learned_candidate_episodes_executed": false,
+    "receipt_digest": "sha256:fddc951cf938cee6435d3eda19d8dba4aa43c58f6ef91a41499c46bd97a153e8",
+    "schema_version": "adp_task_evaluation_run_abstention.v1",
+    "smallest_missing_capability": "exact_washer_replacement_usd_and_independent_calibrated_gaussian_removal_collider_receipts",
+    "status": "typed_evidence_backed_abstention"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": "adp_task_evaluation_run_abstention.v1",
+  "status": "typed_evidence_backed_abstention",
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "smallest_missing_capability": "exact_washer_replacement_usd_and_independent_calibrated_gaussian_removal_collider_receipts",
+  "controls_executed": false,
+  "learned_candidate_episodes_executed": false,
+  "receipt_digest": "sha256:fddc951cf938cee6435d3eda19d8dba4aa43c58f6ef91a41499c46bd97a153e8"
+}

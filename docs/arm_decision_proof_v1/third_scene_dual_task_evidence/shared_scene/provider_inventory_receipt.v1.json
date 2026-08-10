@@ -1,0 +1,20 @@
+{
+  "schema_version": "third_scene_provider_inventory_receipt.v1",
+  "observed_at": "2026-08-10T16:19:08Z",
+  "provider": "vast",
+  "third_scene_owned_instance_ids": [],
+  "third_scene_lane_provider_zero": true,
+  "third_scene_paid_cost_usd": 0.0,
+  "external_instances": [
+    {
+      "instance_id": 47385583,
+      "actual_status": "running",
+      "owner": "ongoing_840796_native_microcheck_lane_do_not_touch",
+      "charged_to_third_scene": false,
+      "outputs_inspected": false,
+      "terminated_by_third_scene": false
+    }
+  ],
+  "source": "read_only_vastai_show_instances_raw_redacted_summary",
+  "receipt_digest": "sha256:e377c52914d8e4a9366c3a10136ceda4131a129dee0ee5735adc5d50fdbc9d3a"
+}
