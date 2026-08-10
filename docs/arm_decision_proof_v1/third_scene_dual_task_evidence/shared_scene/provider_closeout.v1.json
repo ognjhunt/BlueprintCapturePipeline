@@ -1,0 +1,32 @@
+{
+  "schema_version": "adp_gaussian_excision_provider_closeout.v1",
+  "status": "lane_owned_provider_zero",
+  "owned_instance_ids": [
+    47393332,
+    47393331
+  ],
+  "attempt_receipt_digests": [
+    "sha256:5fb14dff7ecb7a44eebf8a69e94717e7ad27493c0430fcd54767841aae26afe2",
+    "sha256:ea2fb17f2f648aada43da166a2f1c504a5975b97d2916123baf6af04537252da"
+  ],
+  "combined_estimated_cost_usd": 0.096648,
+  "continuing_lane_owned_spend": false,
+  "external_live_instances": [
+    {
+      "instance_id": "47394962",
+      "name": "blueprint-adp009d-1786386236",
+      "state": "running",
+      "cost_per_hr_usd": 0.680625,
+      "charged_to_this_lane": false,
+      "provider_mutation_performed": false
+    }
+  ],
+  "global_provider_zero_claimed": false,
+  "provider_inventory": {
+    "relative_path": "shared_scene/provider_inventory_after_flashsplat.json",
+    "size_bytes": 2540,
+    "sha256": "sha256:f04c7298556b1e0075b28d15c23c698919de5cc00af618e475620afad2b9b7d6"
+  },
+  "raw_secret_values_recorded": false,
+  "receipt_digest": "sha256:71f6d1843dc2c76ae0536e23495620d500c091ce630f73e6ff69fa388af4cefe"
+}

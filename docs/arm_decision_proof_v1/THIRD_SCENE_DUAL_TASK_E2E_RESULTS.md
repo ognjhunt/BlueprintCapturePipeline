@@ -1,29 +1,32 @@
 # Third-Scene Dual-Task Generalization Rehearsal Results
 
-Status: **in progress; construction evidence is not yet sufficient for controls**.
+Status: **typed construction abstention; no control or policy result**.
 
 The reusable harness work is locally qualified and both replacement candidates
 are authored. Scene `840920` and both tasks are preregistered, both exact source
 collider deletions are materialized, and the appearance source is converted
-locally to standard 3DGS without changing its Gaussian count. The two Gaussian
-removals and native replacement qualifications remain open, so no control or
-learned-policy episode is admitted. This is not a policy result.
+locally to standard 3DGS without changing its Gaussian count. Two independent
+zero-retry Vast contribution attempts were made. Each terminated before released
+FlashSplat execution and retained a typed blocked result, so neither Gaussian
+ownership/removal nor native replacement qualification exists. Controls and
+learned policies were therefore not admitted. This is not a policy result.
 
 ## Identity and isolation
 
 - Backlog/gate: `ADP-009D`, public-scene day-28 rehearsal, Gate 7.
 - Starting commit: `229b785f69617be543cfc76dcd6944ee3b9f2e49`.
-- Latest pushed reusable implementation commit: `3475aaa25` on
-  `codex/adp-third-scene-dual-task-20260810` (preceded by the pushed commits
-  listed below).
+- Latest pushed reusable implementation commit before this results update:
+  `dd893aaed0adb3ecc5c58e558a7cf639fca09a7c` on
+  `codex/adp-third-scene-dual-task-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
 - External 840796 worktrees and evidence roots were not modified.
-- The authority snapshot allowed external Vast instance `47373597`. A read-only
-  refresh at `2026-08-10T16:19:08Z` found a different running external instance,
-  `47385583`, owned by the ongoing 840796 native-microcheck lane. The third-scene
-  lane owned zero instances and did not inspect its outputs, reuse it, terminate
-  it, or charge it to this rehearsal.
+- External Vast instances from the independently running 840796 lane changed
+  during this rehearsal. They were recorded as external inventory only and were
+  never reused, inspected for scientific output, terminated, or charged here.
+  Third-scene instances were restricted to `47393332` and `47393331`; both are
+  now absent by double exact-ID inspection and their unique lane prefixes are
+  empty.
 
 ## Selected scene and complete survey
 
@@ -109,11 +112,49 @@ native applied-parameter readback. No learned outcome influenced either freeze.
 
 ## Construction and evaluation outcomes
 
-Task A Gaussian removal: **blocked/not executed**. No calibrated mask set,
-contribution/ownership receipt, held-out deletion proof, or replacement-depth
-sweep exists. Task B Gaussian removal: **blocked/not executed** for the same
-independently identified evidence fields. No shared mask, replacement ID, or
-task-specific assumption was reused.
+Both tasks have independent evaluation-authorized eight-camera input packets
+and calibrated candidate masks. Task A input receipt digest is
+`sha256:abe232a66588249366a7fe6e02e9d65fe7e4c716835ab8a2574c3b48b601887f`;
+Task B is
+`sha256:4422d5337bd9d329a395578e9551b4625d395f72387fd13871240099ff3211b2`.
+They bind separate source-object identities, masks, camera splits, and excision
+freezes
+(`sha256:5aa65c7b2df5e2ed4d2784729e1893c27ecf5dc18f8986a68ee5719bfe70b48f`
+and
+`sha256:64cba590f4a6f99af6acd2e87a975ceaab3086bd869d15a37326c12a4f0c9e62`).
+These are method
+inputs, not ownership or deletion evidence.
+
+Task A Gaussian removal: **blocked before released-code execution**. Vast
+instance `47393332` passed the complete 11-module import preflight, then the
+provider runner returned `gaussian_excision_runtime_failed:ValueError` before
+classification and without accessing held-out cameras. Inspection of the frozen
+input and shared runner identified a general contract mismatch: the authorized
+camera packet used `T_world_camera_provider_frame`, while the provider runner
+accepted only the equivalent normalized `T_world_camera_opencv` spelling. The
+general adapter now accepts either, rejects conflicting aliases, and retains a
+sanitized deterministic failure code. This diagnosis is an inference from the
+sealed bytes because the old worker retained only the exception type. Attempt
+receipt:
+[`gaussian_excision_attempt.v1.json`](third_scene_dual_task_evidence/task_a/gaussian_excision_attempt.v1.json).
+
+Task B Gaussian removal: **blocked before released-code execution**. Vast
+instance `47393331` exhausted the installer transport retries while fetching
+`nvidia-cublas-cu12==12.4.5.8`; its immutable blocker is
+`gaussian_excision_torch_install_failed`. Held-out cameras were not accessed.
+The general lane now uses immutable
+`pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel` image digest
+`sha256:14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014`
+and a locally materialized eight-wheel offline closure with manifest digest
+`sha256:e96bc10993da4644d5f320059151e0f267e3307daa013a1dd501bedfc52849dd`;
+provider-network dependency
+installation is forbidden at admission. Attempt receipt:
+[`gaussian_excision_attempt.v1.json`](third_scene_dual_task_evidence/task_b/gaussian_excision_attempt.v1.json).
+
+No shared mask, removal ID, replacement ID, or task-specific assumption was
+reused. Neither contribution attempt produced ownership evidence, so no
+Gaussians were deleted and no held-out deletion proof or replacement-depth sweep
+was claimed.
 
 Both source collider deletions are materialized independently from the same
 immutable SAGE source, plus one shared stage with both exact subtrees absent.
@@ -187,6 +228,14 @@ forks:
 - `3475aaa25`: variable-camera registered excision evidence, authorized-render
   bindings, file-backed construction joins, general graph USD authoring, and
   fail-closed non-servo task-joint semantics.
+- `a2e54548c` through `6b49e4dae`: evaluation-authorized public-scene render
+  packets, typed renderer dependency failures, render-packet/excision joins,
+  per-task paid authority, and collision-free provider lane identities.
+- `bef27509b`: general provider/OpenCV camera-alias normalization and sanitized
+  paid-worker failure diagnostics.
+- `dd893aaed`: exact-ID/prefix-scoped concurrent Vast teardown, immutable
+  PyTorch/CUDA base-image admission, and digest-bound offline dependency
+  wheelhouses.
 
 Hermetic regressions preserve the 840313 rigid fixture, 840796 articulated
 fixture, and dual-task shared-asset fixture. Scene-specific values remain in
@@ -197,13 +246,28 @@ scenario, scoring, and evidence contracts.
 
 - Local scientific/contract runs: focused tests plus the mandated ADP/DROID/
   episode/NUREC/Aura selection; no native simulator execution.
-- Paid third-scene runs: `0`.
-- Third-scene paid cost: exactly `$0.00`.
-- Third-scene instances allocated: `0`.
+- Paid third-scene runs: `2` independent, one per task.
+- Task A estimated cost: `$0.025951`; Task B estimated cost: `$0.070697`;
+  combined estimated cost: `$0.096648`. These are adapter estimates, not a
+  reconciled provider billing export.
+- Third-scene instances allocated: Task A `47393332`; Task B `47393331`.
 - Third-scene retries: `0`.
-- Teardown: no third-scene provider resource existed to destroy; read-only
-  inventory proves lane-owned provider zero. External instance `47385583`
-  remained untouched.
+- Teardown: both owned instances were destroyed through the Vast API with HTTP
+  `200`; both teardown manifests state zero continuing spend. Independent
+  watchdogs later wrote `provider_terminal`, double exact-ID absence, and empty
+  lane prefixes. External 840796 resources remained untouched. Portable
+  closeout digest:
+  `sha256:71f6d1843dc2c76ae0536e23495620d500c091ce630f73e6ff69fa388af4cefe`.
+- Repaired, unexecuted bundles are locally ready at commit `dd893aaed`:
+  Task A SHA-256
+  `80d8620a2ec89ba2f60e59c2f000b0cc5849a99bb11798ef449977dee9eb5e17`
+  (`125,326,062` bytes), Task B
+  `fe0a58c5d89fbc8bdf6135ff1934447047ab7f9c1d20c4f78c009169278aea87`
+  (`125,281,798` bytes). Exact entrypoint rehearsals and
+  canonical paid-admission dry-runs pass with zero provider mutations. Their
+  receipts explicitly require new authority and make no GPU/scientific claim:
+  [Task A](third_scene_dual_task_evidence/task_a/gaussian_excision_recovery_readiness.v1.json),
+  [Task B](third_scene_dual_task_evidence/task_b/gaussian_excision_recovery_readiness.v1.json).
 - Episode receipts, frame manifests, reset replays, terminal observations, and
   videos: none exist because controls were not admitted. The evidence index
   represents this explicitly and contains no synthetic episode links.
@@ -216,26 +280,28 @@ Portable evidence index:
 Before the final reusable-code commit:
 
 - `PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode or nurec or aura"`
-  — `1123 passed, 9781 deselected`.
+  — `1132 passed, 9809 deselected` before the final evidence-receipt/doc commit.
 - `.venv/bin/ruff check src/ tests/` — passed.
-- Focused scenario and scene-neutrality regressions — `45 passed`.
+- Focused Gaussian-excision, watchdog, allocator, and closure regressions —
+  `103 passed`.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; generic rigid scoring/state; task-neutral native policy lane; portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; generic rigid scoring/state; task-neutral native policy lane; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Two exact Gaussian removals, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
 
 ## Remaining ambiguity and single next action
 
-Independent metric/handedness qualification, evaluation-authorized rendering,
-native reach/contact, asset dynamics/appearance, and all episode evidence remain
-unknown.
+Independent metric/handedness qualification, Gaussian ownership/removal,
+replacement depth coverage, native reach/contact, asset dynamics/appearance,
+and all episode evidence remain unknown.
 
-**Single next action:** materialize the two evaluation-authorized calibrated mask
-sets and contribution/ownership receipts, then use the authored USD candidates
-for complete joint-state/rigid-pose depth coverage. Do not launch native controls
-or learned policies before both per-task construction joins pass.
+**Single next action:** grant fresh explicit one-attempt, zero-retry authority for
+the two independently sealed repaired contribution bundles. If either attempt
+does not produce qualified contribution evidence, preserve its typed blocker;
+otherwise materialize ownership before any deletion, native control, or policy
+launch.

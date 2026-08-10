@@ -1,0 +1,54 @@
+{
+  "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+  "status": "sealed_blocked_attempt",
+  "blueprint_commit": "6b49e4dae9c5b8f2f1109e6673d2f9e9517c1335",
+  "bundle_sha256": "sha256:f80b703c6e815f75c216767a1329dba21888cd038582821afa7168d1f17148fb",
+  "freeze_digest": "sha256:64cba590f4a6f99af6acd2e87a975ceaab3086bd869d15a37326c12a4f0c9e62",
+  "execution_status": "blocked",
+  "execution_blockers": [
+    "gaussian_excision_torch_install_failed"
+  ],
+  "released_code_executed": false,
+  "heldout_cameras_accessed_for_classification": false,
+  "instance_id": 47393331,
+  "estimated_cost_usd": 0.070697,
+  "retry_cap": 0,
+  "continuing_spend": false,
+  "provider_absence_confirmed": true,
+  "records": {
+    "bundle_receipt": {
+      "relative_path": "task_b/removal/flashsplat_bundle_v2/adp_gaussian_excision_bundle_receipt.json",
+      "size_bytes": 8079,
+      "sha256": "sha256:b767af6508734516f5c6ba9af599126dea04e1faa210fdedf7b14cbe913f76ae"
+    },
+    "run_result": {
+      "relative_path": "task_b/removal/flashsplat_run_v2/run/gaussian_excision_vast_result.json",
+      "size_bytes": 1695,
+      "sha256": "sha256:ef56d01742108b0002c54b0f49998646823047634c762507aa2ec1d34b772444"
+    },
+    "execution_result": {
+      "relative_path": "task_b/removal/flashsplat_run_v2/run/immutable_execution/adp009b_gaussian_excision_result.json",
+      "size_bytes": 380,
+      "sha256": "sha256:7541d6cf77b3efb42ade854debca2d45e946c7fe418cd8977e5f0b44c36fdf26"
+    },
+    "teardown_manifest": {
+      "relative_path": "task_b/removal/flashsplat_run_v2/run/vast_provider_run/vast_teardown_manifest.json",
+      "size_bytes": 1358,
+      "sha256": "sha256:ca0938a6b2712ada7810c7184435ce5a23654ff0c0c2c1f7fc0a3661bc38bb04"
+    },
+    "watchdog_evidence": {
+      "relative_path": "task_b/removal/flashsplat_run_v2/run/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json",
+      "size_bytes": 3282,
+      "sha256": "sha256:7e5ca59595c2c689c4c2139e8aacf402c1089c2061be4e9ace964c389841324d"
+    }
+  },
+  "proof_boundaries": {
+    "gaussian_contribution_evidence_completed": false,
+    "gaussian_ownership_qualified": false,
+    "source_removal_qualified": false,
+    "inpainting_decision_qualified": false,
+    "policy_outcome_available": false
+  },
+  "raw_secret_values_recorded": false,
+  "receipt_digest": "sha256:ea2fb17f2f648aada43da166a2f1c504a5975b97d2916123baf6af04537252da"
+}

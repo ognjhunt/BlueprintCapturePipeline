@@ -1,12 +1,26 @@
 {
   "schema_version": "adp_task_evaluation_run_abstention.v1",
   "status": "typed_evidence_backed_abstention",
+  "scene_id": "840920",
+  "task_id": "task_b_notebook_relocation",
+  "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+  "gaussian_excision_freeze_digest": "sha256:64cba590f4a6f99af6acd2e87a975ceaab3086bd869d15a37326c12a4f0c9e62",
   "candidate_ids": [
     "pi05_droid",
     "groot_n17_droid"
   ],
-  "smallest_missing_capability": "exact_notebook_replacement_usd_and_independent_calibrated_gaussian_removal_collider_receipts",
+  "smallest_missing_capability": "gaussian_excision_torch_install_failed",
+  "all_terminal_blockers": [
+    "gaussian_excision_torch_install_failed"
+  ],
+  "gaussian_excision_attempt_receipt_digest": "sha256:ea2fb17f2f648aada43da166a2f1c504a5975b97d2916123baf6af04537252da",
+  "recovery_readiness_receipt_digest": "sha256:cf134d4fe842c7790691393ecfbfbdd18a8b72620c08516fefd39f770f17dbb8",
   "controls_executed": false,
   "learned_candidate_episodes_executed": false,
-  "receipt_digest": "sha256:40d2271fe626c02ce71886cb6e2986e0b96d1aa7b3c8cd06eb111da05c36bb78"
+  "episode_media_exists": false,
+  "comparison_exists": false,
+  "automatic_paid_retry_executed": false,
+  "next_action": "obtain new explicit one-attempt zero-retry authority for the sealed repaired contribution bundle",
+  "claim_ceiling": "public_dataset_simulator_construction_rehearsal_only; no physical, deployment, customer_value, or learned_policy claim",
+  "receipt_digest": "sha256:a780c997d7fba86bbfadb380931d7ab618dac49f73cb24ea355099123e09e601"
 }

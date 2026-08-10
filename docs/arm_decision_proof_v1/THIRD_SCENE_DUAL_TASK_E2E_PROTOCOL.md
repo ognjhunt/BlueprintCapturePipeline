@@ -19,9 +19,12 @@ external to this lane and must not be modified.
 
 Before any paid construction run, the smallest local gate is a hermetic proof
 that device ownership is coherent before the first Arena reset, followed by an
-exact packet and runtime-source bundle dry-run. This gate is now implemented in
-the reusable runtime, but it has not qualified scene 840920 because the exact
-replacement and removal packets do not yet exist.
+exact packet and runtime-source bundle dry-run. A Gaussian-contribution launch
+additionally requires a digest-bound offline Python wheelhouse, an immutable
+base image already containing the pinned Torch/CUDA runtime, exact-bundle
+entrypoint rehearsal, and canonical paid-admission dry-run. These gates are now
+implemented in the reusable runtime. They do not qualify scene 840920 without
+the missing GPU contribution evidence and native replacement qualifications.
 
 ## Frozen scene selection
 

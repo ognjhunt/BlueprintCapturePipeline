@@ -1,6 +1,8 @@
 # Controls not admitted
 
-No zero-action or scripted-positive episode was run. The exact notebook
-Gaussian removal, collider deletion, replacement USD, native import, and
-construction gates do not yet exist. This is a construction blocker, not a
-control failure.
+No zero-action or scripted-positive episode was run. The notebook collider
+deletion and graph-driven replacement candidate exist, but the zero-retry
+FlashSplat attempt blocked while installing Torch/CUDA dependencies and before
+contribution evidence. Gaussian ownership, removal, replacement-depth coverage,
+native import, and construction joins are therefore unqualified. This is a
+construction blocker, not a control failure.

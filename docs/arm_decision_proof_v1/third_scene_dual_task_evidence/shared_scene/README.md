@@ -22,6 +22,12 @@ License: CC-BY-NC-4.0.
 
 The provider-declared shared-frame evidence is not independent metric or
 handedness proof. Raw data bytes are not included in this portable package.
-Third-scene paid cost is `$0.00`; zero third-scene provider instances were
-allocated. The running provider instance in the inventory receipt is external
-to this lane and was not touched.
+Two third-scene instances were allocated and destroyed: Task A `47393332`
+(`$0.025951` estimated) and Task B `47393331` (`$0.070697` estimated), for a
+combined adapter estimate of `$0.096648`. Both exact IDs are absent, both lane
+prefixes are empty, and both watchdogs reached `provider_terminal`. Any other
+running provider instance in an inventory receipt belongs to an external lane
+and was not touched. The estimates are not a reconciled billing export.
+Portable closeout receipt:
+[`provider_closeout.v1.json`](provider_closeout.v1.json), digest
+`sha256:71f6d1843dc2c76ae0536e23495620d500c091ce630f73e6ff69fa388af4cefe`.

@@ -338,6 +338,364 @@ def _verified_dependency_wheelhouse(
     return manifest
 
 
+def _evidence_record(path: Path, *, evidence_root: Path) -> dict[str, Any]:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file() or resolved.is_symlink():
+        raise ValueError("gaussian_excision_evidence_file_invalid")
+    try:
+        relative = resolved.relative_to(evidence_root)
+    except ValueError as exc:
+        raise ValueError("gaussian_excision_evidence_outside_root") from exc
+    return {
+        "relative_path": relative.as_posix(),
+        "size_bytes": resolved.stat().st_size,
+        "sha256": _sha256(resolved),
+    }
+
+
+def materialize_gaussian_excision_attempt_receipt(
+    *,
+    evidence_root: str | Path,
+    bundle_receipt_path: str | Path,
+    run_result_path: str | Path,
+    execution_result_path: str | Path,
+    teardown_manifest_path: str | Path,
+    watchdog_evidence_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal one terminal blocked/completed attempt without upgrading its claims."""
+
+    root = Path(evidence_root).expanduser().resolve()
+    paths = {
+        "bundle_receipt": Path(bundle_receipt_path),
+        "run_result": Path(run_result_path),
+        "execution_result": Path(execution_result_path),
+        "teardown_manifest": Path(teardown_manifest_path),
+        "watchdog_evidence": Path(watchdog_evidence_path),
+    }
+    payloads = {
+        name: json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
+        for name, path in paths.items()
+    }
+    bundle = payloads["bundle_receipt"]
+    run = payloads["run_result"]
+    execution = payloads["execution_result"]
+    teardown = payloads["teardown_manifest"]
+    watchdog = payloads["watchdog_evidence"]
+    instance_ids = teardown.get("vast_instance_ids")
+    watchdog_instance = (watchdog.get("recorded_vast_instance_teardown") or {}).get(
+        "instance_id"
+    )
+    if (
+        bundle.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
+        or bundle.get("bundle_sha256") != run.get("bundle_sha256")
+        or run.get("status") not in {"blocked", "completed"}
+        or execution.get("status") not in {"blocked", "completed"}
+        or teardown.get("status") != "completed"
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or not isinstance(instance_ids, list)
+        or len(instance_ids) != 1
+        or str(instance_ids[0]) != str(watchdog_instance)
+        or watchdog.get("status") != "provider_terminal"
+        or watchdog.get("provider_absence_confirmed") is not True
+        or (watchdog.get("recorded_vast_instance_teardown") or {}).get(
+            "provider_absence_confirmed"
+        )
+        is not True
+        or run.get("retry_cap") != 0
+    ):
+        raise ValueError("gaussian_excision_attempt_join_invalid")
+    output = Path(output_path).expanduser().resolve()
+    if output.exists():
+        raise ValueError("gaussian_excision_attempt_receipt_exists")
+    receipt = {
+        "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+        "status": (
+            "sealed_completed_attempt"
+            if run.get("status") == "completed"
+            else "sealed_blocked_attempt"
+        ),
+        "blueprint_commit": bundle.get("blueprint_commit"),
+        "bundle_sha256": bundle.get("bundle_sha256"),
+        "freeze_digest": bundle.get("freeze_digest"),
+        "execution_status": execution.get("status"),
+        "execution_blockers": list(execution.get("blockers") or []),
+        "released_code_executed": execution.get("released_code_executed") is True,
+        "heldout_cameras_accessed_for_classification": execution.get(
+            "heldout_cameras_accessed_for_classification"
+        )
+        is True,
+        "instance_id": instance_ids[0],
+        "estimated_cost_usd": run.get("estimated_cost_usd"),
+        "retry_cap": 0,
+        "continuing_spend": False,
+        "provider_absence_confirmed": True,
+        "records": {
+            name: _evidence_record(path, evidence_root=root)
+            for name, path in paths.items()
+        },
+        "proof_boundaries": {
+            "gaussian_contribution_evidence_completed": execution.get("status")
+            == "completed",
+            "gaussian_ownership_qualified": False,
+            "source_removal_qualified": False,
+            "inpainting_decision_qualified": False,
+            "policy_outcome_available": False,
+        },
+        "raw_secret_values_recorded": False,
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    ensure_dir(output.parent)
+    write_json(output, receipt)
+    return receipt
+
+
+def materialize_gaussian_excision_recovery_readiness(
+    *,
+    evidence_root: str | Path,
+    dependency_manifest_path: str | Path,
+    bundle_receipt_path: str | Path,
+    admission_path: str | Path,
+    dry_run_result_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal a mutation-free repaired bundle as ready for new launch authority."""
+
+    root = Path(evidence_root).expanduser().resolve()
+    paths = {
+        "dependency_manifest": Path(dependency_manifest_path),
+        "bundle_receipt": Path(bundle_receipt_path),
+        "admission": Path(admission_path),
+        "dry_run_result": Path(dry_run_result_path),
+    }
+    payloads = {
+        name: json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
+        for name, path in paths.items()
+    }
+    dependency = payloads["dependency_manifest"]
+    bundle = payloads["bundle_receipt"]
+    admission = payloads["admission"]
+    dry_run = payloads["dry_run_result"]
+    binding = admission.get("allocation_binding") or {}
+    if (
+        dependency.get("schema_version") != DEPENDENCY_WHEELHOUSE_SCHEMA
+        or dependency.get("status") != "ready"
+        or dependency.get("provider_network_install_required") is not False
+        or bundle.get("status") != "ready"
+        or bundle.get("container_image") != DEFAULT_IMAGE
+        or bundle.get("dependency_wheelhouse_manifest_digest")
+        != dependency.get("manifest_digest")
+        or bundle.get("provider_network_dependency_install_required") is not False
+        or (bundle.get("exact_bundle_entrypoint_rehearsal") or {}).get("status")
+        != "passed"
+        or admission.get("status") != "admitted"
+        or binding.get("bundle_sha256") != bundle.get("bundle_sha256")
+        or binding.get("orchestrator_source_commit") != bundle.get("blueprint_commit")
+        or dry_run.get("status") != "dry_run_ready"
+        or dry_run.get("provider_mutations_performed") != 0
+        or dry_run.get("retry_cap") != 0
+    ):
+        raise ValueError("gaussian_excision_recovery_readiness_invalid")
+    output = Path(output_path).expanduser().resolve()
+    if output.exists():
+        raise ValueError("gaussian_excision_recovery_readiness_exists")
+    receipt = {
+        "schema_version": "adp_gaussian_excision_recovery_readiness.v1",
+        "status": "ready_for_new_authority_not_executed",
+        "blueprint_commit": bundle.get("blueprint_commit"),
+        "container_image": bundle.get("container_image"),
+        "bundle_sha256": bundle.get("bundle_sha256"),
+        "freeze_digest": bundle.get("freeze_digest"),
+        "dependency_wheelhouse_manifest_digest": dependency.get("manifest_digest"),
+        "provider_network_dependency_install_required": False,
+        "exact_bundle_rehearsal_passed": True,
+        "canonical_paid_admission_dry_run_passed": True,
+        "provider_mutations_performed": 0,
+        "automatic_retry_authorized": False,
+        "records": {
+            name: _evidence_record(path, evidence_root=root)
+            for name, path in paths.items()
+        },
+        "proof_boundaries": {
+            "gpu_runtime_executed": False,
+            "gaussian_ownership_qualified": False,
+            "new_paid_authority_required": True,
+        },
+        "raw_secret_values_recorded": False,
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    ensure_dir(output.parent)
+    write_json(output, receipt)
+    return receipt
+
+
+def materialize_gaussian_excision_task_abstention(
+    *,
+    scene_freeze_path: str | Path,
+    task_freeze_path: str | Path,
+    excision_freeze_path: str | Path,
+    attempt_receipt_path: str | Path,
+    recovery_readiness_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Convert a terminal contribution blocker into the standard task abstention."""
+
+    scene_freeze = _read_canonical(
+        Path(scene_freeze_path).expanduser().resolve(),
+        field="scene_freeze_digest",
+        code="gaussian_excision_scene_freeze_invalid",
+    )
+    task_freeze = _read_canonical(
+        Path(task_freeze_path).expanduser().resolve(),
+        field="task_freeze_digest",
+        code="gaussian_excision_task_freeze_invalid",
+    )
+    excision_freeze = _read_canonical(
+        Path(excision_freeze_path).expanduser().resolve(),
+        field="freeze_digest",
+        code="gaussian_excision_freeze_invalid",
+    )
+    attempt = _read_canonical(
+        Path(attempt_receipt_path).expanduser().resolve(),
+        field="receipt_digest",
+        code="gaussian_excision_attempt_receipt_invalid",
+    )
+    readiness = _read_canonical(
+        Path(recovery_readiness_path).expanduser().resolve(),
+        field="receipt_digest",
+        code="gaussian_excision_recovery_readiness_invalid",
+    )
+    excision_scene = excision_freeze.get("scene") or {}
+    blockers = attempt.get("execution_blockers")
+    if (
+        attempt.get("status") != "sealed_blocked_attempt"
+        or attempt.get("freeze_digest") != readiness.get("freeze_digest")
+        or attempt.get("freeze_digest") != excision_freeze.get("freeze_digest")
+        or task_freeze.get("scene_freeze_digest")
+        != scene_freeze.get("scene_freeze_digest")
+        or str(excision_scene.get("task_id") or "")
+        != str(task_freeze.get("task_id") or "")
+        or str(excision_scene.get("publisher_scene_id") or "")
+        != str(scene_freeze.get("selected_scene_id") or "")
+        or not isinstance(blockers, list)
+        or not blockers
+        or readiness.get("status") != "ready_for_new_authority_not_executed"
+        or readiness.get("proof_boundaries", {}).get("new_paid_authority_required")
+        is not True
+        or not str(task_freeze.get("task_id") or "")
+    ):
+        raise ValueError("gaussian_excision_task_abstention_join_invalid")
+    output = Path(output_path).expanduser().resolve()
+    if output.exists():
+        raise ValueError("gaussian_excision_task_abstention_exists")
+    receipt = {
+        "schema_version": "adp_task_evaluation_run_abstention.v1",
+        "status": "typed_evidence_backed_abstention",
+        "scene_id": str(scene_freeze["selected_scene_id"]),
+        "task_id": str(task_freeze["task_id"]),
+        "task_freeze_digest": task_freeze.get("task_freeze_digest"),
+        "gaussian_excision_freeze_digest": excision_freeze.get("freeze_digest"),
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_capability": str(blockers[0]),
+        "all_terminal_blockers": list(blockers),
+        "gaussian_excision_attempt_receipt_digest": attempt["receipt_digest"],
+        "recovery_readiness_receipt_digest": readiness["receipt_digest"],
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "episode_media_exists": False,
+        "comparison_exists": False,
+        "automatic_paid_retry_executed": False,
+        "next_action": (
+            "obtain new explicit one-attempt zero-retry authority for the sealed "
+            "repaired contribution bundle"
+        ),
+        "claim_ceiling": (
+            "public_dataset_simulator_construction_rehearsal_only; no physical, "
+            "deployment, customer_value, or learned_policy claim"
+        ),
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    ensure_dir(output.parent)
+    write_json(output, receipt)
+    return receipt
+
+
+def materialize_gaussian_excision_provider_closeout(
+    *,
+    evidence_root: str | Path,
+    attempt_receipt_paths: Sequence[str | Path],
+    provider_inventory_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Prove lane-owned provider-zero without claiming unrelated fleet zero."""
+
+    root = Path(evidence_root).expanduser().resolve()
+    attempts = [
+        _read_canonical(
+            Path(path).expanduser().resolve(),
+            field="receipt_digest",
+            code="gaussian_excision_attempt_receipt_invalid",
+        )
+        for path in attempt_receipt_paths
+    ]
+    inventory_path = Path(provider_inventory_path).expanduser().resolve()
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    owned_ids = [str(row.get("instance_id")) for row in attempts]
+    live_rows = [
+        row
+        for row in inventory.get("instances", [])
+        if isinstance(row, Mapping) and row.get("live") is True
+    ]
+    if (
+        len(attempts) != len(set(owned_ids))
+        or not attempts
+        or any(row.get("provider_absence_confirmed") is not True for row in attempts)
+        or any(str(row.get("id")) in owned_ids for row in live_rows)
+    ):
+        raise ValueError("gaussian_excision_provider_closeout_invalid")
+    output = Path(output_path).expanduser().resolve()
+    if output.exists():
+        raise ValueError("gaussian_excision_provider_closeout_exists")
+    receipt = {
+        "schema_version": "adp_gaussian_excision_provider_closeout.v1",
+        "status": "lane_owned_provider_zero",
+        "owned_instance_ids": [int(value) for value in owned_ids],
+        "attempt_receipt_digests": [row["receipt_digest"] for row in attempts],
+        "combined_estimated_cost_usd": round(
+            sum(float(row.get("estimated_cost_usd") or 0.0) for row in attempts), 6
+        ),
+        "continuing_lane_owned_spend": False,
+        "external_live_instances": [
+            {
+                "instance_id": row.get("id"),
+                "name": row.get("name"),
+                "state": row.get("state"),
+                "cost_per_hr_usd": row.get("cost_per_hr_usd"),
+                "charged_to_this_lane": False,
+                "provider_mutation_performed": False,
+            }
+            for row in live_rows
+        ],
+        "global_provider_zero_claimed": not live_rows,
+        "provider_inventory": _evidence_record(
+            inventory_path, evidence_root=root
+        ),
+        "raw_secret_values_recorded": False,
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    ensure_dir(output.parent)
+    write_json(output, receipt)
+    return receipt
+
+
 def _validate_authority(
     authority: Mapping[str, Any], *, freeze: Mapping[str, Any]
 ) -> None:

@@ -460,6 +460,184 @@ def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None
     assert result["retry_cap"] == 0
 
 
+def test_attempt_and_recovery_receipts_join_files_without_upgrading_claims(
+    tmp_path: Path,
+) -> None:
+    bundle = {
+        "provider_bundle_kind": excision_vast.PROVIDER_BUNDLE_KIND,
+        "blueprint_commit": "a" * 40,
+        "bundle_sha256": "sha256:" + "1" * 64,
+        "freeze_digest": "sha256:" + "2" * 64,
+    }
+    run = {
+        "status": "blocked",
+        "bundle_sha256": bundle["bundle_sha256"],
+        "estimated_cost_usd": 0.01,
+        "retry_cap": 0,
+    }
+    execution = {
+        "status": "blocked",
+        "blockers": ["fixture_runtime_blocked"],
+        "released_code_executed": False,
+        "heldout_cameras_accessed_for_classification": False,
+    }
+    teardown = {
+        "status": "completed",
+        "vast_instance_ids": [7],
+        "continuing_spend_from_this_run": False,
+    }
+    watchdog = {
+        "status": "provider_terminal",
+        "provider_absence_confirmed": True,
+        "recorded_vast_instance_teardown": {
+            "instance_id": "7",
+            "provider_absence_confirmed": True,
+        },
+    }
+    payloads = {
+        "bundle.json": bundle,
+        "run.json": run,
+        "execution.json": execution,
+        "teardown.json": teardown,
+        "watchdog.json": watchdog,
+    }
+    for name, payload in payloads.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    attempt = excision_vast.materialize_gaussian_excision_attempt_receipt(
+        evidence_root=tmp_path,
+        bundle_receipt_path=tmp_path / "bundle.json",
+        run_result_path=tmp_path / "run.json",
+        execution_result_path=tmp_path / "execution.json",
+        teardown_manifest_path=tmp_path / "teardown.json",
+        watchdog_evidence_path=tmp_path / "watchdog.json",
+        output_path=tmp_path / "attempt.json",
+    )
+
+    assert attempt["status"] == "sealed_blocked_attempt"
+    assert attempt["provider_absence_confirmed"] is True
+    assert attempt["proof_boundaries"]["gaussian_ownership_qualified"] is False
+    assert attempt["proof_boundaries"]["policy_outcome_available"] is False
+
+    dependency = {
+        "schema_version": excision_vast.DEPENDENCY_WHEELHOUSE_SCHEMA,
+        "status": "ready",
+        "provider_network_install_required": False,
+        "manifest_digest": "sha256:" + "3" * 64,
+    }
+    bundle.update(
+        {
+            "status": "ready",
+            "container_image": excision_vast.DEFAULT_IMAGE,
+            "dependency_wheelhouse_manifest_digest": dependency["manifest_digest"],
+            "provider_network_dependency_install_required": False,
+            "exact_bundle_entrypoint_rehearsal": {"status": "passed"},
+        }
+    )
+    admission = {
+        "status": "admitted",
+        "allocation_binding": {
+            "bundle_sha256": bundle["bundle_sha256"],
+            "orchestrator_source_commit": bundle["blueprint_commit"],
+        },
+    }
+    dry_run = {
+        "status": "dry_run_ready",
+        "provider_mutations_performed": 0,
+        "retry_cap": 0,
+    }
+    for name, payload in {
+        "dependency.json": dependency,
+        "repaired-bundle.json": bundle,
+        "admission.json": admission,
+        "dry-run.json": dry_run,
+    }.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    readiness = excision_vast.materialize_gaussian_excision_recovery_readiness(
+        evidence_root=tmp_path,
+        dependency_manifest_path=tmp_path / "dependency.json",
+        bundle_receipt_path=tmp_path / "repaired-bundle.json",
+        admission_path=tmp_path / "admission.json",
+        dry_run_result_path=tmp_path / "dry-run.json",
+        output_path=tmp_path / "readiness.json",
+    )
+
+    assert readiness["status"] == "ready_for_new_authority_not_executed"
+    assert readiness["proof_boundaries"]["gpu_runtime_executed"] is False
+    assert readiness["proof_boundaries"]["new_paid_authority_required"] is True
+
+    scene_freeze = {"selected_scene_id": "fixture"}
+    scene_freeze["scene_freeze_digest"] = canonical_digest(
+        scene_freeze, digest_field="scene_freeze_digest"
+    )
+    task_freeze = {
+        "scene_freeze_digest": scene_freeze["scene_freeze_digest"],
+        "task_id": "fixture_task",
+    }
+    task_freeze["task_freeze_digest"] = canonical_digest(
+        task_freeze, digest_field="task_freeze_digest"
+    )
+    excision_freeze = {
+        "scene": {"publisher_scene_id": "fixture", "task_id": "fixture_task"}
+    }
+    excision_freeze["freeze_digest"] = canonical_digest(
+        excision_freeze, digest_field="freeze_digest"
+    )
+    # The fixture attempt/readiness pair is rebound to this exact excision
+    # freeze before exercising the task-level join.
+    for path in (tmp_path / "attempt.json", tmp_path / "readiness.json"):
+        payload = json.loads(path.read_text())
+        payload["freeze_digest"] = excision_freeze["freeze_digest"]
+        payload["receipt_digest"] = canonical_digest(
+            payload, digest_field="receipt_digest"
+        )
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    for name, payload in {
+        "scene-freeze.json": scene_freeze,
+        "task-freeze.json": task_freeze,
+        "excision-freeze.json": excision_freeze,
+    }.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    abstention = excision_vast.materialize_gaussian_excision_task_abstention(
+        scene_freeze_path=tmp_path / "scene-freeze.json",
+        task_freeze_path=tmp_path / "task-freeze.json",
+        excision_freeze_path=tmp_path / "excision-freeze.json",
+        attempt_receipt_path=tmp_path / "attempt.json",
+        recovery_readiness_path=tmp_path / "readiness.json",
+        output_path=tmp_path / "abstention.json",
+    )
+    assert abstention["status"] == "typed_evidence_backed_abstention"
+    assert abstention["controls_executed"] is False
+    assert abstention["automatic_paid_retry_executed"] is False
+
+    inventory = {
+        "instances": [
+            {
+                "provider": "vast",
+                "id": "99",
+                "name": "external-lane",
+                "state": "running",
+                "live": True,
+                "cost_per_hr_usd": 0.5,
+            }
+        ]
+    }
+    (tmp_path / "inventory.json").write_text(
+        json.dumps(inventory), encoding="utf-8"
+    )
+    closeout = excision_vast.materialize_gaussian_excision_provider_closeout(
+        evidence_root=tmp_path,
+        attempt_receipt_paths=[tmp_path / "attempt.json"],
+        provider_inventory_path=tmp_path / "inventory.json",
+        output_path=tmp_path / "closeout.json",
+    )
+    assert closeout["status"] == "lane_owned_provider_zero"
+    assert closeout["global_provider_zero_claimed"] is False
+    assert closeout["external_live_instances"][0]["charged_to_this_lane"] is False
+
+
 def test_canonical_allocator_binds_gaussian_excision_bundle(monkeypatch, tmp_path: Path) -> None:
     bundle = tmp_path / "bundle.zip"
     bundle.write_bytes(b"immutable-gaussian-excision-runtime")

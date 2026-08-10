@@ -1,0 +1,43 @@
+{
+  "schema_version": "adp_gaussian_excision_recovery_readiness.v1",
+  "status": "ready_for_new_authority_not_executed",
+  "blueprint_commit": "dd893aaed0adb3ecc5c58e558a7cf639fca09a7c",
+  "container_image": "docker.io/pytorch/pytorch@sha256:14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014",
+  "bundle_sha256": "sha256:fe0a58c5d89fbc8bdf6135ff1934447047ab7f9c1d20c4f78c009169278aea87",
+  "freeze_digest": "sha256:64cba590f4a6f99af6acd2e87a975ceaab3086bd869d15a37326c12a4f0c9e62",
+  "dependency_wheelhouse_manifest_digest": "sha256:e96bc10993da4644d5f320059151e0f267e3307daa013a1dd501bedfc52849dd",
+  "provider_network_dependency_install_required": false,
+  "exact_bundle_rehearsal_passed": true,
+  "canonical_paid_admission_dry_run_passed": true,
+  "provider_mutations_performed": 0,
+  "automatic_retry_authorized": false,
+  "records": {
+    "dependency_manifest": {
+      "relative_path": "shared_scene/gaussian_excision_dependency_wheelhouse_v1/dependency_wheelhouse_manifest.v1.json",
+      "size_bytes": 3390,
+      "sha256": "sha256:07afaff2bc1617f4c997cb523b1840b298c35d5535e65467bf134dcaa0b8c048"
+    },
+    "bundle_receipt": {
+      "relative_path": "task_b/removal/flashsplat_bundle_v3/adp_gaussian_excision_bundle_receipt.json",
+      "size_bytes": 8259,
+      "sha256": "sha256:45e8abd2fac8392c246674cd63a4c207bba8ae26a207cbb1cc21c08803faf833"
+    },
+    "admission": {
+      "relative_path": "task_b/removal/flashsplat_bundle_v3/admission_dry_run.json",
+      "size_bytes": 2190,
+      "sha256": "sha256:2f50ba1e657e3b1db29571d46761dc6c1786758fb6d3bfd23b2d822b07bef301"
+    },
+    "dry_run_result": {
+      "relative_path": "task_b/removal/flashsplat_bundle_v3/adapter_dry_run.json",
+      "size_bytes": 8634,
+      "sha256": "sha256:8ea4dd523d5940c43701452ac1bff1da251ea6cb1bf25c2fabd40c646fbc3beb"
+    }
+  },
+  "proof_boundaries": {
+    "gpu_runtime_executed": false,
+    "gaussian_ownership_qualified": false,
+    "new_paid_authority_required": true
+  },
+  "raw_secret_values_recorded": false,
+  "receipt_digest": "sha256:cf134d4fe842c7790691393ecfbfbdd18a8b72620c08516fefd39f770f17dbb8"
+}
