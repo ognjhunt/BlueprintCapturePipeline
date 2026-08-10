@@ -30,6 +30,7 @@ class OperatorRunConfig:
     model: str
     prompt: str
     plan_context: Mapping[str, Any]
+    reasoning_effort: str | None = None
     executor: OperatorExecutor | None = None
     sandbox: str | None = None
     cwd: str | None = None
@@ -168,9 +169,18 @@ def run_agents_sdk_operator(config: OperatorRunConfig) -> Dict[str, Any]:
     except ImportError as exc:
         raise RuntimeError("missing_openai_agents_sdk") from exc
 
+    model_settings = None
+    if config.reasoning_effort:
+        from agents import ModelSettings
+        from openai.types.shared import Reasoning
+
+        model_settings = ModelSettings(
+            reasoning=Reasoning(effort=config.reasoning_effort)
+        )
     agent = Agent(
         name=config.adapter,
         model=config.model,
+        model_settings=model_settings,
         instructions=(
             "You are a Blueprint pipeline operator. Inspect the provided manifest context, "
             "choose safe next deterministic commands, summarize blockers, and never claim "
@@ -206,6 +216,10 @@ def run_codex_sdk_operator(config: OperatorRunConfig) -> Dict[str, Any]:
     sandbox_value = getattr(Sandbox, sandbox_attr, None)
     with Codex() as codex:
         thread_kwargs: Dict[str, Any] = {"model": config.model}
+        if config.reasoning_effort:
+            thread_kwargs["config"] = {
+                "model_reasoning_effort": config.reasoning_effort
+            }
         if sandbox_value is not None:
             thread_kwargs["sandbox"] = sandbox_value
         thread = codex.thread_start(**thread_kwargs)
@@ -246,6 +260,10 @@ def run_codex_cli_operator(config: OperatorRunConfig) -> Dict[str, Any]:
         ]
         if config.model:
             command.extend(["--model", config.model])
+        if config.reasoning_effort:
+            command.extend(
+                ["-c", f'model_reasoning_effort="{config.reasoning_effort}"']
+            )
         command.append("-")
         try:
             completed = subprocess.run(

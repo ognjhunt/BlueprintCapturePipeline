@@ -40,6 +40,7 @@ from .agent_operator_runtime import (
     proof_effect,
     run_agents_sdk_operator,
 )
+from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 from .arena_result_ingest import build_arena_result_ingest
 from .action_normalization import build_action_normalization_from_trace
 from .benchmark_protocol import execute_benchmark_protocol_request
@@ -431,7 +432,8 @@ class AgentsSdkRobotEvalJobAdapter:
     openai_api_key: str | None = None
     live_env_allowed: bool | None = None
     allow_live_operator: bool = False
-    model: str = "gpt-4.1"
+    model: str = OPENAI_TEXT_MODEL
+    reasoning_effort: str = OPENAI_REASONING_EFFORT
     executor: OperatorExecutor | None = None
 
     def build_plan(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
@@ -470,6 +472,7 @@ class AgentsSdkRobotEvalJobAdapter:
                     OperatorRunConfig(
                         adapter="openai_agents_sdk_robot_eval_job",
                         model=self.model,
+                        reasoning_effort=self.reasoning_effort,
                         prompt=_agents_sdk_robot_eval_job_prompt(plan_context),
                         plan_context=plan_context,
                         executor=self.executor,
@@ -519,6 +522,7 @@ class AgentsSdkRobotEvalJobAdapter:
             "request": {
                 "purpose": "headless_robot_eval_job_orchestration_live_operator",
                 "model": self.model,
+                "reasoning_effort": self.reasoning_effort,
                 "job_id": _string(plan_context.get("job_id")),
                 "capture_root": _string(plan_context.get("capture_root")),
                 "allowed_actions": [

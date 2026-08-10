@@ -98,9 +98,10 @@ def test_openai_wam_episode_consistency_uses_responses_without_writing_secret(
     openai_module = types.ModuleType("openai")
 
     class FakeResponses:
-        def create(self, *, model, input, max_output_tokens):
+        def create(self, *, model, input, max_output_tokens, reasoning):
             assert model == "openai-test-model"
             assert max_output_tokens == 800
+            assert reasoning == {"effort": "xhigh"}
             content = input[0]["content"]
             assert content[0]["type"] == "input_text"
             assert "forward/inverse consistent" in content[0]["text"]
@@ -166,3 +167,8 @@ def test_openai_wam_episode_consistency_uses_responses_without_writing_secret(
     assert output.is_file()
     serialized = output.read_text(encoding="utf-8")
     assert "secret-openai-key" not in serialized
+
+
+def test_openai_consistency_labeler_defaults_to_luna_xhigh() -> None:
+    assert consistency_labeler.DEFAULT_MODEL == "gpt-5.6-luna"
+    assert consistency_labeler.OPENAI_REASONING_EFFORT == "xhigh"

@@ -16,7 +16,7 @@ texture:
   uv_projection: box
   image_gen:
     backend: openai
-    model: gpt-image-1
+    model: gpt-image-2
   size: 1024
   workers: 1
 target_prims:

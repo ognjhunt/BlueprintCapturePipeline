@@ -43,6 +43,7 @@ from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_te
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import EpisodeSpecAgentAdapter, FakeEpisodeSpecAgentAdapter, build_episode_specs
 from .local_capture import resolve_local_capture_context
+from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 from . import nvidia_siggraph_automation_evidence as nvidia_evidence
 from .scene_asset_preflight import build_scene_asset_preflight
 from .scenario_variation_instantiator import build_scenario_variation_instances
@@ -201,7 +202,8 @@ class CodexSdkSimulationAutomationAgentAdapter:
     codex_cli_path: str | None = None
     live_env_allowed: bool | None = None
     allow_live_operator: bool = False
-    model: str = "gpt-4.1"
+    model: str = OPENAI_TEXT_MODEL
+    reasoning_effort: str = OPENAI_REASONING_EFFORT
     executor: OperatorExecutor | None = None
 
     def build_ledger(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
@@ -268,6 +270,7 @@ class CodexSdkSimulationAutomationAgentAdapter:
                 config = OperatorRunConfig(
                     adapter="codex_sdk_simulation_code_maintainer",
                     model=self.model,
+                    reasoning_effort=self.reasoning_effort,
                     prompt=_codex_simulation_operator_prompt(plan_context),
                     plan_context=plan_context,
                     executor=self.executor,
@@ -376,7 +379,8 @@ class AgentsSdkCodexMCPAdapter:
     openai_api_key: str | None = None
     live_env_allowed: bool | None = None
     allow_live_operator: bool = False
-    model: str = "gpt-4.1"
+    model: str = OPENAI_TEXT_MODEL
+    reasoning_effort: str = OPENAI_REASONING_EFFORT
     executor: OperatorExecutor | None = None
 
     def build_ledger(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
@@ -432,6 +436,7 @@ class AgentsSdkCodexMCPAdapter:
                     OperatorRunConfig(
                         adapter="openai_agents_sdk_simulation_operator",
                         model=self.model,
+                        reasoning_effort=self.reasoning_effort,
                         prompt=_agents_sdk_simulation_operator_prompt(plan_context),
                         plan_context=plan_context,
                         executor=self.executor,

@@ -157,9 +157,10 @@ def test_openai_wam_success_labeler_uses_responses_without_writing_secret(
     )
 
     class FakeResponses:
-        def create(self, *, model, input, max_output_tokens):
+        def create(self, *, model, input, max_output_tokens, reasoning):
             assert model == "gpt-test-vision"
             assert max_output_tokens == 900
+            assert reasoning == {"effort": "xhigh"}
             content = input[0]["content"]
             prompt = content[0]["text"]
             assert "Turn the faucet handle on" in prompt
@@ -199,6 +200,7 @@ def test_openai_wam_success_labeler_uses_responses_without_writing_secret(
 
     assert result["status"] == "completed"
     assert result["provider"] == "openai"
+    assert result["reasoning_effort"] == "xhigh"
     assert result["label_count"] == 1
     assert result["labels"][0]["success"] is True
     assert result["labels"][0]["label_source"] == "openai_generated_video_frame_judge"
@@ -211,3 +213,8 @@ def test_openai_wam_success_labeler_uses_responses_without_writing_secret(
     assert result["inference_attestation"]["signature_verified"] is True
     assert output.is_file()
     assert "secret-openai-key" not in output.read_text(encoding="utf-8")
+
+
+def test_openai_success_labeler_defaults_to_luna_xhigh() -> None:
+    assert openai_labeler.DEFAULT_MODEL == "gpt-5.6-luna"
+    assert openai_labeler.OPENAI_REASONING_EFFORT == "xhigh"

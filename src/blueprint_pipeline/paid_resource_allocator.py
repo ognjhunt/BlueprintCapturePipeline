@@ -73,7 +73,12 @@ from .paid_resource_admission import (
     require_paid_resource_admission,
 )
 from .paid_resource_cli_arguments import add_cpu_arguments as _add_cpu_arguments
-from .hosted_model_inference_preflight import BACKENDS as HOSTED_MODEL_BACKENDS
+from .hosted_model_inference_preflight import (
+    BACKENDS as HOSTED_MODEL_BACKENDS,
+    PROBE_PROFILE as HOSTED_MODEL_PROBE_PROFILE,
+    REQUIRED_CAPABILITIES as HOSTED_MODEL_REQUIRED_CAPABILITIES,
+    SCHEMA_VERSION as HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION,
+)
 from .openpi_policy_ranking_gpu_admission import (
     NEW_SITE_CANARY_PROBE_KIND,
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
@@ -1687,8 +1692,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 model = prepared_bundle.get("model") or {}
                 model_backend = str(model.get("backend") or "")
-                expected_model = (HOSTED_MODEL_BACKENDS.get(model_backend) or {}).get(
-                    "model"
+                capability = model.get("capability_preflight") or {}
+                capability_verified = capability.get("verified_capabilities")
+                capability_preflight_valid = (
+                    capability.get("schema_version")
+                    == HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION
+                    and capability.get("probe_profile") == HOSTED_MODEL_PROBE_PROFILE
+                    and isinstance(capability_verified, list)
+                    and set(HOSTED_MODEL_REQUIRED_CAPABILITIES).issubset(
+                        set(capability_verified)
+                    )
+                    and capability.get("receipt_digest") == model_preflight_digest
                 )
                 legacy_nim_bundle = not prepared_bundle.get(
                     "model_preflight_receipt_digest"
@@ -1718,7 +1732,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         not legacy_nim_bundle
                         and (
                             model_backend not in HOSTED_MODEL_BACKENDS
-                            or model.get("id") != expected_model
+                            or not str(model.get("id") or "")
+                            or not capability_preflight_valid
                         )
                     )
                     or not bundle_path.is_file()

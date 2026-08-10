@@ -21,6 +21,10 @@ from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .hosted_model_inference_preflight import (
     BACKENDS as HOSTED_MODEL_BACKENDS,
+    LEGACY_SCHEMA_VERSION as HOSTED_MODEL_PREFLIGHT_LEGACY_SCHEMA_VERSION,
+    PROBE_PROFILE as HOSTED_MODEL_PROBE_PROFILE,
+    REQUIRED_CAPABILITIES as HOSTED_MODEL_REQUIRED_CAPABILITIES,
+    REASONING_EFFORTS as HOSTED_MODEL_REASONING_EFFORTS,
     SCHEMA_VERSION as HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION,
 )
 from .nvidia_nim_model_preflight import (
@@ -164,7 +168,11 @@ def _deterministic_zip(root: Path, destination: Path) -> None:
 
 
 def _provider_config(
-    packet: Mapping[str, Any], *, model_backend: str = "nim", model_id: str = NIM_DEFAULT_MODEL
+    packet: Mapping[str, Any],
+    *,
+    model_backend: str = "nim",
+    model_id: str = NIM_DEFAULT_MODEL,
+    model_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     config_path = Path(str((packet.get("config") or {}).get("path") or ""))
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -175,7 +183,10 @@ def _provider_config(
     steps = config["steps"]
     materialized_model_nodes = _materialize_released_model_nodes(steps)
     model_node_count = _rewrite_model_nodes(
-        steps, model_backend=model_backend, model_id=model_id
+        steps,
+        model_backend=model_backend,
+        model_id=model_id,
+        model_options=model_options,
     )
     if model_node_count < len(materialized_model_nodes):
         raise ValueError("adp_joint_agent_config_model_nodes_missing")
@@ -226,7 +237,11 @@ def _materialize_released_model_nodes(steps: Any) -> tuple[str, ...]:
 
 
 def _rewrite_model_nodes(
-    value: Any, *, model_backend: str, model_id: str
+    value: Any,
+    *,
+    model_backend: str,
+    model_id: str,
+    model_options: Mapping[str, Any] | None = None,
 ) -> int:
     """Rewrite every released-code LLM/VLM node, including future steps."""
 
@@ -234,18 +249,83 @@ def _rewrite_model_nodes(
     if isinstance(value, dict):
         for key, child in list(value.items()):
             if key in {"llm", "vlm"} and isinstance(child, Mapping):
-                value[key] = {**child, "backend": model_backend, "model": model_id}
+                value[key] = {
+                    **child,
+                    "backend": model_backend,
+                    "model": model_id,
+                    **dict(model_options or {}),
+                }
                 rewritten += 1
             else:
                 rewritten += _rewrite_model_nodes(
-                    child, model_backend=model_backend, model_id=model_id
+                    child,
+                    model_backend=model_backend,
+                    model_id=model_id,
+                    model_options=model_options,
                 )
     elif isinstance(value, list):
         for child in value:
             rewritten += _rewrite_model_nodes(
-                child, model_backend=model_backend, model_id=model_id
+                child,
+                model_backend=model_backend,
+                model_id=model_id,
+                model_options=model_options,
             )
     return rewritten
+
+
+def _admitted_hosted_model(
+    model_preflight: Mapping[str, Any],
+) -> tuple[str, str, str, dict[str, Any]]:
+    """Validate an inference receipt and return released-code model routing."""
+
+    schema = model_preflight.get("schema_version")
+    if schema not in {
+        HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION,
+        HOSTED_MODEL_PREFLIGHT_LEGACY_SCHEMA_VERSION,
+    }:
+        raise ValueError("adp_joint_agent_model_preflight_schema_invalid")
+    model_backend = str(model_preflight.get("backend") or "")
+    model_id = str(model_preflight.get("model") or "")
+    expected = HOSTED_MODEL_BACKENDS.get(model_backend) or {}
+    if (
+        not expected
+        or not model_id
+        or model_preflight.get("status") != "qualified"
+        or model_preflight.get("endpoint") != expected.get("endpoint")
+        or model_preflight.get("inference_http_status") != 200
+        or model_preflight.get("credential_validated") is not True
+        or model_preflight.get("choice_count", 0) < 1
+        or model_preflight.get("inference_probe_performed") is not True
+        or model_preflight.get("provider_mutations_performed") != 0
+        or model_preflight.get("raw_secret_values_recorded") is not False
+        or model_preflight.get("blockers") not in ([], None)
+    ):
+        raise ValueError("adp_joint_agent_model_preflight_not_qualified")
+    model_options: dict[str, Any] = {}
+    if schema == HOSTED_MODEL_PREFLIGHT_LEGACY_SCHEMA_VERSION:
+        if model_id != expected.get("legacy_model", expected.get("model")):
+            raise ValueError("adp_joint_agent_model_preflight_not_qualified")
+    else:
+        required = set(HOSTED_MODEL_REQUIRED_CAPABILITIES)
+        verified = model_preflight.get("verified_capabilities")
+        reasoning_effort = model_preflight.get("reasoning_effort")
+        if (
+            model_preflight.get("probe_profile") != HOSTED_MODEL_PROBE_PROFILE
+            or model_preflight.get("probe_response_validated") is not True
+            or not isinstance(verified, list)
+            or not required.issubset(set(verified))
+            or reasoning_effort not in HOSTED_MODEL_REASONING_EFFORTS | {None}
+            or (model_preflight.get("probe_image") or {}).get(
+                "uploaded_scene_bytes"
+            )
+            is not False
+        ):
+            raise ValueError("adp_joint_agent_model_capability_preflight_failed")
+        if reasoning_effort is not None:
+            model_options["reasoning_effort"] = reasoning_effort
+    released_backend = "nim" if model_backend == "nvidia_nim" else model_backend
+    return model_backend, released_backend, model_id, model_options
 
 
 def _review_contract(
@@ -351,24 +431,13 @@ def build_joint_agent_vast_bundle(
         digest_field="receipt_digest",
         error="adp_joint_agent_model_preflight_invalid",
     )
-    if model_preflight.get("schema_version") == HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION:
-        model_backend = str(model_preflight.get("backend") or "")
-        model_id = str(model_preflight.get("model") or "")
-        expected = HOSTED_MODEL_BACKENDS.get(model_backend) or {}
-        if (
-            model_preflight.get("status") != "qualified"
-            or model_preflight.get("endpoint") != expected.get("endpoint")
-            or model_id != expected.get("model")
-            or model_preflight.get("inference_http_status") != 200
-            or model_preflight.get("credential_validated") is not True
-            or model_preflight.get("choice_count", 0) < 1
-            or model_preflight.get("inference_probe_performed") is not True
-            or model_preflight.get("provider_mutations_performed") != 0
-            or model_preflight.get("raw_secret_values_recorded") is not False
-            or model_preflight.get("blockers") not in ([], None)
-        ):
-            raise ValueError("adp_joint_agent_model_preflight_not_qualified")
-        released_backend = "nim" if model_backend == "nvidia_nim" else model_backend
+    if model_preflight.get("schema_version") in {
+        HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION,
+        HOSTED_MODEL_PREFLIGHT_LEGACY_SCHEMA_VERSION,
+    }:
+        model_backend, released_backend, model_id, model_options = (
+            _admitted_hosted_model(model_preflight)
+        )
     else:
         if (
             model_preflight.get("schema_version") != NIM_PREFLIGHT_SCHEMA_VERSION
@@ -384,10 +453,11 @@ def build_joint_agent_vast_bundle(
             or model_preflight.get("blockers") not in ([], None)
         ):
             raise ValueError("adp_joint_agent_nim_preflight_not_qualified")
-        model_backend, released_backend, model_id = (
+        model_backend, released_backend, model_id, model_options = (
             "nvidia_nim",
             "nim",
             NIM_DEFAULT_MODEL,
+            {},
         )
     destination = Path(job_dir).expanduser().resolve()
     if destination.exists() and any(destination.iterdir()):
@@ -436,7 +506,10 @@ def build_joint_agent_vast_bundle(
     ensure_dir(runtime / "blueprint_src" / "blueprint_pipeline")
     shutil.copy2(source_asset, runtime / "input" / "articulated_source.usda")
     config = _provider_config(
-        packet, model_backend=released_backend, model_id=model_id
+        packet,
+        model_backend=released_backend,
+        model_id=model_id,
+        model_options=model_options,
     )
     (runtime / "joint_agent.yaml").write_text(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
@@ -570,7 +643,19 @@ def build_joint_agent_vast_bundle(
             "failure_blocker": "joint_agent_runtime_disk_headroom_insufficient",
         },
         "python_build_dependency_plan": build_dependency_plan,
-        "model": {"backend": model_backend, "id": model_id},
+        "model": {
+            "backend": model_backend,
+            "id": model_id,
+            "options": model_options,
+            "capability_preflight": {
+                "schema_version": model_preflight.get("schema_version"),
+                "probe_profile": model_preflight.get("probe_profile"),
+                "verified_capabilities": model_preflight.get(
+                    "verified_capabilities", []
+                ),
+                "receipt_digest": model_preflight["receipt_digest"],
+            },
+        },
         "completion_retries": 0,
         "execution_role": "optional_construction_enrichment",
         "failure_blocks_deterministic_asset_construction": False,

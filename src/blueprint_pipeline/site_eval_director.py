@@ -38,6 +38,7 @@ from .agent_operator_runtime import (
 )
 from .common import ensure_dir, read_json_any, write_json
 from .local_capture import resolve_local_capture_context
+from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 
 
 SCENARIO_EXECUTION_PLAN_SCHEMA_VERSION = "site_eval_scenario_execution_plan.v1"
@@ -146,7 +147,8 @@ class AgentsSdkSiteEvalDirectorAdapter:
     openai_api_key: str | None = None
     live_env_allowed: bool | None = None
     allow_live_operator: bool = False
-    model: str = "gpt-4.1"
+    model: str = OPENAI_TEXT_MODEL
+    reasoning_effort: str = OPENAI_REASONING_EFFORT
     executor: OperatorExecutor | None = None
 
     def build_request_manifest(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
@@ -184,6 +186,7 @@ class AgentsSdkSiteEvalDirectorAdapter:
                     OperatorRunConfig(
                         adapter="openai_agents_sdk_site_eval_director",
                         model=self.model,
+                        reasoning_effort=self.reasoning_effort,
                         prompt=_agents_sdk_site_eval_prompt(plan_context),
                         plan_context=plan_context,
                         executor=self.executor,
@@ -233,6 +236,7 @@ class AgentsSdkSiteEvalDirectorAdapter:
             "request": {
                 "purpose": "site_eval_workflow_coordination_live_operator",
                 "model": self.model,
+                "reasoning_effort": self.reasoning_effort,
                 "capture_root": str(plan_context.get("capture_root") or ""),
                 "scenario_execution_plan": "scenario_execution_plan.json",
                 "task_simulation_requests": "task_simulation_requests.json",
@@ -279,7 +283,8 @@ class CodexSdkCodeMaintainerAdapter:
     live_env_allowed: bool | None = None
     allow_live_operator: bool = False
     sandbox: str = "workspace-write"
-    model: str = "gpt-4.1"
+    model: str = OPENAI_TEXT_MODEL
+    reasoning_effort: str = OPENAI_REASONING_EFFORT
     executor: OperatorExecutor | None = None
 
     def build_request_manifest(self, *, plan_context: Mapping[str, Any]) -> Dict[str, Any]:
@@ -334,6 +339,7 @@ class CodexSdkCodeMaintainerAdapter:
                 config = OperatorRunConfig(
                     adapter="codex_sdk_code_maintainer",
                     model=self.model,
+                    reasoning_effort=self.reasoning_effort,
                     prompt=_codex_code_maintainer_prompt(plan_context, sandbox=sandbox),
                     plan_context=plan_context,
                     executor=self.executor,
@@ -399,6 +405,7 @@ class CodexSdkCodeMaintainerAdapter:
                 "capture_root": str(plan_context.get("capture_root") or ""),
                 "workspace": str(plan_context.get("repo_root") or ""),
                 "model": self.model,
+                "reasoning_effort": self.reasoning_effort,
                 "sandbox": sandbox,
                 "mcp_server_command": ["codex", "mcp-server"],
                 "allowed_request_types": [

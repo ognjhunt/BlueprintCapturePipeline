@@ -90,6 +90,45 @@ def _write_receipt(path: Path, payload: dict) -> dict:
     return payload
 
 
+def _qualified_model_access() -> dict:
+    llm = {
+        "schema_version": bundle_preflight.LLM_PREFLIGHT_SCHEMA_VERSION,
+        "status": "qualified",
+        "backend": "openai",
+        "model": content_agents.CONTENT_LLM_MODEL,
+        "reasoning_effort": content_agents.CONTENT_LLM_REASONING_EFFORT,
+        "probe_profile": bundle_preflight.LLM_PROBE_PROFILE,
+        "verified_capabilities": list(bundle_preflight.LLM_REQUIRED_CAPABILITIES),
+        "blockers": [],
+        "receipt_digest": "",
+    }
+    llm["receipt_digest"] = canonical_digest(llm, digest_field="receipt_digest")
+    image = {
+        "schema_version": bundle_preflight.IMAGE_PREFLIGHT_SCHEMA_VERSION,
+        "status": "qualified",
+        "provider": "openai",
+        "model": content_agents.CONTENT_IMAGE_MODEL,
+        "output": {
+            "width": 1024,
+            "height": 1024,
+            "bytes_retained": False,
+        },
+        "uploaded_scene_bytes": False,
+        "blockers": [],
+        "receipt_digest": "",
+    }
+    image["receipt_digest"] = canonical_digest(image, digest_field="receipt_digest")
+    return {
+        "provider": "openai",
+        "models": {
+            content_agents.CONTENT_LLM_MODEL: llm,
+            content_agents.CONTENT_IMAGE_MODEL: image,
+        },
+        "paid_inference_performed": True,
+        "uploaded_scene_bytes": False,
+    }
+
+
 def _match_v2_evidence(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     evidence = tmp_path / "evidence"
@@ -275,7 +314,7 @@ def test_bundle_rejects_changed_reference_bytes(
     ("filename", "before", "after"),
     [
         ("material_agent.yaml", "on_failure: warn", "on_failure: fail"),
-        ("texture_agent.yaml", "model: gpt-image-1", "model: unavailable-image"),
+        ("texture_agent.yaml", "model: gpt-image-2", "model: unavailable-image"),
         (
             "physics_agent.yaml",
             "    enabled: false\n    vlm:\n      backend: openai",
@@ -308,6 +347,42 @@ def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
             source=source,
             config_sources=config_sources,
         )
+
+
+def test_remote_configs_freeze_successor_models_for_both_scene_fixtures() -> None:
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    for prefix in ("adp009a_content_agents_", "adp009d_content_agents_articulated_"):
+        material = yaml.safe_load((assets / f"{prefix}material.vast.yaml").read_text())
+        physics = yaml.safe_load((assets / f"{prefix}physics.vast.yaml").read_text())
+        texture = yaml.safe_load((assets / f"{prefix}texture.vast.yaml").read_text())
+        for config in (
+            material["steps"]["predict"]["vlm"],
+            material["steps"]["predict"]["llm"],
+            physics["steps"]["identify_asset"]["vlm"],
+            physics["steps"]["predict"]["vlm"],
+        ):
+            assert config["model"] == content_agents.CONTENT_LLM_MODEL
+            assert (
+                config["reasoning_effort"]
+                == content_agents.CONTENT_LLM_REASONING_EFFORT
+            )
+        assert texture["texture"]["image_gen"] == {
+            "backend": "openai",
+            "model": content_agents.CONTENT_IMAGE_MODEL,
+        }
+
+
+def test_bundle_preflight_rejects_catalog_only_model_access() -> None:
+    assert bundle_preflight._valid_model_access(
+        {
+            "provider": "openai",
+            "models": {
+                model: {"http_status": 200, "returned_id": model}
+                for model in bundle_preflight.REQUIRED_MODELS
+            },
+            "paid_inference_performed": False,
+        }
+    ) is False
 
 
 def test_vast_adapter_uses_gpu_rendering_and_bounded_bundle_path(tmp_path: Path) -> None:
@@ -456,14 +531,7 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
             "recipe": dict(bundle_preflight.LOCAL_IMAGE_RECIPE),
             "platform": bundle_preflight.LOCAL_IMAGE_PLATFORM,
         },
-        "model_access": {
-            "provider": "openai",
-            "models": {
-                model: {"http_status": 200, "returned_id": model}
-                for model in bundle_preflight.REQUIRED_MODELS
-            },
-            "paid_inference_performed": False,
-        },
+        "model_access": _qualified_model_access(),
         "configs": bundle_preflight._bundle_config_records(
             Path(bundle_receipt["bundle_path"])
         ),
@@ -753,14 +821,7 @@ def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
     monkeypatch.setattr(
         bundle_preflight,
         "_probe_model_access",
-        lambda _secret: {
-            "provider": "openai",
-            "models": {
-                model: {"http_status": 200, "returned_id": model}
-                for model in bundle_preflight.REQUIRED_MODELS
-            },
-            "paid_inference_performed": False,
-        },
+        lambda _secret, _output: _qualified_model_access(),
     )
     evidence = tmp_path / "evidence"
 
@@ -831,14 +892,7 @@ def test_exact_bundle_preflight_fails_before_receipt_when_any_cli_fails(
     monkeypatch.setattr(
         bundle_preflight,
         "_probe_model_access",
-        lambda _secret: {
-            "provider": "openai",
-            "models": {
-                model: {"http_status": 200, "returned_id": model}
-                for model in bundle_preflight.REQUIRED_MODELS
-            },
-            "paid_inference_performed": False,
-        },
+        lambda _secret, _output: _qualified_model_access(),
     )
     evidence = tmp_path / "failed-evidence"
 

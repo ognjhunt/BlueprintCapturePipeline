@@ -17,11 +17,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 
 
 GATE_ENV = "BLUEPRINT_ALLOW_OPENAI_WAM_EPISODE_CONSISTENCY"
 MODEL_ENV = "BLUEPRINT_OPENAI_WAM_EPISODE_CONSISTENCY_MODEL"
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = OPENAI_TEXT_MODEL
 DEFAULT_OUTPUT_FILENAME = "wam_episode_consistency.command.json"
 # Five frames per episode cannot localise when a rollout diverged; it can
 # only characterise its end state.  Raised so consistency labels carry
@@ -284,6 +285,7 @@ def _openai_score_one(
         model=model,
         input=[{"role": "user", "content": content}],
         max_output_tokens=800,
+        reasoning={"effort": OPENAI_REASONING_EFFORT},
     )
     payload = _parse_json_text(_string(getattr(response, "output_text", "")) or "{}")
     if isinstance(payload.get("rollout_checks"), list) and payload["rollout_checks"]:
@@ -309,6 +311,7 @@ def _openai_score_one(
         ],
         "label_source": "openai_wam_episode_consistency_judge",
         "model": model,
+        "reasoning_effort": OPENAI_REASONING_EFFORT,
         "visual_evidence_used": bool(frames),
         "action_trace_evidence_used": True,
         "sampled_frame_count": len(frames),
@@ -410,6 +413,7 @@ def build_openai_wam_episode_consistency_labels(
         "status": "completed" if checks and not blockers else "blocked",
         "provider": "openai_wam_episode_consistency_judge",
         "model": model_name,
+        "reasoning_effort": OPENAI_REASONING_EFFORT,
         "api_key_configured": bool(api_key_source),
         "blockers": sorted(set(blockers)),
         "rollout_check_count": len(checks),

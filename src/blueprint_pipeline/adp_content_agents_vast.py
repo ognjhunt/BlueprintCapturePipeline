@@ -21,6 +21,11 @@ from pxr import Usd, UsdGeom, UsdPhysics
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .openai_successor_models import (
+    OPENAI_IMAGE_MODEL,
+    OPENAI_REASONING_EFFORT,
+    OPENAI_TEXT_MODEL,
+)
 from .public_scene_simready_native import materialize_native_probe
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .provider_bundle_rehearsal import (
@@ -40,6 +45,9 @@ RESULT_SCHEMA_VERSION = "adp_content_agents_vast_run.v1"
 SOURCE_COMMIT = "36dbf3f274f8e256637230a05a085853f65cc175"
 SOURCE_TREE = "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3"
 SOURCE_VERSION = "0.5.2"
+CONTENT_LLM_MODEL = OPENAI_TEXT_MODEL
+CONTENT_LLM_REASONING_EFFORT = OPENAI_REASONING_EFFORT
+CONTENT_IMAGE_MODEL = OPENAI_IMAGE_MODEL
 DEFAULT_IMAGE = (
     "docker.io/nvidia/cuda@"
     "sha256:cff3a0d82d2c2b47bab252d67fa9b34a20ef4c50781d98501b5c7367ea9afd10"
@@ -526,18 +534,22 @@ def _validate_remote_configs(
         "material_libs_default/materials.yaml"
         or not texture_targets_consistent
         or texture_config.get("image_gen")
-        != {"backend": "openai", "model": "gpt-image-1"}
+        != {"backend": "openai", "model": CONTENT_IMAGE_MODEL}
         or material_validation.get("on_failure") != "warn"
         or (material_steps.get("validate_output") or {}).get("on_failure") != "warn"
         or material_vlm.get("backend") != "openai"
-        or material_vlm.get("model") != "gpt-4.1"
+        or material_vlm.get("model") != CONTENT_LLM_MODEL
+        or material_vlm.get("reasoning_effort") != CONTENT_LLM_REASONING_EFFORT
         or material_llm.get("backend") != "openai"
-        or material_llm.get("model") != "gpt-4.1"
+        or material_llm.get("model") != CONTENT_LLM_MODEL
+        or material_llm.get("reasoning_effort") != CONTENT_LLM_REASONING_EFFORT
         or identify_enabled is not False
         or identify_vlm.get("backend") != "openai"
-        or identify_vlm.get("model") != "gpt-4.1"
+        or identify_vlm.get("model") != CONTENT_LLM_MODEL
+        or identify_vlm.get("reasoning_effort") != CONTENT_LLM_REASONING_EFFORT
         or predict_vlm.get("backend") != "openai"
-        or predict_vlm.get("model") != "gpt-4.1"
+        or predict_vlm.get("model") != CONTENT_LLM_MODEL
+        or predict_vlm.get("reasoning_effort") != CONTENT_LLM_REASONING_EFFORT
         or material_rendering_modes != {"composition", "prim_only"}
         or physics_rendering_modes != {"composition", "prim_only"}
         or (physics_dataset.get("prim_filters") or {}).get("skip_invisible") is not True

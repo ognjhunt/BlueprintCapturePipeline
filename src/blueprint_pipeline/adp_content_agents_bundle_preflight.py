@@ -8,19 +8,33 @@ import json
 import os
 import subprocess
 import tempfile
-import urllib.error
-import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .adp_content_agents_vast import SOURCE_COMMIT, SOURCE_TREE
+from .adp_content_agents_vast import (
+    CONTENT_IMAGE_MODEL,
+    CONTENT_LLM_MODEL,
+    CONTENT_LLM_REASONING_EFFORT,
+    SOURCE_COMMIT,
+    SOURCE_TREE,
+)
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .hosted_image_generation_preflight import (
+    SCHEMA_VERSION as IMAGE_PREFLIGHT_SCHEMA_VERSION,
+    materialize_hosted_image_generation_preflight,
+)
+from .hosted_model_inference_preflight import (
+    PROBE_PROFILE as LLM_PROBE_PROFILE,
+    REQUIRED_CAPABILITIES as LLM_REQUIRED_CAPABILITIES,
+    SCHEMA_VERSION as LLM_PREFLIGHT_SCHEMA_VERSION,
+    materialize_hosted_model_inference_preflight,
+)
 from .provider_archive import ProviderArchiveError, extract_provider_archive
 
 
-SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v1"
+SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v2"
 LOCAL_IMAGE = "blueprint/adp009a-content-agents:0.5.2"
 LOCAL_IMAGE_PLATFORM = "linux/arm64"
 # A container build is not bit-reproducible: the base tag moves and uv
@@ -52,7 +66,7 @@ LOCAL_IMAGE_ADMITTED_IDS = {
     ),
 }
 SECRET_ENV_NAMES = ("OPENAI_API_KEY",)
-REQUIRED_MODELS = ("gpt-4.1", "gpt-image-1")
+REQUIRED_MODELS = (CONTENT_LLM_MODEL, CONTENT_IMAGE_MODEL)
 ORCHESTRATOR_REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_MEMBERS = {
     "material": "provider_runtime/configs/material_agent.yaml",
@@ -137,30 +151,80 @@ def _secret() -> str:
     return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
 
 
-def _probe_model_access(secret: str) -> dict[str, Any]:
-    models: dict[str, dict[str, Any]] = {}
-    for model in REQUIRED_MODELS:
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/models/" + model,
-            headers={
-                "Authorization": "Bearer " + secret,
-                "User-Agent": "BlueprintContentAgentsPreflight/1.0",
-            },
+def _probe_model_access(secret: str, output: Path) -> dict[str, Any]:
+    """Prove real capabilities; a model-catalog lookup is not admission."""
+
+    llm = materialize_hosted_model_inference_preflight(
+        output_path=output / "content-agents-llm-capability.json",
+        backend="openai",
+        model=CONTENT_LLM_MODEL,
+        reasoning_effort=CONTENT_LLM_REASONING_EFFORT,
+        secret_loader=lambda _backend: (secret, "inherited_openai_secret"),
+    )
+    image = materialize_hosted_image_generation_preflight(
+        output_path=output / "content-agents-image-capability.json",
+        model=CONTENT_IMAGE_MODEL,
+        secret_loader=lambda: (secret, "inherited_openai_secret"),
+    )
+    if llm.get("status") != "qualified":
+        raise ContentAgentsBundlePreflightError(
+            f"openai_model_capability_probe_failed:{CONTENT_LLM_MODEL}"
         )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                value = json.loads(response.read())
-                status = int(response.status)
-        except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
-            raise ContentAgentsBundlePreflightError(
-                f"openai_model_access_probe_failed:{model}"
-            ) from exc
-        if status != 200 or not isinstance(value, Mapping) or value.get("id") != model:
-            raise ContentAgentsBundlePreflightError(
-                f"openai_model_access_probe_failed:{model}"
-            )
-        models[model] = {"http_status": status, "returned_id": str(value["id"])}
-    return {"provider": "openai", "models": models, "paid_inference_performed": False}
+    if image.get("status") != "qualified":
+        raise ContentAgentsBundlePreflightError(
+            f"openai_model_capability_probe_failed:{CONTENT_IMAGE_MODEL}"
+        )
+    return {
+        "provider": "openai",
+        "models": {
+            CONTENT_LLM_MODEL: llm,
+            CONTENT_IMAGE_MODEL: image,
+        },
+        "paid_inference_performed": True,
+        "uploaded_scene_bytes": False,
+    }
+
+
+def _valid_model_access(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    models = value.get("models")
+    if not isinstance(models, Mapping):
+        return False
+    llm = models.get(CONTENT_LLM_MODEL)
+    image = models.get(CONTENT_IMAGE_MODEL)
+    image_output = image.get("output") if isinstance(image, Mapping) else None
+    if not isinstance(image_output, Mapping):
+        image_output = {}
+    return bool(
+        value.get("provider") == "openai"
+        and value.get("paid_inference_performed") is True
+        and value.get("uploaded_scene_bytes") is False
+        and isinstance(llm, Mapping)
+        and llm.get("schema_version") == LLM_PREFLIGHT_SCHEMA_VERSION
+        and llm.get("status") == "qualified"
+        and llm.get("backend") == "openai"
+        and llm.get("model") == CONTENT_LLM_MODEL
+        and llm.get("reasoning_effort") == CONTENT_LLM_REASONING_EFFORT
+        and llm.get("probe_profile") == LLM_PROBE_PROFILE
+        and sorted(llm.get("verified_capabilities") or [])
+        == sorted(LLM_REQUIRED_CAPABILITIES)
+        and llm.get("blockers") in ([], None)
+        and llm.get("receipt_digest")
+        == canonical_digest(llm, digest_field="receipt_digest")
+        and isinstance(image, Mapping)
+        and image.get("schema_version") == IMAGE_PREFLIGHT_SCHEMA_VERSION
+        and image.get("status") == "qualified"
+        and image.get("provider") == "openai"
+        and image.get("model") == CONTENT_IMAGE_MODEL
+        and image_output.get("width") == 1024
+        and image_output.get("height") == 1024
+        and image_output.get("bytes_retained") is False
+        and image.get("uploaded_scene_bytes") is False
+        and image.get("blockers") in ([], None)
+        and image.get("receipt_digest")
+        == canonical_digest(image, digest_field="receipt_digest")
+    )
 
 
 def _redact(value: str, secrets: Sequence[str]) -> str:
@@ -286,7 +350,7 @@ def materialize_bundle_config_preflight(
     secret = _secret()
     if not secret:
         raise ContentAgentsBundlePreflightError("openai_secret_missing")
-    model_access = _probe_model_access(secret)
+    model_access = _probe_model_access(secret, output)
     environment = os.environ.copy()
     for name in SECRET_ENV_NAMES:
         environment[name] = secret
@@ -508,15 +572,7 @@ def validate_bundle_config_preflight(
         or preflight.get("content_agents_source_commit") != SOURCE_COMMIT
         or preflight.get("content_agents_source_tree") != SOURCE_TREE
         or not _admitted_local_image_record(preflight.get("local_container_image"))
-        or preflight.get("model_access")
-        != {
-            "provider": "openai",
-            "models": {
-                model: {"http_status": 200, "returned_id": model}
-                for model in REQUIRED_MODELS
-            },
-            "paid_inference_performed": False,
-        }
+        or not _valid_model_access(preflight.get("model_access"))
         or preflight.get("all_required_dry_runs_executed") is not True
         or preflight.get("provider_mutations_performed") != 0
         or preflight.get("paid_resource_allocated") is not False

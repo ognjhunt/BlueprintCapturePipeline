@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 from .wam_generated_video_success_label_gemini import (
     _bool_or_none,
     _confidence_or_none,
@@ -32,7 +33,7 @@ from .wam_generated_video_success_label_gemini import (
 GATE_ENV = "BLUEPRINT_ALLOW_OPENAI_WAM_SUCCESS_LABELING"
 SHARED_GATE_ENV = "BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING"
 MODEL_ENV = "BLUEPRINT_OPENAI_WAM_SUCCESS_LABEL_MODEL"
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = OPENAI_TEXT_MODEL
 DEFAULT_OUTPUT_FILENAME = "wam_success_labels.command.json"
 # Matches the Gemini success judge: five frames characterise an end state but
 # cannot localise when a rollout diverged.
@@ -239,6 +240,7 @@ def _openai_label_one(
         model=model,
         input=[{"role": "user", "content": content}],
         max_output_tokens=900,
+        reasoning={"effort": OPENAI_REASONING_EFFORT},
     )
     payload = _parse_json_text(_string(getattr(response, "output_text", "")) or "{}")
     if isinstance(payload.get("labels"), list) and payload["labels"]:
@@ -289,6 +291,7 @@ def _openai_label_one(
         "evidence_refs": evidence_refs,
         "label_source": "openai_generated_video_frame_judge",
         "model": model,
+        "reasoning_effort": OPENAI_REASONING_EFFORT,
         "visual_evidence_used": bool(frames),
         "sampled_frame_count": len(frames),
         "human_review_required": False,
@@ -423,6 +426,7 @@ def build_openai_wam_success_labels(
         "status": "completed" if labels and not blockers else "blocked",
         "provider": "openai",
         "model": model_name,
+        "reasoning_effort": OPENAI_REASONING_EFFORT,
         "prompt_template_sha256": PROMPT_TEMPLATE_SHA256,
         "api_key_configured": bool(api_key_source),
         "blockers": sorted(set(blockers)),

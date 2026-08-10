@@ -114,7 +114,13 @@ def test_operator_runtime_executor_shortcuts_normalize_output() -> None:
 
 
 def test_agents_sdk_operator_missing_and_success(monkeypatch) -> None:
-    config = runtime.OperatorRunConfig(adapter="agents", model="gpt", prompt="plan", plan_context={})
+    config = runtime.OperatorRunConfig(
+        adapter="agents",
+        model="gpt",
+        prompt="plan",
+        plan_context={},
+        reasoning_effort="xhigh",
+    )
     real_import = builtins.__import__
 
     def import_missing(name, *args, **kwargs):
@@ -129,6 +135,14 @@ def test_agents_sdk_operator_missing_and_success(monkeypatch) -> None:
 
     agents_module = types.ModuleType("agents")
 
+    class FakeModelSettings:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+    class FakeReasoning:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
     class FakeAgent:
         def __init__(self, **kwargs) -> None:
             self.kwargs = kwargs
@@ -137,6 +151,10 @@ def test_agents_sdk_operator_missing_and_success(monkeypatch) -> None:
         @staticmethod
         async def run(agent, prompt):
             assert agent.kwargs["name"] == "agents"
+            assert (
+                agent.kwargs["model_settings"].kwargs["reasoning"].kwargs["effort"]
+                == "xhigh"
+            )
             assert prompt == "plan"
             return types.SimpleNamespace(
                 final_output="operator summary",
@@ -148,8 +166,16 @@ def test_agents_sdk_operator_missing_and_success(monkeypatch) -> None:
             )
 
     agents_module.Agent = FakeAgent
+    agents_module.ModelSettings = FakeModelSettings
     agents_module.Runner = FakeRunner
     monkeypatch.setitem(sys.modules, "agents", agents_module)
+    openai_module = types.ModuleType("openai")
+    openai_types_module = types.ModuleType("openai.types")
+    openai_shared_module = types.ModuleType("openai.types.shared")
+    openai_shared_module.Reasoning = FakeReasoning
+    monkeypatch.setitem(sys.modules, "openai", openai_module)
+    monkeypatch.setitem(sys.modules, "openai.types", openai_types_module)
+    monkeypatch.setitem(sys.modules, "openai.types.shared", openai_shared_module)
 
     output = runtime.run_agents_sdk_operator(config)
 
@@ -168,6 +194,7 @@ def test_codex_sdk_operator_missing_and_success(monkeypatch) -> None:
         prompt="inspect",
         plan_context={},
         sandbox="workspace-write",
+        reasoning_effort="xhigh",
     )
     real_import = builtins.__import__
 
@@ -213,7 +240,13 @@ def test_codex_sdk_operator_missing_and_success(monkeypatch) -> None:
 
     output = runtime.run_codex_sdk_operator(config)
 
-    assert calls == [{"model": "gpt", "sandbox": "ww"}]
+    assert calls == [
+        {
+            "model": "gpt",
+            "sandbox": "ww",
+            "config": {"model_reasoning_effort": "xhigh"},
+        }
+    ]
     assert output["final_output"] == "codex response"
     assert output["tool_call_summaries"] == [{"index": 0, "item_type": "tool", "tool_name": "edit"}]
 
@@ -227,6 +260,7 @@ def test_codex_cli_operator_success_and_failures(monkeypatch, tmp_path: Path) ->
         sandbox="invalid",
         cwd=str(tmp_path),
         timeout_seconds=0,
+        reasoning_effort="xhigh",
     )
 
     monkeypatch.setattr(runtime, "codex_cli_path", lambda _bin: None)
@@ -252,7 +286,13 @@ def test_codex_cli_operator_success_and_failures(monkeypatch, tmp_path: Path) ->
     def successful_run(command, **kwargs):
         assert command[command.index("--sandbox") + 1] == "read-only"
         assert command[command.index("--cd") + 1] == str(tmp_path.resolve())
-        assert command[-3:] == ["--model", "gpt", "-"]
+        assert command[-5:] == [
+            "--model",
+            "gpt",
+            "-c",
+            'model_reasoning_effort="xhigh"',
+            "-",
+        ]
         assert kwargs["input"] == "plan"
         assert kwargs["timeout"] == 1
         output_path = Path(command[command.index("--output-last-message") + 1])

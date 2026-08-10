@@ -95,6 +95,7 @@ def test_rollout_vision_openai_and_fallback_label(monkeypatch, tmp_path: Path) -
     class FakeResponses:
         def create(self, **kwargs):
             assert kwargs["model"] == "vision-model"
+            assert kwargs["reasoning"] == {"effort": "xhigh"}
             content = kwargs["input"][0]["content"]
             assert content[0]["type"] == "input_text"
             assert content[1]["image_url"].startswith("data:image/jpeg;base64,")
@@ -206,3 +207,8 @@ def test_rollout_vision_main_reports_status(monkeypatch, tmp_path: Path, capsys)
         lambda **_kwargs: {"status": "completed_review_required", "blockers": []},
     )
     assert vision.main(["--output-dir", str(tmp_path)]) == 0
+
+
+def test_rollout_vision_defaults_to_luna_xhigh() -> None:
+    assert vision.DEFAULT_MODEL == "gpt-5.6-luna"
+    assert vision.OPENAI_REASONING_EFFORT == "xhigh"

@@ -457,7 +457,8 @@ def test_provider_config_routes_replaceable_hosted_model_backend(
     config = joint_vast._provider_config(
         {"config": {"path": str(path)}},
         model_backend="openai",
-        model_id="gpt-4.1",
+        model_id="gpt-5.6-luna",
+        model_options={"reasoning_effort": "max"},
     )
 
     for step, key in (
@@ -467,13 +468,50 @@ def test_provider_config_routes_replaceable_hosted_model_backend(
         ("identify_asset", "vlm"),
     ):
         assert config["steps"][step][key]["backend"] == "openai"
-        assert config["steps"][step][key]["model"] == "gpt-4.1"
+        assert config["steps"][step][key]["model"] == "gpt-5.6-luna"
+        assert config["steps"][step][key]["reasoning_effort"] == "max"
     assert config["steps"]["analyze_structure"]["llm"]["temperature"] == 0
     assert config["steps"]["future_nested_step"]["workers"][0]["vlm"] == {
         "backend": "openai",
-        "model": "gpt-4.1",
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "max",
         "custom": "retained",
     }
+
+
+def test_joint_model_admission_accepts_capability_proven_model_not_static_default() -> None:
+    receipt = {
+        "schema_version": "hosted_model_inference_preflight.v2",
+        "status": "qualified",
+        "backend": "openai",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "model": "gpt-5.6-luna",
+        "credential_validated": True,
+        "inference_http_status": 200,
+        "choice_count": 1,
+        "probe_profile": "multimodal_structured_json.v1",
+        "verified_capabilities": ["image_input", "structured_json"],
+        "probe_response_validated": True,
+        "probe_image": {"uploaded_scene_bytes": False},
+        "reasoning_effort": "max",
+        "inference_probe_performed": True,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+        "blockers": [],
+    }
+
+    assert joint_vast._admitted_hosted_model(receipt) == (
+        "openai",
+        "openai",
+        "gpt-5.6-luna",
+        {"reasoning_effort": "max"},
+    )
+
+    receipt["verified_capabilities"] = ["structured_json"]
+    with pytest.raises(
+        ValueError, match="adp_joint_agent_model_capability_preflight_failed"
+    ):
+        joint_vast._admitted_hosted_model(receipt)
 
 
 def _prepared_bundle(tmp_path: Path) -> dict:
@@ -563,7 +601,17 @@ def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
         receipt["nim_preflight_receipt_digest"] = "sha256:" + "2" * 64
     else:
         receipt["model_preflight_receipt_digest"] = "sha256:" + "2" * 64
-        receipt["model"] = {"backend": "openai", "id": "gpt-4.1"}
+        receipt["model"] = {
+            "backend": "openai",
+            "id": "gpt-5.6-luna",
+            "options": {"reasoning_effort": "xhigh"},
+            "capability_preflight": {
+                "schema_version": "hosted_model_inference_preflight.v2",
+                "probe_profile": "multimodal_structured_json.v1",
+                "verified_capabilities": ["image_input", "structured_json"],
+                "receipt_digest": "sha256:" + "2" * 64,
+            },
+        }
     receipt_path = tmp_path / "receipt.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     monkeypatch.setattr(
@@ -1088,7 +1136,10 @@ def test_provider_runner_reports_typed_openai_credential_gap_before_gpu_work(
     root = tmp_path / "provider_runtime"
     output = tmp_path / "runtime_output"
     root.mkdir()
-    manifest = {"status": "ready", "model": {"backend": "openai", "id": "gpt-4.1"}}
+    manifest = {
+        "status": "ready",
+        "model": {"backend": "openai", "id": "fixture-openai-model"},
+    }
     (root / "adp_joint_agent_provider_manifest.json").write_text(
         json.dumps(manifest), encoding="utf-8"
     )

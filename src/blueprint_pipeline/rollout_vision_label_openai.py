@@ -21,12 +21,13 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 from .arena_result_ingest import COMMAND_VISION_LABELS_SCHEMA_VERSION
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 
 
 OUTPUT_FILENAME = "rollout_vision_labels.command.json"
 GATE_ENV = "BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING"
 MODEL_ENV = "BLUEPRINT_ROLLOUT_VISION_OPENAI_MODEL"
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = OPENAI_TEXT_MODEL
 
 
 def _string(value: Any) -> str:
@@ -166,6 +167,7 @@ def _openai_label(
     client = OpenAI()
     response = client.responses.create(
         model=model,
+        reasoning={"effort": OPENAI_REASONING_EFFORT},
         input=[
             {
                 "role": "user",
@@ -208,6 +210,7 @@ def _fallback_label(
         "confidence": evidence.get("confidence") if isinstance(evidence.get("confidence"), (int, float)) else None,
         "label_source": "openai_responses_vision",
         "model": model,
+        "reasoning_effort": OPENAI_REASONING_EFFORT,
         "visual_evidence_used": keyframe_completed,
         "evidence_refs": [
             ref
@@ -290,6 +293,7 @@ def build_openai_rollout_vision_labels(
         "status": "completed_review_required" if labels and not blockers else "blocked_review_required",
         "provider": "openai",
         "model": model_name,
+        "reasoning_effort": OPENAI_REASONING_EFFORT,
         "blockers": sorted(set(blockers)),
         "label_count": len(labels),
         "labels": labels,
