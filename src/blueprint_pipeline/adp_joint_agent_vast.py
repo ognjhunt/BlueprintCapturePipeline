@@ -864,20 +864,6 @@ def run_joint_agent_vast(
         )
     ):
         raise ValueError("adp_joint_agent_prepared_bundle_binding_invalid")
-    if not execute:
-        result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "generated_at": utc_now_iso(),
-            "status": "dry_run_ready",
-            "bundle": bundle,
-            "provider_mutations_performed": 0,
-            "retry_cap": 0,
-            "blockers": [],
-        }
-        write_json(job / "adp_joint_agent_vast_result.json", result)
-        return result
-    if paid_resource_admission_grant is None:
-        raise ValueError("adp_joint_agent_paid_resource_admission_grant_missing")
     local_capacity = _local_evidence_capacity(job=job, bundle_path=bundle_path)
     write_json(job / "local_evidence_capacity.json", local_capacity)
     if local_capacity["status"] != "passed":
@@ -903,6 +889,22 @@ def run_joint_agent_vast(
             "provider_mutations_performed": 0,
             "blockers": ["adp_joint_agent_budget_below_minimum_live_window"],
         }
+    if not execute:
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "dry_run_ready",
+            "bundle": bundle,
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "local_evidence_capacity": local_capacity,
+            "admitted_live_minutes": remaining_minutes,
+            "blockers": [],
+        }
+        write_json(job / "adp_joint_agent_vast_result.json", result)
+        return result
+    if paid_resource_admission_grant is None:
+        raise ValueError("adp_joint_agent_paid_resource_admission_grant_missing")
     staging_dir = job / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,

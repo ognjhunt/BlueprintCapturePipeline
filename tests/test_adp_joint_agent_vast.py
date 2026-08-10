@@ -508,6 +508,28 @@ def test_run_dry_run_is_zero_mutation_and_requires_bound_bundle(tmp_path: Path) 
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
     assert result["retry_cap"] == 0
+    assert result["local_evidence_capacity"]["status"] == "passed"
+    assert result["admitted_live_minutes"] >= 90
+
+
+def test_run_dry_run_rejects_budget_below_minimum_live_window(
+    tmp_path: Path,
+) -> None:
+    result = run_joint_agent_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=None,
+        execute=False,
+        prepared_bundle=_prepared_bundle(tmp_path),
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.8,
+        hard_ttl_seconds=5400,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == [
+        "adp_joint_agent_budget_below_minimum_live_window"
+    ]
 
 
 @pytest.mark.parametrize("execute", [False, True])
