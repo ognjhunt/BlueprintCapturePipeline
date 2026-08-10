@@ -346,3 +346,58 @@ def test_a_spec_whose_schema_is_not_the_declared_one_fails_closed(
         )
 
     assert any("probe_schema_invalid" in error for error in excinfo.value.errors)
+
+
+def test_the_entrypoint_points_at_the_spec_the_bundle_actually_carries(
+    tmp_path: Path,
+) -> None:
+    """A hardcoded spec name boots Isaac and then cannot find its own input.
+
+    The runner exits, the fallback writes "spec unreadable", and the launch is
+    spent on a result that says nothing about the probe. Nothing earlier in the
+    chain catches it: the bundle is well-formed, the digests match, and the dry
+    run is clean.
+    """
+
+    root = tmp_path / "controls_probe"
+    root.mkdir()
+    stage = root / "controls_stage.usda"
+    stage.write_text("#usda 1.0\n", encoding="utf-8")
+    (root / "articulated_controls_probe_spec.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "articulated_controls_probe_spec.v1",
+                "status": "frozen_not_executed",
+                "stages": {
+                    "controls_stage": {
+                        "path": str(stage),
+                        "sha256": _digest_of(stage),
+                    }
+                },
+                "required_readbacks": ["zero_action_door_stays_shut"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    receipt = build_articulated_isaac_bundle(
+        probe_root=root,
+        job_dir=tmp_path / "job",
+        worker_source=_worker(tmp_path),
+        source_commit_sha="d" * 40,
+        probe_spec_filename="articulated_controls_probe_spec.json",
+        probe_spec_schema_version="articulated_controls_probe_spec.v1",
+        primary_stage_name="controls_stage",
+    )
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        entrypoint = archive.read(
+            "provider_runtime/run_isaac_realistic_runtime.sh"
+        ).decode("utf-8")
+        names = set(archive.namelist())
+
+    assert "articulated_controls_probe_spec.json" in entrypoint
+    assert "articulated_native_probe_spec.json" not in entrypoint
+    assert (
+        "provider_runtime/native/articulated_controls_probe_spec.json" in names
+    )

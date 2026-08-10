@@ -40,7 +40,7 @@ OUTPUT_DIR="${BLUEPRINT_ISAAC_OUTPUT_DIR:-$BUNDLE_DIR/runtime_output}"
 RESULT="$OUTPUT_DIR/isaac_runtime_result.json"
 mkdir -p "$OUTPUT_DIR"
 /isaac-sim/python.sh "$BUNDLE_DIR/provider_runtime/isaac_realistic_runtime_runner.py" \
-  --spec "$BUNDLE_DIR/provider_runtime/native/articulated_native_probe_spec.json" \
+  --spec "$BUNDLE_DIR/provider_runtime/native/__PROBE_SPEC_FILENAME__" \
   --output "$RESULT"
 runner_rc=$?
 write_missing_result() {
@@ -148,7 +148,14 @@ def build_articulated_isaac_bundle(
     shutil.copy2(spec_path, native / spec_path.name)
     shutil.copy2(worker, runtime / "isaac_realistic_runtime_runner.py")
     entrypoint = runtime / "run_isaac_realistic_runtime.sh"
-    entrypoint.write_text(ENTRYPOINT, encoding="utf-8")
+    # The runner is told which spec to open. Leaving one kind's filename baked
+    # in here boots Isaac against a path that does not exist, and the launch is
+    # spent on a result that says nothing about the probe - while the bundle
+    # stays well-formed and the dry run stays clean.
+    entrypoint.write_text(
+        ENTRYPOINT.replace("__PROBE_SPEC_FILENAME__", spec_path.name),
+        encoding="utf-8",
+    )
     entrypoint.chmod(0o755)
 
     # The Isaac lane's transport declares a fixed set of slots. Fill them with
