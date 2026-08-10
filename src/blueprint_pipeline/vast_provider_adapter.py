@@ -2129,6 +2129,7 @@ def _blueprint_bundle_preflight(
         "provider_runtime/native_task_packet/native_task_runtime_contract.v1.json",
         "provider_runtime/native_task_packet/native_task_arena_scene_plan.v1.json",
         "provider_runtime/native_task_packet/native_task_arena_packet_receipt.v1.json",
+        "provider_runtime/native_task_packet/native_task_asset_import_normalizations.v1.json",
         "provider_runtime/blueprint_pipeline/__init__.py",
         "provider_runtime/blueprint_pipeline/articulated_control_planner.py",
         "provider_runtime/blueprint_pipeline/decision_evidence_contracts.py",
@@ -2141,6 +2142,7 @@ def _blueprint_bundle_preflight(
         "provider_runtime/blueprint_pipeline/native_task_arena_readback.py",
         "provider_runtime/blueprint_pipeline/native_task_arena_runtime.py",
         "provider_runtime/blueprint_pipeline/native_task_camera_observability.py",
+        "provider_runtime/blueprint_pipeline/native_task_usd_import_normalization.py",
     }
     adp009d_ovrtx_required_entries = {
         "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh",

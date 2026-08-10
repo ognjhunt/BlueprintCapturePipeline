@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,15 @@ REQUIRED_EXPERIENCE_FILES = (
     "isaaclab.python.kit",
     "isaaclab.python.headless.kit",
     "isaaclab.python.headless.rendering.kit",
+)
+ISAAC_SIM_DEFAULT_CALLBACKS_SETTING = (
+    "/exts/isaacsim.core.simulation_manager/enable_default_callbacks"
+)
+ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG = (
+    f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}=false"
+)
+ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX = (
+    "d81d2160220a4401be1d94f871c8f0b62e217acb"
 )
 
 
@@ -200,8 +210,16 @@ def launch_native_task_isaaclab(
     provisioning_receipt_path: str | Path,
     *,
     simulation_app_factory: Callable[..., Any] | None = None,
+    settings_reader: Callable[[str], Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Launch SimulationApp with the verified compatibility experience."""
+    """Launch SimulationApp with one verified PhysX lifecycle owner.
+
+    Isaac Lab upstream now disables Isaac Sim's default simulation-manager
+    callbacks *before* extension startup.  Those callbacks otherwise race the
+    PhysxManager lifecycle and can invalidate or rebind its tensor view.  This
+    harness launches ``SimulationApp`` directly, so it must carry the same
+    upstream Kit setting explicitly and read it back after startup.
+    """
 
     receipt = verify_native_task_isaaclab_launch_contract(
         provisioning_receipt_path
@@ -210,15 +228,55 @@ def launch_native_task_isaaclab(
         from isaacsim.simulation_app import SimulationApp
 
         simulation_app_factory = SimulationApp
-    app = simulation_app_factory(
-        {"headless": True, "renderer": "RayTracedLighting"},
-        experience=receipt["experience"]["path"],
+    setting_prefix = f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}="
+    existing = [arg for arg in sys.argv if arg.startswith(setting_prefix)]
+    if existing and existing != [ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG]:
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_default_callbacks_setting_conflict"]
+        )
+    inserted = not existing
+    if inserted:
+        sys.argv.append(ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG)
+    try:
+        app = simulation_app_factory(
+            {"headless": True, "renderer": "RayTracedLighting"},
+            experience=receipt["experience"]["path"],
+        )
+    finally:
+        if inserted:
+            sys.argv.remove(ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG)
+
+    if settings_reader is None:
+        import carb
+
+        settings_reader = carb.settings.get_settings().get
+    observed = settings_reader(ISAAC_SIM_DEFAULT_CALLBACKS_SETTING)
+    if observed is not False:
+        close = getattr(app, "close", None)
+        if callable(close):
+            close()
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_default_callbacks_readback_failed"]
+        )
+    receipt["simulation_manager_lifecycle"] = {
+        "owner": "isaaclab_physx.PhysxManager",
+        "setting": ISAAC_SIM_DEFAULT_CALLBACKS_SETTING,
+        "requested_value": False,
+        "observed_value": observed,
+        "applied_before_extension_startup": True,
+        "upstream_fix_revision": ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX,
+    }
+    receipt["launch_receipt_digest"] = canonical_digest(
+        receipt, digest_field="launch_receipt_digest"
     )
     return app, receipt
 
 
 __all__ = [
     "NativeTaskIsaacLabLaunchError",
+    "ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG",
+    "ISAAC_SIM_DEFAULT_CALLBACKS_SETTING",
+    "ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX",
     "REQUIRED_EXPERIENCE_FILES",
     "SCHEMA_VERSION",
     "launch_native_task_isaaclab",

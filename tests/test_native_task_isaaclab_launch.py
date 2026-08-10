@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -110,7 +111,9 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         return SimpleNamespace(close=lambda: None)
 
     app, receipt = launch_native_task_isaaclab(
-        _receipt(tmp_path), simulation_app_factory=factory
+        _receipt(tmp_path),
+        simulation_app_factory=factory,
+        settings_reader=lambda setting: False,
     )
 
     assert app is not None
@@ -122,6 +125,13 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     ]
     assert receipt["bundled_isaac_sim_warp_extension_loaded"] is False
     assert receipt["external_warp"]["import_qualified_before_simulation_app"] is True
+    assert receipt["simulation_manager_lifecycle"]["observed_value"] is False
+    assert receipt["simulation_manager_lifecycle"][
+        "applied_before_extension_startup"
+    ] is True
+    assert receipt["launch_receipt_digest"] == canonical_digest(
+        receipt, digest_field="launch_receipt_digest"
+    )
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",
         "isaaclab.python.headless.kit",
@@ -179,6 +189,83 @@ def test_missing_external_warp_fails_before_simulation_app_factory(
             receipt_path, simulation_app_factory=forbidden_factory
         )
     assert called is False
+
+
+def test_default_callbacks_are_disabled_before_factory_and_read_back(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.native_task_isaaclab_launch import (
+        ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG,
+        ISAAC_SIM_DEFAULT_CALLBACKS_SETTING,
+    )
+
+    observed_argv = []
+
+    def factory(config, *, experience):
+        del config, experience
+        observed_argv.extend(sys.argv)
+        return SimpleNamespace(close=lambda: None)
+
+    launch_native_task_isaaclab(
+        _receipt(tmp_path),
+        simulation_app_factory=factory,
+        settings_reader=lambda setting: (
+            False if setting == ISAAC_SIM_DEFAULT_CALLBACKS_SETTING else None
+        ),
+    )
+
+    assert ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG in observed_argv
+    assert ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG not in sys.argv
+
+
+def test_conflicting_default_callback_setting_fails_before_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline.native_task_isaaclab_launch import (
+        ISAAC_SIM_DEFAULT_CALLBACKS_SETTING,
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["worker", f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}=true"],
+    )
+    called = False
+
+    def factory(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("factory must not run with lifecycle conflict")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_default_callbacks_setting_conflict",
+    ):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path), simulation_app_factory=factory
+        )
+    assert called is False
+
+
+def test_default_callback_readback_failure_closes_app(tmp_path: Path) -> None:
+    closed = False
+
+    def close():
+        nonlocal closed
+        closed = True
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_default_callbacks_readback_failed",
+    ):
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            simulation_app_factory=lambda *args, **kwargs: SimpleNamespace(
+                close=close
+            ),
+            settings_reader=lambda setting: True,
+        )
+    assert closed is True
 
 
 def test_underlying_kit_python_binary_is_rejected_before_launch(

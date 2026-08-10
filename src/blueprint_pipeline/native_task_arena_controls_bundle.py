@@ -45,6 +45,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_episode_environment.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
+    "native_task_usd_import_normalization.py",
 )
 
 

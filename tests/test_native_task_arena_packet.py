@@ -74,6 +74,7 @@ def _request(evidence: Path, *, articulated: bool) -> dict:
 )
 def Xform "FixtureRoot"
 {
+    def PhysicsScene "PhysicsScene" {}
     def Xform "cabinet" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
     {
         def Mesh "body" (
@@ -131,15 +132,34 @@ def Xform "Root"
     def Mesh "floor" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {}
 }
 '''
+    rigid_asset = b'''#usda 1.0
+(
+    defaultPrim = "RigidFixture"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "RigidFixture" (prepend apiSchemas = ["PhysicsRigidBodyAPI"])
+{
+    def Mesh "body" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {}
+}
+'''
+    appearance_asset = b'''#usda 1.0
+(
+    defaultPrim = "Appearance"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Appearance" {}
+'''
     files = {
         "scene_collision": (
             "scene_collision.usda",
-            collision_asset if articulated else b"collision",
+            collision_asset,
         ),
-        "scene_appearance": ("scene_appearance.usdc", b"appearance"),
+        "scene_appearance": ("scene_appearance.usda", appearance_asset),
         "task_object": (
             "task_object.usda",
-            articulated_asset if articulated else b"rigid",
+            articulated_asset if articulated else rigid_asset,
         ),
     }
     assets = []
@@ -304,6 +324,23 @@ def test_original_and_second_scene_share_one_packet_materializer(
     assert {row["usd_path"] for row in plan["objects"]} == {
         f"assets/{row['filename']}" for row in request["assets"]
     }
+    normalizations = json.loads(
+        (output / "native_task_asset_import_normalizations.v1.json").read_text()
+    )
+    assert normalizations["all_import_assets_scene_free"] is True
+    task_normalization = next(
+        row
+        for row in normalizations["assets"]
+        if row["semantic_role"] == "task_object"
+    )
+    if articulated:
+        assert task_normalization["staged_bytes_derived"] is True
+        assert task_normalization["removed_physics_scene_paths"] == [
+            "/FixtureRoot/PhysicsScene"
+        ]
+        assert receipt["staged_asset_derivation_applied"] is True
+    else:
+        assert task_normalization["staged_bytes_derived"] is False
 
 
 def test_tampered_source_fails_and_removes_partial_packet(tmp_path: Path) -> None:

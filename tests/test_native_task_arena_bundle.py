@@ -67,14 +67,36 @@ def _packet(root: Path, *, scene_id: str) -> Path:
                 "staged_sha256": _sha(path),
             }
         )
+    normalization = {
+        "schema_version": "native_task_asset_import_normalizations.v1",
+        "environment_physics_scene_owner": "arena_environment",
+        "all_import_assets_scene_free": True,
+        "assets": [
+            {
+                "semantic_role": role,
+                "environment_import_scene_free": True,
+            }
+            for role in ("scene_collision", "scene_appearance", "task_object")
+        ],
+        "normalization_digest": "",
+    }
+    normalization["normalization_digest"] = canonical_digest(
+        normalization, digest_field="normalization_digest"
+    )
     documents = {
         "native_task_arena_packet_request.v1.json": {"scene_id": scene_id},
         "native_task_runtime_contract.v1.json": {"contract_digest": "sha256:" + "c" * 64},
         "native_task_arena_scene_plan.v1.json": {"plan_digest": "sha256:" + "p" * 64},
+        "native_task_asset_import_normalizations.v1.json": normalization,
     }
     artifacts = []
     for role, (name, value) in zip(
-        ("packet_request", "runtime_contract", "arena_scene_plan"),
+        (
+            "packet_request",
+            "runtime_contract",
+            "arena_scene_plan",
+            "asset_import_normalizations",
+        ),
         documents.items(),
         strict=True,
     ):
@@ -98,8 +120,12 @@ def _packet(root: Path, *, scene_id: str) -> Path:
         "arena_scene_plan_digest": "sha256:" + "b" * 64,
         "scenario_instance_digest": "sha256:" + "d" * 64,
         "source_bindings": source_bindings,
+        "asset_import_normalization_digest": normalization[
+            "normalization_digest"
+        ],
         "artifacts": artifacts,
         "source_bytes_mutated": False,
+        "staged_asset_derivation_applied": False,
         "native_application_claimed": False,
         "policy_episode_claimed": False,
         "simulator_execution_is_not_physical_truth": True,
@@ -449,6 +475,55 @@ def test_packet_asset_tamper_fails_before_bundle_creation(tmp_path: Path) -> Non
         error.startswith("native_task_arena_bundle_packet_asset_identity_mismatch")
         for error in excinfo.value.errors
     )
+
+
+def test_packet_with_non_scene_free_import_receipt_fails_before_bundle(
+    tmp_path: Path,
+) -> None:
+    packet = _packet(tmp_path, scene_id="840796")
+    normalization_path = (
+        packet / "native_task_asset_import_normalizations.v1.json"
+    )
+    normalization = json.loads(normalization_path.read_text(encoding="utf-8"))
+    normalization["all_import_assets_scene_free"] = False
+    normalization["normalization_digest"] = canonical_digest(
+        normalization, digest_field="normalization_digest"
+    )
+    normalization_path.write_text(
+        json.dumps(normalization, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    receipt_path = packet / "native_task_arena_packet_receipt.v1.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["asset_import_normalization_digest"] = normalization[
+        "normalization_digest"
+    ]
+    artifact = next(
+        row
+        for row in receipt["artifacts"]
+        if row["role"] == "asset_import_normalizations"
+    )
+    artifact["size_bytes"] = normalization_path.stat().st_size
+    artifact["sha256"] = _sha(normalization_path)
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+
+    with pytest.raises(
+        NativeTaskArenaBundleError,
+        match="native_task_arena_bundle_import_normalization_invalid",
+    ):
+        build_native_task_arena_bundle(
+            job_dir=tmp_path / "job",
+            packet_dir=packet,
+            worker_source=worker,
+            runtime_module_sources=[],
+            implementation_commit="c" * 40,
+        )
 
 
 def test_policy_mode_requires_an_exact_candidate_binding(tmp_path: Path) -> None:

@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import blueprint_pipeline.native_task_arena_runtime as runtime_module
+
 from blueprint_pipeline.native_task_arena_runtime import (
     NativeTaskArenaRuntimeError,
     build_native_task_arena_environment,
@@ -244,6 +246,14 @@ class _ArenaBuilder:
 
 
 def _install_fake_native_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "inspect_environment_import_usd",
+        lambda path, *, semantic_role: {
+            "environment_import_scene_free": True,
+            "semantic_role": semantic_role,
+        },
+    )
     modules = {
         "isaaclab": types.ModuleType("isaaclab"),
         "isaaclab.envs": types.ModuleType("isaaclab.envs"),
@@ -484,6 +494,23 @@ def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> 
 
     assert excinfo.value.errors == (
         "native_task_arena_contact_sensor_contract_invalid:0",
+    )
+
+
+def test_embedded_asset_physics_scene_fails_before_isaac_import(monkeypatch) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "inspect_environment_import_usd",
+        lambda path, *, semantic_role: {
+            "environment_import_scene_free": semantic_role != "task_object",
+        },
+    )
+
+    with pytest.raises(NativeTaskArenaRuntimeError) as excinfo:
+        build_native_task_arena_environment(_sealed_scene_plan())
+
+    assert excinfo.value.errors == (
+        "native_task_arena_import_asset_embedded_physics_scene:task_object",
     )
 
 

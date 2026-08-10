@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .native_task_usd_import_normalization import inspect_environment_import_usd
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
 SCENE_PLAN_SCHEMA = "native_task_arena_scene_plan.v1"
 
@@ -262,6 +263,17 @@ def build_native_task_arena_environment(
 
     plan = _validated_plan(scene_plan)
     runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
+    for row in runtime_objects:
+        audit = inspect_environment_import_usd(
+            row["usd_path"], semantic_role=str(row["semantic_role"])
+        )
+        if not audit["environment_import_scene_free"]:
+            raise NativeTaskArenaRuntimeError(
+                [
+                    "native_task_arena_import_asset_embedded_physics_scene:"
+                    + str(row["semantic_role"])
+                ]
+            )
 
     from blueprint_pipeline.native_task_arena_import_scope import (
         install_scoped_arena_embodiment,

@@ -20,6 +20,9 @@ from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
 )
 from .native_task_runtime_contract import materialize_native_task_runtime_contract
+from .native_task_usd_import_normalization import (
+    normalize_environment_import_usd,
+)
 
 
 REQUEST_SCHEMA_VERSION = "native_task_arena_packet_request.v1"
@@ -191,6 +194,7 @@ def materialize_native_task_arena_packet(
     assets_dir.mkdir()
     source_bindings: list[dict[str, Any]] = []
     runtime_assets: list[dict[str, Any]] = []
+    import_normalizations: list[dict[str, Any]] = []
     try:
         raw_assets = frozen.get("assets")
         if not isinstance(raw_assets, list) or not raw_assets:
@@ -216,22 +220,32 @@ def materialize_native_task_arena_packet(
                 raise NativeTaskArenaPacketError(
                     [f"native_task_arena_packet_asset_filename_duplicate:{filename}"]
                 )
-            shutil.copyfile(source_path, destination)
+            normalization = normalize_environment_import_usd(
+                source_path,
+                destination,
+                semantic_role=role,
+            )
             if (
-                destination.stat().st_size != source_size
-                or _sha256(destination) != source_digest
+                normalization["source_size_bytes"] != source_size
+                or normalization["source_sha256"] != source_digest
+                or not normalization["environment_import_scene_free"]
             ):
                 raise NativeTaskArenaPacketError(
-                    [f"native_task_arena_packet_asset_copy_mismatch:{role}"]
+                    [f"native_task_arena_packet_asset_normalization_mismatch:{role}"]
                 )
+            import_normalizations.append(normalization)
             source = dict(raw["source"])
             source_bindings.append(
                 {
                     "semantic_role": role,
                     "source": source,
                     "staged_relative_path": f"assets/{filename}",
-                    "staged_size_bytes": source_size,
-                    "staged_sha256": source_digest,
+                    "staged_size_bytes": normalization["staged_size_bytes"],
+                    "staged_sha256": normalization["staged_sha256"],
+                    "staged_bytes_derived": normalization["staged_bytes_derived"],
+                    "import_normalization_digest": normalization[
+                        "normalization_digest"
+                    ],
                 }
             )
             runtime_assets.append(
@@ -239,10 +253,26 @@ def materialize_native_task_arena_packet(
                     "semantic_role": role,
                     "name": str(raw.get("name") or role),
                     "filename": filename,
-                    "sha256": source_digest,
+                    "sha256": normalization["staged_sha256"],
                     "pose_world": raw.get("pose_world"),
                 }
             )
+
+        normalization_document: dict[str, Any] = {
+            "schema_version": "native_task_asset_import_normalizations.v1",
+            "environment_physics_scene_owner": "arena_environment",
+            "all_import_assets_scene_free": all(
+                row["environment_import_scene_free"]
+                for row in import_normalizations
+            ),
+            "assets": import_normalizations,
+            "normalization_digest": "",
+        }
+        normalization_document["normalization_digest"] = canonical_digest(
+            normalization_document, digest_field="normalization_digest"
+        )
+        normalization_path = output / "native_task_asset_import_normalizations.v1.json"
+        write_json(normalization_path, normalization_document)
 
         scenario = _validated_scenario_context(frozen.get("scenario"))
         contract_path = output / "native_task_runtime_contract.v1.json"
@@ -286,6 +316,7 @@ def materialize_native_task_arena_packet(
                 ("packet_request", output / "native_task_arena_packet_request.v1.json"),
                 ("runtime_contract", contract_path),
                 ("arena_scene_plan", plan_path),
+                ("asset_import_normalizations", normalization_path),
             )
         ]
         receipt: dict[str, Any] = {
@@ -298,8 +329,14 @@ def materialize_native_task_arena_packet(
             "arena_scene_plan_digest": plan["plan_digest"],
             "scenario_instance_digest": scenario["instance_digest"],
             "source_bindings": source_bindings,
+            "asset_import_normalization_digest": normalization_document[
+                "normalization_digest"
+            ],
             "artifacts": artifacts,
             "source_bytes_mutated": False,
+            "staged_asset_derivation_applied": any(
+                row["staged_bytes_derived"] for row in import_normalizations
+            ),
             "native_application_claimed": False,
             "policy_episode_claimed": False,
             "simulator_execution_is_not_physical_truth": True,
@@ -308,8 +345,8 @@ def materialize_native_task_arena_packet(
         for binding, raw in zip(source_bindings, raw_assets, strict=True):
             path, digest, size = _asset_source(raw, evidence_root=evidence)
             if (
-                digest != binding["staged_sha256"]
-                or size != binding["staged_size_bytes"]
+                digest != binding["source"]["sha256"]
+                or size != binding["source"]["size_bytes"]
                 or _sha256(path) != digest
             ):
                 raise NativeTaskArenaPacketError(

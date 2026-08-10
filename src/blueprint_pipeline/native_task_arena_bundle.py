@@ -109,6 +109,7 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
         )
     by_path = {row["relative_path"]: row for row in rows}
     required = {
+        "native_task_asset_import_normalizations.v1.json",
         "native_task_arena_packet_request.v1.json",
         "native_task_runtime_contract.v1.json",
         "native_task_arena_scene_plan.v1.json",
@@ -116,6 +117,37 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
     }
     for missing in sorted(required - set(by_path)):
         errors.append(f"native_task_arena_bundle_packet_file_missing:{missing}")
+
+    normalization_path = root / "native_task_asset_import_normalizations.v1.json"
+    normalization = _read_mapping(
+        normalization_path,
+        error="native_task_arena_bundle_import_normalization_invalid",
+    )
+    normalization_assets = normalization.get("assets")
+    normalized_roles = {
+        str(row.get("semantic_role") or "")
+        for row in normalization_assets or []
+        if isinstance(row, Mapping) and row.get("environment_import_scene_free") is True
+    }
+    bound_roles = {
+        str(row.get("semantic_role") or "")
+        for row in receipt.get("source_bindings") or []
+        if isinstance(row, Mapping)
+    }
+    if (
+        normalization.get("schema_version")
+        != "native_task_asset_import_normalizations.v1"
+        or normalization.get("environment_physics_scene_owner")
+        != "arena_environment"
+        or normalization.get("all_import_assets_scene_free") is not True
+        or not isinstance(normalization_assets, list)
+        or normalized_roles != bound_roles
+        or normalization.get("normalization_digest")
+        != canonical_digest(normalization, digest_field="normalization_digest")
+        or receipt.get("asset_import_normalization_digest")
+        != normalization.get("normalization_digest")
+    ):
+        errors.append("native_task_arena_bundle_import_normalization_invalid")
 
     for artifact in receipt.get("artifacts") or []:
         if not isinstance(artifact, Mapping):
