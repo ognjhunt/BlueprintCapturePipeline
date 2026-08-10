@@ -2914,6 +2914,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     avoidlist_digest = (
                         "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
                     )
+            # Before the bundle is staged, not after. The first version of
+            # this check ran just before the create call, which is early
+            # enough to prevent an orphan and too late to prevent the disk
+            # filling: rt30 wrote its 162 MB bundle and only then discovered
+            # there was no room for it. A guard that fires after the thing it
+            # guards against is a receipt, not a gate.
+            if not blockers:
+                try:
+                    _require_launch_disk_headroom(args)
+                except Exception as exc:  # noqa: BLE001
+                    blockers.extend(
+                        getattr(exc, "errors", None) or [f"{type(exc).__name__}"]
+                    )
             prepared_bundle = None
             if not blockers:
                 try:
@@ -3038,24 +3051,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
-                # Before anything is created on a provider. Twice this session
-                # the disk filled partway through a run and killed a harness
-                # that had already made an instance, so the cost was an orphan
-                # billing rather than a launch that did not happen. Blocking
-                # here is free.
-                try:
-                    _require_launch_disk_headroom(args)
-                except Exception as exc:  # noqa: BLE001
-                    result = {
-                        "status": "blocked",
-                        "blockers": sorted(
-                            getattr(exc, "errors", None) or [f"{type(exc).__name__}"]
-                        ),
-                        "provider_mutations_performed": 0,
-                    }
-                    write_json(Path(args.adapter_output), result)
-                    print(json.dumps({"success": False}, sort_keys=True))
-                    return 2
                 result = run_adp009d_native_microcheck_vast(
                     job_dir=args.adp_job_dir,
                     prepared_bundle=prepared_bundle,

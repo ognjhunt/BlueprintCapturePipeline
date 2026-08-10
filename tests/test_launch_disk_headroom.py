@@ -104,3 +104,34 @@ def test_the_allocator_blocks_a_launch_with_no_disk(tmp_path, monkeypatch):
 
     with pytest.raises(LaunchDiskHeadroomError):
         allocator._require_launch_disk_headroom(args)
+
+
+def test_the_gate_runs_before_the_bundle_is_staged():
+    """A guard that fires after the thing it guards against is a receipt.
+
+    The first placement checked just before the create call - early enough to
+    prevent an orphan, too late to prevent the disk filling. rt30 staged its
+    162 MB bundle and only then found there was no room for it, leaving the
+    disk worse off than before the launch it refused.
+    """
+
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/paid_resource_allocator.py"
+    ).read_text(encoding="utf-8")
+    lines = source.splitlines()
+
+    guard = next(
+        i for i, line in enumerate(lines) if "_require_launch_disk_headroom(args)" in line
+    )
+    build = next(
+        i for i, line in enumerate(lines) if "prepared_bundle = build_native_microcheck_bundle(" in line
+    )
+
+    assert guard < build, (
+        f"disk guard at line {guard + 1} must precede bundle staging at line {build + 1}"
+    )
+    assert ast.parse(source) is not None
