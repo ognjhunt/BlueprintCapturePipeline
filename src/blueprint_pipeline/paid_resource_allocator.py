@@ -424,6 +424,27 @@ def _source_checkout_blockers(
     return blockers, checkout_commit
 
 
+BLOCKER_CAUSE_MAXIMUM_CHARACTERS = 400
+
+
+def blocker_with_cause(prefix: str, exc: BaseException) -> str:
+    """A blocker that carries the exception's own explanation.
+
+    rt53 blocked twice on the literal string
+    ``adp009d_bundle_preparation_failed:ValueError`` while the exceptions
+    underneath said exactly what was wrong - a digest mismatch, then a missing
+    ROI. Each opaque blocker cost a separate local reproduction to recover a
+    cause that had already been raised in full. The type name alone is a
+    receipt that something failed; the message is the fix.
+    """
+
+    detail = ";".join(getattr(exc, "errors", None) or ()) or str(exc)
+    blocker = f"{prefix}:{type(exc).__name__}"
+    if detail:
+        blocker = f"{blocker}:{detail}"
+    return blocker[:BLOCKER_CAUSE_MAXIMUM_CHARACTERS]
+
+
 def _control_plane_checkout_blockers() -> tuple[list[str], dict[str, object]]:
     """Pin the clean allocator identity without coupling it to the runtime image.
 
@@ -2925,7 +2946,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _require_launch_disk_headroom(args)
                 except Exception as exc:  # noqa: BLE001
                     blockers.extend(
-                        getattr(exc, "errors", None) or [f"{type(exc).__name__}"]
+                        getattr(exc, "errors", None)
+                        or [blocker_with_cause("adp009d_disk_headroom_failed", exc)]
                     )
             prepared_bundle = None
             if not blockers:
@@ -2953,7 +2975,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ),
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")
+                    blockers.append(
+                        blocker_with_cause("adp009d_bundle_preparation_failed", exc)
+                    )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
