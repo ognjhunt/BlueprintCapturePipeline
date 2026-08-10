@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.adp_founder_sim_protocol import (
     build_founder_approval_receipt,
@@ -167,41 +168,81 @@ def test_successor_ttl_reserves_only_remaining_cumulative_budget(tmp_path: Path)
     )
 
 
-def test_paid_attempt_roots_are_fresh_and_preserve_prior_evidence(tmp_path: Path) -> None:
-    write_json(tmp_path / "adp_arena_vast_session_budget.json", {"attempt_count": 1})
-    prior = tmp_path / "attempts" / "attempt_002"
-    prior.mkdir(parents=True)
-    (prior / "prior_evidence.txt").write_text("preserve", encoding="utf-8")
+def test_live_transport_emits_allocator_artifact_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    prepared_bundle = {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": arena._file_sha256(bundle_path),
+        "protocol_digest": "sha256:" + "b" * 64,
+    }
 
-    number, root = _next_attempt_root(tmp_path)
+    def fake_stage(*, job_dir, **_kwargs):
+        staging = Path(job_dir)
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text("https://example.invalid/object\n")
+        return {"status": "completed"}
 
-    assert number == 3
-    assert root == tmp_path / "attempts" / "attempt_003"
-    assert (prior / "prior_evidence.txt").read_text(encoding="utf-8") == "preserve"
-
-
-def test_successor_ttl_reserves_only_remaining_cumulative_budget(tmp_path: Path) -> None:
-    write_json(
-        tmp_path / "adp_arena_vast_session_budget.json",
-        {
-            "attempts": [
-                {
-                    "actual_live_runtime_seconds_observed_by_adapter": 560.9,
-                    "estimated_cost_usd": 0.083795,
-                }
-            ]
-        },
-    )
-
-    assert (
-        _remaining_session_live_minutes(
-            job=tmp_path,
-            hard_cap_usd=4.0,
-            hard_ttl_seconds=14_400,
-            max_hourly_rate_usd=1.0,
+    def fake_adapter(*, job_dir, **_kwargs):
+        provider = Path(job_dir)
+        provider.mkdir(parents=True)
+        write_json(provider / "vast_provider_adapter_result.json", {"status": "completed"})
+        write_json(
+            provider / "vast_teardown_manifest.json",
+            {"continuing_spend_from_this_run": False},
         )
-        == 230
+        with zipfile.ZipFile(provider / "vast_provider_runtime_output.zip", "w") as archive:
+            archive.writestr(
+                "adp_arena_native_canary.json",
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "candidate_policy_queried": False,
+                        "blockers": [],
+                    }
+                ),
+            )
+            archive.writestr("lossless_frames/frame_000001.png", b"lossless")
+        return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.1}
+
+    monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(
+        arena, "cleanup_staged_wam_provider_objects", lambda _path: {"all_objects_absent": True}
     )
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
+
+    result = arena.run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=prepared_bundle,
+        hard_cap_usd=1.0,
+        hard_ttl_seconds=3600,
+    )
+
+    assert result["status"] == "completed"
+    manifest_path = Path(result["artifact_manifest_path"])
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["status"] == "completed"
+    assert manifest["binding"]["bundle_sha256"] == prepared_bundle["bundle_sha256"]
+    assert set(manifest["observed_roles"]) == {
+        "allocator_adapter_result",
+        "provider_runtime_evidence",
+        "teardown_manifest",
+    }
+    assert "immutable_execution/lossless_frames/frame_000001.png" in {
+        row["relative_path"] for row in manifest["files"]
+    }
 
 
 def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:
