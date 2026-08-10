@@ -9,6 +9,7 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
     _load_and_verify_manifest,
     _requested_arm_reset,
 )
+from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
 
 
 def test_worker_source_contains_no_scene_or_task_object_identity() -> None:
@@ -32,7 +33,10 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "cloudpickle",
         "farama_notifications",
         "packaging",
+        "prettytable",
         "typing_extensions",
+        "wcwidth",
+        "yaml",
         "toml",
         "isaaclab.controllers",
         "isaaclab_assets",
@@ -40,6 +44,7 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
         "isaaclab_teleop",
         "isaaclab_arena.environments.arena_env_builder",
     }.issubset(DEPENDENCY_IMPORTS)
+    assert set(TOP_LEVEL_PACKAGES).issubset(DEPENDENCY_IMPORTS)
 
 
 def test_manifest_binding_rejects_tamper_before_isaac(tmp_path: Path) -> None:

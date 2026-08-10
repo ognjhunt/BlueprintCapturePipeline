@@ -80,6 +80,18 @@ RUNTIME_DEPENDENCY_WHEELS = (
         "version": "4.15.0",
         "license_spdx": "PSF-2.0",
     },
+    {
+        "filename": "prettytable-3.3.0-py3-none-any.whl",
+        "package": "prettytable",
+        "version": "3.3.0",
+        "license_spdx": "BSD-3-Clause",
+    },
+    {
+        "filename": "wcwidth-0.2.13-py2.py3-none-any.whl",
+        "package": "wcwidth",
+        "version": "0.2.13",
+        "license_spdx": "MIT",
+    },
 )
 
 
