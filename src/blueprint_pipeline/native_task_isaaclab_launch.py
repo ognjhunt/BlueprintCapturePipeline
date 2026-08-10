@@ -11,11 +11,17 @@ No scene, robot, object, or policy decision is made here.
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import sys
+import traceback
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+from packaging.specifiers import SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_runtime_source_packet import (
@@ -32,6 +38,8 @@ from .native_task_runtime_source_packet import (
 
 
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
+PRE_APP_DEPENDENCY_SCHEMA_VERSION = "native_task_pre_app_dependency_matrix.v1"
+PRE_APP_DEPENDENCY_FILENAME = "native_task_pre_app_dependency_matrix.v1.json"
 PROVISIONING_SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 REQUIRED_EXPERIENCE_FILES = (
     "isaaclab.python.kit",
@@ -41,13 +49,115 @@ REQUIRED_EXPERIENCE_FILES = (
 ISAAC_SIM_DEFAULT_CALLBACKS_SETTING = (
     "/exts/isaacsim.core.simulation_manager/enable_default_callbacks"
 )
-ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG = (
-    f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}=false"
-)
-ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX = (
-    "d81d2160220a4401be1d94f871c8f0b62e217acb"
-)
+ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG = f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}=false"
+ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX = "d81d2160220a4401be1d94f871c8f0b62e217acb"
 BUNDLED_WARP_EXTENSION = "omni.warp.core"
+
+# This is the released production dependency surface declared by the pinned
+# Isaac Lab and Arena setup files plus the exact transport imports already used
+# by the harness.  Probe all of it before SimulationApp: Kit extension startup
+# otherwise stops on the first missing module and turns a dependency inventory
+# into a sequence of paid discoveries.
+PRE_APP_DEPENDENCY_IMPORTS = (
+    "torch",
+    "torchvision",
+    "numpy",
+    "onnx",
+    "onnxruntime",
+    "prettytable",
+    "toml",
+    "hid",
+    "gymnasium",
+    "trimesh",
+    "pyglet",
+    "transformers",
+    "einops",
+    "warp",
+    "matplotlib",
+    "PIL",
+    "botocore",
+    "starlette",
+    "debugpy",
+    "flatdict",
+    "flaky",
+    "packaging",
+    "psutil",
+    "filelock",
+    "h5py",
+    "typing_extensions",
+    "pydantic",
+    "lazy_loader",
+    "pinocchio",
+    "pink",
+    "daqp",
+    "pxr.Usd",
+    "usdex",
+    "pytetwild",
+    "hf_xet",
+    "google.protobuf",
+    "tensorboard",
+    "vuer",
+    "lightwheel_sdk",
+    "openai",
+    "sbi",
+    "scipy",
+    "pandas",
+    "cloudpickle",
+    "farama_notifications",
+    "antlr4",
+    "omegaconf",
+    "hydra",
+    "msgpack",
+    "zmq",
+    "tensordict",
+    "importlib_metadata",
+    "zipp",
+    "orjson",
+    "pyvers",
+    "git",
+    "gitdb",
+    "smmap",
+    "requests",
+    "charset_normalizer",
+    "idna",
+    "urllib3",
+    "certifi",
+    "tqdm",
+    "termcolor",
+    "yaml",
+    "click",
+    "rsl_rl",
+)
+PRE_APP_VERSION_CONSTRAINTS = {
+    "torch": ">=2.10",
+    "torchvision": ">=0.25.0",
+    "numpy": ">=2",
+    "prettytable": "==3.3.0",
+    "gymnasium": "==1.2.1",
+    "transformers": "==4.57.6",
+    "warp": "==1.13.0",
+    "PIL": "==12.2.0",
+    "typing_extensions": "==4.12.2",
+    "h5py": ">=3.16.0",
+    "packaging": "<24",
+    "pandas": "==2.2.3",
+    "tqdm": "==4.67.1",
+}
+PRE_APP_DISTRIBUTION_NAMES = {
+    "torch": "torch",
+    "torchvision": "torchvision",
+    "numpy": "numpy",
+    "prettytable": "prettytable",
+    "gymnasium": "gymnasium",
+    "transformers": "transformers",
+    "warp": "warp-lang",
+    "PIL": "Pillow",
+    "typing_extensions": "typing_extensions",
+    "h5py": "h5py",
+    "packaging": "packaging",
+    "pandas": "pandas",
+    "tqdm": "tqdm",
+}
 
 
 class NativeTaskIsaacLabLaunchError(ValueError):
@@ -75,6 +185,134 @@ def _has_symlink_component(path: Path, *, root: Path) -> bool:
     return False
 
 
+def _module_version(
+    name: str,
+    module: Any,
+    *,
+    distribution_version_reader: Callable[[str], str],
+) -> str:
+    distribution = PRE_APP_DISTRIBUTION_NAMES.get(name)
+    if distribution:
+        try:
+            return str(distribution_version_reader(distribution))
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    return str(
+        getattr(module, "__version__", None) or getattr(module, "VERSION", None) or "unreported"
+    )
+
+
+def preflight_native_task_pre_app_dependencies(
+    *,
+    module_importer: Callable[[str], Any] = importlib.import_module,
+    distribution_version_reader: Callable[[str], str] = importlib.metadata.version,
+) -> dict[str, Any]:
+    """Inventory the complete released runtime surface before Kit starts."""
+
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    imported: dict[str, Any] = {}
+    for name in PRE_APP_DEPENDENCY_IMPORTS:
+        try:
+            module = module_importer(name)
+            imported[name] = module
+            observed = _module_version(
+                name,
+                module,
+                distribution_version_reader=distribution_version_reader,
+            )
+            constraint = PRE_APP_VERSION_CONSTRAINTS.get(name)
+            version_matches: bool | None = None
+            if constraint:
+                try:
+                    version_matches = Version(observed) in SpecifierSet(constraint)
+                except InvalidVersion:
+                    version_matches = False
+                if not version_matches:
+                    blockers.append(f"native_task_pre_app_version_mismatch:{name}")
+            rows.append(
+                {
+                    "module": name,
+                    "available": True,
+                    "observed_version": observed,
+                    "version_constraint": constraint,
+                    "version_matches": version_matches,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - retain every missing import
+            rows.append(
+                {
+                    "module": name,
+                    "available": False,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+            )
+            blockers.append(f"native_task_pre_app_dependency_missing:{name}")
+
+    torch = imported.get("torch")
+    torch_cuda: dict[str, Any] = {
+        "available": False,
+        "runtime_version": None,
+        "device_count": 0,
+        "device_name": None,
+    }
+    if torch is not None:
+        try:
+            cuda = torch.cuda
+            available = bool(cuda.is_available())
+            device_count = int(cuda.device_count())
+            runtime_version = str(getattr(torch.version, "cuda", None) or "")
+            torch_cuda = {
+                "available": available,
+                "runtime_version": runtime_version,
+                "device_count": device_count,
+                "device_name": (
+                    str(cuda.get_device_name(0)) if available and device_count > 0 else None
+                ),
+            }
+            if not available or device_count < 1:
+                blockers.append("native_task_pre_app_torch_cuda_unavailable")
+            if runtime_version != "12.8":
+                blockers.append("native_task_pre_app_torch_cuda_version_mismatch")
+        except Exception as exc:  # noqa: BLE001 - exact CUDA probe is evidence
+            torch_cuda["error_type"] = type(exc).__name__
+            torch_cuda["error"] = str(exc)
+            torch_cuda["traceback"] = traceback.format_exc()
+            blockers.append("native_task_pre_app_torch_cuda_probe_failed")
+
+    result: dict[str, Any] = {
+        "schema_version": PRE_APP_DEPENDENCY_SCHEMA_VERSION,
+        "status": "qualified" if not blockers else "blocked",
+        "imports": rows,
+        "import_count": len(rows),
+        "all_declared_imports_attempted": len(rows) == len(PRE_APP_DEPENDENCY_IMPORTS),
+        "torch_cuda": torch_cuda,
+        "simulation_app_started": False,
+        "candidate_policy_queried": False,
+        "blockers": sorted(set(blockers)),
+        "raw_secret_values_recorded": False,
+        "matrix_digest": "",
+    }
+    result["matrix_digest"] = canonical_digest(result, digest_field="matrix_digest")
+    return result
+
+
+def _persist_pre_app_dependency_matrix(
+    provisioning_receipt_path: str | Path,
+    result: Mapping[str, Any],
+) -> Path:
+    path = (
+        Path(provisioning_receipt_path).expanduser().resolve().parent / PRE_APP_DEPENDENCY_FILENAME
+    )
+    path.write_text(
+        json.dumps(dict(result), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def verify_native_task_isaaclab_launch_contract(
     provisioning_receipt_path: str | Path,
 ) -> dict[str, Any]:
@@ -98,11 +336,9 @@ def verify_native_task_isaaclab_launch_contract(
         errors.append("native_task_isaaclab_provisioning_receipt_invalid")
     if (
         provisioning.get("python_executable") != "/isaac-sim/python.sh"
-        or provisioning.get("python_executable_source")
-        != "simulator_python_launcher"
+        or provisioning.get("python_executable_source") != "simulator_python_launcher"
         or provisioning.get("python_probe_flag") != "-P"
-        or provisioning.get("python_probe_mode")
-        != "simulator_wrapper_safe_path"
+        or provisioning.get("python_probe_mode") != "simulator_wrapper_safe_path"
     ):
         errors.append("native_task_isaaclab_runtime_launcher_invalid")
 
@@ -112,9 +348,7 @@ def verify_native_task_isaaclab_launch_contract(
         "repository": ISAACLAB_REPOSITORY,
         "source_revision": ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
         "source_tree": ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
-        "upstream_fix_revisions": list(
-            ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES
-        ),
+        "upstream_fix_revisions": list(ISAACLAB_RUNTIME_COMPATIBILITY_UPSTREAM_FIXES),
     }
     if any(experience.get(key) != value for key, value in expected_identity.items()):
         errors.append("native_task_isaaclab_experience_revision_mismatch")
@@ -160,7 +394,11 @@ def verify_native_task_isaaclab_launch_contract(
         data = candidate.read_text(encoding="utf-8")
         texts[filename] = data
         file_rows.append(
-            {"filename": filename, "size_bytes": candidate.stat().st_size, "sha256": _sha256(candidate)}
+            {
+                "filename": filename,
+                "size_bytes": candidate.stat().st_size,
+                "sha256": _sha256(candidate),
+            }
         )
     base = texts.get("isaaclab.python.kit", "")
     headless = texts.get("isaaclab.python.headless.kit", "")
@@ -187,8 +425,7 @@ def verify_native_task_isaaclab_launch_contract(
         len(installed_warp) != 1
         or installed_warp[0].get("version") != "1.13.0"
         or installed_warp[0].get("pure_python") is not False
-        or installed_warp[0].get("wheel_tag")
-        != "py3-none-manylinux_2_28_x86_64"
+        or installed_warp[0].get("wheel_tag") != "py3-none-manylinux_2_28_x86_64"
     ):
         errors.append("native_task_isaaclab_external_warp_identity_invalid")
     if (
@@ -205,7 +442,11 @@ def verify_native_task_isaaclab_launch_contract(
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "qualified",
-        "experience": {**expected_identity, "path": str(experience_path), "sha256": experience["sha256"]},
+        "experience": {
+            **expected_identity,
+            "path": str(experience_path),
+            "sha256": experience["sha256"],
+        },
         "experience_files": file_rows,
         "paired_stack": paired_stack,
         # Static experience inspection proves exclusion was requested.  Only
@@ -230,6 +471,7 @@ def launch_native_task_isaaclab(
     simulation_app_factory: Callable[..., Any] | None = None,
     settings_reader: Callable[[str], Any] | None = None,
     extension_enabled_reader: Callable[[str], bool] | None = None,
+    pre_app_dependency_probe: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Launch SimulationApp with one verified PhysX lifecycle owner.
 
@@ -240,19 +482,56 @@ def launch_native_task_isaaclab(
     upstream Kit setting explicitly and read it back after startup.
     """
 
-    receipt = verify_native_task_isaaclab_launch_contract(
-        provisioning_receipt_path
-    )
-    if simulation_app_factory is None:
-        from isaacsim.simulation_app import SimulationApp
-
-        simulation_app_factory = SimulationApp
+    receipt = verify_native_task_isaaclab_launch_contract(provisioning_receipt_path)
     setting_prefix = f"--{ISAAC_SIM_DEFAULT_CALLBACKS_SETTING}="
     existing = [arg for arg in sys.argv if arg.startswith(setting_prefix)]
     if existing and existing != [ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG]:
         raise NativeTaskIsaacLabLaunchError(
             ["native_task_isaaclab_default_callbacks_setting_conflict"]
         )
+    try:
+        pre_app = dict((pre_app_dependency_probe or preflight_native_task_pre_app_dependencies)())
+    except Exception as exc:  # noqa: BLE001 - retain a probe implementation gap
+        pre_app = {
+            "schema_version": PRE_APP_DEPENDENCY_SCHEMA_VERSION,
+            "status": "blocked",
+            "imports": [],
+            "import_count": 0,
+            "all_declared_imports_attempted": False,
+            "torch_cuda": {},
+            "simulation_app_started": False,
+            "candidate_policy_queried": False,
+            "blockers": [f"native_task_pre_app_dependency_probe_failed:{type(exc).__name__}"],
+            "exception": str(exc),
+            "traceback": traceback.format_exc(),
+            "raw_secret_values_recorded": False,
+            "matrix_digest": "",
+        }
+        pre_app["matrix_digest"] = canonical_digest(pre_app, digest_field="matrix_digest")
+    pre_app_path = _persist_pre_app_dependency_matrix(
+        provisioning_receipt_path,
+        pre_app,
+    )
+    pre_app_valid = bool(
+        pre_app.get("schema_version") == PRE_APP_DEPENDENCY_SCHEMA_VERSION
+        and pre_app.get("matrix_digest") == canonical_digest(pre_app, digest_field="matrix_digest")
+        and pre_app.get("all_declared_imports_attempted") is True
+        and pre_app.get("simulation_app_started") is False
+        and pre_app.get("candidate_policy_queried") is False
+    )
+    if not pre_app_valid or pre_app.get("status") != "qualified":
+        errors = list(pre_app.get("blockers") or [])
+        if not pre_app_valid:
+            errors.append("native_task_pre_app_dependency_matrix_invalid")
+        raise NativeTaskIsaacLabLaunchError(errors)
+    receipt["pre_app_dependency_matrix"] = {
+        **pre_app,
+        "path": str(pre_app_path),
+    }
+    if simulation_app_factory is None:
+        from isaacsim.simulation_app import SimulationApp
+
+        simulation_app_factory = SimulationApp
     inserted = not existing
     if inserted:
         sys.argv.append(ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG)
@@ -276,9 +555,7 @@ def launch_native_task_isaaclab(
         extension_enabled_reader = extension_manager.is_extension_enabled
     try:
         observed = settings_reader(ISAAC_SIM_DEFAULT_CALLBACKS_SETTING)
-        bundled_warp_loaded = bool(
-            extension_enabled_reader(BUNDLED_WARP_EXTENSION)
-        )
+        bundled_warp_loaded = bool(extension_enabled_reader(BUNDLED_WARP_EXTENSION))
     except Exception as exc:
         close = getattr(app, "close", None)
         if callable(close):
@@ -295,9 +572,7 @@ def launch_native_task_isaaclab(
             errors.append("native_task_isaaclab_default_callbacks_readback_failed")
         if bundled_warp_loaded:
             errors.append("native_task_isaaclab_bundled_warp_extension_live")
-        raise NativeTaskIsaacLabLaunchError(
-            errors
-        )
+        raise NativeTaskIsaacLabLaunchError(errors)
     receipt["bundled_isaac_sim_warp_extension_loaded"] = bundled_warp_loaded
     receipt["bundled_warp_extension_readback"] = {
         "extension_id": BUNDLED_WARP_EXTENSION,
@@ -324,8 +599,13 @@ __all__ = [
     "ISAAC_SIM_DEFAULT_CALLBACKS_KIT_ARG",
     "ISAAC_SIM_DEFAULT_CALLBACKS_SETTING",
     "ISAAC_SIM_DEFAULT_CALLBACKS_UPSTREAM_FIX",
+    "PRE_APP_DEPENDENCY_FILENAME",
+    "PRE_APP_DEPENDENCY_IMPORTS",
+    "PRE_APP_DEPENDENCY_SCHEMA_VERSION",
+    "PRE_APP_VERSION_CONSTRAINTS",
     "REQUIRED_EXPERIENCE_FILES",
     "SCHEMA_VERSION",
     "launch_native_task_isaaclab",
+    "preflight_native_task_pre_app_dependencies",
     "verify_native_task_isaaclab_launch_contract",
 ]
