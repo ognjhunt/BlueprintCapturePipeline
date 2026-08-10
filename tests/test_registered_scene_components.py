@@ -51,8 +51,15 @@ def test_component_contract_is_scene_and_task_neutral(
     assert appearance["scene_mapping"]["publisher_scene_id"] == scene_id
     assert appearance["target_binding"]["interiorgs_instance_id"] == target_id
     assert appearance["target_binding"]["semantic_label"] == target_label
+    assert appearance["component_id"] == (
+        f"public-scene-interiorgs-{scene_id}-{target_id}"
+    )
     assert "support_instance_id" not in appearance["target_binding"]
     assert receipt["status"] == "admitted"
+    assert receipt["checks"]["coordinate_frame_status_bound"] is True
+    assert receipt["checks"]["coordinate_frame_qualification_status"] == (
+        "legacy_verified"
+    )
     assert receipt["component_manifest_digest"] == appearance["manifest_digest"]
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"

@@ -15,9 +15,13 @@ from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3
 from blueprint_pipeline.public_scene_inpainting_inputs import (
     PublicSceneInpaintingInputError,
     _inside_obb,
+    _publisher_obb,
     build_public_scene_inpainting_input_request,
     materialize_public_scene_inpainting_inputs,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _request() -> dict:
@@ -178,6 +182,226 @@ def _fake_render(**kwargs) -> dict:
     return {"command": ["fake-observed-render"], "result": {"status": "completed"}}
 
 
+def _write_v2_fixture(tmp_path: Path) -> dict[str, Path]:
+    repo = tmp_path / "repo"
+    data = tmp_path / "data"
+    repo.mkdir()
+    data.mkdir()
+    source_dir = data / "public_scene"
+    source_dir.mkdir()
+    task = json.loads(
+        (
+            REPO_ROOT
+            / "docs/arm_decision_proof_v1/manifests"
+            / "third_scene_840920_task_a_freeze.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    scene = json.loads(
+        (
+            REPO_ROOT
+            / "docs/arm_decision_proof_v1/manifests"
+            / "third_scene_840920_dual_task_scene_freeze.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    bounds = task["source_object"]["observed_bounds_world_m"]
+    lower = np.asarray(bounds["minimum"], dtype=np.float32)
+    upper = np.asarray(bounds["maximum"], dtype=np.float32)
+    points = np.asarray(
+        [
+            [x, y, z]
+            for x in np.linspace(lower[0] + 0.1, upper[0] - 0.1, 4)
+            for y in (lower[1] + 0.1, upper[1] - 0.1)
+            for z in (lower[2] + 0.1, (lower[2] + upper[2]) / 2, upper[2] - 0.1)
+        ],
+        dtype=np.float32,
+    )
+    standard = source_dir / "scene_standard.ply"
+    write_standard_3dgs_ply(
+        SplatData(
+            count=len(points),
+            xyz=points,
+            opacity=np.full(len(points), 8.0, dtype=np.float32),
+            f_dc=np.full((len(points), 3), 0.4, dtype=np.float32),
+            scales=np.full((len(points), 3), -3.0, dtype=np.float32),
+            quats=np.tile(
+                np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                (len(points), 1),
+            ),
+            properties=(),
+        ),
+        standard,
+    )
+    corners = [
+        {"x": x, "y": y, "z": z}
+        for x, y, z in __import__("itertools").product(
+            (bounds["minimum"][0], bounds["maximum"][0]),
+            (bounds["minimum"][1], bounds["maximum"][1]),
+            (bounds["minimum"][2], bounds["maximum"][2]),
+        )
+    ]
+    labels = source_dir / "labels.json"
+    labels.write_text(
+        json.dumps(
+            [
+                {
+                    "ins_id": task["source_object"]["instance_id"],
+                    "label": task["source_object"]["semantic_label"],
+                    "bounding_box": corners,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    structure = source_dir / "structure.json"
+    structure.write_text(json.dumps({"rooms": []}), encoding="utf-8")
+    interiorgs = scene["source_components"]["interiorgs"]
+    interiorgs["sha256"] = "sha256:" + "1" * 64
+    interiorgs["size_bytes"] = 123
+    interiorgs["supporting_files"] = {
+        "labels": {"sha256": _digest(labels), "size_bytes": labels.stat().st_size},
+        "structure": {
+            "sha256": _digest(structure),
+            "size_bytes": structure.stat().st_size,
+        },
+    }
+    sage_digest = "sha256:" + "2" * 64
+    scene["source_components"]["sage_collision"]["sha256"] = sage_digest
+    scene["scene_freeze_digest"] = canonical_digest(
+        scene, digest_field="scene_freeze_digest"
+    )
+    task["scene_freeze_digest"] = scene["scene_freeze_digest"]
+    task["task_freeze_digest"] = canonical_digest(
+        task, digest_field="task_freeze_digest"
+    )
+    (repo / "scene.json").write_text(json.dumps(scene), encoding="utf-8")
+    (repo / "task.json").write_text(json.dumps(task), encoding="utf-8")
+    conversion = {
+        "schema_version": "standard_splat_conversion_receipt.v1",
+        "status": "standard_splat_conversion_materialized",
+        "source": {"sha256": interiorgs["sha256"], "size_bytes": 123},
+        "output": {
+            "sha256": _digest(standard),
+            "size_bytes": standard.stat().st_size,
+            "gaussian_count": len(points),
+            "gaussian_count_preserved": True,
+            "standard_3dgs_schema_validated": True,
+        },
+        "raw_source_uploaded": False,
+        "gaussian_ownership_claimed": False,
+    }
+    conversion["receipt_digest"] = canonical_digest(
+        conversion, digest_field="receipt_digest"
+    )
+    (repo / "conversion.json").write_text(json.dumps(conversion), encoding="utf-8")
+    frame = {
+        "schema_version": "interiorgs_sage_shared_frame_candidate.v1",
+        "source_digests": {
+            "interiorgs_labels": _digest(labels),
+            "sage_collision_usd": sage_digest,
+        },
+        "correspondences": [
+            {
+                "interiorgs_instance_id": task["source_object"]["instance_id"],
+                "semantic_label": task["source_object"]["semantic_label"],
+                "sage_prim_path": task["removal_plan"]["source_collider_prim_path"],
+                "identity_receipt_digest": task["source_object"][
+                    "collision_identity_receipt_digest"
+                ],
+            }
+        ],
+        "shared_frame_status": "provider_declared_not_independently_validated",
+    }
+    frame["receipt_digest"] = canonical_digest(frame, digest_field="receipt_digest")
+    (source_dir / "frame.json").write_text(json.dumps(frame), encoding="utf-8")
+    request = _request()
+    request.update(
+        {
+            "schema_version": "public_scene_interiorgs_edit_input_request.v2",
+            "adp_item": "ADP-009D",
+            "scene": {
+                "source_adapter": "dual_task_freeze_and_standard_splat_v1",
+                "scene_freeze_path": "scene.json",
+                "task_freeze_path": "task.json",
+                "standard_splat_conversion_receipt_path": "conversion.json",
+                "standard_splat_path": "public_scene/scene_standard.ply",
+                "labels_path": "public_scene/labels.json",
+                "structure_path": "public_scene/structure.json",
+                "registered_frame_receipt_path": "public_scene/frame.json",
+            },
+        }
+    )
+    request["rendering"].update(
+        {
+            "supersampling": 1,
+            "color_space": "srgb",
+            "alpha_mode": "opaque_rgb",
+            "background_rgb": 0,
+            "exposure_mode": "renderer_default_unmodified",
+        }
+    )
+    request["mask_policy"]["maximum_image_fraction"] = 0.84
+    for view in request["camera_policy"]["views"]:
+        view["position_offset_m"] = [
+            float(value) * 2.0 for value in view["position_offset_m"]
+        ]
+    (repo / "request.json").write_text(
+        json.dumps(build_public_scene_inpainting_input_request(request)),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"], check=True
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True
+    )
+    return {
+        "repo": repo,
+        "data": data,
+        "standard": standard,
+        "output": data / "output",
+    }
+
+
+def _fake_sealed_render(**kwargs) -> dict:
+    output = Path(kwargs["output_dir"])
+    frames = output / "frames"
+    frames.mkdir(parents=True, exist_ok=True)
+    for row in kwargs["cameras"]:
+        width = int(row["intrinsics"]["width"])
+        height = int(row["intrinsics"]["height"])
+        pixels = np.zeros((height, width, 3), dtype=np.uint8)
+        if output.name in {"images", "scene_without_target"}:
+            pixels[:, :, 0] = np.arange(width, dtype=np.uint16)[None, :] % 255
+            pixels[:, :, 1] = 80 if output.name == "images" else 48
+        else:
+            pixels[height // 2 - 8 : height // 2 + 8, width // 2 - 8 : width // 2 + 8] = 255
+        Image.fromarray(pixels, mode="RGB").save(
+            frames / f"{row['camera_id']}.png"
+        )
+    digest = "sha256:" + hashlib.sha256(output.name.encode()).hexdigest()
+    return {
+        "sealed_camera_render_manifest_digest": digest,
+        "render_settings": {
+            "dimensions": {
+                "width": kwargs["cameras"][0]["intrinsics"]["width"],
+                "height": kwargs["cameras"][0]["intrinsics"]["height"],
+            },
+            "supersampling": 1,
+            "color_space": "srgb",
+            "alpha_mode": "opaque_rgb",
+            "background_rgb": "#000000",
+            "exposure": {"mode": "renderer_default_unmodified", "ev": None},
+        },
+        "renderer_identity": {"repository_revision": "a" * 40},
+    }
+
+
 def test_request_forbids_caller_outcomes_and_orbit_only_camera_set() -> None:
     request = _request()
     request["status"] = "admitted"
@@ -233,6 +457,20 @@ def test_oriented_box_membership_does_not_collapse_to_aabb() -> None:
     corners = local @ rotation.T
     points = np.asarray([[0.0, 0.0, 0.1], [0.8, 0.0, 0.1]])
     assert _inside_obb(points, corners).tolist() == [True, False]
+
+
+def test_publisher_semantic_text_and_stable_identifier_share_one_join() -> None:
+    labels = [
+        {
+            "ins_id": "385",
+            "label": "Notebook computer",
+            "bounding_box": [
+                {"x": x, "y": y, "z": z}
+                for x, y, z in __import__("itertools").product((0, 1), repeat=3)
+            ],
+        }
+    ]
+    assert _publisher_obb(labels, "385", "notebook_computer").shape == (8, 3)
 
 
 def test_materializer_hashes_real_inputs_and_emits_truthful_packet(
@@ -312,6 +550,57 @@ def test_materializer_rejects_changed_source_bytes(tmp_path: Path) -> None:
     paths = _write_fixture(tmp_path)
     paths["source"].write_bytes(paths["source"].read_bytes() + b"changed")
     with pytest.raises(PublicSceneInpaintingInputError, match="splat_bytes_changed"):
+        materialize_public_scene_inpainting_inputs(
+            request_path=paths["repo"] / "request.json",
+            repo_root=paths["repo"],
+            data_root=paths["data"],
+            output_root=paths["output"],
+        )
+
+
+def test_dual_task_adapter_reuses_qualified_standard_splat_and_sealed_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _write_v2_fixture(tmp_path)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpainting_inputs.render_splat_at_exact_cameras",
+        _fake_sealed_render,
+    )
+    receipt = materialize_public_scene_inpainting_inputs(
+        request_path=paths["repo"] / "request.json",
+        repo_root=paths["repo"],
+        data_root=paths["data"],
+        output_root=paths["output"],
+    )
+
+    assert receipt["schema_version"] == "public_scene_interiorgs_edit_input_receipt.v2"
+    assert receipt["adp_item"] == "ADP-009D"
+    assert receipt["source_admission"]["adapter"] == (
+        "dual_task_freeze_and_standard_splat_v1"
+    )
+    assert receipt["scene"]["task_id"] == "task_a_washer_door_open"
+    assert receipt["renderer"]["authorization_class"] == "method_input"
+    assert set(receipt["renderer"]["render_manifest_digests"]) == {
+        "images",
+        "target_support",
+        "scene_without_target",
+    }
+    assert receipt["proof_boundaries"]["gaussian_ownership_qualified"] is False
+    assert receipt["proof_boundaries"][
+        "mask_is_calibrated_candidate_not_owned_gaussian_classification"
+    ] is True
+    assert receipt["executed_commands"]["decode"][0] == (
+        "reuse-standard-splat-conversion-receipt"
+    )
+
+
+def test_dual_task_adapter_rejects_changed_standard_splat_bytes(tmp_path: Path) -> None:
+    paths = _write_v2_fixture(tmp_path)
+    paths["standard"].write_bytes(paths["standard"].read_bytes() + b"changed")
+
+    with pytest.raises(
+        PublicSceneInpaintingInputError, match="standard_splat_bytes_changed"
+    ):
         materialize_public_scene_inpainting_inputs(
             request_path=paths["repo"] / "request.json",
             repo_root=paths["repo"],

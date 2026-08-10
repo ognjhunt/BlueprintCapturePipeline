@@ -1,4 +1,4 @@
-"""Materialize render-derived ADP-009B inputs from an admitted InteriorGS scene.
+"""Materialize render-derived inputs from an admitted InteriorGS scene.
 
 InteriorGS does not publish the original capture photographs. This module makes
 the substitute explicit: decode the publisher splat, render frozen translated
@@ -14,6 +14,7 @@ import hashlib
 import itertools
 import json
 import math
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,6 +24,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .dual_task_rehearsal_contract import validate_scene_freeze, validate_task_freeze
 from .gaussian_splat_decode import (
     SplatData,
     convert_to_standard_ply,
@@ -30,9 +32,15 @@ from .gaussian_splat_decode import (
     read_standard_3dgs_ply,
     write_standard_3dgs_ply,
 )
+from .sealed_camera_render import (
+    SealedCameraRenderError,
+    render_splat_at_exact_cameras,
+)
 
 REQUEST_SCHEMA = "adp009b_interiorgs_edit_input_request.v1"
 RECEIPT_SCHEMA = "adp009b_interiorgs_edit_input_receipt.v1"
+REQUEST_SCHEMA_V2 = "public_scene_interiorgs_edit_input_request.v2"
+RECEIPT_SCHEMA_V2 = "public_scene_interiorgs_edit_input_receipt.v2"
 RENDER_HARNESS_REL = "tools/splat_render/render_splat.mjs"
 RENDER_ENTRY_REL = "tools/splat_render/src/render_entry.mjs"
 
@@ -68,6 +76,10 @@ def _read_object(path: Path, *, code: str) -> dict[str, Any]:
     return value
 
 
+def _semantic_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
 def build_public_scene_inpainting_input_request(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and digest the frozen, non-outcome camera/mask request."""
 
@@ -77,10 +89,15 @@ def build_public_scene_inpainting_input_request(value: Mapping[str, Any]) -> dic
         raise PublicSceneInpaintingInputError(["edit_input_request_not_json"]) from exc
     supplied = request.pop("request_digest", None)
     errors: list[str] = []
-    if request.get("schema_version") != REQUEST_SCHEMA:
+    schema = request.get("schema_version")
+    if schema not in {REQUEST_SCHEMA, REQUEST_SCHEMA_V2}:
         errors.append("edit_input_request_schema_invalid")
-    if request.get("program_id") != "arm-decision-proof-v1" or request.get("adp_item") != "ADP-009B":
+    if request.get("program_id") != "arm-decision-proof-v1" or not str(
+        request.get("adp_item") or ""
+    ).startswith("ADP-"):
         errors.append("edit_input_program_identity_invalid")
+    if schema == REQUEST_SCHEMA and request.get("adp_item") != "ADP-009B":
+        errors.append("edit_input_legacy_program_identity_invalid")
     if request.get("frozen_before_render") is not True:
         errors.append("edit_input_not_frozen_before_render")
     if request.get("method_outcomes_observed_before_freeze") is not False:
@@ -90,13 +107,27 @@ def build_public_scene_inpainting_input_request(value: Mapping[str, Any]) -> dic
     scene = request.get("scene")
     if not isinstance(scene, Mapping):
         errors.append("edit_input_scene_missing")
-    else:
+    elif schema == REQUEST_SCHEMA:
         for key in (
             "publisher_scene_id",
             "target_instance_id",
             "target_semantic_label",
             "component_manifest_path",
             "component_receipt_path",
+        ):
+            if not str(scene.get(key) or "").strip():
+                errors.append(f"edit_input_scene_{key}_missing")
+    else:
+        if scene.get("source_adapter") != "dual_task_freeze_and_standard_splat_v1":
+            errors.append("edit_input_scene_source_adapter_invalid")
+        for key in (
+            "scene_freeze_path",
+            "task_freeze_path",
+            "standard_splat_conversion_receipt_path",
+            "standard_splat_path",
+            "labels_path",
+            "structure_path",
+            "registered_frame_receipt_path",
         ):
             if not str(scene.get(key) or "").strip():
                 errors.append(f"edit_input_scene_{key}_missing")
@@ -204,7 +235,7 @@ def _publisher_obb(labels: Any, instance_id: str, semantic_label: str) -> np.nda
     if len(rows) != 1:
         raise PublicSceneInpaintingInputError(["edit_input_target_identity_not_unique"])
     row = rows[0]
-    if str(row.get("label") or "").strip().lower() != semantic_label.strip().lower():
+    if _semantic_key(row.get("label")) != _semantic_key(semantic_label):
         raise PublicSceneInpaintingInputError(["edit_input_target_semantic_label_mismatch"])
     corners = row.get("bounding_box")
     try:
@@ -396,6 +427,192 @@ def _git_identity(repo: Path) -> dict[str, Any]:
     }
 
 
+def _verified_dual_task_scene_source(
+    *, scene: Mapping[str, Any], repo: Path, data: Path
+) -> dict[str, Any]:
+    """Normalize the dual-task source adapter into one verified render source.
+
+    The adapter accepts only paths.  Every scientific identity is derived from
+    opened, digest-verified freezes and receipts; callers cannot assert scene,
+    target, registration, or conversion qualification fields directly.
+    """
+
+    scene_freeze_path = _require_under(
+        repo / str(scene["scene_freeze_path"]),
+        (repo,),
+        code="edit_input_scene_freeze_outside_repo",
+    )
+    task_freeze_path = _require_under(
+        repo / str(scene["task_freeze_path"]),
+        (repo,),
+        code="edit_input_task_freeze_outside_repo",
+    )
+    try:
+        scene_freeze = validate_scene_freeze(
+            _read_object(scene_freeze_path, code="edit_input_scene_freeze_invalid")
+        )
+        task_freeze = validate_task_freeze(
+            _read_object(task_freeze_path, code="edit_input_task_freeze_invalid")
+        )
+    except ValueError as exc:
+        raise PublicSceneInpaintingInputError(
+            ["edit_input_dual_task_freeze_invalid"]
+        ) from exc
+    if task_freeze["scene_freeze_digest"] != scene_freeze["scene_freeze_digest"]:
+        raise PublicSceneInpaintingInputError(["edit_input_task_scene_freeze_mismatch"])
+
+    conversion_receipt_path = _require_under(
+        repo / str(scene["standard_splat_conversion_receipt_path"]),
+        (repo,),
+        code="edit_input_conversion_receipt_outside_repo",
+    )
+    conversion_receipt = _read_object(
+        conversion_receipt_path, code="edit_input_conversion_receipt_invalid"
+    )
+    if (
+        canonical_digest(conversion_receipt, digest_field="receipt_digest")
+        != conversion_receipt.get("receipt_digest")
+        or conversion_receipt.get("schema_version")
+        != "standard_splat_conversion_receipt.v1"
+        or conversion_receipt.get("status")
+        != "standard_splat_conversion_materialized"
+    ):
+        raise PublicSceneInpaintingInputError(
+            ["edit_input_conversion_receipt_not_qualified"]
+        )
+    appearance_source = scene_freeze["source_components"]["interiorgs"]
+    conversion_source = conversion_receipt.get("source") or {}
+    if (
+        conversion_source.get("sha256") != appearance_source.get("sha256")
+        or conversion_source.get("size_bytes") != appearance_source.get("size_bytes")
+        or conversion_receipt.get("raw_source_uploaded") is not False
+        or conversion_receipt.get("gaussian_ownership_claimed") is not False
+    ):
+        raise PublicSceneInpaintingInputError(
+            ["edit_input_conversion_source_join_invalid"]
+        )
+    standard_ply = _require_under(
+        data / str(scene["standard_splat_path"]),
+        (data,),
+        code="edit_input_standard_splat_outside_data_root",
+    )
+    output_record = conversion_receipt.get("output") or {}
+    if (
+        not standard_ply.is_file()
+        or standard_ply.is_symlink()
+        or standard_ply.stat().st_size != output_record.get("size_bytes")
+        or _sha256(standard_ply) != output_record.get("sha256")
+        or output_record.get("standard_3dgs_schema_validated") is not True
+        or output_record.get("gaussian_count_preserved") is not True
+    ):
+        raise PublicSceneInpaintingInputError(
+            ["edit_input_standard_splat_bytes_changed"]
+        )
+
+    support_records = appearance_source.get("supporting_files") or {}
+    resolved_support: dict[str, Path] = {}
+    for role, request_key in (("labels", "labels_path"), ("structure", "structure_path")):
+        record = support_records.get(role) or {}
+        path = _require_under(
+            data / str(scene[request_key]),
+            (data,),
+            code=f"edit_input_{role}_outside_data_root",
+        )
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or path.stat().st_size != record.get("size_bytes")
+            or _sha256(path) != record.get("sha256")
+        ):
+            raise PublicSceneInpaintingInputError(
+                [f"edit_input_{role}_bytes_changed"]
+            )
+        resolved_support[role] = path
+
+    frame_path = _require_under(
+        data / str(scene["registered_frame_receipt_path"]),
+        (data,),
+        code="edit_input_registered_frame_outside_data_root",
+    )
+    frame = _read_object(frame_path, code="edit_input_registered_frame_invalid")
+    if (
+        canonical_digest(frame, digest_field="receipt_digest")
+        != frame.get("receipt_digest")
+        or frame.get("schema_version")
+        != "interiorgs_sage_shared_frame_candidate.v1"
+        or frame.get("source_digests", {}).get("interiorgs_labels")
+        != support_records.get("labels", {}).get("sha256")
+        or frame.get("source_digests", {}).get("sage_collision_usd")
+        != scene_freeze["source_components"]["sage_collision"].get("sha256")
+    ):
+        raise PublicSceneInpaintingInputError(
+            ["edit_input_registered_frame_join_invalid"]
+        )
+    target = task_freeze["source_object"]
+    collider_path = task_freeze["removal_plan"]["source_collider_prim_path"]
+    correspondences = [
+        row
+        for row in frame.get("correspondences", [])
+        if isinstance(row, Mapping)
+        and str(row.get("interiorgs_instance_id")) == str(target["instance_id"])
+    ]
+    if (
+        len(correspondences) != 1
+        or _semantic_key(correspondences[0].get("semantic_label"))
+        != _semantic_key(target["semantic_label"])
+        or correspondences[0].get("sage_prim_path") != collider_path
+        or correspondences[0].get("identity_receipt_digest")
+        != target.get("collision_identity_receipt_digest")
+    ):
+        raise PublicSceneInpaintingInputError(
+            ["edit_input_registered_target_join_invalid"]
+        )
+    labels = json.loads(resolved_support["labels"].read_text(encoding="utf-8"))
+    corners = _publisher_obb(
+        labels, str(target["instance_id"]), str(target["semantic_label"])
+    )
+    observed_bounds = target["observed_bounds_world_m"]
+    if not (
+        np.allclose(corners.min(axis=0), observed_bounds["minimum"], atol=1e-6)
+        and np.allclose(corners.max(axis=0), observed_bounds["maximum"], atol=1e-6)
+    ):
+        raise PublicSceneInpaintingInputError(
+            ["edit_input_target_bounds_freeze_mismatch"]
+        )
+    return {
+        "scene_id": str(scene_freeze["selected_scene_id"]),
+        "task_id": str(task_freeze["task_id"]),
+        "target_instance_id": str(target["instance_id"]),
+        "target_semantic_label": str(target["semantic_label"]),
+        "scene_freeze_digest": str(scene_freeze["scene_freeze_digest"]),
+        "task_freeze_digest": str(task_freeze["task_freeze_digest"]),
+        "mask_set_id": str(task_freeze["removal_plan"]["mask_set_id"]),
+        "removal_id": str(task_freeze["removal_plan"]["removal_id"]),
+        "standard_ply": standard_ply,
+        "standard_splat_digest": str(output_record["sha256"]),
+        "gaussian_count": int(output_record["gaussian_count"]),
+        "conversion_receipt_digest": str(conversion_receipt["receipt_digest"]),
+        "registered_frame_receipt_digest": str(frame["receipt_digest"]),
+        "registered_frame_status": str(frame.get("shared_frame_status") or "unavailable"),
+        "corners": corners,
+        "source_artifacts": [
+            {
+                "role": "standard_splat",
+                "relative_path": standard_ply.relative_to(data).as_posix(),
+                **_record(standard_ply, data),
+            },
+            *[
+                {
+                    "role": role,
+                    "relative_path": path.relative_to(data).as_posix(),
+                    **_record(path, data),
+                }
+                for role, path in resolved_support.items()
+            ],
+        ],
+    }
+
+
 def materialize_public_scene_inpainting_inputs(
     *, request_path: str | Path, repo_root: str | Path, data_root: str | Path,
     output_root: str | Path, receipt_output: str | Path | None = None,
@@ -418,80 +635,162 @@ def materialize_public_scene_inpainting_inputs(
         _read_object(request_file, code="edit_input_request_invalid")
     )
     scene = request["scene"]
-    manifest_path = _require_under(
-        repo / str(scene["component_manifest_path"]), (repo,),
-        code="edit_input_component_manifest_outside_repo",
-    )
-    receipt_path = _require_under(
-        repo / str(scene["component_receipt_path"]), (repo,),
-        code="edit_input_component_receipt_outside_repo",
-    )
-    manifest = _read_object(manifest_path, code="edit_input_component_manifest_invalid")
-    component_receipt = _read_object(receipt_path, code="edit_input_component_receipt_invalid")
-    if canonical_digest(manifest, digest_field="manifest_digest") != manifest.get("manifest_digest"):
-        raise PublicSceneInpaintingInputError(["edit_input_component_manifest_digest_mismatch"])
-    if canonical_digest(component_receipt, digest_field="receipt_digest") != component_receipt.get("receipt_digest"):
-        raise PublicSceneInpaintingInputError(["edit_input_component_receipt_digest_mismatch"])
-    if (
-        component_receipt.get("status") != "admitted"
-        or component_receipt.get("component_manifest_digest") != manifest.get("manifest_digest")
-    ):
-        raise PublicSceneInpaintingInputError(["edit_input_scene_component_not_admitted"])
-    mapping = manifest.get("scene_mapping") or {}
-    target_binding = manifest.get("target_binding") or {}
-    if str(mapping.get("publisher_scene_id")) != str(scene["publisher_scene_id"]):
-        raise PublicSceneInpaintingInputError(["edit_input_scene_id_mismatch"])
-    if (
-        str(target_binding.get("interiorgs_instance_id")) != str(scene["target_instance_id"])
-        or str(target_binding.get("semantic_label")).lower()
-        != str(scene["target_semantic_label"]).lower()
-    ):
-        raise PublicSceneInpaintingInputError(["edit_input_target_binding_mismatch"])
-    artifacts = {record["role"]: record for record in manifest.get("materialized_artifacts", [])}
-    try:
-        source_records = {
-            "splat": artifacts["appearance_3dgs"],
-            "labels": artifacts["semantic_metadata"],
-            "structure": artifacts["scene_structure"],
-        }
-    except KeyError as exc:
-        raise PublicSceneInpaintingInputError(["edit_input_scene_artifacts_missing"]) from exc
-    observed_sources = []
-    resolved: dict[str, Path] = {}
-    for name, record in source_records.items():
-        path = _require_under(
-            data / str(record["external_relative_path"]), (data,),
-            code="edit_input_source_outside_data_root",
-        )
-        if (
-            not path.is_file() or path.is_symlink()
-            or path.stat().st_size != record.get("size_bytes") or _sha256(path) != record.get("sha256")
-        ):
-            raise PublicSceneInpaintingInputError([f"edit_input_{name}_bytes_changed"])
-        resolved[name] = path
-        observed_sources.append(
-            {"role": name, "relative_path": path.relative_to(data).as_posix(), **_record(path, data)}
-        )
-    labels = json.loads(resolved["labels"].read_text(encoding="utf-8"))
-    corners = _publisher_obb(
-        labels, str(scene["target_instance_id"]), str(scene["target_semantic_label"])
-    )
     output.mkdir(parents=True, exist_ok=True)
-    standard_ply = output / "scene_standard.ply"
-    decode_cli = find_splat_transform_cli(repo)
-    decode_command = (
-        ["node", str(decode_cli), "-w", "-q", str(resolved["splat"]), str(standard_ply)]
-        if decode_cli is not None
-        else None
-    )
-    conversion = convert_to_standard_ply(
-        resolved["splat"], standard_ply, repo_root=repo, timeout_seconds=1800
-    )
-    if conversion.get("status") != "completed":
-        raise PublicSceneInpaintingInputError(
-            ["edit_input_splat_decode_failed", *conversion.get("blockers", [])]
+    source_adapter = str(scene.get("source_adapter") or "legacy_component_v1")
+    source_identity: dict[str, Any]
+    manifest: dict[str, Any] | None = None
+    component_receipt: dict[str, Any] | None = None
+    if source_adapter == "dual_task_freeze_and_standard_splat_v1":
+        source_identity = _verified_dual_task_scene_source(
+            scene=scene, repo=repo, data=data
         )
+        standard_ply = source_identity["standard_ply"]
+        observed_sources = source_identity["source_artifacts"]
+        corners = source_identity["corners"]
+        conversion = {
+            "status": "reused_qualified_standard_splat",
+            "command": [
+                "reuse-standard-splat-conversion-receipt",
+                source_identity["conversion_receipt_digest"],
+            ],
+        }
+        decode_command = None
+    else:
+        manifest_path = _require_under(
+            repo / str(scene["component_manifest_path"]), (repo,),
+            code="edit_input_component_manifest_outside_repo",
+        )
+        receipt_path = _require_under(
+            repo / str(scene["component_receipt_path"]), (repo,),
+            code="edit_input_component_receipt_outside_repo",
+        )
+        manifest = _read_object(
+            manifest_path, code="edit_input_component_manifest_invalid"
+        )
+        component_receipt = _read_object(
+            receipt_path, code="edit_input_component_receipt_invalid"
+        )
+        if canonical_digest(
+            manifest, digest_field="manifest_digest"
+        ) != manifest.get("manifest_digest"):
+            raise PublicSceneInpaintingInputError(
+                ["edit_input_component_manifest_digest_mismatch"]
+            )
+        if canonical_digest(
+            component_receipt, digest_field="receipt_digest"
+        ) != component_receipt.get("receipt_digest"):
+            raise PublicSceneInpaintingInputError(
+                ["edit_input_component_receipt_digest_mismatch"]
+            )
+        if (
+            component_receipt.get("status") != "admitted"
+            or component_receipt.get("component_manifest_digest")
+            != manifest.get("manifest_digest")
+        ):
+            raise PublicSceneInpaintingInputError(
+                ["edit_input_scene_component_not_admitted"]
+            )
+        mapping = manifest.get("scene_mapping") or {}
+        target_binding = manifest.get("target_binding") or {}
+        if str(mapping.get("publisher_scene_id")) != str(
+            scene["publisher_scene_id"]
+        ):
+            raise PublicSceneInpaintingInputError(["edit_input_scene_id_mismatch"])
+        if (
+            str(target_binding.get("interiorgs_instance_id"))
+            != str(scene["target_instance_id"])
+            or _semantic_key(target_binding.get("semantic_label"))
+            != _semantic_key(scene["target_semantic_label"])
+        ):
+            raise PublicSceneInpaintingInputError(
+                ["edit_input_target_binding_mismatch"]
+            )
+        artifacts = {
+            record["role"]: record
+            for record in manifest.get("materialized_artifacts", [])
+        }
+        try:
+            source_records = {
+                "splat": artifacts["appearance_3dgs"],
+                "labels": artifacts["semantic_metadata"],
+                "structure": artifacts["scene_structure"],
+            }
+        except KeyError as exc:
+            raise PublicSceneInpaintingInputError(
+                ["edit_input_scene_artifacts_missing"]
+            ) from exc
+        observed_sources = []
+        resolved: dict[str, Path] = {}
+        for name, record in source_records.items():
+            path = _require_under(
+                data / str(record["external_relative_path"]),
+                (data,),
+                code="edit_input_source_outside_data_root",
+            )
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or path.stat().st_size != record.get("size_bytes")
+                or _sha256(path) != record.get("sha256")
+            ):
+                raise PublicSceneInpaintingInputError(
+                    [f"edit_input_{name}_bytes_changed"]
+                )
+            resolved[name] = path
+            observed_sources.append(
+                {
+                    "role": name,
+                    "relative_path": path.relative_to(data).as_posix(),
+                    **_record(path, data),
+                }
+            )
+        labels = json.loads(resolved["labels"].read_text(encoding="utf-8"))
+        corners = _publisher_obb(
+            labels,
+            str(scene["target_instance_id"]),
+            str(scene["target_semantic_label"]),
+        )
+        standard_ply = output / "scene_standard.ply"
+        decode_cli = find_splat_transform_cli(repo)
+        decode_command = (
+            [
+                "node",
+                str(decode_cli),
+                "-w",
+                "-q",
+                str(resolved["splat"]),
+                str(standard_ply),
+            ]
+            if decode_cli is not None
+            else None
+        )
+        conversion = convert_to_standard_ply(
+            resolved["splat"], standard_ply, repo_root=repo, timeout_seconds=1800
+        )
+        if conversion.get("status") != "completed":
+            raise PublicSceneInpaintingInputError(
+                ["edit_input_splat_decode_failed", *conversion.get("blockers", [])]
+            )
+        source_identity = {
+            "scene_id": str(scene["publisher_scene_id"]),
+            "task_id": None,
+            "target_instance_id": str(scene["target_instance_id"]),
+            "target_semantic_label": str(scene["target_semantic_label"]),
+            "scene_freeze_digest": None,
+            "task_freeze_digest": None,
+            "mask_set_id": None,
+            "removal_id": None,
+            "conversion_receipt_digest": None,
+            "registered_frame_receipt_digest": None,
+            "registered_frame_status": "legacy_component_admission",
+        }
     splat = read_standard_3dgs_ply(standard_ply)
+    if source_adapter == "dual_task_freeze_and_standard_splat_v1" and (
+        splat.count != source_identity["gaussian_count"]
+    ):
+        raise PublicSceneInpaintingInputError(
+            ["edit_input_standard_splat_count_mismatch"]
+        )
     selected = _inside_obb(np.asarray(splat.xyz, dtype=np.float64), corners)
     target_count = int(selected.sum())
     if target_count < int(request["mask_policy"]["minimum_contained_gaussians"]):
@@ -523,8 +822,24 @@ def materialize_public_scene_inpainting_inputs(
     )
     target_center = corners.mean(axis=0)
     cameras = _camera_rows(request, target_center)
+    sealed_cameras = [
+        {
+            "camera_id": row["camera_id"],
+            "T_world_camera_provider_frame": row["T_world_camera_opencv"],
+            "intrinsics": row["intrinsics"],
+        }
+        for row in cameras
+    ]
     camera_file = output / "cameras.v1.json"
-    camera_file.write_text(canonical_json(cameras) + "\n", encoding="utf-8")
+    camera_file.write_text(
+        canonical_json(
+            sealed_cameras
+            if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+            else cameras
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     rendering = request["rendering"]
     common = {
         "cameras": cameras, "repo_root": repo,
@@ -534,20 +849,112 @@ def materialize_public_scene_inpainting_inputs(
         "settle_ms": int(rendering["settle_ms"]),
         "timeout_seconds": int(rendering["timeout_seconds"]),
     }
-    rgb_run = _render_harness(splat=standard_ply, output=output / "images", **common)
-    support_run = _render_harness(splat=target_ply, output=output / "target_support", **common)
-    background_run = _render_harness(
-        splat=background_ply, output=output / "scene_without_target", **common
-    )
+    sealed_render_manifests: dict[str, Any] = {}
+    if source_adapter == "dual_task_freeze_and_standard_splat_v1":
+        render_inputs = (
+            ("images", standard_ply, int(splat.count), "complete source appearance"),
+            (
+                "target_support",
+                target_ply,
+                target_count,
+                "candidate target OBB Gaussian support",
+            ),
+            (
+                "scene_without_target",
+                background_ply,
+                int(retained.sum()),
+                "source appearance without candidate target OBB Gaussians",
+            ),
+        )
+        try:
+            for label, splat_path, retained_count, purpose_label in render_inputs:
+                manifest_row = render_splat_at_exact_cameras(
+                    splat_path=splat_path,
+                    cameras=sealed_cameras,
+                    output_dir=output / label,
+                    provider_splat_import_receipt_digest=source_identity[
+                        "conversion_receipt_digest"
+                    ],
+                    alignment_digest=source_identity[
+                        "registered_frame_receipt_digest"
+                    ],
+                    camera_set_label=(
+                        f"{source_identity['task_id']}:removal_input:{label}"
+                    ),
+                    calibrated_camera_file=camera_file,
+                    retained_gaussian_count=retained_count,
+                    source_splat_digest=_sha256(splat_path),
+                    purpose=(
+                        f"{source_identity['task_id']} calibrated removal analysis: "
+                        f"{purpose_label}"
+                    ),
+                    authorization_class="method_input",
+                    supersampling=int(rendering.get("supersampling", 1)),
+                    color_space=str(rendering.get("color_space", "srgb")),
+                    alpha_mode=str(rendering.get("alpha_mode", "opaque_rgb")),
+                    exposure_mode=str(
+                        rendering.get("exposure_mode", "renderer_default_unmodified")
+                    ),
+                    repo_root=repo,
+                    graphics_backend=str(rendering["graphics_backend"]),
+                    background_rgb=int(rendering.get("background_rgb", 0)),
+                    warmup_ms=int(rendering["warmup_ms"]),
+                    settle_frames=int(rendering["settle_frames"]),
+                    settle_ms=int(rendering["settle_ms"]),
+                    render_timeout=int(rendering["timeout_seconds"]),
+                )
+                sealed_render_manifests[label] = manifest_row
+        except SealedCameraRenderError as exc:
+            raise PublicSceneInpaintingInputError(
+                ["edit_input_authorized_render_failed", *exc.codes]
+            ) from exc
+        rgb_run = {
+            "command": [
+                "sealed-camera-render",
+                sealed_render_manifests["images"][
+                    "sealed_camera_render_manifest_digest"
+                ],
+            ]
+        }
+        support_run = {
+            "command": [
+                "sealed-camera-render",
+                sealed_render_manifests["target_support"][
+                    "sealed_camera_render_manifest_digest"
+                ],
+            ]
+        }
+        background_run = {
+            "command": [
+                "sealed-camera-render",
+                sealed_render_manifests["scene_without_target"][
+                    "sealed_camera_render_manifest_digest"
+                ],
+            ]
+        }
+        render_frame_subdir = "frames"
+    else:
+        rgb_run = _render_harness(
+            splat=standard_ply, output=output / "images", **common
+        )
+        support_run = _render_harness(
+            splat=target_ply, output=output / "target_support", **common
+        )
+        background_run = _render_harness(
+            splat=background_ply, output=output / "scene_without_target", **common
+        )
+        render_frame_subdir = ""
     width, height = int(rendering["width"]), int(rendering["height"])
     dilation = int(request["mask_policy"]["dilation_pixels"])
     mask_rows = []
     image_rows = []
     for camera in cameras:
         camera_id = camera["camera_id"]
-        rgb = output / "images" / f"{camera_id}.png"
-        support = output / "target_support" / f"{camera_id}.png"
-        background = output / "scene_without_target" / f"{camera_id}.png"
+        rgb = output / "images" / render_frame_subdir / f"{camera_id}.png"
+        support = output / "target_support" / render_frame_subdir / f"{camera_id}.png"
+        background = (
+            output / "scene_without_target" / render_frame_subdir / f"{camera_id}.png"
+        )
         if not rgb.is_file() or not support.is_file() or not background.is_file():
             raise PublicSceneInpaintingInputError([f"edit_input_render_missing:{camera_id}"])
         rgb_pixels = np.asarray(Image.open(rgb).convert("RGB"))
@@ -604,35 +1011,82 @@ def materialize_public_scene_inpainting_inputs(
              "visible_target_contribution_fraction": round(visible_fraction, 9),
              "scene_without_target_render": _record(background, output)}
         )
-    renderer = {
-        "name": "reference_spark_renderer_exact_camera",
-        "harness_sha256": _sha256(repo / RENDER_HARNESS_REL),
-        "entry_sha256": _sha256(repo / RENDER_ENTRY_REL),
-        "node_version": subprocess.run(
-            ["node", "--version"], check=True, capture_output=True, text=True
-        ).stdout.strip(),
-        "graphics_backend": rendering["graphics_backend"], "width": width, "height": height,
-        "warmup_ms": rendering["warmup_ms"], "settle_frames": rendering["settle_frames"],
-        "settle_ms": rendering["settle_ms"],
-    }
+    if source_adapter == "dual_task_freeze_and_standard_splat_v1":
+        renderer = {
+            "name": "reference_spark_renderer_exact_camera",
+            "authorization_class": "method_input",
+            "purpose_bound": True,
+            "render_manifest_digests": {
+                label: row["sealed_camera_render_manifest_digest"]
+                for label, row in sealed_render_manifests.items()
+            },
+            "render_settings": sealed_render_manifests["images"]["render_settings"],
+            "renderer_identity": sealed_render_manifests["images"][
+                "renderer_identity"
+            ],
+        }
+        standard_splat_record = next(
+            row for row in observed_sources if row["role"] == "standard_splat"
+        )
+        source_admission = {
+            "adapter": source_adapter,
+            "scene_freeze_digest": source_identity["scene_freeze_digest"],
+            "task_freeze_digest": source_identity["task_freeze_digest"],
+            "standard_splat_conversion_receipt_digest": source_identity[
+                "conversion_receipt_digest"
+            ],
+            "registered_frame_receipt_digest": source_identity[
+                "registered_frame_receipt_digest"
+            ],
+            "registered_frame_status": source_identity["registered_frame_status"],
+        }
+    else:
+        renderer = {
+            "name": "reference_spark_renderer_exact_camera",
+            "authorization_class": "legacy_unqualified",
+            "harness_sha256": _sha256(repo / RENDER_HARNESS_REL),
+            "entry_sha256": _sha256(repo / RENDER_ENTRY_REL),
+            "node_version": subprocess.run(
+                ["node", "--version"], check=True, capture_output=True, text=True
+            ).stdout.strip(),
+            "graphics_backend": rendering["graphics_backend"],
+            "width": width,
+            "height": height,
+            "warmup_ms": rendering["warmup_ms"],
+            "settle_frames": rendering["settle_frames"],
+            "settle_ms": rendering["settle_ms"],
+        }
+        standard_splat_record = _record(standard_ply, output)
+        source_admission = {
+            "adapter": source_adapter,
+            "scene_component_manifest_digest": manifest["manifest_digest"],
+            "scene_component_receipt_digest": component_receipt["receipt_digest"],
+        }
     receipt = {
-        "schema_version": RECEIPT_SCHEMA,
+        "schema_version": (
+            RECEIPT_SCHEMA_V2
+            if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+            else RECEIPT_SCHEMA
+        ),
         "status": "render_derived_input_packet_materialized",
-        "program_id": "arm-decision-proof-v1", "adp_item": "ADP-009B",
+        "program_id": "arm-decision-proof-v1",
+        "adp_item": request["adp_item"],
         "repository": repository,
         "request_digest": request["request_digest"],
-        "scene_component_manifest_digest": manifest["manifest_digest"],
-        "scene_component_receipt_digest": component_receipt["receipt_digest"],
+        "source_admission": source_admission,
         "scene": {
-            "publisher_scene_id": str(scene["publisher_scene_id"]),
-            "target_instance_id": str(scene["target_instance_id"]),
-            "target_semantic_label": str(scene["target_semantic_label"]),
+            "publisher_scene_id": source_identity["scene_id"],
+            "task_id": source_identity["task_id"],
+            "target_instance_id": source_identity["target_instance_id"],
+            "target_semantic_label": source_identity["target_semantic_label"],
+            "mask_set_id": source_identity["mask_set_id"],
+            "removal_id": source_identity["removal_id"],
             "target_obb_corners_m": corners.tolist(), "target_gaussian_count": target_count,
             "scene_gaussian_count": int(splat.count),
         },
         "source_artifacts": observed_sources,
         "derived_artifacts": {
-            "standard_splat": _record(standard_ply, output),
+            "standard_splat": standard_splat_record,
             "target_gaussian_support": _record(target_ply, output),
             "scene_without_target_obb_gaussians": _record(background_ply, output),
             "cameras": _record(camera_file, output), "images": image_rows, "masks": mask_rows,
@@ -674,8 +1128,14 @@ def materialize_public_scene_inpainting_inputs(
             "source_target_obb_visual_contribution_measured": True,
             "source_object_removed_from_appearance": False, "source_collider_removed": False,
             "simready_replacement_inserted": False, "inpainting_result": False,
+            "mask_is_calibrated_candidate_not_owned_gaussian_classification": True,
+            "gaussian_ownership_qualified": False,
         },
-        "smallest_next_blocker": "method_native_interiorgs_adapter_and_unchanged_author_runtime_required",
+        "smallest_next_blocker": (
+            "independent_gaussian_contribution_ownership_and_replacement_depth_coverage"
+            if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+            else "method_native_interiorgs_adapter_and_unchanged_author_runtime_required"
+        ),
         "claim_ceiling": "synthetic_public_scene_inpainting_input_candidate",
         "replay_command": (
             "python -m blueprint_pipeline.public_scene_inpainting_inputs "
@@ -684,7 +1144,12 @@ def materialize_public_scene_inpainting_inputs(
         ),
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
-    (output / "adp009b_interiorgs_edit_input_receipt.v1.json").write_text(
+    output_receipt_name = (
+        "public_scene_interiorgs_edit_input_receipt.v2.json"
+        if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+        else "adp009b_interiorgs_edit_input_receipt.v1.json"
+    )
+    (output / output_receipt_name).write_text(
         canonical_json(receipt) + "\n", encoding="utf-8"
     )
     if retained_receipt is not None:

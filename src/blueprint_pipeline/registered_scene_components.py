@@ -35,6 +35,12 @@ def _artifact_by_role(freeze: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _component_receipt(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    coordinate = manifest.get("coordinate_frame")
+    qualification_status = (
+        str(coordinate.get("qualification_status") or "legacy_verified")
+        if isinstance(coordinate, Mapping)
+        else "unavailable"
+    )
     receipt: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA,
         "program_id": PROGRAM_ID,
@@ -49,7 +55,13 @@ def _component_receipt(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "freeze_digest_verified": True,
             "materialized_files_hashed": True,
             "rights_authority_bound": True,
-            "meters_and_z_up_verified": True,
+            "coordinate_frame_status_bound": qualification_status
+            in {
+                "legacy_verified",
+                "provider_declared_not_independently_validated",
+                "independently_qualified",
+            },
+            "coordinate_frame_qualification_status": qualification_status,
             "inverse_transform_present": True,
             "target_binding_verified": True,
         },
@@ -116,6 +128,9 @@ def build_registered_scene_components(
         "T_source_world": registration["interiorgs_to_sage_transform"],
         "T_world_source": registration["inverse_transform"],
         "round_trip_max_error_m": float(registration["round_trip_max_error_m"]),
+        "qualification_status": str(
+            registration.get("qualification_status") or "legacy_verified"
+        ),
     }
     target_binding = {
         "interiorgs_instance_id": target_id,
@@ -164,7 +179,7 @@ def build_registered_scene_components(
     }
     appearance: dict[str, Any] = {
         **common,
-        "component_id": f"second-scene-interiorgs-{scene_id}",
+        "component_id": f"public-scene-interiorgs-{scene_id}-{target_id}",
         "role": "interiorgs_appearance_scene",
         "source_project_id": "InteriorGS",
         "publisher_identity": {
@@ -193,7 +208,7 @@ def build_registered_scene_components(
     )
     collision: dict[str, Any] = {
         **common,
-        "component_id": f"second-scene-sage3d-{scene_id}",
+        "component_id": f"public-scene-sage3d-{scene_id}-{target_id}",
         "role": "sage3d_collision_companion",
         "source_project_id": "SAGE-3D",
         "publisher_identity": {
@@ -278,4 +293,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-

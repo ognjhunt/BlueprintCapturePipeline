@@ -1,0 +1,58 @@
+{
+  "schema_version": "public_scene_interiorgs_edit_input_request.v2",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009D",
+  "frozen_before_render": true,
+  "method_outcomes_observed_before_freeze": false,
+  "scene": {
+    "source_adapter": "dual_task_freeze_and_standard_splat_v1",
+    "scene_freeze_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_scene_freeze.v1.json",
+    "task_freeze_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json",
+    "standard_splat_conversion_receipt_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_standard_splat_conversion_receipt.v1.json",
+    "standard_splat_path": "third_scene_dual_task_e2e/shared_scene/standard_splat_conversion_v1/scene_standard.ply",
+    "labels_path": "third_scene_dual_task_e2e/shared_scene/source/InteriorGS/0492_840920/labels.json",
+    "structure_path": "third_scene_dual_task_e2e/shared_scene/source/InteriorGS/0492_840920/structure.json",
+    "registered_frame_receipt_path": "third_scene_dual_task_e2e/shared_scene/selection/shared_frame/interiorgs_sage_shared_frame_candidate.v1.json"
+  },
+  "rendering": {
+    "renderer": "reference_spark_renderer_exact_camera",
+    "graphics_backend": "metal",
+    "width": 1536,
+    "height": 1024,
+    "vertical_fov_deg": 56.0,
+    "warmup_ms": 2500,
+    "settle_frames": 6,
+    "settle_ms": 100,
+    "timeout_seconds": 3600,
+    "supersampling": 1,
+    "color_space": "srgb",
+    "alpha_mode": "opaque_rgb",
+    "background_rgb": 0,
+    "exposure_mode": "renderer_default_unmodified"
+  },
+  "camera_policy": {
+    "generator": "translated_target_coverage_v1",
+    "orbit_only_forbidden": true,
+    "views": [
+      {"camera_id": "front_wide", "position_offset_m": [0.0, -1.8, 0.8], "target_offset_m": [0.0, 0.0, 0.0]},
+      {"camera_id": "front_mid", "position_offset_m": [0.0, -1.35, 0.55], "target_offset_m": [0.0, 0.0, 0.0]},
+      {"camera_id": "left_wide", "position_offset_m": [-1.4, -0.9, 0.75], "target_offset_m": [0.0, 0.0, 0.0]},
+      {"camera_id": "right_wide", "position_offset_m": [1.4, -0.9, 0.75], "target_offset_m": [0.0, 0.0, 0.0]},
+      {"camera_id": "high_left", "position_offset_m": [-1.0, -1.2, 1.2], "target_offset_m": [0.0, 0.0, 0.05]},
+      {"camera_id": "high_right", "position_offset_m": [1.0, -1.2, 1.05], "target_offset_m": [0.0, 0.0, 0.05]},
+      {"camera_id": "low_left", "position_offset_m": [-0.75, -1.0, 0.2], "target_offset_m": [0.0, 0.0, -0.05]},
+      {"camera_id": "low_right", "position_offset_m": [0.85, -1.0, 0.3], "target_offset_m": [0.0, 0.0, -0.05]}
+    ]
+  },
+  "mask_policy": {
+    "authority": "publisher_target_obb_plus_contained_gaussians",
+    "minimum_contained_gaussians": 16,
+    "dilation_pixels": 4,
+    "support_threshold_8bit": 24,
+    "minimum_support_inside_final_fraction": 0.99,
+    "maximum_image_fraction": 0.7,
+    "visual_contribution_threshold_8bit": 8,
+    "minimum_visible_target_fraction": 0.01
+  },
+  "request_digest": "sha256:30baf0ec18a9810c3f43c82974c19111193afa3c077091935ace8acebd6163d3"
+}
