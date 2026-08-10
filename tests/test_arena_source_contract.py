@@ -283,3 +283,46 @@ def test_spawn_cfg_addon_never_duplicates_what_arena_already_passes():
     assert not violations, "spawn_cfg_addon collisions:\n  " + "\n  ".join(violations)
     # BASE is static: no rigid bodies, so contact sensors cannot attach at all.
     assert "activate_contact_sensors" not in module._spawn_cfg_addon("BASE", {})
+
+
+def test_the_robot_scene_key_matches_the_embodiment_scene_cfg():
+    """embodiment.name is not a scene key.
+
+    DroidSceneCfg declares the articulation as the attribute ``robot``. The
+    embodiment's own ``name`` is ``droid_abs_joint_pos``, which the scene has
+    never heard of. rt20 composed the whole scene, bound both door joints, and
+    then died looking the arm up by the wrong name - a fact already read out of
+    this same file two commits earlier and not applied.
+    """
+
+    root = _arena_source()
+    droid = (root / "isaaclab_arena/embodiments/droid/droid.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(droid)
+
+    scene_cfg_attributes: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name.endswith("SceneCfg"):
+            scene_cfg_attributes |= {
+                item.target.id for item in node.body if isinstance(item, ast.AnnAssign)
+            }
+    assert scene_cfg_attributes, "no SceneCfg attributes found for the embodiment"
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("scene_worker_key", WORKER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.ROBOT_SCENE_KEY in scene_cfg_attributes, (
+        f"worker looks up {module.ROBOT_SCENE_KEY!r}; the embodiment's scene cfg "
+        f"declares {sorted(scene_cfg_attributes)}"
+    )
+    # Narrowly the embodiment: an Object's own name IS its scene key, because
+    # Arena derives both from it (prim_path = "{ENV_REGEX_NS}/" + self.name).
+    # Banning every .name lookup would flag scene[task_object.name], which is
+    # correct.
+    assert "scene[embodiment.name]" not in WORKER.read_text(encoding="utf-8"), (
+        "the embodiment's name is not a scene key"
+    )

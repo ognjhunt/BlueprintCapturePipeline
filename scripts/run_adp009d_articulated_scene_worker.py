@@ -85,6 +85,10 @@ CANDIDATE_POLICY_QUERIED = False
 CAMERA_WIDTH = 320
 CAMERA_HEIGHT = 180
 ARENA_ENVIRONMENT_NAME = "Blueprint-ADP009D-Articulated-Scene-v0"
+# The scene key for the arm. Declared by DroidSceneCfg as the attribute
+# "robot"; the prim it spawns is "{ENV_REGEX_NS}/Robot". The two differ in
+# case and neither is embodiment.name.
+ROBOT_SCENE_KEY = "robot"
 
 
 def _sha256(path: Path) -> str:
@@ -614,7 +618,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 **readers,
             )
 
-        robot = scene[embodiment.name] if hasattr(embodiment, "name") else scene["robot"]
+        # DroidSceneCfg declares the articulation as the attribute "robot";
+        # embodiment.name is "droid_abs_joint_pos", which is the embodiment's
+        # own identifier and not a scene key. I read this out of the source
+        # while chasing the prim-path case bug, wrote it down, and left the
+        # code alone - so rt20 spent a launch on a fact already in hand.
+        robot = scene[ROBOT_SCENE_KEY]
 
         def _to_torch(value):
             return value.detach() if hasattr(value, "detach") else torch.as_tensor(value)
