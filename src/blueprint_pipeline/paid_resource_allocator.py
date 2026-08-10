@@ -967,6 +967,45 @@ def _run_reconstruction_gpu_canary(
 
 
 
+
+def _require_launch_disk_headroom(args: Any) -> dict[str, Any] | None:
+    """Refuse before the create call if this run cannot fit on disk.
+
+    Twice this session the disk filled partway through a run. Both times the
+    instance already existed, so the cost was an orphan billing while the
+    harness lay dead - unable even to write the record that would have flagged
+    it. The check itself is free; the failure it prevents is not.
+
+    Sized from the inputs actually being staged plus a margin for what the run
+    writes afterwards, because a launch that dies composing its own receipt is
+    the same failure with extra steps.
+    """
+
+    from .launch_disk_headroom import require_launch_disk_headroom
+
+    job_dir = getattr(args, "adp_job_dir", None)
+    if not job_dir:
+        return None
+    sources = [
+        Path(str(value))
+        for value in (
+            getattr(args, "adp009d_approved_can", None),
+            getattr(args, "adp009d_sage_collision", None),
+            getattr(args, "adp009d_harness_manifest", None),
+            *(getattr(args, "adp009d_extra_native", None) or ()),
+        )
+        if value
+    ]
+    staged = sum(
+        source.stat().st_size for source in sources if source.is_file()
+    )
+    # The bundle holds the inputs plus a zip of them, so budget for both.
+    return require_launch_disk_headroom(
+        path=Path(str(job_dir)).expanduser().parent,
+        required_bytes=staged * 2,
+    )
+
+
 def _reap_finished_bundle(args: Any) -> dict[str, Any] | None:
     """Reap the finished run's provider bundle, if it is safe to.
 
@@ -2999,6 +3038,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
+                # Before anything is created on a provider. Twice this session
+                # the disk filled partway through a run and killed a harness
+                # that had already made an instance, so the cost was an orphan
+                # billing rather than a launch that did not happen. Blocking
+                # here is free.
+                try:
+                    _require_launch_disk_headroom(args)
+                except Exception as exc:  # noqa: BLE001
+                    result = {
+                        "status": "blocked",
+                        "blockers": sorted(
+                            getattr(exc, "errors", None) or [f"{type(exc).__name__}"]
+                        ),
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
                 result = run_adp009d_native_microcheck_vast(
                     job_dir=args.adp_job_dir,
                     prepared_bundle=prepared_bundle,
