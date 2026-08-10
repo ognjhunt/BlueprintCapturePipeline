@@ -12,6 +12,7 @@ from blueprint_pipeline.adp009d_droid_observation import (
 )
 from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     CAMERA_VIEW_BINDING,
+    DEFAULT_CAMERA_SCENE_NAMES,
     FINGER_BODIES,
     GRIPPER_PHYSICAL_FULL_OPENING_M,
     IsaacEpisodeAdapter,
@@ -241,14 +242,15 @@ class _Scene(dict):
 
 
 class _Env:
-    def __init__(self, channels=4):
+    def __init__(self, channels=4, camera_scene_names=None):
         self.reset_calls: list[int] = []
         self.stepped: list[list[float]] = []
+        names = dict(camera_scene_names or DEFAULT_CAMERA_SCENE_NAMES)
         scene = _Scene(
             {
-                "external_camera": _Camera(channels),
-                "wrist_camera": _Camera(channels),
-                "external_camera_2": _Camera(channels),
+                names["external"]: _Camera(channels),
+                names["wrist"]: _Camera(channels),
+                names["overview"]: _Camera(channels),
             }
         )
         self.unwrapped = type("U", (), {"scene": scene, "device": "cpu"})()
@@ -313,6 +315,75 @@ def test_policy_inputs_carry_both_views_as_uint8_rgb() -> None:
         "wrist",
         "overview",
     }
+
+
+@pytest.mark.parametrize(
+    "camera_scene_names",
+    (
+        DEFAULT_CAMERA_SCENE_NAMES,
+        {
+            "external": "arena_task_external_sensor",
+            "wrist": "panda_hand_sensor",
+            "overview": "review_only_room_sensor",
+        },
+    ),
+)
+def test_camera_roles_bind_original_and_task_neutral_arena_scene_names(
+    camera_scene_names: dict[str, str],
+) -> None:
+    env = _Env(camera_scene_names=camera_scene_names)
+    adapter = IsaacEpisodeAdapter(
+        env=env,
+        robot=_Robot(),
+        rigid_task_object=_Can(),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+        camera_scene_names=camera_scene_names,
+        simulation_step_seconds=1.0 / 15.0,
+    )
+
+    assert set(adapter.read_policy_inputs()) >= {
+        DROID_EXTERIOR_VIEW_1,
+        DROID_WRIST_VIEW,
+    }
+    assert set(adapter.read_evaluation_camera_inputs()) == {
+        "external",
+        "wrist",
+        "overview",
+    }
+    metadata = adapter.read_control_observation_metadata()
+    assert set(metadata["calibrations"]) == {"external", "wrist", "overview"}
+
+
+@pytest.mark.parametrize(
+    "camera_scene_names",
+    (
+        {"external": "one", "wrist": "two"},
+        {"external": "one", "wrist": "one", "overview": "three"},
+        {"external": "one", "wrist": "two", "overview": ""},
+    ),
+)
+def test_camera_role_binding_fails_closed_before_scene_access(
+    camera_scene_names: dict[str, str],
+) -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_camera_scene_names_invalid",
+    ):
+        IsaacEpisodeAdapter(
+            env=_Env(),
+            robot=_Robot(),
+            rigid_task_object=_Can(),
+            action_dim=8,
+            reset_seed=20260806,
+            to_torch=_to_torch,
+            gripper_closed_width_m=0.0,
+            gripper_open_width_m=0.06,
+            camera_scene_names=camera_scene_names,
+        )
 
 
 def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -> None:

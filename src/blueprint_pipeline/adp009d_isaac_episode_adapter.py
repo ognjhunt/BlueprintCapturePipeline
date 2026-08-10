@@ -55,6 +55,11 @@ EVALUATION_CAMERA_BINDING = {
     "wrist_camera": "wrist",
     **REVIEW_CAMERA_BINDING,
 }
+DEFAULT_CAMERA_SCENE_NAMES = {
+    "external": "external_camera",
+    "wrist": "wrist_camera",
+    "overview": "external_camera_2",
+}
 # The two bodies whose separation is the gripper width, matching the
 # convention probe so both read the same physical quantity.
 FINGER_BODIES = ("left_inner_finger", "right_inner_finger")
@@ -295,6 +300,7 @@ class IsaacEpisodeAdapter:
         ]
         | None = None,
         task_sample_callback: Callable[[], Mapping[str, Any]] | None = None,
+        camera_scene_names: Mapping[str, str] | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -316,6 +322,11 @@ class IsaacEpisodeAdapter:
         self._scripted_pose_action_callback = scripted_pose_action_callback
         self._camera_pose_callback = camera_pose_callback
         self._task_sample_callback = task_sample_callback
+        self._camera_scene_names = dict(
+            DEFAULT_CAMERA_SCENE_NAMES
+            if camera_scene_names is None
+            else camera_scene_names
+        )
         self._control_step_index = 0
         if self._rigid_object is None and self._task_sample_callback is None:
             raise IsaacEpisodeAdapterError(
@@ -328,6 +339,19 @@ class IsaacEpisodeAdapter:
         ):
             raise IsaacEpisodeAdapterError(
                 ["isaac_episode_gripper_width_calibration_invalid"]
+            )
+        required_camera_roles = set(DEFAULT_CAMERA_SCENE_NAMES)
+        if (
+            set(self._camera_scene_names) != required_camera_roles
+            or any(
+                not isinstance(scene_name, str) or not scene_name.strip()
+                for scene_name in self._camera_scene_names.values()
+            )
+            or len(set(self._camera_scene_names.values()))
+            != len(self._camera_scene_names)
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_camera_scene_names_invalid"]
             )
 
         body_names = list(robot.data.body_names)
@@ -363,7 +387,11 @@ class IsaacEpisodeAdapter:
 
     def read_policy_inputs(self) -> dict[str, Any]:
         inputs: dict[str, Any] = {}
-        for camera_name, view in CAMERA_VIEW_BINDING.items():
+        for role, view in (
+            ("external", DROID_EXTERIOR_VIEW_1),
+            ("wrist", DROID_WRIST_VIEW),
+        ):
+            camera_name = self._camera_scene_names[role]
             camera = self._env.unwrapped.scene[camera_name]
             output = camera.data.output
             if "rgb" not in output:
@@ -379,7 +407,7 @@ class IsaacEpisodeAdapter:
         """Lossless policy views plus the review-only fixed overview stream."""
 
         images: dict[str, Any] = {}
-        for camera_name, camera_id in EVALUATION_CAMERA_BINDING.items():
+        for camera_id, camera_name in self._camera_scene_names.items():
             try:
                 camera = self._env.unwrapped.scene[camera_name]
             except (KeyError, TypeError) as exc:
@@ -474,7 +502,7 @@ class IsaacEpisodeAdapter:
         calibrations: dict[str, Any] = {}
         source_devices: dict[str, str] = {}
         synchronizations: dict[str, dict[str, Any]] = {}
-        for camera_name, camera_id in EVALUATION_CAMERA_BINDING.items():
+        for camera_id, camera_name in self._camera_scene_names.items():
             camera = self._env.unwrapped.scene[camera_name]
             output = camera.data.output
             if "rgb" not in output:
@@ -739,6 +767,7 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
 __all__ = [
     "ADAPTER_SCHEMA_VERSION",
     "CAMERA_VIEW_BINDING",
+    "DEFAULT_CAMERA_SCENE_NAMES",
     "END_EFFECTOR_BODY_CANDIDATES",
     "FINGER_BODIES",
     "GRIPPER_PHYSICAL_FULL_OPENING_M",
