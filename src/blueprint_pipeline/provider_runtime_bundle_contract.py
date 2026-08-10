@@ -18,6 +18,13 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_simpler",
     "adp_arena",
     "adp009d_isaac",
+    # Same Arena transport and the same runner obligations as adp009d_isaac,
+    # but a payload that ships an articulated scene instead of the sealed can
+    # and its SAGE overlay. Kept as a separate kind rather than loosening the
+    # rigid one: that overlay is produced by an inspector which exists to
+    # identify one specific scene, and exempting the rigid kind from its own
+    # required entry would weaken a gate that reaches paid hardware.
+    "adp009d_articulated_arena",
     "adp009d_ovrtx",
     "adp009d_aura_native",
     "adp_content_agents",
@@ -164,6 +171,27 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp009d_isaac_runtime_contract"
+    elif provider_bundle_kind == "adp009d_articulated_arena":
+        # Identical obligations to the rigid Arena kind. What differs between
+        # them is which files must be in the zip, which the provider adapter
+        # owns - not what the runner must be able to do.
+        entrypoint_valid = (
+            "adp009d_worker_failed_without_runtime_result" in entrypoint_text
+            and "adp009d_native_microcheck.json" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp009d_native_microcheck.json",
+                "ARENA_REVISION",
+                "ISAAC_LAB_REVISION",
+                "provider_zero_required_after_return",
+                "candidate_policy_queried",
+            )
+        )
+        runner_blocker = (
+            "provider_runner_missing_adp009d_articulated_arena_runtime_contract"
+        )
     elif provider_bundle_kind == "adp009d_ovrtx":
         entrypoint_valid = (
             "adp009d_ovrtx_runner_failed_without_runtime_result" in entrypoint_text
