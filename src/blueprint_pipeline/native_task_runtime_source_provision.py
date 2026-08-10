@@ -216,6 +216,16 @@ def provision_native_task_runtime_sources(
     else:
         runtime_python = sys.executable
         runtime_python_source = "current_interpreter_fallback"
+    if runtime_python_source == "simulator_python_launcher":
+        # Isaac's wrapper exports the simulator's bundled Python paths (including
+        # NumPy).  ``-I`` discards those required exports, so use Python's safe-path
+        # mode: it prevents the working directory from shadowing imports while
+        # retaining the wrapper-authored environment.
+        python_probe_flag = "-P"
+        python_probe_mode = "simulator_wrapper_safe_path"
+    else:
+        python_probe_flag = "-I"
+        python_probe_mode = "isolated_interpreter"
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "blocked",
@@ -225,6 +235,8 @@ def provision_native_task_runtime_sources(
         "extraction_dir": str(destination),
         "python_executable": runtime_python,
         "python_executable_source": runtime_python_source,
+        "python_probe_flag": python_probe_flag,
+        "python_probe_mode": python_probe_mode,
         "install_roots": [],
         "installation_method": "verified_source_roots_pth",
         "path_file": None,
@@ -335,7 +347,7 @@ def provision_native_task_runtime_sources(
         )
         command = [
             runtime_python,
-            "-I",
+            python_probe_flag,
             "-c",
             package_probe,
         ]
@@ -371,7 +383,7 @@ def provision_native_task_runtime_sources(
         )
         import_command = [
             runtime_python,
-            "-I",
+            python_probe_flag,
             "-c",
             import_probe,
         ]

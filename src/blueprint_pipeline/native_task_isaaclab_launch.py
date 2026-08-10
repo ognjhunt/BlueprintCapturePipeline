@@ -87,6 +87,9 @@ def verify_native_task_isaaclab_launch_contract(
         provisioning.get("python_executable") != "/isaac-sim/python.sh"
         or provisioning.get("python_executable_source")
         != "simulator_python_launcher"
+        or provisioning.get("python_probe_flag") != "-P"
+        or provisioning.get("python_probe_mode")
+        != "simulator_wrapper_safe_path"
     ):
         errors.append("native_task_isaaclab_runtime_launcher_invalid")
 

@@ -58,6 +58,8 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
         "status": "completed",
         "python_executable": "/isaac-sim/python.sh",
         "python_executable_source": "simulator_python_launcher",
+        "python_probe_flag": "-P",
+        "python_probe_mode": "simulator_wrapper_safe_path",
         "extraction_dir": str(extraction),
         "runtime_experience": {
             "relative_path": RUNTIME_EXPERIENCE_RELATIVE_PATH,
@@ -186,6 +188,25 @@ def test_underlying_kit_python_binary_is_rejected_before_launch(
     value = json.loads(receipt_path.read_text(encoding="utf-8"))
     value["python_executable"] = "/isaac-sim/kit/python/bin/python3"
     value["python_executable_source"] = "current_interpreter_fallback"
+    value["python_probe_flag"] = "-I"
+    value["python_probe_mode"] = "isolated_interpreter"
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    receipt_path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_runtime_launcher_invalid",
+    ):
+        verify_native_task_isaaclab_launch_contract(receipt_path)
+
+
+def test_simulator_wrapper_with_isolated_flag_is_rejected_before_launch(
+    tmp_path: Path,
+) -> None:
+    receipt_path = _receipt(tmp_path)
+    value = json.loads(receipt_path.read_text(encoding="utf-8"))
+    value["python_probe_flag"] = "-I"
+    value["python_probe_mode"] = "isolated_interpreter"
     value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
     receipt_path.write_text(json.dumps(value), encoding="utf-8")
 

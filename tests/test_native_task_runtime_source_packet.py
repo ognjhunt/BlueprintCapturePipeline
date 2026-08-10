@@ -448,8 +448,60 @@ def test_provisioner_uses_simulator_python_wrapper_for_all_runtime_probes(
     assert result["status"] == "completed"
     assert result["python_executable"] == str(launcher)
     assert result["python_executable_source"] == "simulator_python_launcher"
+    assert result["python_probe_flag"] == "-P"
+    assert result["python_probe_mode"] == "simulator_wrapper_safe_path"
     assert len(observed) == 2
     assert all(command[0] == str(launcher) for command in observed)
+    assert all(command[1:3] == ["-P", "-c"] for command in observed)
+
+
+def test_explicit_interpreter_runtime_probes_remain_isolated(tmp_path: Path) -> None:
+    receipt = _packet(tmp_path)
+    simulator = tmp_path / "isaac-sim"
+    simulator.mkdir()
+    observed: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        observed.append(command)
+        if "import_module" in command[-1]:
+            stdout = json.dumps(
+                [
+                    {
+                        "module": "warp",
+                        "available": True,
+                        "expected_version": "1.12.0",
+                        "observed_version": "1.12.0",
+                        "version_matches": True,
+                    }
+                ]
+            )
+        else:
+            stdout = "found"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    result = provision_native_task_runtime_sources(
+        source_receipt_path=tmp_path
+        / "packet/native_task_runtime_source_packet.v1.json",
+        source_packet_path=receipt["packet_path"],
+        extraction_dir=tmp_path / "explicit-probe",
+        output_path=tmp_path / "explicit-probe.json",
+        simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
+        python_executable="/verified/python",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=(
+            "manylinux_2_28_x86_64",
+            "manylinux_2_26_x86_64",
+            "manylinux_2_17_x86_64",
+            "manylinux2014_x86_64",
+        ),
+        run_command=fake_run,
+    )
+
+    assert result["status"] == "completed"
+    assert result["python_probe_flag"] == "-I"
+    assert result["python_probe_mode"] == "isolated_interpreter"
+    assert all(command[1:3] == ["-I", "-c"] for command in observed)
 
 
 def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe(
