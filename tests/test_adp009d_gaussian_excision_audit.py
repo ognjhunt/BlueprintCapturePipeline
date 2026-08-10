@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import cv2
 import numpy as np
+import pytest
 
 from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
@@ -28,6 +29,8 @@ from blueprint_pipeline.public_scene_gaussian_excision_audit import (
     materialize_excision_ownership,
     materialize_excision_ownership_replay,
     select_maximally_diverse_holdout_pair,
+    _normalized_camera_row,
+    _verified_render_input_packet,
 )
 
 
@@ -100,6 +103,90 @@ def test_diverse_holdout_split_is_outcome_blind_and_deterministic() -> None:
     assert first["heldout_camera_ids"] == ["far_left", "far_right"]
     assert len(first["calibration_camera_ids"]) == 6
     assert first["outcome_fields_accessed"] is False
+
+
+def test_provider_frame_camera_normalizes_at_shared_excision_seam() -> None:
+    camera = _camera("front", 0.0, 0.0)
+    provider_row = dict(camera)
+    provider_row["T_world_camera_provider_frame"] = provider_row.pop(
+        "T_world_camera_opencv"
+    )
+
+    normalized = _normalized_camera_row(provider_row)
+
+    assert "T_world_camera_provider_frame" not in normalized
+    assert normalized["T_world_camera_opencv"] == camera["T_world_camera_opencv"]
+
+
+def test_excision_freeze_opens_render_packet_and_rejects_mask_tamper(
+    tmp_path: Path,
+) -> None:
+    cameras = [_camera("front", 0.0, 0.0)]
+    camera_path = tmp_path / "cameras.json"
+    camera_path.write_text(json.dumps(cameras), encoding="utf-8")
+    image_root = tmp_path / "images"
+    mask_root = tmp_path / "masks"
+    image_root.mkdir()
+    mask_root.mkdir()
+    image = np.full((48, 64, 3), 64, dtype=np.uint8)
+    mask = np.full((48, 64), 255, dtype=np.uint8)
+    assert cv2.imwrite(str(image_root / "front.png"), image)
+    assert cv2.imwrite(str(mask_root / "front.png"), mask)
+    scene = {
+        "publisher_scene_id": "840920",
+        "task_id": "task_a",
+        "target_instance_id": "165",
+        "mask_set_id": "mask_a",
+        "removal_id": "removal_a",
+    }
+    receipt = {
+        "schema_version": "public_scene_interiorgs_edit_input_receipt.v2",
+        "status": "render_derived_input_packet_materialized",
+        "request_digest": "sha256:" + "1" * 64,
+        "scene": scene,
+        "derived_artifacts": {
+            "cameras": {
+                "sha256": "sha256:"
+                + hashlib.sha256(camera_path.read_bytes()).hexdigest(),
+                "size_bytes": camera_path.stat().st_size,
+            },
+            "images": [_record(image_root / "front.png", image_root)],
+            "masks": [_record(mask_root / "front.png", mask_root)],
+        },
+        "renderer": {
+            "authorization_class": "method_input",
+            "purpose_bound": True,
+            "render_manifest_digests": {"images": "sha256:" + "2" * 64},
+        },
+        "proof_boundaries": {"gaussian_ownership_qualified": False},
+    }
+    receipt["derived_artifacts"]["images"][0]["camera_id"] = "front"
+    receipt["derived_artifacts"]["masks"][0]["camera_id"] = "front"
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    binding = _verified_render_input_packet(
+        receipt_path=receipt_path,
+        camera_path=camera_path,
+        image_root=image_root,
+        outer_mask_root=mask_root,
+        scene=scene,
+    )
+    assert binding["authorization_class"] == "method_input"
+    assert binding["gaussian_ownership_qualified_upstream"] is False
+
+    (mask_root / "front.png").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="masks_join_mismatch"):
+        _verified_render_input_packet(
+            receipt_path=receipt_path,
+            camera_path=camera_path,
+            image_root=image_root,
+            outer_mask_root=mask_root,
+            scene=scene,
+        )
 
 
 def test_contribution_geometry_and_neighborhood_create_exhaustive_three_way_labels() -> None:

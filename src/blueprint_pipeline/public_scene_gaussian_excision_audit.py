@@ -67,7 +67,10 @@ def _record(path: Path, root: Path | None = None) -> dict[str, Any]:
 
 
 def _camera_vector(camera: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
-    transform = np.asarray(camera.get("T_world_camera_opencv"), dtype=np.float64)
+    transform_value = camera.get("T_world_camera_opencv")
+    if transform_value is None:
+        transform_value = camera.get("T_world_camera_provider_frame")
+    transform = np.asarray(transform_value, dtype=np.float64)
     if transform.shape != (4, 4) or not np.isfinite(transform).all():
         raise GaussianExcisionAuditError(["excision_camera_transform_invalid"])
     if not np.allclose(transform[3], [0.0, 0.0, 0.0, 1.0], atol=1e-9, rtol=0.0):
@@ -77,6 +80,110 @@ def _camera_vector(camera: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
         raise GaussianExcisionAuditError(["excision_camera_rotation_invalid"])
     forward = rotation[:, 2]
     return transform[:3, 3], forward / np.linalg.norm(forward)
+
+
+def _normalized_camera_row(camera: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(camera)
+    provider_pose = row.pop("T_world_camera_provider_frame", None)
+    if row.get("T_world_camera_opencv") is None and provider_pose is not None:
+        row["T_world_camera_opencv"] = provider_pose
+    _camera_vector(row)
+    return row
+
+
+def _verified_render_input_packet(
+    *,
+    receipt_path: Path,
+    camera_path: Path,
+    image_root: Path,
+    outer_mask_root: Path,
+    scene: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GaussianExcisionAuditError(
+            ["excision_render_input_receipt_invalid"]
+        ) from exc
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema_version")
+        != "public_scene_interiorgs_edit_input_receipt.v2"
+        or receipt.get("status") != "render_derived_input_packet_materialized"
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+    ):
+        raise GaussianExcisionAuditError(
+            ["excision_render_input_receipt_invalid"]
+        )
+    receipt_scene = receipt.get("scene") or {}
+    identity_fields = (
+        "publisher_scene_id",
+        "task_id",
+        "target_instance_id",
+        "mask_set_id",
+        "removal_id",
+    )
+    if any(
+        scene.get(field) is not None
+        and str(scene.get(field)) != str(receipt_scene.get(field))
+        for field in identity_fields
+    ):
+        raise GaussianExcisionAuditError(
+            ["excision_render_input_scene_join_mismatch"]
+        )
+    derived = receipt.get("derived_artifacts") or {}
+    camera_record = derived.get("cameras") or {}
+    if (
+        camera_record.get("sha256") != _sha256(camera_path)
+        or camera_record.get("size_bytes") != camera_path.stat().st_size
+    ):
+        raise GaussianExcisionAuditError(
+            ["excision_render_input_camera_join_mismatch"]
+        )
+    for field, root in (("images", image_root), ("masks", outer_mask_root)):
+        rows = derived.get(field)
+        if not isinstance(rows, list) or not rows:
+            raise GaussianExcisionAuditError(
+                [f"excision_render_input_{field}_missing"]
+            )
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise GaussianExcisionAuditError(
+                    [f"excision_render_input_{field}_invalid"]
+                )
+            path = root / f"{row.get('camera_id')}.png"
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or row.get("sha256") != _sha256(path)
+                or row.get("size_bytes") != path.stat().st_size
+            ):
+                raise GaussianExcisionAuditError(
+                    [f"excision_render_input_{field}_join_mismatch"]
+                )
+    renderer = receipt.get("renderer") or {}
+    if (
+        renderer.get("authorization_class") != "method_input"
+        or renderer.get("purpose_bound") is not True
+        or not isinstance(renderer.get("render_manifest_digests"), Mapping)
+    ):
+        raise GaussianExcisionAuditError(
+            ["excision_render_input_authorization_invalid"]
+        )
+    return {
+        "receipt": _record(receipt_path),
+        "receipt_digest": receipt["receipt_digest"],
+        "request_digest": receipt.get("request_digest"),
+        "scene": {field: receipt_scene.get(field) for field in identity_fields},
+        "authorization_class": "method_input",
+        "render_manifest_digests": dict(renderer["render_manifest_digests"]),
+        "gaussian_ownership_qualified_upstream": bool(
+            (receipt.get("proof_boundaries") or {}).get(
+                "gaussian_ownership_qualified"
+            )
+        ),
+    }
 
 
 def select_maximally_diverse_holdout_pair(
@@ -322,6 +429,8 @@ def materialize_excision_audit_freeze(
     historical_baseline: Mapping[str, Any],
     output_root: str | Path,
     supersample: int = 2,
+    render_input_receipt_path: str | Path | None = None,
+    adp_item: str = "ADP-009B",
 ) -> dict[str, Any]:
     """Freeze independent mask zones and a digest-bound split before execution."""
 
@@ -346,9 +455,27 @@ def materialize_excision_audit_freeze(
         raise GaussianExcisionAuditError(["excision_camera_contract_invalid"]) from exc
     if not isinstance(cameras_value, list) or len(cameras_value) < 4:
         raise GaussianExcisionAuditError(["excision_camera_count_below_four"])
-    cameras = [dict(row) for row in cameras_value if isinstance(row, Mapping)]
+    cameras = [
+        _normalized_camera_row(row)
+        for row in cameras_value
+        if isinstance(row, Mapping)
+    ]
     if len(cameras) != len(cameras_value):
         raise GaussianExcisionAuditError(["excision_camera_contract_invalid"])
+    input_packet_binding = None
+    if render_input_receipt_path is not None:
+        receipt_path = Path(render_input_receipt_path).expanduser().resolve()
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            raise GaussianExcisionAuditError(
+                ["excision_render_input_receipt_missing"]
+            )
+        input_packet_binding = _verified_render_input_packet(
+            receipt_path=receipt_path,
+            camera_path=camera_path,
+            image_root=image_root,
+            outer_mask_root=outer_root,
+            scene=scene,
+        )
 
     splat = read_standard_3dgs_ply(source_path)
     world, faces, stage_info = _load_target_mesh(collision_path, target_collision_prim_path)
@@ -443,7 +570,7 @@ def materialize_excision_audit_freeze(
     freeze: dict[str, Any] = {
         "schema_version": FREEZE_SCHEMA,
         "program_id": "arm-decision-proof-v1",
-        "adp_item": "ADP-009B",
+        "adp_item": str(adp_item),
         "status": "frozen_before_excision_execution",
         "scene": dict(scene),
         "source_standard_splat": _record(source_path),
@@ -451,6 +578,7 @@ def materialize_excision_audit_freeze(
         "target_collision_prim_path": target_collision_prim_path,
         "registered_frame": registered_frame,
         "camera_contract": _record(camera_path),
+        "render_input_packet": input_packet_binding,
         "source_images": image_rows,
         "masks": mask_rows,
         "camera_split": split,
