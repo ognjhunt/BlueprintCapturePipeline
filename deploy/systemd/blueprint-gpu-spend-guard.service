@@ -1,8 +1,8 @@
 [Unit]
 Description=Blueprint GPU spend guard and orphan reaper
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target blueprint-provider-billing-reconciler.service
+After=network-online.target blueprint-provider-billing-reconciler.service
 
 [Service]
 User=blueprint
