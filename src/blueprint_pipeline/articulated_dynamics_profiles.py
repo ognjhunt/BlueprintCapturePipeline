@@ -56,6 +56,36 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         "breakaway_angular_width_degrees": [3.0, 8.0],
         "sustained_torque_n_m": [0.4, 2.1],
         "lever_arm_m": [0.42, 0.70],
+        # Contact properties, separate because they come from a different
+        # place: the force survey measured how hard doors are to pull, not what
+        # their panels are made of. Attributing these to it would be a
+        # misattribution, so they carry their own source line.
+        "material_bands": {
+            "measurement_source": (
+                "Engineering-admissible bands for household appliance shell "
+                "materials - painted and stainless sheet steel, ABS and "
+                "polystyrene liners, tempered glass shelving, and closed-cell "
+                "gasket rubber - taken from standard dry-contact coefficient "
+                "tables and appliance mass ratings rather than from an "
+                "instrumented capture of this object class."
+            ),
+            "band_basis": "material_class_envelope_not_per_asset_measurement",
+            # Steel on steel dry runs about 0.4-0.6, filled ABS about 0.3-0.5,
+            # and gasket rubber up to about 0.9. The envelope spans the mix.
+            "dynamic_friction_range": [0.25, 0.90],
+            # Static exceeds dynamic for every pairing in that set.
+            "static_friction_range": [0.30, 1.00],
+            # Painted steel, plastic liner and glass against rigid surfaces sit
+            # low; a gasket is damped, not elastic. Nothing on an appliance
+            # rebounds like rubber ball stock, so the ceiling is well under it.
+            "restitution_range": [0.0, 0.50],
+            # A door leaf or shelf, not the cabinet: full-size doors run about
+            # 8-20 kg with liner, gasket and any in-door dispenser.
+            "link_mass_range_kg": [3.0, 45.0],
+            # Whole unit: freestanding full-size refrigerators are rated about
+            # 70-140 kg empty.
+            "assembly_mass_range_kg": [55.0, 160.0],
+        },
         "notes": (
             "Mainstream freestanding units self-close gently from about halfway "
             "on installed backward tilt; cam-hinged built-ins hold open past 90 "

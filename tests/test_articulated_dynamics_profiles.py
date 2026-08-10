@@ -124,3 +124,49 @@ def test_a_miss_states_what_a_new_profile_has_to_supply() -> None:
     for field in ("breakaway_torque_n_m", "sustained_torque_n_m", "lever_arm_m"):
         assert field in joined
     assert "measurement_source" in joined
+
+
+def test_profile_carries_material_bands_for_contact_properties():
+    """Friction, restitution and mass are class properties too.
+
+    Without these the physics contract's ranges get chosen per asset, which
+    means they get chosen to fit the asset - a receipt that says the values are
+    admissible because they are the values present.
+    """
+
+    profile = resolve_dynamics_profile("household_refrigerator_door")
+    materials = profile["material_bands"]
+
+    for field in (
+        "dynamic_friction_range",
+        "static_friction_range",
+        "restitution_range",
+        "link_mass_range_kg",
+        "assembly_mass_range_kg",
+    ):
+        low, high = materials[field]
+        assert low < high, field
+        assert low >= 0.0, field
+
+    assert materials["measurement_source"]
+    # These are not from the force survey - saying so would misattribute them.
+    assert materials["measurement_source"] != profile["measurement_source"]
+
+
+def test_material_bands_reject_a_superball_restitution():
+    """An appliance panel does not bounce; the band has to say so."""
+
+    materials = resolve_dynamics_profile("household_refrigerator_door")[
+        "material_bands"
+    ]
+
+    assert materials["restitution_range"][1] < 0.8
+
+
+def test_material_bands_are_copied_not_shared():
+    first = resolve_dynamics_profile("household_refrigerator_door")
+    first["material_bands"]["restitution_range"][0] = 99.0
+
+    second = resolve_dynamics_profile("household_refrigerator_door")
+
+    assert second["material_bands"]["restitution_range"][0] != 99.0
