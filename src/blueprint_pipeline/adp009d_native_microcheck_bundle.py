@@ -773,6 +773,7 @@ def build_native_microcheck_bundle(
     worker_source: str | Path | None = None,
     runtime_module_source: str | Path | None = None,
     extra_native_paths: Sequence[str | Path] = (),
+    build_task_collision_derivative: bool = True,
 ) -> dict[str, Any]:
     """Compile a deterministic bundle from materialized, digest-verified bytes.
 
@@ -800,12 +801,19 @@ def build_native_microcheck_bundle(
     asset_rows = [
         _copy_bound_asset(sources[name], assets / name, bindings[name]) for name in sorted(bindings)
     ]
+    # The derivative is a proxy carved out of the SAGE scene by finding two
+    # named collider prims and everything sharing their region of interest, so
+    # a scene that is not that scene cannot produce one. A worker that never
+    # reads it should not be required to have it, and skipping is more honest
+    # than passing a different scene off as the one those prim names belong to.
+    task_collision = None
     task_collision_path = assets / TASK_COLLISION_DERIVATIVE_FILENAME
-    task_collision = _build_sage_task_collision_derivative(
-        sources["sage_collision.usd"],
-        task_collision_path,
-        source_sha256=bindings["sage_collision.usd"],
-    )
+    if build_task_collision_derivative:
+        task_collision = _build_sage_task_collision_derivative(
+            sources["sage_collision.usd"],
+            task_collision_path,
+            source_sha256=bindings["sage_collision.usd"],
+        )
     # Build the derivative before the independent whole-source audit. Opening the
     # million-face source twice in the opposite order leaves enough USD allocator
     # state resident to exhaust memory while the USDA layer is serialized on the
@@ -832,25 +840,26 @@ def build_native_microcheck_bundle(
         }
     )
     task_collision_manifest_path = assets / TASK_COLLISION_MANIFEST_FILENAME
-    write_json(task_collision_manifest_path, task_collision)
-    asset_rows.extend(
-        [
-            {
-                "filename": task_collision_path.name,
-                "sha256": task_collision["derivative_sha256"],
-                "size_bytes": task_collision_path.stat().st_size,
-                "derived_from": "sage_collision.usd",
-                "sealed_source_mutated": False,
-                "claim_ceiling": task_collision["claim_ceiling"],
-            },
-            {
-                "filename": task_collision_manifest_path.name,
-                "sha256": _sha256(task_collision_manifest_path),
-                "size_bytes": task_collision_manifest_path.stat().st_size,
-                "binds_derivative": task_collision_path.name,
-            },
-        ]
-    )
+    if task_collision is not None:
+        write_json(task_collision_manifest_path, task_collision)
+        asset_rows.extend(
+            [
+                {
+                    "filename": task_collision_path.name,
+                    "sha256": task_collision["derivative_sha256"],
+                    "size_bytes": task_collision_path.stat().st_size,
+                    "derived_from": "sage_collision.usd",
+                    "sealed_source_mutated": False,
+                    "claim_ceiling": task_collision["claim_ceiling"],
+                },
+                {
+                    "filename": task_collision_manifest_path.name,
+                    "sha256": _sha256(task_collision_manifest_path),
+                    "size_bytes": task_collision_manifest_path.stat().st_size,
+                    "binds_derivative": task_collision_path.name,
+                },
+            ]
+        )
     can_adapter_path = assets / APPROVED_CAN_ADAPTER_FILENAME
     can_adapter_path.write_text(_approved_can_physx_sdf_adapter_text(), encoding="utf-8")
     asset_rows.append(
@@ -1080,6 +1089,7 @@ def build_native_microcheck_bundle(
         "worker_source_sha256": _sha256(worker_path),
         "runtime_module_sha256": _sha256(runtime_module_path),
         "worker_overridden": worker_source is not None,
+        "task_collision_derivative": task_collision,
         "extra_native_files": native_payload,
         "extra_native_file_count": len(native_payload),
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",

@@ -2810,3 +2810,56 @@ def test_no_payload_leaves_the_rigid_bundle_exactly_as_it_was(tmp_path: Path) ->
     )
 
     assert plain["bundle_sha256"] == empty["bundle_sha256"]
+
+
+def test_the_task_collision_derivative_can_be_skipped(tmp_path: Path) -> None:
+    """It is a proxy carved out of the SAGE scene around the can.
+
+    It is built by finding two named collider prims and everything sharing
+    their region of interest, so a scene that is not that scene cannot produce
+    it - and a worker that never reads it should not be required to. Skipping
+    is more honest than passing a different scene off as the one those prim
+    names belong to.
+    """
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    worker = tmp_path / "w.py"
+    worker.write_text("PAYLOAD = 1\n", encoding="utf-8")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="1" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+        worker_source=worker,
+        build_task_collision_derivative=False,
+    )
+
+    assert receipt["task_collision_derivative"] is None
+
+    import zipfile
+
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    assert not any(name.endswith("task_collision.usda") for name in names)
+
+
+def test_the_derivative_is_still_built_by_default(tmp_path: Path) -> None:
+    """The rigid lane depends on it; skipping must be opt-in."""
+
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "job",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="2" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    assert receipt["task_collision_derivative"] is not None
