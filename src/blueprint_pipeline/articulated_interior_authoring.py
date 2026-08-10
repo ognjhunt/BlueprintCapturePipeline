@@ -33,6 +33,9 @@ from .decision_evidence_contracts import canonical_digest
 INTERIOR_AUTHORING_SCHEMA_VERSION = "articulated_interior_authoring.v1"
 PROVENANCE_ATTRIBUTE = "blueprint:articulatedReplacement:provenance"
 GENERATED_VALUE = "generated_candidate_geometry"
+# Gap left between the back of the door-bin sweep and the shelf front. Small,
+# because cavity depth is scarce, but far larger than any solver tolerance.
+DOOR_BIN_SHELF_CLEARANCE_M = 0.005
 MINIMUM_SHELF_SPACING_M = 0.08
 
 
@@ -210,6 +213,26 @@ def author_articulated_interior(
     box(f"{scope}/liner_right", "liner_right", [x[1] - wall, x[1]], y, z)
     box(f"{scope}/liner_floor", "liner_floor", x, y, [z[0], z[0] + wall])
     box(f"{scope}/liner_ceiling", "liner_ceiling", x, y, [z[1] - wall, z[1]])
+    # A shelf must stop short of wherever the door bins swing. Reaching into
+    # that volume interpenetrates them at the closed pose, and PhysX resolves
+    # the overlap by pushing the door open: rt33 read the hinge at 0.619 rad
+    # on reset, 35.5 degrees, on a vertical axis gravity cannot move. Ten
+    # millimetres of shelf was enough. A real refrigerator sets its shelves
+    # back for the same reason.
+    shelf_front = inner[1][1] - shelf_inset_m
+    if door_bin_count and door_bin_y_interval_m is not None:
+        bin_interval = _interval(
+            door_bin_y_interval_m, "articulated_interior_door_bin_interval_invalid"
+        )
+        shelf_front = min(shelf_front, bin_interval[0] - DOOR_BIN_SHELF_CLEARANCE_M)
+        if shelf_front <= inner[1][0]:
+            raise ArticulatedInteriorAuthoringError(
+                [
+                    "articulated_interior_shelf_depth_exhausted_by_door_bins:"
+                    f"bin_front={bin_interval[0]:.4f}:cavity_back={inner[1][0]:.4f}"
+                ]
+            )
+
     for index in range(shelf_count):
         height = inner[2][0] + (index + 1) * (inner[2][1] - inner[2][0]) / (
             shelf_count + 1
@@ -218,7 +241,7 @@ def author_articulated_interior(
             f"{scope}/shelf_{index:02d}",
             "shelf",
             [inner[0][0] + shelf_inset_m, inner[0][1] - shelf_inset_m],
-            [inner[1][0], inner[1][1] - shelf_inset_m],
+            [inner[1][0], shelf_front],
             [height - shelf_t / 2.0, height + shelf_t / 2.0],
         )
 

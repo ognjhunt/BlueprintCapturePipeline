@@ -238,3 +238,64 @@ def test_door_bins_inboard_of_the_door_inner_face_are_accepted(
     assert len(bins) == 2
     assert receipt["door_bins"]["door_inner_face_m"] == pytest.approx(0.30)
     assert all(row["world_aabb_max_m"][1] <= 0.30 for row in bins)
+
+
+def test_shelves_stop_short_of_the_door_bin_sweep(tmp_path):
+    """A shelf that occupies the door-bin volume forces the door open.
+
+    rt33 reset the scene and read the hinge at 0.619 rad - 35.5 degrees, on a
+    vertical axis where gravity cannot swing it. The cause was 10 mm of
+    interpenetration between shelf_00 and door_bin_00 at the authored closed
+    pose: PhysX resolves the overlap by pushing them apart, and an unactuated
+    hinge simply gives way.
+
+    A real refrigerator sets its shelves back so the door bins swing clear.
+    """
+
+    receipt = _author(
+        tmp_path,
+        door_bin_count=2,
+        door_link_path="/Asset/upper_door",
+        door_bin_y_interval_m=[0.10, 0.17],
+    )
+
+    shelves = [p for p in receipt["parts"] if p["role"] == "shelf"]
+    bins = [p for p in receipt["parts"] if p["role"] == "door_bin"]
+    assert shelves and bins
+
+    bin_front = min(p["world_aabb_min_m"][1] for p in bins)
+    for shelf in shelves:
+        assert shelf["world_aabb_max_m"][1] <= bin_front, (
+            f"shelf reaches y={shelf['world_aabb_max_m'][1]} into the bin zone "
+            f"starting at y={bin_front}"
+        )
+
+
+def test_no_shelf_and_bin_pair_overlaps_in_three_axes(tmp_path):
+    """The condition PhysX actually reacts to, checked directly."""
+
+    receipt = _author(
+        tmp_path,
+        door_bin_count=2,
+        door_link_path="/Asset/upper_door",
+        door_bin_y_interval_m=[0.10, 0.17],
+    )
+
+    shelves = [p for p in receipt["parts"] if p["role"] == "shelf"]
+    bins = [p for p in receipt["parts"] if p["role"] == "door_bin"]
+
+    def overlaps(a, b):
+        return all(
+            min(a["world_aabb_max_m"][axis], b["world_aabb_max_m"][axis])
+            - max(a["world_aabb_min_m"][axis], b["world_aabb_min_m"][axis])
+            > 0.0
+            for axis in range(3)
+        )
+
+    clashes = [
+        (s["prim_path"], b["prim_path"])
+        for s in shelves
+        for b in bins
+        if overlaps(s, b)
+    ]
+    assert not clashes, f"shelf/bin interpenetration at closed: {clashes}"
