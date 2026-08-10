@@ -194,6 +194,16 @@ class _FakeCamera:
 class _FakeArticulation:
     def __init__(self, joint_names=None, body_names=None):
         self.data = _FakeArticulationData(joint_names, body_names)
+        self.written_joint_states = []
+
+    def write_joint_state_to_sim(self, positions, velocities, *_a, **_kw):
+        # The call rt35 proved was missing: env.reset does not restore an
+        # articulated task object's joints, so the worker must.
+        self.written_joint_states.append(
+            ([float(v) for v in positions[0]], [float(v) for v in velocities[0]])
+        )
+        self.data.joint_pos = positions
+        self.data.joint_vel = velocities
 
 
 class _FakeArenaEnvironment:
@@ -704,3 +714,31 @@ def test_the_app_launcher_is_told_to_enable_cameras(stubbed_arena, tmp_path):
 
     assert seen["headless"] is True
     assert seen["enable_cameras"] is True
+
+
+def test_the_reset_restores_the_twins_joints(stubbed_arena, tmp_path):
+    """env.reset leaves an articulated task object where it was.
+
+    rt35 recorded the door at 0.61929 rad before a reset and 0.61929 rad after
+    it, still moving at 0.031 rad/s. The rigid can lane never needed joints
+    restored, so nothing restored them, and the episode was scoring a door
+    nothing had put back.
+    """
+
+    runtime = _write_runtime(tmp_path)
+    output = tmp_path / "out" / "result.json"
+
+    _load_worker().main(
+        [
+            "--runtime-dir", str(runtime),
+            "--output-dir", str(output.parent),
+            "--spec", str(runtime / "adp009d_articulated_scene_spec.json"),
+            "--output", str(output),
+        ]
+    )
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    snapshots = result.get("reset_diagnostic") or []
+    assert snapshots, result.get("blockers")
+    labels = [s.get("label") for s in snapshots]
+    assert "after_adapter_reset" in labels, labels

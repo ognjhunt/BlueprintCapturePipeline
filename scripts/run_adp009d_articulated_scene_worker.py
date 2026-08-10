@@ -790,6 +790,35 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _phase(result, "observations_bound")
 
+        def _reset_scene() -> None:
+            """Reset the environment AND the twin's joints.
+
+            env.reset() restores the robot and any rigid task object. It does
+            not touch an articulated task object's joint state - the rigid can
+            lane never needed it to - so rt35 showed the door sitting at 0.619
+            rad both before and after a reset, identical to five decimals,
+            still moving at 0.031 rad/s. The episode was scoring a door that
+            nothing had ever put back.
+            """
+
+            env.reset(seed=int(spec.get("seed") or 20260810))
+            names = list(live.data.joint_names or [])
+            resets = task_spec_row.get("joint_reset_positions_rad") or {}
+            positions = torch.zeros(
+                (1, len(names)), device=env.unwrapped.device, dtype=torch.float32
+            )
+            for joint_name, value in resets.items():
+                if joint_name in names:
+                    positions[0, names.index(joint_name)] = float(value)
+            velocities = torch.zeros_like(positions)
+            writer = getattr(live, "write_joint_state_to_sim", None)
+            if writer is None:
+                raise RuntimeError(
+                    "articulated_scene_joint_state_write_unavailable:"
+                    f"{sorted(a for a in dir(live) if 'joint' in a)}"
+                )
+            writer(positions, velocities)
+
         adapter = IsaacEpisodeAdapter(
             env=env,
             robot=robot,
@@ -800,6 +829,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             gripper_closed_width_m=float(gripper["gripper_closed_width_m"]),
             gripper_open_width_m=float(gripper["gripper_open_width_m"]),
             simulation_step_seconds=1.0 / 120.0 * 8,
+            reset_callback=_reset_scene,
         )
         adapter_holder["adapter"] = adapter
 
