@@ -885,6 +885,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             def __init__(self, inner: Any) -> None:
                 self._inner = inner
                 self.seal_applications = 0
+                self.achieved_joint_trace: list[list[float]] = []
 
             def _apply_seal(self) -> None:
                 if seal_peak <= 0.0 or seal_width <= 0.0:
@@ -913,7 +914,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             def step(self, action):
                 self._apply_seal()
-                return self._inner.step(action)
+                outcome = self._inner.step(action)
+                # Achieved joints, recorded because rt43 proved the danger of
+                # assuming execution: a 0.0 mm-verified trajectory produced
+                # zero contact, and nothing in any receipt could say whether
+                # the arm had tracked it. Commanded is an intention; this is
+                # what happened.
+                try:
+                    achieved = _to_torch(robot.data.joint_pos)[0]
+                    self.achieved_joint_trace.append(
+                        [round(float(v), 4) for v in achieved][:9]
+                    )
+                except Exception:  # noqa: BLE001 - tracing must not fail a step
+                    pass
+                return outcome
 
             def __getattr__(self, name):
                 return getattr(self._inner, name)
@@ -936,6 +950,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result["control_pair"] = pair
         result["seal_applied"]["applications"] = sealed.seal_applications
+        result["achieved_joint_trace_tail"] = sealed.achieved_joint_trace[-40:]
+        result["achieved_joint_trace_length"] = len(sealed.achieved_joint_trace)
         result["controls_qualified"] = bool(
             pair.get("cell_admitted_for_policy_execution")
         )
