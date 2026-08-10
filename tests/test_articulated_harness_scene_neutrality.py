@@ -32,6 +32,29 @@ LANE_MODULES = (
     "agent_enrichment_acceptance.py",
     "replacement_colour_fidelity.py",
 )
+# The older paid lanes were each written against the 840313 can and audited
+# only after a different scene hit them. These are the modules whose job is
+# transport or task execution - they must stay object-agnostic. Registries that
+# deliberately record the 840313 asset's identity are not in this list.
+OLDER_LANE_MODULES = (
+    "adp_aura_interiorgs_vast.py",
+    "public_scene_aura_adapter.py",
+    "public_scene_aura_execution.py",
+    "adp_joint_agent_vast.py",
+    "joint_agent_articulation_review.py",
+    "joint_agent_execution_receipt.py",
+    "adp009d_policy_episode.py",
+    "adp009d_episode_batch.py",
+    "adp009d_isaac_episode_adapter.py",
+    "adp_episode_evidence_index.py",
+    "adp_isaac_lab_arena_vast.py",
+    "adp_isaac_lab_arena_request.py",
+    "arena_result_ingest.py",
+)
+# A task-object name in an execution seam is the defect that hid longest: the
+# Isaac adapter took an ``approved_can`` even after it had been generalized.
+OBJECT_NAMED_PARAMETERS = ("approved_can:", "the_can", "can_prim", "can_path")
+
 FORBIDDEN = (
     "840796",
     "840313",
@@ -91,6 +114,32 @@ def test_the_isaac_worker_names_no_scene_or_object() -> None:
     offenders = [token for token in FORBIDDEN if token in source]
 
     assert offenders == [], f"worker hardcodes {offenders}"
+
+
+@pytest.mark.parametrize("module", OLDER_LANE_MODULES)
+def test_older_lane_module_names_no_scene(module: str) -> None:
+    path = ROOT / "src/blueprint_pipeline" / module
+    assert path.is_file(), module
+    source = _executable_source(path).lower()
+
+    offenders = [
+        token
+        for token in ("840796", "840313", "840411", "canned_beverage", "ins160")
+        if token in source
+    ]
+
+    assert offenders == [], f"{module} hardcodes {offenders}"
+
+
+@pytest.mark.parametrize("module", OLDER_LANE_MODULES)
+def test_older_lane_execution_seams_take_no_can_shaped_parameter(module: str) -> None:
+    """An execution seam that names the object cannot serve another task."""
+
+    source = _executable_source(ROOT / "src/blueprint_pipeline" / module)
+
+    offenders = [token for token in OBJECT_NAMED_PARAMETERS if token in source]
+
+    assert offenders == [], f"{module} declares {offenders}"
 
 
 def test_no_lane_module_assumes_a_default_prim_name() -> None:

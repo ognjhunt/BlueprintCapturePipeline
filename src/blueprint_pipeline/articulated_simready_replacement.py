@@ -824,6 +824,50 @@ def validate_articulated_replacement_physics(
     for prim_path in sorted(untagged):
         errors.append(f"articulated_replacement_geometry_provenance_untagged:{prim_path}")
 
+    # A commanded joint with no drive accepts a position target and ignores it.
+    # Isaac proved that the expensive way on 840796: every other readback
+    # passed while the door stayed at 0.0 degrees through the whole sweep,
+    # because no drive existed to act on the target. NVIDIA's Joint Agent
+    # authors topology and not drives, so nothing upstream supplies one.
+    drive_review: dict[str, Any] = {"required": False, "present": None}
+    if contract.get("require_task_joint_drive"):
+        task_joint_path = str(contract.get("task_joint_prim_path") or "")
+        joint_prim = stage.GetPrimAtPath(task_joint_path) if task_joint_path else None
+        drive_review = {
+            "required": True,
+            "task_joint_prim_path": task_joint_path,
+            "present": False,
+            "stiffness": None,
+            "damping": None,
+        }
+        if joint_prim is None or not joint_prim.IsValid():
+            errors.append(
+                "articulated_replacement_task_joint_not_found_for_drive:"
+                f"{task_joint_path}"
+            )
+        else:
+            for name in ("angular", "linear", "rotX", "rotY", "rotZ"):
+                drive = UsdPhysics.DriveAPI.Get(joint_prim, name)
+                if not drive:
+                    continue
+                stiffness = drive.GetStiffnessAttr().Get()
+                damping = drive.GetDampingAttr().Get()
+                if float(stiffness or 0.0) > 0.0 or float(damping or 0.0) > 0.0:
+                    drive_review.update(
+                        {
+                            "present": True,
+                            "drive_name": name,
+                            "stiffness": float(stiffness or 0.0),
+                            "damping": float(damping or 0.0),
+                        }
+                    )
+                    break
+            if not drive_review["present"]:
+                errors.append(
+                    "articulated_replacement_task_joint_missing_drive:"
+                    f"{task_joint_path}"
+                )
+
     if errors:
         raise ArticulatedSimReadyReplacementError(errors)
 
@@ -835,6 +879,7 @@ def validate_articulated_replacement_physics(
         "link_review": link_rows,
         "collider_review": collider_rows,
         "handle_prim_paths": sorted(set(handle_paths)),
+        "task_joint_drive": drive_review,
         "generated_interior_prim_paths": sorted(
             prim_path
             for paths in generated_interior_by_link.values()

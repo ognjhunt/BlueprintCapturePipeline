@@ -866,3 +866,51 @@ def test_agent_enriched_asset_must_keep_blueprint_authored_link_masses(
     assert any(
         "link_mass_missing_or_out_of_range" in error for error in excinfo.value.errors
     )
+
+
+def test_a_commanded_joint_without_a_drive_is_rejected(tmp_path: Path) -> None:
+    """A position target on an undriven joint does nothing at all.
+
+    Isaac proved this the expensive way: every other readback passed - axis,
+    limits, locked joint, contact, reset, determinism - while the commanded
+    door stayed at 0.0 degrees through all twelve steps, because the joint
+    carried no DriveAPI. NVIDIA documents that the Joint Agent authors topology
+    and not drives, so nothing upstream would have supplied one.
+    """
+
+    asset = _apply_physics(_author_topology(tmp_path / "asset.usda"))
+    contract = dict(_physics_contract())
+    contract["require_task_joint_drive"] = True
+    contract["task_joint_prim_path"] = "/Asset/joints/upper_hinge"
+
+    with pytest.raises(ArticulatedSimReadyReplacementError) as excinfo:
+        validate_articulated_replacement_physics(
+            replacement_usd_path=asset, contract=contract
+        )
+
+    assert any(
+        "task_joint_missing_drive" in error for error in excinfo.value.errors
+    )
+
+
+def test_a_commanded_joint_with_a_drive_is_admitted(tmp_path: Path) -> None:
+    asset = _apply_physics(_author_topology(tmp_path / "asset.usda"))
+    stage = Usd.Stage.Open(str(asset))
+    drive = UsdPhysics.DriveAPI.Apply(
+        stage.GetPrimAtPath("/Asset/joints/upper_hinge"), "angular"
+    )
+    drive.CreateStiffnessAttr().Set(400.0)
+    drive.CreateDampingAttr().Set(40.0)
+    drive.CreateMaxForceAttr().Set(200.0)
+    stage.GetRootLayer().Save()
+    contract = dict(_physics_contract())
+    contract["require_task_joint_drive"] = True
+    contract["task_joint_prim_path"] = "/Asset/joints/upper_hinge"
+
+    receipt = validate_articulated_replacement_physics(
+        replacement_usd_path=asset, contract=contract
+    )
+
+    assert receipt["status"] == "physics_statically_admitted"
+    assert receipt["task_joint_drive"]["present"] is True
+    assert receipt["task_joint_drive"]["stiffness"] == 400.0
