@@ -14,6 +14,7 @@ deprecated import alias for this module.
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
 from .capture_enrichment_llm import build_capture_enrichment_runner
+from .core.stage_graph import StageSpec, run_stage_graph, stage_concurrency_from_env
 from .alpha_readiness import write_pipeline_sync_result
 from .canonical_site_package import write_blueprint_canonical_site_package
 from .common import (
@@ -4874,10 +4876,16 @@ def run_qualification_pipeline(
             geometry_evidence=geometry_evidence,
         )
         enrichment_runner = build_capture_enrichment_runner(repo_root=Path(__file__).resolve().parents[2])
-        weakness_summary = (
-            enrichment_runner(
-                "qualification_weakness_summarizer",
-                _llm_weakness_payload(
+        weakness_summary = None
+        recapture_instructions = None
+        if enrichment_runner is not None:
+            # The two enrichment skills consume already-computed, read-only
+            # state and produce independent artifacts, so they are a stage
+            # graph with no edges. The env knob keeps the default serial;
+            # raising it overlaps the two provider calls without changing
+            # either payload or artifact.
+            enrichment_payloads = {
+                "qualification_weakness_summarizer": _llm_weakness_payload(
                     descriptor=descriptor,
                     scorecard=scorecard,
                     scope_record=scope_record,
@@ -4885,24 +4893,47 @@ def run_qualification_pipeline(
                     blocker_register=blocker_register,
                     human_actions_required=human_actions_required,
                 ),
-            )
-            if enrichment_runner is not None
-            else None
-        )
-        recapture_instructions = (
-            enrichment_runner(
-                "recapture_instruction_writer",
-                _llm_recapture_payload(
+                "recapture_instruction_writer": _llm_recapture_payload(
                     descriptor=descriptor,
                     scorecard=scorecard,
                     scope_record=scope_record,
                     blocker_register=blocker_register,
                     human_actions_required=human_actions_required,
                 ),
+            }
+            enrichment_errors: Dict[str, BaseException] = {}
+
+            def _enrichment_stage(skill_name: str) -> Mapping[str, Any]:
+                try:
+                    value = enrichment_runner(skill_name, enrichment_payloads[skill_name])
+                except BaseException as error:
+                    enrichment_errors[skill_name] = error
+                    raise
+                return {"value": value}
+
+            enrichment_graph = run_stage_graph(
+                [
+                    StageSpec(
+                        stage_id=skill_name,
+                        run=functools.partial(_enrichment_stage, skill_name),
+                    )
+                    for skill_name in enrichment_payloads
+                ],
+                max_concurrency=stage_concurrency_from_env(
+                    "BLUEPRINT_SITE_PACKAGE_STAGE_CONCURRENCY"
+                ),
+                cancel_pending_on_failure=True,
             )
-            if enrichment_runner is not None
-            else None
-        )
+            for skill_name in enrichment_payloads:
+                stage_error = enrichment_errors.get(skill_name)
+                if stage_error is not None:
+                    raise stage_error
+                if enrichment_graph.execution(skill_name).status == "completed":
+                    artifact = enrichment_graph.artifact(skill_name) or {}
+                    if skill_name == "qualification_weakness_summarizer":
+                        weakness_summary = artifact.get("value")
+                    else:
+                        recapture_instructions = artifact.get("value")
         if isinstance(recapture_instructions, Mapping):
             human_actions_required["llm_recapture_instructions"] = list(
                 recapture_instructions.get("instructions", [])

@@ -18,6 +18,7 @@ return the same byte-hashed result contract.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -28,6 +29,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
+
+from .core.stage_graph import StageSpec, run_stage_graph
 
 from .arkit_depth_surface_compiler import (
     build_arkit_depth_surface_compilation_request,
@@ -1223,113 +1226,182 @@ def execute_canonical_3dgs_plan(
     output_root: str | Path,
     runners: Mapping[str, ArmRunner],
     require_external_worker_controls: bool = False,
+    max_concurrency: int = 1,
+    paid_concurrency_authorized: bool = False,
 ) -> dict[str, Any]:
-    """Execute both precommitted arms through trusted worker bindings."""
+    """Execute both precommitted arms through trusted worker bindings.
+
+    Arms are independent by construction (each owns its ``run_root``), so they
+    form a stage graph with no edges. Every arm is paid reconstruction work:
+    arms therefore never overlap unless the caller passes both
+    ``max_concurrency > 1`` and ``paid_concurrency_authorized=True``, the same
+    explicit concurrent-paid authority the resource allocator requires. The
+    default stays serial and byte-identical to the historical behavior, and
+    campaign results always keep the plan's arm order regardless of completion
+    order.
+    """
 
     data_root = verify_canonical_3dgs_plan_inputs(plan=plan, dataset_root=dataset_root)
     destination = Path(output_root).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    results: list[dict[str, Any]] = []
+
+    arm_rows: list[tuple[str, dict[str, Any]]] = []
     for arm_value in plan.get("arms") or []:
         arm = dict(arm_value)
         arm_id = str(arm.get("arm_id") or "")
-        runner = runners.get(arm_id)
-        if runner is None:
+        if runners.get(arm_id) is None:
             raise Canonical3DGSPipelineError([f"trusted_runner_missing:{arm_id}"])
-        run_root = destination / arm_id
-        if run_root.is_symlink():
-            raise Canonical3DGSPipelineError([f"run_root_symlink_forbidden:{arm_id}"])
-        run_root.mkdir(parents=True, exist_ok=True)
-        receipt = dict(runner(arm, data_root, run_root))
-        worker_control_binding = _validate_worker_control_binding(
-            receipt=receipt,
-            run_root=run_root,
-            arm_id=arm_id,
-            plan=plan,
-            required=require_external_worker_controls,
-        )
-        receipt_plan_digest = receipt.get("canonical_3dgs_execution_plan_digest")
-        if receipt_plan_digest not in {
-            None,
-            plan["canonical_3dgs_execution_plan_digest"],
-        }:
-            raise Canonical3DGSPipelineError([f"runner_plan_digest_mismatch:{arm_id}"])
-        exit_code = receipt.get("exit_code")
-        if isinstance(exit_code, bool) or not isinstance(exit_code, int):
-            raise Canonical3DGSPipelineError([f"runner_exit_code_invalid:{arm_id}"])
-        artifacts: list[dict[str, Any]] = []
-        kinds: set[str] = set()
-        splat_profile: dict[str, Any] | None = None
-        for row in receipt.get("artifacts") or []:
-            if not isinstance(row, Mapping):
-                raise Canonical3DGSPipelineError([f"runner_artifact_invalid:{arm_id}"])
-            path = _safe_child(
-                run_root,
-                row.get("relative_path"),
-                code=f"runner_artifact_unsafe:{arm_id}",
+        arm_rows.append((arm_id, arm))
+
+    arm_errors: dict[str, BaseException] = {}
+    arm_results: dict[str, dict[str, Any]] = {}
+
+    def _execute_arm(arm_id: str, arm: dict[str, Any]) -> Mapping[str, Any]:
+        try:
+            arm_results[arm_id] = _execute_canonical_3dgs_arm(
+                arm=arm,
+                arm_id=arm_id,
+                plan=plan,
+                data_root=data_root,
+                destination=destination,
+                runner=runners[arm_id],
+                require_external_worker_controls=require_external_worker_controls,
             )
-            digest = _sha256(path)
-            if row.get("digest") not in {None, digest}:
-                raise Canonical3DGSPipelineError([f"runner_artifact_digest_mismatch:{arm_id}"])
-            kind = str(row.get("kind") or "")
-            if kind == "standard_3dgs_ply":
-                try:
-                    splat = read_standard_3dgs_ply(path)
-                except (OSError, TypeError, ValueError) as exc:
-                    raise Canonical3DGSPipelineError(
-                        [f"runner_standard_3dgs_invalid:{arm_id}"]
-                    ) from exc
-                if splat.count < 1:
-                    raise Canonical3DGSPipelineError(
-                        [f"runner_standard_3dgs_empty:{arm_id}"]
-                    )
-                splat_profile = _standard_splat_profile(splat)
-            kinds.add(kind)
-            artifacts.append(
-                {
-                    "kind": kind,
-                    "relative_path": path.relative_to(run_root).as_posix(),
-                    "digest": digest,
-                    "size_bytes": path.stat().st_size,
-                }
-            )
-        required = set(str(value) for value in arm.get("required_outputs") or [])
-        status = "succeeded" if exit_code == 0 and required <= kinds else "failed"
-        result = {
-            "schema_version": ARM_RESULT_SCHEMA,
-            "status": status,
-            "arm_id": arm_id,
-            "role": arm["role"],
-            "method_id": arm["method_id"],
-            "source_capture_digest": plan["source_capture_digest"],
-            "source_commit_sha": plan["source_commit_sha"],
-            "canonical_3dgs_execution_plan_digest": plan[
-                "canonical_3dgs_execution_plan_digest"
+        except BaseException as error:
+            arm_errors[arm_id] = error
+            raise
+        return {"arm_id": arm_id}
+
+    if arm_rows:
+        run_stage_graph(
+            [
+                StageSpec(
+                    stage_id=arm_id,
+                    run=functools.partial(_execute_arm, arm_id, arm),
+                    paid=True,
+                )
+                for arm_id, arm in arm_rows
             ],
-            "colmap_training_dataset_digest": plan["colmap_training_dataset_digest"],
-            "frozen_split_digest": plan["frozen_split_digest"],
-            "runtime_identity": dict(receipt.get("runtime_identity") or {}),
-            "worker_control_binding": worker_control_binding,
-            "command_digest": canonical_digest(
-                {"argv": receipt.get("argv") or [], "method_id": arm["method_id"]}
-            ),
-            "exit_code": exit_code,
-            "artifacts": artifacts,
-            "standard_3dgs_profile": splat_profile,
-            "hidden_heldout_pixels_included": False,
-            "candidate_self_graded": False,
-            "quality_claimed": False,
-            "proof_effect": "appearance_asset_candidate_only",
-            "claim_ceiling": "appearance_reconstruction",
-            "blockers": [] if status == "succeeded" else ["trainer_execution_or_output_failed"],
-            "timestamp": str(receipt.get("timestamp") or plan["timestamp"]),
-        }
-        result["canonical_3dgs_arm_result_digest"] = canonical_digest(
-            result, digest_field="canonical_3dgs_arm_result_digest"
+            max_concurrency=max_concurrency,
+            paid_concurrency_authorized=paid_concurrency_authorized,
+            cancel_pending_on_failure=True,
         )
-        _write_immutable_json(run_root / "canonical_3dgs_arm_result.json", result)
-        results.append(result)
+    for arm_id, _arm in arm_rows:
+        error = arm_errors.get(arm_id)
+        if error is not None:
+            raise error
+
+    results: list[dict[str, Any]] = []
+    for arm_id, _arm in arm_rows:
+        if arm_id not in arm_results:
+            raise Canonical3DGSPipelineError([f"arm_result_missing:{arm_id}"])
+        results.append(arm_results[arm_id])
     return _finalize_campaign(plan=plan, destination=destination, results=results)
+
+
+def _execute_canonical_3dgs_arm(
+    *,
+    arm: dict[str, Any],
+    arm_id: str,
+    plan: Mapping[str, Any],
+    data_root: Path,
+    destination: Path,
+    runner: ArmRunner,
+    require_external_worker_controls: bool,
+) -> dict[str, Any]:
+    run_root = destination / arm_id
+    if run_root.is_symlink():
+        raise Canonical3DGSPipelineError([f"run_root_symlink_forbidden:{arm_id}"])
+    run_root.mkdir(parents=True, exist_ok=True)
+    receipt = dict(runner(arm, data_root, run_root))
+    worker_control_binding = _validate_worker_control_binding(
+        receipt=receipt,
+        run_root=run_root,
+        arm_id=arm_id,
+        plan=plan,
+        required=require_external_worker_controls,
+    )
+    receipt_plan_digest = receipt.get("canonical_3dgs_execution_plan_digest")
+    if receipt_plan_digest not in {
+        None,
+        plan["canonical_3dgs_execution_plan_digest"],
+    }:
+        raise Canonical3DGSPipelineError([f"runner_plan_digest_mismatch:{arm_id}"])
+    exit_code = receipt.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        raise Canonical3DGSPipelineError([f"runner_exit_code_invalid:{arm_id}"])
+    artifacts: list[dict[str, Any]] = []
+    kinds: set[str] = set()
+    splat_profile: dict[str, Any] | None = None
+    for row in receipt.get("artifacts") or []:
+        if not isinstance(row, Mapping):
+            raise Canonical3DGSPipelineError([f"runner_artifact_invalid:{arm_id}"])
+        path = _safe_child(
+            run_root,
+            row.get("relative_path"),
+            code=f"runner_artifact_unsafe:{arm_id}",
+        )
+        digest = _sha256(path)
+        if row.get("digest") not in {None, digest}:
+            raise Canonical3DGSPipelineError([f"runner_artifact_digest_mismatch:{arm_id}"])
+        kind = str(row.get("kind") or "")
+        if kind == "standard_3dgs_ply":
+            try:
+                splat = read_standard_3dgs_ply(path)
+            except (OSError, TypeError, ValueError) as exc:
+                raise Canonical3DGSPipelineError(
+                    [f"runner_standard_3dgs_invalid:{arm_id}"]
+                ) from exc
+            if splat.count < 1:
+                raise Canonical3DGSPipelineError(
+                    [f"runner_standard_3dgs_empty:{arm_id}"]
+                )
+            splat_profile = _standard_splat_profile(splat)
+        kinds.add(kind)
+        artifacts.append(
+            {
+                "kind": kind,
+                "relative_path": path.relative_to(run_root).as_posix(),
+                "digest": digest,
+                "size_bytes": path.stat().st_size,
+            }
+        )
+    required = set(str(value) for value in arm.get("required_outputs") or [])
+    status = "succeeded" if exit_code == 0 and required <= kinds else "failed"
+    result = {
+        "schema_version": ARM_RESULT_SCHEMA,
+        "status": status,
+        "arm_id": arm_id,
+        "role": arm["role"],
+        "method_id": arm["method_id"],
+        "source_capture_digest": plan["source_capture_digest"],
+        "source_commit_sha": plan["source_commit_sha"],
+        "canonical_3dgs_execution_plan_digest": plan[
+            "canonical_3dgs_execution_plan_digest"
+        ],
+        "colmap_training_dataset_digest": plan["colmap_training_dataset_digest"],
+        "frozen_split_digest": plan["frozen_split_digest"],
+        "runtime_identity": dict(receipt.get("runtime_identity") or {}),
+        "worker_control_binding": worker_control_binding,
+        "command_digest": canonical_digest(
+            {"argv": receipt.get("argv") or [], "method_id": arm["method_id"]}
+        ),
+        "exit_code": exit_code,
+        "artifacts": artifacts,
+        "standard_3dgs_profile": splat_profile,
+        "hidden_heldout_pixels_included": False,
+        "candidate_self_graded": False,
+        "quality_claimed": False,
+        "proof_effect": "appearance_asset_candidate_only",
+        "claim_ceiling": "appearance_reconstruction",
+        "blockers": [] if status == "succeeded" else ["trainer_execution_or_output_failed"],
+        "timestamp": str(receipt.get("timestamp") or plan["timestamp"]),
+    }
+    result["canonical_3dgs_arm_result_digest"] = canonical_digest(
+        result, digest_field="canonical_3dgs_arm_result_digest"
+    )
+    _write_immutable_json(run_root / "canonical_3dgs_arm_result.json", result)
+    return result
 
 
 def _validate_worker_control_binding(

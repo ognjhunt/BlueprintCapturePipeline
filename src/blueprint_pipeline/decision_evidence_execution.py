@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import functools
+import threading
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
+from .core.stage_graph import StageSpec, run_stage_graph
 from .decision_evidence_contracts import (
     DecisionEnvelope,
     DecisionEvidenceRequest,
@@ -206,11 +209,28 @@ def execute_evidence_plan(
     *,
     registry: EvidenceMethodAdapterRegistry,
     context: Mapping[str, Any] | None = None,
+    max_concurrency: int = 1,
+    paid_concurrency_authorized: bool = False,
 ) -> EvidenceExecution:
     """Execute selected plan steps through registered, stable method ports.
 
     The caller supplies adapters explicitly. This function never discovers or
     launches providers from defaults and never initiates a physical robot run.
+
+    Steps for different claims are independent evidence work; within one
+    claim, conditional escalations depend on every earlier step of that claim.
+    Those are the only edges, so with ``max_concurrency > 1`` independent
+    steps run concurrently while escalation gating, result content, execution
+    rows, and manifest ordering stay byte-identical to serial execution for
+    the same adapter outputs. Concurrency is opt-in per call: adapters must be
+    thread-safe, and each concurrently executed step receives its own copy of
+    the caller context, so cross-step context mutation is only visible in the
+    default serial mode. Steps whose method profile carries a positive
+    ``expected_cost_usd`` are paid work and never overlap each other unless
+    ``paid_concurrency_authorized=True`` — concurrent paid execution is a
+    separately granted authority, mirroring the paid-resource allocator's
+    explicit concurrent-instance binding. Step bindings are validated before
+    any adapter executes, so a malformed plan fails closed before spend.
     """
 
     plan = EvidencePlan.from_mapping(plan_value).to_mapping()
@@ -239,10 +259,11 @@ def execute_evidence_plan(
         ):
             selected_steps[_string(step.get("step_id"))] = step
 
-    results: list[NormalizedEvidenceResult] = []
-    execution_rows: list[dict[str, Any]] = []
-    ephemeral_context = dict(context or {})
-    claim_has_sufficient_result: dict[str, bool] = {}
+    max_workers = int(max_concurrency)
+    concurrent = max_workers > 1
+    shared_context = dict(context or {})
+
+    resolved: list[dict[str, Any]] = []
     for step_id in _strings(plan.get("execution_order")):
         step = selected_steps.get(step_id)
         if step is None:
@@ -254,87 +275,192 @@ def execute_evidence_plan(
         claim = claims.get(_string(step.get("claim_id")))
         if claim is None:
             raise ValueError(f"evidence_plan_claim_missing:{step_id}")
-        claim_id = _string(claim.get("claim_id"))
-        if _string(step.get("execution_role")) == "conditional_escalation" and claim_has_sufficient_result.get(
-            claim_id, False
+        resolved.append(
+            {
+                "step_id": step_id,
+                "step": step,
+                "profile": profile,
+                "qualification": qualification,
+                "claim": claim,
+                "claim_id": _string(claim.get("claim_id")),
+            }
+        )
+
+    claim_step_order: dict[str, list[str]] = {}
+    for entry in resolved:
+        claim_step_order.setdefault(entry["claim_id"], []).append(entry["step_id"])
+
+    records: dict[str, dict[str, Any]] = {}
+    records_lock = threading.Lock()
+
+    def _prior_claim_sufficiency(claim_id: str, step_id: str) -> bool:
+        # Reproduce the serial escalation gate exactly: the gate value is the
+        # sufficiency of the last *executed* earlier step of this claim in
+        # plan order; skipped steps never update it. Dependency edges
+        # guarantee every earlier step of the claim has settled before an
+        # escalation stage starts, so this walk is deterministic under
+        # concurrency.
+        sufficient = False
+        for candidate_id in claim_step_order[claim_id]:
+            if candidate_id == step_id:
+                break
+            with records_lock:
+                record = records.get(candidate_id)
+            if record is not None and record.get("executed"):
+                sufficient = bool(record.get("sufficient"))
+        return sufficient
+
+    def _run_step(entry: Mapping[str, Any]) -> Mapping[str, Any]:
+        step_id = entry["step_id"]
+        step = entry["step"]
+        profile = entry["profile"]
+        qualification = entry["qualification"]
+        claim = entry["claim"]
+        claim_id = entry["claim_id"]
+        if _string(step.get("execution_role")) == "conditional_escalation" and _prior_claim_sufficiency(
+            claim_id, step_id
         ):
-            execution_rows.append(
-                {
+            record = {
+                "executed": False,
+                "row": {
                     "step_id": step_id,
                     "result_digest": None,
                     "status": "skipped_evidence_already_sufficient",
                     "adapter_reference": profile.get("adapter_reference"),
-                }
-            )
-            continue
+                },
+            }
+            with records_lock:
+                records[step_id] = record
+            return {"step_id": step_id, "executed": False}
         adapter = registry.resolve(_string(profile.get("adapter_reference")))
         leaf = leaf_specs.get(
             (_string(claim.get("claim_id")), _string(profile.get("method_profile_digest")))
         )
-        if _string(profile.get("method_family")) == "physical_evidence" and (
-            adapter is None or getattr(adapter, "physical_evidence_mode", None) != "read_only"
-        ):
-            raw: Mapping[str, Any] = {
-                "status": "evidence_requested",
-                "supports_claim": None,
-                "uncertainty": 1.0,
-                "coverage": 0.0,
-                "blockers": ["physical_evidence_execution_not_permitted"],
-                "invalid_rollout_reasons": [],
-                "raw_artifact_references": [],
-                "provenance": {"physical_robot_run_initiated": False},
-            }
-        elif adapter is None:
-            raw = {
-                "status": "unavailable",
-                "supports_claim": None,
-                "uncertainty": 1.0,
-                "coverage": 0.0,
-                "blockers": ["evidence_method_adapter_unavailable"],
-                "invalid_rollout_reasons": [],
-                "raw_artifact_references": [],
-                "provenance": {},
-            }
-        else:
-            raw = adapter.execute(
+        step_context = dict(shared_context) if concurrent else shared_context
+        try:
+            if _string(profile.get("method_family")) == "physical_evidence" and (
+                adapter is None
+                or getattr(adapter, "physical_evidence_mode", None) != "read_only"
+            ):
+                raw: Mapping[str, Any] = {
+                    "status": "evidence_requested",
+                    "supports_claim": None,
+                    "uncertainty": 1.0,
+                    "coverage": 0.0,
+                    "blockers": ["physical_evidence_execution_not_permitted"],
+                    "invalid_rollout_reasons": [],
+                    "raw_artifact_references": [],
+                    "provenance": {"physical_robot_run_initiated": False},
+                }
+            elif adapter is None:
+                raw = {
+                    "status": "unavailable",
+                    "supports_claim": None,
+                    "uncertainty": 1.0,
+                    "coverage": 0.0,
+                    "blockers": ["evidence_method_adapter_unavailable"],
+                    "invalid_rollout_reasons": [],
+                    "raw_artifact_references": [],
+                    "provenance": {},
+                }
+            else:
+                raw = adapter.execute(
+                    step=step,
+                    claim=claim,
+                    request=request,
+                    testbed=testbed,
+                    method_profile=profile,
+                    qualification=qualification,
+                    evaluation_run_spec=leaf,
+                    context=step_context,
+                )
+            result = _normalize(
+                raw,
                 step=step,
                 claim=claim,
                 request=request,
                 testbed=testbed,
-                method_profile=profile,
+                plan=plan,
+                profile=profile,
                 qualification=qualification,
-                evaluation_run_spec=leaf,
-                context=ephemeral_context,
+                leaf=leaf,
             )
-        result = _normalize(
-            raw,
-            step=step,
-            claim=claim,
-            request=request,
-            testbed=testbed,
-            plan=plan,
-            profile=profile,
-            qualification=qualification,
-            leaf=leaf,
-        )
-        results.append(result)
+        except BaseException as error:
+            with records_lock:
+                records[step_id] = {"executed": True, "exception": error}
+            raise
         result_mapping = result.to_mapping()
         desired = dict(claim.get("desired_confidence_or_coverage") or {})
-        claim_has_sufficient_result[claim_id] = (
+        sufficient = (
             result_mapping["validity"] is True
             and _number(result_mapping.get("coverage"))
             >= _number(desired.get("minimum_coverage"), 0.0)
             and _number(result_mapping.get("false_safe_risk"), 1.0)
             <= _number(claim.get("acceptable_false_safe_risk"), 0.0)
         )
-        execution_rows.append(
-            {
+        record = {
+            "executed": True,
+            "result": result,
+            "sufficient": sufficient,
+            "row": {
                 "step_id": step_id,
                 "result_digest": result.digest,
-                "status": result.to_mapping()["status"],
+                "status": result_mapping["status"],
                 "adapter_reference": profile.get("adapter_reference"),
-            }
+            },
+        }
+        with records_lock:
+            records[step_id] = record
+        return {"step_id": step_id, "executed": True}
+
+    stage_specs: list[StageSpec] = []
+    for entry in resolved:
+        depends_on: tuple[str, ...] = ()
+        if _string(entry["step"].get("execution_role")) == "conditional_escalation":
+            prior: list[str] = []
+            for candidate_id in claim_step_order[entry["claim_id"]]:
+                if candidate_id == entry["step_id"]:
+                    break
+                prior.append(candidate_id)
+            depends_on = tuple(prior)
+        stage_specs.append(
+            StageSpec(
+                stage_id=entry["step_id"],
+                run=functools.partial(_run_step, entry),
+                depends_on=depends_on,
+                paid=_number(entry["profile"].get("expected_cost_usd")) > 0.0,
+            )
         )
+
+    graph_result = None
+    if stage_specs:
+        graph_result = run_stage_graph(
+            stage_specs,
+            max_concurrency=max_workers,
+            paid_concurrency_authorized=paid_concurrency_authorized,
+            cancel_pending_on_failure=True,
+        )
+        for entry in resolved:
+            record = records.get(entry["step_id"]) or {}
+            error = record.get("exception")
+            if error is not None:
+                raise error
+        for execution in graph_result.executions:
+            if execution.status != "completed":
+                raise ValueError(
+                    f"evidence_plan_stage_failed:{execution.stage_id}:"
+                    f"{execution.outcome.reason}"
+                )
+
+    results: list[NormalizedEvidenceResult] = []
+    execution_rows: list[dict[str, Any]] = []
+    for entry in resolved:
+        record = records.get(entry["step_id"])
+        if record is None or "row" not in record:
+            raise ValueError(f"evidence_plan_step_not_settled:{entry['step_id']}")
+        execution_rows.append(record["row"])
+        if record.get("executed") and record.get("result") is not None:
+            results.append(record["result"])
 
     manifest = {
         "schema_version": "evidence_plan_execution.v1",
@@ -350,11 +476,17 @@ def execute_evidence_plan(
         else "completed_with_abstentions",
         "steps": execution_rows,
         "registered_adapters": registry.manifest(),
-        "context_keys_supplied": sorted(str(key) for key in ephemeral_context),
+        "context_keys_supplied": sorted(str(key) for key in shared_context),
         "context_values_persisted": False,
         "provider_discovery_from_defaults": False,
         "physical_robot_run_initiated": False,
     }
+    if concurrent and graph_result is not None:
+        manifest["execution_concurrency"] = {
+            "max_concurrency": max_workers,
+            "paid_concurrency_authorized": bool(paid_concurrency_authorized),
+            "observed_max_overlap": graph_result.observed_max_overlap,
+        }
     return EvidenceExecution(results=tuple(results), execution_manifest=manifest)
 
 

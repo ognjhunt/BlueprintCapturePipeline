@@ -1448,3 +1448,100 @@ def test_platform_finalizer_rejects_unadmitted_worker_receipts(tmp_path: Path) -
             dataset_root=dataset_root,
             results_root=tmp_path / "results",
         )
+
+
+def test_canonical_arms_serialize_by_default_and_overlap_only_with_paid_authority(
+    tmp_path: Path,
+) -> None:
+    """Arms are paid reconstruction work: they never overlap without the
+    explicit concurrent-paid authority, and with it they genuinely overlap
+    while campaign results keep the plan's arm order."""
+
+    import threading
+
+    dataset_root = tmp_path / "dataset"
+    dataset = _dataset(dataset_root)
+    plan = build_canonical_3dgs_execution_plan(
+        preparation=_preparation(dataset),
+        dataset=dataset,
+        dataset_root=dataset_root,
+        source_commit_sha=SOURCE_COMMIT,
+        timestamp="2026-08-03T05:00:00Z",
+    )
+
+    second_started = threading.Event()
+    first_saw_second: list[bool] = []
+
+    def probe_runner(arm: dict, data_root: Path, output_root: Path) -> dict:
+        if arm["role"] == "primary":
+            first_saw_second.append(second_started.wait(0.3))
+        else:
+            second_started.set()
+        return _runner(arm, data_root, output_root)
+
+    execute_canonical_3dgs_plan(
+        plan=plan,
+        dataset_root=dataset_root,
+        output_root=tmp_path / "serialized",
+        runners={
+            "postshot-primary": probe_runner,
+            "splatfacto-comparison": probe_runner,
+        },
+        max_concurrency=4,
+    )
+    assert first_saw_second == [False], "paid arms overlapped without explicit authority"
+
+    barrier = threading.Barrier(2, timeout=5.0)
+
+    def rendezvous_runner(arm: dict, data_root: Path, output_root: Path) -> dict:
+        barrier.wait()
+        return _runner(arm, data_root, output_root)
+
+    result = execute_canonical_3dgs_plan(
+        plan=plan,
+        dataset_root=dataset_root,
+        output_root=tmp_path / "concurrent",
+        runners={
+            "postshot-primary": rendezvous_runner,
+            "splatfacto-comparison": rendezvous_runner,
+        },
+        max_concurrency=2,
+        paid_concurrency_authorized=True,
+    )
+    assert [row["arm_id"] for row in result["arm_results"]] == [
+        str(arm["arm_id"]) for arm in plan["arms"]
+    ]
+    assert all(row["status"] == "succeeded" for row in result["arm_results"])
+
+
+def test_canonical_arm_runner_failure_propagates_and_skips_later_arms(
+    tmp_path: Path,
+) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset = _dataset(dataset_root)
+    plan = build_canonical_3dgs_execution_plan(
+        preparation=_preparation(dataset),
+        dataset=dataset,
+        dataset_root=dataset_root,
+        source_commit_sha=SOURCE_COMMIT,
+        timestamp="2026-08-03T05:00:00Z",
+    )
+    executed: list[str] = []
+
+    def failing_runner(arm: dict, data_root: Path, output_root: Path) -> dict:
+        executed.append(str(arm["arm_id"]))
+        if arm["role"] == "primary":
+            raise RuntimeError("trainer exploded")
+        return _runner(arm, data_root, output_root)
+
+    with pytest.raises(RuntimeError, match="trainer exploded"):
+        execute_canonical_3dgs_plan(
+            plan=plan,
+            dataset_root=dataset_root,
+            output_root=tmp_path / "results",
+            runners={
+                "postshot-primary": failing_runner,
+                "splatfacto-comparison": failing_runner,
+            },
+        )
+    assert executed == ["postshot-primary"], "later arm ran after an earlier arm failed"
