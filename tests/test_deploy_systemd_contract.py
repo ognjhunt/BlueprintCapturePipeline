@@ -158,7 +158,7 @@ def test_isolated_staging_intake_has_separate_identity_state_and_installer() -> 
 
     assert "HEAD must equal origin/main" in installer
     assert "staging checkout must be clean" in installer
-    assert 'safe.directory=${STAGING_REPO}' in installer
+    assert "safe.directory=${STAGING_REPO}" in installer
     assert "blueprint-pipeline-intake-staging.service" in installer
     assert "pipeline-intake-staging.env.example" in installer
     assert "blueprint-pipeline-intake.service" not in installer
@@ -179,8 +179,7 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
         "BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION=blueprint-pipeline-handoff-listener" in env_example
     )
     assert (
-        "GOOGLE_APPLICATION_CREDENTIALS="
-        "/etc/blueprint/credentials/pipeline-handoff-listener.json"
+        "GOOGLE_APPLICATION_CREDENTIALS=/etc/blueprint/credentials/pipeline-handoff-listener.json"
     ) in env_example
     assert "GOOGLE_CLOUD_PROJECT=blueprint-8c1ca" in env_example
     assert "BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true" in env_example
@@ -494,6 +493,8 @@ def test_terraform_declares_optional_gcp_billing_budget_for_gpu_fleet():
 
 def test_systemd_spend_guard_enforces_5000_admission_lock_and_page_path():
     service = _read("blueprint-gpu-spend-guard.service")
+    billing_service = _read("blueprint-provider-billing-reconciler.service")
+    billing_timer = _read("blueprint-provider-billing-reconciler.timer")
     env_example = _read("pipeline-control-plane.env.example")
     installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
 
@@ -513,6 +514,15 @@ def test_systemd_spend_guard_enforces_5000_admission_lock_and_page_path():
     assert "systemctl enable --now blueprint-gpu-spend-guard.timer" in installer
     assert '"${STATE_DIR}/gpu_spend_guard"' in installer
     assert '"${PROVIDER_SECRETS_DIR}"' in installer
+    assert "blueprint-provider-billing-reconciler.service" in service
+    assert "blueprint_pipeline.provider_billing_reconciler" in billing_service
+    assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in billing_service
+    assert "Before=blueprint-gpu-spend-guard.service" in billing_service
+    assert "OnUnitInactiveSec=10m" in billing_timer
+    assert "blueprint-provider-billing-reconciler.service" in installer
+    assert "blueprint-provider-billing-reconciler.timer" in installer
+    assert "systemctl enable --now blueprint-provider-billing-reconciler.timer" in installer
+    assert "BLUEPRINT_PROVIDER_BILLING_COHORT_START_AT=2026-01-01T00:00:00Z" in env_example
 
 
 def test_main_deploy_image_includes_ffmpeg_for_clip_and_keyframe_lanes():

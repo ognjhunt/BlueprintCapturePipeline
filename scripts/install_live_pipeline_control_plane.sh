@@ -21,8 +21,8 @@ Usage: scripts/install_live_pipeline_control_plane.sh [--enable-now] [--dry-run]
 Installs the Blueprint live pipeline control-plane systemd service/timer, the
 capture handoff Pub/Sub listener service/timer, and the optional authenticated
 WebApp intake service unit, plus the paid-work spend admission guard service/
-timer. The spend guard remains locked until current external billing input and
-provider credentials are installed.
+timer and read-only provider billing reconciler. The spend guard remains locked
+until current provider billing input and credentials are installed.
 The service runs one safe control-plane pass on each timer tick:
 read env, audit readiness, optionally consume the robot-eval job inbox, write
 manifests, run the proof-boundary audit, and exit. It does not add secrets or
@@ -153,6 +153,12 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-provider-billing-reconciler.service" \
+  "${SYSTEMD_DIR}/blueprint-provider-billing-reconciler.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-provider-billing-reconciler.timer" \
+  "${SYSTEMD_DIR}/blueprint-provider-billing-reconciler.timer"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   run install -o root -g "${SERVICE_GROUP}" -m 0640 \
@@ -173,6 +179,7 @@ systemctl daemon-reload
 if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-pipeline-control-plane.timer
   systemctl enable --now blueprint-pubsub-handoff-listener.timer
+  systemctl enable --now blueprint-provider-billing-reconciler.timer
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
@@ -180,6 +187,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
 else
   echo "installed; enable timer with: systemctl enable --now blueprint-pipeline-control-plane.timer"
   echo "enable handoff listener with: systemctl enable --now blueprint-pubsub-handoff-listener.timer"
+  echo "enable billing reconciliation with: systemctl enable --now blueprint-provider-billing-reconciler.timer"
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
