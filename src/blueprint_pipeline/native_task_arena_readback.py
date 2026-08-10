@@ -114,7 +114,176 @@ def _body_position(
     pose = poses[names.index(body_name)]
     if not isinstance(pose, list) or len(pose) < 7:
         raise NativeTaskArenaReadbackError([error])
-    return [float(value) for value in pose[:3]], [float(value) for value in pose[3:7]]
+    return [float(value) for value in pose[:3]], _native_wxyz_to_xyzw(pose[3:7])
+
+
+def _native_wxyz_to_xyzw(value: Sequence[float]) -> list[float]:
+    """Convert Isaac Lab's native WXYZ quaternion into contract XYZW order."""
+
+    try:
+        qw, qx, qy, qz = (float(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_quaternion_invalid"]
+        ) from exc
+    quaternion = [qx, qy, qz, qw]
+    norm = math.sqrt(sum(item * item for item in quaternion))
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_quaternion_invalid"]
+        )
+    return [item / norm for item in quaternion]
+
+
+def _quaternion_angle_xyzw(a: Sequence[float], b: Sequence[float]) -> float:
+    qa = [float(item) for item in a]
+    qb = [float(item) for item in b]
+    if len(qa) != 4 or len(qb) != 4:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_quaternion_invalid"]
+        )
+    norm_a = math.sqrt(sum(item * item for item in qa))
+    norm_b = math.sqrt(sum(item * item for item in qb))
+    if not math.isfinite(norm_a) or not math.isfinite(norm_b) or min(norm_a, norm_b) <= 0:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_quaternion_invalid"]
+        )
+    dot = abs(sum(x * y for x, y in zip(qa, qb, strict=True)) / (norm_a * norm_b))
+    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
+
+def read_native_task_arena_object_reset_state(
+    built: NativeTaskArenaEnvironment,
+    *,
+    joint_tolerance_rad: float = 1.0e-4,
+) -> dict[str, Any]:
+    """Read and qualify every replacement root/joint reset from native state.
+
+    The active task subject and every inactive replacement are intentionally
+    treated alike.  This prevents an inactive asset from drifting across task
+    resets while the active subject alone appears reproducible.
+    """
+
+    env = getattr(built.env, "unwrapped", built.env)
+    scene = getattr(env, "scene", None)
+    if scene is None:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_scene_readback_missing"]
+        )
+    try:
+        translation_tolerance = float(
+            built.plan["task_state_binding"]["root_translation_tolerance_m"]
+        )
+        orientation_tolerance = float(
+            built.plan["task_state_binding"]["root_orientation_tolerance_rad"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_reset_tolerance_missing"]
+        ) from exc
+
+    rows: list[dict[str, Any]] = []
+    for planned in built.plan["objects"]:
+        if not (
+            planned.get("task_subject") is True
+            or planned.get("semantic_role") in {"task_object", "replacement"}
+        ):
+            continue
+        runtime_name = str(planned.get("name") or "")
+        try:
+            asset = scene[built.scene_asset_names[runtime_name]]
+        except (KeyError, TypeError) as exc:
+            raise NativeTaskArenaReadbackError(
+                [f"native_task_arena_reset_asset_missing:{runtime_name}"]
+            ) from exc
+        data = getattr(asset, "data", None)
+        root_pose = _first_environment(
+            getattr(data, "root_pose_w", None),
+            error=f"native_task_arena_reset_root_pose_missing:{runtime_name}",
+        )
+        if len(root_pose) < 7:
+            raise NativeTaskArenaReadbackError(
+                [f"native_task_arena_reset_root_pose_invalid:{runtime_name}"]
+            )
+        observed_pose = {
+            "position_world_m": [float(item) for item in root_pose[:3]],
+            "orientation_xyzw": _native_wxyz_to_xyzw(root_pose[3:7]),
+        }
+        reset_state = planned.get("reset_state") or {}
+        expected_pose = reset_state.get("root_pose_world") or planned["pose_world"]
+        translation_error = math.dist(
+            observed_pose["position_world_m"], expected_pose["position_world_m"]
+        )
+        orientation_error = _quaternion_angle_xyzw(
+            observed_pose["orientation_xyzw"], expected_pose["orientation_xyzw"]
+        )
+
+        expected_joints = {
+            str(name): float(position)
+            for name, position in (reset_state.get("joint_positions") or {}).items()
+        }
+        joint_errors: dict[str, float] = {}
+        missing_joint_names: list[str] = []
+        unexpected_joint_names: list[str] = []
+        if planned["object_type"] == "ARTICULATION":
+            native_names = _names(
+                getattr(asset, "joint_names", None)
+                or getattr(data, "joint_names", None),
+                error=f"native_task_arena_reset_joint_names_missing:{runtime_name}",
+            )
+            native_positions = _first_environment(
+                getattr(data, "joint_pos", None),
+                error=f"native_task_arena_reset_joint_positions_missing:{runtime_name}",
+            )
+            if len(native_positions) != len(native_names):
+                raise NativeTaskArenaReadbackError(
+                    [f"native_task_arena_reset_joint_state_invalid:{runtime_name}"]
+                )
+            observed_joints = dict(
+                zip(native_names, (float(item) for item in native_positions), strict=True)
+            )
+            missing_joint_names = sorted(set(expected_joints) - set(observed_joints))
+            unexpected_joint_names = sorted(set(observed_joints) - set(expected_joints))
+            joint_errors = {
+                name: abs(observed_joints[name] - expected)
+                for name, expected in expected_joints.items()
+                if name in observed_joints
+            }
+
+        passed = (
+            translation_error <= translation_tolerance
+            and orientation_error <= orientation_tolerance
+            and not missing_joint_names
+            and not unexpected_joint_names
+            and max(joint_errors.values(), default=0.0) <= joint_tolerance_rad
+        )
+        rows.append(
+            {
+                "asset_id": planned.get("asset_id", runtime_name),
+                "runtime_name": runtime_name,
+                "task_subject": bool(planned.get("task_subject")),
+                "object_type": planned["object_type"],
+                "expected_root_pose_world": expected_pose,
+                "observed_root_pose_world": observed_pose,
+                "root_translation_error_m": translation_error,
+                "root_orientation_error_rad": orientation_error,
+                "joint_absolute_errors_rad": joint_errors,
+                "missing_joint_names": missing_joint_names,
+                "unexpected_joint_names": unexpected_joint_names,
+                "passed": passed,
+            }
+        )
+    if not rows:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_reset_assets_missing"]
+        )
+    return {
+        "passed": all(row["passed"] for row in rows),
+        "root_translation_tolerance_m": translation_tolerance,
+        "root_orientation_tolerance_rad": orientation_tolerance,
+        "joint_tolerance_rad": joint_tolerance_rad,
+        "objects": rows,
+    }
 
 
 class NativeArticulatedTaskArenaReadback:
@@ -156,10 +325,14 @@ class NativeArticulatedTaskArenaReadback:
             getattr(task_data, "joint_vel", None),
             error="native_task_arena_joint_velocities_missing",
         )
-        task_root_pose = _first_environment(
+        native_task_root_pose = _first_environment(
             getattr(task_data, "root_pose_w", None),
             error="native_task_arena_task_root_pose_missing",
         )[:7]
+        task_root_pose = [
+            *[float(value) for value in native_task_root_pose[:3]],
+            *_native_wxyz_to_xyzw(native_task_root_pose[3:7]),
+        ]
 
         sensor_forces: dict[str, list[list[float]]] = {}
         for logical_sensor_id, scene_names in self._built.contact_sensor_names.items():
@@ -230,7 +403,8 @@ class NativeArticulatedTaskArenaReadback:
         reset_object = next(
             row
             for row in self._built.plan["objects"]
-            if row["semantic_role"] == "task_object"
+            if row.get("task_subject") is True
+            or row.get("semantic_role") == "task_object"
         )
         reset_pose = [
             *reset_object["pose_world"]["position_world_m"],
@@ -256,4 +430,5 @@ class NativeArticulatedTaskArenaReadback:
 __all__ = [
     "NativeArticulatedTaskArenaReadback",
     "NativeTaskArenaReadbackError",
+    "read_native_task_arena_object_reset_state",
 ]

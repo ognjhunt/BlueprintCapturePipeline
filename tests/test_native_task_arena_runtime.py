@@ -488,16 +488,60 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         "upper_door_hinge": 0.0,
         "lower_door_hinge": 0.0,
     }
-    reset_owner = next(
-        asset
-        for asset in arena_env.scene.assets
-        if asset.name == "task_robot_contact__moving_link"
-    )
-    assert reset_owner.event_name == "reset_task_object_joints"
-    assert reset_owner.event_cfg.params["asset_cfg"].name == "task_object"
-    assert reset_owner.event_cfg.params["position_range"] == (0.0, 0.0)
+    reset_owner = task_object
+    assert reset_owner.reset_event_name == "reset_task_object_state"
+    assert reset_owner.reset_event_cfg.params["asset_cfg"].name == "task_object"
+    assert reset_owner.reset_event_cfg.params["reset_joints"] is True
     assert _ArenaBuilder.last.args.device == "cuda:0"
     assert built.preconstruction_device_binding["passed"] is True
+
+
+def test_builder_keeps_inactive_articulated_replacement_and_its_reset(
+    monkeypatch,
+) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["objects"].append(
+        {
+            "name": "replacement__inactive_articulation",
+            "semantic_role": "replacement",
+            "asset_id": "inactive_articulation",
+            "task_subject": False,
+            "prim_path": "{ENV_REGEX_NS}/replacement__inactive_articulation",
+            "object_type": "ARTICULATION",
+            "usd_path": "/provider/assets/inactive.usda",
+            "visible": True,
+            "pose_world": {
+                "position_world_m": [2.0, 3.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "reset_state": {
+                "joint_positions": {"inactive_hinge": 0.25},
+            },
+        }
+    )
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    built = build_native_task_arena_environment(plan)
+
+    assert built.scene_asset_names["replacement__inactive_articulation"] == (
+        "replacement__inactive_articulation"
+    )
+    inactive = next(
+        asset
+        for asset in _ArenaBuilder.last.arena_env.scene.assets
+        if asset.name == "replacement__inactive_articulation"
+    )
+    assert inactive.object_type is _ObjectType.ARTICULATION
+    assert inactive.object_cfg.init_state.joint_pos == {"inactive_hinge": 0.25}
+    assert inactive.spawn_cfg_addon["semantic_tags"] == [
+        ("class", "inactive_replacement")
+    ]
+    assert inactive.reset_event_name == "reset_replacement__inactive_articulation_state"
+    assert inactive.reset_event_cfg.params["asset_cfg"].name == (
+        "replacement__inactive_articulation"
+    )
+    assert inactive.reset_event_cfg.params["reset_joints"] is True
 
 
 def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> None:

@@ -27,7 +27,9 @@ from .decision_evidence_contracts import canonical_digest
 SCHEMA_VERSION = "native_task_runtime_contract.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
-ASSET_ROLES = ("scene_collision", "scene_appearance", "task_object")
+SINGULAR_ASSET_ROLES = ("scene_collision", "scene_appearance", "task_object")
+REPEATABLE_REPLACEMENT_ROLE = "replacement"
+OBJECT_TYPES = frozenset({"RIGID", "ARTICULATION"})
 CAMERA_ROLES = ("external", "wrist", "overview")
 CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
 ENV_ROOT = "{ENV_REGEX_NS}"
@@ -101,27 +103,74 @@ def _pose(value: Any, *, error: str, errors: list[str]) -> dict[str, Any]:
 
 
 def _asset_rows(
-    assets: Sequence[Mapping[str, Any]], *, errors: list[str]
+    assets: Sequence[Mapping[str, Any]],
+    *,
+    subject_asset_id: str | None,
+    errors: list[str],
 ) -> tuple[list[dict[str, Any]], dict[str, Mapping[str, Any]]]:
     by_role: dict[str, Mapping[str, Any]] = {}
+    replacements: list[Mapping[str, Any]] = []
     for index, row in enumerate(assets):
         if not isinstance(row, Mapping):
             errors.append(f"native_task_runtime_asset_invalid:{index}")
             continue
         role = str(row.get("semantic_role") or "")
-        if role not in ASSET_ROLES or role in by_role:
+        if role == REPEATABLE_REPLACEMENT_ROLE:
+            replacements.append(row)
+            continue
+        if role not in SINGULAR_ASSET_ROLES or role in by_role:
             errors.append(f"native_task_runtime_asset_role_invalid:{role or index}")
             continue
         by_role[role] = row
+    if replacements and "task_object" in by_role:
+        errors.append("native_task_runtime_legacy_and_replacement_assets_mixed")
+    if replacements:
+        replacement_ids = [str(row.get("asset_id") or "") for row in replacements]
+        if (
+            any(
+                not asset_id
+                or not asset_id.replace("_", "a").isalnum()
+                or asset_id[0].isdigit()
+                for asset_id in replacement_ids
+            )
+            or len(replacement_ids) != len(set(replacement_ids))
+        ):
+            errors.append("native_task_runtime_replacement_asset_ids_invalid")
+        selected = str(subject_asset_id or "")
+        if replacement_ids.count(selected) != 1:
+            errors.append("native_task_runtime_subject_asset_id_invalid")
+        else:
+            by_role["task_object"] = replacements[replacement_ids.index(selected)]
+    elif subject_asset_id not in (None, ""):
+        errors.append("native_task_runtime_subject_asset_id_unexpected")
     required = {"scene_collision", "task_object"}
     for role in sorted(required - set(by_role)):
         errors.append(f"native_task_runtime_asset_missing:{role}")
 
     rows: list[dict[str, Any]] = []
-    for role in ASSET_ROLES:
-        if role not in by_role:
-            continue
-        source = by_role[role]
+    ordered: list[tuple[str, Mapping[str, Any], bool]] = [
+        (role, by_role[role], False)
+        for role in ("scene_collision", "scene_appearance")
+        if role in by_role
+    ]
+    if replacements:
+        ordered.extend(
+            (
+                "task_object"
+                if str(source.get("asset_id")) == str(subject_asset_id)
+                else REPEATABLE_REPLACEMENT_ROLE,
+                source,
+                str(source.get("asset_id")) == str(subject_asset_id),
+            )
+            for source in replacements
+        )
+    elif "task_object" in by_role:
+        ordered.append(("task_object", by_role["task_object"], True))
+    for role, source, task_subject in ordered:
+        asset_id = str(
+            source.get("asset_id")
+            or ("legacy_task_object" if role == "task_object" else role)
+        )
         filename = str(source.get("filename") or "")
         if (
             not filename
@@ -137,13 +186,74 @@ def _asset_rows(
             error=f"native_task_runtime_asset_pose_invalid:{role}",
             errors=errors,
         )
+        object_type = str(source.get("object_type") or "")
+        if replacements and role in {"task_object", REPEATABLE_REPLACEMENT_ROLE}:
+            if object_type not in OBJECT_TYPES:
+                errors.append(
+                    f"native_task_runtime_replacement_object_type_invalid:{asset_id}"
+                )
+        reset_state = source.get("reset_state")
+        reset_joints: dict[str, float] = {}
+        if replacements and role in {"task_object", REPEATABLE_REPLACEMENT_ROLE}:
+            if not isinstance(reset_state, Mapping):
+                errors.append(
+                    f"native_task_runtime_replacement_reset_state_missing:{asset_id}"
+                )
+            else:
+                joint_positions = reset_state.get("joint_positions")
+                if not isinstance(joint_positions, Mapping):
+                    errors.append(
+                        f"native_task_runtime_replacement_joint_reset_invalid:{asset_id}"
+                    )
+                else:
+                    for joint_name, raw in joint_positions.items():
+                        name = str(joint_name or "")
+                        number = _finite_vector(
+                            [raw],
+                            length=1,
+                            error=(
+                                "native_task_runtime_replacement_joint_reset_invalid:"
+                                + asset_id
+                            ),
+                            errors=errors,
+                        )
+                        if not name or PurePosixPath(name).name != name:
+                            errors.append(
+                                f"native_task_runtime_replacement_joint_reset_invalid:{asset_id}"
+                            )
+                        elif number:
+                            reset_joints[name] = number[0]
+            if object_type == "RIGID" and reset_joints:
+                errors.append(
+                    f"native_task_runtime_rigid_replacement_has_joint_reset:{asset_id}"
+                )
+            if object_type == "ARTICULATION" and not reset_joints:
+                errors.append(
+                    f"native_task_runtime_articulated_replacement_joint_reset_missing:{asset_id}"
+                )
         rows.append(
             {
                 "name": str(source.get("name") or role),
                 "semantic_role": role,
+                "source_semantic_role": str(source.get("semantic_role") or role),
+                "asset_id": asset_id,
+                "runtime_name": (
+                    "task_object"
+                    if task_subject
+                    else f"replacement__{asset_id}"
+                    if role == REPEATABLE_REPLACEMENT_ROLE
+                    else role
+                ),
+                "task_subject": task_subject,
                 "filename": filename,
                 "sha256": digest,
                 "pose_world": pose,
+                "object_type": object_type or None,
+                "visible": bool(source.get("visible", True)),
+                "reset_state": {
+                    "root_pose_world": pose,
+                    "joint_positions": reset_joints,
+                },
             }
         )
     return rows, by_role
@@ -436,7 +546,14 @@ def materialize_native_task_runtime_contract(
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
         errors.append("native_task_runtime_seed_invalid")
 
-    asset_rows, by_asset_role = _asset_rows(assets, errors=errors)
+    subject_asset_id = task_spec.get("subject_asset_id")
+    asset_rows, by_asset_role = _asset_rows(
+        assets,
+        subject_asset_id=(
+            str(subject_asset_id) if subject_asset_id is not None else None
+        ),
+        errors=errors,
+    )
     composition: dict[str, Any] = {}
     if {"scene_collision", "task_object"}.issubset(by_asset_role):
         try:
@@ -462,8 +579,9 @@ def materialize_native_task_runtime_contract(
         planned = {row["semantic_role"]: row for row in composition["objects"]}
         for row in asset_rows:
             role = row["semantic_role"]
-            row["object_type"] = planned[role]["object_type"]
-            row["visible"] = planned[role]["visible"]
+            if role in planned:
+                row["object_type"] = planned[role]["object_type"]
+                row["visible"] = planned[role]["visible"]
 
     robot_pose = _pose(
         robot_base_pose_world,
@@ -486,6 +604,9 @@ def materialize_native_task_runtime_contract(
         "scene_id": scene,
         "task_id": task,
         "task_kind": task_kind,
+        "task_subject_asset_id": next(
+            row["asset_id"] for row in asset_rows if row["task_subject"]
+        ),
         "task_spec": json.loads(json.dumps(task_spec, sort_keys=True)),
         "task_spec_digest": canonical_digest(dict(task_spec)),
         "scenario": {
@@ -521,6 +642,11 @@ def materialize_native_task_runtime_contract(
             "same_cameras": True,
             "same_scorer": True,
             "native_state_readback_required_after_reset": True,
+            "per_object_reset_states": {
+                row["asset_id"]: row["reset_state"]
+                for row in asset_rows
+                if row["semantic_role"] in {"task_object", "replacement"}
+            },
         },
         "scoring_contract": {
             "source": "deterministic_simulator_state",

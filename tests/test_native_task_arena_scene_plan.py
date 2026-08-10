@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_scene_plan import (
     NativeTaskArenaScenePlanError,
     materialize_native_task_arena_scene_plan,
@@ -338,6 +339,51 @@ def test_staged_asset_digest_mismatch_fails_before_isaac(tmp_path: Path) -> None
     assert excinfo.value.errors == (
         "native_task_arena_asset_digest_mismatch:task_object",
     )
+
+
+def test_scene_plan_stages_inactive_replacement_with_unique_runtime_identity(
+    tmp_path: Path,
+) -> None:
+    contract, asset_directory = _contract(tmp_path, articulated=False)
+    inactive_path = asset_directory / "inactive_replacement.usda"
+    inactive_path.write_bytes(b"fixture:inactive-replacement")
+    inactive = dict(next(row for row in contract["objects"] if row["task_subject"]))
+    inactive.update(
+        {
+            "semantic_role": "replacement",
+            "source_semantic_role": "replacement",
+            "asset_id": "inactive_replacement",
+            "runtime_name": "replacement__inactive_replacement",
+            "task_subject": False,
+            "filename": inactive_path.name,
+            "sha256": _digest(inactive_path),
+            "reset_state": {
+                "root_pose_world": _pose(2.0, 3.0, 0.0),
+                "joint_positions": {},
+            },
+        }
+    )
+    inactive["pose_world"] = _pose(2.0, 3.0, 0.0)
+    contract["objects"].append(inactive)
+    contract["reset_contract"]["per_object_reset_states"][
+        "inactive_replacement"
+    ] = inactive["reset_state"]
+    contract["contract_digest"] = canonical_digest(
+        contract, digest_field="contract_digest"
+    )
+
+    plan = materialize_native_task_arena_scene_plan(
+        runtime_contract=contract,
+        provider_asset_directory=asset_directory,
+        physics_frequency_hz=120,
+    )
+
+    staged = next(
+        row for row in plan["objects"] if row["asset_id"] == "inactive_replacement"
+    )
+    assert staged["name"] == "replacement__inactive_replacement"
+    assert staged["prim_path"] == "{ENV_REGEX_NS}/replacement__inactive_replacement"
+    assert staged["task_subject"] is False
 
 
 def test_staged_asset_symlink_is_rejected(tmp_path: Path) -> None:

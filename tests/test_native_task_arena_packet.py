@@ -306,6 +306,95 @@ def test_original_and_second_scene_share_one_packet_materializer(
     }
 
 
+def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    articulated_request = _request(evidence, articulated=True)
+    task_asset = articulated_request["assets"][-1]
+    task_asset.update(
+        {
+            "semantic_role": "replacement",
+            "asset_id": "articulated_a",
+            "object_type": "ARTICULATION",
+            "reset_state": {
+                "joint_positions": {"door_hinge": 0.0, "locked_hinge": 0.0}
+            },
+        }
+    )
+    rigid_path = evidence / "rigid_b" / "rigid_b.usda"
+    rigid_path.parent.mkdir()
+    rigid_path.write_bytes(b"rigid-b")
+    articulated_request["assets"].append(
+        {
+            "semantic_role": "replacement",
+            "asset_id": "rigid_b",
+            "object_type": "RIGID",
+            "filename": rigid_path.name,
+            "source": {
+                "root": "evidence",
+                "relative_path": "rigid_b/rigid_b.usda",
+                "size_bytes": rigid_path.stat().st_size,
+                "sha256": f"sha256:{sha256_file(rigid_path)}",
+            },
+            "pose_world": _pose(2.0, 3.0, 0.8),
+            "reset_state": {"joint_positions": {}},
+        }
+    )
+    articulated_request["task_spec"]["subject_asset_id"] = "articulated_a"
+    articulated_request["request_digest"] = canonical_digest(
+        articulated_request, digest_field="request_digest"
+    )
+    rigid_request = json.loads(json.dumps(articulated_request))
+    rigid_request.update(
+        task_id="rigid_task_b",
+        task_spec={
+            "task_kind": "rigid_pick_place",
+            "prompt": "Relocate the rigid subject.",
+            "subject_asset_id": "rigid_b",
+            "control_frequency_hz": 15,
+            "maximum_action_steps": 20,
+            "settle_window_samples": 4,
+        },
+        task_joint_bindings=[],
+        task_state_binding=None,
+    )
+    rigid_request["request_digest"] = canonical_digest(
+        rigid_request, digest_field="request_digest"
+    )
+
+    receipts = []
+    contracts = []
+    for name, request in (("task_a", articulated_request), ("task_b", rigid_request)):
+        output = tmp_path / name
+        receipts.append(
+            materialize_native_task_arena_packet(
+                request=request,
+                evidence_root=evidence,
+                output_dir=output,
+            )
+        )
+        contracts.append(
+            json.loads((output / "native_task_runtime_contract.v1.json").read_text())
+        )
+
+    assert all(len(receipt["source_bindings"]) == 4 for receipt in receipts)
+    assert [contract["task_subject_asset_id"] for contract in contracts] == [
+        "articulated_a",
+        "rigid_b",
+    ]
+    assert {
+        row["asset_id"]
+        for row in contracts[0]["objects"]
+        if row["source_semantic_role"] == "replacement"
+    } == {
+        row["asset_id"]
+        for row in contracts[1]["objects"]
+        if row["source_semantic_role"] == "replacement"
+    } == {"articulated_a", "rigid_b"}
+
+
 def test_tampered_source_fails_and_removes_partial_packet(tmp_path: Path) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()

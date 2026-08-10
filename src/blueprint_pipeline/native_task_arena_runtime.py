@@ -338,6 +338,46 @@ def build_native_task_arena_environment(
                 object_type=ObjectType.SPAWNER,
             )
 
+    class ResettableObject(Object):
+        """Arena object that owns an exact per-episode articulation reset."""
+
+        def __init__(
+            self,
+            *,
+            reset_event_name: str,
+            reset_event_cfg: Any,
+            **kwargs: Any,
+        ) -> None:
+            self.reset_event_name = reset_event_name
+            self.reset_event_cfg = reset_event_cfg
+            super().__init__(**kwargs)
+
+        def get_event_cfg(self) -> tuple[str, Any]:
+            return self.reset_event_name, self.reset_event_cfg
+
+    def _reset_exact_asset_state(
+        env: Any,
+        env_ids: Any,
+        *,
+        asset_cfg: Any,
+        reset_joints: bool,
+    ) -> None:
+        mdp.reset_root_state_uniform(
+            env,
+            env_ids,
+            pose_range={},
+            velocity_range={},
+            asset_cfg=asset_cfg,
+        )
+        if reset_joints:
+            mdp.reset_joints_by_offset(
+                env,
+                env_ids,
+                position_range=(0.0, 0.0),
+                velocity_range=(0.0, 0.0),
+                asset_cfg=asset_cfg,
+            )
+
     robot = plan["robot"]
     robot_pose = robot["base_pose_world"]
     embodiment = DroidAbsoluteJointPositionEmbodiment(
@@ -386,27 +426,54 @@ def build_native_task_arena_environment(
     task_object: Any | None = None
     for row in runtime_objects:
         role = row["semantic_role"]
+        runtime_name = str(row.get("name") or role)
+        task_subject = row.get("task_subject") is True or role == "task_object"
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
-        if role == "task_object":
+        if task_subject:
             spawn_addon["semantic_tags"] = [("class", "task_object")]
-        obj = Object(
-            name=role,
-            prim_path=row["prim_path"],
-            object_type=ObjectType[row["object_type"]],
-            usd_path=row["usd_path"],
-            initial_pose=Pose(
+        elif role == "replacement":
+            spawn_addon["semantic_tags"] = [("class", "inactive_replacement")]
+        object_kwargs: dict[str, Any] = {
+            "name": runtime_name,
+            "prim_path": row["prim_path"],
+            "object_type": ObjectType[row["object_type"]],
+            "usd_path": row["usd_path"],
+            "initial_pose": Pose(
                 position_xyz=tuple(row["pose_world"]["position_world_m"]),
                 rotation_xyzw=tuple(row["pose_world"]["orientation_xyzw"]),
             ),
-            spawn_cfg_addon=spawn_addon,
-        )
-        if role == "task_object" and row["object_type"] == "ARTICULATION":
-            obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
-                joint_pos=plan["reset"]["task_joint_positions_rad"]
+            "spawn_cfg_addon": spawn_addon,
+        }
+        object_class = Object
+        if task_subject or role == "replacement":
+            object_class = ResettableObject
+            object_kwargs.update(
+                reset_event_name=f"reset_{runtime_name}_state",
+                reset_event_cfg=EventTerm(
+                    func=_reset_exact_asset_state,
+                    mode="reset",
+                    params={
+                        "asset_cfg": SceneEntityCfg(runtime_name),
+                        "reset_joints": row["object_type"] == "ARTICULATION",
+                    },
+                ),
             )
+        obj = object_class(
+            **object_kwargs,
+        )
+        if row["object_type"] == "ARTICULATION":
+            reset_positions = dict(
+                (row.get("reset_state") or {}).get("joint_positions") or {}
+            )
+            if task_subject:
+                reset_positions = plan["reset"]["task_joint_positions_rad"]
+            obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
+                joint_pos=reset_positions
+            )
+        if task_subject and row["object_type"] == "ARTICULATION":
             task_object = obj
         assets.append(obj)
-        scene_asset_names[role] = role
+        scene_asset_names[runtime_name] = runtime_name
 
     def invalid_exact_contact_path(path: Any) -> bool:
         value = str(path)
@@ -438,22 +505,9 @@ def build_native_task_arena_environment(
                 [f"native_task_arena_contact_sensor_contract_invalid:{index}"]
             )
         seen_sensor_instances.add(sensor_instance_id)
-        event_name = None
-        event_cfg = None
-        if index == 0:
-            if task_object is None:
-                raise NativeTaskArenaRuntimeError(
-                    ["native_task_arena_articulated_object_missing"]
-                )
-            event_name = "reset_task_object_joints"
-            event_cfg = EventTerm(
-                func=mdp.reset_joints_by_offset,
-                mode="reset",
-                params={
-                    "position_range": (0.0, 0.0),
-                    "velocity_range": (0.0, 0.0),
-                    "asset_cfg": SceneEntityCfg("task_object"),
-                },
+        if index == 0 and task_object is None:
+            raise NativeTaskArenaRuntimeError(
+                ["native_task_arena_articulated_object_missing"]
             )
         assets.append(
             ConfigAsset(
@@ -462,8 +516,6 @@ def build_native_task_arena_environment(
                     prim_path=prim_path,
                     filter_prim_paths_expr=filter_paths,
                 ),
-                event_name=event_name,
-                event_cfg=event_cfg,
             )
         )
         contact_sensor_names_mutable.setdefault(logical_sensor_id, []).append(

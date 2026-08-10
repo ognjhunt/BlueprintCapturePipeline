@@ -228,6 +228,7 @@ def materialize_native_task_arena_packet(
             source_bindings.append(
                 {
                     "semantic_role": role,
+                    "asset_id": raw.get("asset_id"),
                     "source": source,
                     "staged_relative_path": f"assets/{filename}",
                     "staged_size_bytes": source_size,
@@ -238,6 +239,22 @@ def materialize_native_task_arena_packet(
                 {
                     "semantic_role": role,
                     "name": str(raw.get("name") or role),
+                    **(
+                        {"asset_id": raw.get("asset_id")}
+                        if raw.get("asset_id") is not None
+                        else {}
+                    ),
+                    **(
+                        {"object_type": raw.get("object_type")}
+                        if raw.get("object_type") is not None
+                        else {}
+                    ),
+                    **(
+                        {"reset_state": raw.get("reset_state")}
+                        if raw.get("reset_state") is not None
+                        else {}
+                    ),
+                    "visible": bool(raw.get("visible", True)),
                     "filename": filename,
                     "sha256": source_digest,
                     "pose_world": raw.get("pose_world"),

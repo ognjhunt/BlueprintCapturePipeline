@@ -167,6 +167,46 @@ def _articulated_fixture() -> dict:
     return fixture
 
 
+def _dual_replacement_assets() -> list[dict]:
+    return [
+        {
+            "semantic_role": "scene_collision",
+            "filename": "scene_collision.usd",
+            "sha256": _sha("a"),
+            "pose_world": _pose(),
+        },
+        {
+            "semantic_role": "scene_appearance",
+            "filename": "scene_appearance.usdz",
+            "sha256": _sha("b"),
+            "pose_world": _pose(),
+        },
+        {
+            "semantic_role": "replacement",
+            "asset_id": "articulated_a",
+            "filename": "articulated_a.usda",
+            "sha256": _sha("c"),
+            "pose_world": _pose(1.0, 2.0, 0.0),
+            "object_type": "ARTICULATION",
+            "reset_state": {
+                "joint_positions": {
+                    "upper_door_hinge": 0.0,
+                    "lower_door_hinge": 0.0,
+                }
+            },
+        },
+        {
+            "semantic_role": "replacement",
+            "asset_id": "rigid_b",
+            "filename": "rigid_b.usda",
+            "sha256": _sha("e"),
+            "pose_world": _pose(2.0, 3.0, 0.8),
+            "object_type": "RIGID",
+            "reset_state": {"joint_positions": {}},
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     ("fixture", "expected_type", "expected_joints"),
     [
@@ -203,6 +243,53 @@ def test_original_and_second_scene_share_one_runtime_contract(
         ] is True
     else:
         assert contract["task_state_binding"] is None
+
+
+def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() -> None:
+    articulated = _articulated_fixture()
+    articulated["assets"] = _dual_replacement_assets()
+    articulated["task_spec"]["subject_asset_id"] = "articulated_a"
+    rigid = _rigid_fixture()
+    rigid["assets"] = _dual_replacement_assets()
+    rigid["task_spec"]["subject_asset_id"] = "rigid_b"
+
+    contract_a = materialize_native_task_runtime_contract(**articulated)
+    contract_b = materialize_native_task_runtime_contract(**rigid)
+
+    assert {row["asset_id"] for row in contract_a["objects"]} == {
+        row["asset_id"] for row in contract_b["objects"]
+    }
+    assert contract_a["task_subject_asset_id"] == "articulated_a"
+    assert contract_b["task_subject_asset_id"] == "rigid_b"
+    assert next(row for row in contract_a["objects"] if row["task_subject"])[
+        "semantic_role"
+    ] == "task_object"
+    inactive_a = next(
+        row for row in contract_b["objects"] if row["asset_id"] == "articulated_a"
+    )
+    assert inactive_a["semantic_role"] == "replacement"
+    assert inactive_a["object_type"] == "ARTICULATION"
+    assert inactive_a["reset_state"]["joint_positions"] == {
+        "lower_door_hinge": 0.0,
+        "upper_door_hinge": 0.0,
+    }
+    assert set(contract_a["reset_contract"]["per_object_reset_states"]) == {
+        "articulated_a",
+        "rigid_b",
+    }
+
+
+def test_shared_replacement_set_rejects_duplicate_or_missing_subject_identity() -> None:
+    fixture = _rigid_fixture()
+    fixture["assets"] = _dual_replacement_assets()
+    fixture["task_spec"]["subject_asset_id"] = "missing"
+    fixture["assets"][3]["asset_id"] = "articulated_a"
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert "native_task_runtime_replacement_asset_ids_invalid" in excinfo.value.errors
+    assert "native_task_runtime_subject_asset_id_invalid" in excinfo.value.errors
 
 
 def test_policy_and_review_camera_roles_cannot_be_swapped() -> None:

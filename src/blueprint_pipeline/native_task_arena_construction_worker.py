@@ -427,6 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         from blueprint_pipeline.native_task_arena_readback import (
             NativeArticulatedTaskArenaReadback,
+            read_native_task_arena_object_reset_state,
         )
         from blueprint_pipeline.native_task_arena_device_readback import (
             read_native_task_arena_device_binding,
@@ -649,17 +650,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "joint_reset_positions_rad"
             ].items()
         }
-        reset_passed = max(reset_errors, default=0.0) <= 1.0e-4 and max(
-            task_reset_errors.values(), default=0.0
-        ) <= float(plan["task_spec"]["reset_tolerance_rad"])
+        object_reset_readback = read_native_task_arena_object_reset_state(built)
+        reset_passed = (
+            max(reset_errors, default=0.0) <= 1.0e-4
+            and max(task_reset_errors.values(), default=0.0)
+            <= float(plan["task_spec"]["reset_tolerance_rad"])
+            and object_reset_readback["passed"]
+        )
         result["reset_replay"] = {
             "passed": reset_passed,
             "robot_joint_absolute_errors_rad": reset_errors,
             "task_joint_absolute_errors_rad": task_reset_errors,
+            "object_reset_readback": object_reset_readback,
             "task_sample": reset_sample,
         }
         if not reset_passed:
             result["blockers"].append("native_task_reset_replay_mismatch")
+        if not object_reset_readback["passed"]:
+            result["blockers"].append(
+                "native_task_object_reset_replay_mismatch"
+            )
         _announce("reset_replay", "completed" if reset_passed else "blocked")
 
         result["blockers"] = sorted(set(result["blockers"]))

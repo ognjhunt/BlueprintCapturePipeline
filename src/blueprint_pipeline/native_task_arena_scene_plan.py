@@ -147,6 +147,7 @@ def _stage_assets(
     rows: list[dict[str, Any]] = []
     for row in objects:
         role = str(row["semantic_role"])
+        runtime_name = str(row.get("runtime_name") or role)
         candidate = provider_asset_directory / str(row["filename"])
         path = candidate.resolve()
         if provider_asset_directory != path.parent:
@@ -161,9 +162,12 @@ def _stage_assets(
             continue
         rows.append(
             {
-                "name": role,
+                "name": runtime_name,
                 "semantic_role": role,
-                "prim_path": f"{ENV_ROOT}/{role}",
+                "source_semantic_role": row.get("source_semantic_role", role),
+                "asset_id": row.get("asset_id", role),
+                "task_subject": bool(row.get("task_subject")),
+                "prim_path": f"{ENV_ROOT}/{runtime_name}",
                 "object_type": row["object_type"],
                 "usd_path": (
                     f"{published_asset_directory}/{row['filename']}"
@@ -174,6 +178,10 @@ def _stage_assets(
                 "size_bytes": path.stat().st_size,
                 "visible": bool(row["visible"]),
                 "pose_world": row["pose_world"],
+                "reset_state": row.get("reset_state") or {
+                    "root_pose_world": row["pose_world"],
+                    "joint_positions": {},
+                },
                 "activate_contact_sensors": row["object_type"]
                 in {"RIGID", "ARTICULATION"},
             }
@@ -275,7 +283,7 @@ def _articulation_plan(
             task_object_sha256=next(
                 row["sha256"]
                 for row in contract["objects"]
-                if row["semantic_role"] == "task_object"
+                if row.get("task_subject") is True
             ),
             target_joint_id=target_joint_id,
             target_joint_prim_path=sample_binding["joint_prim_paths"][
@@ -288,7 +296,7 @@ def _articulation_plan(
             task_object_pose_world=next(
                 row["pose_world"]
                 for row in contract["objects"]
-                if row["semantic_role"] == "task_object"
+                if row.get("task_subject") is True
             ),
             reset_angle_rad=contract["task_spec"]["joint_reset_positions_rad"][
                 target_joint_id
@@ -436,7 +444,7 @@ def materialize_native_task_arena_scene_plan(
         (
             asset_directory / str(row["filename"])
             for row in contract["objects"]
-            if row["semantic_role"] == "task_object"
+            if row.get("task_subject") is True
         ),
         None,
     )
