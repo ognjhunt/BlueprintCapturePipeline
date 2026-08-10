@@ -116,13 +116,22 @@ def _persist(path: Path, value: dict[str, Any]) -> None:
 # BASE is the one that does not get it, and a contact sensor on geometry
 # without it reads false forever: a wrong answer rather than an error.
 ARENA_TYPES_WITH_CONTACT_SENSORS_ENABLED = frozenset({"ARTICULATION", "RIGID"})
+# A BASE asset is static geometry. It has no rigid bodies, so it can carry
+# neither activate_contact_sensors nor a ContactSensor - Isaac raises "no rigid
+# bodies are present under this prim". Arena omitting the flag for BASE is
+# correct, not an oversight, and my previous commit had that backwards.
+ARENA_STATIC_TYPES = frozenset({"BASE"})
 
 
 def _spawn_cfg_addon(object_type: str, row: Mapping[str, Any]) -> dict[str, Any]:
     """Extra UsdFileCfg keywords for one object, without colliding."""
 
     addon: dict[str, Any] = {"visible": bool(row.get("visible", True))}
-    if str(object_type) not in ARENA_TYPES_WITH_CONTACT_SENSORS_ENABLED:
+    kind = str(object_type)
+    if (
+        kind not in ARENA_TYPES_WITH_CONTACT_SENSORS_ENABLED
+        and kind not in ARENA_STATIC_TYPES
+    ):
         addon["activate_contact_sensors"] = True
     return addon
 
@@ -432,17 +441,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prim_path="{ENV_REGEX_NS}/Robot/.*",
                 history_length=1,
                 track_air_time=False,
+                # Per-partner forces against the twin, so "gripper on handle"
+                # and "elbow into the room" can be told apart at all.
+                filter_prim_paths_expr=["{ENV_REGEX_NS}/task_object/.*"],
             )
             cfg.scene.task_object_contact_sensor = ContactSensorCfg(
                 prim_path="{ENV_REGEX_NS}/task_object/.*",
                 history_length=1,
                 track_air_time=False,
             )
-            cfg.scene.scene_collision_contact_sensor = ContactSensorCfg(
-                prim_path="{ENV_REGEX_NS}/scene_collision/.*",
-                history_length=1,
-                track_air_time=False,
-            )
+            # No sensor on scene_collision: it is static, and
+            # filter_prim_paths_expr matches body prim paths, which static
+            # geometry does not have either. Scene contact is therefore the
+            # part of the robot's net force that the task-object filter does
+            # not explain.
 
             cfg.sim.dt = 1.0 / 120.0
             cfg.seed = int(spec.get("seed") or 20260810)
@@ -537,6 +549,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             except (KeyError, AttributeError, TypeError):
                 return None
 
+        def _residual_scene_forces():
+            """Robot net contact minus the part the twin explains."""
+
+            net = _sensor_forces("robot_contact_sensor")
+            if net is None:
+                return None
+            sensor = scene["robot_contact_sensor"]
+            matrix = getattr(sensor.data, "force_matrix_w", None)
+            if matrix is None:
+                # No filter reported: cannot separate room from twin, and
+                # returning the net force would blame the room for every grasp.
+                return None
+            # force_matrix_w is (envs, bodies, filters, 3); summing the filter
+            # axis gives the twin's share of each body's contact.
+            explained = matrix[0].sum(dim=1) if hasattr(matrix[0], "sum") else None
+            if explained is None:
+                return None
+            return (net[0] - explained).unsqueeze(0)
+
         def _body_position(articulation, body_name: str):
             names = list(getattr(articulation.data, "body_names", []) or [])
             if body_name not in names:
@@ -626,9 +657,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "task_object_contact_sensor"
             ),
             read_robot_contact_forces=lambda: _sensor_forces("robot_contact_sensor"),
-            read_scene_contact_forces=lambda: _sensor_forces(
-                "scene_collision_contact_sensor"
-            ),
+            # The room is static and cannot report contact itself. What the
+            # robot touches that is NOT the twin is, in this scene, the room:
+            # net force minus the filtered per-partner force against the twin.
+            # An approximation, and stated as one - it cannot distinguish the
+            # room from the robot touching itself.
+            read_scene_contact_forces=lambda: _residual_scene_forces(),
             # Named by the spec, never defaulted to a literal. A guessed body
             # name that happens not to exist refuses (which is fine), but one
             # that happens to exist and is the wrong link reads a containment

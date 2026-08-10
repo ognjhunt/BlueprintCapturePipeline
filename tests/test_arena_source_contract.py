@@ -235,12 +235,15 @@ def test_spawn_cfg_addon_never_duplicates_what_arena_already_passes():
 
     It is not additive. Arena's _generate_articulation_cfg and
     _generate_rigid_cfg already pass activate_contact_sensors; repeating it
-    raises "got multiple values for keyword argument". _generate_base_cfg does
-    not pass it, and a contact sensor on a BASE prim without it reads false
-    forever - a wrong answer rather than an error, which is worse.
+    raises "got multiple values for keyword argument".
 
-    So the safe set is per object type, and it is read from Arena's source
-    rather than remembered.
+    _generate_base_cfg omits it, and I first read that as an oversight to
+    correct. It is not: a BASE asset is static geometry with no rigid bodies,
+    and Isaac refuses with "no rigid bodies are present under this prim". Arena
+    is right and I was wrong, so BASE must not receive it either.
+
+    The safe set is per object type and read from Arena's source rather than
+    remembered.
     """
 
     root = _arena_source()
@@ -278,5 +281,5 @@ def test_spawn_cfg_addon_never_duplicates_what_arena_already_passes():
             violations.append(f"{object_type}: duplicates {sorted(clash)}")
 
     assert not violations, "spawn_cfg_addon collisions:\n  " + "\n  ".join(violations)
-    # And the one type Arena leaves alone must actually get it.
-    assert "activate_contact_sensors" in module._spawn_cfg_addon("BASE", {})
+    # BASE is static: no rigid bodies, so contact sensors cannot attach at all.
+    assert "activate_contact_sensors" not in module._spawn_cfg_addon("BASE", {})

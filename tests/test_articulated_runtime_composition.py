@@ -179,3 +179,57 @@ def test_composition_refuses_an_alias_for_an_unknown_role():
         )
 
     assert any("alias_role_unknown" in error for error in excinfo.value.errors)
+
+
+def test_a_policy_bound_composition_must_carry_an_appearance():
+    """A vision policy cannot be evaluated against an invisible room.
+
+    The 840796 scene shipped with a collision-only background: the room's
+    geometry present for physics, nothing for the cameras. That is fine for
+    scripted controls, which are pure physics - and silently wrong for
+    pi05_droid or groot_n17_droid, which consume the camera images. They would
+    be looking at a floating appliance in a void, and a failure there says
+    nothing about the policy.
+
+    Nobody noticed for several runs because nothing asked. Now something asks.
+    """
+
+    with pytest.raises(ArticulatedRuntimeCompositionError) as excinfo:
+        plan_articulated_runtime_composition(
+            task_spec=_task_spec(),
+            twin_usd_filename="twin.usda",
+            scene_collision_filename="scene.usda",
+            appearance_filename=None,
+            intended_for_policy_execution=True,
+        )
+
+    assert any("appearance_missing" in error for error in excinfo.value.errors)
+
+
+def test_a_policy_bound_composition_with_an_appearance_is_admitted():
+    plan = plan_articulated_runtime_composition(
+        task_spec=_task_spec(),
+        twin_usd_filename="twin.usda",
+        scene_collision_filename="scene.usda",
+        appearance_filename="scene_appearance.usdz",
+        intended_for_policy_execution=True,
+    )
+
+    roles = {row["semantic_role"] for row in plan["objects"]}
+    assert "scene_appearance" in roles
+    assert plan["intended_for_policy_execution"] is True
+
+
+def test_scripted_controls_do_not_require_an_appearance():
+    """Physics does not need to be lit; refusing here would block real work."""
+
+    plan = plan_articulated_runtime_composition(
+        task_spec=_task_spec(),
+        twin_usd_filename="twin.usda",
+        scene_collision_filename="scene.usda",
+    )
+
+    assert plan["intended_for_policy_execution"] is False
+    assert plan["appearance_present"] is False
+    # And it says so, so a reader cannot mistake it for a policy-ready scene.
+    assert plan["claim_boundary"]["cameras_see_no_scene_background"] is True

@@ -43,6 +43,7 @@ def plan_articulated_runtime_composition(
     appearance_filename: str | None = None,
     twin_position_world_m: Sequence[float] | None = None,
     asset_filename_aliases: Mapping[str, Sequence[str]] | None = None,
+    intended_for_policy_execution: bool = False,
 ) -> dict[str, Any]:
     """Resolve spawn types, visibility, and the joint binding for one task."""
 
@@ -104,6 +105,14 @@ def plan_articulated_runtime_composition(
     # than being guessed at load time, and an alias for a role that does not
     # exist is an error - a typo that silently left an asset unaliased would
     # surface as a missing file on paid hardware.
+    # A vision policy cannot be evaluated against an invisible room. Scripted
+    # controls are pure physics and need no appearance; a learned policy reads
+    # the cameras, and a collision-only background gives it a floating
+    # appliance in a void. Refusing here is the only place that distinction
+    # gets checked.
+    if intended_for_policy_execution and not appearance_filename:
+        errors.append("articulated_runtime_composition_appearance_missing_for_policy")
+
     known_roles = {"scene_collision", "task_object"}
     if appearance_filename:
         known_roles.add("scene_appearance")
@@ -162,6 +171,11 @@ def plan_articulated_runtime_composition(
         "schema_version": RUNTIME_COMPOSITION_SCHEMA_VERSION,
         "task_kind": task_kind,
         "objects": objects,
+        # Recorded, not inferred by a reader: a scene with no appearance is
+        # valid for scripted controls and invalid for a vision policy, and the
+        # difference has to survive into the receipt.
+        "appearance_present": bool(appearance_filename),
+        "intended_for_policy_execution": bool(intended_for_policy_execution),
         "task_sample_binding": {
             "joint_ids": sorted(row["joint_id"] for row in joints),
             "joint_prim_paths": {
