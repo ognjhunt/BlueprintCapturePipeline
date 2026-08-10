@@ -114,9 +114,9 @@ mapfile -t BUILD_REQUIREMENTS < "${BUILD_REQUIREMENTS_PATH}"
 }
 "${UV_BIN}" pip install --python "${SOURCE_DIR}/.venv/bin/python" \
   --no-build-isolation \
-  -e "${SOURCE_DIR}" \
-  -e "${SOURCE_DIR}/apps/joint_agent" \
-  -e "${SOURCE_DIR}/apps/ovrtx_rendering_api" || {
+  "${SOURCE_DIR}" \
+  "${SOURCE_DIR}/apps/joint_agent" \
+  "${SOURCE_DIR}/apps/ovrtx_rendering_api" || {
   write_missing_result "joint_agent_dependency_install_failed"; exit 2;
 }
 export WU_OVRTX_VENV_DIR="${SOURCE_DIR}/.ovrtx_venv"

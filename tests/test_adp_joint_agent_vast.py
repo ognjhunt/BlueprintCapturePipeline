@@ -893,12 +893,13 @@ def test_runtime_script_probes_ovrtx_daemon_before_service() -> None:
     assert "UV_DEFAULT_INDEX" in script
     assert "python_build_dependency_plan.json" in script
     assert "--no-build-isolation" in script
+    assert '-e "${SOURCE_DIR}"' not in script
     assert (
         '"${SOURCE_DIR}/.venv/bin/python" '
         '"${SCRIPT_DIR}/provider_python_build_plan.py"'
     ) in script
     assert script.index("python_build_dependency_plan.json") < script.index(
-        "-e \"${SOURCE_DIR}\""
+        '"${SOURCE_DIR}/apps/joint_agent"'
     )
 
 
