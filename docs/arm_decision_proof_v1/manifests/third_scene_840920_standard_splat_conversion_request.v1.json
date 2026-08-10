@@ -1,0 +1,22 @@
+{
+  "schema_version": "standard_splat_conversion_request.v1",
+  "program_id": "arm-decision-proof-v1",
+  "frozen_before_conversion": true,
+  "learned_policy_outcomes_observed": false,
+  "source": {
+    "relative_path": "third_scene_dual_task_e2e/shared_scene/source/InteriorGS/0492_840920/3dgs_compressed.ply",
+    "size_bytes": 31223241,
+    "sha256": "sha256:7de988a6cc1654dee5ed8c735bdc89ab0c5e67d10f6b76f8e65eec75522fc3b9",
+    "dataset": "spatialverse/InteriorGS",
+    "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+    "license": "custom gated noncommercial research terms"
+  },
+  "rights": {
+    "terms_digest": "sha256:508b0ec62ff1b5bee3c47524dd36f2402f5f70a09afbe62a4d0041078856356b",
+    "conversion_execution_location": "local_only",
+    "raw_private_upload_authorized": false,
+    "training_authorized": false
+  },
+  "output_filename": "scene_standard.ply",
+  "request_digest": "sha256:9a8ba3413f81023faea4dc6c5006c0338852b0e219e05eb85b1c30aa6875b759"
+}
