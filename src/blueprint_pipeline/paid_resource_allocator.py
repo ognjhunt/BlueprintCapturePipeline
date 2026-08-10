@@ -2949,6 +2949,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     authorize_gated_backbone=args.adp009d_authorize_gated_backbone,
+                    # An overridden worker ships a different payload, so it is
+                    # validated against a different entry list.
+                    provider_bundle_kind=(
+                        "adp009d_articulated_arena"
+                        if args.adp009d_worker_source
+                        else "adp009d_isaac"
+                    ),
                     allowed_active_instance_ids=(
                         args.adp_allowed_active_vast_instance_id
                     ),

@@ -12,6 +12,11 @@ from .paid_resource_admission import PaidResourceAdmissionGrant
 
 
 RESULT_SCHEMA_VERSION = "adp009d_franka_vast_run.v1"
+# Both Arena payloads share this transport but not their required entries, so
+# the kind has to travel rather than be assumed. Hardcoding it meant an
+# articulated bundle was validated against the rigid lane's entry list and
+# refused for missing a SAGE overlay it can never produce.
+SUPPORTED_BUNDLE_KINDS = ("adp009d_isaac", "adp009d_articulated_arena")
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/adp009d-native-microcheck"
 
 
@@ -27,9 +32,14 @@ def run_adp009d_native_microcheck_vast(
     hard_ttl_seconds: int = 14_400,
     authorize_gated_backbone: bool = False,
     allowed_active_instance_ids: Sequence[int] = (),
+    provider_bundle_kind: str = "adp009d_isaac",
 ) -> dict[str, Any]:
     """Run one zero-retry native infrastructure check through the shared transport."""
 
+    if provider_bundle_kind not in SUPPORTED_BUNDLE_KINDS:
+        raise ValueError(
+            f"adp009d_provider_bundle_kind_unsupported:{provider_bundle_kind}"
+        )
     return run_arena_native_control_vast(
         approval_path=".",
         job_dir=job_dir,
@@ -42,7 +52,7 @@ def run_adp009d_native_microcheck_vast(
         hard_ttl_seconds=hard_ttl_seconds,
         expected_output_filename="adp009d_native_microcheck.json",
         container_image=DEFAULT_IMAGE,
-        provider_bundle_kind="adp009d_isaac",
+        provider_bundle_kind=provider_bundle_kind,
         result_schema_version=RESULT_SCHEMA_VERSION,
         object_store_key_prefix=DEFAULT_KEY_PREFIX,
         instance_label_prefix="blueprint-adp009d-",
@@ -57,4 +67,8 @@ def run_adp009d_native_microcheck_vast(
     )
 
 
-__all__ = ["PROBE_KIND", "run_adp009d_native_microcheck_vast"]
+__all__ = [
+    "PROBE_KIND",
+    "SUPPORTED_BUNDLE_KINDS",
+    "run_adp009d_native_microcheck_vast",
+]
