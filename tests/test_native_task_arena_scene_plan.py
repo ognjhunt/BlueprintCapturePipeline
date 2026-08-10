@@ -28,11 +28,17 @@ def _pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
 
 
 def _camera(role: str) -> dict:
+    wrist = role == "wrist"
     return {
         "role": role,
         "policy_input": role in {"external", "wrist"},
         "scoring_input": False,
-        "pose_frame": "panda_hand" if role == "wrist" else "world",
+        "pose_frame": "robot_body" if wrist else "world",
+        "parent_prim_path": (
+            "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link"
+            if wrist
+            else "{ENV_REGEX_NS}"
+        ),
         "optical_convention": "opencv",
         "frame_from_camera_matrix": [
             1.0,

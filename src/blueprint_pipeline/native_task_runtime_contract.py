@@ -30,6 +30,7 @@ FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
 ASSET_ROLES = ("scene_collision", "scene_appearance", "task_object")
 CAMERA_ROLES = ("external", "wrist", "overview")
 CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
+ENV_ROOT = "{ENV_REGEX_NS}"
 TASK_KINDS = ("rigid_pick_place", "articulated_open_close")
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
 DROID_FRANKA_RESET_JOINT_NAMES = (
@@ -174,9 +175,21 @@ def _camera_rows(
         if bool(source.get("scoring_input")):
             errors.append(f"native_task_runtime_camera_scoring_forbidden:{role}")
         frame = str(source.get("pose_frame") or "")
-        expected_frame = "panda_hand" if role == "wrist" else "world"
+        expected_frame = "robot_body" if role == "wrist" else "world"
         if frame != expected_frame:
             errors.append(f"native_task_runtime_camera_pose_frame_invalid:{role}")
+        parent_prim_path = str(source.get("parent_prim_path") or "")
+        expected_world_parent = ENV_ROOT
+        robot_parent_valid = (
+            parent_prim_path.startswith(f"{ENV_ROOT}/Robot/")
+            and not parent_prim_path.endswith("/")
+            and ".." not in PurePosixPath(parent_prim_path).parts
+        )
+        if (
+            (frame == "world" and parent_prim_path != expected_world_parent)
+            or (frame == "robot_body" and not robot_parent_valid)
+        ):
+            errors.append(f"native_task_runtime_camera_parent_invalid:{role}")
         matrix = _finite_vector(
             source.get("frame_from_camera_matrix"),
             length=16,
@@ -247,6 +260,7 @@ def _camera_rows(
                 "review_only": role == "overview",
                 "scoring_input": False,
                 "pose_frame": frame,
+                "parent_prim_path": parent_prim_path,
                 "optical_convention": optical_convention,
                 "frame_from_camera_matrix": matrix,
                 "intrinsics": intrinsic_values,

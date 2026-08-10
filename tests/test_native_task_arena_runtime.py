@@ -17,10 +17,17 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 def _camera(role: str, matrix: list[float] | None = None) -> dict:
+    wrist = role == "wrist"
     return {
         "role": role,
         "policy_input": role in {"external", "wrist"},
         "review_only": role == "overview",
+        "pose_frame": "robot_body" if wrist else "world",
+        "parent_prim_path": (
+            "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link"
+            if wrist
+            else "{ENV_REGEX_NS}"
+        ),
         "optical_convention": "opencv",
         "frame_from_camera_matrix": matrix
         or [
@@ -59,7 +66,10 @@ def _camera(role: str, matrix: list[float] | None = None) -> dict:
         (
             "wrist",
             "wrist_camera",
-            "{ENV_REGEX_NS}/Robot/panda_hand/wrist_camera",
+            (
+                "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
+                "base_link/wrist_camera"
+            ),
         ),
         ("overview", "external_camera_2", "{ENV_REGEX_NS}/external_camera_2"),
     ],

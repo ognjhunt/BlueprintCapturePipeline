@@ -31,7 +31,12 @@ def _camera(role: str) -> dict:
         "role": role,
         "policy_input": role in {"external", "wrist"},
         "scoring_input": False,
-        "pose_frame": "panda_hand" if wrist else "world",
+        "pose_frame": "robot_body" if wrist else "world",
+        "parent_prim_path": (
+            "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link"
+            if wrist
+            else "{ENV_REGEX_NS}"
+        ),
         "optical_convention": "opencv",
         "frame_from_camera_matrix": [
             1.0,
@@ -218,6 +223,22 @@ def test_camera_pose_must_be_rigid_and_opencv_calibrated() -> None:
 
     assert "native_task_runtime_camera_pose_invalid:external" in excinfo.value.errors
     assert "native_task_runtime_camera_convention_invalid:wrist" in excinfo.value.errors
+
+
+def test_wrist_camera_requires_exact_robot_body_parent() -> None:
+    fixture = _articulated_fixture()
+    fixture["cameras"][1]["parent_prim_path"] = "{ENV_REGEX_NS}/Robot/panda_hand"
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    assert contract["cameras"][1]["parent_prim_path"] == (
+        "{ENV_REGEX_NS}/Robot/panda_hand"
+    )
+
+    fixture["cameras"][1]["parent_prim_path"] = "{ENV_REGEX_NS}/scene_collision"
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+    assert "native_task_runtime_camera_parent_invalid:wrist" in excinfo.value.errors
 
 
 def test_runtime_contract_round_trip_and_tamper_rejection(tmp_path: Path) -> None:

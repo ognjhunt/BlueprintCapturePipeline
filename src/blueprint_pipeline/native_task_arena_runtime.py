@@ -128,7 +128,21 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
             [f"native_task_arena_camera_intrinsics_not_representable:{role}"]
         )
     rotation = [matrix[0:3], matrix[4:7], matrix[8:11]]
-    parent = "{ENV_REGEX_NS}/Robot/panda_hand" if role == "wrist" else "{ENV_REGEX_NS}"
+    pose_frame = str(camera.get("pose_frame") or "")
+    parent = str(camera.get("parent_prim_path") or "")
+    expected_frame = "robot_body" if role == "wrist" else "world"
+    if (
+        pose_frame != expected_frame
+        or not parent
+        or (pose_frame == "world" and parent != "{ENV_REGEX_NS}")
+        or (
+            pose_frame == "robot_body"
+            and not parent.startswith("{ENV_REGEX_NS}/Robot/")
+        )
+    ):
+        raise NativeTaskArenaRuntimeError(
+            [f"native_task_arena_camera_parent_invalid:{role}"]
+        )
     runtime_name = {
         "external": "external_camera",
         "wrist": "wrist_camera",
@@ -142,6 +156,8 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
         "role": role,
         "runtime_name": runtime_name,
         "prim_path": f"{parent}/{runtime_name}",
+        "pose_frame": pose_frame,
+        "parent_prim_path": parent,
         "offset_position_m": [matrix[3], matrix[7], matrix[11]],
         "offset_rotation_xyzw": _rotation_matrix_to_xyzw(rotation),
         # Isaac Lab names the OpenCV optical frame convention "ros": +Z
