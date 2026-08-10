@@ -25,6 +25,7 @@ from .native_task_runtime_source_packet import (
 SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 TOP_LEVEL_PACKAGES = (
+    "warp",
     "cloudpickle",
     "farama_notifications",
     "gymnasium",
@@ -70,6 +71,9 @@ TOP_LEVEL_PACKAGES = (
     "isaaclab_visualizers",
     "isaaclab_arena",
 )
+RUNTIME_IMPORT_PROBES = (
+    {"module": "warp", "expected_version": "1.12.0"},
+)
 
 
 def _extract_runtime_dependency_wheels(
@@ -109,8 +113,8 @@ def _extract_runtime_dependency_wheels(
             if not pure_python:
                 interpreter, abi, platform_tag = wheel_tag.split("-", 2)
                 if (
-                    interpreter != runtime_python_tag
-                    or abi not in {runtime_python_tag, "abi3"}
+                    interpreter not in {runtime_python_tag, "py3"}
+                    or abi not in {runtime_python_tag, "abi3", "none"}
                     or platform_tag not in runtime_platform_tags
                 ):
                     raise RuntimeError("native_task_runtime_dependency_binary_wheel_incompatible")
@@ -212,6 +216,11 @@ def provision_native_task_runtime_sources(
         "package_path_probe_returncode": None,
         "package_path_probe_stdout": "",
         "package_path_probe_stderr": "",
+        "runtime_import_probe_command": [],
+        "runtime_import_probe_returncode": None,
+        "runtime_import_probe_stdout": "",
+        "runtime_import_probe_stderr": "",
+        "runtime_import_probes": [],
         "isaac_sim_link": None,
         "runtime_dependency_target": None,
         "runtime_dependencies_installed": [],
@@ -329,6 +338,49 @@ def provision_native_task_runtime_sources(
             result["blockers"].append(
                 "native_task_runtime_source_package_path_probe_failed"
             )
+            return _persist(result_path, result)
+        import_probe = (
+            "import importlib,json;"
+            f"contracts={list(RUNTIME_IMPORT_PROBES)!r};"
+            "rows=[];"
+            "[(lambda module,contract: rows.append({"
+            "'module':contract['module'],'available':True,"
+            "'expected_version':contract['expected_version'],"
+            "'observed_version':str(getattr(module,'__version__','unreported')),"
+            "'version_matches':str(getattr(module,'__version__','unreported'))"
+            "==contract['expected_version']}))"
+            "(importlib.import_module(contract['module']),contract) for contract in contracts];"
+            "print(json.dumps(rows,sort_keys=True));"
+            "raise SystemExit(0 if all(row['version_matches'] for row in rows) else 4)"
+        )
+        import_command = [
+            str(python_executable or sys.executable),
+            "-I",
+            "-c",
+            import_probe,
+        ]
+        result["runtime_import_probe_command"] = import_command
+        imported = run_command(
+            import_command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        result["runtime_import_probe_returncode"] = imported.returncode
+        result["runtime_import_probe_stdout"] = imported.stdout[-16_000:]
+        result["runtime_import_probe_stderr"] = imported.stderr[-16_000:]
+        try:
+            import_rows = json.loads(imported.stdout)
+        except (json.JSONDecodeError, TypeError):
+            import_rows = []
+        result["runtime_import_probes"] = import_rows
+        if (
+            imported.returncode != 0
+            or not isinstance(import_rows, list)
+            or len(import_rows) != len(RUNTIME_IMPORT_PROBES)
+            or any(row.get("version_matches") is not True for row in import_rows)
+        ):
+            result["blockers"].append("native_task_runtime_import_probe_failed:warp")
             return _persist(result_path, result)
         result["status"] = "completed"
         result["source_packages_made_importable"] = True

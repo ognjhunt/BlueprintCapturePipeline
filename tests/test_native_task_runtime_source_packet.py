@@ -48,6 +48,10 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
     else:
         files = {
             "LICENSE": "BSD-3-Clause fixture\n",
+            "pyproject.toml": (
+                "[project]\nname='isaaclab-fixture'\n"
+                'dependencies=["warp-lang==1.12.0"]\n'
+            ),
             "apps/isaaclab.python.kit": (
                 "[dependencies]\n\"omni.physics.physx\" = {}\n"
                 "[settings.app.extensions]\n"
@@ -141,6 +145,18 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         "BSD-3-Clause",
     }
     assert verified["install_roots"][-1] == "runtime_sources/arena"
+    assert verified["runtime_dependency_basis"]["requirement"] == (
+        "warp-lang==1.12.0"
+    )
+    assert verified["runtime_dependency_basis"]["source_repository"] == (
+        source_packet.ISAACLAB_REPOSITORY
+    )
+    assert verified["runtime_dependency_basis"]["source_revision"] == (
+        verified["repositories"][0]["commit"]
+    )
+    assert verified["runtime_dependency_basis"]["relative_path"] == (
+        "runtime_sources/isaaclab/pyproject.toml"
+    )
     assert {
         ("antlr4-python3-runtime", "4.9.3"),
         ("omegaconf", "2.3.0"),
@@ -153,6 +169,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         ("lightwheel-sdk", "1.0.3"),
         ("requests", "2.34.2"),
         ("PyYAML", "6.0.3"),
+        ("warp-lang", "1.12.0"),
     }.issubset(
         {
             (row["package"], row["version"])
@@ -222,6 +239,38 @@ def test_source_packet_rejects_revision_and_archive_tamper(tmp_path: Path) -> No
         )
 
 
+def test_source_packet_rejects_warp_wheel_not_bound_by_api_source(
+    tmp_path: Path,
+) -> None:
+    isaaclab, _, _ = _repository(tmp_path / "lab", arena=False)
+    (isaaclab / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\ndependencies=[]\n", encoding="utf-8"
+    )
+    _git(isaaclab, "add", "pyproject.toml")
+    _git(isaaclab, "commit", "-m", "remove warp contract")
+    isaaclab_commit = _git(isaaclab, "rev-parse", "HEAD")
+    isaaclab_tree = _git(isaaclab, "rev-parse", "HEAD^{tree}")
+    arena, arena_commit, arena_tree = _repository(tmp_path / "arena", arena=True)
+
+    with pytest.raises(
+        NativeTaskRuntimeSourcePacketError,
+        match="native_task_runtime_dependency_source_contract_invalid:warp-lang",
+    ):
+        materialize_native_task_runtime_source_packet(
+            output_dir=tmp_path / "bad-warp-contract",
+            isaaclab_repo=isaaclab,
+            arena_repo=arena,
+            dependency_wheel_dir=_wheelhouse(tmp_path),
+            generated_at="fixed",
+            isaaclab_commit=isaaclab_commit,
+            isaaclab_tree=isaaclab_tree,
+            isaaclab_runtime_compatibility_commit=isaaclab_commit,
+            isaaclab_runtime_compatibility_tree=isaaclab_tree,
+            arena_commit=arena_commit,
+            arena_tree=arena_tree,
+        )
+
+
 def test_relocated_packet_installs_all_sources_once_without_build_backend(
     tmp_path: Path,
 ) -> None:
@@ -240,6 +289,23 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     def fake_run(command, **kwargs):
         assert kwargs == {"check": False, "capture_output": True, "text": True}
         observed.append(command)
+        if "import_module" in command[-1]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "module": "warp",
+                            "available": True,
+                            "expected_version": "1.12.0",
+                            "observed_version": "1.12.0",
+                            "version_matches": True,
+                        }
+                    ]
+                ),
+                stderr="",
+            )
         return subprocess.CompletedProcess(command, 0, stdout="installed", stderr="")
 
     simulator = tmp_path / "isaac-sim"
@@ -272,10 +338,13 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert next(
         row for row in result["runtime_dependencies_installed"] if row["package"] == "h5py"
     )["pure_python"] is False
-    assert len(observed) == 1
+    assert len(observed) == 2
     assert observed[0][1:3] == ["-I", "-c"]
     assert "pip" not in observed[0]
     assert "setuptools" not in observed[0]
+    assert "import_module" in observed[1][-1]
+    assert result["runtime_import_probes"][0]["module"] == "warp"
+    assert result["runtime_import_probes"][0]["version_matches"] is True
     assert len(result["install_roots"]) == len(ISAACLAB_PACKAGE_NAMES) + 1
     assert Path(result["isaac_sim_link"]["path"]).readlink() == simulator
     path_lines = Path(result["path_file"]).read_text(encoding="utf-8").splitlines()
@@ -283,6 +352,52 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert path_lines[0].startswith("import sys;sys.path[:0]=[")
     assert result["runtime_dependency_target"] in path_lines[0]
     assert all(path in path_lines[0] for path in result["install_roots"])
+
+
+def test_external_warp_is_probed_before_runtime_provisioning_can_complete(
+    tmp_path: Path,
+) -> None:
+    receipt = _packet(tmp_path)
+    calls = 0
+
+    def missing_warp(command, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0, stdout="found", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="ModuleNotFoundError: No module named 'warp'",
+        )
+
+    simulator = tmp_path / "isaac-sim"
+    simulator.mkdir()
+    result = provision_native_task_runtime_sources(
+        source_receipt_path=tmp_path
+        / "packet/native_task_runtime_source_packet.v1.json",
+        source_packet_path=receipt["packet_path"],
+        extraction_dir=tmp_path / "missing-warp",
+        output_path=tmp_path / "missing-warp.json",
+        simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
+        python_executable="/isaac-sim/python.sh",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=(
+            "manylinux_2_28_x86_64",
+            "manylinux_2_26_x86_64",
+            "manylinux_2_17_x86_64",
+            "manylinux2014_x86_64",
+        ),
+        run_command=missing_warp,
+    )
+
+    assert calls == 2
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["native_task_runtime_import_probe_failed:warp"]
+    assert result["source_packages_made_importable"] is False
+    assert result["dependencies_installed"] is False
 
 
 def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe(

@@ -51,6 +51,9 @@ RUNTIME_EXPERIENCE_RELATIVE_PATH = (
     "runtime_sources/isaaclab_runtime_compatibility/apps/"
     "isaaclab.python.headless.rendering.kit"
 )
+RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH = (
+    "runtime_sources/isaaclab/pyproject.toml"
+)
 ARENA_REPOSITORY = "https://github.com/isaac-sim/IsaacLab-Arena.git"
 ARENA_COMMIT = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
 ARENA_TREE = "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
@@ -73,6 +76,21 @@ INSTALL_ROOTS = tuple(
     f"runtime_sources/isaaclab/source/{name}" for name in ISAACLAB_PACKAGE_NAMES
 ) + ("runtime_sources/arena",)
 RUNTIME_DEPENDENCY_WHEELS = (
+    # Arena's pinned Isaac Lab Python/API tree declares external Warp 1.12.0.
+    # The compatible Kit experience intentionally excludes ``omni.warp.core``
+    # to prevent a second Warp runtime from moving PhysX tensors across CPU and
+    # CUDA devices.  Therefore the external wheel is a required runtime input,
+    # not an optional transitive dependency supplied by the simulator image.
+    {
+        "filename": "warp_lang-1.12.0-py3-none-manylinux_2_28_x86_64.whl",
+        "package": "warp-lang",
+        "version": "1.12.0",
+        "license_spdx": "Apache-2.0",
+        "pure_python": False,
+        "wheel_tag": "py3-none-manylinux_2_28_x86_64",
+        "import_module": "warp",
+        "import_version": "1.12.0",
+    },
     # Arena imports Isaac Lab task configuration at builder import time.  That
     # path requires Hydra and its complete pure-Python dependency closure;
     # bundling only hydra-core would merely defer failure to OmegaConf or the
@@ -509,7 +527,8 @@ def _runtime_dependency_rows(
         archive_path = f"runtime_dependencies/wheels/{path.name}"
         row = {
             **contract,
-            "source": f"https://pypi.org/project/{contract['package']}/{contract['version']}/",
+            "source": contract.get("source")
+            or f"https://pypi.org/project/{contract['package']}/{contract['version']}/",
             "archive_path": archive_path,
             "size_bytes": len(data),
             "sha256": _sha256_bytes(data),
@@ -547,7 +566,7 @@ def materialize_native_task_runtime_source_packet(
     # root at import time.  They are runtime inputs, not optional developer
     # metadata, so keep the complete released ``apps`` directory in the exact
     # source closure alongside the Python packages.
-    isaaclab_prefixes = ["LICENSE", "apps"] + [
+    isaaclab_prefixes = ["LICENSE", "pyproject.toml", "apps"] + [
         f"source/{name}" for name in ISAACLAB_PACKAGE_NAMES
     ]
     isaaclab, isaaclab_blobs = _repository_rows(
@@ -560,6 +579,28 @@ def materialize_native_task_runtime_source_packet(
         archive_namespace="isaaclab",
         prefixes=isaaclab_prefixes,
     )
+    dependency_manifest = next(
+        (
+            data
+            for archive_path, data in isaaclab_blobs
+            if archive_path == RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH
+        ),
+        b"",
+    )
+    if b'"warp-lang==1.12.0"' not in dependency_manifest:
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_dependency_source_contract_invalid:warp-lang"]
+        )
+    dependency_basis = {
+        "package": "warp-lang",
+        "version": "1.12.0",
+        "requirement": "warp-lang==1.12.0",
+        "source_repository": ISAACLAB_REPOSITORY,
+        "source_revision": isaaclab_commit,
+        "source_tree": isaaclab_tree,
+        "relative_path": RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH,
+        "sha256": _sha256_bytes(dependency_manifest),
+    }
     compatibility, compatibility_blobs = _repository_rows(
         repo=Path(
             isaaclab_runtime_compatibility_repo or isaaclab_repo
@@ -607,6 +648,7 @@ def materialize_native_task_runtime_source_packet(
         },
         "install_roots": list(INSTALL_ROOTS),
         "runtime_dependency_wheels": dependency_rows,
+        "runtime_dependency_basis": dependency_basis,
         "source_file_count": (
             isaaclab["file_count"]
             + compatibility["file_count"]
@@ -657,6 +699,7 @@ def materialize_native_task_runtime_source_packet(
         "runtime_experience": manifest["runtime_experience"],
         "install_roots": list(INSTALL_ROOTS),
         "runtime_dependency_wheels": dependency_rows,
+        "runtime_dependency_basis": dependency_basis,
         "source_file_count": manifest["source_file_count"],
         "packet_path": str(packet_path),
         "packet_size_bytes": packet_path.stat().st_size,
@@ -753,6 +796,12 @@ def verify_native_task_runtime_source_packet(
                 "runtime_dependency_wheels"
             ):
                 errors.append("native_task_runtime_dependency_receipt_manifest_mismatch")
+            if manifest.get("runtime_dependency_basis") != receipt.get(
+                "runtime_dependency_basis"
+            ):
+                errors.append(
+                    "native_task_runtime_dependency_basis_receipt_manifest_mismatch"
+                )
             if manifest.get("runtime_experience") != receipt.get(
                 "runtime_experience"
             ):

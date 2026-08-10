@@ -27,6 +27,7 @@ from typing import Any
 RESULT_SCHEMA_VERSION = "native_task_arena_construction_result.v1"
 RESULT_FILENAME = "native_task_arena_construction_result.v1.json"
 DEPENDENCY_IMPORTS = (
+    "warp",
     "torch",
     "numpy",
     "PIL.Image",

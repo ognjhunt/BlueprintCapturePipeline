@@ -68,6 +68,24 @@ def _receipt(tmp_path: Path, *, old_conflicting_experience: bool = False) -> Pat
             "path": str(experience),
             "sha256": _sha256(experience),
         },
+        "runtime_dependencies_installed": [
+            {
+                "package": "warp-lang",
+                "version": "1.12.0",
+                "pure_python": False,
+                "wheel_tag": "py3-none-manylinux_2_28_x86_64",
+            }
+        ],
+        "runtime_import_probe_returncode": 0,
+        "runtime_import_probes": [
+            {
+                "module": "warp",
+                "available": True,
+                "expected_version": "1.12.0",
+                "observed_version": "1.12.0",
+                "version_matches": True,
+            }
+        ],
         "receipt_digest": "",
     }
     result["receipt_digest"] = canonical_digest(
@@ -99,6 +117,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
         )
     ]
     assert receipt["bundled_isaac_sim_warp_extension_loaded"] is False
+    assert receipt["external_warp"]["import_qualified_before_simulation_app"] is True
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",
         "isaaclab.python.headless.kit",
@@ -130,3 +149,29 @@ def test_experience_byte_or_revision_drift_fails_closed(tmp_path: Path) -> None:
         match="native_task_isaaclab_experience_revision_mismatch",
     ):
         verify_native_task_isaaclab_launch_contract(receipt_path)
+
+
+def test_missing_external_warp_fails_before_simulation_app_factory(
+    tmp_path: Path,
+) -> None:
+    receipt_path = _receipt(tmp_path)
+    value = json.loads(receipt_path.read_text(encoding="utf-8"))
+    value["runtime_import_probe_returncode"] = 1
+    value["runtime_import_probes"] = []
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    receipt_path.write_text(json.dumps(value), encoding="utf-8")
+    called = False
+
+    def forbidden_factory(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("SimulationApp must not launch without external Warp")
+
+    with pytest.raises(
+        NativeTaskIsaacLabLaunchError,
+        match="native_task_isaaclab_external_warp_import_unqualified",
+    ):
+        launch_native_task_isaaclab(
+            receipt_path, simulation_app_factory=forbidden_factory
+        )
+    assert called is False

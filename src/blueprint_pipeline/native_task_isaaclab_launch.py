@@ -140,6 +140,33 @@ def verify_native_task_isaaclab_launch_contract(
         or "omni.warp.core" not in headless
     ):
         errors.append("native_task_isaaclab_experience_warp_contract_invalid")
+    installed_warp = [
+        row
+        for row in provisioning.get("runtime_dependencies_installed") or []
+        if isinstance(row, Mapping) and row.get("package") == "warp-lang"
+    ]
+    import_warp = [
+        row
+        for row in provisioning.get("runtime_import_probes") or []
+        if isinstance(row, Mapping) and row.get("module") == "warp"
+    ]
+    if (
+        len(installed_warp) != 1
+        or installed_warp[0].get("version") != "1.12.0"
+        or installed_warp[0].get("pure_python") is not False
+        or installed_warp[0].get("wheel_tag")
+        != "py3-none-manylinux_2_28_x86_64"
+    ):
+        errors.append("native_task_isaaclab_external_warp_identity_invalid")
+    if (
+        provisioning.get("runtime_import_probe_returncode") != 0
+        or len(import_warp) != 1
+        or import_warp[0].get("available") is not True
+        or import_warp[0].get("expected_version") != "1.12.0"
+        or import_warp[0].get("observed_version") != "1.12.0"
+        or import_warp[0].get("version_matches") is not True
+    ):
+        errors.append("native_task_isaaclab_external_warp_import_unqualified")
     if errors:
         raise NativeTaskIsaacLabLaunchError(errors)
     return {
@@ -148,6 +175,13 @@ def verify_native_task_isaaclab_launch_contract(
         "experience": {**expected_identity, "path": str(experience_path), "sha256": experience["sha256"]},
         "experience_files": file_rows,
         "bundled_isaac_sim_warp_extension_loaded": False,
+        "external_warp": {
+            "package": "warp-lang",
+            "version": "1.12.0",
+            "wheel_tag": "py3-none-manylinux_2_28_x86_64",
+            "import_module": "warp",
+            "import_qualified_before_simulation_app": True,
+        },
         "direct_physx_registration_required": True,
         "device_coherence_still_requires_native_readback": True,
     }
