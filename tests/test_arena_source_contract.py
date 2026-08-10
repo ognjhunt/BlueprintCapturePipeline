@@ -187,3 +187,44 @@ def test_object_types_the_worker_names_exist_in_arena():
 
     unknown = {name for name in named if name and name not in members}
     assert not unknown, f"worker names {sorted(unknown)}; Arena has {sorted(members)}"
+
+
+def test_contact_sensor_prim_paths_match_the_embodiment_source():
+    """A sensor pattern that matches nothing raises IndexError, not a message.
+
+    Isaac Lab's ContactSensor does ``self._parent_prims[0]`` with no emptiness
+    check, so a wrong prim path surfaces as a bare "list index out of range"
+    from inside a physics callback - two launches, rt16 and rt17.
+
+    The trap is that DroidSceneCfg declares the scene *key* as ``robot`` and
+    the *prim* as ``{ENV_REGEX_NS}/Robot``. They differ only in case.
+    """
+
+    root = _arena_source()
+    droid = (root / "isaaclab_arena/embodiments/droid/droid.py").read_text(
+        encoding="utf-8"
+    )
+    worker = WORKER.read_text(encoding="utf-8")
+
+    declared = {
+        line.split('prim_path="')[1].split('"')[0]
+        for line in droid.splitlines()
+        if 'prim_path="{ENV_REGEX_NS}' in line
+    }
+    robot_roots = {path for path in declared if path.count("/") == 1}
+    assert robot_roots, "no robot prim root declared by the embodiment"
+
+    used = {
+        line.split('prim_path="')[1].split('"')[0]
+        for line in worker.splitlines()
+        if 'prim_path="{ENV_REGEX_NS}' in line
+    }
+    robot_sensor = {path for path in used if path.lower().startswith("{env_regex_ns}/robot")}
+    assert robot_sensor, "worker declares no robot contact sensor"
+
+    for path in robot_sensor:
+        stem = path.rsplit("/", 1)[0]
+        assert stem in robot_roots, (
+            f"worker uses {path!r}; embodiment declares roots {sorted(robot_roots)} "
+            "(these differ by case, which matches nothing and raises IndexError)"
+        )

@@ -332,7 +332,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         float(v) for v in (row.get("initial_position_world_m") or (0, 0, 0))
                     )
                 ),
-                spawn_cfg_addon={"visible": bool(row.get("visible", True))},
+                spawn_cfg_addon={
+                    "visible": bool(row.get("visible", True)),
+                    # Arena's object cfgs do not set this; the DROID robot's
+                    # own spawn does. Without it a contact sensor on this prim
+                    # is attached to geometry that never reports, so every
+                    # contact reads false and the task looks untouched.
+                    "activate_contact_sensors": True,
+                },
             )
             assets.append(obj)
             if row.get("semantic_role") == "task_object":
@@ -405,8 +412,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             # scene. Three separate sensors rather than one, because "the
             # gripper is holding the handle" and "the elbow hit the cabinet"
             # are opposite verdicts read off the same forces.
+            # Capital R. The scene *key* is "robot" but the prim is
+            # "{ENV_REGEX_NS}/Robot" - DroidSceneCfg declares both and they do
+            # not match. A ContactSensor whose pattern matches nothing does not
+            # say so: Isaac Lab indexes _parent_prims[0] and raises a bare
+            # IndexError from inside the physics callback, which is what rt16
+            # and rt17 returned.
             cfg.scene.robot_contact_sensor = ContactSensorCfg(
-                prim_path="{ENV_REGEX_NS}/robot/.*",
+                prim_path="{ENV_REGEX_NS}/Robot/.*",
                 history_length=1,
                 track_air_time=False,
             )
