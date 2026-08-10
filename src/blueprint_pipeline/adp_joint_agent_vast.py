@@ -79,6 +79,15 @@ SCENE_OPTIMIZER_CORE_SHA256 = (
     "sha256:9d98d22eed1eb31da3183bfd4155f3b8eca48576e6eb5947d126e781f0edc671"
 )
 RESULT_SCHEMA_VERSION = "adp_joint_agent_vast_run.v1"
+# Model consumers in the pinned released Joint Agent schema. Some are omitted
+# from NVIDIA's BYOA YAML and injected from package defaults at load time, so
+# rewriting only serialized nodes can silently leave a second backend active.
+RELEASED_EFFECTIVE_MODEL_NODES = (
+    ("identify_asset", "vlm"),
+    ("analyze_structure", "llm"),
+    ("predict", "vlm"),
+    ("infer_articulation_candidates", "vlm"),
+)
 REQUIRED_RETAINED_ARTIFACT_ROLES = frozenset(
     {
         "articulation_candidates",
@@ -164,10 +173,11 @@ def _provider_config(
     config["project"]["working_dir"] = "runtime_output/joint_agent_work"
     config["input"]["usd_path"] = "input/articulated_source.usda"
     steps = config["steps"]
+    materialized_model_nodes = _materialize_released_model_nodes(steps)
     model_node_count = _rewrite_model_nodes(
         steps, model_backend=model_backend, model_id=model_id
     )
-    if model_node_count < 1:
+    if model_node_count < len(materialized_model_nodes):
         raise ValueError("adp_joint_agent_config_model_nodes_missing")
     steps["identify_asset"]["renderer"] = {"backend": "remote"}
     steps["build_dataset_usd"]["renderer"] = {"backend": "remote"}
@@ -194,6 +204,25 @@ def _provider_config(
         }
     )
     return config
+
+
+def _materialize_released_model_nodes(steps: Any) -> tuple[str, ...]:
+    """Make every enabled released-code model default explicit and rewritable."""
+
+    if not isinstance(steps, dict):
+        raise ValueError("adp_joint_agent_config_steps_invalid")
+    materialized: list[str] = []
+    for step_name, node_name in RELEASED_EFFECTIVE_MODEL_NODES:
+        step = steps.get(step_name)
+        if not isinstance(step, dict):
+            raise ValueError("adp_joint_agent_config_model_step_missing")
+        if step.get("enabled") is False:
+            continue
+        node = step.setdefault(node_name, {})
+        if not isinstance(node, Mapping):
+            raise ValueError("adp_joint_agent_config_model_node_invalid")
+        materialized.append(f"steps.{step_name}.{node_name}")
+    return tuple(materialized)
 
 
 def _rewrite_model_nodes(

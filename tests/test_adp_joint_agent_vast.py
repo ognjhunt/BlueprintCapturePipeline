@@ -442,7 +442,9 @@ def test_provider_config_routes_replaceable_hosted_model_backend(
             "analyze_structure": {"llm": {"backend": "nim", "temperature": 0}},
             "predict": {"vlm": {"backend": "nim"}},
             "infer_articulation_candidates": {"vlm": {"backend": "nim"}},
-            "identify_asset": {"vlm": {"backend": "nim"}},
+            # The released BYOA config omits this node and silently injects a
+            # NIM default. The harness must materialize it before rewriting.
+            "identify_asset": {},
             "build_dataset_usd": {},
             "apply_joint_rigger": {},
             "future_nested_step": {
