@@ -9,6 +9,7 @@ REPO = Path(__file__).resolve().parents[1]
 MANIFESTS = REPO / "docs" / "arm_decision_proof_v1" / "manifests"
 SOURCE_BUNDLE = MANIFESTS / "adp009d_840313_interiorgs_sage_source_bundle.v1.json"
 EVALUATION_RUN = MANIFESTS / "adp009d_840313_evaluation_run.v1.json"
+RUNTIME_READINESS = MANIFESTS / "adp009d_840313_runtime_readiness.v1.json"
 
 
 def _read(path: Path) -> dict:
@@ -84,3 +85,20 @@ def test_evaluation_run_spec_is_valid_but_explicitly_dry_only() -> None:
         "scripted_positive_control_not_passed",
         "allocator_artifact_manifest_not_emitted",
     }
+
+
+def test_runtime_readiness_receipt_binds_the_same_typed_live_blockers() -> None:
+    bundle = _read(SOURCE_BUNDLE)
+    spec = _read(EVALUATION_RUN)
+    readiness = _read(RUNTIME_READINESS)
+    validation = validate_evaluation_run_spec(spec)
+
+    assert readiness["receipt_digest"] == _canonical_digest(
+        readiness, "receipt_digest"
+    )
+    assert readiness["status"] == "blocked"
+    assert readiness["live_execution_enabled"] is False
+    assert readiness["provider_mutation_performed"] is False
+    assert readiness["source_bundle_digest"] == bundle["bundle_digest"]
+    assert readiness["evaluation_run_spec_digest"] == validation["spec_digest"]
+    assert readiness["blockers"] == spec["metadata"]["live_blockers"]
