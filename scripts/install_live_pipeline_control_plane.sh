@@ -106,6 +106,7 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launches/completed" \
   "${STATE_DIR}/task-evaluation-launches/blocked" \
   "${STATE_DIR}/task-evaluation-launch-runs" \
+  "${STATE_DIR}/task-evaluation-control-plane-releases" \
   "${STATE_DIR}/task-evaluation-launch-reconciliation" \
   "${STATE_DIR}/task-evaluation-launch-supervision/recommendations"
 # Older units ran as root. Migrate only the two explicitly bounded runtime

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Build the exact dry-only production launch profile for ADP-009D scene 840313.
 
-The builder runs only from a clean checkout at the exact protected ``main``
-commit. It re-verifies every materialized InteriorGS/SAGE byte, writes immutable
+The builder runs only from a clean immutable checkout at one protected-``main``
+commit. Protected ``main`` may advance after that release is staged; it must not
+silently change the source identity named by an already-built profile. The
+builder re-verifies every materialized InteriorGS/SAGE byte, writes immutable
 allocator-preflight inputs, and emits a Pipeline-owned profile whose mutable
 outputs are rooted beneath ``{launch_run_root}`` by the dispatcher.
 """
@@ -108,11 +110,36 @@ def _git(repo_root: Path, *args: str) -> str:
 
 
 def verify_protected_main_checkout(repo_root: Path, source_commit: str) -> None:
+    """Require a clean checkout of a commit already protected by ``main``.
+
+    Release worktrees are deliberately detached. Requiring their checkout to
+    equal the *current* ``origin/main`` would race ordinary protected-main
+    merges and turn an immutable profile into a moving target. A commit must
+    instead be the exact clean checkout and an ancestor of the current protected
+    ``origin/main`` reference.
+    """
+
+    normalized = source_commit.strip().lower()
+    if len(normalized) != 40 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ProductionProfileBuildError(
+            "production_profile_checkout_not_exact_clean_main"
+        )
+    try:
+        merged = _git(
+            repo_root,
+            "merge-base",
+            "--is-ancestor",
+            normalized,
+            "origin/main",
+        )
+    except ProductionProfileBuildError:
+        merged = None
     if (
-        len(source_commit) != 40
-        or any(character not in "0123456789abcdef" for character in source_commit)
-        or _git(repo_root, "rev-parse", "HEAD") != source_commit
-        or _git(repo_root, "rev-parse", "origin/main") != source_commit
+        _git(repo_root, "rev-parse", "HEAD") != normalized
+        or not _git(repo_root, "rev-parse", "origin/main")
+        or merged is None
         or _git(repo_root, "status", "--porcelain")
     ):
         raise ProductionProfileBuildError("production_profile_checkout_not_exact_clean_main")

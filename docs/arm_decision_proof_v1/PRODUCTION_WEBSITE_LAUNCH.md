@@ -32,26 +32,60 @@ frozen in one `task_evaluation_launch_profile.v1` JSON file. Every allocator
 output path must use the validated `{launch_run_root}` placeholder so separate
 website launches cannot overwrite one another's evidence.
 
-For the first frozen 840313 InteriorGS/SAGE dry route, build the exact profile
-only from the clean protected-main production checkout. The builder rehashes all
-five materialized scene files and emits immutable preflight and release inputs:
+For the first frozen 840313 InteriorGS/SAGE dry route, stage the exact clean
+protected-main commit into an immutable control-plane checkout *before* building
+the profile. The mutable build checkout may advance while ordinary protected
+main work is merged; it must never become the allocator identity for a profile
+that names an earlier commit. The stage command verifies that the named source
+commit is already contained in protected `main`, creates a detached clean
+worktree, and retains a receipt. It does not activate the checkout yet:
 
 ```bash
-python scripts/build_adp009d_840313_launch_profile.py \
-  --source-commit "$(git rev-parse HEAD)" \
-  --repo-root /opt/blueprint/BlueprintCapturePipeline \
+SOURCE_REPO=/opt/blueprint/BlueprintCapturePipeline
+SOURCE_COMMIT="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
+RELEASE_ROOT=/opt/blueprint/task-evaluation-control-plane-releases
+RELEASE_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-control-plane-releases
+ACTIVE_RELEASE_LINK=/opt/blueprint/task-evaluation-control-plane
+
+python "$SOURCE_REPO"/scripts/stage_task_evaluation_control_plane_release.py \
+  --source-repo "$SOURCE_REPO" \
+  --source-commit "$SOURCE_COMMIT" \
+  --release-root "$RELEASE_ROOT" \
+  --state-root "$RELEASE_STATE_ROOT" \
+  --active-link "$ACTIVE_RELEASE_LINK"
+```
+
+Build from that detached checkout. The builder rehashes all five materialized
+scene files and emits immutable preflight and release inputs whose repository
+paths are inside the staged release, not the mutable build checkout:
+
+```bash
+RELEASE_REPO="$RELEASE_ROOT/$SOURCE_COMMIT"
+cd "$RELEASE_REPO"
+PYTHONPATH=src "$SOURCE_REPO"/.venv/bin/python scripts/build_adp009d_840313_launch_profile.py \
+  --source-commit "$SOURCE_COMMIT" \
+  --repo-root "$RELEASE_REPO" \
   --production-input-root /var/lib/blueprint/task-evaluation-inputs/adp009d-840313-interiorgs-sage-v1 \
   --provider-guard-path /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json \
-  --output-dir /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/"$(git rev-parse HEAD)"
+  --output-dir /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/"$SOURCE_COMMIT"
 ```
 
 Then validate and publish it with:
 
 ```bash
-python scripts/publish_task_evaluation_launch_profiles.py \
-  --profile /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/<commit>/adp009d-840313-franka-dry-<commit>.json \
+PYTHONPATH=src "$SOURCE_REPO"/.venv/bin/python scripts/publish_task_evaluation_launch_profiles.py \
+  --profile /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/"$SOURCE_COMMIT"/adp009d-840313-franka-dry-"$SOURCE_COMMIT".json \
   --profile-dir /etc/blueprint/task-evaluation-launch-profiles \
   --webapp-catalog-out /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+
+python "$SOURCE_REPO"/scripts/stage_task_evaluation_control_plane_release.py \
+  --source-repo "$SOURCE_REPO" \
+  --source-commit "$SOURCE_COMMIT" \
+  --release-root "$RELEASE_ROOT" \
+  --state-root "$RELEASE_STATE_ROOT" \
+  --active-link "$ACTIVE_RELEASE_LINK" \
+  --activate
+systemctl daemon-reload
 ```
 
 The command hashes every `immutable_inputs` file, fails on
@@ -66,7 +100,10 @@ that endpoint from its canonical Pipeline forwarding URL. An inline
 override, not the normal production source.
 
 The dry profile is immutable and remains bound to the deployment commit that
-created it. Do not overwrite it to enable spend. After the protected-main
+created it. The dispatcher, reconciler, and advisory supervisor import source
+only through the active immutable-release link; their shared Python
+interpreter supplies dependencies but `PYTHONPATH=src` selects the release
+tree. Do not overwrite a dry profile to enable spend. After the protected-main
 controls canary passes, build a separate
 `adp009d-840313-franka-live-<commit>` profile. The live builder verifies all five
 InteriorGS/SAGE source bytes, the retained Aura construction and task-volume
@@ -153,6 +190,10 @@ Pipeline host:
 - configure `PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL` when the
   optional supervisor should publish recommendations and human-decision prompts
   into the same WebApp control room;
+- set `BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO` to the atomic active
+  release link and `BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON` to the
+  dependency interpreter. Do not point the Task Evaluation dispatcher,
+  reconciler, or supervisor directly at a mutable checkout;
 - set `BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID` to the non-secret identity
   named in the immutable profile;
 - set `BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH` to the publisher's

@@ -34,7 +34,12 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "--execute" in dispatcher
     assert "blueprint-gpu-spend-guard.service" in dispatcher
     assert "GIT_CONFIG_KEY_0=safe.directory" in dispatcher
-    assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_PIPELINE_REPO}"' in dispatcher
+    for unit in (dispatcher, reconciler, supervisor):
+        assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=" in unit
+        assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=" in unit
+        assert "BLUEPRINT_PIPELINE_REPO" not in unit
+        assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}"' in unit
+        assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
     for binding in (
         "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
         "VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
@@ -81,12 +86,15 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
         "task-evaluation-launches/completed",
         "task-evaluation-launches/blocked",
         "task-evaluation-launch-runs",
+        "task-evaluation-control-plane-releases",
         "task-evaluation-launch-reconciliation",
         "provider-locks",
     ):
         assert directory in installer
 
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_MODE=systemd_path" in environment
+    assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane" in environment
+    assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python" in environment
     assert "# BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID=canonical-vast-adp" in environment
     assert "# BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER=true" in environment
     assert "# BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true" in environment
