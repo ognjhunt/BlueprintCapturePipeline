@@ -291,8 +291,8 @@ def materialize_source_collider_batch_removal(
         normalized.append(
             {"removal_id": removal_id, "target_prim_path": target}
         )
-    if len(normalized) < 2:
-        errors.append("source_collider_batch_requires_two_targets")
+    if len(normalized) < 1:
+        errors.append("source_collider_batch_targets_missing")
     if len(normalized) > MAX_REPLACEMENT_OBJECTS:
         errors.append("source_collider_batch_target_count_exceeds_limit")
     removal_ids = [row["removal_id"] for row in normalized]

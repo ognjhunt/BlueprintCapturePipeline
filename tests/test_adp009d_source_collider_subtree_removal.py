@@ -148,6 +148,32 @@ def test_batch_removal_supports_five_independent_replacement_objects(
     assert len(receipt["target_removals"]) == 5
 
 
+def test_batch_removal_supports_one_replacement_object(
+    tmp_path: Path,
+) -> None:
+    source = _fixture(tmp_path / "single.usda", "only")
+
+    receipt = materialize_source_collider_batch_removal(
+        source_usd_path=source,
+        targets=[
+            {"removal_id": "removal_only", "target_prim_path": "/Root/target_only"}
+        ],
+        output_root=tmp_path / "single_removed",
+        expected_source_sha256=_sha256(source),
+    )
+
+    assert receipt["target_count"] == 1
+    assert len(receipt["target_removals"]) == 1
+    assert receipt["independent_receipts_share_exact_source_digest"] is True
+    assert receipt["independent_removed_scenes_are_distinct"] is True
+    shared = Usd.Stage.Open(
+        str(tmp_path / "single_removed" / "scene_without_source_colliders.usda")
+    )
+    assert shared is not None
+    assert not shared.GetPrimAtPath("/Root/target_only").IsValid()
+    assert shared.GetPrimAtPath("/Root/protected_neighbor").IsValid()
+
+
 def test_batch_removal_rejects_more_than_five_objects(tmp_path: Path) -> None:
     source = _fixture(tmp_path / "six.usda", "0")
 
