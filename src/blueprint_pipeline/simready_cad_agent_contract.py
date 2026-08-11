@@ -31,6 +31,7 @@ from .dual_task_rehearsal_contract import (
 REQUEST_SCHEMA_VERSION = "simready_cad_agent_request.v1"
 OUTPUT_SCHEMA_VERSION = "simready_cad_agent_output.v1"
 MATRIX_SCHEMA_VERSION = "scene_replacement_cad_agent_matrix.v1"
+REFERENCE_MANIFEST_SCHEMA_VERSION = "simready_cad_agent_reference_manifest.v1"
 INSPECTION_SCHEMA_VERSION = "cad_agent_step_inspection.v1"
 EXECUTION_SCHEMA_VERSION = "cad_agent_execution_receipt.v1"
 
@@ -156,6 +157,145 @@ def _read_json_record(record: Mapping[str, Any], code: str) -> dict[str, Any]:
     return value
 
 
+def _reference_object_key(row: Mapping[str, Any]) -> tuple[int, str, str]:
+    slot = row.get("replacement_slot")
+    return (
+        slot if isinstance(slot, int) and not isinstance(slot, bool) else -1,
+        str(row.get("task_id") or ""),
+        str(row.get("asset_id") or ""),
+    )
+
+
+def validate_cad_agent_reference_manifest(
+    value: Mapping[str, Any], *, verify_files: bool = True
+) -> dict[str, Any]:
+    manifest = _clone(value)
+    errors: list[str] = []
+    if manifest.get("schema_version") != REFERENCE_MANIFEST_SCHEMA_VERSION:
+        errors.append("cad_agent_reference_manifest_schema_invalid")
+    if not str(manifest.get("scene_id") or "").strip():
+        errors.append("cad_agent_reference_manifest_scene_invalid")
+    objects = manifest.get("objects")
+    if (
+        not isinstance(objects, list)
+        or not objects
+        or len(objects) > MAX_REPLACEMENT_OBJECTS
+    ):
+        errors.append("cad_agent_reference_manifest_object_count_invalid")
+        objects = []
+    keys: list[tuple[int, str, str]] = []
+    slots: list[int] = []
+    for row in objects:
+        if not isinstance(row, Mapping):
+            errors.append("cad_agent_reference_manifest_object_invalid")
+            continue
+        key = _reference_object_key(row)
+        slot, task_id, asset_id = key
+        keys.append(key)
+        slots.append(slot)
+        if (
+            slot < 1
+            or slot > MAX_REPLACEMENT_OBJECTS
+            or not task_id
+            or not asset_id
+        ):
+            errors.append("cad_agent_reference_manifest_object_invalid")
+        if not _file_record_valid(row.get("task_freeze"), verify_files=verify_files):
+            errors.append("cad_agent_reference_manifest_task_freeze_invalid")
+        references = row.get("reference_images")
+        if (
+            not isinstance(references, list)
+            or not references
+            or any(
+                not _file_record_valid(record, verify_files=verify_files)
+                for record in references
+            )
+        ):
+            errors.append("cad_agent_reference_manifest_reference_images_invalid")
+        if str(row.get("reference_authority") or "") not in {
+            "observed_scene_reconnaissance_frames",
+            "evaluation_authorized_observed_scene_frames",
+        }:
+            errors.append("cad_agent_reference_manifest_authority_invalid")
+    if len(keys) != len(set(keys)) or len(slots) != len(set(slots)):
+        errors.append("cad_agent_reference_manifest_object_identity_invalid")
+    if manifest.get("maximum_replacement_objects") != MAX_REPLACEMENT_OBJECTS:
+        errors.append("cad_agent_reference_manifest_capacity_invalid")
+    if manifest.get("manifest_digest") != canonical_digest(
+        manifest, digest_field="manifest_digest"
+    ):
+        errors.append("cad_agent_reference_manifest_digest_invalid")
+    if errors:
+        raise SimReadyCadAgentContractError(errors)
+    return manifest
+
+
+def seal_cad_agent_reference_manifest(
+    *,
+    scene_id: str,
+    objects: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    payload_objects: list[dict[str, Any]] = []
+    for row in objects:
+        references = row.get("reference_image_paths")
+        if not isinstance(references, Sequence) or isinstance(references, (str, bytes)):
+            raise SimReadyCadAgentContractError(
+                ["cad_agent_reference_manifest_reference_images_invalid"]
+            )
+        payload_objects.append(
+            {
+                "replacement_slot": int(row.get("replacement_slot", 0)),
+                "task_id": str(row.get("task_id") or ""),
+                "asset_id": str(row.get("asset_id") or ""),
+                "task_freeze": file_record(str(row.get("task_freeze_path") or "")),
+                "reference_authority": str(
+                    row.get("reference_authority")
+                    or "observed_scene_reconnaissance_frames"
+                ),
+                "reference_images": [file_record(path) for path in references],
+            }
+        )
+    payload: dict[str, Any] = {
+        "schema_version": REFERENCE_MANIFEST_SCHEMA_VERSION,
+        "scene_id": str(scene_id),
+        "objects": payload_objects,
+        "maximum_replacement_objects": MAX_REPLACEMENT_OBJECTS,
+    }
+    payload["manifest_digest"] = canonical_digest(
+        payload, digest_field="manifest_digest"
+    )
+    return validate_cad_agent_reference_manifest(payload)
+
+
+def _select_reference_manifest_object(
+    *,
+    manifest: Mapping[str, Any],
+    scene_id: str,
+    replacement_slot: int,
+    task_id: str,
+    asset_id: str,
+) -> dict[str, Any]:
+    try:
+        admitted = validate_cad_agent_reference_manifest(manifest)
+    except SimReadyCadAgentContractError:
+        raise
+    if admitted.get("scene_id") != scene_id:
+        raise SimReadyCadAgentContractError(
+            ["cad_agent_reference_manifest_scene_mismatch"]
+        )
+    key = (replacement_slot, task_id, asset_id)
+    matches = [
+        row
+        for row in admitted.get("objects", [])
+        if _reference_object_key(row) == key
+    ]
+    if len(matches) != 1:
+        raise SimReadyCadAgentContractError(
+            ["cad_agent_reference_manifest_object_missing"]
+        )
+    return _clone(matches[0])
+
+
 def _archive_binds_commit(record: Any, commit: Any, *, verify_files: bool) -> bool:
     if not _file_record_valid(record, verify_files=verify_files):
         return False
@@ -247,6 +387,37 @@ def validate_cad_agent_request(
             )
         ):
             errors.append("cad_agent_request_reference_images_invalid")
+        manifest_record = inputs.get("reference_manifest")
+        if manifest_record is not None:
+            if not _file_record_valid(manifest_record, verify_files=verify_files):
+                errors.append("cad_agent_request_reference_manifest_invalid")
+            if inputs.get("reference_binding_source") != "manifest_derived":
+                errors.append("cad_agent_request_reference_binding_invalid")
+            if verify_files and _file_record_valid(
+                manifest_record, verify_files=True
+            ):
+                manifest = _read_json_record(
+                    manifest_record, "cad_agent_request_reference_manifest_invalid"
+                )
+                try:
+                    selected = _select_reference_manifest_object(
+                        manifest=manifest,
+                        scene_id=str(request.get("scene_id") or ""),
+                        replacement_slot=(
+                            slot
+                            if isinstance(slot, int) and not isinstance(slot, bool)
+                            else -1
+                        ),
+                        task_id=str(request.get("task_id") or ""),
+                        asset_id=str(request.get("asset_id") or ""),
+                    )
+                except SimReadyCadAgentContractError as exc:
+                    errors.extend(exc.codes)
+                else:
+                    if selected.get("task_freeze") != inputs.get("task_freeze"):
+                        errors.append("cad_agent_request_reference_manifest_join_invalid")
+                    if selected.get("reference_images") != references:
+                        errors.append("cad_agent_request_reference_manifest_join_invalid")
         if _vector3(inputs.get("metric_envelope_mm")) is None:
             errors.append("cad_agent_request_metric_envelope_invalid")
         tolerance = _finite(inputs.get("envelope_tolerance_mm"))
@@ -309,10 +480,46 @@ def seal_cad_agent_request(
     backend: Mapping[str, Any],
     task_freeze_path: str | Path,
     cad_brief_path: str | Path,
-    reference_image_paths: Sequence[str | Path],
     metric_envelope_mm: Sequence[float],
+    reference_manifest_path: str | Path | None = None,
+    reference_image_paths: Sequence[str | Path] | None = None,
     envelope_tolerance_mm: float = 0.25,
 ) -> dict[str, Any]:
+    task_freeze_record = file_record(task_freeze_path)
+    if (
+        not isinstance(replacement_slot, int)
+        or isinstance(replacement_slot, bool)
+        or replacement_slot < 1
+        or replacement_slot > MAX_REPLACEMENT_OBJECTS
+    ):
+        raise SimReadyCadAgentContractError(
+            ["cad_agent_request_replacement_slot_invalid"]
+        )
+    if reference_manifest_path is None:
+        raise SimReadyCadAgentContractError(
+            ["cad_agent_request_reference_manifest_required"]
+        )
+    else:
+        if reference_image_paths is not None:
+            raise SimReadyCadAgentContractError(
+                ["cad_agent_request_manual_reference_images_forbidden"]
+            )
+        reference_manifest_record = file_record(reference_manifest_path)
+        manifest = _read_json_record(
+            reference_manifest_record, "cad_agent_request_reference_manifest_invalid"
+        )
+        selected = _select_reference_manifest_object(
+            manifest=manifest,
+            scene_id=str(scene_id),
+            replacement_slot=int(replacement_slot),
+            task_id=str(task_id),
+            asset_id=str(asset_id),
+        )
+        if selected.get("task_freeze") != task_freeze_record:
+            raise SimReadyCadAgentContractError(
+                ["cad_agent_request_reference_manifest_join_invalid"]
+            )
+        reference_records = [_clone(record) for record in selected["reference_images"]]
     payload: dict[str, Any] = {
         "schema_version": REQUEST_SCHEMA_VERSION,
         "request_id": str(request_id),
@@ -325,9 +532,9 @@ def seal_cad_agent_request(
             "geometry_authority": "agent_authored_from_observed_evidence",
             "collision_graph_is_geometry_authority": False,
             "primitive_graph_used_as_cad_candidate": False,
-            "task_freeze": file_record(task_freeze_path),
+            "task_freeze": task_freeze_record,
             "cad_brief": file_record(cad_brief_path),
-            "reference_images": [file_record(path) for path in reference_image_paths],
+            "reference_images": reference_records,
             "metric_envelope_mm": [float(item) for item in metric_envelope_mm],
             "envelope_tolerance_mm": float(envelope_tolerance_mm),
         },
@@ -342,6 +549,9 @@ def seal_cad_agent_request(
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
+    if reference_manifest_record is not None:
+        payload["inputs"]["reference_manifest"] = reference_manifest_record
+        payload["inputs"]["reference_binding_source"] = "manifest_derived"
     payload["request_digest"] = canonical_digest(
         payload, digest_field="request_digest"
     )
@@ -817,15 +1027,18 @@ __all__ = [
     "INSPECTION_SCHEMA_VERSION",
     "MATRIX_SCHEMA_VERSION",
     "OUTPUT_SCHEMA_VERSION",
+    "REFERENCE_MANIFEST_SCHEMA_VERSION",
     "REQUEST_SCHEMA_VERSION",
     "SimReadyCadAgentContractError",
     "file_record",
     "materialize_step_inspection_receipt",
+    "seal_cad_agent_reference_manifest",
     "seal_cad_agent_execution_receipt",
     "seal_cad_agent_matrix",
     "seal_cad_agent_output",
     "seal_cad_agent_request",
     "validate_cad_agent_matrix",
+    "validate_cad_agent_reference_manifest",
     "validate_cad_agent_execution_receipt",
     "validate_cad_agent_output",
     "validate_cad_agent_request",

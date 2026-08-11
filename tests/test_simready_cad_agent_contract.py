@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -14,9 +15,11 @@ from blueprint_pipeline.simready_cad_agent_contract import (
     seal_cad_agent_execution_receipt,
     seal_cad_agent_matrix,
     seal_cad_agent_output,
+    seal_cad_agent_reference_manifest,
     seal_cad_agent_request,
     validate_cad_agent_matrix,
     validate_cad_agent_output,
+    validate_cad_agent_reference_manifest,
     validate_cad_agent_request,
 )
 
@@ -87,6 +90,23 @@ def _request(
 ):
     brief = _write(tmp_path / f"brief-{slot}-{backend_id}.md", "CAD brief")
     image = _write(tmp_path / f"reference-{slot}.png", b"png-reference")
+    reference_manifest = seal_cad_agent_reference_manifest(
+        scene_id="fixture_scene",
+        objects=[
+            {
+                "replacement_slot": slot,
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "task_freeze_path": freeze_path,
+                "reference_image_paths": [image],
+            }
+        ],
+    )
+    reference_manifest_path = tmp_path / f"references-{slot}-{backend_id}.json"
+    reference_manifest_path.write_text(
+        json.dumps(reference_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     return seal_cad_agent_request(
         request_id=f"request-{slot}-{backend_id}",
         scene_id="fixture_scene",
@@ -96,8 +116,8 @@ def _request(
         backend=_backend(tmp_path, backend_id),
         task_freeze_path=freeze_path,
         cad_brief_path=brief,
-        reference_image_paths=[image],
         metric_envelope_mm=[600.112, 604.104004, 847.564026],
+        reference_manifest_path=reference_manifest_path,
     )
 
 
@@ -171,12 +191,193 @@ def test_earthtojake_and_multi_agent_requests_share_agent_only_contract(tmp_path
         request["backend"]["deterministic_geometry_generator_used"] is False
         for request in (earth, mac)
     )
+    assert earth["inputs"]["reference_binding_source"] == "manifest_derived"
+
+
+def test_request_sealer_rejects_manual_reference_images_without_manifest(
+    tmp_path: Path,
+) -> None:
+    brief = _write(tmp_path / "brief.md", "CAD brief")
+    image = _write(tmp_path / "reference.png", b"png-reference")
+
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        seal_cad_agent_request(
+            request_id="manual-reference-rejected",
+            scene_id="fixture_scene",
+            task_id="task_a_washer_door_open",
+            asset_id="840920_simready_washer_candidate",
+            replacement_slot=1,
+            backend=_backend(tmp_path, "earthtojake_text_to_cad"),
+            task_freeze_path=FREEZE_A,
+            cad_brief_path=brief,
+            reference_image_paths=[image],
+            metric_envelope_mm=[600.112, 604.104004, 847.564026],
+        )
+    assert "cad_agent_request_reference_manifest_required" in excinfo.value.codes
+
+
+def test_request_sealer_rejects_off_manifest_reference_override(
+    tmp_path: Path,
+) -> None:
+    brief = _write(tmp_path / "brief.md", "CAD brief")
+    admitted = _write(tmp_path / "admitted.png", b"admitted-reference")
+    off_manifest = _write(tmp_path / "off-manifest.png", b"wrong-reference")
+    reference_manifest = seal_cad_agent_reference_manifest(
+        scene_id="fixture_scene",
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "task_freeze_path": FREEZE_A,
+                "reference_image_paths": [admitted],
+            }
+        ],
+    )
+    reference_manifest_path = tmp_path / "references.json"
+    reference_manifest_path.write_text(
+        json.dumps(reference_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        seal_cad_agent_request(
+            request_id="off-manifest-reference-rejected",
+            scene_id="fixture_scene",
+            task_id="task_a_washer_door_open",
+            asset_id="840920_simready_washer_candidate",
+            replacement_slot=1,
+            backend=_backend(tmp_path, "earthtojake_text_to_cad"),
+            task_freeze_path=FREEZE_A,
+            cad_brief_path=brief,
+            reference_image_paths=[off_manifest],
+            metric_envelope_mm=[600.112, 604.104004, 847.564026],
+            reference_manifest_path=reference_manifest_path,
+        )
+    assert "cad_agent_request_manual_reference_images_forbidden" in excinfo.value.codes
+
+
+def test_reference_manifest_accepts_five_replacement_objects(tmp_path: Path) -> None:
+    objects = []
+    for slot in range(1, 6):
+        objects.append(
+            {
+                "replacement_slot": slot,
+                "task_id": f"task_{slot}",
+                "asset_id": f"asset_{slot}",
+                "task_freeze_path": FREEZE_A,
+                "reference_image_paths": [
+                    _write(tmp_path / f"reference-{slot}.png", f"ref-{slot}".encode())
+                ],
+            }
+        )
+    manifest = seal_cad_agent_reference_manifest(
+        scene_id="fixture_scene", objects=objects
+    )
+    assert validate_cad_agent_reference_manifest(manifest) == manifest
+    assert len(manifest["objects"]) == 5
+
+
+def test_reference_manifest_rejects_six_replacement_objects(tmp_path: Path) -> None:
+    objects = []
+    for slot in range(1, 7):
+        objects.append(
+            {
+                "replacement_slot": slot,
+                "task_id": f"task_{slot}",
+                "asset_id": f"asset_{slot}",
+                "task_freeze_path": FREEZE_A,
+                "reference_image_paths": [
+                    _write(tmp_path / f"reference-{slot}.png", f"ref-{slot}".encode())
+                ],
+            }
+        )
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        seal_cad_agent_reference_manifest(scene_id="fixture_scene", objects=objects)
+    assert "cad_agent_reference_manifest_object_count_invalid" in excinfo.value.codes
+
+
+def test_reference_manifest_rejects_swapped_object_reference_binding(
+    tmp_path: Path,
+) -> None:
+    task_a_ref = _write(tmp_path / "washer.png", b"washer-reference")
+    task_b_ref = _write(tmp_path / "notebook.png", b"notebook-reference")
+    manifest = seal_cad_agent_reference_manifest(
+        scene_id="fixture_scene",
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "task_freeze_path": FREEZE_A,
+                "reference_image_paths": [task_a_ref],
+            },
+            {
+                "replacement_slot": 2,
+                "task_id": "task_b_notebook_relocation",
+                "asset_id": "840920_simready_notebook_candidate",
+                "task_freeze_path": FREEZE_A,
+                "reference_image_paths": [task_b_ref],
+            },
+        ],
+    )
+    assert validate_cad_agent_reference_manifest(manifest) == manifest
+    manifest_path = tmp_path / "references.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    brief = _write(tmp_path / "brief.md", "CAD brief")
+
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        seal_cad_agent_request(
+            request_id="swapped-reference-rejected",
+            scene_id="fixture_scene",
+            task_id="task_a_washer_door_open",
+            asset_id="840920_simready_washer_candidate",
+            replacement_slot=2,
+            backend=_backend(tmp_path, "earthtojake_text_to_cad"),
+            task_freeze_path=FREEZE_A,
+            cad_brief_path=brief,
+            metric_envelope_mm=[600.112, 604.104004, 847.564026],
+            reference_manifest_path=manifest_path,
+        )
+    assert "cad_agent_reference_manifest_object_missing" in excinfo.value.codes
 
 
 @pytest.mark.parametrize("slot", [0, 6])
 def test_request_rejects_slots_outside_one_to_five(tmp_path: Path, slot: int):
+    brief = _write(tmp_path / "brief.md", "CAD brief")
+    image = _write(tmp_path / "reference.png", b"png-reference")
+    reference_manifest = seal_cad_agent_reference_manifest(
+        scene_id="fixture_scene",
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "task_freeze_path": FREEZE_A,
+                "reference_image_paths": [image],
+            }
+        ],
+    )
+    reference_manifest_path = tmp_path / "references.json"
+    reference_manifest_path.write_text(
+        json.dumps(reference_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     with pytest.raises(SimReadyCadAgentContractError) as excinfo:
-        _request(tmp_path, slot=slot)
+        seal_cad_agent_request(
+            request_id=f"request-{slot}",
+            scene_id="fixture_scene",
+            task_id="task_a_washer_door_open",
+            asset_id="840920_simready_washer_candidate",
+            replacement_slot=slot,
+            backend=_backend(tmp_path, "earthtojake_text_to_cad"),
+            task_freeze_path=FREEZE_A,
+            cad_brief_path=brief,
+            metric_envelope_mm=[600.112, 604.104004, 847.564026],
+            reference_manifest_path=reference_manifest_path,
+        )
     assert "cad_agent_request_replacement_slot_invalid" in excinfo.value.codes
 
 

@@ -23,6 +23,7 @@ from blueprint_pipeline.simready_cad_agent_contract import (
     file_record,
     seal_cad_agent_execution_receipt,
     seal_cad_agent_output,
+    seal_cad_agent_reference_manifest,
     seal_cad_agent_request,
 )
 from blueprint_pipeline.vast_provider_adapter import (
@@ -173,6 +174,20 @@ def _agent_cad_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     brief.write_text("agent CAD brief\n", encoding="utf-8")
     reference = root / "reference.png"
     reference.write_bytes(b"\x89PNG\r\n\x1a\nagent-cad-reference")
+    reference_manifest = seal_cad_agent_reference_manifest(
+        scene_id="840920",
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "task_freeze_path": TASK_A_FREEZE,
+                "reference_image_paths": [reference],
+            }
+        ],
+    )
+    reference_manifest_path = root / "reference_manifest.json"
+    write_json(reference_manifest_path, reference_manifest)
     request = seal_cad_agent_request(
         request_id="agent-cad-fixture-request",
         scene_id="840920",
@@ -182,8 +197,8 @@ def _agent_cad_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         backend=_cad_backend(root),
         task_freeze_path=TASK_A_FREEZE,
         cad_brief_path=brief,
-        reference_image_paths=[reference],
         metric_envelope_mm=[600.112, 604.104004, 847.564026],
+        reference_manifest_path=reference_manifest_path,
     )
     generator = root / "agent_source.py"
     generator.write_text("def build(): return 'agent-authored'\n", encoding="utf-8")

@@ -25,7 +25,10 @@ learned policies were therefore not admitted. This is not a policy result.
   Latest agent-CAD/Content Agents follow-up commits are
   `f53dc2775` (manifest-derived agent-CAD references required) and
   `a1a73e0db` (portable agent-CAD evidence indexed), followed by
-  `c5d3d0d92` (reusable agent-CAD supporting-evidence row builder), pushed on
+  `c5d3d0d92` (reusable agent-CAD supporting-evidence row builder) and
+  `7aa7b7fce` (four-candidate Content Agents execution-readiness receipt),
+  plus the current manifest-bound CAD-agent request sealing follow-up,
+  pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
@@ -261,12 +264,17 @@ or appearance qualifications:
 | Task B notebook | Earth-to-Jake | 79 | `sha256:36fcb32e67764c7f14c4f346d5193fb0b1db30e8cd38788d1516a9d716d0d348` | `sha256:52ceda6a9b51dc79dcd9636f81c1468d24e2652ea1b73767d7a571cd46ffe1a7` |
 | Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:c4aa978d8b10592c4775f54fda23acb414ac4a785845464d8462a4dd614bab84` | `sha256:a0afcce7930ef8b0abbd526dcb85164c54cdc1ad9c6d42373e316bc16a1685f5` |
 
-The Content Agents adapter now supports a general `agent_cad_v1` path that
-derives the reference image from each CAD-agent output manifest. Manual
-reference-image overrides are rejected for `agent_cad_v1`, even when the bytes
-would match, so bundle construction cannot depend on hand-selected frame paths.
-This closes the operator-error class where a bundle could be invoked with an
-unbound frame path. Local no-provider bundle
+The CAD-agent request contract now has a scene/task/object reference-manifest
+contract for one to five replacement slots. New request sealing derives
+reference images from the bound `(scene_id, replacement_slot, task_id, asset_id)`
+row and rejects direct, swapped, or off-manifest reference images. The Content
+Agents adapter also supports a general `agent_cad_v1` path that derives the
+reference image from each CAD-agent output manifest. Manual reference-image
+overrides are rejected for `agent_cad_v1`, even when the bytes would match, so
+neither CAD-agent request creation nor Content Agents bundle construction can
+depend on hand-selected frame paths. This closes the operator-error class where
+a Task B candidate could be invoked with an unbound or wrong frame path. Local
+no-provider bundle
 construction and exact-entrypoint rehearsal passed for all four candidates
 against pinned NVIDIA USD Content Agents `0.5.2`
 (`36dbf3f274f8e256637230a05a085853f65cc175`,
@@ -467,8 +475,12 @@ Recent reusable-code and manifest commits:
 - Focused reusable agent-CAD supporting-evidence regressions before
   `c5d3d0d92` — `61 passed`; the helper also reproduced the current real Task A
   and Task B inventory digests exactly.
-- Focused Content Agents execution-readiness regressions before the readiness
-  receipt update — `52 passed`.
+- Focused Content Agents execution-readiness regressions before `7aa7b7fce` —
+  `52 passed`; the generated readiness receipt digest was also recomputed and
+  matched.
+- Focused CAD-agent reference-manifest contract regressions for the current
+  follow-up — `15 passed`; adjacent Content Agents/evidence-index regressions —
+  `63 passed`.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
@@ -480,9 +492,10 @@ Recent reusable-code and manifest commits:
   after this lane's temporary pytest directory was removed.
 - Focused graph-native state, bounded 1..5 replacement construction,
   independent collider removal, runtime admission, static GPU-collision, and
-  agent-CAD contract regressions are retained. The new agent-CAD Content Agents
-  path additionally proves manifest-derived references so bundle construction
-  no longer depends on hand-selected reference-frame CLI input.
+  agent-CAD contract regressions are retained. The new CAD-agent request and
+  Content Agents paths additionally prove manifest-derived references so request
+  creation and bundle construction no longer depend on hand-selected
+  reference-frame CLI input.
 
 ## Claim table
 

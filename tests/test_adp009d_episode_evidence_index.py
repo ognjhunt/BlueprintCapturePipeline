@@ -22,6 +22,7 @@ from blueprint_pipeline.simready_cad_agent_contract import (
     seal_cad_agent_execution_receipt,
     seal_cad_agent_matrix,
     seal_cad_agent_output,
+    seal_cad_agent_reference_manifest,
     seal_cad_agent_request,
 )
 
@@ -93,6 +94,23 @@ def _cad_output_fixture(
     candidate_root = source_root / "task_a" / backend_id
     brief = _write_text_or_bytes(candidate_root / "brief.md", "CAD brief\n")
     reference = _write_text_or_bytes(candidate_root / "reference.png", b"PNG")
+    reference_manifest = seal_cad_agent_reference_manifest(
+        scene_id="fixture_scene",
+        objects=[
+            {
+                "replacement_slot": slot,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "task_freeze_path": TASK_A_FREEZE,
+                "reference_image_paths": [reference],
+            }
+        ],
+    )
+    reference_manifest_path = candidate_root / "reference_manifest.json"
+    reference_manifest_path.write_text(
+        json.dumps(reference_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     request = seal_cad_agent_request(
         request_id=f"request-{slot}-{backend_id}",
         scene_id="fixture_scene",
@@ -102,8 +120,8 @@ def _cad_output_fixture(
         backend=_cad_backend(source_root / "sources", backend_id),
         task_freeze_path=TASK_A_FREEZE,
         cad_brief_path=brief,
-        reference_image_paths=[reference],
         metric_envelope_mm=[600.0, 604.0, 848.0],
+        reference_manifest_path=reference_manifest_path,
     )
     generator = _write_text_or_bytes(candidate_root / "candidate.py", "pass\n")
     step = _write_text_or_bytes(candidate_root / "candidate.step", b"STEP")
