@@ -185,6 +185,21 @@ def _verified_source_package(
     return receipt, receipt_bytes, snapshots
 
 
+def _runtime_source_container_mismatch(
+    runtime_receipt: Mapping[str, Any], container_image: str
+) -> bool:
+    """Return True when a dependency-free packet depends on a different image."""
+
+    wheels = runtime_receipt.get("runtime_dependency_wheels")
+    if isinstance(wheels, list) and wheels:
+        return False
+    paired_stack = runtime_receipt.get("paired_stack")
+    if not isinstance(paired_stack, Mapping):
+        return True
+    required_image = str(paired_stack.get("simulator_runtime_image") or "").strip()
+    return not required_image or required_image != container_image
+
+
 def _entrypoint(*, plan_digest: str) -> str:
     digest = json.dumps(plan_digest)
     output_name = json.dumps(EXPECTED_OUTPUT_FILENAME)
@@ -312,6 +327,10 @@ def build_native_deformable_asset_provider_bundle(
     ) != runtime_receipt.get("packet_sha256"):
         raise NativeDeformableAssetProviderBundleError(
             ["native_deformable_provider_runtime_source_packet_invalid"]
+        )
+    if _runtime_source_container_mismatch(runtime_receipt, container_image):
+        raise NativeDeformableAssetProviderBundleError(
+            ["native_deformable_provider_runtime_source_container_mismatch"]
         )
     plan_digest = str(source_receipt.get("plan_digest") or "")
     package_sources = Path(package_source_root).expanduser().resolve()

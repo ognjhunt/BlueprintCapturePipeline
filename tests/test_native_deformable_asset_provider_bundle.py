@@ -74,6 +74,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, dict]:
         "packet_sha256": _sha(packet),
         "verified_packet_path": str(packet),
         "redistribution_permitted": True,
+        "runtime_dependency_wheels": [{"package": "fixture", "sha256": _sha(packet)}],
     }
     return receipt_path, runtime_receipt_path, runtime
 
@@ -170,6 +171,34 @@ def test_source_package_tamper_fails_before_bundle_materialization(tmp_path: Pat
             implementation_commit="a" * 40,
             package_source_root=Path(__file__).parents[1] / "src" / "blueprint_pipeline",
             container_image="registry.example/isaac@sha256:" + "b" * 64,
+            runtime_source_packet_verifier=lambda _: runtime,
+        )
+
+
+def test_dependency_free_runtime_source_requires_matching_complete_runtime_image(
+    tmp_path: Path,
+) -> None:
+    source, runtime_path, runtime = _fixture(tmp_path)
+    runtime = {
+        **runtime,
+        "runtime_dependency_wheels": [],
+        "paired_stack": {
+            "simulator_runtime_image": "registry.example/complete-isaac-lab@sha256:"
+            + "c" * 64
+        },
+    }
+
+    with pytest.raises(
+        NativeDeformableAssetProviderBundleError,
+        match="native_deformable_provider_runtime_source_container_mismatch",
+    ):
+        build_native_deformable_asset_provider_bundle(
+            job_dir=tmp_path / "bundle",
+            source_package_receipt_path=source,
+            runtime_source_packet_receipt_path=runtime_path,
+            implementation_commit="a" * 40,
+            package_source_root=Path(__file__).parents[1] / "src" / "blueprint_pipeline",
+            container_image="registry.example/isaac-sim@sha256:" + "b" * 64,
             runtime_source_packet_verifier=lambda _: runtime,
         )
 

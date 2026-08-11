@@ -243,6 +243,19 @@ exit $runner_rc
 '''
 
 
+def _runtime_source_container_mismatch(
+    runtime_receipt: Mapping[str, Any], container_image: str
+) -> bool:
+    wheels = runtime_receipt.get("runtime_dependency_wheels")
+    if isinstance(wheels, list) and wheels:
+        return False
+    paired_stack = runtime_receipt.get("paired_stack")
+    if not isinstance(paired_stack, Mapping):
+        return True
+    required_image = str(paired_stack.get("simulator_runtime_image") or "").strip()
+    return not required_image or required_image != container_image
+
+
 def build_native_task_arena_bundle(
     *,
     job_dir: str | Path,
@@ -294,6 +307,10 @@ def build_native_task_arena_bundle(
         runtime_source_receipt = verify_native_task_runtime_source_packet(
             runtime_source_packet_receipt
         )
+        if _runtime_source_container_mismatch(runtime_source_receipt, image):
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_runtime_source_container_mismatch"]
+            )
     worker = Path(worker_source).expanduser().resolve()
     if not worker.is_file():
         raise NativeTaskArenaBundleError(["native_task_arena_bundle_worker_missing"])

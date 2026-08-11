@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import native_task_arena_bundle as arena_bundle
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
@@ -276,6 +277,48 @@ def test_bound_runtime_inputs_are_immutable_and_scene_neutral(
         assert (
             archive.read("provider_runtime/runtime_inputs/qualification/input.json")
             == bound.read_bytes()
+        )
+
+
+def test_dependency_free_runtime_source_requires_matching_container_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(tmp_path, scene_id="840313")
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+    runtime_receipt = tmp_path / "native_task_runtime_source_packet.v1.json"
+    runtime_receipt.write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        arena_bundle,
+        "verify_native_task_runtime_source_packet",
+        lambda _: {
+            "receipt_digest": "sha256:" + "1" * 64,
+            "packet_sha256": "sha256:" + "2" * 64,
+            "packet_size_bytes": 1,
+            "install_roots": [],
+            "runtime_dependency_wheels": [],
+            "redistribution_permitted": True,
+            "verified_packet_path": str(runtime_receipt),
+            "paired_stack": {
+                "simulator_runtime_image": "registry.example/complete-isaac-lab@sha256:"
+                + "c" * 64
+            },
+        },
+    )
+
+    with pytest.raises(
+        NativeTaskArenaBundleError,
+        match="native_task_arena_bundle_runtime_source_container_mismatch",
+    ):
+        build_native_task_arena_bundle(
+            job_dir=tmp_path / "job",
+            packet_dir=packet,
+            worker_source=worker,
+            runtime_module_sources=[],
+            implementation_commit="a" * 40,
+            runtime_source_packet_receipt=runtime_receipt,
+            container_image="registry.example/isaac-sim@sha256:" + "b" * 64,
         )
 
 
