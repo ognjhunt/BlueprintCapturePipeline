@@ -193,6 +193,8 @@ def _agent_cad_evidence(
     brief.write_text("agent CAD brief\n", encoding="utf-8")
     reference = root / "reference.png"
     reference.write_bytes(b"\x89PNG\r\n\x1a\nagent-cad-reference")
+    reference_oblique = root / "reference_oblique.png"
+    reference_oblique.write_bytes(b"\x89PNG\r\n\x1a\nagent-cad-reference-oblique")
     reference_manifest = seal_cad_agent_reference_manifest(
         scene_id="840920",
         objects=[
@@ -201,7 +203,7 @@ def _agent_cad_evidence(
                 "task_id": task_id,
                 "asset_id": asset_id,
                 "task_freeze_path": TASK_A_FREEZE,
-                "reference_image_paths": [reference],
+                "reference_image_paths": [reference, reference_oblique],
             }
         ],
     )
@@ -504,11 +506,18 @@ def test_agent_cad_variant_binds_agent_output_and_mesh_projection(
     tmp_path: Path,
 ) -> None:
     output_path, projection_path, reference, usd = _agent_cad_evidence(tmp_path)
+    reference_sources = [
+        Path(record["path"])
+        for record in json.loads(output_path.read_text(encoding="utf-8"))["request"][
+            "inputs"
+        ]["reference_images"]
+    ]
 
     resolved = content_agents._resolve_input_variant(
         repo=ROOT,
         evidence_root=None,
         reference_source=reference,
+        reference_sources=reference_sources,
         variant="agent_cad_v1",
         agent_cad_output_manifest_path=output_path,
         agent_mesh_projection_receipt_path=projection_path,
@@ -529,6 +538,25 @@ def test_agent_cad_variant_binds_agent_output_and_mesh_projection(
     assert resolved["cad_agent_selected_reference_image"]["path"] == str(
         reference.resolve()
     )
+    assert len(resolved["cad_agent_reference_images"]) == 2
+    assert len(resolved["reference_image_sha256s"]) == 2
+
+
+def test_agent_cad_variant_rejects_partial_manifest_reference_set(
+    tmp_path: Path,
+) -> None:
+    output_path, projection_path, reference, _usd = _agent_cad_evidence(tmp_path)
+
+    with pytest.raises(ValueError, match="source_identity_mismatch"):
+        content_agents._resolve_input_variant(
+            repo=ROOT,
+            evidence_root=None,
+            reference_source=reference,
+            reference_sources=[reference],
+            variant="agent_cad_v1",
+            agent_cad_output_manifest_path=output_path,
+            agent_mesh_projection_receipt_path=projection_path,
+        )
 
 
 def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
@@ -575,6 +603,20 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
     assert texture["material_textures"]["agent_cad_visible_surfaces"][
         "material_path"
     ] == "/Asset/materials/agent_input_neutral"
+    assert texture["input"]["reference_images"] == [
+        "../input/reference.png",
+        "../input/reference_0002.png",
+    ]
+    assert receipt["runtime_reference_image_bindings"] == [
+        {
+            "relative_path": "input/reference.png",
+            "sha256": receipt["reference_image_sha256s"][0],
+        },
+        {
+            "relative_path": "input/reference_0002.png",
+            "sha256": receipt["reference_image_sha256s"][1],
+        },
+    ]
 
 
 def _single_agent_cad_content_bundle_matrix(
@@ -1114,8 +1156,15 @@ def test_agent_cad_reference_is_derived_from_manifest_not_operator_guess(
     )
 
     output = json.loads(output_path.read_text(encoding="utf-8"))
-    first_reference = output["request"]["inputs"]["reference_images"][0]
+    references = output["request"]["inputs"]["reference_images"]
+    first_reference = references[0]
     assert receipt["reference_image_sha256"] == first_reference["sha256"]
+    assert receipt["reference_image_sha256s"] == [
+        record["sha256"] for record in references
+    ]
+    assert [
+        row["relative_path"] for row in receipt["runtime_reference_image_bindings"]
+    ] == ["input/reference.png", "input/reference_0002.png"]
 
 
 def test_agent_cad_bundle_rejects_manual_reference_override(
@@ -1145,6 +1194,12 @@ def test_agent_cad_variant_rejects_changed_projection_usd(
     tmp_path: Path,
 ) -> None:
     output_path, projection_path, reference, usd = _agent_cad_evidence(tmp_path)
+    reference_sources = [
+        Path(record["path"])
+        for record in json.loads(output_path.read_text(encoding="utf-8"))["request"][
+            "inputs"
+        ]["reference_images"]
+    ]
     usd.write_text("#usda 1.0\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="source_identity_mismatch"):
@@ -1152,6 +1207,7 @@ def test_agent_cad_variant_rejects_changed_projection_usd(
             repo=ROOT,
             evidence_root=None,
             reference_source=reference,
+            reference_sources=reference_sources,
             variant="agent_cad_v1",
             agent_cad_output_manifest_path=output_path,
             agent_mesh_projection_receipt_path=projection_path,

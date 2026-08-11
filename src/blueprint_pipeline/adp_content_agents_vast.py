@@ -640,9 +640,9 @@ def consume_content_agents_paid_attempt_authority_once(
     }
 
 
-def _default_agent_cad_reference_image(
+def _default_agent_cad_reference_images(
     agent_cad_output_manifest_path: Path | None,
-) -> Path:
+) -> list[Path]:
     if agent_cad_output_manifest_path is None:
         raise ValueError("adp_content_agents_agent_cad_output_manifest_missing")
     try:
@@ -657,13 +657,15 @@ def _default_agent_cad_reference_image(
     )
     if not isinstance(references, list) or not references:
         raise ValueError("adp_content_agents_agent_cad_reference_missing")
-    first = references[0]
-    if not isinstance(first, Mapping):
-        raise ValueError("adp_content_agents_agent_cad_reference_missing")
-    path = Path(str(first.get("path") or "")).expanduser().resolve()
-    if not path.is_file() or _sha256(path) != first.get("sha256"):
-        raise ValueError("adp_content_agents_agent_cad_reference_identity_mismatch")
-    return path
+    paths: list[Path] = []
+    for record in references:
+        if not isinstance(record, Mapping):
+            raise ValueError("adp_content_agents_agent_cad_reference_missing")
+        path = Path(str(record.get("path") or "")).expanduser().resolve()
+        if not path.is_file() or _sha256(path) != record.get("sha256"):
+            raise ValueError("adp_content_agents_agent_cad_reference_identity_mismatch")
+        paths.append(path)
+    return paths
 
 
 def _resolve_input_variant(
@@ -671,6 +673,7 @@ def _resolve_input_variant(
     repo: Path,
     evidence_root: Path | None,
     reference_source: Path,
+    reference_sources: Sequence[Path] | None = None,
     variant: str,
     agent_cad_output_manifest_path: Path | None = None,
     agent_mesh_projection_receipt_path: Path | None = None,
@@ -824,22 +827,31 @@ def _resolve_input_variant(
         reference_manifest_object_digest = request_inputs.get(
             "reference_manifest_object_digest"
         )
-        selected_reference_record: Mapping[str, Any] | None = None
+        expected_reference_records: list[Mapping[str, Any]] = []
+        expected_reference_identities: set[tuple[str, str]] = set()
         for record in reference_records:
             if not isinstance(record, Mapping):
                 continue
             record_path = Path(str(record.get("path") or "")).expanduser().resolve()
-            if (
-                reference_source == record_path
-                and _sha256(reference_source) == record.get("sha256")
-            ):
-                selected_reference_record = record
-                break
+            record_sha = str(record.get("sha256") or "")
+            if not record_path.is_file() or _sha256(record_path) != record_sha:
+                continue
+            expected_reference_records.append(record)
+            expected_reference_identities.add((str(record_path), record_sha))
+        provided_reference_identities = {
+            (str(path.expanduser().resolve()), _sha256(path.expanduser().resolve()))
+            for path in (reference_sources or [reference_source])
+            if path.expanduser().resolve().is_file()
+        }
+        selected_reference_record = (
+            expected_reference_records[0] if expected_reference_records else None
+        )
         if (
             not usd_source.is_file()
             or _sha256(usd_source) != usd_record.get("sha256")
             or not isinstance(reference_records, list)
-            or selected_reference_record is None
+            or not expected_reference_records
+            or provided_reference_identities != expected_reference_identities
         ):
             raise ValueError("adp_content_agents_agent_cad_source_identity_mismatch")
         if (
@@ -868,6 +880,9 @@ def _resolve_input_variant(
                 for agent in ("material", "texture", "physics")
             },
             "reference_image_sha256": _sha256(reference_source),
+            "reference_image_sha256s": [
+                str(record["sha256"]) for record in expected_reference_records
+            ],
             "reference_image_authority": (
                 "rights_admitted_observed_reference_image_for_agent_authored_"
                 "cad_candidate_not_raw_interiorgs_dataset_bytes"
@@ -883,6 +898,9 @@ def _resolve_input_variant(
                 reference_manifest_object_digest
             ),
             "cad_agent_selected_reference_image": dict(selected_reference_record),
+            "cad_agent_reference_images": [
+                dict(record) for record in expected_reference_records
+            ],
             "mesh_projection_receipt": projection_record,
             "mesh_projection_receipt_digest": projection["receipt_digest"],
             "mesh_packet_digest": projection["packet_digest"],
@@ -1300,11 +1318,13 @@ def _materialize_remote_configs(
     variant: str,
     agent_mesh_prim_paths: Sequence[str] | None = None,
     agent_default_material_path: str | None = None,
+    reference_image_relpaths: Sequence[str] | None = None,
 ) -> dict[str, str]:
     """Copy v1 configs or deterministically derive the approved v2 challenger."""
 
     mesh_paths = sorted(str(path) for path in (agent_mesh_prim_paths or ()))
     material_path = str(agent_default_material_path or "")
+    reference_relpaths = list(reference_image_relpaths or ["../input/reference.png"])
     config_hashes: dict[str, str] = {}
     for name, path in config_sources.items():
         target = destination / name
@@ -1394,8 +1414,8 @@ def _materialize_remote_configs(
                 )
         input_config = payload.get("input") or {}
         input_config["usd_path"] = "../input/source_asset.usda"
-        if "reference_images" in input_config:
-            input_config["reference_images"] = ["../input/reference.png"]
+        if variant == "agent_cad_v1" or "reference_images" in input_config:
+            input_config["reference_images"] = reference_relpaths
         payload["input"] = input_config
         target.write_text(
             yaml.safe_dump(payload, sort_keys=False, width=100), encoding="utf-8"
@@ -1459,9 +1479,11 @@ def build_content_agents_vast_bundle(
     if reference_image_path is None:
         if input_variant != "agent_cad_v1":
             raise ValueError("adp_content_agents_reference_image_missing")
-        reference_source = _default_agent_cad_reference_image(agent_output_path)
+        reference_sources = _default_agent_cad_reference_images(agent_output_path)
+        reference_source = reference_sources[0]
     else:
         reference_source = Path(reference_image_path).expanduser().resolve()
+        reference_sources = [reference_source]
     evidence = Path(evidence_root) if evidence_root is not None else None
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
@@ -1480,6 +1502,7 @@ def build_content_agents_vast_bundle(
         repo=repo,
         evidence_root=evidence,
         reference_source=reference_source,
+        reference_sources=reference_sources,
         variant=input_variant,
         agent_cad_output_manifest_path=(
             agent_output_path.expanduser().resolve()
@@ -1544,12 +1567,20 @@ def build_content_agents_vast_bundle(
         "physics_agent.yaml",
     } or any(not path.is_file() for path in config_sources.values()):
         raise ValueError("adp_content_agents_config_sources_invalid")
+    reference_runtime_names = [
+        "reference.png" if index == 0 else f"reference_{index + 1:04d}.png"
+        for index in range(len(reference_sources))
+    ]
+    reference_runtime_relpaths = [
+        f"../input/{name}" for name in reference_runtime_names
+    ]
     config_hashes = _materialize_remote_configs(
         config_sources=config_sources,
         destination=runtime / "configs",
         variant=str(variant["variant"]),
         agent_mesh_prim_paths=variant.get("mesh_prim_paths"),
         agent_default_material_path=variant.get("default_material_path"),
+        reference_image_relpaths=reference_runtime_relpaths,
     )
     runtime_configs = {
         name: runtime / "configs" / name for name in config_sources
@@ -1557,7 +1588,6 @@ def build_content_agents_vast_bundle(
     _validate_remote_configs(source=source, config_sources=runtime_configs)
     usd_source = Path(variant["usd_source"])
     runtime_usd_name = "source_asset.usda"
-    reference_name = "reference.png"
     input_normalization = _materialize_content_agents_input(
         usd_source,
         runtime / "input" / runtime_usd_name,
@@ -1567,7 +1597,17 @@ def build_content_agents_vast_bundle(
         input_variant=str(variant["variant"]),
         input_normalization=input_normalization,
     )
-    shutil.copy2(reference_source, runtime / "input" / reference_name)
+    reference_runtime_bindings: list[dict[str, Any]] = []
+    for source_path, runtime_name in zip(
+        reference_sources, reference_runtime_names, strict=True
+    ):
+        shutil.copy2(source_path, runtime / "input" / runtime_name)
+        reference_runtime_bindings.append(
+            {
+                "relative_path": f"input/{runtime_name}",
+                "sha256": _sha256(source_path),
+            }
+        )
 
     entrypoint = runtime / "run_adp_content_agents_provider_runtime.sh"
     runner = runtime / "adp_content_agents_provider_runner.py"
@@ -1606,6 +1646,7 @@ def build_content_agents_vast_bundle(
                 "cad_agent_reference_manifest",
                 "cad_agent_reference_manifest_object_digest",
                 "cad_agent_selected_reference_image",
+                "cad_agent_reference_images",
                 "cad_agent_backend_id",
                 "cad_agent_execution_mode",
                 "task_id",
@@ -1614,6 +1655,10 @@ def build_content_agents_vast_bundle(
             }
         },
         "reference_image_sha256": variant["reference_image_sha256"],
+        "reference_image_sha256s": variant.get(
+            "reference_image_sha256s", [variant["reference_image_sha256"]]
+        ),
+        "runtime_reference_image_bindings": reference_runtime_bindings,
         "reference_image_authority": variant["reference_image_authority"],
         "runtime_entrypoint": "provider_runtime/run_adp_content_agents_provider_runtime.sh",
         "remote_config_contract_validated": True,
