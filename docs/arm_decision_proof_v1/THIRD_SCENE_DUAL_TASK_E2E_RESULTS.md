@@ -435,6 +435,9 @@ forks:
 - `a5ef9eb7e`: retained native import execution receipts and a materializer that
   derives construction-facing native import receipts from exact scene/task,
   static-asset, and native-execution evidence.
+- `fe2fede78`: native runtime admission now requires materialized
+  construction-binding receipts, including scene-freeze and exact per-lane
+  evidence schema records, rather than accepting low-level sealer output.
 - `3475aaa25`: variable-camera registered excision evidence, authorized-render
   bindings, file-backed construction joins, general graph USD authoring, and
   fail-closed non-servo task-joint semantics.
@@ -669,6 +672,9 @@ Recent reusable-code and manifest commits:
 - Focused retained-native-import receipt and construction-join regressions for
   `a5ef9eb7e` — `29 passed`; required precommit selector —
   `1164 passed, 9972 deselected`; Ruff over `src/ tests/` passed.
+- Focused materialized-construction runtime/packet regressions for
+  `fe2fede78` — `60 passed`; required precommit selector —
+  `1164 passed, 9973 deselected`; Ruff over `src/ tests/` passed.
 
 ## Claim table
 
