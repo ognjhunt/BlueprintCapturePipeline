@@ -2842,3 +2842,42 @@ def test_contact_partner_filter_uses_one_sensor_per_finger_and_the_rigid_body() 
     per_finger = source[source.index("partner_contacts = [") : source.index("light = SpawnerObject")]
     assert "filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH]" in per_finger
     assert "Robotiq_2F_85/{body_name}" in per_finger
+
+
+def test_finger_collision_envelope_probe_measures_reach_and_cannot_break_a_run() -> None:
+    """Arena's tool frame is a +46 mm semantic point, not the finger's collision
+    extent, and the gap between them is what decides whether a commanded descend
+    is reachable. Measure it before any motion, and never let the measurement
+    fail a paid run."""
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import (
+        FINGER_TOOL_FRAME_LOCAL_OFFSET_M,
+    )
+
+    # The worker imports the adapter under a flattened name, so the runtime
+    # mirrors this constant; a silent drift would misreport the reach margin.
+    assert runtime.FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M == FINGER_TOOL_FRAME_LOCAL_OFFSET_M[2]
+
+    # No Isaac stage in the fast lane: the probe must degrade, not raise.
+    probe = runtime._probe_finger_collision_envelope()
+    assert probe["schema_version"] == "adp009d_finger_collision_envelope_probe.v1"
+    assert probe["status"] == "unavailable"
+    assert probe["tool_frame_local_offset_m"] == FINGER_TOOL_FRAME_LOCAL_OFFSET_M[2]
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    body = source[
+        source.index("def _probe_finger_collision_envelope")
+        : source.index("def _build_environment")
+    ]
+    assert "ComputeLocalBound" in body
+    assert "reach_beyond_tool_frame_m" in body
+    assert "half_width_across_tool_axis_m" in body
+    # Read-only: the probe may not command, spawn, or mutate anything.
+    for forbidden in ("set_joint", "write", "step(", "spawn", "DeletePrim"):
+        assert forbidden not in body
+    # Runs before the gripper convention probe, so it is measured pre-motion.
+    assert source.index("finger_collision_envelope = _probe_finger_collision_envelope()") < (
+        source.index('_phase("gripper_convention_probe")')
+    )

@@ -203,6 +203,11 @@ CONTACT_PARTNER_SENSOR_NAMES = {
     "left_inner_finger": "robot_contact_can_left",
     "right_inner_finger": "robot_contact_can_right",
 }
+# The worker imports the episode adapter under a flattened module name, so this
+# file cannot read the adapter's constant at module scope.  Mirrored here and
+# pinned equal by test, because a silent drift would misreport how far the
+# finger geometry reaches past the frame the planner steers.
+FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M = 0.046
 # Semantics are authored as a runtime spawn-config override so the sealed can
 # and SAGE USD bytes are never mutated.  The exact override is emitted with the
 # result and digest-bound, so a downstream composition can prove which labelling
@@ -958,6 +963,63 @@ def _approved_can_observability(camera: Any) -> dict[str, Any]:
     )
 
 
+def _probe_finger_collision_envelope() -> dict[str, Any]:
+    """Measure each finger's geometry extent in its own body frame.
+
+    Arena's ``tool_leftfinger``/``tool_rightfinger`` frames are a +46 mm semantic
+    point along the finger's local Z, which the descend planner treats as the
+    fingertip.  That is not the collision extent, and the difference is what
+    decides whether a commanded descend is geometrically reachable.  Reported as
+    measurement only: it names no obstruction and changes no motion.
+    """
+
+    result: dict[str, Any] = {
+        "schema_version": "adp009d_finger_collision_envelope_probe.v1",
+        "status": "unavailable",
+        "tool_frame_local_offset_m": FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M,
+        "fingers": {},
+    }
+    try:
+        import omni.usd
+        from pxr import Usd, UsdGeom
+
+        stage = omni.usd.get_context().get_stage()
+        cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+        )
+        for body_name in sorted(CONTACT_PARTNER_SENSOR_NAMES):
+            path = f"/World/envs/env_0/Robot/Gripper/Robotiq_2F_85/{body_name}"
+            prim = stage.GetPrimAtPath(path)
+            if not (prim and prim.IsValid()):
+                result["fingers"][body_name] = {"prim_exists": False}
+                continue
+            aligned = cache.ComputeLocalBound(prim).ComputeAlignedRange()
+            minimum = [float(value) for value in aligned.GetMin()]
+            maximum = [float(value) for value in aligned.GetMax()]
+            result["fingers"][body_name] = {
+                "prim_exists": True,
+                "prim_path": path,
+                "local_bound_min_m": minimum,
+                "local_bound_max_m": maximum,
+                # Local +Z is the direction the tool offset advances toward the
+                # object, so this is how far the geometry reaches past the body
+                # origin compared with the 46 mm frame the planner uses.
+                "reach_along_tool_axis_m": maximum[2],
+                "reach_beyond_tool_frame_m": (
+                    maximum[2] - FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M
+                ),
+                "half_width_across_tool_axis_m": max(
+                    abs(minimum[0]), abs(maximum[0]), abs(minimum[1]), abs(maximum[1])
+                ),
+            }
+        if any(row.get("prim_exists") for row in result["fingers"].values()):
+            result["status"] = "measured"
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not break a paid run
+        result["error_type"] = type(exc).__name__
+    return result
+
+
 def _build_environment(runtime: Path, args: argparse.Namespace):
     import torch
     import isaaclab.sim as sim_utils
@@ -1672,6 +1734,16 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "max_gaussians_to_accumulate": _max_gaussians_to_accumulate(),
                 "timings_seconds": _json_safe(timings_seconds),
             }
+
+        # --- finger collision envelope probe ----------------------------------
+        # The descend stall left the semantic fingertip frame 34.6 mm above the
+        # can lid with the nearest scene triangle 70 mm away, so the contact is
+        # with geometry the planner has no model of: Arena's tool frame is a
+        # +46 mm semantic point, not the finger's collision extent.  Measure that
+        # extent once, before any motion, so the gap between the planned tip and
+        # the real swept volume is a recorded number instead of an inference.
+        # Diagnostics must never break a paid run, so this cannot raise.
+        finger_collision_envelope = _probe_finger_collision_envelope()
 
         # --- gripper convention probe -----------------------------------------
         # DROID encodes the gripper as a scalar in [0, 1] where above 0.5 means
@@ -2844,6 +2916,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "aura_appearance_render_verified": None,
             "aura_particlefield_prim": AURA_PARTICLEFIELD_PRIM,
             "gripper_convention_probe": gripper_probe,
+            "finger_collision_envelope_probe": _json_safe(finger_collision_envelope),
             "policy_episode": policy_episode,
             "policy_episode_error": policy_episode_error,
             "policy_episode_skipped_reason": policy_episode_skipped_reason,
