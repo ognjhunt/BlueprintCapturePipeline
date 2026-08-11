@@ -341,6 +341,7 @@ def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
         profile_dir=profile_dir,
         state_root=tmp_path / "live-state",
         execute=True,
+        execute_launch_id=request["launch_id"],
         allocator_runner=live_runner,
     )
     assert live["status"] == "completed"
@@ -461,6 +462,7 @@ def test_live_dispatch_blocks_without_independent_execute_environment(
     )
     assert receipt["status"] == "blocked"
     assert f"missing_env_{EXECUTE_ENV}" in receipt["blockers"]
+    assert "execute_launch_id_required" in receipt["blockers"]
     assert calls == []
     assert receipt["provider_mutation_attempted"] is False
 
@@ -555,6 +557,97 @@ def test_queue_moves_failed_request_to_blocked_without_retry(tmp_path: Path) -> 
     assert result["automatic_retry_performed"] is False
     assert not list((queue_root / "pending").glob("*.json"))
     assert len(list((queue_root / "blocked").glob("*.json"))) == 1
+
+
+def test_paid_queue_execution_requires_an_exact_launch_id_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    queue_root = tmp_path / "queue"
+    stage_launch_request(value=request, queue_root=queue_root)
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    calls: list[list[str]] = []
+
+    result = process_launch_queue(
+        queue_root=queue_root,
+        profile_dir=tmp_path / "profiles",
+        state_root=tmp_path / "state",
+        execute=True,
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["processed_count"] == 0
+    assert result["blockers"] == ["execute_launch_id_required"]
+    assert calls == []
+    assert len(list((queue_root / "pending").glob("*.json"))) == 1
+
+
+def test_paid_queue_execution_leaves_unscoped_launches_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    target = _request(profile)
+    other = json.loads(json.dumps(target))
+    other["launch_id"] = "launch-interiorgs-sage-other"
+    other["run_id"] = "run-interiorgs-sage-other"
+    other["idempotency_key"] = "launch-interiorgs-sage-other"
+    other["request_digest"] = canonical_digest(other, digest_field="request_digest")
+    queue_root = tmp_path / "queue"
+    target_stage = stage_launch_request(value=target, queue_root=queue_root)
+    other_stage = stage_launch_request(value=other, queue_root=queue_root)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    teardown = tmp_path / "teardown.json"
+    artifacts = tmp_path / "artifacts.json"
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str]) -> int:
+        calls.append(list(argv))
+        _write(teardown, {"continuing_spend_from_this_run": False})
+        _write(artifacts, {"status": "retained"})
+        _write(
+            Path(profile["terminal_contract"]["result_path"]),
+            {
+                "status": "completed",
+                "continuing_spend_from_this_run": False,
+                "retry_cap": 0,
+                "teardown_manifest_path": str(teardown),
+                "artifact_manifest_path": str(artifacts),
+            },
+        )
+        return 0
+
+    result = process_launch_queue(
+        queue_root=queue_root,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=target["launch_id"],
+        max_messages=10,
+        allocator_runner=runner,
+    )
+
+    assert result["status"] == "completed"
+    assert result["processed_count"] == 1
+    assert result["execute_launch_id"] == target["launch_id"]
+    assert result["receipts"][0]["launch_id"] == target["launch_id"]
+    assert result["receipts"][0]["execute_launch_id"] == target["launch_id"]
+    assert calls and calls[0][-1] == "--execute"
+    assert Path(target_stage["queue_path"]).name in {
+        path.name for path in (queue_root / "completed").glob("*.json")
+    }
+    assert Path(other_stage["queue_path"]).is_file()
+    bound = json.loads(
+        (tmp_path / "state" / target["launch_id"] / "launch_binding.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert bound["execute_launch_id"] == target["launch_id"]
 
 
 def test_unhandled_dispatch_failure_stays_processing_for_independent_reconciliation(

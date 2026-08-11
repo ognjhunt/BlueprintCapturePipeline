@@ -220,9 +220,13 @@ Pipeline host:
   while that canonical file still permits execution, set
   `BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN=true` in a runtime dispatcher
   drop-in; the service must omit `--execute` and retain a dry receipt;
-- set `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true` only after selecting a
-  profile whose `execution_admission.live_enabled` is true and separately
-  confirming current rights, execution, and spend authority.
+- set `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true` only alongside
+  `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID=<exact immutable launch_id>`,
+  after selecting a profile whose `execution_admission.live_enabled` is true
+  and separately confirming current rights, execution, and spend authority.
+  The dispatcher refuses a global execute request and only claims the named
+  pending launch; it leaves every other pending launch untouched. Clear both
+  values as soon as that launch has retained its binding.
 
 WebApp:
 
