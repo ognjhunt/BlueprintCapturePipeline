@@ -58,6 +58,7 @@ PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
     "evaluation_run_spec",
     "required_controls",
     "execution_admission",
+    "authority_requirements",
     "claim_ceiling",
 )
 
@@ -410,7 +411,17 @@ def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, An
     blockers = validate_launch_profile(profile)
     if blockers:
         raise TaskEvaluationLaunchError(",".join(blockers))
-    return {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
+    descriptor = {
+        field: profile[field]
+        for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS
+        if field != "authority_requirements"
+    }
+    allocator = _mapping(profile.get("allocator"))
+    descriptor["authority_requirements"] = {
+        "max_spend_usd": allocator["max_spend_usd"],
+        "hard_ttl_seconds": allocator["hard_ttl_seconds"],
+    }
+    return descriptor
 
 
 def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[str]:
@@ -475,6 +486,23 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
         blockers.append("launch_profile_public_live_enabled_with_blockers")
     elif execution.get("live_enabled") is False and not readiness_blockers:
         blockers.append("launch_profile_public_dry_without_blocker")
+    authority = _mapping(descriptor.get("authority_requirements"))
+    if set(authority) != {"max_spend_usd", "hard_ttl_seconds"}:
+        blockers.append("launch_profile_public_authority_fields_invalid")
+    public_max_spend = authority.get("max_spend_usd")
+    if (
+        not isinstance(public_max_spend, (int, float))
+        or isinstance(public_max_spend, bool)
+        or public_max_spend <= 0
+    ):
+        blockers.append("launch_profile_public_max_spend_invalid")
+    public_hard_ttl = authority.get("hard_ttl_seconds")
+    if (
+        not isinstance(public_hard_ttl, int)
+        or isinstance(public_hard_ttl, bool)
+        or public_hard_ttl <= 0
+    ):
+        blockers.append("launch_profile_public_hard_ttl_invalid")
     if descriptor.get("claim_ceiling") not in {
         "development_only",
         "partner_run_pending_physical_join",

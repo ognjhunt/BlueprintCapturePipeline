@@ -686,20 +686,19 @@ def test_profile_publisher_emits_webapp_descriptor_without_allocator_arguments(
 
     assert result["status"] == "published"
     catalog = json.loads((tmp_path / "catalog.json").read_text())
-    assert catalog == [
-        {
-            field: profile[field]
-            for field in (
-                "profile_id",
-                "profile_digest",
-                "source_bundle",
-                "evaluation_run_spec",
-                "required_controls",
-                "execution_admission",
-                "claim_ceiling",
-            )
-        }
-    ]
+    assert catalog == [{
+        "profile_id": profile["profile_id"],
+        "profile_digest": profile["profile_digest"],
+        "source_bundle": profile["source_bundle"],
+        "evaluation_run_spec": profile["evaluation_run_spec"],
+        "required_controls": profile["required_controls"],
+        "execution_admission": profile["execution_admission"],
+        "authority_requirements": {
+            "max_spend_usd": profile["allocator"]["max_spend_usd"],
+            "hard_ttl_seconds": profile["allocator"]["hard_ttl_seconds"],
+        },
+        "claim_ceiling": profile["claim_ceiling"],
+    }]
     assert "allocator" not in catalog[0]
     assert "provider-launch-request" not in json.dumps(catalog)
 
