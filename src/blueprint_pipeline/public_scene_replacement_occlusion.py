@@ -18,6 +18,10 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .dual_task_rehearsal_contract import (
+    DualTaskRehearsalContractError,
+    validate_task_freeze_set,
+)
 from .gaussian_splat_decode import (
     read_standard_3dgs_ply,
     verify_standard_3dgs_ply_subset_exact,
@@ -31,6 +35,7 @@ RECEIPT_SCHEMA = "adp009b_replacement_occlusion_receipt.v1"
 OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA = (
     "adp009b_ownership_coverage_cutout_candidate.v1"
 )
+OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA = "adp009b_ownership_coverage_cutout_set.v1"
 
 _OWNERSHIP_RECEIPT_SCHEMA = "adp009b_gaussian_excision_ownership_receipt.v1"
 _OWNERSHIP_RECEIPT_STATUSES = frozenset(
@@ -65,6 +70,16 @@ def _sha256(path: Path) -> str:
 def _record(path: Path, root: Path) -> dict[str, Any]:
     return {
         "relative_path": path.relative_to(root).as_posix(),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _input_record(path: Path) -> dict[str, Any]:
+    """Record a sealed input without pretending it lives under an output root."""
+
+    return {
+        "path": str(path),
         "size_bytes": path.stat().st_size,
         "sha256": _sha256(path),
     }
@@ -836,6 +851,327 @@ def materialize_ownership_coverage_cutout_candidate(
     return receipt
 
 
+def materialize_ownership_coverage_cutout_set(
+    *,
+    source_standard_splat_path: str | Path,
+    task_freeze_paths: Sequence[str | Path],
+    excision_freeze_paths_by_task: Mapping[str, str | Path],
+    ownership_receipt_paths_by_task: Mapping[str, str | Path],
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Materialize independent coverage-conditioned candidates for one to five objects.
+
+    A failed factual-ownership audit must not turn into a scene-specific manual
+    crop.  This successor path selects ``owned ∪ ambiguous`` solely from each
+    task's calibration-only ownership receipt, retains every other source row
+    byte-for-byte, and emits a shared-scene union.  The ambiguous records stay
+    explicitly *not factually owned*: a later actual-USD, all-camera/state
+    coverage audit is the only route that can qualify their deletion.
+
+    The set fails closed when two task slices nominate the same source Gaussian.
+    That makes a shared source contribution visible instead of silently letting
+    two replacements share a deletion assumption.  A caller that needs to
+    model a genuinely shared source layer must supply a separate joint-object
+    construction contract; it cannot pass through this independent-object
+    seam.
+    """
+
+    source = Path(source_standard_splat_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if not source.is_file() or source.is_symlink():
+        raise ReplacementOcclusionError(["coverage_cutout_set_source_splat_missing"])
+    if output.exists() and any(output.iterdir()):
+        raise ReplacementOcclusionError(["coverage_cutout_set_output_not_empty"])
+    if isinstance(task_freeze_paths, (str, bytes)) or not task_freeze_paths:
+        raise ReplacementOcclusionError(["coverage_cutout_set_task_freezes_missing"])
+
+    task_paths = [Path(path).expanduser().resolve() for path in task_freeze_paths]
+    raw_tasks: list[dict[str, Any]] = []
+    for path in task_paths:
+        if not path.is_file() or path.is_symlink():
+            raise ReplacementOcclusionError(["coverage_cutout_set_task_freeze_missing"])
+        raw_tasks.append(
+            _read_object(path, code="coverage_cutout_set_task_freeze_unreadable")
+        )
+    try:
+        task_set = validate_task_freeze_set(raw_tasks)
+    except DualTaskRehearsalContractError as exc:
+        raise ReplacementOcclusionError(
+            [f"coverage_cutout_set_{code}" for code in exc.errors]
+        ) from exc
+
+    tasks_by_id = {str(task["task_id"]): task for task in raw_tasks}
+    paths_by_id = {
+        str(task["task_id"]): path for task, path in zip(raw_tasks, task_paths, strict=True)
+    }
+    task_ids = sorted(tasks_by_id)
+    if set(excision_freeze_paths_by_task) != set(task_ids):
+        raise ReplacementOcclusionError(["coverage_cutout_set_excision_freeze_keys_invalid"])
+    if set(ownership_receipt_paths_by_task) != set(task_ids):
+        raise ReplacementOcclusionError(["coverage_cutout_set_ownership_receipt_keys_invalid"])
+
+    source_sha256 = _sha256(source)
+    source_size = source.stat().st_size
+    source_splat = read_standard_3dgs_ply(source)
+    validated: list[tuple[str, dict[str, Any], Path, dict[str, Any], Path, dict[str, Any], Path]] = []
+    preselected_indices: dict[str, np.ndarray] = {}
+    errors: list[str] = []
+    for task_id in task_ids:
+        task = tasks_by_id[task_id]
+        excision_path = Path(excision_freeze_paths_by_task[task_id]).expanduser().resolve()
+        ownership_path = Path(ownership_receipt_paths_by_task[task_id]).expanduser().resolve()
+        if not excision_path.is_file() or excision_path.is_symlink():
+            errors.append(f"coverage_cutout_set_excision_freeze_missing:{task_id}")
+            continue
+        if not ownership_path.is_file() or ownership_path.is_symlink():
+            errors.append(f"coverage_cutout_set_ownership_receipt_missing:{task_id}")
+            continue
+        excision = _read_object(
+            excision_path, code=f"coverage_cutout_set_excision_freeze_unreadable:{task_id}"
+        )
+        ownership = _read_object(
+            ownership_path, code=f"coverage_cutout_set_ownership_receipt_unreadable:{task_id}"
+        )
+        expected_excision_digest = canonical_digest(excision, digest_field="freeze_digest")
+        if (
+            excision.get("schema_version") != "adp009b_gaussian_excision_audit_freeze.v1"
+            or excision.get("status") != "frozen_before_excision_execution"
+            or excision.get("freeze_digest") != expected_excision_digest
+            or excision.get("learned_policy_outcomes_observed") is not False
+            or excision.get("replacement_usd_inserted") is not False
+        ):
+            errors.append(f"coverage_cutout_set_excision_freeze_invalid:{task_id}")
+            continue
+        scene = excision.get("scene")
+        if not isinstance(scene, Mapping) or (
+            scene.get("task_id") != task_id
+            or scene.get("target_instance_id")
+            != task["source_object"]["instance_id"]
+            or scene.get("removal_id") != task["removal_plan"]["removal_id"]
+            or scene.get("mask_set_id") != task["removal_plan"]["mask_set_id"]
+        ):
+            errors.append(f"coverage_cutout_set_excision_task_join_invalid:{task_id}")
+            continue
+        excision_source = excision.get("source_standard_splat")
+        if not isinstance(excision_source, Mapping) or (
+            excision_source.get("sha256") != source_sha256
+            or excision_source.get("size_bytes") != source_size
+        ):
+            errors.append(f"coverage_cutout_set_excision_source_mismatch:{task_id}")
+            continue
+        if (
+            ownership.get("schema_version") != _OWNERSHIP_RECEIPT_SCHEMA
+            or ownership.get("status") not in _OWNERSHIP_RECEIPT_STATUSES
+            or ownership.get("receipt_digest")
+            != canonical_digest(ownership, digest_field="receipt_digest")
+            or ownership.get("freeze_digest") != excision.get("freeze_digest")
+            or ownership.get("heldout_cameras_accessed_for_classification") is not False
+            or ownership.get("replacement_usd_inserted") is not False
+        ):
+            errors.append(f"coverage_cutout_set_ownership_receipt_invalid:{task_id}")
+            continue
+        ownership_source = ownership.get("source_standard_splat")
+        if not isinstance(ownership_source, Mapping) or (
+            ownership_source.get("sha256") != source_sha256
+            or ownership_source.get("size_bytes") != source_size
+        ):
+            errors.append(f"coverage_cutout_set_ownership_source_mismatch:{task_id}")
+            continue
+        outputs = ownership.get("outputs")
+        if not isinstance(outputs, Mapping):
+            errors.append(f"coverage_cutout_set_ownership_outputs_invalid:{task_id}")
+            continue
+        _owned_path, owned = _ownership_output_array(
+            ownership_path=ownership_path,
+            record=outputs.get("owned_indices"),
+            code=f"coverage_cutout_set_owned_indices_invalid:{task_id}",
+        )
+        _ambiguous_path, ambiguous = _ownership_output_array(
+            ownership_path=ownership_path,
+            record=outputs.get("ambiguous_indices"),
+            code=f"coverage_cutout_set_ambiguous_indices_invalid:{task_id}",
+        )
+        _retained_path, retained = _ownership_output_array(
+            ownership_path=ownership_path,
+            record=outputs.get("retained_indices"),
+            code=f"coverage_cutout_set_retained_indices_invalid:{task_id}",
+        )
+        selected = np.union1d(owned, ambiguous).astype(np.int64)
+        source_count = source_splat.count
+        if (
+            not selected.size
+            or any(
+                values.size and (values[0] < 0 or values[-1] >= source_count)
+                for values in (owned, ambiguous, retained)
+            )
+            or np.intersect1d(owned, ambiguous, assume_unique=True).size
+            or np.intersect1d(owned, retained, assume_unique=True).size
+            or np.intersect1d(ambiguous, retained, assume_unique=True).size
+            or not np.array_equal(
+                np.union1d(selected, retained),
+                np.arange(source_count, dtype=np.int64),
+            )
+        ):
+            errors.append(f"coverage_cutout_set_ownership_partition_invalid:{task_id}")
+            continue
+        preselected_indices[task_id] = selected
+        validated.append(
+            (
+                task_id,
+                task,
+                paths_by_id[task_id],
+                excision,
+                excision_path,
+                ownership,
+                ownership_path,
+            )
+        )
+    if errors:
+        raise ReplacementOcclusionError(errors)
+
+    for left_index, left_task_id in enumerate(task_ids):
+        for right_task_id in task_ids[left_index + 1 :]:
+            if np.intersect1d(
+                preselected_indices[left_task_id],
+                preselected_indices[right_task_id],
+                assume_unique=True,
+            ).size:
+                raise ReplacementOcclusionError(
+                    [
+                        "coverage_cutout_set_independent_candidate_overlap:"
+                        f"{left_task_id}:{right_task_id}"
+                    ]
+                )
+
+    output.mkdir(parents=True, exist_ok=True)
+    candidates: list[dict[str, Any]] = []
+    candidate_indices: dict[str, np.ndarray] = {}
+    for slot, (
+        task_id,
+        task,
+        task_path,
+        excision,
+        excision_path,
+        ownership,
+        ownership_path,
+    ) in enumerate(validated, start=1):
+        candidate_root = output / "task_candidates" / f"slot_{slot:02d}"
+        candidate = materialize_ownership_coverage_cutout_candidate(
+            source_standard_splat_path=source,
+            ownership_receipt_path=ownership_path,
+            output_root=candidate_root,
+        )
+        candidate_receipt_path = candidate_root / f"{OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA}.json"
+        deleted_record = candidate["outputs"]["deleted_source_indices"]
+        deleted_path = _verify_artifact(
+            candidate_root,
+            deleted_record,
+            code=f"coverage_cutout_set_candidate_indices_invalid:{task_id}",
+        )
+        deleted = np.asarray(np.load(deleted_path, allow_pickle=False), dtype=np.int64)
+        if (
+            deleted.ndim != 1
+            or not deleted.size
+            or (deleted.size > 1 and np.any(deleted[1:] <= deleted[:-1]))
+            or not np.array_equal(deleted, preselected_indices[task_id])
+        ):
+            raise ReplacementOcclusionError(
+                [f"coverage_cutout_set_candidate_indices_invalid:{task_id}"]
+            )
+        candidate_indices[task_id] = deleted
+        candidates.append(
+            {
+                "slot": slot,
+                "task_id": task_id,
+                "task_freeze_digest": task["task_freeze_digest"],
+                "source_object_instance_id": task["source_object"]["instance_id"],
+                "removal_id": task["removal_plan"]["removal_id"],
+                "mask_set_id": task["removal_plan"]["mask_set_id"],
+                "task_freeze": _input_record(task_path),
+                "excision_freeze": {
+                    **_input_record(excision_path),
+                    "freeze_digest": excision["freeze_digest"],
+                },
+                "ownership_receipt": {
+                    **_input_record(ownership_path),
+                    "receipt_digest": ownership["receipt_digest"],
+                },
+                "candidate_receipt": {
+                    **_record(candidate_receipt_path, output),
+                    "receipt_digest": candidate["receipt_digest"],
+                },
+                "counts": dict(candidate["counts"]),
+            }
+        )
+
+    deleted_union = np.unique(np.concatenate([candidate_indices[task_id] for task_id in task_ids]))
+    retained_union = np.setdiff1d(
+        np.arange(source_splat.count, dtype=np.int64), deleted_union, assume_unique=True
+    )
+    shared_root = output / "shared_scene_union"
+    shared_root.mkdir()
+    deleted_indices_path = shared_root / "deleted_source_indices.npy"
+    retained_indices_path = shared_root / "retained_source_indices.npy"
+    np.save(deleted_indices_path, deleted_union, allow_pickle=False)
+    np.save(retained_indices_path, retained_union, allow_pickle=False)
+    deleted_ply = write_standard_3dgs_ply_subset_exact(
+        source, shared_root / "deleted_source_gaussians.ply", deleted_union
+    )
+    retained_ply = write_standard_3dgs_ply_subset_exact(
+        source, shared_root / "retained_scene_gaussians.ply", retained_union
+    )
+    preservation = verify_standard_3dgs_ply_subset_exact(source, retained_ply, retained_union)
+    if preservation.get("retained_rows_byte_exact") is not True:
+        raise ReplacementOcclusionError(["coverage_cutout_set_retained_rows_changed"])
+
+    receipt: dict[str, Any] = {
+        "schema_version": OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA,
+        "status": (
+            "coverage_conditioned_successor_set_materialized_"
+            "pending_per_task_actual_usd_source_layer_coverage"
+        ),
+        "source_standard_splat": _input_record(source),
+        "task_set": task_set,
+        "selection": {
+            "rule": "owned_and_ambiguous_union_from_calibration_only_ownership.v1",
+            "heldout_pixels_used_to_select_indices": False,
+            "replacement_usd_used_to_select_indices": False,
+            "learned_policy_outcomes_used": False,
+            "factual_gaussian_ownership_established_for_ambiguous_records": False,
+            "fresh_confirmation_coverage_required_before_qualification": True,
+        },
+        "task_candidates": candidates,
+        "shared_scene_union": {
+            "counts": {
+                "source": source_splat.count,
+                "deleted_total": int(deleted_union.size),
+                "retained_total": int(retained_union.size),
+            },
+            "preservation": preservation,
+            "outputs": {
+                "deleted_source_indices": _record(deleted_indices_path, output),
+                "retained_source_indices": _record(retained_indices_path, output),
+                "deleted_source_gaussians": _record(deleted_ply, output),
+                "retained_scene_gaussians": _record(retained_ply, output),
+            },
+        },
+        "claim_boundary": {
+            "source_gaussians_deleted_from_canonical_scene": False,
+            "candidate_derived_layers_only": True,
+            "all_task_slices_independent": True,
+            "overlapping_task_deletions_allowed": False,
+            "replacement_depth_coverage_qualified": False,
+            "inpainting_decision_qualified": False,
+            "native_simulator_import_qualified": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = output / f"{OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA}.json"
+    receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def evaluate_depth_coverage(
     removal_alpha: np.ndarray,
     replacement_depth_m: np.ndarray,
@@ -1180,6 +1516,7 @@ __all__ = [
     "CONTRIBUTION_SCHEMA",
     "COVERAGE_SCHEMA",
     "OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA",
+    "OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA",
     "RECEIPT_SCHEMA",
     "REQUEST_SCHEMA",
     "ReplacementOcclusionError",
@@ -1190,6 +1527,7 @@ __all__ = [
     "materialize_replacement_occlusion_cutout",
     "materialize_direct_evidence_expansion_candidate",
     "materialize_ownership_coverage_cutout_candidate",
+    "materialize_ownership_coverage_cutout_set",
     "materialize_bound_index_union_candidate",
     "select_direct_calibration_evidence_expansion",
 ]

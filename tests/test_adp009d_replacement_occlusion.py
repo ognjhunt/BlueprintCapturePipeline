@@ -18,6 +18,7 @@ from blueprint_pipeline.public_scene_replacement_occlusion import (
     CONTRIBUTION_SCHEMA,
     COVERAGE_SCHEMA,
     OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA,
+    OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA,
     REQUEST_SCHEMA,
     ReplacementOcclusionError,
     build_replacement_occlusion_request,
@@ -26,6 +27,7 @@ from blueprint_pipeline.public_scene_replacement_occlusion import (
     materialize_bound_index_union_candidate,
     materialize_direct_evidence_expansion_candidate,
     materialize_ownership_coverage_cutout_candidate,
+    materialize_ownership_coverage_cutout_set,
     materialize_replacement_occlusion_cutout,
     select_direct_calibration_evidence_expansion,
 )
@@ -48,8 +50,7 @@ def _write_json(path: Path, value: dict[str, object]) -> None:
     path.write_text(canonical_json(value) + "\n", encoding="utf-8")
 
 
-def _source_splat(path: Path) -> Path:
-    count = 6
+def _source_splat(path: Path, *, count: int = 6) -> Path:
     values = np.arange(count, dtype=np.float32)
     splat = SplatData(
         count=count,
@@ -62,6 +63,172 @@ def _source_splat(path: Path) -> Path:
         sh_rest=None,
     )
     return write_standard_3dgs_ply(splat, path)
+
+
+def _digest(character: str) -> str:
+    return "sha256:" + character * 64
+
+
+def _coverage_task_freeze(task_id: str, slot: int) -> dict[str, object]:
+    """Build a valid, task-neutral rigid fixture for the 1--5 object seam."""
+
+    payload: dict[str, object] = {
+        "schema_version": "dual_task_task_freeze.v1",
+        "task_id": task_id,
+        "prompt": f"relocate independently observed fixture object {slot}",
+        "task_kind": "rigid_object_manipulation",
+        "scene_freeze_digest": _digest("a"),
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "frozen_before_learned_policy_execution": True,
+        "learned_policy_outcomes_accessed": False,
+        "source_object": {
+            "instance_id": f"fixture_source_{slot}",
+            "semantic_label": "fixture_object",
+            "observed_bounds_world_m": {
+                "minimum": [0.0, 0.0, 0.0],
+                "maximum": [0.1, 0.1, 0.1],
+            },
+            "observed_pose_world": {
+                "position_world_m": [0.05, 0.05, 0.05],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "support_or_attachment_id": f"support_{slot}",
+            "collision_identity_receipt_digest": _digest("b"),
+            "support_receipt_digest": _digest("c"),
+            "franka_placement_packet_digest": _digest("d"),
+            "visibility_receipt_digest": _digest("e"),
+        },
+        "removal_plan": {
+            "removal_id": f"removal_{slot}",
+            "mask_set_id": f"mask_set_{slot}",
+            "source_collider_prim_path": f"/Root/fixture_source_{slot}",
+            "collider_deletion_id": f"collider_deletion_{slot}",
+            "replacement_asset_id": f"replacement_asset_{slot}",
+            "replacement_qualification_id": f"replacement_qualification_{slot}",
+        },
+        "cameras": {
+            "external": f"external_{slot}",
+            "wrist": f"wrist_{slot}",
+            "overview": f"overview_{slot}",
+        },
+        "overview_camera_policy_input": False,
+        "overview_camera_deterministic_scoring_input": False,
+        "execution_contract": {
+            "control_frequency_hz": 20,
+            "maximum_steps": 200,
+            "settle_window_steps": 10,
+            "seeds": [slot + 1],
+            "canonical_scenario_cell_id": f"canonical_{slot}",
+            "reset_state": {"robot": "home", "object": "source_start"},
+        },
+        "deterministic_success_predicates": ["released", "settled"],
+        "failure_rungs": ["never_moved", "collision_failure"],
+        "target_configuration": {
+            "kind": "pose_volume",
+            "position_bounds_world_m": {
+                "minimum": [0.2, 0.2, 0.0],
+                "maximum": [0.3, 0.3, 0.1],
+            },
+            "orientation_reference_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "maximum_orientation_error_rad": 0.1,
+            "support_id": f"destination_support_{slot}",
+            "release_required": True,
+        },
+        "articulation_graph": None,
+        "task_freeze_digest": "",
+    }
+    payload["task_freeze_digest"] = canonical_digest(
+        payload, digest_field="task_freeze_digest"
+    )
+    return payload
+
+
+def _coverage_cutout_inputs(
+    tmp_path: Path,
+    *,
+    source: Path,
+    task_id: str,
+    slot: int,
+    owned: list[int],
+    ambiguous: list[int],
+) -> tuple[Path, Path, Path]:
+    """Write one frozen calibration-only ownership lane for a fixture task."""
+
+    task = _coverage_task_freeze(task_id, slot)
+    task_path = tmp_path / "tasks" / f"{task_id}.json"
+    _write_json(task_path, task)
+    excision: dict[str, object] = {
+        "schema_version": "adp009b_gaussian_excision_audit_freeze.v1",
+        "status": "frozen_before_excision_execution",
+        "learned_policy_outcomes_observed": False,
+        "replacement_usd_inserted": False,
+        "source_standard_splat": {
+            "path": str(source),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha256(source),
+        },
+        "scene": {
+            "task_id": task_id,
+            "target_instance_id": task["source_object"]["instance_id"],
+            "removal_id": task["removal_plan"]["removal_id"],
+            "mask_set_id": task["removal_plan"]["mask_set_id"],
+        },
+        "freeze_digest": "",
+    }
+    excision["freeze_digest"] = canonical_digest(excision, digest_field="freeze_digest")
+    excision_path = tmp_path / "excision" / f"{task_id}.json"
+    _write_json(excision_path, excision)
+
+    ownership_root = tmp_path / "ownership" / task_id
+    ownership_root.mkdir(parents=True)
+    selected = set(owned) | set(ambiguous)
+    retained = [index for index in range(read_standard_3dgs_ply(source).count) if index not in selected]
+    array_paths = {
+        "owned_indices": ownership_root / "owned.npy",
+        "ambiguous_indices": ownership_root / "ambiguous.npy",
+        "retained_indices": ownership_root / "retained.npy",
+    }
+    np.save(array_paths["owned_indices"], np.asarray(sorted(owned), dtype=np.int64), allow_pickle=False)
+    np.save(
+        array_paths["ambiguous_indices"],
+        np.asarray(sorted(ambiguous), dtype=np.int64),
+        allow_pickle=False,
+    )
+    np.save(
+        array_paths["retained_indices"],
+        np.asarray(retained, dtype=np.int64),
+        allow_pickle=False,
+    )
+    ownership: dict[str, object] = {
+        "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
+        "status": "three_way_ownership_materialized_heldout_not_evaluated",
+        "freeze_digest": excision["freeze_digest"],
+        "source_standard_splat": {
+            "path": str(source),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha256(source),
+        },
+        "ownership": {
+            "source_gaussian_count": read_standard_3dgs_ply(source).count,
+            "owned_count": len(owned),
+            "retained_count": len(retained),
+            "ambiguous_count": len(ambiguous),
+            "exhaustive": True,
+            "pairwise_disjoint": True,
+        },
+        "heldout_cameras_accessed_for_classification": False,
+        "replacement_usd_inserted": False,
+        "outputs": {
+            name: _record(path, ownership_root) for name, path in array_paths.items()
+        },
+        "receipt_digest": "",
+    }
+    ownership["receipt_digest"] = canonical_digest(
+        ownership, digest_field="receipt_digest"
+    )
+    ownership_path = ownership_root / "ownership.json"
+    _write_json(ownership_path, ownership)
+    return task_path, excision_path, ownership_path
 
 
 def test_exact_subset_writer_preserves_source_vertex_rows(tmp_path: Path) -> None:
@@ -465,3 +632,93 @@ def test_ownership_coverage_candidate_keeps_ambiguous_claims_conditional(
             ownership_receipt_path=ownership_path,
             output_root=tmp_path / "blocked-cutout",
         )
+
+
+def test_coverage_conditioned_successor_set_supports_five_independent_objects(
+    tmp_path: Path,
+) -> None:
+    """One shared source splat can carry five independently frozen replacements."""
+
+    source = _source_splat(tmp_path / "source.ply", count=15)
+    task_paths: list[Path] = []
+    excision_paths: dict[str, Path] = {}
+    ownership_paths: dict[str, Path] = {}
+    for slot in range(5):
+        task_id = f"task_{slot}"
+        task_path, excision_path, ownership_path = _coverage_cutout_inputs(
+            tmp_path,
+            source=source,
+            task_id=task_id,
+            slot=slot,
+            owned=[slot * 2],
+            ambiguous=[slot * 2 + 1],
+        )
+        task_paths.append(task_path)
+        excision_paths[task_id] = excision_path
+        ownership_paths[task_id] = ownership_path
+
+    receipt = materialize_ownership_coverage_cutout_set(
+        source_standard_splat_path=source,
+        task_freeze_paths=task_paths,
+        excision_freeze_paths_by_task=excision_paths,
+        ownership_receipt_paths_by_task=ownership_paths,
+        output_root=tmp_path / "successor-set",
+    )
+
+    assert receipt["schema_version"] == OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA
+    assert receipt["task_set"]["task_count"] == 5
+    assert receipt["task_set"]["maximum_task_count"] == 5
+    assert len(receipt["task_candidates"]) == 5
+    assert receipt["shared_scene_union"]["counts"] == {
+        "source": 15,
+        "deleted_total": 10,
+        "retained_total": 5,
+    }
+    assert receipt["selection"]["factual_gaussian_ownership_established_for_ambiguous_records"] is False
+    assert receipt["claim_boundary"]["candidate_derived_layers_only"] is True
+    assert receipt["shared_scene_union"]["preservation"]["retained_rows_byte_exact"] is True
+    assert np.load(
+        tmp_path / "successor-set/shared_scene_union/deleted_source_indices.npy"
+    ).tolist() == list(range(10))
+    assert np.load(
+        tmp_path / "successor-set/shared_scene_union/retained_source_indices.npy"
+    ).tolist() == list(range(10, 15))
+
+
+def test_coverage_conditioned_successor_set_rejects_shared_deletion_before_write(
+    tmp_path: Path,
+) -> None:
+    """Independent object lanes may not silently share one selected splat."""
+
+    source = _source_splat(tmp_path / "source.ply", count=6)
+    task_a, excision_a, ownership_a = _coverage_cutout_inputs(
+        tmp_path,
+        source=source,
+        task_id="task_a",
+        slot=0,
+        owned=[0],
+        ambiguous=[1],
+    )
+    task_b, excision_b, ownership_b = _coverage_cutout_inputs(
+        tmp_path,
+        source=source,
+        task_id="task_b",
+        slot=1,
+        owned=[2],
+        ambiguous=[1],
+    )
+    output = tmp_path / "blocked-successor-set"
+
+    with pytest.raises(
+        ReplacementOcclusionError,
+        match="coverage_cutout_set_independent_candidate_overlap:task_a:task_b",
+    ):
+        materialize_ownership_coverage_cutout_set(
+            source_standard_splat_path=source,
+            task_freeze_paths=[task_a, task_b],
+            excision_freeze_paths_by_task={"task_a": excision_a, "task_b": excision_b},
+            ownership_receipt_paths_by_task={"task_a": ownership_a, "task_b": ownership_b},
+            output_root=output,
+        )
+
+    assert not output.exists()
