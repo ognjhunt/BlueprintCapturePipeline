@@ -108,6 +108,21 @@ def _prefixed_sha256(path: Path) -> str:
     return "sha256:" + _sha256(path)
 
 
+def _digest(value: Any) -> bool:
+    text = str(value or "")
+    return text.startswith("sha256:") and len(text) == len("sha256:") + 64
+
+
+def _file_records_same_identity(left: Any, right: Any) -> bool:
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        return False
+    return (
+        left.get("sha256") == right.get("sha256")
+        and left.get("size_bytes") == right.get("size_bytes")
+        and _digest(left.get("sha256"))
+    )
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     """Replace one owned artifact without exposing partially written bytes."""
 
@@ -276,6 +291,7 @@ def agent_cad_content_agents_supporting_artifacts(
     source_root: str | Path,
     cad_agent_matrix: Mapping[str, Any],
     content_agents_bundle_matrix: Mapping[str, Any],
+    content_agents_execution_readiness: Mapping[str, Any] | None = None,
     task_id: str,
     shared_artifacts: Sequence[Mapping[str, str]] = (),
 ) -> list[dict[str, Any]]:
@@ -342,6 +358,46 @@ def agent_cad_content_agents_supporting_artifacts(
         raise EpisodeEvidenceIndexError(
             "agent_cad_supporting_content_agents_items_invalid"
         )
+    readiness_by_key: dict[tuple[int, str, str, str], Mapping[str, Any]] = {}
+    if content_agents_execution_readiness is not None:
+        readiness = dict(content_agents_execution_readiness)
+        if (
+            readiness.get("schema_version")
+            != "adp_content_agents_execution_readiness.v1"
+            or readiness.get("input_variant") != "agent_cad_v1"
+            or readiness.get("content_agents_bundle_matrix_digest")
+            != bundle_matrix.get("receipt_digest")
+            or readiness.get("receipt_digest")
+            != canonical_digest(readiness, digest_field="receipt_digest")
+        ):
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_content_agents_readiness_invalid"
+            )
+        readiness_items = readiness.get("items")
+        if not isinstance(readiness_items, list):
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_content_agents_readiness_invalid"
+            )
+        for row in readiness_items:
+            if not isinstance(row, Mapping):
+                raise EpisodeEvidenceIndexError(
+                    "agent_cad_supporting_content_agents_readiness_invalid"
+                )
+            key = (
+                row.get("replacement_slot"),
+                str(row.get("task_id") or ""),
+                str(row.get("asset_id") or ""),
+                str(row.get("cad_agent_backend_id") or ""),
+            )
+            if (
+                not isinstance(key[0], int)
+                or isinstance(key[0], bool)
+                or key in readiness_by_key
+            ):
+                raise EpisodeEvidenceIndexError(
+                    "agent_cad_supporting_content_agents_readiness_invalid"
+                )
+            readiness_by_key[key] = row
 
     cad_outputs: dict[tuple[int, str, str, str], dict[str, Any]] = {}
     for obj in cad_matrix["objects"]:
@@ -502,6 +558,51 @@ def agent_cad_content_agents_supporting_artifacts(
                 role=f"{prefix}:content_agents_bundle_zip",
             )
         )
+        readiness_row = readiness_by_key.get(key)
+        if readiness_row is not None:
+            if (
+                not _file_records_same_identity(
+                    readiness_row.get("bundle"), item.get("bundle")
+                )
+                or not _file_records_same_identity(
+                    readiness_row.get("bundle_receipt"), item.get("bundle_receipt")
+                )
+                or readiness_row.get("execute_admitted") is not False
+                or readiness_row.get("provider_mutations_performed") != 0
+            ):
+                raise EpisodeEvidenceIndexError(
+                    "agent_cad_supporting_content_agents_readiness_join_mismatch"
+                )
+            for field, role_suffix in (
+                ("static_config_preflight", "content_agents_static_preflight"),
+                (
+                    "local_config_preflight",
+                    "content_agents_local_docker_preflight",
+                ),
+                ("config_preflight", "content_agents_paid_config_preflight"),
+            ):
+                record = readiness_row.get(field)
+                if record is None:
+                    continue
+                if not isinstance(record, Mapping) or not _digest(
+                    record.get("receipt_digest")
+                ):
+                    raise EpisodeEvidenceIndexError(
+                        "agent_cad_supporting_content_agents_readiness_join_mismatch"
+                    )
+                receipt_path = _inside(source, str(record.get("path") or ""), role=field)
+                if _prefixed_sha256(receipt_path) != record.get("sha256"):
+                    raise EpisodeEvidenceIndexError(
+                        "agent_cad_supporting_content_agents_readiness_join_mismatch"
+                    )
+                preflight = _load_json(receipt_path)
+                if preflight.get("receipt_digest") != record.get("receipt_digest"):
+                    raise EpisodeEvidenceIndexError(
+                        "agent_cad_supporting_content_agents_readiness_join_mismatch"
+                    )
+                rows.append(
+                    _external_file_record(source, record, role=f"{prefix}:{role_suffix}")
+                )
 
     if matched == 0:
         raise EpisodeEvidenceIndexError("agent_cad_supporting_task_missing")

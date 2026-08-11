@@ -285,6 +285,96 @@ def _content_bundle_matrix(*, fixture_rows: list[dict[str, object]]) -> dict[str
     return matrix
 
 
+def _preflight_receipt(
+    source_root: Path,
+    *,
+    fixture: dict[str, object],
+    schema_version: str,
+    status: str,
+    relative_name: str,
+) -> dict[str, object]:
+    output = fixture["output"]
+    request = output["request"]
+    backend_id = request["backend"]["backend_id"]
+    path = (
+        source_root
+        / "task_a"
+        / backend_id
+        / "content_agents_bundle"
+        / relative_name
+    )
+    receipt = {
+        "schema_version": schema_version,
+        "status": status,
+        "bundle_sha256": fixture["bundle"]["sha256"],
+        "bundle_receipt_sha256": fixture["bundle_receipt"]["sha256"],
+        "provider_mutations_performed": 0,
+        "paid_resource_allocated": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    return file_record(path) | {"receipt_digest": receipt["receipt_digest"]}
+
+
+def _content_execution_readiness(
+    *,
+    bundle_matrix: dict[str, object],
+    fixture_rows: list[dict[str, object]],
+    source_root: Path,
+) -> dict[str, object]:
+    rows = []
+    for fixture in fixture_rows:
+        output = fixture["output"]
+        request = output["request"]
+        static = _preflight_receipt(
+            source_root,
+            fixture=fixture,
+            schema_version="adp_content_agents_static_bundle_config_preflight.v1",
+            status="static_passed_docker_and_paid_model_access_not_checked",
+            relative_name="static_bundle_config_preflight_v1/"
+            "adp_content_agents_static_bundle_config_preflight.json",
+        )
+        local = _preflight_receipt(
+            source_root,
+            fixture=fixture,
+            schema_version="adp_content_agents_local_bundle_config_preflight.v1",
+            status="local_passed_paid_model_access_not_checked",
+            relative_name="local_bundle_config_preflight_v1/"
+            "adp_content_agents_bundle_config_preflight.json",
+        )
+        rows.append(
+            {
+                "replacement_slot": request["replacement_slot"],
+                "task_id": request["task_id"],
+                "asset_id": request["asset_id"],
+                "cad_agent_backend_id": request["backend"]["backend_id"],
+                "bundle": fixture["bundle"],
+                "bundle_receipt": fixture["bundle_receipt"],
+                "config_preflight": None,
+                "local_config_preflight": local,
+                "static_config_preflight": static,
+                "execute_admitted": False,
+                "provider_mutations_performed": 0,
+            }
+        )
+    readiness = {
+        "schema_version": "adp_content_agents_execution_readiness.v1",
+        "status": "blocked_before_paid_execution",
+        "input_variant": "agent_cad_v1",
+        "content_agents_bundle_matrix_digest": bundle_matrix["receipt_digest"],
+        "items": rows,
+        "receipt_digest": "",
+    }
+    readiness["receipt_digest"] = canonical_digest(
+        readiness, digest_field="receipt_digest"
+    )
+    return readiness
+
+
 def _receipt(
     root: Path,
     *,
@@ -598,11 +688,17 @@ def test_agent_cad_content_agents_rows_materialize_task_inventory(
         ]
     )
     bundle_matrix = _content_bundle_matrix(fixture_rows=[earth, mac])
+    readiness = _content_execution_readiness(
+        bundle_matrix=bundle_matrix,
+        fixture_rows=[earth, mac],
+        source_root=source_root,
+    )
 
     rows = agent_cad_content_agents_supporting_artifacts(
         source_root=source_root,
         cad_agent_matrix=cad_matrix,
         content_agents_bundle_matrix=bundle_matrix,
+        content_agents_execution_readiness=readiness,
         task_id="task_a_washer_door_open",
         shared_artifacts=[
             {
@@ -616,6 +712,14 @@ def test_agent_cad_content_agents_rows_materialize_task_inventory(
     assert "agent_cad_comparison:all_four_front_best" in roles
     assert (
         "agent_cad:earthtojake_text_to_cad:content_agents_bundle_receipt"
+        in roles
+    )
+    assert (
+        "agent_cad:earthtojake_text_to_cad:content_agents_static_preflight"
+        in roles
+    )
+    assert (
+        "agent_cad:pan_chera_multi_agent_cad:content_agents_local_docker_preflight"
         in roles
     )
     assert "agent_cad:pan_chera_multi_agent_cad:mesh_projection_receipt" in roles
