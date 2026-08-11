@@ -8,6 +8,17 @@ def _text(relative: str) -> str:
     return (REPO / relative).read_text(encoding="utf-8")
 
 
+def test_canonical_allocator_dependencies_are_in_the_production_base() -> None:
+    pyproject = _text("pyproject.toml")
+    base_dependencies = pyproject.split("[project.optional-dependencies]", 1)[0]
+    frozen_base = _text("requirements.txt")
+
+    for requirement in ('"packaging>=24.0"', '"usd-core>=24.0"'):
+        assert requirement in base_dependencies
+    assert "packaging==" in frozen_base
+    assert "usd-core==" in frozen_base
+
+
 def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     dispatcher = _text("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service")
     path_unit = _text("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.path")

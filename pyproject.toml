@@ -32,6 +32,11 @@ dependencies = [
     # module load. Keep this direct in the production base instead of relying
     # on a developer-only transitive dependency.
     "packaging>=24.0",
+    # The canonical allocator imports the Content Agents adapter at module
+    # load, and that adapter imports OpenUSD pxr. The production control-plane
+    # base must therefore carry usd-core; a geometry/dev-only declaration
+    # makes the website dispatcher fail before it can classify any request.
+    "usd-core>=24.0",
     "numpy>=1.24.0",
     # Exact-camera frame registration uses scipy.spatial.cKDTree in the core
     # external-scene admission path, so this cannot be left to a transitive
