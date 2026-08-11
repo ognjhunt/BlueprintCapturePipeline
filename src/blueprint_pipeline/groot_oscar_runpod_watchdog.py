@@ -37,6 +37,8 @@ CANARY_NAME_PREFIXES = (
     "blueprint-measurement-isaac-",
     "blueprint-measurement-dlo-",
     "blueprint-measurement-chrono-dem-",
+    "blueprint-adp-arena-",
+    "blueprint-adp009d-",
 )
 CAMPAIGN_PENDING_TEARDOWN_LANES = {
     "persistent_policy_wam_loop": "runpod_wam_async",

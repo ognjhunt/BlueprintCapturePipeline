@@ -92,6 +92,26 @@ def test_watchdog_arms_measurement_chrono_dem_canary_prefix(tmp_path, monkeypatc
     assert result["pod_name_prefix"] == "blueprint-measurement-chrono-dem-"
     assert result["provider"] == "vast"
 
+
+@pytest.mark.parametrize(
+    "prefix",
+    ("blueprint-adp-arena-", "blueprint-adp009d-"),
+)
+def test_watchdog_arms_adp_canary_prefixes(tmp_path, monkeypatch, prefix) -> None:
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
+
+    result = arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=3_000.0,
+        pid=os.getpid(),
+        provider_name="vast",
+    )
+
+    assert result["status"] == "armed"
+    assert result["pod_name_prefix"] == prefix
+    assert result["provider"] == "vast"
+
 def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence(
     monkeypatch,
 ) -> None:
