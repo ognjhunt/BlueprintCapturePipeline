@@ -80,6 +80,10 @@ result.
   review contract. The contract binds an isolated Codex CLI command prefix and
   rejects missing explicit host-OAuth authority; Codex receives only digest-bound
   metadata, never raw scene, CAD, mesh, or secret bytes.
+- Current evidence-seal commit: `6999f09de`. It binds all four completed
+  metadata-only Codex reviews into a complete matrix, mirrors their JSON
+  receipts without copying source artifacts, and makes the portable evidence
+  index fail closed on a missing, swapped, or relabelled review receipt.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
 - External 840796 worktrees and evidence roots were not modified.
@@ -794,6 +798,12 @@ Recent reusable-code and manifest commits:
   not API calls: observed provider/GPU/object-store spend is `$0.00`; no
   per-call subscription-cost export exists, so no fictional agent-cost number
   is reported. All four have `provider_upload_performed=false`.
+- Focused matrix, advisory-review, portable-mirror, and evidence-index
+  regressions for `6999f09de` — `100 passed`; the required ADP precommit
+  selector and `.venv/bin/ruff check src/ tests/` passed. The additional
+  regression proves a missing explicit host-OAuth grant blocks before either
+  the Codex operator or a version probe can execute, so it cannot fall back to
+  an API-backed path.
 
 ## Claim table
 
