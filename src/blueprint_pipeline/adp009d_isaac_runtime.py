@@ -241,11 +241,13 @@ APPROVED_CAN_HEIGHT_M = 0.1694279937744141
 # `PhysicsCollisionAPI`.
 CONTACT_PARTNER_FILTER_LABEL = "approved_can"
 CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can"
-# Canary 47488171 proved that the PhysX spawn label ``approved_can`` matches no
-# Newton counterpart.  The sealed USD has exactly one authored rigid body and
-# applies ``PhysicsRigidBodyAPI`` to its ``canned_beverage`` root, so the next
-# fail-closed candidate filter targets that exact source label.
-NEWTON_CONTACT_PARTNER_FILTER_BODY_EXPR = "*canned_beverage"
+# Canaries 47488171 and 47489958 proved that neither the PhysX spawn label
+# ``approved_can`` nor the authored USD rigid-body name ``canned_beverage`` is
+# retained as a Newton body label.  The sealed USD has exactly one authored can
+# collision shape, ``/canned_beverage/colliders/body_collider``.  Newton's
+# native contact adapter supports shape-level partner filtering, so bind that
+# exact authored collider rather than guessing another converted body label.
+NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR = "*body_collider"
 # The retained paid controls receipt proved that the can filter resolved one
 # shape and carried zero force while the left finger carried 8.6 N net force.
 # That rules out the can, but not the sealed SAGE collision asset versus any
@@ -312,14 +314,88 @@ def _robot_contact_sensor_prim_path(physics_backend: str) -> str:
 
 
 def _contact_partner_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
-    """Return an explicit body-level can filter for the selected backend."""
+    """Return the backend-native exact can contact-partner filter."""
 
     backend = normalize_physics_backend(physics_backend)
     if backend == "newton":
         return {
-            "filter_prim_paths_expr": [NEWTON_CONTACT_PARTNER_FILTER_BODY_EXPR]
+            "filter_shape_prim_expr": [NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR]
         }
     return {"filter_prim_paths_expr": [CONTACT_PARTNER_FILTER_PRIM_PATH]}
+
+
+def _summarize_newton_contact_labels(
+    body_labels: list[str] | tuple[str, ...],
+    shape_labels: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Retain bounded converted labels needed to diagnose filter admission.
+
+    Contact-sensor construction happens after Newton has finalized its model,
+    so a failed selector must preserve what Newton actually named.  All body
+    labels are retained up to a generous bounded ceiling; shape labels retain
+    every can-relevant value plus deterministic head/tail samples.  This is
+    read-only failure evidence and cannot change contact behavior.
+    """
+
+    bodies = [str(value) for value in body_labels]
+    shapes = [str(value) for value in shape_labels]
+    relevant_tokens = ("approved", "can", "beverage", "body_collider")
+
+    def relevant(values: list[str]) -> list[str]:
+        return [
+            value
+            for value in values
+            if any(token in value.lower() for token in relevant_tokens)
+        ]
+
+    body_limit = 256
+    shape_sample_limit = 64
+    retained_bodies = bodies[:body_limit]
+    if len(shapes) <= shape_sample_limit:
+        shape_sample = shapes
+    else:
+        half = shape_sample_limit // 2
+        shape_sample = shapes[:half] + shapes[-half:]
+    return {
+        "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
+        "body_label_count": len(bodies),
+        "shape_label_count": len(shapes),
+        "body_labels": retained_bodies,
+        "body_labels_truncated": len(bodies) > body_limit,
+        "can_relevant_body_labels": relevant(bodies),
+        "can_relevant_shape_labels": relevant(shapes),
+        "shape_label_sample": shape_sample,
+        "shape_label_sample_truncated": len(shapes) > shape_sample_limit,
+        "requested_can_shape_filter": NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR,
+    }
+
+
+def _newton_contact_label_diagnostics() -> dict[str, Any]:
+    """Read the finalized Newton model labels after a sensor-build failure."""
+
+    try:
+        from isaaclab_newton.physics import NewtonManager
+
+        model = NewtonManager.get_model()
+        if model is None:
+            return {
+                "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
+                "status": "model_unavailable",
+            }
+        raw_body_labels = getattr(model, "body_label", None)
+        raw_shape_labels = getattr(model, "shape_label", None)
+        result = _summarize_newton_contact_labels(
+            [] if raw_body_labels is None else list(raw_body_labels),
+            [] if raw_shape_labels is None else list(raw_shape_labels),
+        )
+        result["status"] = "observed"
+        return result
+    except Exception as exc:  # noqa: BLE001 - diagnostics cannot mask the blocker
+        return {
+            "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
+            "status": "unavailable",
+            "error_type": type(exc).__name__,
+        }
 
 
 def _sage_collision_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
@@ -1770,13 +1846,28 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         _phase("runtime_import_preflight", "completed")
         _phase("environment_build")
         phase_started = time.monotonic()
-        (
-            env,
-            cfg,
-            torch,
-            external_task_camera_plan,
-            overview_camera_plan,
-        ) = _build_environment(runtime, args)
+        try:
+            (
+                env,
+                cfg,
+                torch,
+                external_task_camera_plan,
+                overview_camera_plan,
+            ) = _build_environment(runtime, args)
+        except Exception as exc:
+            if backend == "newton":
+                existing = getattr(exc, "diagnostics", None)
+                diagnostics = dict(existing) if isinstance(existing, dict) else {}
+                diagnostics["newton_contact_labels"] = (
+                    _newton_contact_label_diagnostics()
+                )
+                try:
+                    exc.diagnostics = diagnostics
+                except Exception:  # noqa: BLE001 - retain labels via a typed wrapper
+                    wrapped = RuntimeError(str(exc))
+                    wrapped.diagnostics = diagnostics
+                    raise wrapped from exc
+            raise
         timings_seconds["environment_build"] = round(time.monotonic() - phase_started, 6)
         log.flush()
         _phase("environment_build", "completed")

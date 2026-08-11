@@ -110,11 +110,28 @@ Terminal receipt
 `sha256:9816ed8355a38e11111eb87d5adf5d63735470f92f86e8779a1e4fd28412e901`
 records the typed blocker, zero policy queries, zero retries, a settled `$0.133`
 provider charge, 20 retained artifacts, successful teardown, and fresh
-API-confirmed provider-zero. The candidate repair keeps PhysX's existing body
-filter unchanged, tests Newton against that exact source body label, and filters
-the static SAGE counterpart through the exact 15 shape labels bound by the sealed task
-collision manifest. A new native canary must still prove both force matrices
-before controls begin.
+API-confirmed provider-zero.
+
+A provider-free bundle and admission attempt at implementation commit
+`b59836ea97963077335cbc178471feb367577f70` was then rejected before storage or
+compute mutation because the canonical paid-spend lock path was absent from the
+operator environment. Its adapter receipt records
+`provider_mutations_performed: 0`; the corrected invocation used a new evidence
+root and an explicitly bound lock rather than modifying the failed attempt.
+
+The fourth controls-only canary at that same commit proved the exact source
+body label `canned_beverage` also matches no Newton counterpart. Terminal receipt
+`sha256:7a420975420b88841ac3b1b1c3dd88699140514888caa4f9f44efaba3b1a138a`
+records the typed pre-controls blocker, zero policy queries, zero retries, a
+settled `$0.148` provider charge, 20 retained artifacts totaling 277,996 bytes,
+successful teardown, and fresh API-confirmed provider-zero. The repair keeps
+PhysX's existing body filter unchanged and uses Newton's native shape-level
+filter for the sealed can's exact authored `body_collider`; static SAGE remains
+separately filtered through the exact 15 shape labels bound by the sealed task
+collision manifest. Any subsequent Newton sensor-build failure retains the
+finalized model's bounded body/shape label diagnostics, so another label is not
+guessed blindly. A new native canary must still prove both partner force
+matrices before controls begin.
 
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.

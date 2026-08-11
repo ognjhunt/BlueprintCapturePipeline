@@ -3168,13 +3168,12 @@ def test_contact_partner_filter_uses_one_sensor_per_finger_and_the_rigid_body() 
     assert "Robotiq_2F_85/{body_name}" in per_finger
 
 
-def test_newton_contact_partner_filters_bind_converted_body_and_exact_sage_shapes() -> None:
+def test_newton_contact_partner_filters_bind_exact_can_and_sage_shapes() -> None:
     """Newton counterpart matching uses fnmatch labels, not PhysX prim scopes.
 
-    Vast instance 47488171 proved the PhysX spawn label ``approved_can``
-    resolves no Newton counterpart.  The sealed source body is named
-    ``canned_beverage``; static SAGE geometry has no body and therefore uses
-    the exact 15 digest-bound task-derivative shape labels.
+    Vast instances 47488171 and 47489958 proved the PhysX spawn label and the
+    authored USD body name do not survive as Newton body labels.  The sealed
+    can and static SAGE geometry therefore use exact authored shape labels.
     """
 
     from fnmatch import fnmatchcase
@@ -3185,13 +3184,15 @@ def test_newton_contact_partner_filters_bind_converted_body_and_exact_sage_shape
         "filter_prim_paths_expr": ["{ENV_REGEX_NS}/approved_can"]
     }
     newton_can = runtime._contact_partner_filter_kwargs("newton")
-    assert newton_can == {"filter_prim_paths_expr": ["*canned_beverage"]}
-    assert fnmatchcase("canned_beverage", newton_can["filter_prim_paths_expr"][0])
+    assert newton_can == {"filter_shape_prim_expr": ["*body_collider"]}
+    assert fnmatchcase("body_collider", newton_can["filter_shape_prim_expr"][0])
     assert fnmatchcase(
-        "/World/envs/env_0/approved_can/canned_beverage",
-        newton_can["filter_prim_paths_expr"][0],
+        "/World/envs/env_0/approved_can/canned_beverage/colliders/body_collider",
+        newton_can["filter_shape_prim_expr"][0],
     )
-    assert not fnmatchcase("approved_can_visual", newton_can["filter_prim_paths_expr"][0])
+    assert not fnmatchcase(
+        "approved_can_visual", newton_can["filter_shape_prim_expr"][0]
+    )
 
     assert runtime._sage_collision_filter_kwargs("physx") == {
         "filter_prim_paths_expr": ["{ENV_REGEX_NS}/sage_collision"]
@@ -3214,9 +3215,38 @@ def test_newton_contact_partner_filters_bind_converted_body_and_exact_sage_shape
         assert not fnmatchcase(f"Robot/{label}_other", expression)
 
     assert not any(
-        fnmatchcase("/World/envs/env_0/approved_can/canned_beverage", expression)
+        fnmatchcase(
+            "/World/envs/env_0/approved_can/canned_beverage/colliders/body_collider",
+            expression,
+        )
         for expression in expressions
     )
+
+
+def test_newton_contact_label_diagnostics_are_bounded_and_retain_can_labels() -> None:
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    bodies = [f"/World/envs/env_0/Robot/link_{index}" for index in range(300)]
+    bodies.append("/World/envs/env_0/approved_can/canned_beverage")
+    shapes = [f"/World/envs/env_0/sage_collision/mesh_{index}" for index in range(80)]
+    shapes.append(
+        "/World/envs/env_0/approved_can/canned_beverage/colliders/body_collider"
+    )
+
+    diagnostics = runtime._summarize_newton_contact_labels(bodies, shapes)
+
+    assert diagnostics["schema_version"] == (
+        "adp009d_newton_contact_label_diagnostics.v1"
+    )
+    assert diagnostics["body_label_count"] == 301
+    assert len(diagnostics["body_labels"]) == 256
+    assert diagnostics["body_labels_truncated"] is True
+    assert diagnostics["can_relevant_body_labels"] == [bodies[-1]]
+    assert diagnostics["shape_label_count"] == 81
+    assert diagnostics["can_relevant_shape_labels"] == [shapes[-1]]
+    assert len(diagnostics["shape_label_sample"]) == 64
+    assert diagnostics["shape_label_sample_truncated"] is True
+    assert diagnostics["requested_can_shape_filter"] == "*body_collider"
 
 
 def test_finger_collision_envelope_probe_measures_reach_and_cannot_break_a_run() -> None:
