@@ -126,6 +126,18 @@ def _verified_canonical_receipt(path: Path, *, error: str) -> dict[str, Any]:
     return receipt
 
 
+def _file_record_matches_current_bytes(record: Any) -> bool:
+    if not isinstance(record, Mapping):
+        return False
+    path = Path(str(record.get("path") or "")).expanduser().resolve()
+    return (
+        path.is_file()
+        and not path.is_symlink()
+        and path.stat().st_size == int(record.get("size_bytes", -1))
+        and _sha256(path) == record.get("sha256")
+    )
+
+
 def materialize_content_agents_execution_readiness(
     *,
     content_agents_bundle_matrix: Mapping[str, Any],
@@ -280,6 +292,13 @@ def materialize_content_agents_execution_readiness(
             for field, expected_value in expected_binding_fields.items()
         ):
             raise ValueError("adp_content_agents_readiness_bundle_binding_mismatch")
+        if not all(
+            _file_record_matches_current_bytes(bindings.get(field))
+            for field in ("cad_agent_output_manifest", "mesh_projection_receipt")
+        ):
+            raise ValueError(
+                "adp_content_agents_readiness_bundle_binding_file_mismatch"
+            )
         key = (
             f"{item.get('task_id')}|{item.get('replacement_slot')}|"
             f"{item.get('cad_agent_backend_id')}"
