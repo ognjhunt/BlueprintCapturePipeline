@@ -367,6 +367,8 @@ def test_plan_bakes_metric_scale_and_rebuilds_only_allowlisted_content(
         "prim_path",
         "cfg",
         "stage",
+        "deformable_type",
+        "sim_mesh_prim_path",
     ]
     assert PINNED_NATIVE_CALL_CONTRACT["deformable_authoring"]["explicit_success_return"] is None
     assert PINNED_NATIVE_CALL_CONTRACT["physics_material_binding"] == {

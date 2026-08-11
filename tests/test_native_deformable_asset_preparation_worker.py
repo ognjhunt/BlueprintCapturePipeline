@@ -138,6 +138,13 @@ def test_pinned_native_call_contract_matches_runtime_source_packet_v14_blobs():
 
     rows = worker._source_rows()
     assert {symbol: rows[symbol]["source_git_blob_sha1"] for symbol in expected} == expected
+    assert rows[worker.DEFORMABLE_AUTHORING_API]["parameters"] == [
+        "prim_path",
+        "cfg",
+        "stage",
+        "deformable_type",
+        "sim_mesh_prim_path",
+    ]
 
 
 def test_worker_reads_one_frozen_plan_and_delegates_without_claim_upgrade(
