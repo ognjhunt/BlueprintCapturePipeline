@@ -69,7 +69,8 @@ result.
   `d7256699aaf3596c6a645045cc3133ce1606b21e` (the general 1..5-object
   Codex-first Content Agents route). The latter sends local packet/scope/config
   review to host-authenticated Codex without an API key or provider bundle, and
-  rejects a Codex-only request before bundle creation. The pinned NVIDIA
+  requires that route for every new agent-CAD bundle, rejecting a Codex-only
+  request before bundle creation. The pinned NVIDIA
   pipeline remains selected only for its complete released
   material/texture/physics/validation capability; Codex is not represented as
   an NVIDIA Content Agents execution.
@@ -558,9 +559,10 @@ forks:
   execution or SimReady qualification.
 - Content-Agent-capable work is now explicitly Codex-first: a general
   1..5-object route isolates local input/material/physics-scope/configuration/
-  receipt review from API-backed released-code execution. A Codex-only route is
-  rejected before a VAST bundle directory is created; a hybrid route binds each
-  candidate object and the exact residual NVIDIA pipeline capability. This
+  receipt review from API-backed released-code execution. Every new agent-CAD
+  bundle requires that route; a Codex-only route is rejected before a VAST
+  bundle directory is created; a hybrid route binds each candidate object and
+  the exact residual NVIDIA pipeline capability. This
   optimization remains advisory and cannot change any source-removal,
   simulator, or physical-evidence boolean.
 - Content Agents paid execution now has its own single-use attempt-authority

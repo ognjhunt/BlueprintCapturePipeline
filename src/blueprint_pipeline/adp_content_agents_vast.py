@@ -1603,6 +1603,11 @@ def build_content_agents_vast_bundle(
         raise ValueError(
             "adp_content_agents_agent_cad_reference_must_come_from_manifest"
         )
+    if (
+        input_variant == "agent_cad_v1"
+        and content_agents_execution_route_path is None
+    ):
+        raise ValueError("adp_content_agents_codex_first_route_missing")
     if reference_image_path is None:
         if input_variant != "agent_cad_v1":
             raise ValueError("adp_content_agents_reference_image_missing")

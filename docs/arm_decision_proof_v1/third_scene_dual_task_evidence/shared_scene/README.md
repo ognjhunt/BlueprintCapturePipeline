@@ -69,10 +69,11 @@ The readiness receipt includes Dockerless static bundle/config/input-USD
 preflight receipts for all four Content Agents bundles. The reusable
 Codex-first routing contract sends local packet/scope/configuration/review work
 to host-authenticated Codex without an API key or provider bundle. It rejects a
-Codex-only request before a provider-bundle directory can be created. NVIDIA
-Content Agents remain advisory for the one residual capability their released
-runtime actually owns: the complete material/texture/physics/validation
-pipeline. Neither route can repair the independently failed
+Codex-only request before a provider-bundle directory can be created; every new
+agent-CAD Content Agents bundle must carry that explicit route. NVIDIA Content
+Agents remain advisory for the one residual capability their released runtime
+actually owns: the complete material/texture/physics/validation pipeline.
+Neither route can repair the independently failed
 Gaussian-ownership gate.
 
 Claim boundary: these are CAD candidates and Content Agents bundle/readiness

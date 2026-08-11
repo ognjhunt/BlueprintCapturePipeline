@@ -369,6 +369,17 @@ def _agent_cad_execution_route(
     return destination
 
 
+def _agent_cad_provider_route(output_path: Path) -> Path:
+    return _agent_cad_execution_route(
+        output_path=output_path,
+        destination=output_path.with_name("content_agents_execution_route.json"),
+        capabilities=[
+            "input_packet_review",
+            "released_material_texture_physics_validation_pipeline",
+        ],
+    )
+
+
 def _qualified_model_access() -> dict:
     llm = {
         "schema_version": bundle_preflight.LLM_PREFLIGHT_SCHEMA_VERSION,
@@ -724,6 +735,28 @@ def test_agent_cad_bundle_rejects_a_codex_only_route_before_provider_bundle(
     assert not (tmp_path / "must-not-stage-provider-bundle").exists()
 
 
+def test_agent_cad_bundle_requires_an_explicit_codex_first_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+
+    with pytest.raises(
+        ValueError, match="adp_content_agents_codex_first_route_missing"
+    ):
+        content_agents.build_content_agents_vast_bundle(
+            repo_root=ROOT,
+            content_agents_root=source,
+            job_dir=tmp_path / "unrouted-agent-cad-bundle",
+            input_variant="agent_cad_v1",
+            agent_cad_output_manifest_path=output_path,
+            agent_mesh_projection_receipt_path=projection_path,
+            generated_at="fixed",
+        )
+    assert not (tmp_path / "unrouted-agent-cad-bundle").exists()
+
+
 def _single_agent_cad_content_bundle_matrix(
     *,
     bundle_receipt_path: Path,
@@ -803,6 +836,14 @@ def _agent_cad_bundle_item(
         backend_id,
         replacement_slot=replacement_slot,
     )
+    route_path = _agent_cad_execution_route(
+        output_path=output_path,
+        destination=output_path.with_name("content_agents_execution_route.json"),
+        capabilities=[
+            "input_packet_review",
+            "released_material_texture_physics_validation_pipeline",
+        ],
+    )
     bundle_receipt = content_agents.build_content_agents_vast_bundle(
         repo_root=ROOT,
         content_agents_root=source,
@@ -810,6 +851,7 @@ def _agent_cad_bundle_item(
         input_variant="agent_cad_v1",
         agent_cad_output_manifest_path=output_path,
         agent_mesh_projection_receipt_path=projection_path,
+        content_agents_execution_route_path=route_path,
         generated_at="fixed",
     )
     bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
@@ -1169,6 +1211,7 @@ def test_content_agents_execution_readiness_rejects_duplicate_or_partial_backend
         input_variant="agent_cad_v1",
         agent_cad_output_manifest_path=output_path,
         agent_mesh_projection_receipt_path=projection_path,
+        content_agents_execution_route_path=_agent_cad_provider_route(output_path),
         generated_at="fixed",
     )
     bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
@@ -1223,6 +1266,7 @@ def test_content_agents_execution_readiness_rejects_relabelled_bundle_backend(
         input_variant="agent_cad_v1",
         agent_cad_output_manifest_path=output_path,
         agent_mesh_projection_receipt_path=projection_path,
+        content_agents_execution_route_path=_agent_cad_provider_route(output_path),
         generated_at="fixed",
     )
     bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
@@ -1336,6 +1380,7 @@ def test_content_agents_execution_readiness_rejects_tampered_bundle_identity(
         input_variant="agent_cad_v1",
         agent_cad_output_manifest_path=output_path,
         agent_mesh_projection_receipt_path=projection_path,
+        content_agents_execution_route_path=_agent_cad_provider_route(output_path),
         generated_at="fixed",
     )
     bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
@@ -1391,6 +1436,7 @@ def test_agent_cad_reference_is_derived_from_manifest_not_operator_guess(
         input_variant="agent_cad_v1",
         agent_cad_output_manifest_path=output_path,
         agent_mesh_projection_receipt_path=projection_path,
+        content_agents_execution_route_path=_agent_cad_provider_route(output_path),
         generated_at="fixed",
     )
 
