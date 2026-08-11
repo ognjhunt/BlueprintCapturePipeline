@@ -2162,6 +2162,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
                 from adp009d_isaac_episode_adapter import (
                     controlled_body_pose_for_grasp_frame_target,
+                    semantic_finger_tool_midpoint_world_m,
                 )
                 from adp009d_droid_action_execution import GripperConvention
                 from adp009d_control_episode import run_required_controls
@@ -2291,10 +2292,20 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         body_names.index("left_inner_finger"),
                         body_names.index("right_inner_finger"),
                     ]
-                    finger_midpoint = (
+                    raw_finger_body_midpoint = (
                         body_poses[finger_indices[0], :3]
                         + body_poses[finger_indices[1], :3]
                     ) / 2.0
+                    finger_midpoint = semantic_finger_tool_midpoint_world_m(
+                        left_finger_pose_world_xyzw=[
+                            float(value)
+                            for value in body_poses[finger_indices[0], :7]
+                        ],
+                        right_finger_pose_world_xyzw=[
+                            float(value)
+                            for value in body_poses[finger_indices[1], :7]
+                        ],
+                    )
                     target_body_position_world, held_body_quaternion_world = (
                         controlled_body_pose_for_grasp_frame_target(
                             current_body_position_world_m=[
@@ -2362,6 +2373,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 ],
                                 "current_grasp_frame_position_world_m": [
                                     float(value) for value in finger_midpoint
+                                ],
+                                "raw_finger_body_midpoint_world_m": [
+                                    float(value)
+                                    for value in raw_finger_body_midpoint
                                 ],
                                 "target_controlled_body_position_world_m": [
                                     float(value) for value in target_body_position_world
