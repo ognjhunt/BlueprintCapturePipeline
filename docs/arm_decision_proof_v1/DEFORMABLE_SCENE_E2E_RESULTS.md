@@ -87,10 +87,12 @@ inventory and objective rejection reasons are frozen in
   That package retained the older native-runtime API symbol contract and was
   replaced after canary v16.
 - The current paid-free pinned-PhysX preparation plan has digest
-  `sha256:5ad516bf28881fd38dc06527049eef65a936cf286c866218d356aaa758f54907`;
-  its immutable local source-package receipt has digest
-  `sha256:c915be13c8165211116d58eecf6b0e4b485e26bbddc5d509b9766f29836196ab`.
-  Packaging does not qualify the cook.
+  `sha256:162f83839060f09ce8265fbd9bd3d490e9f3ebe4b7b8c3c2ce0e3150eeed5efd`;
+  its immutable local source-package v5 receipt has digest
+  `sha256:d817287215cc4d275442adeb748b7e742dbe53bfba066f602a750d818b8bd4a3`.
+  Packaging does not qualify the cook. Source-package v4 was superseded after
+  canary v28 proved that stale embedded preparation plans could survive into a
+  provider bundle.
 - The local download-provenance xattr points to Lightwheel job
   `job_msnornab_95503606da`; this identifies the delivery origin but is not an
   output-license or provider-terms grant. The six-file archive contains no
@@ -192,7 +194,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 
 ## Cost and provider lifecycle
 
-- Deformable Vast/GPU spend retained so far: `$0.588892`.
+- Deformable Vast/GPU spend retained so far: `$0.634007`.
 - Palatial/Newton local attempt 001: retained free null, 120 requested CPU
   frames, hard timeout at 300 seconds, `$0.00`, scratch removed, receipt file
   SHA-256 `a159530bca09fccf07cd42dc0e6a097e876621e47861e323ad6f779f647164fb`.
@@ -373,8 +375,38 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 - Current provider state after v27 teardown: the deformable lane owns no live
   provider instance. `vastai show instances --raw` still showed the unrelated
   ADP-009D instance `47458442` running.
-- Deformable Vast/GPU attempts with allocation: `13`; prelaunch-blocked attempts:
-  `3`; local dry-run command-shape nulls: `3`; uploads: `11`; automatic retries:
+- Deformable native canary v28 dry-run prepared the immutable provider bundle
+  from commit `3f3dcf152` and source-package v4. Status: `dry_run_ready`;
+  blockers: `[]`; provider mutations: `0`; no policy query. Bundle SHA-256 is
+  `sha256:8faf79c3a507092f2bc836b0039ada4e9e959e9d652c94b5c19e6f58f52e3657`;
+  bundle receipt digest is
+  `sha256:d244c6847d2a653bc5d0d09e218678c50bc362166b34a3a19908e71ba72bc2a8`;
+  allocation input digest is
+  `sha256:171ce7dd4f0dc81dda5d81e6abdfa29ca2c1e4bc0fd7c8f97330fb24945e7c99`.
+- Deformable native canary v28 launched Vast instance `47460081` on machine
+  `51579` (`RTX A6000`, `$0.5125185185/hr`), reached Isaac Sim 6.0.1, Warp CUDA
+  startup, bundle download, verified runtime-source provisioning, and native
+  worker startup. The worker then blocked before native cook because
+  source-package v4 still embedded a stale preparation plan with
+  `OmniPhysicsDeformableBodyAPI` under `pxr.PhysxSchema` and physics material
+  binding at `/Deformable/Visuals/Surface`. Cost: `$0.045115`; no policy query;
+  teardown, object-store cleanup, final validation, and provider-zero all
+  passed. This is a reusable source-package freshness/package-admission bug,
+  not a native cook/contact capability result. The fixed source-package v5 has
+  plan digest
+  `sha256:162f83839060f09ce8265fbd9bd3d490e9f3ebe4b7b8c3c2ce0e3150eeed5efd`
+  and package receipt digest
+  `sha256:d817287215cc4d275442adeb748b7e742dbe53bfba066f602a750d818b8bd4a3`.
+- Deformable native canary v29 precommit local bundle check used
+  source-package v5 and performed `0` provider mutations. Status: `ready`;
+  bundle SHA-256 is
+  `sha256:ae538d2f1ea0bf1aa3ec75e90c4f8ce38fb45bb3882b4e817425f74f474873df`;
+  bundle receipt digest is
+  `sha256:186cbb5ee07c94eed3fa9f1b52396c208f4322ea46a2b489cd45580ad30a4f59`;
+  allocation input digest is
+  `sha256:6b366a0325d05b33c37b7440ff074f0c0f561acc5155c8fcb345ad3a19841d13`.
+- Deformable Vast/GPU attempts with allocation: `14`; prelaunch-blocked attempts:
+  `3`; local dry-run command-shape nulls: `3`; uploads: `12`; automatic retries:
   `0`.
 
 ## Claim table
@@ -383,7 +415,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, v25 exposed a stale body/cooking configuration mismatch before native asset qualification, v26 exposed the missing `pytetwild`/pre-tetrahedralized-TetMesh admission requirement before native asset qualification, and v27 exposed an incorrect visual-mesh physics material/schema readback contract before native qualification |
+| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, v25 exposed a stale body/cooking configuration mismatch before native asset qualification, v26 exposed the missing `pytetwild`/pre-tetrahedralized-TetMesh admission requirement before native asset qualification, v27 exposed an incorrect visual-mesh physics material/schema readback contract before native qualification, and v28 exposed stale embedded preparation-plan admission before native qualification |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -416,6 +448,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `dff14c289` | Record deformable v24 dry run |
 | `97ec188c4` | Split deformable body and cook config |
 | `098d91d8e` | Pin deformable tetrahedralization dependency |
+| `3f3dcf152` | Bind deformable physics material at body root |
 
 Each listed commit was pushed to
 `origin/codex/adp-deformable-scene-e2e-20260810`.
@@ -430,11 +463,9 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to commit and push the reusable deformable-root physics
-material/schema readback fix, regenerate the provider bundle at that exact
-commit, and execute one no-retry v28 Vast native canary with either global
-provider-zero or an explicit allowlist for the still-running unrelated ADP-009D
-instance. If the canary
+The single next action is to commit and push the reusable stale-plan admission
+guard, regenerate the provider bundle at that exact commit from source-package
+v5, and execute one no-retry v29 Vast native canary under provider-zero. If the canary
 qualifies cook/load/reset/contact/cameras, the run continues to zero-action and
 scripted controls before any learned policy. If the native backend still cannot
 provide qualified rigid--deformable contact attribution after cook succeeds, the

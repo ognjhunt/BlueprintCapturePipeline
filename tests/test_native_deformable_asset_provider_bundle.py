@@ -12,6 +12,10 @@ import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
+from blueprint_pipeline.native_deformable_asset_preparation import (
+    build_native_deformable_asset_source_package,
+    materialize_native_deformable_asset_preparation_plan,
+)
 from blueprint_pipeline.native_deformable_asset_provider_bundle import (
     NativeDeformableAssetProviderBundleError,
     build_native_deformable_asset_provider_bundle,
@@ -31,42 +35,25 @@ def _sha(path: Path) -> str:
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, dict]:
+    from tests.test_native_deformable_asset_preparation import _physics, _source_fixture
+
+    source, textures, inspection_receipt_path, inspection = _source_fixture(tmp_path)
+    plan = materialize_native_deformable_asset_preparation_plan(
+        preparation_id="fixture",
+        inspection_receipt_path=inspection_receipt_path,
+        expected_inspection_receipt_digest=inspection["receipt_digest"],
+        source_usd_path=source,
+        source_texture_root=textures,
+        target_metric_dimensions_m=inspection["observation"]["dimensions_m"],
+        physics_configuration=_physics(),
+    )
     package = tmp_path / "source_package"
-    (package / "source" / "textures").mkdir(parents=True)
-    files = {
-        "native_deformable_asset_preparation_plan.v1.json": (
-            b'{"source_asset":{"source_archive_sha256":"sha256:' + b"4" * 64 + b'"}}\n'
-        ),
-        "source/asset.usd": b"PXR-USDC\x00fixture",
-        "source/textures/base.png": b"\x89PNG\r\n\x1a\nfixture",
-    }
-    rows = []
-    for relative, content in files.items():
-        path = package / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-        rows.append(
-            {
-                "package_path": relative,
-                "role": "preparation_plan" if relative.endswith(".json") else "input",
-                "sha256": _sha(path),
-                "size_bytes": len(content),
-            }
-        )
-    receipt = {
-        "schema_version": "native_deformable_asset_source_package.v1",
-        "preparation_id": "fixture",
-        "plan_digest": "sha256:" + "1" * 64,
-        "package_root": str(package),
-        "files": rows,
-        "package_content_digest": "sha256:" + "2" * 64,
-        "claim_boundary": {"native_cook_qualified": False},
-        "receipt_path": str(package / "native_deformable_asset_source_package.v1.json"),
-        "receipt_digest": "",
-    }
-    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    build_native_deformable_asset_source_package(
+        output_dir=package,
+        plan=plan,
+        expected_plan_digest=plan["plan_digest"],
+    )
     receipt_path = package / "native_deformable_asset_source_package.v1.json"
-    receipt_path.write_text(canonical_json(receipt) + "\n")
     packet = tmp_path / "runtime_sources.zip"
     packet.write_bytes(b"runtime-source-packet")
     runtime_receipt_path = tmp_path / "native_task_runtime_source_packet.v1.json"
@@ -117,7 +104,10 @@ def test_builds_replayable_bundle_with_exact_native_runtime_contract(
         )
         == []
     )
-    assert '. "$RUNTIME_DIR/provisioned_runtime_sources/native_task_runtime_environment.sh"' in entrypoint
+    assert (
+        '. "$RUNTIME_DIR/provisioned_runtime_sources/native_task_runtime_environment.sh"'
+        in entrypoint
+    )
     assert "BLUEPRINT_WAM_RUNTIME_PHASE:native_deformable_asset:worker:started" in entrypoint
     assert entrypoint.index("native_task_runtime_environment.sh") < entrypoint.index(
         "native_deformable_asset_preparation_worker"
@@ -221,18 +211,12 @@ def test_embedded_runtime_result_writer_retains_worker_failure_logs(
         (out / "native_deformable_asset_preparation_worker_terminal.v1.json").read_text()
     )
     assert terminal["status"] == "blocked"
-    assert terminal["errors"] == [
-        "native_deformable_asset_worker_failed_without_terminal_receipt"
-    ]
+    assert terminal["errors"] == ["native_deformable_asset_worker_failed_without_terminal_receipt"]
     assert terminal["worker_logs"]["stderr"]["present"] is True
     assert "fixture native failure" in terminal["worker_logs"]["stderr"]["tail"]
-    result = json.loads(
-        (out / "native_deformable_asset_vast_execution.v1.json").read_text()
-    )
+    result = json.loads((out / "native_deformable_asset_vast_execution.v1.json").read_text())
     assert result["status"] == "blocked"
-    assert result["blockers"] == [
-        "native_deformable_asset_worker_failed_without_terminal_receipt"
-    ]
+    assert result["blockers"] == ["native_deformable_asset_worker_failed_without_terminal_receipt"]
     assert result["worker_returncode"] == 1
     assert result["worker_logs"]["stdout"]["sha256"].startswith("sha256:")
 
@@ -263,8 +247,7 @@ def test_dependency_free_runtime_source_requires_matching_complete_runtime_image
         **runtime,
         "runtime_dependency_wheels": [],
         "paired_stack": {
-            "simulator_runtime_image": "registry.example/complete-isaac-lab@sha256:"
-            + "c" * 64
+            "simulator_runtime_image": "registry.example/complete-isaac-lab@sha256:" + "c" * 64
         },
     }
 
@@ -327,9 +310,12 @@ def test_canonical_allocator_routes_owner_authorized_deformable_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
 ) -> None:
     source, runtime_path, runtime = _fixture(tmp_path)
+    plan = json.loads(
+        (source.parent / "native_deformable_asset_preparation_plan.v1.json").read_text()
+    )
     rights = {
         "schema_version": "task_evaluation_prelaunch_abstention_supersession.v1",
-        "asset_archive_sha256": "sha256:" + "4" * 64,
+        "asset_archive_sha256": plan["source_asset"]["source_archive_sha256"],
         "private_upload_to_vast_permitted": True,
         "public_redistribution_permitted": False,
         "rights_gate_passed_for_private_vast_canary": True,

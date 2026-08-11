@@ -22,6 +22,9 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 from .native_deformable_asset_preparation import (
     PACKAGE_RECEIPT_FILENAME,
     PACKAGE_SCHEMA_VERSION,
+    PLAN_FILENAME,
+    NativeDeformableAssetPreparationError,
+    _verify_plan,
 )
 from .native_task_runtime_source_packet import verify_native_task_runtime_source_packet
 
@@ -180,6 +183,27 @@ def _verified_source_package(
             )
             continue
         snapshots[relative.as_posix()] = content
+    plan_digest = str(receipt.get("plan_digest") or "")
+    if PLAN_FILENAME not in snapshots:
+        errors.append("native_deformable_provider_source_plan_missing")
+    else:
+        try:
+            plan = json.loads(snapshots[PLAN_FILENAME])
+            if not isinstance(plan, dict):
+                raise ValueError("plan_not_mapping")
+            _verify_plan(plan, expected_plan_digest=plan_digest)
+        except (
+            NativeDeformableAssetPreparationError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
+            if isinstance(exc, NativeDeformableAssetPreparationError):
+                errors.extend(
+                    f"native_deformable_provider_source_plan_invalid:{item}" for item in exc.errors
+                )
+            else:
+                errors.append("native_deformable_provider_source_plan_invalid")
     if PACKAGE_RECEIPT_FILENAME != path.name:
         errors.append("native_deformable_provider_source_receipt_name_invalid")
     if errors:
