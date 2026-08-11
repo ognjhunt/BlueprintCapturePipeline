@@ -19,6 +19,11 @@ import yaml
 from pxr import Usd, UsdGeom, UsdPhysics
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .content_agents_execution_route import (
+    ContentAgentsExecutionRouteError,
+    nvidia_content_agents_required,
+    validate_content_agents_execution_route,
+)
 from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
 )
@@ -1082,6 +1087,52 @@ def _resolve_input_variant(
     }
 
 
+def _content_agents_execution_route_binding(
+    *, route_path: Path | None, variant: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Bind a paid bundle to one object-specific Codex-first route.
+
+    A VAST bundle is only meaningful when the selected object retains the one
+    released NVIDIA pipeline capability.  Codex-only review work must use the
+    local route and is rejected here before a provider bundle is created.
+    """
+
+    if route_path is None:
+        return None
+    if variant.get("variant") != "agent_cad_v1":
+        raise ValueError("adp_content_agents_execution_route_variant_invalid")
+    path = route_path.expanduser().resolve()
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("adp_content_agents_execution_route_file_invalid")
+    try:
+        route = validate_content_agents_execution_route(_read_json(path))
+        requires_nvidia, codex_capabilities, nvidia_capabilities = (
+            nvidia_content_agents_required(
+                route,
+                replacement_slot=int(variant.get("replacement_slot")),
+                task_id=str(variant.get("task_id") or ""),
+                asset_id=str(variant.get("asset_id") or ""),
+                source_binding_digest=str(
+                    variant.get("cad_agent_output_receipt_digest") or ""
+                ),
+            )
+        )
+    except (ContentAgentsExecutionRouteError, TypeError, ValueError) as exc:
+        raise ValueError("adp_content_agents_execution_route_binding_invalid") from exc
+    if not requires_nvidia:
+        raise ValueError(
+            "adp_content_agents_vast_bundle_not_required_for_codex_local_route"
+        )
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+        "route_digest": route["route_digest"],
+        "codex_local_capabilities": codex_capabilities,
+        "nvidia_content_agents_capabilities": nvidia_capabilities,
+    }
+
+
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -1528,6 +1579,7 @@ def build_content_agents_vast_bundle(
     evidence_root: str | Path | None = None,
     agent_cad_output_manifest_path: str | Path | None = None,
     agent_mesh_projection_receipt_path: str | Path | None = None,
+    content_agents_execution_route_path: str | Path | None = None,
     generated_at: str | None = None,
     historical_replay_only: bool = False,
 ) -> dict[str, Any]:
@@ -1563,9 +1615,6 @@ def build_content_agents_vast_bundle(
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
         raise ValueError("adp_content_agents_bundle_job_dir_not_empty")
-    runtime = job / "provider_runtime"
-    ensure_dir(runtime / "configs")
-    ensure_dir(runtime / "input")
     head = _git(source, "rev-parse", "HEAD")
     tree = _git(source, "rev-parse", "HEAD^{tree}")
     dirty = bool(_git(source, "status", "--porcelain"))
@@ -1590,6 +1639,17 @@ def build_content_agents_vast_bundle(
             else None
         ),
     )
+    execution_route_binding = _content_agents_execution_route_binding(
+        route_path=(
+            Path(content_agents_execution_route_path)
+            if content_agents_execution_route_path is not None
+            else None
+        ),
+        variant=variant,
+    )
+    runtime = job / "provider_runtime"
+    ensure_dir(runtime / "configs")
+    ensure_dir(runtime / "input")
 
     source_zip = runtime / "content_agents_source.zip"
     subprocess.run(
@@ -1729,6 +1789,7 @@ def build_content_agents_vast_bundle(
                 "replacement_slot",
             }
         },
+        "content_agents_execution_route": execution_route_binding,
         "reference_image_sha256": variant["reference_image_sha256"],
         "reference_image_sha256s": variant.get(
             "reference_image_sha256s", [variant["reference_image_sha256"]]
@@ -2074,6 +2135,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-root")
     parser.add_argument("--agent-cad-output-manifest")
     parser.add_argument("--agent-mesh-projection-receipt")
+    parser.add_argument("--content-agents-execution-route")
     parser.add_argument("--historical-replay-only", action="store_true")
     args = parser.parse_args(argv)
     receipt = build_content_agents_vast_bundle(
@@ -2085,6 +2147,7 @@ def main(argv: list[str] | None = None) -> int:
         evidence_root=args.evidence_root,
         agent_cad_output_manifest_path=args.agent_cad_output_manifest,
         agent_mesh_projection_receipt_path=args.agent_mesh_projection_receipt,
+        content_agents_execution_route_path=args.content_agents_execution_route,
         historical_replay_only=args.historical_replay_only,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))

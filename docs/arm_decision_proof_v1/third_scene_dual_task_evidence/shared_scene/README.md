@@ -22,15 +22,19 @@ License: CC-BY-NC-4.0.
 
 The provider-declared shared-frame evidence is not independent metric or
 handedness proof. Raw data bytes are not included in this portable package.
-Two third-scene instances were allocated and destroyed: Task A `47393332`
-(`$0.025951` estimated) and Task B `47393331` (`$0.070697` estimated), for a
-combined adapter estimate of `$0.096648`. Both exact IDs are absent, both lane
-prefixes are empty, and both watchdogs reached `provider_terminal`. Any other
-running provider instance in an inventory receipt belongs to an external lane
-and was not touched. The estimates are not a reconciled billing export.
-Portable closeout receipt:
-[`provider_closeout.v1.json`](provider_closeout.v1.json), digest
-`sha256:71f6d1843dc2c76ae0536e23495620d500c091ce630f73e6ff69fa388af4cefe`.
+Six third-scene allocations are terminal: historical infrastructure-null
+instances `47393332`, `47393331`, `47471710`, and `47474897`, followed by the
+completed released-code contribution instances `47473321` (Task A) and
+`47475316` (Task B). Every listed instance has zero continuing spend and
+provider absence confirmed; no external 840796 resource was touched. The
+retained adapter/provider estimates total `$0.222944`, not a reconciled billing
+export.
+
+The receipt-only terminal mirror is
+[`terminal_receipt_mirror.v1.json`](terminal_receipt_mirror.v1.json), digest
+`sha256:8f48e46b21a4c7b69f6ee3fdbc18c420206a76040fc085e541745ba75ecf6981`.
+It copies only digest-verified JSON receipts: no source splats, masks, frames,
+media, USD, or other dataset-derived bytes are copied.
 
 ## Agent-authored CAD and Content Agents bundle evidence
 
@@ -61,9 +65,15 @@ Local human-review-only visual comparison receipt:
 - Original observed references plus Earth-to-Jake and Pan-Chera CAD candidates: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`, image digest `sha256:6d21505f6f6e04f3f6d502f5dd6c25a6752208f085452caf0a7b316289758f94`
 - Finder/browser review HTML: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/OPEN_ME_cad_agent_visual_comparison.html`, digest `sha256:0014fdb0b497480eaf2206a9485f70ed884fd8daa7c115b9ba2943d278f15219`
 
-The readiness receipt now includes Dockerless static bundle/config/input-USD
-preflight receipts for all four Content Agents bundles. Docker local dry-run,
-paid model access, and paid attempt authority remain missing.
+The readiness receipt includes Dockerless static bundle/config/input-USD
+preflight receipts for all four Content Agents bundles. The reusable
+Codex-first routing contract sends local packet/scope/configuration/review work
+to host-authenticated Codex without an API key or provider bundle. It rejects a
+Codex-only request before a provider-bundle directory can be created. NVIDIA
+Content Agents remain advisory for the one residual capability their released
+runtime actually owns: the complete material/texture/physics/validation
+pipeline. Neither route can repair the independently failed
+Gaussian-ownership gate.
 
 Claim boundary: these are CAD candidates and Content Agents bundle/readiness
 receipts only. Content Agents have not been executed in this goal state; no

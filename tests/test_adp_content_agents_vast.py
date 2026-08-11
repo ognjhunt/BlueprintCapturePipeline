@@ -16,6 +16,9 @@ from blueprint_pipeline import adp_content_agents_vast as content_agents
 from blueprint_pipeline import adp_content_agents_bundle_preflight as bundle_preflight
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.common import write_json
+from blueprint_pipeline.content_agents_execution_route import (
+    materialize_content_agents_execution_route,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.simready_cad_agent_contract import (
@@ -342,6 +345,30 @@ def _agent_cad_evidence(
     return output_path, projection_path, reference, usd_path
 
 
+def _agent_cad_execution_route(
+    *,
+    output_path: Path,
+    destination: Path,
+    capabilities: list[str],
+) -> Path:
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+    request = output["request"]
+    materialize_content_agents_execution_route(
+        objects=[
+            {
+                "replacement_slot": request["replacement_slot"],
+                "task_id": request["task_id"],
+                "asset_id": request["asset_id"],
+                "source_binding_digest": output["receipt_digest"],
+                "requested_capabilities": capabilities,
+            }
+        ],
+        output_path=destination,
+        generated_at="fixed",
+    )
+    return destination
+
+
 def _qualified_model_access() -> dict:
     llm = {
         "schema_version": bundle_preflight.LLM_PREFLIGHT_SCHEMA_VERSION,
@@ -565,6 +592,14 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
 ) -> None:
     source = _fake_source(tmp_path, monkeypatch)
     output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    route_path = _agent_cad_execution_route(
+        output_path=output_path,
+        destination=tmp_path / "execution-route.json",
+        capabilities=[
+            "input_packet_review",
+            "released_material_texture_physics_validation_pipeline",
+        ],
+    )
 
     receipt = content_agents.build_content_agents_vast_bundle(
         repo_root=ROOT,
@@ -573,6 +608,7 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
         input_variant="agent_cad_v1",
         agent_cad_output_manifest_path=output_path,
         agent_mesh_projection_receipt_path=projection_path,
+        content_agents_execution_route_path=route_path,
         generated_at="fixed",
     )
 
@@ -590,6 +626,15 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
     assert receipt["agent_output_is_simready_authority"] is False
     assert receipt["canonical_simready_construction_unresolved"] is True
     assert receipt["deterministic_usd_construction_remains_primary"] is False
+    assert receipt["content_agents_execution_route"]["route_digest"].startswith(
+        "sha256:"
+    )
+    assert receipt["content_agents_execution_route"]["codex_local_capabilities"] == [
+        "input_packet_review"
+    ]
+    assert receipt["content_agents_execution_route"][
+        "nvidia_content_agents_capabilities"
+    ] == ["released_material_texture_physics_validation_pipeline"]
     runtime_configs = Path(receipt["bundle_path"]).with_name(
         "provider_runtime"
     ) / "configs"
@@ -648,6 +693,35 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
         "../input/reference.png",
         "../input/reference_0002.png",
     ]
+
+
+def test_agent_cad_bundle_rejects_a_codex_only_route_before_provider_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    route_path = _agent_cad_execution_route(
+        output_path=output_path,
+        destination=tmp_path / "codex-only-route.json",
+        capabilities=["configuration_review", "output_receipt_review"],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="adp_content_agents_vast_bundle_not_required_for_codex_local_route",
+    ):
+        content_agents.build_content_agents_vast_bundle(
+            repo_root=ROOT,
+            content_agents_root=source,
+            job_dir=tmp_path / "must-not-stage-provider-bundle",
+            input_variant="agent_cad_v1",
+            agent_cad_output_manifest_path=output_path,
+            agent_mesh_projection_receipt_path=projection_path,
+            content_agents_execution_route_path=route_path,
+            generated_at="fixed",
+        )
+    assert not (tmp_path / "must-not-stage-provider-bundle").exists()
 
 
 def _single_agent_cad_content_bundle_matrix(
