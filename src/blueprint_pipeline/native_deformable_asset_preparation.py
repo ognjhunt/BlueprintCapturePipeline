@@ -87,7 +87,7 @@ DEFORMABLE_MATERIAL_CFG = (
 DEFORMABLE_BODY_CFG = "isaaclab.sim.schemas.schemas_cfg:DeformableBodyPropertiesCfg"
 DEFORMABLE_PHYSICS_BINDING_API = "isaaclab.sim.utils.prims:bind_physics_material"
 DEFORMABLE_BODY_SCHEMAS = (
-    "pxr.PhysxSchema.OmniPhysicsDeformableBodyAPI",
+    "pxr.OmniPhysicsSchema.OmniPhysicsDeformableBodyAPI",
     "pxr.PhysxSchema.PhysxBaseDeformableBodyAPI",
     "pxr.PhysxSchema.PhysxCollisionAPI",
 )
@@ -1500,7 +1500,7 @@ def materialize_native_deformable_asset_preparation_plan(
         "cfg_kwargs": normalized_physics["material_properties"],
     }
     physics_binding_arguments = {
-        "prim_path": OUTPUT_VISUAL_PRIM_PATH,
+        "prim_path": OUTPUT_BODY_PRIM_PATH,
         "material_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
         "stronger_than_descendants": True,
     }
@@ -1667,7 +1667,7 @@ def materialize_native_deformable_asset_preparation_plan(
                 "development_configuration_not_observed_material_truth": True,
             },
             "physics_material_binding": {
-                "prim_path": OUTPUT_VISUAL_PRIM_PATH,
+                "prim_path": OUTPUT_BODY_PRIM_PATH,
                 "material_prim_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
                 "material_purpose": "physics",
                 "binding_strength": "strongerThanDescendants",
@@ -2038,7 +2038,7 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
         "cfg_kwargs": physics.get("body_properties", {}),
     }
     physics_binding_arguments = {
-        "prim_path": OUTPUT_VISUAL_PRIM_PATH,
+        "prim_path": OUTPUT_BODY_PRIM_PATH,
         "material_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
         "stronger_than_descendants": True,
     }
@@ -2194,7 +2194,7 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
             "development_configuration_not_observed_material_truth": True,
         },
         "physics_material_binding": {
-            "prim_path": OUTPUT_VISUAL_PRIM_PATH,
+            "prim_path": OUTPUT_BODY_PRIM_PATH,
             "material_prim_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
             "material_purpose": "physics",
             "binding_strength": "strongerThanDescendants",

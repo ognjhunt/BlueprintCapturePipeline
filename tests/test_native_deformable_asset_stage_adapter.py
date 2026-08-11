@@ -147,7 +147,7 @@ def _author_native_readback(
         physics.GetPrim().CreateAttribute(
             f"physxDeformableBodyMaterial:{name}", Sdf.ValueTypeNames.Double
         ).Set(value)
-    UsdShade.MaterialBindingAPI.Apply(surface).Bind(
+    UsdShade.MaterialBindingAPI.Apply(body).Bind(
         physics,
         bindingStrength=UsdShade.Tokens.strongerThanDescendants,
         materialPurpose="physics",
@@ -694,8 +694,8 @@ def test_physics_binding_strength_must_be_explicitly_read_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     adapter, stage = _prepared_native_stage(tmp_path, monkeypatch=monkeypatch)
-    mesh = stage.GetPrimAtPath("/Deformable/Visuals/Surface")
-    relationship = UsdShade.MaterialBindingAPI(mesh).GetDirectBindingRel("physics")
+    body = stage.GetPrimAtPath("/Deformable")
+    relationship = UsdShade.MaterialBindingAPI(body).GetDirectBindingRel("physics")
     assert relationship.ClearMetadata("bindMaterialAs")
 
     with pytest.raises(NativeDeformableAssetStageAdapterError) as exc:

@@ -39,12 +39,18 @@ _PROVIDER_ATTRIBUTE_PREFIXES = (
     "newton:",
 )
 _BODY_SCHEMA_NAMES = {
-    "OmniPhysicsDeformableBodyAPI": "pxr.PhysxSchema.OmniPhysicsDeformableBodyAPI",
+    "OmniPhysicsDeformableBodyAPI": "pxr.OmniPhysicsSchema.OmniPhysicsDeformableBodyAPI",
     "PhysxBaseDeformableBodyAPI": "pxr.PhysxSchema.PhysxBaseDeformableBodyAPI",
     "PhysxCollisionAPI": "pxr.PhysxSchema.PhysxCollisionAPI",
 }
 _MATERIAL_SCHEMA_NAMES = {
     "PhysxDeformableBodyMaterialAPI": ("pxr.PhysxSchema.PhysxDeformableBodyMaterialAPI")
+}
+_REGISTERED_SCHEMA_MODULES = {
+    "OmniPhysicsDeformableBodyAPI": "OmniPhysicsSchema",
+    "PhysxBaseDeformableBodyAPI": "PhysxSchema",
+    "PhysxCollisionAPI": "PhysxSchema",
+    "PhysxDeformableBodyMaterialAPI": "PhysxSchema",
 }
 _COOKING_FIELDS = frozenset(
     {
@@ -787,21 +793,27 @@ def _registered_physx_schema_names(
 ) -> list[str]:
     """Production-default proof that schema tokens resolve to registered APIs."""
 
-    try:
-        from pxr import PhysxSchema
-    except ImportError as exc:  # pragma: no cover - native runtime owns this path
-        raise NativeDeformableAssetStageAdapterError(
-            ["native_deformable_stage_physx_schema_runtime_unavailable"]
-        ) from exc
     observed: list[str] = []
     for token, qualified_name in expected.items():
-        schema_type = getattr(PhysxSchema, token, None)
-        if schema_type is None:
+        module_name = _REGISTERED_SCHEMA_MODULES.get(token)
+        if module_name is None:
             raise NativeDeformableAssetStageAdapterError([error])
         try:
-            valid = bool(prim.HasAPI(schema_type)) and bool(schema_type(prim))
-        except Exception as exc:
-            raise NativeDeformableAssetStageAdapterError([error]) from exc
+            schema_module = __import__("pxr", fromlist=[module_name]).__dict__[module_name]
+        except (ImportError, KeyError) as exc:  # pragma: no cover - native runtime owns this path
+            raise NativeDeformableAssetStageAdapterError(
+                ["native_deformable_stage_physx_schema_runtime_unavailable"]
+            ) from exc
+        schema_type = getattr(schema_module, token, None)
+        if schema_type is not None:
+            try:
+                valid = bool(prim.HasAPI(schema_type)) and bool(schema_type(prim))
+            except Exception as exc:
+                raise NativeDeformableAssetStageAdapterError([error]) from exc
+        else:
+            if module_name != "OmniPhysicsSchema":
+                raise NativeDeformableAssetStageAdapterError([error])
+            valid = token in _schema_names(prim)
         if not valid:
             raise NativeDeformableAssetStageAdapterError([error])
         observed.append(qualified_name)
@@ -1788,7 +1800,7 @@ class OpenUsdNativeDeformableStageAdapter:
             visual_prim
         ).ComputeBoundMaterial()
         physics_bound, physics_relationship = UsdShade.MaterialBindingAPI(
-            visual_prim
+            schema_prim
         ).ComputeBoundMaterial("physics")
         strength = (
             physics_relationship.GetMetadata("bindMaterialAs") if physics_relationship else None
@@ -1801,7 +1813,7 @@ class OpenUsdNativeDeformableStageAdapter:
             or not physics_bound
             or str(physics_bound.GetPath()) != physics_material_path
             or not physics_relationship
-            or physics_relationship.GetPrim() != visual_prim
+            or physics_relationship.GetPrim() != schema_prim
             or str(strength or "") != "strongerThanDescendants"
         ):
             raise NativeDeformableAssetStageAdapterError(
@@ -1865,7 +1877,7 @@ class OpenUsdNativeDeformableStageAdapter:
                     "PhysicsMassAPI",
                 }
             elif path == output_authoring_root_prim_path:
-                allowed_schemas = set(_BODY_SCHEMA_NAMES)
+                allowed_schemas = {*_BODY_SCHEMA_NAMES, "MaterialBindingAPI"}
             elif path == physics_material_path:
                 allowed_schemas = set(_MATERIAL_SCHEMA_NAMES)
             elif material_root is not None:
@@ -1998,7 +2010,7 @@ class OpenUsdNativeDeformableStageAdapter:
                 "development_configuration_not_observed_material_truth": True,
             },
             "physics_material_binding": {
-                "prim_path": output_visual_prim_path,
+                "prim_path": output_authoring_root_prim_path,
                 "material_prim_path": physics_material_path,
                 "material_purpose": "physics",
                 "binding_strength": str(strength),

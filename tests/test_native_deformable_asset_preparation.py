@@ -399,7 +399,7 @@ def test_plan_bakes_metric_scale_and_rebuilds_only_allowlisted_content(
     assert plan["required_native_readback"]["authoring_root_prim_path"] == "/Deformable"
     assert plan["required_native_readback"]["deformable_schema_prim_path"] == "/Deformable"
     assert plan["required_native_readback"]["physics_material_binding"] == {
-        "prim_path": "/Deformable/Visuals/Surface",
+        "prim_path": "/Deformable",
         "material_prim_path": "/Deformable/PhysicsMaterial",
         "material_purpose": "physics",
         "binding_strength": "strongerThanDescendants",
@@ -613,7 +613,7 @@ def test_injected_native_worker_calls_all_pinned_apis_and_verifier_stays_bounded
     assert events[6][1] == _physics()["body_properties"]
     assert events[7][1]["cfg"].kwargs == _physics()["body_properties"]
     assert events[8][1] == {
-        "prim_path": "/Deformable/Visuals/Surface",
+        "prim_path": "/Deformable",
         "material_path": "/Deformable/PhysicsMaterial",
         "stage": events[7][1]["stage"],
         "stronger_than_descendants": True,
