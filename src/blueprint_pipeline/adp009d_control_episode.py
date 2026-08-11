@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v9"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v10"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -70,14 +70,16 @@ PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
 PHASE_ORIENTATION_TOLERANCE_DEG = 2.0
-# Production v8 preserved task orientation and held lateral error below 0.8 mm,
-# but its 10 mm Cartesian waypoint produced joint-position errors too small to
-# overcome the loaded actuator's tracking floor.  The arm stopped 119 mm above
-# the grasp even though the target remained reachable and the 240-step budget
-# was exhausted.  A 30 mm local waypoint keeps descent more than 11x smaller
-# than the failed historical 335 mm global request while retaining the 30 mrad
-# per-joint safety cap and enough command authority to keep making progress.
-MAX_TASK_SPACE_TRANSLATION_STEP_M = 0.03
+# Production v8 proved the 10 mm local Cartesian waypoint preserved lateral
+# and orientation coherence, but recomputing an absolute joint target after a
+# single environment step let the loaded position actuator settle 119 mm above
+# the grasp.  Production v9 raised the waypoint to 30 mm and reached the same
+# height while oscillating laterally, falsifying waypoint magnitude as the
+# remedy.  Keep the safer 10 mm local request and hold each resulting absolute
+# joint target for four environment steps so the native actuator can track it
+# before the differential IK solver observes and recomputes the next target.
+MAX_TASK_SPACE_TRANSLATION_STEP_M = 0.01
+IK_ACTION_HOLD_STEPS = 4
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
     "orientation_first_bounded_local_increment"
@@ -322,6 +324,7 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
             phase["max_task_space_translation_step_m"] = (
                 MAX_TASK_SPACE_TRANSLATION_STEP_M
             )
+            phase["action_hold_steps"] = IK_ACTION_HOLD_STEPS
             phase["task_space_translation_strategy"] = (
                 DIRECT_GLOBAL_POSE_TARGET
                 if phase["phase_id"] == "pregrasp"
@@ -535,6 +538,8 @@ def _record_action(
     action: Sequence[float],
     observed_before: Sequence[float],
     observed_after: Sequence[float],
+    action_recomputed: bool,
+    action_hold_index: int,
 ) -> dict[str, Any]:
     values = [float(value) for value in action]
     if len(values) != 8 or not all(math.isfinite(value) for value in values):
@@ -543,6 +548,8 @@ def _record_action(
         "step_index": int(step_index),
         "phase_id": phase_id,
         "isaac_action": values,
+        "action_recomputed": bool(action_recomputed),
+        "action_hold_index": int(action_hold_index),
         "observed_joint_position_before_rad": [float(v) for v in observed_before],
         "observed_joint_position_after_rad": [float(v) for v in observed_after],
     }
@@ -616,28 +623,37 @@ def run_control_episode(
         phase_step_limit = int(
             phase.get("maximum_steps", phase.get("steps", 0))
         )
-        for _ in range(phase_step_limit):
+        held_action: Sequence[float] | None = None
+        for phase_step_index in range(phase_step_limit):
             before = [float(v) for v in environment.read_arm_joint_positions()]
             if phase["mode"] == "hold_current_joint_positions":
                 action = environment.hold_action(gripper_command=gripper_command)
+                action_recomputed = True
+                action_hold_index = 0
             else:
-                action = environment.scripted_action_for_pose(
-                    target_position_world_m=phase["target_position_world_m"],
-                    target_quaternion_world_xyzw=phase[
-                        "target_quaternion_world_xyzw"
-                    ],
-                    gripper_command=gripper_command,
-                    max_joint_delta_rad=float(phase["max_joint_delta_rad"]),
-                    max_task_space_translation_step_m=float(
-                        phase["max_task_space_translation_step_m"]
-                    ),
-                    orientation_tolerance_deg=float(
-                        phase["orientation_tolerance_deg"]
-                    ),
-                    task_space_translation_strategy=str(
-                        phase["task_space_translation_strategy"]
-                    ),
-                )
+                action_hold_steps = int(phase["action_hold_steps"])
+                action_hold_index = phase_step_index % action_hold_steps
+                action_recomputed = held_action is None or action_hold_index == 0
+                if action_recomputed:
+                    held_action = environment.scripted_action_for_pose(
+                        target_position_world_m=phase["target_position_world_m"],
+                        target_quaternion_world_xyzw=phase[
+                            "target_quaternion_world_xyzw"
+                        ],
+                        gripper_command=gripper_command,
+                        max_joint_delta_rad=float(phase["max_joint_delta_rad"]),
+                        max_task_space_translation_step_m=float(
+                            phase["max_task_space_translation_step_m"]
+                        ),
+                        orientation_tolerance_deg=float(
+                            phase["orientation_tolerance_deg"]
+                        ),
+                        task_space_translation_strategy=str(
+                            phase["task_space_translation_strategy"]
+                        ),
+                    )
+                assert held_action is not None
+                action = held_action
             environment.step(action)
             step_index += 1
             phase_steps_executed += 1
@@ -649,6 +665,8 @@ def run_control_episode(
                     action=action,
                     observed_before=before,
                     observed_after=after,
+                    action_recomputed=action_recomputed,
+                    action_hold_index=action_hold_index,
                 )
             )
             samples.append(_sample(environment, step_index))
@@ -857,7 +875,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v9.json", plan)
+    _write_json(output / "adp009d_control_plan.v10.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
