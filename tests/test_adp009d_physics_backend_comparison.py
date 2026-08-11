@@ -44,7 +44,7 @@ COMMITTED_DESIGN = (
 
 def _newton_terminal_inputs() -> dict[str, dict]:
     profile = build_backend_profile("newton")
-    return {
+    inputs = {
         "admission": {
             "schema_version": CANARY_ADMISSION_SCHEMA_VERSION,
             "status": "passed",
@@ -135,6 +135,10 @@ def _newton_terminal_inputs() -> dict[str, dict]:
             ],
         },
     }
+    inputs["admission"]["admission_digest"] = canonical_digest(
+        inputs["admission"], digest_field="admission_digest"
+    )
+    return inputs
 
 
 def test_newton_blocked_canary_retains_terminal_comparison_evidence() -> None:
@@ -149,6 +153,16 @@ def test_newton_blocked_canary_retains_terminal_comparison_evidence() -> None:
     assert receipt["policy_verdict"] is None
     assert receipt["engine_promotion_performed"] is False
     assert receipt["claim_ceiling"] == "controls_comparison_evidence_only"
+    assert set(receipt["evidence_input_digests"]) == {
+        "admission",
+        "allocator_result",
+        "artifact_manifest",
+        "bundle_receipt",
+        "native_result",
+        "provider_inventory",
+        "teardown_manifest",
+        "vast_charge",
+    }
     assert receipt["terminal_receipt_digest"] == canonical_digest(
         receipt, digest_field="terminal_receipt_digest"
     )
@@ -161,6 +175,20 @@ def test_newton_terminal_receipt_rejects_nonzero_provider_inventory() -> None:
     with pytest.raises(
         PhysicsBackendContractError,
         match="adp009d_newton_terminal_provider_zero_invalid",
+    ):
+        build_newton_canary_terminal_receipt(**inputs)
+
+
+def test_newton_terminal_receipt_rejects_unsubstantiated_completed_status() -> None:
+    inputs = _newton_terminal_inputs()
+    inputs["allocator_result"]["status"] = "completed"
+    inputs["allocator_result"]["blockers"] = []
+    inputs["native_result"]["status"] = "completed"
+    inputs["native_result"]["blockers"] = []
+
+    with pytest.raises(
+        PhysicsBackendContractError,
+        match="adp009d_newton_terminal_completed_controls_invalid",
     ):
         build_newton_canary_terminal_receipt(**inputs)
 

@@ -205,13 +205,18 @@ def bind_all_in_cost(
     instance_row = _mapping(instance_payload.get("instances")) or instance_payload
     all_in_rate = _number(instance_row.get("dph_total"))
     storage_rate = _number(instance_row.get("storage_total_cost"))
-    if all_in_rate is not None and all_in_rate > 0:
+    all_in_rate_observed = all_in_rate is not None and all_in_rate > 0
+    if all_in_rate_observed:
         selected_offer.update(
             compute_hourly_rate_usd=compute_rate,
             storage_hourly_rate_usd=storage_rate,
             hourly_rate_usd=all_in_rate,
         )
-    projected_cost = float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
+    projected_cost = (
+        all_in_rate * max_live_minutes / 60.0
+        if all_in_rate_observed
+        else None
+    )
     binding = {
         "schema_version": "vast_all_in_cost_binding.v1",
         "generated_at": utc_now_iso(),
@@ -219,13 +224,18 @@ def bind_all_in_cost(
         "disk_gb": disk_gb,
         "compute_hourly_rate_usd": compute_rate,
         "storage_hourly_rate_usd": storage_rate,
-        "all_in_hourly_rate_usd": selected_offer["hourly_rate_usd"],
+        "all_in_hourly_rate_observed": all_in_rate_observed,
+        "all_in_hourly_rate_usd": all_in_rate,
         "max_hourly_rate_usd": max_hourly_rate,
-        "all_in_hourly_rate_under_max": selected_offer["hourly_rate_usd"] <= max_hourly_rate,
+        "all_in_hourly_rate_under_max": (
+            all_in_rate_observed and all_in_rate <= max_hourly_rate
+        ),
         "max_live_minutes": max_live_minutes,
         "projected_all_in_cost_usd": projected_cost,
         "hard_cap_usd": hard_cap_usd,
-        "projected_all_in_cost_under_hard_cap": projected_cost <= hard_cap_usd,
+        "projected_all_in_cost_under_hard_cap": (
+            projected_cost is not None and projected_cost <= hard_cap_usd
+        ),
         "raw_secret_values_recorded": False,
     }
     write_json(root / "vast_all_in_cost_binding.json", binding)

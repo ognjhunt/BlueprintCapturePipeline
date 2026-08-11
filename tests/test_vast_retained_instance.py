@@ -51,3 +51,27 @@ def test_all_in_cost_preserves_flat_payload_compatibility(tmp_path: Path) -> Non
     assert binding["all_in_hourly_rate_usd"] == 0.70
     assert binding["all_in_hourly_rate_under_max"] is True
     assert binding["projected_all_in_cost_under_hard_cap"] is True
+
+
+def test_all_in_cost_fails_closed_without_created_instance_rate(
+    tmp_path: Path,
+) -> None:
+    selected_offer = {"hourly_rate_usd": 0.65}
+
+    binding = bind_all_in_cost(
+        tmp_path,
+        selected_offer=selected_offer,
+        instance_payload={"instances": {"id": 789}},
+        instance_id=789,
+        disk_gb=200,
+        max_live_minutes=120,
+        max_hourly_rate=0.80,
+        hard_cap_usd=2.0,
+    )
+
+    assert binding["all_in_hourly_rate_observed"] is False
+    assert binding["all_in_hourly_rate_usd"] is None
+    assert binding["all_in_hourly_rate_under_max"] is False
+    assert binding["projected_all_in_cost_usd"] is None
+    assert binding["projected_all_in_cost_under_hard_cap"] is False
+    assert selected_offer["hourly_rate_usd"] == 0.65

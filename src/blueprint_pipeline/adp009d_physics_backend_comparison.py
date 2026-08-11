@@ -662,6 +662,8 @@ def build_newton_canary_terminal_receipt(
         or admission.get("controls_only") is not True
         or admission.get("policy_query_allowed") is not False
         or admission.get("retry_cap") != 0
+        or admission.get("admission_digest")
+        != canonical_digest(admission, digest_field="admission_digest")
     ):
         raise PhysicsBackendContractError("adp009d_newton_terminal_admission_invalid")
     if (
@@ -693,6 +695,31 @@ def build_newton_canary_terminal_receipt(
         or allocator_result.get("all_staged_objects_absent") is not True
     ):
         raise PhysicsBackendContractError("adp009d_newton_terminal_runtime_invalid")
+    control_pair = native_result.get("control_episode")
+    if native_status == "completed":
+        probe = native_result.get("physics_backend_probe")
+        if (
+            native_result.get("controls_requested") is not True
+            or not isinstance(probe, Mapping)
+            or validate_backend_probe(probe, profile=profile)
+            or not isinstance(control_pair, Mapping)
+            or control_pair.get("schema_version") != "adp009d_control_pair.v1"
+            or control_pair.get("physics_backend") != "newton"
+            or control_pair.get("instance_digest")
+            != bundle_receipt.get("scenario_instance_digest")
+            or control_pair.get("control_plan_digest")
+            != bundle_receipt.get("control_plan_digest")
+            or control_pair.get("control_plan_semantic_digest")
+            != bundle_receipt.get("control_plan_semantic_digest")
+            or control_pair.get("cell_admitted_for_policy_execution") is not True
+            or control_pair.get("policy_execution_blockers") != []
+            or control_pair.get("candidate_policy_queried") is not False
+            or control_pair.get("pair_digest")
+            != canonical_digest(control_pair, digest_field="pair_digest")
+        ):
+            raise PhysicsBackendContractError(
+                "adp009d_newton_terminal_completed_controls_invalid"
+            )
     instance_ids = teardown_manifest.get("vast_instance_ids")
     actions = teardown_manifest.get("teardown_actions_performed")
     if (
@@ -786,6 +813,16 @@ def build_newton_canary_terminal_receipt(
             "control_plan_semantic_digest"
         ),
         "admission_digest": admission.get("admission_digest"),
+        "evidence_input_digests": {
+            "admission": canonical_digest(admission),
+            "bundle_receipt": canonical_digest(bundle_receipt),
+            "allocator_result": canonical_digest(allocator_result),
+            "native_result": canonical_digest(native_result),
+            "artifact_manifest": canonical_digest(artifact_manifest),
+            "teardown_manifest": canonical_digest(teardown_manifest),
+            "provider_inventory": canonical_digest(provider_inventory),
+            "vast_charge": canonical_digest(vast_charge),
+        },
         "provider_instance_id": instance_id,
         "scientific_phase": (
             "controls_completed"
@@ -794,6 +831,11 @@ def build_newton_canary_terminal_receipt(
         ),
         "scientific_blockers": native_blockers,
         "controls_evidence_observed": native_status == "completed",
+        "control_pair_digest": (
+            control_pair.get("pair_digest")
+            if isinstance(control_pair, Mapping)
+            else None
+        ),
         "media_gap": None
         if native_status == "completed"
         else {
@@ -1215,6 +1257,7 @@ def build_comparison_design_contract() -> dict[str, Any]:
             "schema_version": CANARY_TERMINAL_SCHEMA_VERSION,
             "actual_provider_charge_required": True,
             "artifact_manifest_required": True,
+            "all_evidence_inputs_digest_bound_required": True,
             "teardown_required": True,
             "api_confirmed_provider_zero_required": True,
             "pre_controls_failure_requires_typed_media_gap": True,

@@ -77,12 +77,13 @@ MuJoCo-Warp packages. The worker now selects `newton[all]`, which binds the
 versions declared by the sealed Isaac Lab source tree.
 
 The terminal receipt is `adp009d_newton_canary_terminal.v1`, digest
-`sha256:c93335e4a4a6b352e0b1c0790265ac505744aba725b7481c44b712d6c5f12a3a`.
+`sha256:4cba321ed4d4121783d9435b8178643acdc06969bdc646bf7a0038222b01a694`.
 It records a typed pre-controls media gap, zero policy queries, no verdict,
 actual provider charge of `$0.321`, successful artifact retention and teardown,
-zero retries, and a fresh API inventory of zero RunPod, Vast, and DigitalOcean
-resources. This is comparison evidence only; it is not controls parity,
-fidelity evidence, or engine-promotion evidence.
+zero retries, a digest for every retained evidence input, and a fresh API
+inventory of zero RunPod, Vast, and DigitalOcean resources. This is comparison
+evidence only; it is not controls parity, fidelity evidence, or engine-promotion
+evidence.
 
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.

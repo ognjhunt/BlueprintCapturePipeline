@@ -236,7 +236,7 @@
   "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
   "contract_kind": "provider_free_design",
   "default_physics_backend": "physx",
-  "design_digest": "sha256:67605564483940aa390f0dddfd8c186d50f72d8e2b704a4b0246a3ef6e0718b1",
+  "design_digest": "sha256:2f722c4c83a6718ec94417862907b8e2363a869e598c0714ff72282affb5b41b",
   "mid_run_backend_switch_allowed": false,
   "newton_canary_admission": {
     "artifact_storage_required": true,
@@ -252,6 +252,7 @@
   },
   "newton_canary_terminal_receipt": {
     "actual_provider_charge_required": true,
+    "all_evidence_inputs_digest_bound_required": true,
     "api_confirmed_provider_zero_required": true,
     "artifact_manifest_required": true,
     "claim_ceiling": "controls_comparison_evidence_only",
