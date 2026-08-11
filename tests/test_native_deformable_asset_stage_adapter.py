@@ -129,6 +129,29 @@ def _author_native_readback(
             value_type = Sdf.ValueTypeNames.Double
         body.CreateAttribute(f"{namespace}:{name}", value_type).Set(value)
     tet_points = surface.GetAttribute("points").Get()
+    sim_mesh = UsdGeom.TetMesh.Define(stage, "/Deformable/sim_mesh")
+    sim_mesh.CreatePointsAttr(tet_points)
+    sim_mesh.CreateTetVertexIndicesAttr(Vt.Vec4iArray([Gf.Vec4i(0, 1, 2, 3)]))
+    sim_mesh.GetPurposeAttr().Set(UsdGeom.Tokens.guide)
+    for schema in (
+        "OmniPhysicsVolumeDeformableSimAPI",
+        "PhysicsCollisionAPI",
+        "OmniPhysicsDeformablePoseAPI:default",
+    ):
+        sim_mesh.GetPrim().AddAppliedSchema(schema)
+    sim_mesh.GetPrim().CreateAttribute(
+        "omniphysics:restShapePoints", Sdf.ValueTypeNames.Point3fArray
+    ).Set(tet_points)
+    sim_mesh.GetPrim().CreateAttribute(
+        "omniphysics:restTetVtxIndices", Sdf.ValueTypeNames.IntArray
+    ).Set(Vt.IntArray([0, 1, 2, 3]))
+    cooked_surface_faces = list(UsdGeom.TetMesh.ComputeSurfaceFaces(sim_mesh, Usd.TimeCode.Default()))
+    cooked_surface_indices = [int(index) for face in cooked_surface_faces for index in face]
+    cooked_visual = UsdGeom.Mesh(surface)
+    cooked_visual.GetFaceVertexCountsAttr().Set(
+        Vt.IntArray([3] * len(cooked_surface_faces))
+    )
+    cooked_visual.GetFaceVertexIndicesAttr().Set(Vt.IntArray(cooked_surface_indices))
     surface.CreateAttribute(
         "physxDeformable:simulationPoints", Sdf.ValueTypeNames.Point3fArray
     ).Set(tet_points)
@@ -143,14 +166,24 @@ def _author_native_readback(
     )
 
     physics = UsdShade.Material.Define(stage, "/Deformable/PhysicsMaterial")
-    physics.GetPrim().AddAppliedSchema("PhysxDeformableBodyMaterialAPI")
+    for schema in (
+        "OmniPhysicsDeformableMaterialAPI",
+        "PhysxDeformableMaterialAPI",
+    ):
+        physics.GetPrim().AddAppliedSchema(schema)
     for field, value in material_properties.items():
         name = field.split("_")[0] + "".join(
             part[:1].upper() + part[1:] for part in field.split("_")[1:]
         )
-        physics.GetPrim().CreateAttribute(
-            f"physxDeformableBodyMaterial:{name}", Sdf.ValueTypeNames.Double
-        ).Set(value)
+        if field == "density":
+            namespace = "omniphysics"
+        elif field in {"static_friction", "dynamic_friction"}:
+            namespace = "physics"
+        else:
+            namespace = "physxDeformableMaterial"
+        physics.GetPrim().CreateAttribute(f"{namespace}:{name}", Sdf.ValueTypeNames.Double).Set(
+            value
+        )
     UsdShade.MaterialBindingAPI.Apply(body).Bind(
         physics,
         bindingStrength=UsdShade.Tokens.strongerThanDescendants,
@@ -295,12 +328,17 @@ def test_clean_stage_rebuild_bakes_metric_geometry_and_replays_native_state(
         "up_axis": "Z",
     }
     visual = readback["visual_mesh"]
-    assert visual["point_count"] == 4
-    assert visual["triangle_count"] == 4
-    assert visual["source_face_topology_sha256"] == visual["output_face_topology_sha256"]
-    assert visual["aabb_center_m"] == [0.0, 0.0, 0.0]
-    assert visual["dimensions_m"] == pytest.approx([0.8, 1.8, 3.2], abs=1.0e-6)
-    assert visual["closed_volume_m3"] == pytest.approx(0.768, rel=1.0e-6)
+    assert visual["source_point_count"] == 4
+    assert visual["source_triangle_count"] == 4
+    assert visual["cooked_point_count"] == 4
+    assert visual["cooked_triangle_count"] == 4
+    assert visual["source_face_topology_sha256"] != visual["cooked_face_topology_sha256"]
+    assert visual["source_dimensions_m"] == pytest.approx([0.8, 1.8, 3.2], abs=1.0e-6)
+    assert visual["cooked_dimensions_m"] == pytest.approx([0.8, 1.8, 3.2], abs=1.0e-6)
+    assert visual["source_closed_volume_m3"] == pytest.approx(0.768, rel=1.0e-6)
+    assert visual["cooked_closed_volume_m3"] == pytest.approx(0.768, rel=1.0e-6)
+    assert visual["cooked_visual_matches_simulation_surface"] is True
+    assert visual["visual_alignment_status"] == "pending_render_alignment"
     assert readback["simulation_topology"]["node_count"] == 4
     assert readback["simulation_topology"]["element_count"] == 1
     assert readback["collision_topology"]["node_count"] == 4
@@ -395,14 +433,14 @@ def test_live_visual_mesh_mutation_cannot_replay_cached_geometry(
 
     with pytest.raises(NativeDeformableAssetStageAdapterError) as exc:
         _readback(adapter, stage)
-    assert "native_deformable_stage_visual_mesh_readback_mismatch" in exc.value.errors
+    assert "native_deformable_stage_cooked_visual_simulation_surface_mismatch" in exc.value.errors
 
 
 @pytest.mark.parametrize(
     ("case", "expected_error"),
     [
         ("repeated_simulation_indices", "native_deformable_stage_simulation_topology_invalid"),
-        ("out_of_range_collision_indices", "native_deformable_stage_collision_topology_invalid"),
+        ("out_of_range_collision_indices", "native_deformable_stage_simulation_topology_invalid"),
         ("nonfinite_simulation_points", "native_deformable_stage_simulation_points_invalid"),
     ],
 )
@@ -413,15 +451,15 @@ def test_invalid_cooked_tetrahedra_fail_closed(
     expected_error: str,
 ) -> None:
     adapter, stage = _prepared_native_stage(tmp_path, monkeypatch=monkeypatch)
-    mesh = stage.GetPrimAtPath("/Deformable/Visuals/Surface")
+    sim_mesh = UsdGeom.TetMesh(stage.GetPrimAtPath("/Deformable/sim_mesh"))
     if case == "repeated_simulation_indices":
-        mesh.GetAttribute("physxDeformable:simulationIndices").Set(Vt.IntArray([0, 0, 0, 0]))
+        sim_mesh.GetTetVertexIndicesAttr().Set(Vt.Vec4iArray([Gf.Vec4i(0, 0, 0, 0)]))
     elif case == "out_of_range_collision_indices":
-        mesh.GetAttribute("physxDeformable:collisionIndices").Set(Vt.IntArray([99, 99, 99, 99]))
+        sim_mesh.GetTetVertexIndicesAttr().Set(Vt.Vec4iArray([Gf.Vec4i(99, 99, 99, 99)]))
     else:
-        points = list(mesh.GetAttribute("physxDeformable:simulationPoints").Get())
+        points = list(sim_mesh.GetPointsAttr().Get())
         points[0] = Gf.Vec3f(float("nan"), 0.0, 0.0)
-        mesh.GetAttribute("physxDeformable:simulationPoints").Set(Vt.Vec3fArray(points))
+        sim_mesh.GetPointsAttr().Set(Vt.Vec3fArray(points))
 
     with pytest.raises(NativeDeformableAssetStageAdapterError) as exc:
         _readback(adapter, stage)
@@ -438,7 +476,7 @@ def test_invalid_cooked_tetrahedra_fail_closed(
         ),
         (
             "/Deformable/PhysicsMaterial",
-            "physxDeformableBodyMaterial:density",
+            "omniphysics:density",
             "native_deformable_stage_material_readback_mismatch:density",
         ),
     ],
@@ -497,7 +535,11 @@ def test_moduleless_physx_schema_tokens_require_exact_native_call_chain() -> Non
         "PhysxCollisionAPI",
     ):
         body.AddAppliedSchema(token)
-    material.AddAppliedSchema("PhysxDeformableBodyMaterialAPI")
+    for token in (
+        "OmniPhysicsDeformableMaterialAPI",
+        "PhysxDeformableMaterialAPI",
+    ):
+        material.AddAppliedSchema(token)
     symbols = [
         "isaaclab.sim.spawners.materials.physics_materials:spawn_deformable_body_material",
         "isaaclab.sim.schemas.schemas:define_deformable_body_properties",
@@ -528,7 +570,7 @@ def test_moduleless_physx_schema_tokens_require_exact_native_call_chain() -> Non
 def test_moduleless_material_token_without_spawn_and_binding_is_rejected() -> None:
     stage = Usd.Stage.CreateInMemory()
     material = UsdShade.Material.Define(stage, "/Material").GetPrim()
-    material.AddAppliedSchema("PhysxDeformableBodyMaterialAPI")
+    material.AddAppliedSchema("PhysxDeformableMaterialAPI")
 
     with pytest.raises(NativeDeformableAssetStageAdapterError) as exc:
         adapter_module._registered_physx_schema_validation(
@@ -751,6 +793,7 @@ def test_source_material_connection_to_output_namespace_is_rejected(tmp_path: Pa
         "outside_root",
         "inactive_outside_root",
         "schema_decoy",
+        "material_attribute_decoy",
         "asset_decoy",
         "connection_decoy",
     ],
@@ -767,6 +810,10 @@ def test_positive_stage_inventory_rejects_rogue_content(
         stage.GetPrimAtPath("/Deformable/PhysicsMaterial").AddAppliedSchema(
             "PhysxDeformableBodyAPI"
         )
+    elif rogue_kind == "material_attribute_decoy":
+        stage.GetPrimAtPath("/Deformable/PhysicsMaterial").CreateAttribute(
+            "physxDeformableMaterial:untrackedProviderField", Sdf.ValueTypeNames.Double
+        ).Set(1.0)
     elif rogue_kind == "asset_decoy":
         stage.GetPrimAtPath("/Deformable/Visuals/Surface").CreateAttribute(
             "custom:externalAsset", Sdf.ValueTypeNames.Asset

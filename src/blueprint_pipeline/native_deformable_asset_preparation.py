@@ -62,13 +62,13 @@ from .native_task_runtime_source_packet import (
 )
 
 
-PLAN_SCHEMA_VERSION = "native_deformable_asset_preparation_plan.v1"
-PACKAGE_SCHEMA_VERSION = "native_deformable_asset_source_package.v1"
-WORKER_RETURN_SCHEMA_VERSION = "native_deformable_asset_preparation_worker_return.v1"
-RETURN_VERIFICATION_SCHEMA_VERSION = "native_deformable_asset_preparation_return_verification.v1"
+PLAN_SCHEMA_VERSION = "native_deformable_asset_preparation_plan.v2"
+PACKAGE_SCHEMA_VERSION = "native_deformable_asset_source_package.v2"
+WORKER_RETURN_SCHEMA_VERSION = "native_deformable_asset_preparation_worker_return.v2"
+RETURN_VERIFICATION_SCHEMA_VERSION = "native_deformable_asset_preparation_return_verification.v2"
 
-PLAN_FILENAME = "native_deformable_asset_preparation_plan.v1.json"
-PACKAGE_RECEIPT_FILENAME = "native_deformable_asset_source_package.v1.json"
+PLAN_FILENAME = "native_deformable_asset_preparation_plan.v2.json"
+PACKAGE_RECEIPT_FILENAME = "native_deformable_asset_source_package.v2.json"
 SOURCE_USD_PACKAGE_PATH = "source/asset.usd"
 SOURCE_TEXTURE_PACKAGE_ROOT = PurePosixPath("source/textures")
 OUTPUT_USD_PACKAGE_PATH = "prepared/deformable.usda"
@@ -91,7 +91,13 @@ DEFORMABLE_BODY_SCHEMAS = (
     "pxr.PhysxSchema.PhysxBaseDeformableBodyAPI",
     "pxr.PhysxSchema.PhysxCollisionAPI",
 )
-DEFORMABLE_MATERIAL_SCHEMAS = ("pxr.PhysxSchema.PhysxDeformableBodyMaterialAPI",)
+# The pinned ``DeformableBodyMaterialCfg`` uses the OmniPhysics material API
+# for density and the PhysX deformable-material API for FEM fields.  Keep this
+# distinct from a body API: the two prims have different authoring owners.
+DEFORMABLE_MATERIAL_SCHEMAS = (
+    "pxr.OmniPhysicsSchema.OmniPhysicsDeformableMaterialAPI",
+    "pxr.PhysxSchema.PhysxDeformableMaterialAPI",
+)
 NATIVE_REQUIRED_API_SYMBOLS = (
     DEFORMABLE_MATERIAL_CFG,
     DEFORMABLE_MATERIAL_API,
@@ -113,6 +119,8 @@ SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN = "pinned_native_authoring_schema_token
 _DIGEST_PREFIX = "sha256:"
 _IDENTITY_SCALE = [1.0, 1.0, 1.0]
 _DIMENSION_TOLERANCE_M = 1.0e-6
+_MAX_COOKED_VISUAL_RELATIVE_DIMENSION_ERROR = 0.05
+_MAX_SIMULATION_VOLUME_RELATIVE_ERROR = 0.25
 _MAX_RECEIPT_BYTES = 16 * 1024 * 1024
 _MAX_SOURCE_FILE_BYTES = 256 * 1024 * 1024
 _MAX_TEXTURE_COUNT = 4096
@@ -1535,7 +1543,6 @@ def materialize_native_deformable_asset_preparation_plan(
         normalized_physics["material_properties"]["density"]
     )
     volume_tolerance_m3 = max(1.0e-12, expected_baked_volume_m3 * 1.0e-6)
-    mass_tolerance_kg = max(1.0e-12, expected_mass_kg * 1.0e-6)
     result: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA_VERSION,
         "preparation_id": identifier,
@@ -1651,23 +1658,29 @@ def materialize_native_deformable_asset_preparation_plan(
             },
             "visual_mesh": {
                 "prim_path": OUTPUT_VISUAL_PRIM_PATH,
-                "point_count": point_count,
-                "triangle_count": triangle_count,
+                "source_point_count": point_count,
+                "source_triangle_count": triangle_count,
                 "source_face_topology_sha256_required": True,
-                "output_face_topology_sha256_must_match_source": True,
-                "dimensions_m": target_dimensions,
+                "source_point_positions_sha256_required": True,
+                "source_dimensions_m": target_dimensions,
+                "source_dimension_tolerance_m": _DIMENSION_TOLERANCE_M,
+                "source_closed_volume_m3": expected_baked_volume_m3,
+                "source_closed_volume_tolerance_m3": volume_tolerance_m3,
+                "cooked_output_must_match_simulation_surface": True,
+                "cooked_output_maximum_relative_dimension_error": (
+                    _MAX_COOKED_VISUAL_RELATIVE_DIMENSION_ERROR
+                ),
+                "cooked_output_maximum_relative_volume_error": (
+                    _MAX_SIMULATION_VOLUME_RELATIVE_ERROR
+                ),
+                "visual_alignment_status": "pending_render_alignment",
                 "authored_scale_xyz": list(_IDENTITY_SCALE),
                 "metric_scale_baked_into_points": True,
                 "source_xform_flattened": True,
                 "source_world_bounds_center_m": source_world_center,
                 "recentered_before_scale": True,
-                "aabb_center_m": [0.0, 0.0, 0.0],
                 "authored_pivot_m": [0.0, 0.0, 0.0],
                 "placement_origin_semantics": ("body_pose_translation_is_replacement_aabb_center"),
-                "point_positions_sha256_required": True,
-                "closed_volume_m3": expected_baked_volume_m3,
-                "closed_volume_tolerance_m3": volume_tolerance_m3,
-                "dimension_tolerance_m": _DIMENSION_TOLERANCE_M,
             },
             "material_binding": {
                 "visual_prim_path": OUTPUT_VISUAL_PRIM_PATH,
@@ -1687,9 +1700,9 @@ def materialize_native_deformable_asset_preparation_plan(
             },
             "mass_properties": {
                 "density_kg_m3": float(normalized_physics["material_properties"]["density"]),
-                "closed_volume_m3": expected_baked_volume_m3,
-                "derived_mass_kg": expected_mass_kg,
-                "mass_tolerance_kg": mass_tolerance_kg,
+                "source_baked_closed_volume_m3": expected_baked_volume_m3,
+                "source_closed_volume_tolerance_m3": volume_tolerance_m3,
+                "maximum_simulation_volume_relative_error": _MAX_SIMULATION_VOLUME_RELATIVE_ERROR,
                 "development_configuration_not_observed_material_truth": True,
             },
             "physics_material_binding": {
@@ -2179,23 +2192,29 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
         },
         "visual_mesh": {
             "prim_path": OUTPUT_VISUAL_PRIM_PATH,
-            "point_count": surface.get("point_count"),
-            "triangle_count": surface.get("triangle_count"),
+            "source_point_count": surface.get("point_count"),
+            "source_triangle_count": surface.get("triangle_count"),
             "source_face_topology_sha256_required": True,
-            "output_face_topology_sha256_must_match_source": True,
-            "dimensions_m": target_dimensions,
+            "source_point_positions_sha256_required": True,
+            "source_dimensions_m": target_dimensions,
+            "source_dimension_tolerance_m": _DIMENSION_TOLERANCE_M,
+            "source_closed_volume_m3": expected_volume,
+            "source_closed_volume_tolerance_m3": max(1.0e-12, expected_volume * 1.0e-6),
+            "cooked_output_must_match_simulation_surface": True,
+            "cooked_output_maximum_relative_dimension_error": (
+                _MAX_COOKED_VISUAL_RELATIVE_DIMENSION_ERROR
+            ),
+            "cooked_output_maximum_relative_volume_error": (
+                _MAX_SIMULATION_VOLUME_RELATIVE_ERROR
+            ),
+            "visual_alignment_status": "pending_render_alignment",
             "authored_scale_xyz": list(_IDENTITY_SCALE),
             "metric_scale_baked_into_points": True,
             "source_xform_flattened": True,
             "source_world_bounds_center_m": source_center,
             "recentered_before_scale": True,
-            "aabb_center_m": [0.0, 0.0, 0.0],
             "authored_pivot_m": [0.0, 0.0, 0.0],
             "placement_origin_semantics": "body_pose_translation_is_replacement_aabb_center",
-            "point_positions_sha256_required": True,
-            "closed_volume_m3": expected_volume,
-            "closed_volume_tolerance_m3": max(1.0e-12, expected_volume * 1.0e-6),
-            "dimension_tolerance_m": _DIMENSION_TOLERANCE_M,
         },
         "material_binding": {
             "visual_prim_path": OUTPUT_VISUAL_PRIM_PATH,
@@ -2215,9 +2234,9 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
         },
         "mass_properties": {
             "density_kg_m3": density_number,
-            "closed_volume_m3": expected_volume,
-            "derived_mass_kg": expected_mass,
-            "mass_tolerance_kg": max(1.0e-12, expected_mass * 1.0e-6),
+            "source_baked_closed_volume_m3": expected_volume,
+            "source_closed_volume_tolerance_m3": max(1.0e-12, expected_volume * 1.0e-6),
+            "maximum_simulation_volume_relative_error": _MAX_SIMULATION_VOLUME_RELATIVE_ERROR,
             "development_configuration_not_observed_material_truth": True,
         },
         "physics_material_binding": {
@@ -3316,27 +3335,33 @@ def verify_native_deformable_asset_preparation_return(
     required_visual = required["visual_mesh"]
     if set(visual) != {
         "prim_path",
-        "point_count",
-        "triangle_count",
+        "source_point_count",
+        "source_triangle_count",
         "source_face_topology_sha256",
-        "output_face_topology_sha256",
-        "dimensions_m",
+        "source_point_positions_sha256",
+        "source_dimensions_m",
+        "source_closed_volume_m3",
+        "cooked_point_count",
+        "cooked_triangle_count",
+        "cooked_face_topology_sha256",
+        "cooked_point_positions_sha256",
+        "cooked_dimensions_m",
+        "cooked_closed_volume_m3",
+        "cooked_visual_matches_simulation_surface",
+        "visual_alignment_status",
         "authored_scale_xyz",
         "metric_scale_baked_into_points",
         "source_xform_flattened",
         "source_world_bounds_center_m",
         "recentered_before_scale",
-        "aabb_center_m",
         "authored_pivot_m",
         "placement_origin_semantics",
-        "point_positions_sha256",
-        "closed_volume_m3",
     }:
         errors.append("native_deformable_return_visual_mesh_fields_invalid")
     for field in (
         "prim_path",
-        "point_count",
-        "triangle_count",
+        "source_point_count",
+        "source_triangle_count",
         "authored_scale_xyz",
     ):
         if visual.get(field) != required_visual[field]:
@@ -3348,44 +3373,77 @@ def verify_native_deformable_asset_preparation_return(
     ):
         if visual.get(field) is not True:
             errors.append(f"native_deformable_return_visual_{field}_mismatch")
-    if not _valid_digest(visual.get("point_positions_sha256")):
-        errors.append("native_deformable_return_visual_point_positions_digest_invalid")
-    source_face_digest = visual.get("source_face_topology_sha256")
-    output_face_digest = visual.get("output_face_topology_sha256")
-    if (
-        not _valid_digest(source_face_digest)
-        or not _valid_digest(output_face_digest)
-        or source_face_digest != output_face_digest
+    for field in (
+        "source_face_topology_sha256",
+        "source_point_positions_sha256",
+        "cooked_face_topology_sha256",
+        "cooked_point_positions_sha256",
     ):
-        errors.append("native_deformable_return_visual_face_topology_mismatch")
-    observed_dimensions = _positive_vector3(
-        visual.get("dimensions_m"),
-        error="native_deformable_return_visual_dimensions_invalid",
+        if not _valid_digest(visual.get(field)):
+            errors.append(f"native_deformable_return_visual_{field}_invalid")
+    source_dimensions = _positive_vector3(
+        visual.get("source_dimensions_m"),
+        error="native_deformable_return_visual_source_dimensions_invalid",
         errors=errors,
     )
-    if observed_dimensions and any(
-        abs(observed_dimensions[index] - required_visual["dimensions_m"][index])
-        > required_visual["dimension_tolerance_m"]
+    if source_dimensions and any(
+        abs(source_dimensions[index] - required_visual["source_dimensions_m"][index])
+        > required_visual["source_dimension_tolerance_m"]
         for index in range(3)
     ):
-        errors.append("native_deformable_return_visual_dimensions_mismatch")
+        errors.append("native_deformable_return_visual_source_dimensions_mismatch")
+    source_volume = visual.get("source_closed_volume_m3")
+    if (
+        isinstance(source_volume, bool)
+        or not isinstance(source_volume, (int, float))
+        or not math.isfinite(float(source_volume))
+        or abs(float(source_volume) - required_visual["source_closed_volume_m3"])
+        > required_visual["source_closed_volume_tolerance_m3"]
+    ):
+        errors.append("native_deformable_return_visual_source_closed_volume_mismatch")
+    for field in ("cooked_point_count", "cooked_triangle_count"):
+        value = visual.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            errors.append(f"native_deformable_return_visual_{field}_invalid")
+    cooked_dimensions = _positive_vector3(
+        visual.get("cooked_dimensions_m"),
+        error="native_deformable_return_visual_cooked_dimensions_invalid",
+        errors=errors,
+    )
+    if cooked_dimensions and source_dimensions and any(
+        abs(cooked_dimensions[index] - source_dimensions[index])
+        / source_dimensions[index]
+        > required_visual["cooked_output_maximum_relative_dimension_error"]
+        for index in range(3)
+    ):
+        errors.append("native_deformable_return_visual_cooked_dimensions_mismatch")
+    cooked_volume = visual.get("cooked_closed_volume_m3")
+    if (
+        isinstance(cooked_volume, bool)
+        or not isinstance(cooked_volume, (int, float))
+        or not math.isfinite(float(cooked_volume))
+        or float(cooked_volume) <= 0.0
+        or (
+            isinstance(source_volume, (int, float))
+            and not isinstance(source_volume, bool)
+            and math.isfinite(float(source_volume))
+            and abs(float(cooked_volume) - float(source_volume)) / float(source_volume)
+            > required_visual["cooked_output_maximum_relative_volume_error"]
+        )
+    ):
+        errors.append("native_deformable_return_visual_cooked_volume_mismatch")
+    if (
+        visual.get("cooked_visual_matches_simulation_surface") is not True
+        or visual.get("visual_alignment_status") != required_visual["visual_alignment_status"]
+    ):
+        errors.append("native_deformable_return_visual_cooked_surface_contract_invalid")
     for field in (
         "source_world_bounds_center_m",
-        "aabb_center_m",
         "authored_pivot_m",
         "placement_origin_semantics",
     ):
         if visual.get(field) != required_visual[field]:
             errors.append(f"native_deformable_return_visual_{field}_mismatch")
-    closed_volume = visual.get("closed_volume_m3")
-    if (
-        isinstance(closed_volume, bool)
-        or not isinstance(closed_volume, (int, float))
-        or not math.isfinite(float(closed_volume))
-        or abs(float(closed_volume) - required_visual["closed_volume_m3"])
-        > required_visual["closed_volume_tolerance_m3"]
-    ):
-        errors.append("native_deformable_return_visual_closed_volume_mismatch")
     if readback.get("authoring_root_prim_path") != required["authoring_root_prim_path"]:
         errors.append("native_deformable_return_authoring_root_prim_mismatch")
     if readback.get("deformable_schema_prim_path") != required["deformable_schema_prim_path"]:
@@ -3434,20 +3492,61 @@ def verify_native_deformable_asset_preparation_return(
         errors=errors,
     )
     required_mass = required["mass_properties"]
-    if set(mass_properties) != set(required_mass):
+    if set(mass_properties) != {
+        "density_kg_m3",
+        "simulation_volume_m3",
+        "derived_mass_kg",
+        "mass_tolerance_kg",
+        "development_configuration_not_observed_material_truth",
+    }:
         errors.append("native_deformable_return_mass_property_fields_invalid")
+    simulation_volume = mass_properties.get("simulation_volume_m3")
+    expected_source_volume = required_mass.get("source_baked_closed_volume_m3")
+    maximum_simulation_volume_relative_error = required_mass.get(
+        "maximum_simulation_volume_relative_error"
+    )
+    density = mass_properties.get("density_kg_m3")
+    derived_mass = mass_properties.get("derived_mass_kg")
+    expected_mass_tolerance = (
+        max(1.0e-12, float(derived_mass) * 1.0e-6)
+        if isinstance(derived_mass, (int, float))
+        and not isinstance(derived_mass, bool)
+        and math.isfinite(float(derived_mass))
+        else None
+    )
     if (
-        mass_properties.get("density_kg_m3") != required_mass["density_kg_m3"]
-        or mass_properties.get("closed_volume_m3") != required_mass["closed_volume_m3"]
-        or mass_properties.get("mass_tolerance_kg") != required_mass["mass_tolerance_kg"]
-        or mass_properties.get("development_configuration_not_observed_material_truth") is not True
-        or isinstance(mass_properties.get("derived_mass_kg"), bool)
-        or not isinstance(mass_properties.get("derived_mass_kg"), (int, float))
-        or not math.isfinite(float(mass_properties.get("derived_mass_kg") or 0.0))
-        or abs(
-            float(mass_properties.get("derived_mass_kg") or 0.0) - required_mass["derived_mass_kg"]
+        density != required_mass["density_kg_m3"]
+        or isinstance(simulation_volume, bool)
+        or not isinstance(simulation_volume, (int, float))
+        or not math.isfinite(float(simulation_volume))
+        or float(simulation_volume) <= 0.0
+        or isinstance(expected_source_volume, bool)
+        or not isinstance(expected_source_volume, (int, float))
+        or not math.isfinite(float(expected_source_volume))
+        or float(expected_source_volume) <= 0.0
+        or isinstance(maximum_simulation_volume_relative_error, bool)
+        or not isinstance(maximum_simulation_volume_relative_error, (int, float))
+        or not math.isfinite(float(maximum_simulation_volume_relative_error))
+        or float(maximum_simulation_volume_relative_error) < 0.0
+        or (
+            isinstance(simulation_volume, (int, float))
+            and not isinstance(simulation_volume, bool)
+            and isinstance(expected_source_volume, (int, float))
+            and not isinstance(expected_source_volume, bool)
+            and abs(float(simulation_volume) - float(expected_source_volume))
+            / float(expected_source_volume)
+            > float(maximum_simulation_volume_relative_error)
         )
-        > required_mass["mass_tolerance_kg"]
+        or mass_properties.get("development_configuration_not_observed_material_truth") is not True
+        or isinstance(derived_mass, bool)
+        or not isinstance(derived_mass, (int, float))
+        or not math.isfinite(float(derived_mass))
+        or expected_mass_tolerance is None
+        or abs(
+            float(derived_mass) - float(density) * float(simulation_volume)
+        )
+        > float(expected_mass_tolerance or 0.0)
+        or mass_properties.get("mass_tolerance_kg") != expected_mass_tolerance
     ):
         errors.append("native_deformable_return_mass_properties_mismatch")
     if readback.get("material_binding") != required["material_binding"]:

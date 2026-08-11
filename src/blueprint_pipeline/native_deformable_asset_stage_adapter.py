@@ -34,8 +34,7 @@ _PROVIDER_SCHEMA_PREFIXES = ("omniphysics", "physxauto", "physxbase", "newton")
 _PROVIDER_ATTRIBUTE_PREFIXES = (
     "omniphysics:",
     "lightwheelusd:",
-    "physxauto",
-    "physxbase",
+    "physx",
     "newton:",
 )
 _BODY_SCHEMA_NAMES = {
@@ -44,13 +43,21 @@ _BODY_SCHEMA_NAMES = {
     "PhysxCollisionAPI": "pxr.PhysxSchema.PhysxCollisionAPI",
 }
 _MATERIAL_SCHEMA_NAMES = {
-    "PhysxDeformableBodyMaterialAPI": ("pxr.PhysxSchema.PhysxDeformableBodyMaterialAPI")
+    # ``spawn_deformable_body_material(DeformableBodyMaterialCfg)`` routes the
+    # common density field through OmniPhysics and the FEM fields through the
+    # PhysX deformable-*material* API.  There is no
+    # ``PhysxDeformableBodyMaterialAPI`` in the pinned Isaac Lab contract.
+    "OmniPhysicsDeformableMaterialAPI": (
+        "pxr.OmniPhysicsSchema.OmniPhysicsDeformableMaterialAPI"
+    ),
+    "PhysxDeformableMaterialAPI": "pxr.PhysxSchema.PhysxDeformableMaterialAPI",
 }
 _REGISTERED_SCHEMA_MODULES = {
     "OmniPhysicsDeformableBodyAPI": "OmniPhysicsSchema",
     "PhysxBaseDeformableBodyAPI": "PhysxSchema",
     "PhysxCollisionAPI": "PhysxSchema",
-    "PhysxDeformableBodyMaterialAPI": "PhysxSchema",
+    "OmniPhysicsDeformableMaterialAPI": "OmniPhysicsSchema",
+    "PhysxDeformableMaterialAPI": "PhysxSchema",
 }
 _SCHEMA_VALIDATION_REGISTERED_API = "registered_physx_api_v1"
 _SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN = "pinned_native_authoring_schema_token_v1"
@@ -69,7 +76,13 @@ _MODULELESS_SCHEMA_REQUIRED_NATIVE_SYMBOLS = {
     "OmniPhysicsDeformableBodyAPI": frozenset({_PINNED_DEFORMABLE_AUTHORING_SYMBOL}),
     "PhysxBaseDeformableBodyAPI": frozenset({_PINNED_DEFORMABLE_AUTHORING_SYMBOL}),
     "PhysxCollisionAPI": frozenset({_PINNED_DEFORMABLE_AUTHORING_SYMBOL}),
-    "PhysxDeformableBodyMaterialAPI": frozenset(
+    "OmniPhysicsDeformableMaterialAPI": frozenset(
+        {
+            _PINNED_DEFORMABLE_MATERIAL_SPAWN_SYMBOL,
+            _PINNED_DEFORMABLE_MATERIAL_BINDING_SYMBOL,
+        }
+    ),
+    "PhysxDeformableMaterialAPI": frozenset(
         {
             _PINNED_DEFORMABLE_MATERIAL_SPAWN_SYMBOL,
             _PINNED_DEFORMABLE_MATERIAL_BINDING_SYMBOL,
@@ -88,6 +101,22 @@ _COOKING_FIELDS = frozenset(
 )
 _OMNIPHYSICS_BODY_FIELDS = frozenset({"deformable_body_enabled", "kinematic_enabled", "mass"})
 _PHYSX_COLLISION_BODY_FIELDS = frozenset({"contact_offset", "rest_offset"})
+_MATERIAL_FIELD_NAMESPACES = {
+    "density": "omniphysics",
+    "static_friction": "physics",
+    "dynamic_friction": "physics",
+    "youngs_modulus": "physxDeformableMaterial",
+    "poissons_ratio": "physxDeformableMaterial",
+    "elasticity_damping": "physxDeformableMaterial",
+}
+_COOKED_TOPOLOGY_ATTRIBUTES = frozenset(
+    {
+        "physxDeformable:simulationPoints",
+        "physxDeformable:simulationIndices",
+        "physxDeformable:collisionPoints",
+        "physxDeformable:collisionIndices",
+    }
+)
 _MAX_SOURCE_USD_BYTES = 64 * 1024 * 1024
 _MAX_TEXTURE_BYTES = 64 * 1024 * 1024
 _MAX_TEXTURE_TOTAL_BYTES = 256 * 1024 * 1024
@@ -1197,6 +1226,8 @@ class OpenUsdNativeDeformableStageAdapter:
             "output_prim_path": output_prim_path,
             "source_world_bounds_center_m": list(center),
             "bake_scale_xyz": list(scale),
+            "point_count": len(baked),
+            "triangle_count": len(counts),
             "counts": counts,
             "indices": indices,
             "source_face_topology_sha256": baked_measurements["face_topology_sha256"],
@@ -1666,10 +1697,13 @@ class OpenUsdNativeDeformableStageAdapter:
             )
         actual_configuration["cooking_properties"] = dict(configuration["cooking_properties"])
         for field, expected in configuration["material_properties"].items():
-            attribute = physics_material_prim.GetAttribute(
-                f"physxDeformableBodyMaterial:{_camel_case(field)}"
-            )
             mismatch = f"native_deformable_stage_material_readback_mismatch:{field}"
+            namespace = _MATERIAL_FIELD_NAMESPACES.get(field)
+            if namespace is None:
+                errors.append(mismatch)
+                actual_configuration["material_properties"][field] = None
+                continue
+            attribute = physics_material_prim.GetAttribute(f"{namespace}:{_camel_case(field)}")
             actual_configuration["material_properties"][field] = normalized_actual(
                 attribute, expected, mismatch=mismatch
             )
@@ -1703,6 +1737,7 @@ class OpenUsdNativeDeformableStageAdapter:
         schema_prim = stage.GetPrimAtPath(output_deformable_schema_prim_path)
         visual_prim = stage.GetPrimAtPath(output_visual_prim_path)
         physics_material_path = f"{output_authoring_root_prim_path}/PhysicsMaterial"
+        sim_mesh_path = f"{output_authoring_root_prim_path}/sim_mesh"
         physics_material_prim = stage.GetPrimAtPath(physics_material_path)
         if (
             not schema_prim.IsValid()
@@ -1773,52 +1808,20 @@ class OpenUsdNativeDeformableStageAdapter:
             list(live_mesh.GetFaceVertexCountsAttr().Get() or []),
             list(live_mesh.GetFaceVertexIndicesAttr().Get() or []),
         )
-        if (
-            live_visual["point_positions_sha256"] != surface["point_positions_sha256"]
-            or live_visual["face_topology_sha256"] != surface["output_face_topology_sha256"]
-            or any(
-                abs(live_visual["dimensions_m"][axis] - surface["dimensions_m"][axis]) > 1.0e-8
-                for axis in range(3)
-            )
-            or any(
-                abs(live_visual["aabb_center_m"][axis] - surface["aabb_center_m"][axis]) > 1.0e-8
-                for axis in range(3)
-            )
-            or abs(live_visual["closed_volume_m3"] - surface["closed_volume_m3"])
-            > max(1.0e-12, surface["closed_volume_m3"] * 1.0e-8)
-        ):
-            raise NativeDeformableAssetStageAdapterError(
-                ["native_deformable_stage_visual_mesh_readback_mismatch"]
-            )
         live_normals = list(live_mesh.GetNormalsAttr().Get() or [])
-        if surface["normal_positions_sha256"] is None:
-            if live_normals:
-                raise NativeDeformableAssetStageAdapterError(
-                    ["native_deformable_stage_visual_normal_readback_mismatch"]
-                )
-        else:
-            normalized_live_normals = _normalized_points(
+        if live_normals:
+            # Volume cooking is allowed to replace the visual surface with the
+            # cooked tet boundary.  Its source normals/UVs then need a later
+            # renderer-alignment gate, but malformed native arrays are never
+            # accepted as an excuse to skip that gate.
+            _normalized_points(
                 live_normals,
                 maximum_count=_MAX_ARRAY_VALUES,
                 error="native_deformable_stage_visual_normal_readback_mismatch",
             )
-            if (
-                str(live_mesh.GetNormalsInterpolation()) != surface["normal_interpolation"]
-                or not _normal_cardinality_valid(
-                    interpolation=str(live_mesh.GetNormalsInterpolation()),
-                    count=len(normalized_live_normals),
-                    point_count=len(live_visual["points"]),
-                    face_count=len(live_visual["counts"]),
-                    corner_count=len(live_visual["indices"]),
-                )
-                or _point_sha256(normalized_live_normals) != surface["normal_positions_sha256"]
-            ):
-                raise NativeDeformableAssetStageAdapterError(
-                    ["native_deformable_stage_visual_normal_readback_mismatch"]
-                )
 
         topology_measurements: dict[str, dict[str, Any]] = {}
-        sim_mesh_prim = stage.GetPrimAtPath(f"{output_authoring_root_prim_path}/sim_mesh")
+        sim_mesh_prim = stage.GetPrimAtPath(sim_mesh_path)
 
         def topology_from_attrs(label: str, prim: object) -> dict[str, Any] | None:
             points_name = f"physxDeformable:{label}Points"
@@ -1869,6 +1872,34 @@ class OpenUsdNativeDeformableStageAdapter:
                 raise NativeDeformableAssetStageAdapterError(
                     ["native_deformable_stage_cooked_topology_missing"]
                 )
+        if not sim_mesh_prim.IsValid() or str(sim_mesh_prim.GetTypeName()) != "TetMesh":
+            raise NativeDeformableAssetStageAdapterError(
+                ["native_deformable_stage_cooked_simulation_mesh_missing"]
+            )
+        tet_mesh = UsdGeom.TetMesh(sim_mesh_prim)
+        raw_surface_faces = list(
+            tet_mesh.GetSurfaceFaceVertexIndicesAttr().Get()
+            or UsdGeom.TetMesh.ComputeSurfaceFaces(tet_mesh, Usd.TimeCode.Default())
+            or []
+        )
+        surface_indices = [int(index) for face in raw_surface_faces for index in face]
+        tet_points = list(tet_mesh.GetPointsAttr().Get() or [])
+        if not surface_indices or len(surface_indices) % 3:
+            raise NativeDeformableAssetStageAdapterError(
+                ["native_deformable_stage_cooked_surface_faces_missing"]
+            )
+        cooked_surface = _triangle_mesh_measurements(
+            tet_points,
+            [3] * (len(surface_indices) // 3),
+            surface_indices,
+        )
+        if (
+            live_visual["point_positions_sha256"] != cooked_surface["point_positions_sha256"]
+            or live_visual["face_topology_sha256"] != cooked_surface["face_topology_sha256"]
+        ):
+            raise NativeDeformableAssetStageAdapterError(
+                ["native_deformable_stage_cooked_visual_simulation_surface_mismatch"]
+            )
         simulation_volume_error = (
             abs(topology_measurements["simulation"]["volume_m3"] - live_visual["closed_volume_m3"])
             / live_visual["closed_volume_m3"]
@@ -1943,6 +1974,7 @@ class OpenUsdNativeDeformableStageAdapter:
                 (path == output_authoring_root_prim_path and type_name == "Xform")
                 or (path in expected_scopes and type_name == "Scope")
                 or (path == output_visual_prim_path and type_name == "Mesh")
+                or (path == sim_mesh_path and type_name == "TetMesh")
                 or (path == physics_material_path and type_name == "Material")
                 or (
                     material_root is not None
@@ -1955,7 +1987,7 @@ class OpenUsdNativeDeformableStageAdapter:
                     )
                 )
             )
-            if not allowed_inventory or type_name == "TetMesh":
+            if not allowed_inventory:
                 raise NativeDeformableAssetStageAdapterError(
                     ["native_deformable_stage_unexpected_prim_inventory"]
                 )
@@ -1964,6 +1996,13 @@ class OpenUsdNativeDeformableStageAdapter:
                     "MaterialBindingAPI",
                     "PhysicsCollisionAPI",
                     "PhysicsMassAPI",
+                    "OmniPhysicsDeformablePoseAPI:default",
+                }
+            elif path == sim_mesh_path:
+                allowed_schemas = {
+                    "OmniPhysicsVolumeDeformableSimAPI",
+                    "PhysicsCollisionAPI",
+                    "OmniPhysicsDeformablePoseAPI:default",
                 }
             elif path == output_authoring_root_prim_path:
                 allowed_schemas = {*_BODY_SCHEMA_NAMES, "MaterialBindingAPI"}
@@ -2011,9 +2050,26 @@ class OpenUsdNativeDeformableStageAdapter:
                         )
                     )
                 )
+                expected_material_attribute = path == physics_material_path and any(
+                    attribute_name
+                    == f"{_MATERIAL_FIELD_NAMESPACES[field]}:{_camel_case(field)}"
+                    for field in physics_configuration["material_properties"]
+                    if field in _MATERIAL_FIELD_NAMESPACES
+                )
+                expected_cooked_topology_attribute = (
+                    path == output_visual_prim_path
+                    and attribute_name in _COOKED_TOPOLOGY_ATTRIBUTES
+                )
+                expected_simulation_attribute = path == sim_mesh_path and attribute_name in {
+                    "omniphysics:restShapePoints",
+                    "omniphysics:restTetVtxIndices",
+                }
                 if (
                     attribute_name.casefold().startswith(_PROVIDER_ATTRIBUTE_PREFIXES)
                     and not expected_body_attribute
+                    and not expected_material_attribute
+                    and not expected_cooked_topology_attribute
+                    and not expected_simulation_attribute
                 ):
                     raise NativeDeformableAssetStageAdapterError(
                         ["native_deformable_stage_forbidden_source_content_present"]
@@ -2046,7 +2102,11 @@ class OpenUsdNativeDeformableStageAdapter:
                         ["native_deformable_stage_forbidden_source_content_present"]
                     )
             imageable = UsdGeom.Imageable(prim)
-            if imageable and imageable.ComputePurpose() == UsdGeom.Tokens.guide:
+            if (
+                imageable
+                and imageable.ComputePurpose() == UsdGeom.Tokens.guide
+                and path != sim_mesh_path
+            ):
                 raise NativeDeformableAssetStageAdapterError(
                     ["native_deformable_stage_forbidden_source_content_present"]
                 )
@@ -2059,21 +2119,27 @@ class OpenUsdNativeDeformableStageAdapter:
             "stage_metadata": stage_metadata,
             "visual_mesh": {
                 "prim_path": output_visual_prim_path,
-                "point_count": len(live_visual["points"]),
-                "triangle_count": len(live_visual["counts"]),
+                "source_point_count": surface["point_count"],
+                "source_triangle_count": surface["triangle_count"],
                 "source_face_topology_sha256": surface["source_face_topology_sha256"],
-                "output_face_topology_sha256": live_visual["face_topology_sha256"],
-                "dimensions_m": live_visual["dimensions_m"],
+                "source_point_positions_sha256": surface["point_positions_sha256"],
+                "source_dimensions_m": surface["dimensions_m"],
+                "source_closed_volume_m3": surface["closed_volume_m3"],
+                "cooked_point_count": len(live_visual["points"]),
+                "cooked_triangle_count": len(live_visual["counts"]),
+                "cooked_face_topology_sha256": live_visual["face_topology_sha256"],
+                "cooked_point_positions_sha256": live_visual["point_positions_sha256"],
+                "cooked_dimensions_m": live_visual["dimensions_m"],
+                "cooked_closed_volume_m3": live_visual["closed_volume_m3"],
+                "cooked_visual_matches_simulation_surface": True,
+                "visual_alignment_status": "pending_render_alignment",
                 "authored_scale_xyz": [1.0, 1.0, 1.0],
                 "metric_scale_baked_into_points": True,
                 "source_xform_flattened": True,
                 "source_world_bounds_center_m": surface["source_world_bounds_center_m"],
                 "recentered_before_scale": True,
-                "aabb_center_m": live_visual["aabb_center_m"],
                 "authored_pivot_m": [0.0, 0.0, 0.0],
                 "placement_origin_semantics": "body_pose_translation_is_replacement_aabb_center",
-                "point_positions_sha256": live_visual["point_positions_sha256"],
-                "closed_volume_m3": live_visual["closed_volume_m3"],
             },
             "authoring_root_prim_path": output_authoring_root_prim_path,
             "deformable_schema_prim_path": output_deformable_schema_prim_path,
@@ -2089,10 +2155,11 @@ class OpenUsdNativeDeformableStageAdapter:
             },
             "mass_properties": {
                 "density_kg_m3": density,
-                "closed_volume_m3": live_visual["closed_volume_m3"],
-                "derived_mass_kg": density * live_visual["closed_volume_m3"],
+                "simulation_volume_m3": topology_measurements["simulation"]["volume_m3"],
+                "derived_mass_kg": density * topology_measurements["simulation"]["volume_m3"],
                 "mass_tolerance_kg": max(
-                    1.0e-12, density * live_visual["closed_volume_m3"] * 1.0e-6
+                    1.0e-12,
+                    density * topology_measurements["simulation"]["volume_m3"] * 1.0e-6,
                 ),
                 "development_configuration_not_observed_material_truth": True,
             },

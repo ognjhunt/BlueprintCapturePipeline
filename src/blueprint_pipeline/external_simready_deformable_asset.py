@@ -56,16 +56,18 @@ CLAIM_CEILING = "static_external_deformable_candidate_only"
 PINNED_DEFORMABLE_LOADER_SOURCE = (
     "source/isaaclab_physx/isaaclab_physx/assets/deformable_object/deformable_object.py"
 )
-PINNED_DEFORMABLE_LOADER_SCHEMA_LINE = 544
-PINNED_DEFORMABLE_LOADER_ERROR_LINES = (547, 550)
+PINNED_DEFORMABLE_LOADER_SCHEMA_LINE = 585
+PINNED_DEFORMABLE_LOADER_ERROR_LINES = (595, 598)
 PINNED_AUTHORING_SOURCE = "source/isaaclab/isaaclab/sim/schemas/schemas.py"
 PINNED_AUTHORING_LINES = (852, 1003)
 PINNED_AUTHORING_API = "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
 PINNED_COOKING_API = "omni.physx.scripts.deformableUtils:add_physx_deformable_body"
 PINNED_RUNTIME_CLASS = "isaaclab_physx.assets.deformable_object.deformable_object:DeformableObject"
 
-STANDARD_PHYSX_BODY_SCHEMA = "PhysxDeformableBodyAPI"
-STANDARD_PHYSX_MATERIAL_SCHEMA = "PhysxDeformableBodyMaterialAPI"
+STANDARD_PHYSX_BODY_SCHEMA = "OmniPhysicsDeformableBodyAPI"
+STANDARD_PHYSX_MATERIAL_SCHEMAS = frozenset(
+    {"OmniPhysicsDeformableMaterialAPI", "PhysxDeformableMaterialAPI"}
+)
 PALATIAL_SHELL_SCHEMAS = frozenset({"NewtonShellAPI", "NewtonClothAPI"})
 
 _MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
@@ -1779,8 +1781,9 @@ def _inspect_stage_snapshot(
         )
         has_standard_material_schema = bool(
             bound_physics_material_path
-            and STANDARD_PHYSX_MATERIAL_SCHEMA
-            in schemas_by_prim.get(bound_physics_material_path, set())
+            and STANDARD_PHYSX_MATERIAL_SCHEMAS.issubset(
+                schemas_by_prim.get(bound_physics_material_path, set())
+            )
         )
         has_nonempty_tetmesh = bool(body_tetmeshes) and all(
             row["topology_valid"] for row in body_tetmeshes
@@ -2100,7 +2103,7 @@ def inspect_external_simready_deformable_asset(
             "cooking_api": PINNED_COOKING_API,
             "runtime_class": PINNED_RUNTIME_CLASS,
             "required_runtime_schema": STANDARD_PHYSX_BODY_SCHEMA,
-            "required_material_schema": STANDARD_PHYSX_MATERIAL_SCHEMA,
+            "required_material_schemas": sorted(STANDARD_PHYSX_MATERIAL_SCHEMAS),
             "native_gates_after_conversion": [
                 "usd_composition_and_deformable_cooking",
                 "soft_body_tensor_view_and_nodal_readback",

@@ -105,27 +105,37 @@ def _plan(tmp_path: Path) -> tuple[dict[str, Any], Path, Path]:
 
 def _readback(plan: dict[str, Any]) -> dict[str, Any]:
     required = plan["required_native_readback"]
+    visual = required["visual_mesh"]
+    source_volume = visual["source_closed_volume_m3"]
+    density = required["mass_properties"]["density_kg_m3"]
+    derived_mass = density * source_volume
     return {
         "stage_metadata": copy.deepcopy(required["stage_metadata"]),
         "visual_mesh": {
-            "prim_path": required["visual_mesh"]["prim_path"],
-            "point_count": required["visual_mesh"]["point_count"],
-            "triangle_count": required["visual_mesh"]["triangle_count"],
+            "prim_path": visual["prim_path"],
+            "source_point_count": visual["source_point_count"],
+            "source_triangle_count": visual["source_triangle_count"],
             "source_face_topology_sha256": "sha256:" + "a" * 64,
-            "output_face_topology_sha256": "sha256:" + "a" * 64,
-            "dimensions_m": copy.deepcopy(required["visual_mesh"]["dimensions_m"]),
+            "source_point_positions_sha256": "sha256:" + "d" * 64,
+            "source_dimensions_m": copy.deepcopy(visual["source_dimensions_m"]),
+            "source_closed_volume_m3": source_volume,
+            "cooked_point_count": visual["source_point_count"],
+            "cooked_triangle_count": visual["source_triangle_count"],
+            "cooked_face_topology_sha256": "sha256:" + "a" * 64,
+            "cooked_point_positions_sha256": "sha256:" + "d" * 64,
+            "cooked_dimensions_m": copy.deepcopy(visual["source_dimensions_m"]),
+            "cooked_closed_volume_m3": source_volume,
+            "cooked_visual_matches_simulation_surface": True,
+            "visual_alignment_status": visual["visual_alignment_status"],
             "authored_scale_xyz": [1.0, 1.0, 1.0],
             "metric_scale_baked_into_points": True,
             "source_xform_flattened": True,
             "source_world_bounds_center_m": copy.deepcopy(
-                required["visual_mesh"]["source_world_bounds_center_m"]
+                visual["source_world_bounds_center_m"]
             ),
             "recentered_before_scale": True,
-            "aabb_center_m": [0.0, 0.0, 0.0],
             "authored_pivot_m": [0.0, 0.0, 0.0],
-            "placement_origin_semantics": required["visual_mesh"]["placement_origin_semantics"],
-            "point_positions_sha256": "sha256:" + "d" * 64,
-            "closed_volume_m3": required["visual_mesh"]["closed_volume_m3"],
+            "placement_origin_semantics": visual["placement_origin_semantics"],
         },
         "authoring_root_prim_path": required["authoring_root_prim_path"],
         "deformable_schema_prim_path": required["deformable_schema_prim_path"],
@@ -135,7 +145,13 @@ def _readback(plan: dict[str, Any]) -> dict[str, Any]:
             for group, rows in required["schema_validation"].items()
         },
         "physics_material": copy.deepcopy(required["physics_material"]),
-        "mass_properties": copy.deepcopy(required["mass_properties"]),
+        "mass_properties": {
+            "density_kg_m3": density,
+            "simulation_volume_m3": source_volume,
+            "derived_mass_kg": derived_mass,
+            "mass_tolerance_kg": max(1.0e-12, derived_mass * 1.0e-6),
+            "development_configuration_not_observed_material_truth": True,
+        },
         "physics_material_binding": copy.deepcopy(required["physics_material_binding"]),
         "material_binding": copy.deepcopy(required["material_binding"]),
         "simulation_topology": {
@@ -497,7 +513,6 @@ def test_nonzero_source_world_center_is_recentered_and_bound_to_pose_semantics(
     )
     assert plan["clean_stage_rebuild"]["recenter_source_world_bounds_to_output_origin"] is True
     required = plan["required_native_readback"]["visual_mesh"]
-    assert required["aabb_center_m"] == [0.0, 0.0, 0.0]
     assert required["authored_pivot_m"] == [0.0, 0.0, 0.0]
     assert required["placement_origin_semantics"] == (
         "body_pose_translation_is_replacement_aabb_center"
@@ -994,6 +1009,32 @@ def test_worker_output_inventory_enforces_resource_count_bound(
     with pytest.raises(
         NativeDeformableAssetPreparationError,
         match="native_deformable_return_output_resource_limit_exceeded",
+    ):
+        verify_native_deformable_asset_preparation_return(
+            plan=plan,
+            expected_plan_digest=plan["plan_digest"],
+            worker_return=worker_return,
+            output_root=output_root,
+        )
+
+
+def test_worker_return_requires_cooked_surface_join_and_pending_alignment(
+    tmp_path: Path,
+) -> None:
+    plan, _, _ = _plan(tmp_path)
+    worker_return, output_root, _ = _execute(tmp_path, plan)
+    worker_return["readback"]["visual_mesh"]["cooked_visual_matches_simulation_surface"] = False
+    worker_return["worker_result_digest"] = canonical_digest(
+        worker_return, digest_field="worker_result_digest"
+    )
+    (output_root / "worker_return.json").write_text(
+        json.dumps(worker_return, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        NativeDeformableAssetPreparationError,
+        match="native_deformable_return_visual_cooked_surface_contract_invalid",
     ):
         verify_native_deformable_asset_preparation_return(
             plan=plan,

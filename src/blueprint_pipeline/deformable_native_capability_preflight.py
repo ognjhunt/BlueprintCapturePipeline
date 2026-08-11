@@ -62,9 +62,10 @@ ARENA_REQUIRED_RELATIVE_PATHS = (
 REQUIRED_SYMBOLS_BY_CHECK = {
     "openusd_physx_volumetric_deformable_schemas": (
         "pxr.PhysxSchema:PhysxCollisionAPI",
-        "pxr.PhysxSchema:PhysxDeformableAPI",
-        "pxr.PhysxSchema:PhysxDeformableBodyAPI",
-        "pxr.PhysxSchema:PhysxDeformableBodyMaterialAPI",
+        "pxr.PhysxSchema:PhysxBaseDeformableBodyAPI",
+        "pxr.OmniPhysicsSchema:OmniPhysicsDeformableBodyAPI",
+        "pxr.OmniPhysicsSchema:OmniPhysicsDeformableMaterialAPI",
+        "pxr.PhysxSchema:PhysxDeformableMaterialAPI",
     ),
     "volumetric_deformable_authoring_apis": (
         "omni.physx.scripts.deformableUtils:add_physx_deformable_body",

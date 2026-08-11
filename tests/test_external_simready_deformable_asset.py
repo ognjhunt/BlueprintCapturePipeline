@@ -78,6 +78,7 @@ def _mesh_usda(*, empty_surface: bool) -> str:
 def _fixture_usda(
     *,
     standard_schemas: bool = False,
+    include_runtime_body_schema: bool = True,
     nonempty_tetmesh: bool = False,
     include_default_dome_light: bool = True,
     static_rigid_contract: bool = True,
@@ -90,15 +91,15 @@ def _fixture_usda(
     meters_per_unit: float = 1.0,
 ) -> str:
     body_schemas = [
-        "OmniPhysicsDeformableBodyAPI",
         "PhysxBaseDeformableBodyAPI",
         "PhysxAutoDeformableBodyAPI",
         "MaterialBindingAPI",
     ]
+    if include_runtime_body_schema:
+        body_schemas.insert(0, "OmniPhysicsDeformableBodyAPI")
     material_schemas = ["OmniPhysicsDeformableMaterialAPI"]
     if standard_schemas:
-        body_schemas.append("PhysxDeformableBodyAPI")
-        material_schemas.append("PhysxDeformableBodyMaterialAPI")
+        material_schemas.append("PhysxDeformableMaterialAPI")
     body_schema_text = ", ".join(f'"{schema}"' for schema in body_schemas)
     material_schema_text = ", ".join(f'"{schema}"' for schema in material_schemas)
     rigid_marker = (
@@ -155,7 +156,7 @@ def _fixture_usda(
     )
     {
         def Material "UnrelatedPhysicsMaterial" (
-            apiSchemas = ["PhysxDeformableBodyMaterialAPI"]
+            apiSchemas = ["PhysxDeformableMaterialAPI"]
         )
         {
         }
@@ -497,7 +498,6 @@ def test_external_candidate_retains_source_and_requires_clean_physx_conversion(
     assert stage["compatibility"]["static_rigid_contract_authored"] is True
     assert stage["dome_lights_inside_default_prim"][0]["prim_path"] == "/root/DomeLight"
     assert {
-        "external_simready_deformable_pinned_physx_body_schema_missing",
         "external_simready_deformable_pinned_physx_material_schema_missing",
         "external_simready_deformable_cooked_tetmesh_topology_missing",
         "external_simready_deformable_default_prim_dome_light_requires_exclusion",
@@ -510,7 +510,7 @@ def test_external_candidate_retains_source_and_requires_clean_physx_conversion(
     conversion = receipt["pinned_physx_conversion"]
     assert conversion["derived_runtime_usd_must_be_separate"] is True
     assert conversion["source_usd_must_remain_immutable"] is True
-    assert conversion["loader_literal_schema_predicate_line"] == 544
+    assert conversion["loader_literal_schema_predicate_line"] == 585
     assert conversion["authoring_api"].endswith(":define_deformable_body_properties")
     assert conversion["cooking_api"].endswith(":add_physx_deformable_body")
 
@@ -564,6 +564,7 @@ def test_schema_named_attribute_cannot_impersonate_applied_api(tmp_path: Path) -
     paths = _write_fixture(
         tmp_path,
         schema_decoy_attribute=True,
+        include_runtime_body_schema=False,
         include_default_dome_light=False,
         static_rigid_contract=False,
     )
@@ -755,6 +756,7 @@ def test_unrelated_schema_material_and_tet_decoys_cannot_clear_body_scoped_block
         static_rigid_contract=False,
         unrelated_standard_decoy=True,
         body_scoped_tet_decoy=True,
+        include_runtime_body_schema=False,
     )
     receipt = _inspect(paths)
     compatibility = receipt["openusd_inspection"]["compatibility"]

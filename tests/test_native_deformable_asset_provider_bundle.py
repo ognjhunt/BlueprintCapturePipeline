@@ -14,6 +14,8 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import native_deformable_asset_vast as deformable_vast
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.native_deformable_asset_preparation import (
+    PACKAGE_RECEIPT_FILENAME,
+    PLAN_FILENAME,
     build_native_deformable_asset_source_package,
     materialize_native_deformable_asset_preparation_plan,
 )
@@ -54,7 +56,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, dict]:
         plan=plan,
         expected_plan_digest=plan["plan_digest"],
     )
-    receipt_path = package / "native_deformable_asset_source_package.v1.json"
+    receipt_path = package / PACKAGE_RECEIPT_FILENAME
     packet = tmp_path / "runtime_sources.zip"
     packet.write_bytes(b"runtime-source-packet")
     runtime_receipt_path = tmp_path / "native_task_runtime_source_packet.v1.json"
@@ -402,7 +404,7 @@ def test_canonical_allocator_routes_owner_authorized_deformable_bundle(
 ) -> None:
     source, runtime_path, runtime = _fixture(tmp_path)
     plan = json.loads(
-        (source.parent / "native_deformable_asset_preparation_plan.v1.json").read_text()
+        (source.parent / PLAN_FILENAME).read_text()
     )
     rights = {
         "schema_version": "task_evaluation_prelaunch_abstention_supersession.v1",

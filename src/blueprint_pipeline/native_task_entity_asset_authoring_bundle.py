@@ -66,12 +66,13 @@ DEFORMABLE_RUNTIME_CLASS = (
 )
 DEFORMABLE_AUTHORING_API = "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
 DEFORMABLE_COOKING_API = "omni.physx.scripts.deformableUtils:add_physx_deformable_body"
-DEFORMABLE_EXPECTED_PRIM_TYPE = "pxr.PhysxSchema.PhysxDeformableBodyAPI"
+DEFORMABLE_EXPECTED_PRIM_TYPE = "pxr.OmniPhysicsSchema.OmniPhysicsDeformableBodyAPI"
 DEFORMABLE_REQUIRED_SCHEMAS = (
     "pxr.PhysxSchema.PhysxCollisionAPI",
-    "pxr.PhysxSchema.PhysxDeformableAPI",
-    "pxr.PhysxSchema.PhysxDeformableBodyAPI",
-    "pxr.PhysxSchema.PhysxDeformableBodyMaterialAPI",
+    "pxr.PhysxSchema.PhysxBaseDeformableBodyAPI",
+    "pxr.OmniPhysicsSchema.OmniPhysicsDeformableBodyAPI",
+    "pxr.OmniPhysicsSchema.OmniPhysicsDeformableMaterialAPI",
+    "pxr.PhysxSchema.PhysxDeformableMaterialAPI",
 )
 RIGID_RUNTIME_CLASS = "isaaclab.assets.rigid_object.rigid_object:RigidObject"
 RIGID_AUTHORING_API = "isaaclab.sim.spawners.from_files.from_files:spawn_from_usd"

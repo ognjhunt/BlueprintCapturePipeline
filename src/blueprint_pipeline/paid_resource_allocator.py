@@ -150,6 +150,7 @@ from .native_deformable_asset_provider_bundle import (
     build_native_deformable_asset_provider_bundle,
     load_verified_native_deformable_asset_provider_bundle,
 )
+from . import native_deformable_asset_preparation
 from .native_deformable_asset_vast import run_native_deformable_asset_vast
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
@@ -2151,7 +2152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     package_root = Path(str(source_receipt.get("package_root") or "")).resolve()
                     plan = json.loads(
                         (
-                            package_root / "native_deformable_asset_preparation_plan.v1.json"
+                            package_root / native_deformable_asset_preparation.PLAN_FILENAME
                         ).read_text(encoding="utf-8")
                     )
                     if (
