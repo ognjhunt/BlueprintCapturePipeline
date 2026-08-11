@@ -21,6 +21,7 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     bounded_grasp_frame_target_for_task_orientation,
     controlled_body_pose_for_grasp_frame_target,
     describe_adapter,
+    grasp_frame_target_for_task_space_strategy,
     rgb_from_camera_output,
     rotation_row_major_from_quaternion_xyzw,
     semantic_finger_tool_midpoint_world_m,
@@ -154,6 +155,52 @@ def test_bounded_task_space_target_rejects_unbounded_step_contract() -> None:
         )
 
 
+def test_direct_pregrasp_strategy_preserves_the_proven_coupled_pose_target() -> None:
+    orientation_error_deg = 151.8895149465545
+    half_angle = math.radians(orientation_error_deg) / 2.0
+    current = [3.5542179326306393, -3.0661433904184823, 0.8331015124076399]
+    target = [3.4681748, -3.3100837, 0.9464650138348478]
+
+    result = grasp_frame_target_for_task_space_strategy(
+        current_position_world_m=current,
+        current_quaternion_world_xyzw=[
+            math.cos(half_angle),
+            math.sin(half_angle),
+            0.0,
+            0.0,
+        ],
+        target_position_world_m=target,
+        target_quaternion_world_xyzw=[1.0, 0.0, 0.0, 0.0],
+        max_translation_step_m=0.01,
+        orientation_tolerance_deg=2.0,
+        task_space_translation_strategy="direct_global_pose_target",
+    )
+
+    assert result["orientation_error_deg"] == pytest.approx(
+        orientation_error_deg
+    )
+    assert result["position_world_m"] == target
+    assert result["translation_step_m"] == pytest.approx(math.dist(current, target))
+    assert result["translation_held_for_orientation"] is False
+    assert result["task_space_translation_strategy"] == "direct_global_pose_target"
+
+
+def test_task_space_strategy_rejects_an_unregistered_runtime_override() -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_task_space_translation_strategy_invalid",
+    ):
+        grasp_frame_target_for_task_space_strategy(
+            current_position_world_m=[0.0, 0.0, 0.0],
+            current_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+            target_position_world_m=[0.0, 0.0, 1.0],
+            target_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+            max_translation_step_m=0.01,
+            orientation_tolerance_deg=2.0,
+            task_space_translation_strategy="runtime_guess",
+        )
+
+
 def test_grasp_frame_target_rotates_the_measured_full_offset_into_task_orientation() -> None:
     target_body, target_quaternion = controlled_body_pose_for_grasp_frame_target(
         current_body_position_world_m=[1.0, 2.0, 3.0],
@@ -213,8 +260,9 @@ def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -
     assert "target_quaternion_world_xyzw" in callback
     assert "semantic_finger_tool_midpoint_world_m(" in callback
     assert '"raw_finger_body_midpoint_world_m"' in callback
-    assert "bounded_grasp_frame_target_for_task_orientation(" in callback
-    assert 'runtime / "adp009d_control_plan.v7.json"' in callback
+    assert "grasp_frame_target_for_task_space_strategy(" in callback
+    assert "task_space_translation_strategy" in callback
+    assert 'runtime / "adp009d_control_plan.v8.json"' in callback
 
 
 class _Tensor(list):
@@ -543,11 +591,17 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
         max_joint_delta_rad=0.03,
         max_task_space_translation_step_m=0.01,
         orientation_tolerance_deg=2.0,
+        task_space_translation_strategy=(
+            "orientation_first_bounded_local_increment"
+        ),
     )
     assert scripted_action == [0.2] * 7 + [0.0]
     assert calls[0]["max_joint_delta_rad"] == 0.03
     assert calls[0]["max_task_space_translation_step_m"] == 0.01
     assert calls[0]["orientation_tolerance_deg"] == 2.0
+    assert calls[0]["task_space_translation_strategy"] == (
+        "orientation_first_bounded_local_increment"
+    )
     metadata = adapter.read_control_observation_metadata()
     assert metadata["simulation_time_s"] == 0.0
     assert metadata["timestamp_ns"] == 0
@@ -685,6 +739,10 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["scripted_control_jacobian_frame_transform"] == (
         "rotate_linear_and_angular_rows_world_to_robot_root"
     )
+    assert bindings["scripted_control_task_space_translation_strategies"] == [
+        "direct_global_pose_target",
+        "orientation_first_bounded_local_increment",
+    ]
 
     drifted = dict(bindings)
     drifted["camera_view_binding"] = {"external_camera": DROID_WRIST_VIEW}
@@ -732,6 +790,14 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted = dict(bindings)
     drifted["scripted_control_jacobian_frame_transform"] = "none"
     assert "isaac_episode_adapter_jacobian_frame_transform_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["scripted_control_task_space_translation_strategies"] = [
+        "runtime_guess"
+    ]
+    assert "isaac_episode_adapter_task_space_strategy_drifted" in (
         validate_adapter_bindings(drifted)
     )
 

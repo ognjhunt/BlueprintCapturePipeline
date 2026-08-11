@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v7"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v8"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -71,6 +71,10 @@ MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
 PHASE_ORIENTATION_TOLERANCE_DEG = 2.0
 MAX_TASK_SPACE_TRANSLATION_STEP_M = 0.01
+DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
+ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
+    "orientation_first_bounded_local_increment"
+)
 # The DROID Robotiq 2F-85 is the frozen ADP-009D embodiment.  A generic pose
 # tolerance is not enough before descending around an object: the tool can be
 # "at" pregrasp while one open finger is already over the object.  Preserve a
@@ -131,6 +135,7 @@ class ControlEnvironment(Protocol):
         max_joint_delta_rad: float,
         max_task_space_translation_step_m: float,
         orientation_tolerance_deg: float,
+        task_space_translation_strategy: str,
     ) -> Sequence[float]: ...
 
 
@@ -311,7 +316,9 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
                 MAX_TASK_SPACE_TRANSLATION_STEP_M
             )
             phase["task_space_translation_strategy"] = (
-                "orientation_first_bounded_local_increment"
+                DIRECT_GLOBAL_POSE_TARGET
+                if phase["phase_id"] == "pregrasp"
+                else ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT
             )
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
 
@@ -620,6 +627,9 @@ def run_control_episode(
                     orientation_tolerance_deg=float(
                         phase["orientation_tolerance_deg"]
                     ),
+                    task_space_translation_strategy=str(
+                        phase["task_space_translation_strategy"]
+                    ),
                 )
             environment.step(action)
             step_index += 1
@@ -840,7 +850,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v7.json", plan)
+    _write_json(output / "adp009d_control_plan.v8.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(

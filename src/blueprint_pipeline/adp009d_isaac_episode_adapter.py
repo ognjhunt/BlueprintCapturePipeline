@@ -40,7 +40,12 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v8"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v9"
+
+DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
+ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
+    "orientation_first_bounded_local_increment"
+)
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -308,6 +313,57 @@ def bounded_grasp_frame_target_for_task_orientation(
     }
 
 
+def grasp_frame_target_for_task_space_strategy(
+    *,
+    current_position_world_m: Sequence[float],
+    current_quaternion_world_xyzw: Sequence[float],
+    target_position_world_m: Sequence[float],
+    target_quaternion_world_xyzw: Sequence[float],
+    max_translation_step_m: float,
+    orientation_tolerance_deg: float,
+    task_space_translation_strategy: str,
+) -> dict[str, Any]:
+    """Resolve an immutable-plan strategy into one native IK grasp target.
+
+    Pregrasp starts from the wrist-camera evidence pose, which is roughly 152
+    degrees from the top-down task orientation.  The already-proven v6
+    controller converged by solving that obstacle-clear pose and translation
+    together.  Holding translation against the *current* grasp point while
+    rotating made the reference move with IK error and accumulated a 151 mm
+    lateral miss.  Later phases remain locally bounded because they start in
+    task orientation and operate around the sealed object.
+    """
+
+    strategy = str(task_space_translation_strategy).strip()
+    if strategy not in {
+        DIRECT_GLOBAL_POSE_TARGET,
+        ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT,
+    }:
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_task_space_translation_strategy_invalid"]
+        )
+    resolved = bounded_grasp_frame_target_for_task_orientation(
+        current_position_world_m=current_position_world_m,
+        current_quaternion_world_xyzw=current_quaternion_world_xyzw,
+        target_position_world_m=target_position_world_m,
+        target_quaternion_world_xyzw=target_quaternion_world_xyzw,
+        max_translation_step_m=max_translation_step_m,
+        orientation_tolerance_deg=orientation_tolerance_deg,
+    )
+    if strategy == DIRECT_GLOBAL_POSE_TARGET:
+        resolved.update(
+            {
+                "position_world_m": [
+                    float(value) for value in target_position_world_m
+                ],
+                "translation_step_m": resolved["translation_requested_m"],
+                "translation_held_for_orientation": False,
+            }
+        )
+    resolved["task_space_translation_strategy"] = strategy
+    return resolved
+
+
 def _as_array(value: Any) -> Any:
     """Whatever the simulator handed back, as a numpy array.
 
@@ -518,6 +574,7 @@ class IsaacEpisodeAdapter:
         max_joint_delta_rad: float,
         max_task_space_translation_step_m: float,
         orientation_tolerance_deg: float,
+        task_space_translation_strategy: str,
     ) -> list[float]:
         """Resolve one deterministic pose-servo step through the injected native IK."""
 
@@ -538,6 +595,7 @@ class IsaacEpisodeAdapter:
                 max_task_space_translation_step_m
             ),
             orientation_tolerance_deg=float(orientation_tolerance_deg),
+            task_space_translation_strategy=str(task_space_translation_strategy),
         )
         action = [float(value) for value in values]
         if len(action) != self._action_dim or not all(
@@ -765,6 +823,10 @@ def describe_adapter() -> dict[str, Any]:
         "scripted_control_jacobian_frame_transform": (
             "rotate_linear_and_angular_rows_world_to_robot_root"
         ),
+        "scripted_control_task_space_translation_strategies": [
+            DIRECT_GLOBAL_POSE_TARGET,
+            ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT,
+        ],
         "gripper_physical_full_opening_m": GRIPPER_PHYSICAL_FULL_OPENING_M,
         "raw_gripper_body_separation_retained": True,
         "gripper_width_calibration_clamp_retained": True,
@@ -812,6 +874,13 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         "rotate_linear_and_angular_rows_world_to_robot_root"
     ):
         errors.append("isaac_episode_adapter_jacobian_frame_transform_drifted")
+    if list(
+        bindings.get("scripted_control_task_space_translation_strategies") or []
+    ) != [
+        DIRECT_GLOBAL_POSE_TARGET,
+        ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT,
+    ]:
+        errors.append("isaac_episode_adapter_task_space_strategy_drifted")
     if (
         bindings.get("gripper_physical_full_opening_m")
         != GRIPPER_PHYSICAL_FULL_OPENING_M
