@@ -36,7 +36,8 @@ learned policies were therefore not admitted. This is not a policy result.
   `4b21a7de0` (manifest-derived CAD visual comparison index),
   `07f80fce7` (1..5-object scalable Content Agents readiness matrix), and
   `12c46e6c3` (no-paid Docker/network-disabled Content Agents dry-run
-  preflights),
+  preflights), and `7bac16eee` (retaining both Dockerless static and no-paid
+  Docker preflight receipts per Content Agents candidate),
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
