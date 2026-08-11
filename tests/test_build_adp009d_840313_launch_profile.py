@@ -97,7 +97,11 @@ def test_builder_fails_closed_on_non_main_or_dirty_checkout(
     commit = "b" * 40
 
     def clean_git(_repo: Path, *args: str) -> str:
-        return "" if args == ("status", "--porcelain") else commit
+        if args == ("status", "--porcelain"):
+            return ""
+        if args == ("merge-base", "--is-ancestor", commit, "origin/main"):
+            return ""
+        return commit
 
     monkeypatch.setattr(builder, "_git", clean_git)
     builder.verify_protected_main_checkout(tmp_path, commit)
@@ -112,6 +116,43 @@ def test_builder_fails_closed_on_non_main_or_dirty_checkout(
         match="checkout_not_exact_clean_main",
     ):
         builder.verify_protected_main_checkout(tmp_path, commit)
+
+
+def test_builder_rejects_an_invalid_release_identity_before_running_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def git_must_not_run(_repo: Path, *args: str) -> str:
+        raise AssertionError(args)
+
+    monkeypatch.setattr(builder, "_git", git_must_not_run)
+
+    with pytest.raises(
+        builder.ProductionProfileBuildError,
+        match="checkout_not_exact_clean_main",
+    ):
+        builder.verify_protected_main_checkout(tmp_path, "not-a-sha")
+
+
+def test_builder_accepts_a_clean_release_commit_after_main_advances(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release_commit = "c" * 40
+    newer_main_commit = "d" * 40
+
+    def release_git(_repo: Path, *args: str) -> str:
+        if args == ("status", "--porcelain"):
+            return ""
+        if args == ("merge-base", "--is-ancestor", release_commit, "origin/main"):
+            return ""
+        if args == ("rev-parse", "HEAD"):
+            return release_commit
+        if args == ("rev-parse", "origin/main"):
+            return newer_main_commit
+        raise AssertionError(args)
+
+    monkeypatch.setattr(builder, "_git", release_git)
+
+    builder.verify_protected_main_checkout(tmp_path, release_commit)
 
 
 def test_materialized_source_verifier_rejects_size_or_digest_drift(tmp_path: Path) -> None:
