@@ -184,6 +184,45 @@ def test_package_index_admits_external_cad_visual_comparison_receipt(
     )
 
 
+def test_package_index_admits_receipt_only_mirror_manifest(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    package = workspace / "evidence"
+    package.mkdir(parents=True)
+    _task_index(package, "task_a")
+    mirror = {
+        "schema_version": "adp_portable_evidence_receipt_mirror.v1",
+        "status": "receipt_only_mirror_materialized",
+        "receipt_mirror_digest": "",
+    }
+    mirror["receipt_mirror_digest"] = canonical_digest(
+        mirror, digest_field="receipt_mirror_digest"
+    )
+    _write_json(workspace / "shared/mirror.json", mirror)
+
+    result = materialize_dual_task_evidence_package_index(
+        workspace_root=workspace,
+        package_root=package,
+        title="Fixture package",
+        status_summary="typed abstention",
+        blocker_summary="held-out ownership failed",
+        cad_summary="CAD review media bound",
+        task_indexes=[
+            {
+                "label": "Task A",
+                "task_id": "task_a",
+                "relative_path": "task_a/episode_evidence_index.v1.json",
+            }
+        ],
+        shared_manifests=[
+            {"label": "Receipt-only mirror", "relative_path": "shared/mirror.json"}
+        ],
+    )
+
+    assert result["shared_manifests"][0]["receipt_digest"] == mirror[
+        "receipt_mirror_digest"
+    ]
+
+
 def test_checked_in_package_index_exposes_cad_visual_comparison_binding() -> None:
     html = (PACKAGE / "index.html").read_text(encoding="utf-8")
     receipt = json.loads((PACKAGE / PACKAGE_INDEX_FILENAME).read_text(encoding="utf-8"))
@@ -199,5 +238,16 @@ def test_checked_in_package_index_exposes_cad_visual_comparison_binding() -> Non
         row["schema_version"] == "third_scene_cad_agent_visual_comparison_binding.v1"
         and row["receipt_digest"]
         == "sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d"
+        for row in receipt["shared_manifests"]
+    )
+    assert "held-out ownership-separation gates" in html
+    assert [task["label"] for task in receipt["tasks"]] == [
+        "Task A — whole washer, door-open interaction",
+        "Task B — whole notebook, rigid relocation",
+    ]
+    assert any(
+        row["schema_version"] == "adp_portable_evidence_receipt_mirror.v1"
+        and row["receipt_digest"]
+        == "sha256:8f48e46b21a4c7b69f6ee3fdbc18c420206a76040fc085e541745ba75ecf6981"
         for row in receipt["shared_manifests"]
     )

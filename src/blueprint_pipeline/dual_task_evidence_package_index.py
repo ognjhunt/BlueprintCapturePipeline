@@ -33,6 +33,7 @@ SHARED_DIGEST_FIELDS_BY_SCHEMA = {
     "simready_cad_agent_reference_manifest.v1": "manifest_digest",
     "cad_agent_reference_binding_audit.v1": "audit_digest",
     "third_scene_cad_visual_comparison.v1": "receipt_digest",
+    "adp_portable_evidence_receipt_mirror.v1": "receipt_mirror_digest",
     "third_scene_cad_agent_visual_comparison_binding.v1": "binding_digest",
     "third_scene_agent_cad_content_agents_bundle_matrix.v1": "receipt_digest",
     "adp_content_agents_execution_readiness.v1": "receipt_digest",

@@ -1,0 +1,92 @@
+{
+  "claim_ceiling": "digest_bound_receipt_mirror_only; no source-removal, simulator, physical, or publication-rights claim",
+  "raw_dataset_bytes_copied": false,
+  "receipt_count": 10,
+  "receipt_mirror_digest": "sha256:8f48e46b21a4c7b69f6ee3fdbc18c420206a76040fc085e541745ba75ecf6981",
+  "receipts": [
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:1b007b1922c4324232b319bc0eb74cd4dcccc2f96fe02bfb9b528256fcc464ee",
+      "relative_path": "task_a/removal/flashsplat_run_v7_ded4ff5b0/gaussian_excision_attempt.v3.json",
+      "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+      "sha256": "sha256:eb5828c3dc395ad4b57f095cc207eeb8adc4102c6437cc868c6ae6d2891752f6",
+      "size_bytes": 2914
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:24a86be734239d8bf837330df5a28948c767fa6abe5cf76acd6cef91de734322",
+      "relative_path": "task_a/removal/heldout_audit_v1/adp009b_gaussian_excision_heldout_audit.v1.json",
+      "schema_version": "adp009b_gaussian_excision_heldout_audit.v1",
+      "sha256": "sha256:0e2eb752a864562efc86a5c529934880577db9381f851eab37202c668477ae9a",
+      "size_bytes": 22174
+    },
+    {
+      "digest_field": "replay_digest",
+      "receipt_digest": "sha256:90dba4f671635d3ea0cf8492710c98909ead4f655f549291db89ae008b820d91",
+      "relative_path": "task_a/removal/ownership_replay_gate_v1/adp009b_gaussian_excision_ownership_replay.v1.json",
+      "schema_version": "adp009b_gaussian_excision_ownership_replay.v1",
+      "sha256": "sha256:92484ed103cfe402af3202459e29484e993ba2a33d8c9c5163d4962de5b9b814",
+      "size_bytes": 1116
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:28024f62efd8204f57e34b4b50a00bf880ebb2e895fc4aceef62190fcc765c2b",
+      "relative_path": "task_a/removal/ownership_v1/adp009b_gaussian_excision_ownership_receipt.v1.json",
+      "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
+      "sha256": "sha256:0e47a64e0cb3a2c814713d2820cbe14444e7f2d03ac8f60132945b9f45dc4917",
+      "size_bytes": 5917
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:449407e1a77cf286ea39613baa81bcf08c40a68cf96ab7dca59e3f9969ea2e97",
+      "relative_path": "task_a/typed_abstention.v1.json",
+      "schema_version": "adp_task_evaluation_run_abstention.v1",
+      "sha256": "sha256:65bdfebe093a354d7090ed64f33472547d6261f1e0c0955a6eb04181a3074f14",
+      "size_bytes": 2130
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:eb94a05a1ae6dd4e0bf079adc75fb8a7103b43970306eae881747710f97e1540",
+      "relative_path": "task_b/removal/flashsplat_run_v9_0e6e3c32f/gaussian_excision_attempt.v3.json",
+      "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+      "sha256": "sha256:61d5365eaf73caef48b1432d4c8b945b6f26d13b2630d2d35552376389d69932",
+      "size_bytes": 2913
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:398c286cdcf0f1a928b73fb8858cf516347efa0e0d4e62cfa4acd742d249fb28",
+      "relative_path": "task_b/removal/heldout_audit_v1/adp009b_gaussian_excision_heldout_audit.v1.json",
+      "schema_version": "adp009b_gaussian_excision_heldout_audit.v1",
+      "sha256": "sha256:bc7bab76beae9b5b2cc5c7c8046431d81c45ab1987b0d208994215f5caa84f77",
+      "size_bytes": 22269
+    },
+    {
+      "digest_field": "replay_digest",
+      "receipt_digest": "sha256:844693e0532e404503692ef513fcf1dfe91680c757cd7f36279b887ed4cf5c94",
+      "relative_path": "task_b/removal/ownership_replay_gate_v1/adp009b_gaussian_excision_ownership_replay.v1.json",
+      "schema_version": "adp009b_gaussian_excision_ownership_replay.v1",
+      "sha256": "sha256:d90d0a7b54f73b54b44e554533c31c55c630a9a27ef32f670def029f2999a853",
+      "size_bytes": 1116
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:d44d4386601604d50cca7a09e5079a0302a4058d8fd15a9b13246f5abdd00826",
+      "relative_path": "task_b/removal/ownership_v1/adp009b_gaussian_excision_ownership_receipt.v1.json",
+      "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
+      "sha256": "sha256:97b8c5ccbc2c0723c30c0fb715d680df2a67822fb3d0fe55c265bc34baf08975",
+      "size_bytes": 5931
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:f7ff007fab4f0bee6c10709606644ba8fb2723e656e0ec6d2b581bffd0b28317",
+      "relative_path": "task_b/typed_abstention.v1.json",
+      "schema_version": "adp_task_evaluation_run_abstention.v1",
+      "sha256": "sha256:7c2311bdca18efbec2eb05c9e63b26c8f0e674b67a4502605c2c79e5cbb7c191",
+      "size_bytes": 2133
+    }
+  ],
+  "scene_media_copied": false,
+  "schema_version": "adp_portable_evidence_receipt_mirror.v1",
+  "source_root_id": "third_scene_dual_task_e2e_rights_bounded_evidence_root",
+  "status": "receipt_only_mirror_materialized"
+}

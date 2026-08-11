@@ -1,0 +1,61 @@
+{
+  "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+  "status": "sealed_completed_attempt",
+  "blueprint_commit": "0e6e3c32fb4c1926322754711fbc0908fe94896a",
+  "bundle_sha256": "sha256:d95ef60aa271cf68a85bfe9a654328bb4c32b6713aa69d4cd0bff6105c3349c0",
+  "freeze_digest": "sha256:64cba590f4a6f99af6acd2e87a975ceaab3086bd869d15a37326c12a4f0c9e62",
+  "execution_status": "completed",
+  "execution_blockers": [],
+  "released_code_executed": true,
+  "heldout_cameras_accessed_for_classification": false,
+  "instance_id": 47475316,
+  "estimated_cost_usd": 0.01572,
+  "retry_cap": 0,
+  "continuing_spend": false,
+  "provider_absence_confirmed": true,
+  "records": {
+    "bundle_receipt": {
+      "relative_path": "task_b/removal/flashsplat_bundle_v8_0e6e3c32f/adp_gaussian_excision_bundle_receipt.json",
+      "size_bytes": 8279,
+      "sha256": "sha256:9548ec56840ec64c7b6b9adbbe9252e7f256398c79b837332dccb34e1eafcfb9"
+    },
+    "run_result": {
+      "relative_path": "task_b/removal/flashsplat_run_v9_0e6e3c32f/adapter_execute_v9.json",
+      "size_bytes": 2159,
+      "sha256": "sha256:dd99fc538bba7a9b6b7b2e17f2a34cae2a0b7035257bf2ce5416ab9580813878"
+    },
+    "execution_result": {
+      "relative_path": "task_b/removal/flashsplat_run_v9_0e6e3c32f/immutable_execution/adp009b_gaussian_excision_result.json",
+      "size_bytes": 1345,
+      "sha256": "sha256:d4249571aaeea6326b37a42d01fe10455d22860ee2cd47bbbf102178b8b103e3"
+    },
+    "teardown_manifest": {
+      "relative_path": "task_b/removal/flashsplat_run_v9_0e6e3c32f/vast_provider_run/vast_teardown_manifest.json",
+      "size_bytes": 1358,
+      "sha256": "sha256:12482c2f085f6d6344e8e755656473deddfeb7abab82ed5717afbd9a27c0b646"
+    },
+    "watchdog_evidence": {
+      "relative_path": "task_b/removal/flashsplat_run_v9_0e6e3c32f/vast_independent_watchdog_handoff.json",
+      "size_bytes": 380,
+      "sha256": "sha256:6229c43deb3257686438ed13ffc8ef02ad5f08db2b3f5f91ae75f79a2f2a8edc"
+    }
+  },
+  "proof_boundaries": {
+    "gaussian_contribution_evidence_completed": true,
+    "gaussian_ownership_qualified": false,
+    "source_removal_qualified": false,
+    "inpainting_decision_qualified": false,
+    "policy_outcome_available": false
+  },
+  "raw_secret_values_recorded": false,
+  "paid_attempt_ordinal": 3,
+  "attempt_authority_digest": "sha256:bb309f2cc65a0438465571bc2f0ddef04f73786340dff3efb089edcca23fa29e",
+  "previous_attempt_receipt_digest": "sha256:2edd8aa8d00af8c013ea0ef628c4928f645c8868c5625f4f404c8da1ce12162d",
+  "authorization_consumption": {
+    "status": "consumed",
+    "authorization_digest": "sha256:bb309f2cc65a0438465571bc2f0ddef04f73786340dff3efb089edcca23fa29e",
+    "consumption_record_sha256": "sha256:ee50894c977e18cbbfb9657080de392a6fab95aa2c190d1ce28f03ca2fcaebfb",
+    "record_location_disclosed": false
+  },
+  "receipt_digest": "sha256:eb94a05a1ae6dd4e0bf079adc75fb8a7103b43970306eae881747710f97e1540"
+}

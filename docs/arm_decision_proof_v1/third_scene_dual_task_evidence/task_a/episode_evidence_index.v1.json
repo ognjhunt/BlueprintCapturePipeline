@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:1bfd2e6af2e90f6a12e859b0cda8b6a2ce106c35ee32aef2580fe93c4e9012b3",
+  "index_digest": "sha256:e4282f63362118679f7b72069e8fec9af45314df075eb12730074e5110e28723",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -19,54 +19,72 @@
   "supporting_evidence": [
     {
       "portable_link_available": true,
-      "receipt_digest": "sha256:344a01a4868fefb9dc7c0b796a02c1ddcbdc2b745e1f3bd9e50c4389bd8dc98c",
-      "relative_path": "supporting_evidence_inventory.v2.json",
-      "schema_version": "adp_supporting_evidence_inventory.v1",
-      "sha256": "sha256:a78365cffd252991e01cba28911d93c2294bf3b0d407d1a95fc5f41c60154435",
-      "size_bytes": 34713
+      "receipt_digest": "sha256:1b007b1922c4324232b319bc0eb74cd4dcccc2f96fe02bfb9b528256fcc464ee",
+      "relative_path": "removal/flashsplat_run_v7_ded4ff5b0/gaussian_excision_attempt.v3.json",
+      "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+      "sha256": "sha256:eb5828c3dc395ad4b57f095cc207eeb8adc4102c6437cc868c6ae6d2891752f6",
+      "size_bytes": 2914
+    },
+    {
+      "portable_link_available": true,
+      "receipt_digest": "sha256:24a86be734239d8bf837330df5a28948c767fa6abe5cf76acd6cef91de734322",
+      "relative_path": "removal/heldout_audit_v1/adp009b_gaussian_excision_heldout_audit.v1.json",
+      "schema_version": "adp009b_gaussian_excision_heldout_audit.v1",
+      "sha256": "sha256:0e2eb752a864562efc86a5c529934880577db9381f851eab37202c668477ae9a",
+      "size_bytes": 22174
+    },
+    {
+      "portable_link_available": true,
+      "receipt_digest": "sha256:90dba4f671635d3ea0cf8492710c98909ead4f655f549291db89ae008b820d91",
+      "relative_path": "removal/ownership_replay_gate_v1/adp009b_gaussian_excision_ownership_replay.v1.json",
+      "schema_version": "adp009b_gaussian_excision_ownership_replay.v1",
+      "sha256": "sha256:92484ed103cfe402af3202459e29484e993ba2a33d8c9c5163d4962de5b9b814",
+      "size_bytes": 1116
+    },
+    {
+      "portable_link_available": true,
+      "receipt_digest": "sha256:28024f62efd8204f57e34b4b50a00bf880ebb2e895fc4aceef62190fcc765c2b",
+      "relative_path": "removal/ownership_v1/adp009b_gaussian_excision_ownership_receipt.v1.json",
+      "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
+      "sha256": "sha256:0e47a64e0cb3a2c814713d2820cbe14444e7f2d03ac8f60132945b9f45dc4917",
+      "size_bytes": 5917
     }
   ],
   "typed_abstention": {
     "all_terminal_blockers": [
-      "fresh_paid_authority_for_qualified_gaussian_contribution_missing"
+      "calibrated_gaussian_ownership_separation_without_protected_scene_deletion"
     ],
     "automatic_paid_retry_executed": false,
     "candidate_ids": [
       "pi05_droid",
       "groot_n17_droid"
     ],
-    "claim_ceiling": "public_dataset_simulator_construction_rehearsal_only; no physical, deployment, customer_value, Gaussian_ownership, or learned_policy claim",
+    "claim_ceiling": "public_dataset_simulator_construction_rehearsal_only; no source removal, inpainting, native simulator, physical, deployment, customer_value, or learned_policy claim",
     "comparison_exists": false,
     "controls_executed": false,
     "episode_media_exists": false,
-    "gaussian_contribution_evidence_completed": false,
-    "gaussian_excision_attempt_receipt_digest": "sha256:5fb14dff7ecb7a44eebf8a69e94717e7ad27493c0430fcd54767841aae26afe2",
+    "gaussian_contribution_evidence_completed": true,
+    "gaussian_excision_attempt_receipt_digest": "sha256:1b007b1922c4324232b319bc0eb74cd4dcccc2f96fe02bfb9b528256fcc464ee",
     "gaussian_excision_freeze_digest": "sha256:5aa65c7b2df5e2ed4d2784729e1893c27ecf5dc18f8986a68ee5719bfe70b48f",
-    "gaussian_ownership_qualified": false,
-    "historical_attempt_blockers": [
-      "gaussian_excision_runtime_failed:ValueError"
-    ],
+    "gaussian_ownership_materialized": true,
+    "gaussian_ownership_receipt_digest": "sha256:28024f62efd8204f57e34b4b50a00bf880ebb2e895fc4aceef62190fcc765c2b",
+    "heldout_audit_receipt_digest": "sha256:24a86be734239d8bf837330df5a28948c767fa6abe5cf76acd6cef91de734322",
+    "heldout_ownership_gate_passed": false,
+    "historical_attempt_blockers": [],
+    "inpainting_decision_qualified": false,
     "learned_candidate_episodes_executed": false,
-    "next_action": "obtain fresh explicit one-attempt zero-retry authority for the exact repaired bundle and require qualified Gaussian contribution output",
+    "next_action": "preserve this frozen task as a held-out ownership abstention; select a new independently preregistered source object or obtain a new rights-admitted appearance/collision evidence packet before any further Gaussian contribution launch",
+    "ownership_replay_receipt_digest": "sha256:90dba4f671635d3ea0cf8492710c98909ead4f655f549291db89ae008b820d91",
     "program_id": "arm-decision-proof-v1",
-    "receipt_digest": "sha256:ac544631c6ab7be78d6b69992a01579ee01520696c9ca550825e19ae29aa6a08",
-    "recovery_readiness_receipt_digest": "sha256:081fca829535789d7023d1cdda05345bbc54cec296acbb812e7e0eef2055db43",
-    "removal_binding_digest": "sha256:825c70cd5b4e7a9590facedfbd45cf5af24e0e968ef9a2c58c8e728bd3497f37",
-    "repaired_bundle": {
-      "blueprint_commit": "dd893aaed0adb3ecc5c58e558a7cf639fca09a7c",
-      "bundle_sha256": "sha256:80d8620a2ec89ba2f60e59c2f000b0cc5849a99bb11798ef449977dee9eb5e17",
-      "canonical_paid_admission_dry_run_passed": true,
-      "container_image": "docker.io/pytorch/pytorch@sha256:14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014",
-      "dependency_wheelhouse_manifest_digest": "sha256:e96bc10993da4644d5f320059151e0f267e3307daa013a1dd501bedfc52849dd",
-      "exact_bundle_rehearsal_passed": true,
-      "gpu_runtime_executed": false
-    },
+    "receipt_digest": "sha256:449407e1a77cf286ea39613baa81bcf08c40a68cf96ab7dca59e3f9969ea2e97",
+    "replacement_coverage_sweep_authorized": false,
     "scene_id": "840920",
     "schema_version": "adp_task_evaluation_run_abstention.v1",
-    "smallest_missing_capability": "fresh_paid_authority_for_qualified_gaussian_contribution_missing",
+    "smallest_missing_capability": "calibrated_gaussian_ownership_separation_without_protected_scene_deletion",
+    "source_removal_qualified": false,
     "status": "typed_evidence_backed_abstention",
     "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
     "task_id": "task_a_washer_door_open",
-    "terminal_gate_schema_version": "adp_gaussian_contribution_authority_gate.v1"
+    "terminal_gate_schema_version": "adp_gaussian_heldout_ownership_gate.v1"
   }
 }
