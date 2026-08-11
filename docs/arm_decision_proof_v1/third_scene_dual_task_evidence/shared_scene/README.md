@@ -44,8 +44,9 @@ Checked-in digest-bound manifests:
 
 - [`third_scene_840920_dual_task_agent_cad_matrix.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json)
 - [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
+- [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json)
 
-Claim boundary: these are CAD candidates and Content Agents bundle/preflight
+Claim boundary: these are CAD candidates and Content Agents bundle/readiness
 receipts only. Content Agents have not been executed in this goal state; no
 candidate is SimReady-qualified, native-simulator-import-qualified,
 appearance-qualified, physics-qualified, or physically equivalent.

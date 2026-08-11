@@ -1,0 +1,133 @@
+{
+  "schema_version": "adp_content_agents_execution_readiness.v1",
+  "generated_at": "2026-08-11T00:00:00Z",
+  "status": "blocked_before_paid_execution",
+  "input_variant": "agent_cad_v1",
+  "candidate_count": 4,
+  "replacement_object_capacity": {
+    "maximum": 5,
+    "minimum": 1,
+    "sealed_slots": 2
+  },
+  "content_agents_bundle_matrix_digest": "sha256:a7aee85f65c5a57e955af293c342f9f67351a81f8c5dec4502bfde4e88fa6d1e",
+  "content_agents_executed": false,
+  "paid_resource_allocated": false,
+  "provider_mutations_performed": 0,
+  "private_or_gated_dataset_bytes_uploaded": false,
+  "raw_interiorgs_bytes_uploaded": false,
+  "items": [
+    {
+      "task_id": "task_a_washer_door_open",
+      "replacement_slot": 1,
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "bundle": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:75b11c5b3515e88f6604d8fb567e7d254e6566475890912d370f96ebea98ddc0",
+        "size_bytes": 48755223
+      },
+      "bundle_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:d0b7e5a3756b71c5544a9b30b6b6bf8cd52d7b72efd30df6db0ff6a21f0f8dd4",
+        "size_bytes": 12271
+      },
+      "config_preflight": null,
+      "local_bundle_ready": true,
+      "exact_entrypoint_rehearsed": true,
+      "paid_attempt_authority_required_for_execute": true,
+      "execute_admitted": false,
+      "provider_mutations_performed": 0,
+      "blockers": [
+        "content_agents_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing"
+      ]
+    },
+    {
+      "task_id": "task_a_washer_door_open",
+      "replacement_slot": 1,
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "bundle": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:6419191ebd0dcc9e8d34bd1fd4614459d9fc4d3ec8f4ec8128f2b9acd635bf4b",
+        "size_bytes": 48792435
+      },
+      "bundle_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:040e261e995c5ef4944d98283040fcd91ca2fc33f4786374c1d375131a299a6c",
+        "size_bytes": 14127
+      },
+      "config_preflight": null,
+      "local_bundle_ready": true,
+      "exact_entrypoint_rehearsed": true,
+      "paid_attempt_authority_required_for_execute": true,
+      "execute_admitted": false,
+      "provider_mutations_performed": 0,
+      "blockers": [
+        "content_agents_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing"
+      ]
+    },
+    {
+      "task_id": "task_b_notebook_relocation",
+      "replacement_slot": 2,
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "bundle": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:4b72121743246bff05e1d189da56cdab4e3cc9741ae394c7a25fe8138a09a823",
+        "size_bytes": 48714180
+      },
+      "bundle_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:bb17367918e58e3e546a4063d4521e1f06c874e4c244cc40d0073c1cc9c6a1ea",
+        "size_bytes": 15280
+      },
+      "config_preflight": null,
+      "local_bundle_ready": true,
+      "exact_entrypoint_rehearsed": true,
+      "paid_attempt_authority_required_for_execute": true,
+      "execute_admitted": false,
+      "provider_mutations_performed": 0,
+      "blockers": [
+        "content_agents_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing"
+      ]
+    },
+    {
+      "task_id": "task_b_notebook_relocation",
+      "replacement_slot": 2,
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "bundle": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:c27bbd11e5352f73157decf5ba1b566dd7238c67ccbd6c5e5ab14eee790ffba3",
+        "size_bytes": 48939056
+      },
+      "bundle_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:e6e3891495b15e5803cd56d19d310400ca152015618f70744228ba9ec9f2383c",
+        "size_bytes": 18937
+      },
+      "config_preflight": null,
+      "local_bundle_ready": true,
+      "exact_entrypoint_rehearsed": true,
+      "paid_attempt_authority_required_for_execute": true,
+      "execute_admitted": false,
+      "provider_mutations_performed": 0,
+      "blockers": [
+        "content_agents_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing"
+      ]
+    }
+  ],
+  "claim_boundary": {
+    "content_agents_bundles_built": true,
+    "exact_entrypoint_rehearsed": true,
+    "content_agents_executed": false,
+    "simready_qualified": false,
+    "native_simulator_import_qualified": false,
+    "physical_equivalence": false
+  },
+  "receipt_digest": "sha256:33c10a3df16111d6d0ac07f84a7670891b4d11a09a7bbdcb2c16b3ffcea31bb2"
+}

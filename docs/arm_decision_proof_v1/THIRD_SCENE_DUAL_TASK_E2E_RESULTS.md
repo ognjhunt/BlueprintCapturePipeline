@@ -263,9 +263,10 @@ or appearance qualifications:
 
 The Content Agents adapter now supports a general `agent_cad_v1` path that
 derives the reference image from each CAD-agent output manifest. Manual
-reference-image overrides are still accepted only when they match one of the
-manifest-bound reference records. This closes the operator-error class where a
-bundle could be invoked with an unbound frame path. Local no-provider bundle
+reference-image overrides are rejected for `agent_cad_v1`, even when the bytes
+would match, so bundle construction cannot depend on hand-selected frame paths.
+This closes the operator-error class where a bundle could be invoked with an
+unbound frame path. Local no-provider bundle
 construction and exact-entrypoint rehearsal passed for all four candidates
 against pinned NVIDIA USD Content Agents `0.5.2`
 (`36dbf3f274f8e256637230a05a085853f65cc175`,
@@ -285,6 +286,15 @@ import, or physical equivalence. The checked-in bundle matrix manifest is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`
 with digest
 `sha256:a7aee85f65c5a57e955af293c342f9f67351a81f8c5dec4502bfde4e88fa6d1e`.
+The no-provider execution-readiness receipt is
+`docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`
+with digest
+`sha256:33c10a3df16111d6d0ac07f84a7670891b4d11a09a7bbdcb2c16b3ffcea31bb2`.
+It validates all four prepared bundle bytes and exact-entrypoint rehearsals, and
+records the current smallest blockers for every candidate:
+`content_agents_config_preflight_missing` and
+`content_agents_paid_attempt_authority_missing`. It performs no Docker, OpenAI,
+Vast, or object-store mutation and records `provider_mutations_performed: 0`.
 
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
@@ -374,6 +384,10 @@ forks:
   image from the CAD-agent manifest by default, and treats agent output as
   advisory enrichment only. It does not construct simulator geometry, collision,
   physics authority, native import evidence, or physical truth.
+- Content Agents execution readiness is now a first-class no-provider receipt:
+  it validates prepared bundle bytes and exact-entrypoint rehearsal, records
+  config-preflight/paid-authority blockers, and cannot be mistaken for agent
+  execution or SimReady qualification.
 - Content Agents paid execution now has its own single-use attempt-authority
   contract. Allocator dry-runs remain mutation-free and do not require the
   grant; `--execute` requires an exact bundle/config-preflight authority and
@@ -453,6 +467,8 @@ Recent reusable-code and manifest commits:
 - Focused reusable agent-CAD supporting-evidence regressions before
   `c5d3d0d92` — `61 passed`; the helper also reproduced the current real Task A
   and Task B inventory digests exactly.
+- Focused Content Agents execution-readiness regressions before the readiness
+  receipt update — `52 passed`.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
@@ -474,7 +490,7 @@ Recent reusable-code and manifest commits:
 |---|---|
 | Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; agent-CAD-to-Content-Agents Mesh bundle adapter with manifest-derived references; Content Agents single-use paid-attempt authority; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
-| Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
+| Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes (all four bundles are locally ready but blocked on config preflight plus fresh paid authority), replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
 
 ## Remaining ambiguity and single next action

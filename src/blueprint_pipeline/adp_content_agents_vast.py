@@ -50,6 +50,7 @@ from .wam_provider_object_store import (
 PROBE_KIND = "adp-usd-content-agents"
 RESULT_SCHEMA_VERSION = "adp_content_agents_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_content_agents_paid_attempt_authority.v1"
+EXECUTION_READINESS_SCHEMA = "adp_content_agents_execution_readiness.v1"
 SOURCE_COMMIT = "36dbf3f274f8e256637230a05a085853f65cc175"
 SOURCE_TREE = "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3"
 SOURCE_VERSION = "0.5.2"
@@ -121,6 +122,189 @@ def _verified_canonical_receipt(path: Path, *, error: str) -> dict[str, Any]:
     supplied = receipt.get("receipt_digest")
     if not receipt or supplied != canonical_digest(receipt, digest_field="receipt_digest"):
         raise ValueError(error)
+    return receipt
+
+
+def materialize_content_agents_execution_readiness(
+    *,
+    content_agents_bundle_matrix: Mapping[str, Any],
+    output_path: str | Path,
+    config_preflight_receipts: Mapping[str, str | Path] | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Record exact local readiness and the next missing paid-execution inputs.
+
+    This is a no-provider receipt. It validates prepared bundle bytes and
+    records whether each candidate has the local config-preflight and explicit
+    paid-attempt authority required before `--execute` can be admitted.
+    """
+
+    matrix = dict(content_agents_bundle_matrix)
+    if (
+        matrix.get("schema_version")
+        != "third_scene_agent_cad_content_agents_bundle_matrix.v1"
+        or matrix.get("input_variant") != "agent_cad_v1"
+        or matrix.get("receipt_digest")
+        != canonical_digest(matrix, digest_field="receipt_digest")
+    ):
+        raise ValueError("adp_content_agents_readiness_bundle_matrix_invalid")
+    if matrix.get("claim_boundary") != {
+        "content_agents_bundles_built": True,
+        "exact_entrypoint_rehearsed": True,
+        "content_agents_executed": False,
+        "simready_qualified": False,
+        "native_simulator_import_qualified": False,
+        "physical_equivalence": False,
+    }:
+        raise ValueError("adp_content_agents_readiness_claim_boundary_invalid")
+    capacity = matrix.get("replacement_object_capacity")
+    items = matrix.get("items")
+    if (
+        not isinstance(capacity, Mapping)
+        or capacity.get("minimum") != 1
+        or capacity.get("maximum") != 5
+        or not isinstance(capacity.get("sealed_slots"), int)
+        or not 1 <= capacity["sealed_slots"] <= 5
+        or not isinstance(items, list)
+        or not items
+        or len(items) > 10
+        or matrix.get("candidate_count") != len(items)
+    ):
+        raise ValueError("adp_content_agents_readiness_matrix_capacity_invalid")
+
+    preflights = dict(config_preflight_receipts or {})
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise ValueError("adp_content_agents_readiness_item_invalid")
+        bundle_record = item.get("bundle")
+        receipt_record = item.get("bundle_receipt")
+        if not isinstance(bundle_record, Mapping) or not isinstance(
+            receipt_record, Mapping
+        ):
+            raise ValueError("adp_content_agents_readiness_bundle_record_invalid")
+        bundle_path = Path(str(bundle_record.get("path") or "")).expanduser().resolve()
+        receipt_path = Path(str(receipt_record.get("path") or "")).expanduser().resolve()
+        if (
+            not bundle_path.is_file()
+            or not receipt_path.is_file()
+            or _sha256(bundle_path) != bundle_record.get("sha256")
+            or _sha256(receipt_path) != receipt_record.get("sha256")
+            or bundle_path.stat().st_size != int(bundle_record.get("size_bytes", -1))
+            or receipt_path.stat().st_size
+            != int(receipt_record.get("size_bytes", -1))
+        ):
+            raise ValueError("adp_content_agents_readiness_bundle_bytes_invalid")
+        receipt = _read_json(receipt_path)
+        if (
+            receipt.get("schema_version")
+            != "adp_content_agents_provider_bundle.v1"
+            or receipt.get("status") != "ready"
+            or receipt.get("bundle_path") != str(bundle_path)
+            or receipt.get("bundle_sha256") != bundle_record.get("sha256")
+            or receipt.get("source_commit") != SOURCE_COMMIT
+            or receipt.get("source_tree") != SOURCE_TREE
+            or receipt.get("container_image") != DEFAULT_IMAGE
+            or receipt.get("retry_cap") != 0
+            or receipt.get("blockers") not in ([], None)
+            or provider_bundle_rehearsal_blockers(
+                receipt.get("exact_bundle_entrypoint_rehearsal"),
+                bundle_sha256=str(bundle_record.get("sha256") or ""),
+                entrypoint_relative_path=(
+                    "provider_runtime/run_adp_content_agents_provider_runtime.sh"
+                ),
+            )
+        ):
+            raise ValueError("adp_content_agents_readiness_bundle_receipt_invalid")
+        key = (
+            f"{item.get('task_id')}|{item.get('replacement_slot')}|"
+            f"{item.get('cad_agent_backend_id')}"
+        )
+        blockers = ["content_agents_paid_attempt_authority_missing"]
+        preflight_path_value = preflights.get(key)
+        preflight_record: dict[str, Any] | None = None
+        if preflight_path_value is None:
+            blockers.append("content_agents_config_preflight_missing")
+        else:
+            preflight_path = Path(preflight_path_value).expanduser().resolve()
+            preflight = _read_json(preflight_path)
+            if (
+                not preflight_path.is_file()
+                or preflight.get("schema_version")
+                != "adp_content_agents_bundle_config_preflight.v2"
+                or preflight.get("status") != "passed"
+                or preflight.get("bundle_receipt_sha256") != _sha256(receipt_path)
+                or preflight.get("bundle_sha256") != bundle_record.get("sha256")
+                or preflight.get("receipt_digest")
+                != canonical_digest(preflight, digest_field="receipt_digest")
+            ):
+                blockers.append("content_agents_config_preflight_invalid")
+            else:
+                preflight_record = {
+                    "path": str(preflight_path),
+                    "sha256": _sha256(preflight_path),
+                    "size_bytes": preflight_path.stat().st_size,
+                    "receipt_digest": preflight["receipt_digest"],
+                }
+        rows.append(
+            {
+                "task_id": item.get("task_id"),
+                "replacement_slot": item.get("replacement_slot"),
+                "asset_id": item.get("asset_id"),
+                "cad_agent_backend_id": item.get("cad_agent_backend_id"),
+                "bundle": {
+                    "path": str(bundle_path),
+                    "sha256": bundle_record.get("sha256"),
+                    "size_bytes": bundle_path.stat().st_size,
+                },
+                "bundle_receipt": {
+                    "path": str(receipt_path),
+                    "sha256": receipt_record.get("sha256"),
+                    "size_bytes": receipt_path.stat().st_size,
+                },
+                "config_preflight": preflight_record,
+                "local_bundle_ready": True,
+                "exact_entrypoint_rehearsed": True,
+                "paid_attempt_authority_required_for_execute": True,
+                "execute_admitted": False,
+                "provider_mutations_performed": 0,
+                "blockers": sorted(blockers),
+            }
+        )
+
+    receipt: dict[str, Any] = {
+        "schema_version": EXECUTION_READINESS_SCHEMA,
+        "generated_at": generated_at or utc_now_iso(),
+        "status": "blocked_before_paid_execution",
+        "input_variant": "agent_cad_v1",
+        "candidate_count": len(rows),
+        "replacement_object_capacity": dict(capacity),
+        "content_agents_bundle_matrix_digest": matrix["receipt_digest"],
+        "content_agents_executed": False,
+        "paid_resource_allocated": False,
+        "provider_mutations_performed": 0,
+        "private_or_gated_dataset_bytes_uploaded": False,
+        "raw_interiorgs_bytes_uploaded": False,
+        "items": sorted(
+            rows,
+            key=lambda row: (
+                str(row["task_id"]),
+                int(row["replacement_slot"]),
+                str(row["cad_agent_backend_id"]),
+            ),
+        ),
+        "claim_boundary": {
+            "content_agents_bundles_built": True,
+            "exact_entrypoint_rehearsed": True,
+            "content_agents_executed": False,
+            "simready_qualified": False,
+            "native_simulator_import_qualified": False,
+            "physical_equivalence": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(output_path, receipt)
     return receipt
 
 
@@ -1537,11 +1721,13 @@ def run_content_agents_vast(
 
 __all__ = [
     "DEFAULT_IMAGE",
+    "EXECUTION_READINESS_SCHEMA",
     "PAID_ATTEMPT_AUTHORITY_SCHEMA",
     "PROBE_KIND",
     "REFERENCE_IMAGE_SHA256",
     "build_content_agents_vast_bundle",
     "consume_content_agents_paid_attempt_authority_once",
+    "materialize_content_agents_execution_readiness",
     "run_content_agents_vast",
     "validate_content_agents_paid_attempt_authority",
 ]

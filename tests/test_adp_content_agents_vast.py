@@ -538,6 +538,145 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
     ] == "/Asset/materials/agent_input_neutral"
 
 
+def _single_agent_cad_content_bundle_matrix(
+    *,
+    bundle_receipt_path: Path,
+    bundle_receipt: Mapping[str, object],
+    cad_output_path: Path,
+    projection_path: Path,
+) -> dict[str, object]:
+    cad_output = json.loads(cad_output_path.read_text(encoding="utf-8"))
+    projection = json.loads(projection_path.read_text(encoding="utf-8"))
+    item = {
+        "replacement_slot": cad_output["request"]["replacement_slot"],
+        "task_id": cad_output["request"]["task_id"],
+        "asset_id": cad_output["request"]["asset_id"],
+        "cad_agent_backend_id": cad_output["request"]["backend"]["backend_id"],
+        "cad_agent_output_receipt_digest": cad_output["receipt_digest"],
+        "mesh_projection_receipt_digest": projection["receipt_digest"],
+        "mesh_packet_digest": projection["packet_digest"],
+        "candidate_step_sha256": cad_output["artifacts"]["step"]["sha256"],
+        "bundle": {
+            "path": bundle_receipt["bundle_path"],
+            "sha256": bundle_receipt["bundle_sha256"],
+            "size_bytes": bundle_receipt["bundle_size_bytes"],
+        },
+        "bundle_receipt": {
+            "path": str(bundle_receipt_path),
+            "sha256": "sha256:"
+            + hashlib.sha256(bundle_receipt_path.read_bytes()).hexdigest(),
+            "size_bytes": bundle_receipt_path.stat().st_size,
+        },
+        "blockers": [],
+        "exact_bundle_entrypoint_rehearsal_status": "passed",
+        "agent_output_is_simready_authority": False,
+        "canonical_simready_construction_unresolved": True,
+    }
+    matrix = {
+        "schema_version": "third_scene_agent_cad_content_agents_bundle_matrix.v1",
+        "status": "local_bundles_ready_for_paid_resource_preflight",
+        "input_variant": "agent_cad_v1",
+        "replacement_object_capacity": {
+            "minimum": 1,
+            "maximum": 5,
+            "sealed_slots": 1,
+        },
+        "candidate_count": 1,
+        "items": [item],
+        "claim_boundary": {
+            "content_agents_bundles_built": True,
+            "exact_entrypoint_rehearsed": True,
+            "content_agents_executed": False,
+            "simready_qualified": False,
+            "native_simulator_import_qualified": False,
+            "physical_equivalence": False,
+        },
+        "receipt_digest": "",
+    }
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+    return matrix
+
+
+def test_content_agents_execution_readiness_records_missing_authority_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    bundle_receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-bundle",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
+        "adp_content_agents_bundle_receipt.json"
+    )
+
+    readiness = content_agents.materialize_content_agents_execution_readiness(
+        content_agents_bundle_matrix=_single_agent_cad_content_bundle_matrix(
+            bundle_receipt_path=bundle_receipt_path,
+            bundle_receipt=bundle_receipt,
+            cad_output_path=output_path,
+            projection_path=projection_path,
+        ),
+        output_path=tmp_path / "readiness.json",
+        generated_at="fixed",
+    )
+
+    assert readiness["schema_version"] == content_agents.EXECUTION_READINESS_SCHEMA
+    assert readiness["status"] == "blocked_before_paid_execution"
+    assert readiness["provider_mutations_performed"] == 0
+    assert readiness["paid_resource_allocated"] is False
+    assert readiness["items"][0]["local_bundle_ready"] is True
+    assert readiness["items"][0]["execute_admitted"] is False
+    assert readiness["items"][0]["blockers"] == [
+        "content_agents_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing",
+    ]
+    assert readiness["receipt_digest"] == canonical_digest(
+        readiness, digest_field="receipt_digest"
+    )
+
+
+def test_content_agents_execution_readiness_rejects_tampered_bundle_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    bundle_receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-bundle",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
+        "adp_content_agents_bundle_receipt.json"
+    )
+    matrix = _single_agent_cad_content_bundle_matrix(
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+        cad_output_path=output_path,
+        projection_path=projection_path,
+    )
+    matrix["items"][0]["bundle"]["sha256"] = "sha256:" + "0" * 64
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+
+    with pytest.raises(ValueError, match="readiness_bundle_bytes_invalid"):
+        content_agents.materialize_content_agents_execution_readiness(
+            content_agents_bundle_matrix=matrix,
+            output_path=tmp_path / "readiness.json",
+            generated_at="fixed",
+        )
+
+
 def test_agent_cad_reference_is_derived_from_manifest_not_operator_guess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
