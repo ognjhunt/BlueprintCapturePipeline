@@ -20,6 +20,9 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "native_task_gpu_collision_qualification.v1"
+STATIC_QUALIFICATION_SCHEMA_VERSION = (
+    "native_task_gpu_collision_static_qualification.v1"
+)
 DEFAULT_MAXIMUM_CONVEX_HULL_ASPECT_RATIO = 100.0
 SUPPORTED_DYNAMIC_MESH_APPROXIMATIONS = frozenset(
     {"convexHull", "convexDecomposition", "boundingCube"}
@@ -82,14 +85,47 @@ def audit_native_task_gpu_collisions(
 
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
     rows: list[dict[str, Any]] = []
+    primitive_rows: list[dict[str, Any]] = []
     blockers: list[str] = []
     for prim in stage.Traverse():
-        if not prim.HasAPI(UsdPhysics.CollisionAPI) or not prim.IsA(UsdGeom.Mesh):
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
             continue
         body = prim
         while body.IsValid() and not body.HasAPI(UsdPhysics.RigidBodyAPI):
             body = body.GetParent()
         if not body.IsValid():
+            continue
+        if not prim.IsA(UsdGeom.Mesh):
+            supported_primitive_types = (
+                UsdGeom.Cube,
+                UsdGeom.Sphere,
+                UsdGeom.Capsule,
+                UsdGeom.Cylinder,
+                UsdGeom.Cone,
+            )
+            primitive_type = next(
+                (
+                    schema.__name__
+                    for schema in supported_primitive_types
+                    if prim.IsA(schema)
+                ),
+                None,
+            )
+            prim_path = str(prim.GetPath())
+            row_blockers = (
+                []
+                if primitive_type is not None
+                else [f"native_task_dynamic_primitive_unsupported:{prim_path}"]
+            )
+            blockers.extend(row_blockers)
+            primitive_rows.append(
+                {
+                    "prim_path": prim_path,
+                    "rigid_body_prim_path": str(body.GetPath()),
+                    "primitive_type": primitive_type or prim.GetTypeName(),
+                    "blockers": row_blockers,
+                }
+            )
             continue
         mesh_collision = UsdPhysics.MeshCollisionAPI(prim)
         approximation = (
@@ -131,8 +167,8 @@ def audit_native_task_gpu_collisions(
                 "blockers": row_blockers,
             }
         )
-    if not rows:
-        blockers.append("native_task_dynamic_mesh_colliders_missing")
+    if not rows and not primitive_rows:
+        blockers.append("native_task_dynamic_colliders_missing")
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "qualified" if not blockers else "blocked",
@@ -140,10 +176,92 @@ def audit_native_task_gpu_collisions(
         "usd_sha256": _sha256(path),
         "maximum_convex_hull_aspect_ratio": maximum_convex_hull_aspect_ratio,
         "dynamic_mesh_colliders": rows,
+        "dynamic_primitive_colliders": primitive_rows,
+        "dynamic_collision_prim_count": len(rows) + len(primitive_rows),
         "blockers": sorted(set(blockers)),
         "runtime_gpu_cooking_readback_still_required": True,
         "simulator_execution_is_not_physical_truth": True,
     }
+
+
+def validate_native_task_gpu_collision_static_qualification(
+    value: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise NativeTaskGpuCollisionQualificationError(
+            ["native_task_gpu_collision_static_receipt_invalid"]
+        ) from exc
+    digest = str(payload.get("source_usd_sha256") or "")
+    blockers = payload.get("blockers")
+    mesh_rows = payload.get("dynamic_mesh_colliders")
+    primitive_rows = payload.get("dynamic_primitive_colliders")
+    errors: list[str] = []
+    if (
+        payload.get("schema_version") != STATIC_QUALIFICATION_SCHEMA_VERSION
+        or len(digest) != 71
+        or not digest.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in digest[7:])
+        or isinstance(payload.get("source_usd_size_bytes"), bool)
+        or not isinstance(payload.get("source_usd_size_bytes"), int)
+        or payload.get("source_usd_size_bytes", 0) <= 0
+        or not isinstance(blockers, list)
+        or blockers != sorted(set(str(item) for item in blockers))
+        or not isinstance(mesh_rows, list)
+        or not isinstance(primitive_rows, list)
+        or payload.get("dynamic_collision_prim_count")
+        != len(mesh_rows) + len(primitive_rows)
+        or payload.get("status")
+        != ("qualified" if not blockers else "blocked")
+        or payload.get("native_gpu_cooking_readback_still_required") is not True
+        or payload.get("native_simulator_import_qualified") is not False
+        or payload.get("physical_equivalence_claimed") is not False
+    ):
+        errors.append("native_task_gpu_collision_static_receipt_invalid")
+    if payload.get("qualification_digest") != canonical_digest(
+        payload, digest_field="qualification_digest"
+    ):
+        errors.append("native_task_gpu_collision_static_receipt_digest_invalid")
+    if errors:
+        raise NativeTaskGpuCollisionQualificationError(errors)
+    return payload
+
+
+def materialize_native_task_gpu_collision_static_qualification(
+    *, usd_path: str | Path, destination: str | Path
+) -> dict[str, Any]:
+    source = Path(usd_path).expanduser().resolve()
+    output = Path(destination).expanduser().resolve()
+    if output.is_symlink():
+        raise NativeTaskGpuCollisionQualificationError(
+            ["native_task_gpu_collision_static_destination_invalid"]
+        )
+    audit = audit_native_task_gpu_collisions(source)
+    result: dict[str, Any] = {
+        "schema_version": STATIC_QUALIFICATION_SCHEMA_VERSION,
+        "source_usd_path": str(source),
+        "source_usd_sha256": audit["usd_sha256"],
+        "source_usd_size_bytes": source.stat().st_size,
+        "status": audit["status"],
+        "maximum_convex_hull_aspect_ratio": audit[
+            "maximum_convex_hull_aspect_ratio"
+        ],
+        "dynamic_mesh_colliders": audit["dynamic_mesh_colliders"],
+        "dynamic_primitive_colliders": audit["dynamic_primitive_colliders"],
+        "dynamic_collision_prim_count": audit["dynamic_collision_prim_count"],
+        "blockers": audit["blockers"],
+        "native_gpu_cooking_readback_still_required": True,
+        "native_simulator_import_qualified": False,
+        "physical_equivalence_claimed": False,
+        "qualification_digest": "",
+    }
+    result["qualification_digest"] = canonical_digest(
+        result, digest_field="qualification_digest"
+    )
+    validated = validate_native_task_gpu_collision_static_qualification(result)
+    write_json(output, validated)
+    return validated
 
 
 def author_native_task_gpu_qualified_collisions(
@@ -232,6 +350,9 @@ __all__ = [
     "DEFAULT_MAXIMUM_CONVEX_HULL_ASPECT_RATIO",
     "NativeTaskGpuCollisionQualificationError",
     "SCHEMA_VERSION",
+    "STATIC_QUALIFICATION_SCHEMA_VERSION",
     "audit_native_task_gpu_collisions",
     "author_native_task_gpu_qualified_collisions",
+    "materialize_native_task_gpu_collision_static_qualification",
+    "validate_native_task_gpu_collision_static_qualification",
 ]

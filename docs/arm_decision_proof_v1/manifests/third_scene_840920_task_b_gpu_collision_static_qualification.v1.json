@@ -1,0 +1,29 @@
+{
+  "schema_version": "native_task_gpu_collision_static_qualification.v1",
+  "source_usd_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/replacement_graph_v2/replacement.usda",
+  "source_usd_sha256": "sha256:821a28dc468cdc3f1b38d92bc7f0e158a63fc1432a54942b2144f5cb0416b7b4",
+  "source_usd_size_bytes": 5866,
+  "status": "qualified",
+  "maximum_convex_hull_aspect_ratio": 100.0,
+  "dynamic_mesh_colliders": [],
+  "dynamic_primitive_colliders": [
+    {
+      "prim_path": "/Asset/links/base/geometry/base_shell",
+      "rigid_body_prim_path": "/Asset/links/base",
+      "primitive_type": "Cube",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/display/geometry/display_shell",
+      "rigid_body_prim_path": "/Asset/links/display",
+      "primitive_type": "Cube",
+      "blockers": []
+    }
+  ],
+  "dynamic_collision_prim_count": 2,
+  "blockers": [],
+  "native_gpu_cooking_readback_still_required": true,
+  "native_simulator_import_qualified": false,
+  "physical_equivalence_claimed": false,
+  "qualification_digest": "sha256:652c6ced81ac03621056f74698c5c4d9337d8d8391c0bfdf1506b52125c2b894"
+}

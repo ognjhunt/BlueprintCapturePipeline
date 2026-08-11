@@ -1,0 +1,35 @@
+{
+  "asset_id": "840920_simready_washer_candidate",
+  "binding_digest": "sha256:c77ca3335ef2fe1c1b5b744c9b0a13f2474fdfd986e4c18ee318f3d7c259678d",
+  "claim_boundary": {
+    "articulation_behavior_qualified": false,
+    "generated_cad_candidate_only": true,
+    "hidden_geometry_observed": false,
+    "native_simulator_import_qualified": false,
+    "physical_equivalence_proven": false,
+    "prompt_is_geometry_authority": false
+  },
+  "files": {
+    "cad_output": {
+      "relative_path": "task_a/text_to_cad_v4/candidate.step",
+      "sha256": "sha256:24d23298eb41bdcaf37e2afad2815505a8be66ea122a551a80090ce468a8267a",
+      "size_bytes": 133900
+    },
+    "source_spec": {
+      "relative_path": "task_a/text_to_cad_v4/source_spec.json",
+      "sha256": "sha256:64ef18b11b38d557f54ca5374a43ea9280a232900982e6ec3608753dde704567",
+      "size_bytes": 24528
+    }
+  },
+  "receipt": {
+    "receipt_digest": "sha256:5889b72b5be79d12477d7571ef2dcdbef2f39e7f6d0bad70b25080eea3d3213c",
+    "relative_path": "task_a/text_to_cad_v4/simready_graph_cad_candidate.v1.json",
+    "sha256": "sha256:7531c6fa9c1866b127f385a24df1db64fe5e6a9314149bb713a68733412912cd",
+    "size_bytes": 2640
+  },
+  "request_digest": "sha256:eb11d6e0a90b7a9b75448c065ef1133b6ea775b1bfc627259d6eefca8c198f93",
+  "schema_version": "simready_graph_cad_candidate_binding.v1",
+  "status": "generated_cad_candidate_bound_not_simulator_qualified",
+  "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+  "task_id": "task_a_washer_door_open"
+}

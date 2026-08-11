@@ -597,13 +597,27 @@ class NativeArticulatedTaskArenaReadback:
         ]
 
         articulation = self._built.plan["articulation"]
+        graph_articulation = articulation.get("graph_articulation") is True
         link_position, link_quaternion = _body_position(
             task_object,
-            body_name=articulation["moving_link_native_body_name"],
-            error="native_task_arena_moving_link_missing",
+            body_name=(
+                articulation["interaction_link_native_body_name"]
+                if graph_articulation
+                else articulation["moving_link_native_body_name"]
+            ),
+            error=(
+                "native_task_arena_interaction_link_missing"
+                if graph_articulation
+                else "native_task_arena_moving_link_missing"
+            ),
         )
         rotated_handle = _quaternion_rotate_xyzw(
-            link_quaternion, articulation["handle_grasp_point_link_m"]
+            link_quaternion,
+            (
+                articulation["contact_point_link_m"]
+                if graph_articulation
+                else articulation["handle_grasp_point_link_m"]
+            ),
         )
         handle_position = [
             link_position[axis] + rotated_handle[axis] for axis in range(3)
@@ -628,6 +642,9 @@ class NativeArticulatedTaskArenaReadback:
             task_robot_contact_forces_w_n=sensor_forces["task_robot_contact"],
             task_scene_contact_forces_w_n=sensor_forces["task_scene_contact"],
             robot_scene_contact_forces_w_n=sensor_forces["robot_scene_contact"],
+            robot_task_forbidden_contact_forces_w_n=(
+                sensor_forces.get("robot_task_forbidden_collision")
+            ),
             task_root_pose_world=task_root_pose,
             task_root_reset_pose_world=reset_pose,
             grasp_frame_position_world_m=grasp_position,

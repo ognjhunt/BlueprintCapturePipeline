@@ -47,6 +47,15 @@ def _vector(value: Any, *, length: int, error: str) -> list[float]:
     return result
 
 
+def _digest(value: Any) -> bool:
+    text = str(value or "")
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
+    )
+
+
 def _force_peak(value: Any, *, sensor_id: str) -> float:
     if value is None or isinstance(value, (str, bytes)):
         raise NativeArticulatedTaskStateError(
@@ -141,6 +150,7 @@ def compile_native_articulated_task_sample(
     task_root_reset_pose_world: Sequence[float],
     grasp_frame_position_world_m: Sequence[float],
     handle_reference_position_world_m: Sequence[float],
+    robot_task_forbidden_contact_forces_w_n: Sequence[Sequence[float]] | None = None,
 ) -> dict[str, Any]:
     """Compile one exact scorer sample from native readback quantities."""
 
@@ -167,16 +177,34 @@ def compile_native_articulated_task_sample(
     index = {name: offset for offset, name in enumerate(names)}
     native_name_binding = dict(task_sample_binding.get("native_joint_names") or {})
     expected_ids = list(task_sample_binding.get("joint_ids") or [])
+    native_coordinate_ids = list(
+        task_sample_binding.get("native_coordinate_joint_ids") or expected_ids
+    )
+    fixed_joint_ids = list(task_sample_binding.get("fixed_joint_ids") or [])
+    fixed_qualifications = dict(
+        task_sample_binding.get("fixed_joint_static_qualification_digests") or {}
+    )
     joint_positions: dict[str, float] = {}
     joint_velocities: dict[str, float] = {}
     errors: list[str] = []
-    for joint_id in expected_ids:
+    if (
+        set(native_coordinate_ids).intersection(fixed_joint_ids)
+        or set(native_coordinate_ids).union(fixed_joint_ids) != set(expected_ids)
+        or set(native_name_binding) != set(native_coordinate_ids)
+        or set(fixed_qualifications) != set(fixed_joint_ids)
+        or any(not _digest(value) for value in fixed_qualifications.values())
+    ):
+        errors.append("native_articulated_task_joint_readback_binding_invalid")
+    for joint_id in native_coordinate_ids:
         native_name = str(native_name_binding.get(joint_id) or "")
         if not native_name or native_name not in index:
             errors.append(f"native_articulated_task_joint_unresolved:{joint_id}")
             continue
         joint_positions[str(joint_id)] = positions[index[native_name]]
         joint_velocities[str(joint_id)] = velocities[index[native_name]]
+    for joint_id in fixed_joint_ids:
+        joint_positions[str(joint_id)] = float(reset_positions.get(joint_id, 0.0))
+        joint_velocities[str(joint_id)] = 0.0
     reset_ids = set(reset_positions)
     if set(joint_positions) != reset_ids:
         errors.append("native_articulated_task_joint_set_mismatch")
@@ -191,6 +219,15 @@ def compile_native_articulated_task_sample(
     )
     robot_scene_peak = _force_peak(
         robot_scene_contact_forces_w_n, sensor_id="robot_scene_contact"
+    )
+    graph_task = task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION
+    forbidden_robot_task_peak = (
+        _force_peak(
+            robot_task_forbidden_contact_forces_w_n,
+            sensor_id="robot_task_forbidden_collision",
+        )
+        if graph_task
+        else 0.0
     )
     task_contact = task_contact_peak >= float(
         task_state_binding["task_contact_minimum_force_n"]
@@ -254,17 +291,24 @@ def compile_native_articulated_task_sample(
         "task_contact_active": task_contact,
         "joint_limit_violation": joint_limit_violation,
         "containment_violation": containment_violation,
-        "robot_collision_failure": robot_scene_peak >= collision_threshold,
+        "robot_collision_failure": max(
+            robot_scene_peak, forbidden_robot_task_peak
+        )
+        >= collision_threshold,
         "scene_collision_failure": task_scene_peak >= collision_threshold,
         "retreat_completed": retreat_completed,
         "native_readback": {
             "task_robot_contact_peak_force_n": task_contact_peak,
             "task_scene_contact_peak_force_n": task_scene_peak,
             "robot_scene_contact_peak_force_n": robot_scene_peak,
+            "robot_task_forbidden_collision_peak_force_n": (
+                forbidden_robot_task_peak
+            ),
             "root_translation_delta_m": translation_delta,
             "root_orientation_delta_rad": orientation_delta,
             "grasp_frame_to_handle_separation_m": retreat_separation,
             "caller_asserted_booleans_used": False,
+            "fixed_joint_static_qualification_digests": fixed_qualifications,
         },
     }
     if task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:

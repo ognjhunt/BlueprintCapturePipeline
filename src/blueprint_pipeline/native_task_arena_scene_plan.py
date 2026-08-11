@@ -15,6 +15,10 @@ import math
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from .articulation_graph_contract import (
+    ArticulationGraphContractError,
+    validate_articulation_graph,
+)
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_articulated_motion_geometry import (
@@ -334,6 +338,247 @@ def _apply_scenario_parameters(
     return applications
 
 
+def _graph_articulation_plan(
+    contract: Mapping[str, Any],
+    *,
+    task_object_asset_path: Path | None,
+    scene_collision_asset_path: Path | None,
+) -> dict[str, Any]:
+    """Compile a complete graph articulation without handle/one-link assumptions."""
+
+    task_spec = contract["task_spec"]
+    try:
+        graph = validate_articulation_graph(task_spec["articulation_graph"])
+    except (KeyError, ArticulationGraphContractError) as exc:
+        errors = (
+            list(exc.errors)
+            if isinstance(exc, ArticulationGraphContractError)
+            else ["native_task_arena_graph_articulation_invalid"]
+        )
+        raise NativeTaskArenaScenePlanError(errors) from exc
+    affordance = task_spec.get("interaction_affordance")
+    state_binding = contract.get("task_state_binding")
+    sample_binding = contract.get("task_sample_binding")
+    subject = next(
+        row for row in contract["objects"] if row.get("task_subject") is True
+    )
+    if (
+        not isinstance(affordance, Mapping)
+        or affordance.get("affordance_digest")
+        != canonical_digest(dict(affordance), digest_field="affordance_digest")
+        or not isinstance(state_binding, Mapping)
+        or state_binding.get("schema_version")
+        != "native_articulated_graph_task_state_binding.v1"
+        or not isinstance(sample_binding, Mapping)
+        or task_object_asset_path is None
+        or scene_collision_asset_path is None
+    ):
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_graph_articulation_binding_invalid"]
+        )
+    try:
+        from pxr import Usd, UsdPhysics
+
+        task_stage = Usd.Stage.Open(str(task_object_asset_path))
+    except (ImportError, RuntimeError) as exc:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_task_object_topology_unreadable"]
+        ) from exc
+    task_root = task_stage.GetDefaultPrim() if task_stage is not None else None
+    if task_root is None or not task_root.IsValid():
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_task_object_default_prim_missing"]
+        )
+    gpu_collision_qualification = audit_native_task_gpu_collisions(
+        task_object_asset_path
+    )
+    if gpu_collision_qualification["status"] != "qualified":
+        raise NativeTaskArenaScenePlanError(
+            list(gpu_collision_qualification["blockers"])
+        )
+    source_root = str(task_root.GetPath())
+    source_task_body_paths = sorted(
+        str(prim.GetPath())
+        for prim in task_stage.Traverse()
+        if prim.IsActive()
+        and prim.IsLoaded()
+        and prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    )
+    contact_body_paths_raw = affordance.get("contact_body_prim_paths")
+    if (
+        not source_task_body_paths
+        or not isinstance(contact_body_paths_raw, list)
+        or not contact_body_paths_raw
+        or any(str(path) not in source_task_body_paths for path in contact_body_paths_raw)
+    ):
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_graph_contact_body_paths_invalid"]
+        )
+    all_task_body_paths = [
+        _source_to_spawned_prim(
+            path,
+            role="task_object",
+            source_root_prim_path=source_root,
+        )
+        for path in source_task_body_paths
+    ]
+    contact_body_paths = [
+        _source_to_spawned_prim(
+            str(path),
+            role="task_object",
+            source_root_prim_path=source_root,
+        )
+        for path in contact_body_paths_raw
+    ]
+    joint_by_id = {str(row["joint_id"]): row for row in graph["joints"]}
+    graph_joint_ids = set(joint_by_id)
+    if set(sample_binding.get("joint_ids") or []) != graph_joint_ids:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_graph_joint_binding_invalid"]
+        )
+    source_joint_paths = dict(sample_binding.get("joint_prim_paths") or {})
+    native_names = dict(sample_binding.get("native_joint_names") or {})
+    coordinate_ids = set(sample_binding.get("native_coordinate_joint_ids") or [])
+    fixed_ids = set(sample_binding.get("fixed_joint_ids") or [])
+    if (
+        set(source_joint_paths) != graph_joint_ids
+        or coordinate_ids.union(fixed_ids) != graph_joint_ids
+        or coordinate_ids.intersection(fixed_ids)
+        or set(native_names) != coordinate_ids
+        or any(not task_stage.GetPrimAtPath(path).IsValid() for path in source_joint_paths.values())
+    ):
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_graph_joint_binding_invalid"]
+        )
+    native_reset = {
+        native_names[joint_id]: float(joint_by_id[joint_id]["reset_position"])
+        for joint_id in sorted(coordinate_ids)
+    }
+    subject_reset = dict((subject.get("reset_state") or {}).get("joint_positions") or {})
+    if subject_reset != native_reset:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_graph_joint_reset_binding_mismatch"]
+        )
+    link_native_body_names = dict(state_binding.get("link_native_body_names") or {})
+    link_ids = {str(row["link_id"]) for row in graph["links"]}
+    contact_link_id = str(affordance.get("contact_link_id") or "")
+    if set(link_native_body_names) != link_ids or contact_link_id not in link_ids:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_graph_link_body_binding_invalid"]
+        )
+    contact_point_link_m = affordance.get("contact_point_link_m")
+    if (
+        not isinstance(contact_point_link_m, list)
+        or len(contact_point_link_m) != 3
+        or not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            for value in contact_point_link_m
+        )
+    ):
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_graph_contact_point_invalid"]
+        )
+    scene_contact_body_paths = _exact_scene_contact_body_paths(
+        scene_collision_asset_path
+    )
+    try:
+        robot_contact_topology = resolve_native_task_robot_contact_topology(
+            str(contract["robot"]["robot_id"])
+        )
+    except (KeyError, NativeTaskRobotContactTopologyError) as exc:
+        errors = (
+            list(exc.errors)
+            if isinstance(exc, NativeTaskRobotContactTopologyError)
+            else ["native_task_robot_contact_topology_unavailable"]
+        )
+        raise NativeTaskArenaScenePlanError(errors) from exc
+    forbidden_robot_body_paths = sorted(
+        set(robot_contact_topology["protected_collision_body_paths"])
+        - set(robot_contact_topology["task_contact_body_paths"])
+    )
+    contact_sensors: list[dict[str, Any]] = []
+    for index, body_path in enumerate(contact_body_paths):
+        contact_sensors.append(
+            {
+                "sensor_instance_id": f"task_robot_contact__graph_{index:02d}",
+                "logical_sensor_id": "task_robot_contact",
+                "prim_path": body_path,
+                "filter_prim_paths_expr": robot_contact_topology[
+                    "task_contact_body_paths"
+                ],
+            }
+        )
+    for index, body_path in enumerate(all_task_body_paths):
+        contact_sensors.extend(
+            [
+                {
+                    "sensor_instance_id": f"task_scene_contact__graph_{index:02d}",
+                    "logical_sensor_id": "task_scene_contact",
+                    "prim_path": body_path,
+                    "filter_prim_paths_expr": scene_contact_body_paths,
+                },
+                {
+                    "sensor_instance_id": (
+                        f"robot_task_forbidden_collision__graph_{index:02d}"
+                    ),
+                    "logical_sensor_id": "robot_task_forbidden_collision",
+                    "prim_path": body_path,
+                    "filter_prim_paths_expr": forbidden_robot_body_paths,
+                },
+            ]
+        )
+    contact_sensors.extend(
+        {
+            "sensor_instance_id": f"robot_scene_contact__{index:02d}",
+            "logical_sensor_id": "robot_scene_contact",
+            "prim_path": body_path,
+            "filter_prim_paths_expr": scene_contact_body_paths,
+        }
+        for index, body_path in enumerate(
+            robot_contact_topology["protected_collision_body_paths"]
+        )
+    )
+    return {
+        "graph_articulation": True,
+        "task_joint_reset_positions_rad": native_reset,
+        "task_joint_prim_paths": {
+            joint_id: _source_to_spawned_prim(
+                source_joint_paths[joint_id],
+                role="task_object",
+                source_root_prim_path=source_root,
+            )
+            for joint_id in sorted(graph_joint_ids)
+        },
+        "task_joint_roles": dict(sample_binding["joint_roles"]),
+        "link_native_body_names": link_native_body_names,
+        "interaction_link_native_body_name": link_native_body_names[contact_link_id],
+        "contact_point_link_m": [float(value) for value in contact_point_link_m],
+        "contact_sensors": contact_sensors,
+        "robot_contact_topology": robot_contact_topology,
+        "scene_contact_body_paths": scene_contact_body_paths,
+        "task_contact_body_paths": contact_body_paths,
+        "task_all_body_paths": all_task_body_paths,
+        "forbidden_robot_contact_body_paths": forbidden_robot_body_paths,
+        "gpu_collision_qualification": {
+            key: value
+            for key, value in gpu_collision_qualification.items()
+            if key != "usd_path"
+        },
+        "state_thresholds": {
+            field: float(state_binding[field])
+            for field in (
+                "task_contact_minimum_force_n",
+                "collision_failure_minimum_force_n",
+                "retreat_minimum_separation_m",
+                "root_translation_tolerance_m",
+                "root_orientation_tolerance_rad",
+            )
+        },
+    }
+
+
 def _articulation_plan(
     contract: Mapping[str, Any],
     *,
@@ -597,6 +842,12 @@ def _articulation_plan(
                 field: float(task_spec[field]) for field in required_thresholds
             },
         }
+    if contract["task_spec"].get("schema_version") == "adp_task_spec.v2":
+        return _graph_articulation_plan(
+            contract,
+            task_object_asset_path=task_object_asset_path,
+            scene_collision_asset_path=scene_collision_asset_path,
+        )
     sample_binding = contract["task_sample_binding"]
     state_binding = contract["task_state_binding"]
     native_names = dict(sample_binding["native_joint_names"])

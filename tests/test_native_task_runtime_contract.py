@@ -171,6 +171,76 @@ def _articulated_fixture() -> dict:
     return fixture
 
 
+def _graph_articulated_fixture() -> dict:
+    freeze = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/arm_decision_proof_v1/manifests"
+            / "third_scene_840920_task_a_freeze.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    graph = json.loads(json.dumps(freeze["articulation_graph"]))
+    task_spec = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "articulated_open_close",
+        "articulation_graph": graph,
+    }
+    contact_link_id = next(
+        link["link_id"] for link in graph["links"] if not link["is_root"]
+    )
+    affordance = {
+        "schema_version": "native_articulated_graph_interaction_affordance.v1",
+        "contact_link_id": contact_link_id,
+        "contact_body_prim_paths": [f"/Asset/links/{contact_link_id}"],
+        "contact_point_link_m": [0.1, 0.0, 0.0],
+        "affordance_digest": "",
+    }
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    task_spec["interaction_affordance"] = affordance
+    fixture = _common(
+        task_spec,
+        scene_id="graph_fixture_scene",
+        task_id="graph_fixture_task",
+    )
+    fixture["task_joint_bindings"] = [
+        {
+            "joint_id": joint["joint_id"],
+            "joint_prim_path": f"/Asset/joints/{joint['joint_id']}",
+            "native_joint_name": (
+                None if joint["joint_type"] == "fixed" else joint["joint_id"]
+            ),
+            "role": joint["role"],
+            "readback_kind": (
+                "fixed_joint_static"
+                if joint["joint_type"] == "fixed"
+                else "native_coordinate"
+            ),
+            "static_qualification_digest": (
+                _sha("f") if joint["joint_type"] == "fixed" else None
+            ),
+        }
+        for joint in graph["joints"]
+    ]
+    fixture["task_state_binding"] = {
+        "schema_version": "native_articulated_graph_task_state_binding.v1",
+        "articulation_graph_digest": canonical_digest(graph),
+        "interaction_affordance_digest": task_spec["interaction_affordance"][
+            "affordance_digest"
+        ],
+        "link_native_body_names": {
+            link["link_id"]: link["link_id"] for link in graph["links"]
+        },
+        "task_contact_minimum_force_n": 0.5,
+        "collision_failure_minimum_force_n": 1.0,
+        "retreat_minimum_separation_m": 0.10,
+        "root_translation_tolerance_m": 0.002,
+        "root_orientation_tolerance_rad": 0.01,
+    }
+    return fixture
+
+
 def _dual_replacement_assets() -> list[dict]:
     return [
         {
@@ -296,6 +366,30 @@ def test_original_and_second_scene_share_one_runtime_contract(
         assert contract["task_state_binding"] is None
 
 
+def test_general_graph_articulation_uses_graph_state_binding_without_handle_fields() -> None:
+    contract = materialize_native_task_runtime_contract(
+        **_graph_articulated_fixture()
+    )
+
+    state = contract["task_state_binding"]
+    sample = contract["task_sample_binding"]
+    assert state["schema_version"] == (
+        "native_articulated_graph_task_state_binding.v1"
+    )
+    assert "moving_link_prim_path" not in state
+    assert "handle_prim_paths" not in state
+    assert set(state["link_native_body_names"]) == {
+        link["link_id"]
+        for link in contract["task_spec"]["articulation_graph"]["links"]
+    }
+    assert set(sample["native_coordinate_joint_ids"]).isdisjoint(
+        sample["fixed_joint_ids"]
+    )
+    assert set(sample["native_coordinate_joint_ids"]).union(
+        sample["fixed_joint_ids"]
+    ) == set(sample["joint_ids"])
+
+
 def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() -> None:
     articulated = _articulated_fixture()
     articulated["assets"] = _dual_replacement_assets()
@@ -335,6 +429,98 @@ def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() ->
     assert (
         contract_a["construction_bindings"]["construction_digest"]
         == contract_b["construction_bindings"]["construction_digest"]
+    )
+
+
+def _five_replacement_fixture() -> dict:
+    fixture = _rigid_fixture()
+    scene_assets = _dual_replacement_assets()[:2]
+    replacement_assets = []
+    binding_rows = []
+    for index in range(5):
+        asset_id = f"replacement_{index}"
+        asset_sha = "sha256:" + f"{100 + index:064x}"
+        replacement_assets.append(
+            {
+                "semantic_role": "replacement",
+                "asset_id": asset_id,
+                "filename": f"replacement_{index}.usda",
+                "sha256": asset_sha,
+                "pose_world": _pose(float(index), 3.0, 0.8),
+                "object_type": "RIGID",
+                "reset_state": {"joint_positions": {}},
+            }
+        )
+        task_id = (
+            fixture["task_id"] if index == 0 else f"inactive_task_{index}"
+        )
+        binding_rows.append(
+            {
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "task_freeze_digest": "sha256:" + f"{200 + index:064x}",
+                "source_object_instance_id": f"source_{index}",
+                "removal_id": f"removal_{index}",
+                "mask_set_id": f"masks_{index}",
+                "mask_set_receipt_digest": "sha256:" + f"{300 + index:064x}",
+                "source_removal_receipt_digest": "sha256:" + f"{400 + index:064x}",
+                "source_removal_qualified": True,
+                "collider_deletion_id": f"collider_delete_{index}",
+                "source_collider_prim_path": f"/Root/source_{index}",
+                "collider_deletion_receipt_digest": "sha256:" + f"{500 + index:064x}",
+                "collider_deletion_qualified": True,
+                "replacement_qualification_id": f"replacement_qualification_{index}",
+                "replacement_qualification_receipt_digest": "sha256:"
+                + f"{600 + index:064x}",
+                "replacement_asset_sha256": asset_sha,
+                "replacement_simulator_import_qualified": True,
+            }
+        )
+    fixture["assets"] = [*scene_assets, *replacement_assets]
+    fixture["task_spec"]["subject_asset_id"] = "replacement_0"
+    fixture["task_freeze_digest"] = binding_rows[0]["task_freeze_digest"]
+    fixture["construction_bindings"] = seal_replacement_construction_bindings(
+        scene_freeze_digest=_sha("1"),
+        task_freeze_set_digest=_sha("2"),
+        bindings=binding_rows,
+    )
+    return fixture
+
+
+def test_runtime_preserves_five_copresent_replacements_and_one_subject() -> None:
+    contract = materialize_native_task_runtime_contract(**_five_replacement_fixture())
+
+    replacement_objects = [
+        row
+        for row in contract["objects"]
+        if row["source_semantic_role"] == "replacement"
+    ]
+    assert len(replacement_objects) == 5
+    assert sum(bool(row["task_subject"]) for row in replacement_objects) == 1
+    assert set(contract["reset_contract"]["per_object_reset_states"]) == {
+        f"replacement_{index}" for index in range(5)
+    }
+
+
+def test_runtime_rejects_sixth_replacement_before_scene_build() -> None:
+    fixture = _five_replacement_fixture()
+    fixture["assets"].append(
+        {
+            "semantic_role": "replacement",
+            "asset_id": "replacement_5",
+            "filename": "replacement_5.usda",
+            "sha256": "sha256:" + f"{105:064x}",
+            "pose_world": _pose(5.0, 3.0, 0.8),
+            "object_type": "RIGID",
+            "reset_state": {"joint_positions": {}},
+        }
+    )
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert "native_task_runtime_replacement_asset_count_out_of_range" in (
+        excinfo.value.errors
     )
 
 

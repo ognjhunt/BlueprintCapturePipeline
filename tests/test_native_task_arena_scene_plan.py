@@ -442,6 +442,158 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
     )
 
 
+def test_graph_articulation_plan_binds_complete_joint_and_body_topology(
+    tmp_path: Path,
+) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    freeze = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/arm_decision_proof_v1/manifests"
+            / "third_scene_840920_task_a_freeze.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    graph = freeze["articulation_graph"]
+    task_path = tmp_path / "graph_task.usda"
+    task_stage = Usd.Stage.CreateNew(str(task_path))
+    task_root = UsdGeom.Xform.Define(task_stage, "/Asset")
+    task_stage.SetDefaultPrim(task_root.GetPrim())
+    UsdGeom.Xform.Define(task_stage, "/Asset/links")
+    for link in graph["links"]:
+        body = UsdGeom.Xform.Define(
+            task_stage, f"/Asset/links/{link['link_id']}"
+        ).GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        collider = UsdGeom.Mesh.Define(
+            task_stage, f"/Asset/links/{link['link_id']}/collider"
+        )
+        collider.CreatePointsAttr(
+            [(0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1)]
+        )
+        collider.CreateFaceVertexCountsAttr([3, 3, 3, 3])
+        collider.CreateFaceVertexIndicesAttr([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+        mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(collider.GetPrim())
+        mesh_collision.CreateApproximationAttr("convexHull")
+    UsdGeom.Xform.Define(task_stage, "/Asset/joints")
+    joint_types = {
+        "revolute": UsdPhysics.RevoluteJoint,
+        "prismatic": UsdPhysics.PrismaticJoint,
+        "fixed": UsdPhysics.FixedJoint,
+        "continuous": UsdPhysics.RevoluteJoint,
+    }
+    for joint in graph["joints"]:
+        joint_types[joint["joint_type"]].Define(
+            task_stage, f"/Asset/joints/{joint['joint_id']}"
+        )
+    task_stage.GetRootLayer().Save()
+
+    scene_path = tmp_path / "graph_scene.usda"
+    scene_stage = Usd.Stage.CreateNew(str(scene_path))
+    scene_root = UsdGeom.Xform.Define(scene_stage, "/Scene")
+    scene_stage.SetDefaultPrim(scene_root.GetPrim())
+    floor = UsdGeom.Cube.Define(scene_stage, "/Scene/floor").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(floor)
+    scene_stage.GetRootLayer().Save()
+
+    contact_link_id = next(
+        link["link_id"] for link in graph["links"] if not link["is_root"]
+    )
+    affordance = {
+        "schema_version": "native_articulated_graph_interaction_affordance.v1",
+        "contact_link_id": contact_link_id,
+        "contact_body_prim_paths": [f"/Asset/links/{contact_link_id}"],
+        "contact_point_link_m": [0.1, 0.0, 0.0],
+        "affordance_digest": "",
+    }
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    coordinate_joints = [
+        joint for joint in graph["joints"] if joint["joint_type"] != "fixed"
+    ]
+    fixed_joints = [
+        joint for joint in graph["joints"] if joint["joint_type"] == "fixed"
+    ]
+    contract = {
+        "task_kind": "articulated_open_close",
+        "task_spec": {
+            "schema_version": "adp_task_spec.v2",
+            "task_kind": "articulated_open_close",
+            "articulation_graph": graph,
+            "interaction_affordance": affordance,
+        },
+        "task_sample_binding": {
+            "joint_ids": sorted(joint["joint_id"] for joint in graph["joints"]),
+            "joint_prim_paths": {
+                joint["joint_id"]: f"/Asset/joints/{joint['joint_id']}"
+                for joint in graph["joints"]
+            },
+            "native_joint_names": {
+                joint["joint_id"]: joint["joint_id"] for joint in coordinate_joints
+            },
+            "native_coordinate_joint_ids": sorted(
+                joint["joint_id"] for joint in coordinate_joints
+            ),
+            "fixed_joint_ids": sorted(joint["joint_id"] for joint in fixed_joints),
+            "fixed_joint_static_qualification_digests": {
+                joint["joint_id"]: "sha256:" + "f" * 64
+                for joint in fixed_joints
+            },
+            "joint_roles": {
+                joint["joint_id"]: joint["role"] for joint in graph["joints"]
+            },
+        },
+        "task_state_binding": {
+            "schema_version": "native_articulated_graph_task_state_binding.v1",
+            "link_native_body_names": {
+                link["link_id"]: link["link_id"] for link in graph["links"]
+            },
+            "task_contact_minimum_force_n": 0.5,
+            "collision_failure_minimum_force_n": 1.0,
+            "retreat_minimum_separation_m": 0.1,
+            "root_translation_tolerance_m": 0.002,
+            "root_orientation_tolerance_rad": 0.01,
+        },
+        "robot": {"robot_id": "franka_panda"},
+        "objects": [
+            {
+                "task_subject": True,
+                "object_type": "ARTICULATION",
+                "reset_state": {
+                    "joint_positions": {
+                        joint["joint_id"]: float(joint["reset_position"])
+                        for joint in coordinate_joints
+                    }
+                },
+            }
+        ],
+    }
+
+    result = _articulation_plan(
+        contract,
+        task_object_asset_path=task_path,
+        scene_collision_asset_path=scene_path,
+    )
+
+    assert result["graph_articulation"] is True
+    assert set(result["task_joint_prim_paths"]) == {
+        joint["joint_id"] for joint in graph["joints"]
+    }
+    assert set(result["task_joint_reset_positions_rad"]) == {
+        joint["joint_id"] for joint in coordinate_joints
+    }
+    assert Counter(
+        row["logical_sensor_id"] for row in result["contact_sensors"]
+    ) == {
+        "task_robot_contact": 1,
+        "task_scene_contact": len(graph["links"]),
+        "robot_task_forbidden_collision": len(graph["links"]),
+        "robot_scene_contact": 18,
+    }
+
+
 def test_staged_asset_digest_mismatch_fails_before_isaac(tmp_path: Path) -> None:
     contract, asset_directory = _contract(tmp_path, articulated=True)
     (asset_directory / "task_object.usda").write_bytes(b"tampered")

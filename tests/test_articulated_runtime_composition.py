@@ -215,6 +215,45 @@ def test_graph_task_rejects_runtime_role_drift() -> None:
     )
 
 
+def test_graph_task_binds_fixed_joint_to_static_qualification_not_fake_coordinate() -> None:
+    task_spec = _graph_task_spec()
+    fixed = task_spec["articulation_graph"]["joints"][1]
+    fixed.update(
+        joint_type="fixed",
+        role="locked",
+        axis=[0.0, 0.0, 0.0],
+        limits=[0.0, 0.0],
+        dependency=None,
+    )
+    plan = _plan(
+        task_spec=task_spec,
+        task_joint_bindings=[
+            {
+                "joint_id": "panel_hinge",
+                "joint_prim_path": "/Asset/joints/panel_hinge",
+                "native_joint_name": "panel_hinge",
+                "role": "target",
+            },
+            {
+                "joint_id": "latch_coupler",
+                "joint_prim_path": "/Asset/joints/latch_coupler",
+                "native_joint_name": None,
+                "role": "locked",
+                "readback_kind": "fixed_joint_static",
+                "static_qualification_digest": "sha256:" + "f" * 64,
+            },
+        ],
+    )
+
+    binding = plan["task_sample_binding"]
+    assert binding["native_coordinate_joint_ids"] == ["panel_hinge"]
+    assert binding["fixed_joint_ids"] == ["latch_coupler"]
+    assert binding["native_joint_names"] == {"panel_hinge": "panel_hinge"}
+    assert binding["fixed_joint_static_qualification_digests"] == {
+        "latch_coupler": "sha256:" + "f" * 64
+    }
+
+
 def test_a_rigid_task_never_produces_an_articulation() -> None:
     plan = _plan(
         task_spec={"task_kind": "rigid_pick_place"}, task_joint_bindings=[]

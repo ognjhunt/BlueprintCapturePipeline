@@ -17,13 +17,14 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .dual_task_rehearsal_contract import (
     DualTaskRehearsalContractError,
+    MAX_REPLACEMENT_OBJECTS,
     validate_scene_freeze,
     validate_task_freeze,
-    validate_task_freeze_join,
+    validate_task_freeze_set,
 )
 
 
-SCHEMA_VERSION = "replacement_construction_bindings.v1"
+SCHEMA_VERSION = "replacement_construction_bindings.v2"
 MASK_SET_QUALIFICATION_SCHEMA_VERSION = "calibrated_removal_mask_set_qualification.v1"
 GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION = "gaussian_source_removal_qualification.v1"
 REPLACEMENT_QUALIFICATION_SCHEMA_VERSION = "simready_replacement_native_qualification.v1"
@@ -164,6 +165,41 @@ def _resolve_source_collider_deletion(
         raise ReplacementConstructionBindingsError(
             [f"replacement_construction_{role}_receipt_invalid"]
         ) from exc
+    if (
+        isinstance(batch, Mapping)
+        and batch.get("schema_version") == SOURCE_COLLIDER_DELETION_SCHEMA_VERSION
+    ):
+        verified_path, child = _read_json_receipt(
+            batch_path,
+            role=role,
+            schema_version=SOURCE_COLLIDER_DELETION_SCHEMA_VERSION,
+            status="exact_source_collider_subtree_removed",
+            digest_field="receipt_digest",
+        )
+        if (
+            child.get("removal_id") != collider_deletion_id
+            or child.get("sage_collision_usd_sha256") != sage_sha256
+            or child.get("removed_prim_path") != target_prim_path
+            or not isinstance(child.get("removed_prim_count"), int)
+            or child.get("removed_prim_count", 0) <= 0
+            or child.get("source_bytes_unchanged") is not True
+            or child.get("unrelated_prim_inventory_unchanged") is not True
+            or child.get("remaining_target_collision_prim_count") != 0
+            or child.get("replacement_inserted") is not False
+        ):
+            raise ReplacementConstructionBindingsError(
+                [f"replacement_construction_{role}_identity_mismatch"]
+            )
+        return (
+            verified_path,
+            child,
+            {
+                "selected_deletion_id": collider_deletion_id,
+                "independent": _receipt_file_record(
+                    verified_path, child, digest_field="receipt_digest"
+                ),
+            },
+        )
     errors: list[str] = []
     if not isinstance(batch, dict):
         errors.append(f"replacement_construction_{role}_receipt_invalid")
@@ -175,9 +211,13 @@ def _resolve_source_collider_deletion(
     if batch.get("receipt_digest") != canonical_digest(batch, digest_field="receipt_digest"):
         errors.append(f"replacement_construction_{role}_digest_invalid")
     source_scene = batch.get("source_scene_usd")
+    rows = batch.get("target_removals")
     if (
         not isinstance(source_scene, Mapping)
         or source_scene.get("sha256") != sage_sha256
+        or not isinstance(rows, list)
+        or not 2 <= len(rows) <= MAX_REPLACEMENT_OBJECTS
+        or batch.get("target_count") != len(rows)
         or batch.get("source_bytes_unchanged") is not True
         or batch.get("unrelated_prim_inventory_unchanged") is not True
         or batch.get("remaining_target_collision_prim_count") != 0
@@ -186,7 +226,6 @@ def _resolve_source_collider_deletion(
         or batch.get("independent_removed_scenes_are_distinct") is not True
     ):
         errors.append(f"replacement_construction_{role}_batch_not_qualified")
-    rows = batch.get("target_removals")
     matches = (
         [
             row
@@ -275,12 +314,15 @@ def validate_replacement_construction_bindings(
     errors: list[str] = []
     if payload.get("schema_version") != SCHEMA_VERSION:
         errors.append("replacement_construction_schema_invalid")
-    for field in ("scene_freeze_digest", "task_freeze_join_digest"):
+    for field in ("scene_freeze_digest", "task_freeze_set_digest"):
         if not _digest(payload.get(field)):
             errors.append(f"replacement_construction_{field}_invalid")
     rows = payload.get("bindings")
-    if not isinstance(rows, list) or not rows:
+    if not isinstance(rows, list):
         errors.append("replacement_construction_bindings_missing")
+        rows = []
+    elif not 1 <= len(rows) <= MAX_REPLACEMENT_OBJECTS:
+        errors.append("replacement_construction_binding_count_out_of_range")
         rows = []
     normalized: list[dict[str, Any]] = []
     for index, raw in enumerate(rows):
@@ -355,15 +397,18 @@ def validate_replacement_construction_bindings(
 def seal_replacement_construction_bindings(
     *,
     scene_freeze_digest: str,
-    task_freeze_join_digest: str,
+    task_freeze_set_digest: str | None = None,
+    task_freeze_join_digest: str | None = None,
     bindings: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Canonicalize and seal construction rows after all qualifications exist."""
 
+    freeze_set_digest = task_freeze_set_digest or task_freeze_join_digest
+
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "scene_freeze_digest": scene_freeze_digest,
-        "task_freeze_join_digest": task_freeze_join_digest,
+        "task_freeze_set_digest": freeze_set_digest,
         "bindings": sorted(
             (json.loads(json.dumps(row)) for row in bindings),
             key=lambda row: str(row.get("asset_id")),
@@ -403,9 +448,12 @@ def materialize_replacement_construction_bindings(
             [f"replacement_construction_scene_freeze_invalid:{error}" for error in exc.errors]
         ) from exc
 
-    if isinstance(evidence_lanes, (str, bytes)) or len(evidence_lanes) != 2:
+    if (
+        isinstance(evidence_lanes, (str, bytes))
+        or not 1 <= len(evidence_lanes) <= MAX_REPLACEMENT_OBJECTS
+    ):
         raise ReplacementConstructionBindingsError(
-            ["replacement_construction_requires_exactly_two_evidence_lanes"]
+            ["replacement_construction_evidence_lane_count_out_of_range"]
         )
 
     task_rows: list[dict[str, Any]] = []
@@ -469,10 +517,10 @@ def materialize_replacement_construction_bindings(
         )
 
     try:
-        task_join = validate_task_freeze_join(task_rows)
+        task_set = validate_task_freeze_set(task_rows)
     except DualTaskRehearsalContractError as exc:
         raise ReplacementConstructionBindingsError(
-            [f"replacement_construction_task_join_invalid:{error}" for error in exc.errors]
+            [f"replacement_construction_task_set_invalid:{error}" for error in exc.errors]
         ) from exc
 
     scene_id = str(scene["selected_scene_id"])
@@ -587,7 +635,7 @@ def materialize_replacement_construction_bindings(
 
     result = seal_replacement_construction_bindings(
         scene_freeze_digest=scene["scene_freeze_digest"],
-        task_freeze_join_digest=task_join["join_digest"],
+        task_freeze_set_digest=task_set["set_digest"],
         bindings=bindings,
     )
     result["scene_freeze_receipt"] = _receipt_file_record(

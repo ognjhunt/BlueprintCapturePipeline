@@ -181,6 +181,98 @@ def test_multiple_native_sensor_instances_aggregate_into_one_logical_channel() -
     )
 
 
+def test_graph_articulation_readback_uses_interaction_link_and_forbidden_contact() -> None:
+    built = _built()
+    graph = {
+        "schema_version": "adp_articulation_graph.v1",
+        "links": [
+            {"link_id": "base", "is_root": True, "semantic_role": "base"},
+            {"link_id": "panel", "is_root": False, "semantic_role": "target"},
+            {"link_id": "lower", "is_root": False, "semantic_role": "locked"},
+        ],
+        "joints": [
+            {
+                "joint_id": "panel_hinge",
+                "parent_link_id": "base",
+                "child_link_id": "panel",
+                "joint_type": "revolute",
+                "role": "target",
+                "axis": [0.0, 0.0, 1.0],
+                "limits": [0.0, 1.57],
+                "reset_position": 0.0,
+                "reset_tolerance": 0.001,
+                "drive": {
+                    "drive_type": "force",
+                    "stiffness": 0.0,
+                    "damping": 1.0,
+                    "maximum_force": 50.0,
+                },
+                "dependency": None,
+            },
+            {
+                "joint_id": "lower_lock",
+                "parent_link_id": "base",
+                "child_link_id": "lower",
+                "joint_type": "revolute",
+                "role": "locked",
+                "axis": [0.0, 0.0, 1.0],
+                "limits": [0.0, 1.57],
+                "reset_position": 0.0,
+                "reset_tolerance": 0.001,
+                "drive": {
+                    "drive_type": "force",
+                    "stiffness": 20.0,
+                    "damping": 1.0,
+                    "maximum_force": 50.0,
+                },
+                "dependency": None,
+            },
+        ],
+        "collision_pairs": [],
+        "success_predicate": {
+            "combination": "all",
+            "joint_intervals": {"panel_hinge": [0.7, 1.0]},
+        },
+    }
+    built.plan["task_spec"] = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "articulated_open_close",
+        "articulation_graph": graph,
+    }
+    built.plan["task_sample_binding"] = {
+        "joint_ids": ["lower_lock", "panel_hinge"],
+        "native_coordinate_joint_ids": ["lower_lock", "panel_hinge"],
+        "fixed_joint_ids": [],
+        "fixed_joint_static_qualification_digests": {},
+        "native_joint_names": {
+            "panel_hinge": "upper_door_hinge",
+            "lower_lock": "lower_door_hinge",
+        },
+    }
+    built.plan["articulation"] = {
+        "graph_articulation": True,
+        "interaction_link_native_body_name": "upper_door",
+        "contact_point_link_m": [0.119962, 0.327634, 1.022997],
+    }
+    built.env.unwrapped.scene["robot_task_forbidden"] = SimpleNamespace(
+        data=SimpleNamespace(force_matrix_w=[[[[2.0, 0.0, 0.0]]]])
+    )
+    built.contact_sensor_names["robot_task_forbidden_collision"] = (
+        "robot_task_forbidden",
+    )
+
+    sample = NativeArticulatedTaskArenaReadback(built).read_task_sample()
+
+    assert sample["joint_positions"] == {
+        "lower_lock": 0.0,
+        "panel_hinge": pytest.approx(0.872664626),
+    }
+    assert sample["robot_collision_failure"] is True
+    assert sample["native_readback"][
+        "robot_task_forbidden_collision_peak_force_n"
+    ] == pytest.approx(2.0)
+
+
 def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
     built = _built()
     built.plan["task_kind"] = "rigid_pick_place"

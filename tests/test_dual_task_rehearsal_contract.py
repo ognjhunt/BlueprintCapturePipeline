@@ -15,6 +15,7 @@ from blueprint_pipeline.dual_task_rehearsal_contract import (
     validate_selection_preregistration,
     validate_task_freeze,
     validate_task_freeze_join,
+    validate_task_freeze_set,
 )
 
 
@@ -318,6 +319,45 @@ def test_join_rejects_shared_mask_collider_or_replacement() -> None:
         with pytest.raises(DualTaskRehearsalContractError) as caught:
             validate_task_freeze_join([task_a, mutated])
         assert f"dual_task_join_shared_{field}" in caught.value.errors
+
+
+def _independent_task_copy(base: dict, index: int) -> dict:
+    value = copy.deepcopy(base)
+    suffix = chr(ord("a") + index)
+    value["task_id"] = f"task_{suffix}"
+    value["source_object"]["instance_id"] = f"source_{suffix}"
+    for field in (
+        "removal_id",
+        "mask_set_id",
+        "collider_deletion_id",
+        "replacement_asset_id",
+        "replacement_qualification_id",
+    ):
+        value["removal_plan"][field] = f"{field}_{suffix}"
+    value["removal_plan"]["source_collider_prim_path"] = f"/Root/source_{suffix}"
+    return _seal(value, "task_freeze_digest")
+
+
+@pytest.mark.parametrize("count", [1, 2, 5])
+def test_general_scene_task_freeze_set_accepts_one_to_five_objects(count: int) -> None:
+    base = task_freeze("task_b", "rigid_object_manipulation", "source_b")
+    tasks = [_independent_task_copy(base, index) for index in range(count)]
+
+    result = validate_task_freeze_set(tasks)
+
+    assert result["task_count"] == count
+    assert result["maximum_task_count"] == 5
+    assert len(result["task_freeze_digests"]) == count
+
+
+def test_general_scene_task_freeze_set_rejects_six_objects() -> None:
+    base = task_freeze("task_b", "rigid_object_manipulation", "source_b")
+    tasks = [_independent_task_copy(base, index) for index in range(6)]
+
+    with pytest.raises(DualTaskRehearsalContractError) as caught:
+        validate_task_freeze_set(tasks)
+
+    assert caught.value.errors == ("scene_task_freeze_set_count_out_of_range",)
 
 
 def test_learned_outcome_leakage_fails_before_scene_selection() -> None:

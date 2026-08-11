@@ -60,6 +60,7 @@ def _sample(**overrides):
         "task_robot_contact_forces_w_n": [[0.0, 0.0, 0.0]],
         "task_scene_contact_forces_w_n": [[0.0, 0.0, 0.0]],
         "robot_scene_contact_forces_w_n": [[0.0, 0.0, 0.0]],
+        "robot_task_forbidden_contact_forces_w_n": [[0.0, 0.0, 0.0]],
         "task_root_pose_world": [1.9742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0],
         "task_root_reset_pose_world": [
             1.9742142,
@@ -178,3 +179,56 @@ def test_general_graph_sample_derives_exact_joint_set_and_unit_neutral_aliases()
         joint_id: 0.0 for joint_id in joint_ids
     }
     assert sample["joint_limit_violation"] is False
+
+
+def test_fixed_graph_joint_uses_bound_static_qualification_not_native_coordinate() -> None:
+    task_spec = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "articulated_open_close",
+        "articulation_graph": json.loads(json.dumps(THIRD_SCENE_GRAPH)),
+    }
+    fixed = task_spec["articulation_graph"]["joints"][-1]
+    fixed.update(
+        joint_type="fixed",
+        role="locked",
+        axis=[0.0, 0.0, 0.0],
+        limits=[0.0, 0.0],
+        reset_position=0.0,
+        dependency=None,
+    )
+    joint_ids = [row["joint_id"] for row in task_spec["articulation_graph"]["joints"]]
+    fixed_id = fixed["joint_id"]
+    coordinate_ids = [joint_id for joint_id in joint_ids if joint_id != fixed_id]
+    positions = {
+        joint_id: float(
+            next(
+                row for row in task_spec["articulation_graph"]["joints"]
+                if row["joint_id"] == joint_id
+            )["reset_position"]
+        )
+        for joint_id in coordinate_ids
+    }
+
+    sample = _sample(
+        task_spec=task_spec,
+        task_sample_binding={
+            "joint_ids": joint_ids,
+            "native_coordinate_joint_ids": coordinate_ids,
+            "fixed_joint_ids": [fixed_id],
+            "native_joint_names": {
+                joint_id: joint_id for joint_id in coordinate_ids
+            },
+            "fixed_joint_static_qualification_digests": {
+                fixed_id: "sha256:" + "e" * 64
+            },
+        },
+        native_joint_names=coordinate_ids,
+        native_joint_positions_rad=[positions[joint_id] for joint_id in coordinate_ids],
+        native_joint_velocities_rad_s=[0.0 for _joint_id in coordinate_ids],
+    )
+
+    assert sample["joint_positions"][fixed_id] == 0.0
+    assert sample["joint_velocities_per_s"][fixed_id] == 0.0
+    assert sample["native_readback"][
+        "fixed_joint_static_qualification_digests"
+    ] == {fixed_id: "sha256:" + "e" * 64}

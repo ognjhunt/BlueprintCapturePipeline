@@ -23,6 +23,10 @@ def _sha(character: str) -> str:
     return "sha256:" + character * 64
 
 
+def _num_sha(value: int) -> str:
+    return "sha256:" + f"{value:064x}"
+
+
 def _row(suffix: str, digest_characters: str) -> dict:
     values = iter(digest_characters)
     return {
@@ -62,6 +66,49 @@ def test_two_independent_removal_replacement_lanes_seal() -> None:
         "replacement_a",
         "replacement_b",
     ]
+
+
+@pytest.mark.parametrize("count", [1, 2, 5])
+def test_general_construction_set_accepts_one_to_five_replacements(count: int) -> None:
+    rows = [
+        _row(chr(ord("a") + index), "345678")
+        for index in range(count)
+    ]
+    # Make every evidence digest independent as required by the contract.
+    for index, row in enumerate(rows):
+        for offset, field in enumerate(
+            (
+                "task_freeze_digest",
+                "mask_set_receipt_digest",
+                "source_removal_receipt_digest",
+                "collider_deletion_receipt_digest",
+                "replacement_qualification_receipt_digest",
+                "replacement_asset_sha256",
+            )
+        ):
+            row[field] = "sha256:" + f"{index * 6 + offset + 1:064x}"
+
+    sealed = seal_replacement_construction_bindings(
+        scene_freeze_digest=_sha("1"),
+        task_freeze_set_digest=_sha("2"),
+        bindings=rows,
+    )
+
+    assert len(sealed["bindings"]) == count
+    assert sealed["schema_version"] == "replacement_construction_bindings.v2"
+
+
+def test_general_construction_set_rejects_six_replacements() -> None:
+    rows = [_row(chr(ord("a") + index), "345678") for index in range(6)]
+
+    with pytest.raises(ReplacementConstructionBindingsError) as excinfo:
+        seal_replacement_construction_bindings(
+            scene_freeze_digest=_sha("1"),
+            task_freeze_set_digest=_sha("2"),
+            bindings=rows,
+        )
+
+    assert "replacement_construction_binding_count_out_of_range" in excinfo.value.errors
 
 
 @pytest.mark.parametrize(
@@ -126,15 +173,41 @@ def _file_sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _path_backed_packet(tmp_path: Path) -> tuple[Path, list[dict[str, str]]]:
+def _path_backed_packet(
+    tmp_path: Path, *, object_count: int = 2
+) -> tuple[Path, list[dict[str, str]]]:
     root = Path(__file__).resolve().parents[1]
     manifests = root / "docs/arm_decision_proof_v1/manifests"
     scene_path = manifests / "third_scene_840920_dual_task_scene_freeze.v1.json"
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
-    task_paths = [
+    base_task_paths = [
         manifests / "third_scene_840920_task_a_freeze.v1.json",
         manifests / "third_scene_840920_task_b_freeze.v1.json",
     ]
+    task_paths = base_task_paths[:object_count]
+    base_extra = json.loads(base_task_paths[1].read_text(encoding="utf-8"))
+    for index in range(2, object_count):
+        suffix = chr(ord("a") + index)
+        extra = copy.deepcopy(base_extra)
+        extra["task_id"] = f"task_{suffix}"
+        extra["source_object"]["instance_id"] = f"source_{suffix}"
+        for field in (
+            "removal_id",
+            "mask_set_id",
+            "collider_deletion_id",
+            "replacement_asset_id",
+            "replacement_qualification_id",
+        ):
+            extra["removal_plan"][field] = f"{field}_{suffix}"
+        extra["removal_plan"]["source_collider_prim_path"] = f"/Root/source_{suffix}"
+        for role in ("external", "wrist", "overview"):
+            extra["cameras"][role] = f"{role}_{suffix}"
+        extra["task_freeze_digest"] = canonical_digest(
+            extra, digest_field="task_freeze_digest"
+        )
+        task_path = tmp_path / f"task_{suffix}.json"
+        task_path.write_text(json.dumps(extra, sort_keys=True) + "\n", encoding="utf-8")
+        task_paths.append(task_path)
     lanes: list[dict[str, str]] = []
     collider_rows: list[dict] = []
     for index, task_path in enumerate(task_paths):
@@ -181,6 +254,7 @@ def _path_backed_packet(tmp_path: Path) -> tuple[Path, list[dict[str, str]]]:
             {
                 "schema_version": "source_collider_subtree_removal.v1",
                 "status": "exact_source_collider_subtree_removed",
+                "removal_id": removal["collider_deletion_id"],
                 "sage_collision_usd_sha256": scene["source_components"]["sage_collision"]["sha256"],
                 "removed_prim_path": removal["source_collider_prim_path"],
                 "source_bytes_unchanged": True,
@@ -198,11 +272,11 @@ def _path_backed_packet(tmp_path: Path) -> tuple[Path, list[dict[str, str]]]:
                 "target_prim_path": removal["source_collider_prim_path"],
                 "source_scene_sha256": scene["source_components"]["sage_collision"]["sha256"],
                 "removed_prim_count": 1,
-                "removed_prim_paths_digest": _sha(str(index + 7)),
+                "removed_prim_paths_digest": _num_sha(index + 7),
                 "removed_scene": {
                     "relative_path": f"lane_{index}/removed.usda",
                     "size_bytes": 1,
-                    "sha256": _sha(str(index + 5)),
+                    "sha256": _num_sha(index + 5),
                 },
                 "receipt": {
                     "relative_path": collider.relative_to(tmp_path).as_posix(),
@@ -229,7 +303,7 @@ def _path_backed_packet(tmp_path: Path) -> tuple[Path, list[dict[str, str]]]:
                 },
                 "asset_id": removal["replacement_asset_id"],
                 "replacement_qualification_id": removal["replacement_qualification_id"],
-                "replacement_asset_sha256": _sha(str(index + 3)),
+                "replacement_asset_sha256": _num_sha(index + 3),
                 "native_simulator_import_qualified": True,
                 "receipt_digest": "",
             },
@@ -259,13 +333,14 @@ def _path_backed_packet(tmp_path: Path) -> tuple[Path, list[dict[str, str]]]:
             "replacement_inserted": False,
             "independent_receipts_share_exact_source_digest": True,
             "independent_removed_scenes_are_distinct": True,
-            "target_count": 2,
+            "target_count": len(collider_rows),
             "target_removals": collider_rows,
             "receipt_digest": "",
         },
     )
-    for lane in lanes:
-        lane["source_collider_deletion_receipt_path"] = str(batch)
+    if object_count > 1:
+        for lane in lanes:
+            lane["source_collider_deletion_receipt_path"] = str(batch)
     return scene_path, lanes
 
 
@@ -298,6 +373,34 @@ def test_path_backed_materializer_derives_all_claims_from_receipts(
         }
         for row in result["bindings"]
     )
+
+
+def test_path_backed_materializer_supports_five_independent_objects(
+    tmp_path: Path,
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path, object_count=5)
+
+    result = materialize_replacement_construction_bindings(
+        scene_freeze_receipt_path=scene_path,
+        evidence_lanes=lanes,
+    )
+
+    assert len(result["bindings"]) == 5
+    assert len({row["asset_id"] for row in result["bindings"]}) == 5
+    assert len({row["source_removal_receipt_digest"] for row in result["bindings"]}) == 5
+
+
+def test_path_backed_materializer_supports_one_independent_object(
+    tmp_path: Path,
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path, object_count=1)
+
+    result = materialize_replacement_construction_bindings(
+        scene_freeze_receipt_path=scene_path,
+        evidence_lanes=lanes,
+    )
+
+    assert len(result["bindings"]) == 1
 
 
 @pytest.mark.parametrize(

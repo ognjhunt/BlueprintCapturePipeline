@@ -35,6 +35,15 @@ RUNTIME_COMPOSITION_SCHEMA_VERSION = "articulated_runtime_composition.v1"
 TASK_KIND_ARTICULATED = "articulated_open_close"
 
 
+def _digest(value: Any) -> bool:
+    text = str(value or "")
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
+    )
+
+
 class ArticulatedRuntimeCompositionError(ValueError):
     """Stable, sorted runtime-composition failures."""
 
@@ -87,6 +96,7 @@ def plan_articulated_runtime_composition(
     reset_positions = task_spec.get("joint_reset_positions_rad")
     scorer_joint_ids: set[str] = set()
     scorer_joint_roles: dict[str, str] = {}
+    scorer_joint_types: dict[str, str] = {}
     if task_spec.get("schema_version") == "adp_task_spec.v2":
         graph = task_spec.get("articulation_graph")
         if not isinstance(graph, Mapping):
@@ -105,6 +115,10 @@ def plan_articulated_runtime_composition(
                 }
                 scorer_joint_roles = {
                     str(row["joint_id"]): str(row["role"])
+                    for row in normalized_graph["joints"]
+                }
+                scorer_joint_types = {
+                    str(row["joint_id"]): str(row["joint_type"])
                     for row in normalized_graph["joints"]
                 }
     if reset_positions is not None:
@@ -145,15 +159,37 @@ def plan_articulated_runtime_composition(
         joint_id = str(row.get("joint_id") or "")
         prim_path = str(row.get("joint_prim_path") or "")
         native_joint_name = str(row.get("native_joint_name") or "")
+        readback_kind = str(row.get("readback_kind") or "native_coordinate")
+        static_qualification_digest = str(
+            row.get("static_qualification_digest") or ""
+        )
         if binding_source == "legacy_task_spec" and not native_joint_name:
             native_joint_name = PurePosixPath(prim_path).name
+        expected_readback_kind = (
+            "fixed_joint_static"
+            if scorer_joint_types.get(joint_id) == "fixed"
+            else "native_coordinate"
+        )
+        if readback_kind != expected_readback_kind:
+            errors.append(
+                f"articulated_runtime_composition_joint_readback_kind_invalid:{joint_id}"
+            )
         if (
             not joint_id
             or not PurePosixPath(prim_path).is_absolute()
             or len(PurePosixPath(prim_path).parts) < 3
             or ".." in PurePosixPath(prim_path).parts
-            or not native_joint_name
-            or PurePosixPath(native_joint_name).name != native_joint_name
+            or (
+                readback_kind == "native_coordinate"
+                and (
+                    not native_joint_name
+                    or PurePosixPath(native_joint_name).name != native_joint_name
+                )
+            )
+            or (
+                readback_kind == "fixed_joint_static"
+                and (native_joint_name or not _digest(static_qualification_digest))
+            )
         ):
             errors.append(f"articulated_runtime_composition_joint_invalid:{index}")
             continue
@@ -165,18 +201,25 @@ def plan_articulated_runtime_composition(
             )
             continue
         seen.add(joint_id)
-        if native_joint_name in seen_native_names:
+        if native_joint_name and native_joint_name in seen_native_names:
             errors.append(
                 "articulated_runtime_composition_native_joint_name_duplicated:"
                 + native_joint_name
             )
             continue
-        seen_native_names.add(native_joint_name)
+        if native_joint_name:
+            seen_native_names.add(native_joint_name)
         joints.append(
             {
                 "joint_id": joint_id,
                 "joint_prim_path": prim_path,
                 "native_joint_name": native_joint_name,
+                "readback_kind": readback_kind,
+                "static_qualification_digest": (
+                    static_qualification_digest
+                    if readback_kind == "fixed_joint_static"
+                    else None
+                ),
                 "role": str(
                     row.get("role")
                     or scorer_joint_roles.get(joint_id)
@@ -256,7 +299,24 @@ def plan_articulated_runtime_composition(
                 row["joint_id"]: row["joint_prim_path"] for row in joints
             },
             "native_joint_names": {
-                row["joint_id"]: row["native_joint_name"] for row in joints
+                row["joint_id"]: row["native_joint_name"]
+                for row in joints
+                if row["readback_kind"] == "native_coordinate"
+            },
+            "native_coordinate_joint_ids": sorted(
+                row["joint_id"]
+                for row in joints
+                if row["readback_kind"] == "native_coordinate"
+            ),
+            "fixed_joint_ids": sorted(
+                row["joint_id"]
+                for row in joints
+                if row["readback_kind"] == "fixed_joint_static"
+            ),
+            "fixed_joint_static_qualification_digests": {
+                row["joint_id"]: row["static_qualification_digest"]
+                for row in joints
+                if row["readback_kind"] == "fixed_joint_static"
             },
             "joint_roles": {row["joint_id"]: row["role"] for row in joints},
         },

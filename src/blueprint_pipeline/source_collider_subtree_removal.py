@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 
 
 SCHEMA_VERSION = "source_collider_subtree_removal.v1"
@@ -106,6 +107,7 @@ def remove_source_collider_subtree(
     target_prim_path: str,
     output_usda_path: str | Path,
     expected_source_sha256: str | None = None,
+    removal_id: str | None = None,
 ) -> dict[str, Any]:
     """Delete exactly ``target_prim_path`` and verify unrelated composed data."""
 
@@ -119,6 +121,7 @@ def remove_source_collider_subtree(
     source = Path(source_usd_path).expanduser().resolve()
     output = Path(output_usda_path).expanduser().resolve()
     target = str(target_prim_path or "")
+    normalized_removal_id = str(removal_id or "")
     errors: list[str] = []
     if not source.is_file() or source.is_symlink():
         errors.append("source_collider_usd_missing_or_symlink")
@@ -126,6 +129,10 @@ def remove_source_collider_subtree(
         errors.append("source_collider_target_prim_path_invalid")
     if output.exists() or output.suffix.lower() != ".usda":
         errors.append("source_collider_output_must_be_new_usda")
+    if removal_id is not None and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]*", normalized_removal_id
+    ):
+        errors.append("source_collider_removal_id_invalid")
     if errors:
         raise SourceColliderSubtreeRemovalError(errors)
 
@@ -194,6 +201,7 @@ def remove_source_collider_subtree(
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "exact_source_collider_subtree_removed",
+        "removal_id": normalized_removal_id or None,
         "source_scene_usd": {
             "path": str(source),
             "sha256": source_digest,
@@ -285,6 +293,8 @@ def materialize_source_collider_batch_removal(
         )
     if len(normalized) < 2:
         errors.append("source_collider_batch_requires_two_targets")
+    if len(normalized) > MAX_REPLACEMENT_OBJECTS:
+        errors.append("source_collider_batch_target_count_exceeds_limit")
     removal_ids = [row["removal_id"] for row in normalized]
     target_paths = [row["target_prim_path"] for row in normalized]
     if len(set(removal_ids)) != len(removal_ids):
@@ -315,6 +325,7 @@ def materialize_source_collider_batch_removal(
             target_prim_path=row["target_prim_path"],
             output_usda_path=removed_path,
             expected_source_sha256=source_digest,
+            removal_id=row["removal_id"],
         )
         receipt_path = independent_root / f"{row['removal_id']}.receipt.json"
         receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")

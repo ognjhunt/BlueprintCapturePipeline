@@ -24,6 +24,8 @@ SELECTION_SCHEMA_VERSION = "dual_task_scene_selection_preregistration.v1"
 SCENE_FREEZE_SCHEMA_VERSION = "dual_task_scene_freeze.v1"
 TASK_FREEZE_SCHEMA_VERSION = "dual_task_task_freeze.v1"
 JOIN_SCHEMA_VERSION = "dual_task_freeze_join.v1"
+TASK_FREEZE_SET_SCHEMA_VERSION = "scene_task_freeze_set.v1"
+MAX_REPLACEMENT_OBJECTS = 5
 FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
 TASK_KINDS = frozenset({"articulated_interaction", "rigid_object_manipulation"})
 SELECTION_CRITERION_STATUSES = frozenset(
@@ -433,20 +435,34 @@ def validate_task_freeze(value: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def validate_task_freeze_join(task_freezes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    if isinstance(task_freezes, (str, bytes)) or len(task_freezes) != 2:
-        raise DualTaskRehearsalContractError(["dual_task_join_requires_exactly_two_tasks"])
+def validate_task_freeze_set(
+    task_freezes: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Join one to five independent task/object freezes for scene construction.
+
+    The public rehearsal still uses :func:`validate_task_freeze_join` to require
+    exactly two materially different tasks.  Construction is a broader reusable
+    seam: a scene may contain up to five independently removed and replaced
+    objects without changing the runtime or evidence schema again.
+    """
+
+    if (
+        isinstance(task_freezes, (str, bytes))
+        or not 1 <= len(task_freezes) <= MAX_REPLACEMENT_OBJECTS
+    ):
+        raise DualTaskRehearsalContractError(
+            ["scene_task_freeze_set_count_out_of_range"]
+        )
     tasks = [validate_task_freeze(value) for value in task_freezes]
     errors: list[str] = []
-    if len({_identifier(task["task_id"]) for task in tasks}) != 2:
-        errors.append("dual_task_join_task_ids_not_distinct")
-    if {task["task_kind"] for task in tasks} != TASK_KINDS:
-        errors.append("dual_task_join_kinds_not_materially_distinct")
+    task_count = len(tasks)
+    if len({_identifier(task["task_id"]) for task in tasks}) != task_count:
+        errors.append("scene_task_freeze_set_task_ids_not_distinct")
     if len({task["scene_freeze_digest"] for task in tasks}) != 1:
-        errors.append("dual_task_join_scene_mismatch")
+        errors.append("scene_task_freeze_set_scene_mismatch")
     source_ids = {_identifier(task["source_object"]["instance_id"]) for task in tasks}
-    if len(source_ids) != 2:
-        errors.append("dual_task_join_source_objects_not_distinct")
+    if len(source_ids) != task_count:
+        errors.append("scene_task_freeze_set_source_objects_not_distinct")
     independent_fields = (
         "removal_id",
         "mask_set_id",
@@ -456,17 +472,65 @@ def validate_task_freeze_join(task_freezes: Sequence[Mapping[str, Any]]) -> dict
         "replacement_qualification_id",
     )
     for field in independent_fields:
-        if len({_identifier(task["removal_plan"][field]) for task in tasks}) != 2:
-            errors.append(f"dual_task_join_shared_{field}")
+        if (
+            len({_identifier(task["removal_plan"][field]) for task in tasks})
+            != task_count
+        ):
+            errors.append(f"scene_task_freeze_set_shared_{field}")
     if errors:
         raise DualTaskRehearsalContractError(errors)
     result: dict[str, Any] = {
-        "schema_version": JOIN_SCHEMA_VERSION,
+        "schema_version": TASK_FREEZE_SET_SCHEMA_VERSION,
         "scene_freeze_digest": tasks[0]["scene_freeze_digest"],
+        "task_count": task_count,
+        "maximum_task_count": MAX_REPLACEMENT_OBJECTS,
         "task_freeze_digests": sorted(task["task_freeze_digest"] for task in tasks),
         "task_ids": sorted(task["task_id"] for task in tasks),
         "candidate_ids": list(FROZEN_CANDIDATES),
         "independence_fields": list(independent_fields),
+        "independent": True,
+        "set_digest": "",
+    }
+    result["set_digest"] = canonical_digest(result, digest_field="set_digest")
+    return result
+
+
+def validate_task_freeze_join(task_freezes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Validate the rehearsal-specific two-task contrast."""
+
+    if isinstance(task_freezes, (str, bytes)) or len(task_freezes) != 2:
+        raise DualTaskRehearsalContractError(["dual_task_join_requires_exactly_two_tasks"])
+    try:
+        task_set = validate_task_freeze_set(task_freezes)
+    except DualTaskRehearsalContractError as exc:
+        translations = {
+            "scene_task_freeze_set_task_ids_not_distinct": (
+                "dual_task_join_task_ids_not_distinct"
+            ),
+            "scene_task_freeze_set_scene_mismatch": "dual_task_join_scene_mismatch",
+            "scene_task_freeze_set_source_objects_not_distinct": (
+                "dual_task_join_source_objects_not_distinct"
+            ),
+        }
+        translated = []
+        for error in exc.errors:
+            if error.startswith("scene_task_freeze_set_shared_"):
+                translated.append(error.replace("scene_task_freeze_set_", "dual_task_join_", 1))
+            else:
+                translated.append(translations.get(error, error))
+        raise DualTaskRehearsalContractError(translated) from exc
+    tasks = [validate_task_freeze(value) for value in task_freezes]
+    if {task["task_kind"] for task in tasks} != TASK_KINDS:
+        raise DualTaskRehearsalContractError(
+            ["dual_task_join_kinds_not_materially_distinct"]
+        )
+    result: dict[str, Any] = {
+        "schema_version": JOIN_SCHEMA_VERSION,
+        "scene_freeze_digest": task_set["scene_freeze_digest"],
+        "task_freeze_digests": task_set["task_freeze_digests"],
+        "task_ids": task_set["task_ids"],
+        "candidate_ids": list(FROZEN_CANDIDATES),
+        "independence_fields": task_set["independence_fields"],
         "independent": True,
         "join_digest": "",
     }
@@ -478,13 +542,16 @@ __all__ = [
     "DualTaskRehearsalContractError",
     "FROZEN_CANDIDATES",
     "JOIN_SCHEMA_VERSION",
+    "MAX_REPLACEMENT_OBJECTS",
     "REQUIRED_SELECTION_CRITERIA",
     "SCENE_FREEZE_SCHEMA_VERSION",
     "SELECTION_SCHEMA_VERSION",
     "TASK_FREEZE_SCHEMA_VERSION",
+    "TASK_FREEZE_SET_SCHEMA_VERSION",
     "TASK_KINDS",
     "validate_scene_freeze",
     "validate_selection_preregistration",
     "validate_task_freeze",
     "validate_task_freeze_join",
+    "validate_task_freeze_set",
 ]

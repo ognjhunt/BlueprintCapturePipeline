@@ -219,6 +219,23 @@ native import, joint/physics behavior, appearance, placement, reach/contact,
 cameras, reset execution, zero-action, scripted-positive, or policy execution;
 those remain blocked.
 
+Both objects now also have independent prompt-bound parametric CAD candidates,
+generated locally through the general graph-spec-to-OpenCascade adapter. The
+prompt is semantic guidance only; every dimension, link membership, and rest
+pose comes from the exact graph spec, and generated hidden geometry is not
+observed truth. The washer STEP is `133,900` bytes,
+`sha256:24d23298eb41bdcaf37e2afad2815505a8be66ea122a551a80090ce468a8267a`;
+the notebook STEP is `33,182` bytes,
+`sha256:491d663bb87192b8b7df98dffb7b4e1f8cf02eefffa6b0df50f78d372de32a6b`.
+Both were independently regenerated and matched byte-for-byte after the
+adapter normalized OpenCascade's wall-clock and process-global STEP metadata.
+Portable bindings are retained in
+[Task A](manifests/third_scene_840920_task_a_graph_cad_candidate_binding.v1.json)
+and
+[Task B](manifests/third_scene_840920_task_b_graph_cad_candidate_binding.v1.json).
+These are generated CAD candidates, not Content Agents outputs, native-import
+qualifications, appearance evidence, or physical equivalents.
+
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
 | Task A canonical | Not run | Not run | Not admitted | Not admitted |
@@ -280,6 +297,26 @@ forks:
   policies. No 840920 depth, construction, or control qualification is claimed
   because its evaluation cameras, source removals, native asset imports, and
   construction packets remain unavailable.
+- The exact v2 Task A and Task B USDs now pass the general local GPU-collision
+  schema audit using `10` and `2` dynamic primitive colliders respectively:
+  [Task A receipt](manifests/third_scene_840920_task_a_gpu_collision_static_qualification.v1.json)
+  (`sha256:c6a3d761c99cba4c4dd812360956cc039e4639701a341bd23d32ff3e40797632`)
+  and [Task B receipt](manifests/third_scene_840920_task_b_gpu_collision_static_qualification.v1.json)
+  (`sha256:652c6ced81ac03621056f74698c5c4d9337d8d8391c0bfdf1506b52125c2b894`).
+  These receipts prove only locally authored collision-schema compatibility;
+  both explicitly retain `native_simulator_import_qualified: false` and require
+  native GPU cooking readback.
+- Shared construction is no longer hard-coded to two objects. A general
+  `1..5` task/object freeze set now drives independent removal, source-collider,
+  replacement-qualification, reset, construction-binding, and runtime asset
+  rows. The rehearsal-specific join remains stricter—exactly two materially
+  different tasks—while hermetic `1`, `2`, and `5` object fixtures prove the
+  reusable ceiling and a sixth object fails before scene construction.
+- A deterministic prompt-bound graph-to-CAD adapter now emits portable AP214
+  STEP candidates without loading the legacy can-specific authoring path. It
+  binds exact graph-spec bytes and provenance labels, normalizes nondeterministic
+  OpenCascade header/session metadata, and cannot upgrade generated geometry to
+  observed truth or simulator qualification.
 
 Hermetic regressions preserve the 840313 rigid fixture, 840796 articulated
 fixture, and dual-task shared-asset fixture. Scene-specific values remain in
@@ -331,7 +368,7 @@ rights-bounded dataset-derived bytes.
 Before the final reusable-code commit:
 
 - `PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode or nurec or aura"`
-  — `1153 passed, 9878 deselected` in `218.17 s`.
+  — `1155 passed, 9903 deselected` in `357.24 s`.
 - `.venv/bin/ruff check src/ tests/` — passed.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
@@ -342,23 +379,27 @@ Before the final reusable-code commit:
   development lane, one aggregate invocation was interrupted by host `ENOSPC`
   while Git wrote a disposable fixture index; its exact affected test passed
   after this lane's temporary pytest directory was removed.
+- Focused graph-native state, bounded 1..5 replacement construction, independent
+  collider removal, runtime admission, static GPU-collision, and deterministic
+  graph-to-CAD regressions — `116 passed`.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring; complete collision-pair normalization; static authored-structure qualification; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; deterministic prompt-bound parametric CAD candidates; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
-| Blocked/abstained | Two exact Gaussian removals, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
+| Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
 
 ## Remaining ambiguity and single next action
 
 Independent metric/handedness qualification, Gaussian ownership/removal,
 replacement depth coverage, native reach/contact, asset dynamics/appearance,
-the Task A graph-articulation native import/state/contact binding, and all
-episode evidence remain unknown. The graph phase compiler is implemented and
-hermetically exercised; that is not native task qualification.
+the evidence-backed Task A interaction affordance and native import/dynamics,
+and all episode evidence remain unknown. The graph phase and native
+state/contact compilers are implemented and hermetically exercised; local
+collision-schema qualification is not native task qualification.
 
 **Single next action:** grant fresh explicit one-attempt, zero-retry authority for
 the two independently sealed repaired contribution bundles. If either attempt

@@ -1,0 +1,13 @@
+{
+  "asset_id": "840920_simready_notebook_candidate",
+  "generated_hidden_geometry_is_observed_truth": false,
+  "geometry_authority": "digest_bound_graph_spec_dimensions_and_poses_prompt_is_semantic_only",
+  "prompt": "Create a dimensionally bounded thin clamshell notebook computer candidate in the frozen open configuration; preserve only graph-spec link geometry.",
+  "request_digest": "sha256:2d8effc3e1fc7371936afa764031baa33312933056b375643d26ff2ae391054c",
+  "request_id": "third_scene_840920_task_b_graph_cad_v1",
+  "schema_version": "simready_graph_cad_request.v1",
+  "spec_digest": "sha256:db3f07dccef96433340a6b2ebd84c9cc832cc7400dc8bb7b3a991ddb5ccf2f0f",
+  "target_format": "STEP_AP214",
+  "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+  "task_id": "task_b_notebook_relocation"
+}

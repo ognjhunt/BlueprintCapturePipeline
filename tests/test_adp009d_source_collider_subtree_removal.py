@@ -124,6 +124,50 @@ def test_batch_removal_materializes_independent_receipts_and_shared_scene(
     )
 
 
+def test_batch_removal_supports_five_independent_replacement_objects(
+    tmp_path: Path,
+) -> None:
+    source = _fixture(tmp_path / "five.usda", "0")
+    stage = Usd.Stage.Open(str(source))
+    assert stage is not None
+    for index in range(1, 5):
+        UsdGeom.Cube.Define(stage, f"/Root/target_{index}").CreateSizeAttr(0.25)
+    stage.GetRootLayer().Save()
+
+    receipt = materialize_source_collider_batch_removal(
+        source_usd_path=source,
+        targets=[
+            {"removal_id": f"removal_{index}", "target_prim_path": f"/Root/target_{index}"}
+            for index in range(5)
+        ],
+        output_root=tmp_path / "five_removed",
+        expected_source_sha256=_sha256(source),
+    )
+
+    assert receipt["target_count"] == 5
+    assert len(receipt["target_removals"]) == 5
+
+
+def test_batch_removal_rejects_more_than_five_objects(tmp_path: Path) -> None:
+    source = _fixture(tmp_path / "six.usda", "0")
+
+    with pytest.raises(
+        SourceColliderSubtreeRemovalError,
+        match="source_collider_batch_target_count_exceeds_limit",
+    ):
+        materialize_source_collider_batch_removal(
+            source_usd_path=source,
+            targets=[
+                {
+                    "removal_id": f"removal_{index}",
+                    "target_prim_path": f"/Root/target_{index}",
+                }
+                for index in range(6)
+            ],
+            output_root=tmp_path / "six_removed",
+        )
+
+
 def test_batch_removal_rejects_duplicate_or_nested_targets(tmp_path: Path) -> None:
     source = _fixture(tmp_path / "scene.usda", "task")
     with pytest.raises(

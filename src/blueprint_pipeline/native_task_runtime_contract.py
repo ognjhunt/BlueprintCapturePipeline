@@ -22,6 +22,7 @@ from typing import Any, Mapping, Sequence
 from .articulated_runtime_composition import plan_articulated_runtime_composition
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 from .replacement_construction_bindings import (
     ReplacementConstructionBindingsError,
     validate_replacement_construction_bindings,
@@ -48,6 +49,9 @@ SUPPORTED_SCENARIO_RUNTIME_TARGETS = frozenset(
     }
 )
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
+GRAPH_TASK_STATE_BINDING_SCHEMA_VERSION = (
+    "native_articulated_graph_task_state_binding.v1"
+)
 DROID_FRANKA_RESET_JOINT_NAMES = (
     "panda_joint1",
     "panda_joint2",
@@ -137,6 +141,8 @@ def _asset_rows(
     if replacements and "task_object" in by_role:
         errors.append("native_task_runtime_legacy_and_replacement_assets_mixed")
     if replacements:
+        if len(replacements) > MAX_REPLACEMENT_OBJECTS:
+            errors.append("native_task_runtime_replacement_asset_count_out_of_range")
         replacement_ids = [str(row.get("asset_id") or "") for row in replacements]
         if (
             any(
@@ -393,7 +399,11 @@ def _camera_rows(
 
 
 def _articulated_task_state_binding(
-    value: Any, *, task_kind: str, errors: list[str]
+    value: Any,
+    *,
+    task_kind: str,
+    task_spec: Mapping[str, Any],
+    errors: list[str],
 ) -> dict[str, Any] | None:
     if task_kind != "articulated_open_close":
         if value not in (None, {}):
@@ -402,6 +412,77 @@ def _articulated_task_state_binding(
     if not isinstance(value, Mapping):
         errors.append("native_task_runtime_state_binding_missing")
         return None
+    if task_spec.get("schema_version") == "adp_task_spec.v2":
+        if value.get("schema_version") != GRAPH_TASK_STATE_BINDING_SCHEMA_VERSION:
+            errors.append("native_task_runtime_graph_state_binding_schema_invalid")
+        graph = task_spec.get("articulation_graph")
+        affordance = task_spec.get("interaction_affordance")
+        if not isinstance(graph, Mapping) or not isinstance(affordance, Mapping):
+            errors.append("native_task_runtime_graph_state_contract_missing")
+            graph = {"links": []}
+            affordance = {}
+        graph_digest = canonical_digest(dict(graph))
+        affordance_digest = str(affordance.get("affordance_digest") or "")
+        if (
+            value.get("articulation_graph_digest") != graph_digest
+            or value.get("interaction_affordance_digest") != affordance_digest
+            or not _digest(graph_digest)
+            or not _digest(affordance_digest)
+        ):
+            errors.append("native_task_runtime_graph_state_digest_mismatch")
+        link_ids = {
+            str(row.get("link_id") or "")
+            for row in graph.get("links") or []
+            if isinstance(row, Mapping)
+        }
+        raw_body_names = value.get("link_native_body_names")
+        if not isinstance(raw_body_names, Mapping):
+            errors.append("native_task_runtime_graph_link_body_binding_invalid")
+            body_names: dict[str, str] = {}
+        else:
+            body_names = {
+                str(link_id): str(body_name)
+                for link_id, body_name in raw_body_names.items()
+            }
+            if (
+                set(body_names) != link_ids
+                or len(set(body_names.values())) != len(body_names)
+                or any(
+                    not name or PurePosixPath(name).name != name
+                    for name in body_names.values()
+                )
+            ):
+                errors.append("native_task_runtime_graph_link_body_binding_invalid")
+        thresholds: dict[str, float] = {}
+        for field in (
+            "task_contact_minimum_force_n",
+            "collision_failure_minimum_force_n",
+            "retreat_minimum_separation_m",
+            "root_translation_tolerance_m",
+            "root_orientation_tolerance_rad",
+        ):
+            try:
+                number = float(value[field])
+            except (KeyError, TypeError, ValueError):
+                errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
+                continue
+            if not math.isfinite(number) or number <= 0.0:
+                errors.append(f"native_task_runtime_state_threshold_invalid:{field}")
+            thresholds[field] = number
+        return {
+            "schema_version": GRAPH_TASK_STATE_BINDING_SCHEMA_VERSION,
+            "articulation_graph_digest": graph_digest,
+            "interaction_affordance_digest": affordance_digest,
+            "link_native_body_names": body_names,
+            **thresholds,
+            "measurement_authority": {
+                "joint_state": "native_complete_graph_coordinate_readback",
+                "contact_and_collision": "native_exact_body_filtered_contact_force",
+                "containment": "native_task_root_pose_delta",
+                "retreat": "native_grasp_frame_to_interaction_point_separation",
+                "caller_asserted_booleans_forbidden": True,
+            },
+        }
 
     def _source_prim(field: str) -> str:
         path = str(value.get(field) or "")
@@ -704,7 +785,10 @@ def materialize_native_task_runtime_contract(
         scenario_parameter_bindings, errors=errors
     )
     state_binding = _articulated_task_state_binding(
-        task_state_binding, task_kind=task_kind, errors=errors
+        task_state_binding,
+        task_kind=task_kind,
+        task_spec=task_spec,
+        errors=errors,
     )
     if errors:
         raise NativeTaskRuntimeContractError(errors)

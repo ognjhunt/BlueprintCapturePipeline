@@ -1,0 +1,77 @@
+{
+  "schema_version": "native_task_gpu_collision_static_qualification.v1",
+  "source_usd_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/replacement_graph_v2/replacement.usda",
+  "source_usd_sha256": "sha256:4e5caad7fb233f0560ae91d84b1911f9c27eeb1ad85201236f41c0e9c9f2c9ad",
+  "source_usd_size_bytes": 22261,
+  "status": "qualified",
+  "maximum_convex_hull_aspect_ratio": 100.0,
+  "dynamic_mesh_colliders": [],
+  "dynamic_primitive_colliders": [
+    {
+      "prim_path": "/Asset/links/body/geometry/left_shell",
+      "rigid_body_prim_path": "/Asset/links/body",
+      "primitive_type": "Cube",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/body/geometry/right_shell",
+      "rigid_body_prim_path": "/Asset/links/body",
+      "primitive_type": "Cube",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/body/geometry/top_shell",
+      "rigid_body_prim_path": "/Asset/links/body",
+      "primitive_type": "Cube",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/body/geometry/bottom_shell",
+      "rigid_body_prim_path": "/Asset/links/body",
+      "primitive_type": "Cube",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/body/geometry/back_shell",
+      "rigid_body_prim_path": "/Asset/links/body",
+      "primitive_type": "Cube",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/door/geometry/door_disc",
+      "rigid_body_prim_path": "/Asset/links/door",
+      "primitive_type": "Cylinder",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/latch/geometry/latch_block",
+      "rigid_body_prim_path": "/Asset/links/latch",
+      "primitive_type": "Cube",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/drum/geometry/drum_shell",
+      "rigid_body_prim_path": "/Asset/links/drum",
+      "primitive_type": "Cylinder",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/selector/geometry/selector_knob",
+      "rigid_body_prim_path": "/Asset/links/selector",
+      "primitive_type": "Cylinder",
+      "blockers": []
+    },
+    {
+      "prim_path": "/Asset/links/drawer/geometry/drawer_front",
+      "rigid_body_prim_path": "/Asset/links/drawer",
+      "primitive_type": "Cube",
+      "blockers": []
+    }
+  ],
+  "dynamic_collision_prim_count": 10,
+  "blockers": [],
+  "native_gpu_cooking_readback_still_required": true,
+  "native_simulator_import_qualified": false,
+  "physical_equivalence_claimed": false,
+  "qualification_digest": "sha256:c6a3d761c99cba4c4dd812360956cc039e4639701a341bd23d32ff3e40797632"
+}

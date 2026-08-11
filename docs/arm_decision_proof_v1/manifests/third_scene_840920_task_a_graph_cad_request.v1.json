@@ -1,0 +1,13 @@
+{
+  "asset_id": "840920_simready_washer_candidate",
+  "generated_hidden_geometry_is_observed_truth": false,
+  "geometry_authority": "digest_bound_graph_spec_dimensions_and_poses_prompt_is_semantic_only",
+  "prompt": "Create a dimensionally bounded front-loading washer candidate with a round articulated front door; preserve only graph-spec link geometry and label hidden mechanism geometry as generated.",
+  "request_digest": "sha256:eb11d6e0a90b7a9b75448c065ef1133b6ea775b1bfc627259d6eefca8c198f93",
+  "request_id": "third_scene_840920_task_a_graph_cad_v1",
+  "schema_version": "simready_graph_cad_request.v1",
+  "spec_digest": "sha256:406f6162ae4c04266a7c6257a9c814fcc460bece32e39ed3ac2445de1f421fca",
+  "target_format": "STEP_AP214",
+  "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+  "task_id": "task_a_washer_door_open"
+}
