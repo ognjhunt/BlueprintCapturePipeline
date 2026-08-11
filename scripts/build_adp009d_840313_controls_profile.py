@@ -25,6 +25,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from blueprint_pipeline.evaluation_run_contract import validate_evaluation_run_spec
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     LAUNCH_RUN_ROOT_PLACEHOLDER,
@@ -107,9 +108,15 @@ def build_controls_profile_release(
     source_path = repo / MANIFEST_RELATIVE_ROOT / SOURCE_MANIFEST_NAME
     spec_path = repo / MANIFEST_RELATIVE_ROOT / EVALUATION_SPEC_NAME
     source_bundle = _read(source_path)
-    if _file_digest(source_path) != EXPECTED_BUNDLE_DIGEST:
+    # The frozen digests are the ones the manifests declare for their own
+    # content, not the hashes of the manifest files; the file hashes go into
+    # `immutable_inputs` below, where the dispatcher rehashes them.
+    if source_bundle.get("bundle_id") != BUNDLE_ID:
+        raise ProductionProfileBuildError("controls_profile_bundle_id_mismatch")
+    if source_bundle.get("bundle_digest") != EXPECTED_BUNDLE_DIGEST:
         raise ProductionProfileBuildError("controls_profile_source_bundle_digest_mismatch")
-    if _file_digest(spec_path) != EXPECTED_SPEC_DIGEST:
+    validation = validate_evaluation_run_spec(_read(spec_path))
+    if validation.get("status") != "passed" or validation.get("spec_digest") != EXPECTED_SPEC_DIGEST:
         raise ProductionProfileBuildError("controls_profile_spec_digest_mismatch")
     verify_materialized_source_artifacts(source_bundle, inputs)
 
@@ -151,8 +158,8 @@ def build_controls_profile_release(
 
     profile_id = profile_id_for_source_commit(source_commit)
     immutable_inputs = [
-        {"name": "source_bundle_manifest", "path": str(source_path), "digest": EXPECTED_BUNDLE_DIGEST},
-        {"name": "evaluation_run_spec", "path": str(spec_path), "digest": EXPECTED_SPEC_DIGEST},
+        {"name": "source_bundle_manifest", "path": str(source_path), "digest": _file_digest(source_path)},
+        {"name": "evaluation_run_spec", "path": str(spec_path), "digest": _file_digest(spec_path)},
         *(
             {"name": name, "path": str(path), "digest": _file_digest(path)}
             for name, path in sorted(controls_inputs.items())

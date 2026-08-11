@@ -42,13 +42,25 @@ def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     (repo / builder.APPROVED_CAN_RELATIVE).parent.mkdir(parents=True, exist_ok=True)
     (repo / builder.APPROVED_CAN_RELATIVE).write_text("#usda 1.0\n", encoding="utf-8")
     for name in (
-        builder.SOURCE_MANIFEST_NAME,
-        builder.EVALUATION_SPEC_NAME,
         "adp009d_840313_runtime_readiness.v1.json",
         builder.HARNESS_MANIFEST_RELATIVE.name,
         builder.SCENARIO_INSTANCE_RELATIVE.name,
     ):
         (manifests / name).write_text(json.dumps({"name": name}), encoding="utf-8")
+    (manifests / builder.SOURCE_MANIFEST_NAME).write_text(
+        json.dumps(
+            {"bundle_id": builder.BUNDLE_ID, "bundle_digest": builder.EXPECTED_BUNDLE_DIGEST}
+        ),
+        encoding="utf-8",
+    )
+    (manifests / builder.EVALUATION_SPEC_NAME).write_text(
+        json.dumps({"spec": "stub"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        builder,
+        "validate_evaluation_run_spec",
+        lambda value: {"status": "passed", "spec_digest": builder.EXPECTED_SPEC_DIGEST},
+    )
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     (inputs / builder.SAGE_COLLISION_NAME).write_text("collision", encoding="utf-8")
@@ -58,12 +70,6 @@ def _release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
 
     monkeypatch.setattr(builder, "verify_protected_main_checkout", lambda *a, **k: None)
     monkeypatch.setattr(builder, "verify_materialized_source_artifacts", lambda *a, **k: {})
-    monkeypatch.setattr(
-        builder, "EXPECTED_BUNDLE_DIGEST", builder._file_digest(manifests / builder.SOURCE_MANIFEST_NAME)
-    )
-    monkeypatch.setattr(
-        builder, "EXPECTED_SPEC_DIGEST", builder._file_digest(manifests / builder.EVALUATION_SPEC_NAME)
-    )
     return {
         "repo": repo,
         "inputs": inputs,
