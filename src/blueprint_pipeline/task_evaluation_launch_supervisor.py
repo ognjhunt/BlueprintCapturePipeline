@@ -88,6 +88,15 @@ def build_supervisor_snapshot(
     profiles: list[dict[str, Any]] = []
     guard_path = Path(guard_report_path).expanduser().resolve()
     guard = _read(guard_path) if guard_path.is_file() else {}
+    raw_guard_blockers = guard.get("blockers")
+    if not guard:
+        guard_blockers = ["gpu_spend_guard_report_unavailable"]
+    elif not isinstance(raw_guard_blockers, list) or any(
+        not isinstance(item, str) or not item for item in raw_guard_blockers
+    ):
+        guard_blockers = ["gpu_spend_guard_report_blockers_invalid"]
+    else:
+        guard_blockers = list(raw_guard_blockers)
     inventories = {
         str(row.get("provider")): row
         for row in guard.get("inventory_results") or []
@@ -123,6 +132,7 @@ def build_supervisor_snapshot(
             blockers.append("gpu_fleet_not_zero_before_launch")
         if spend_admission.get("admission_allowed") is not True:
             blockers.append("paid_spend_admission_not_open")
+        blockers.extend(guard_blockers)
         allocator = profile.get("allocator")
         allocator = allocator if isinstance(allocator, Mapping) else {}
         profiles.append(
@@ -180,7 +190,7 @@ def build_supervisor_snapshot(
             "live_instance_count": guard.get("live_instance_count"),
             "total_burn_per_hour_usd": guard.get("total_burn_per_hour_usd"),
             "spend_admission_allowed": spend_admission.get("admission_allowed") is True,
-            "blockers": guard.get("blockers") or ["gpu_spend_guard_report_unavailable"],
+            "blockers": guard_blockers,
         },
         "authority_boundary": {
             "agent_may_mutate_provider": False,
