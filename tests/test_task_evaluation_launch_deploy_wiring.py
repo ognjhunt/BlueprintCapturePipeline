@@ -74,6 +74,27 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "provider-secrets" not in supervisor
 
 
+def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> None:
+    guard = _text("deploy/systemd/blueprint-gpu-spend-guard.service")
+    billing = _text("deploy/systemd/blueprint-provider-billing-reconciler.service")
+
+    for unit in (guard, billing):
+        assert (
+            "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO="
+            "/opt/blueprint/task-evaluation-control-plane"
+        ) in unit
+        assert (
+            "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON="
+            "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
+        ) in unit
+        assert "BLUEPRINT_PIPELINE_REPO" not in unit
+        assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}"' in unit
+        assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
+
+    assert "scripts/gpu_spend_guard.py" in guard
+    assert "blueprint_pipeline.provider_billing_reconciler" in billing
+
+
 def test_installer_and_environment_enable_durable_queue_and_independent_recovery() -> None:
     installer = _text("scripts/install_live_pipeline_control_plane.sh")
     environment = _text("deploy/systemd/pipeline-control-plane.env.example")

@@ -100,11 +100,11 @@ that endpoint from its canonical Pipeline forwarding URL. An inline
 override, not the normal production source.
 
 The dry profile is immutable and remains bound to the deployment commit that
-created it. The dispatcher, reconciler, and advisory supervisor import source
-only through the active immutable-release link; their shared Python
-interpreter supplies dependencies but `PYTHONPATH=src` selects the release
-tree. Do not overwrite a dry profile to enable spend. After the protected-main
-controls canary passes, build a separate
+created it. The dispatcher, reconciler, advisory supervisor, provider-billing
+reconciler, and GPU spend guard import source only through the active
+immutable-release link; their shared Python interpreter supplies dependencies
+but `PYTHONPATH=src` selects the release tree. Do not overwrite a dry profile to
+enable spend. After the protected-main controls canary passes, build a separate
 `adp009d-840313-franka-live-<commit>` profile. The live builder verifies all five
 InteriorGS/SAGE source bytes, the retained Aura construction and task-volume
 exclusion lineage, the exact NuRec appearance byte, the SimReady can, SAGE
