@@ -46,12 +46,27 @@ except ModuleNotFoundError:  # repository package
         finalize_manipulation_evaluation_visual_evidence,
         persist_multicamera_observation,
     )
+try:  # flat provider-bundle layout
+    from adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        canonical_contact_envelope,
+        validate_contact_envelope,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        canonical_contact_envelope,
+        validate_contact_envelope,
+    )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v11"
-CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v3"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v12"
+CONTROL_PLAN_FILENAME = f"{CONTROL_PLAN_SCHEMA_VERSION}.json"
+CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v4"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
+ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
+ARM_DYNAMICS_SUMMARY_SCHEMA_VERSION = "adp009d_arm_dynamics_summary.v2"
 
 ZERO_ACTION_NEGATIVE = "zero_action_negative"
 SCRIPTED_POSITIVE = "deterministic_scripted_positive"
@@ -90,10 +105,10 @@ ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
 # The DROID Robotiq 2F-85 is the frozen ADP-009D embodiment.  A generic pose
 # tolerance is not enough before descending around an object: the tool can be
 # "at" pregrasp while one open finger is already over the object.  Preserve a
-# small geometric clearance on each side and derive the admissible alignment
-# error from the sealed object's radius.
+# small geometric clearance on each side.  The SDF and finger contact envelope
+# is not geometric clearance: it is explicitly subtracted below so a solver
+# standoff cannot be mistaken for an admissible open-jaw approach.
 GRIPPER_FULL_OPENING_M = 0.085
-OPEN_JAW_SAFETY_CLEARANCE_M = 0.003
 MOTION_PHASE_MINIMUM_STEPS = 1
 MOTION_PHASE_MAXIMUM_STEPS = 240
 GRIPPER_DWELL_MINIMUM_STEPS = 30
@@ -208,14 +223,21 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         raise ControlEpisodeError(["control_plan_object_height_invalid"])
     if object_radius <= 0.0:
         raise ControlEpisodeError(["control_plan_object_radius_invalid"])
+    contact_envelope = canonical_contact_envelope()
     open_jaw_radial_clearance = GRIPPER_FULL_OPENING_M / 2.0 - object_radius
-    if open_jaw_radial_clearance <= OPEN_JAW_SAFETY_CLEARANCE_M:
+    effective_contact_envelope = float(
+        contact_envelope["effective_contact_envelope_m"]
+    )
+    open_jaw_effective_radial_clearance = (
+        open_jaw_radial_clearance - effective_contact_envelope
+    )
+    if open_jaw_effective_radial_clearance <= 0.0:
         raise ControlEpisodeError(
-            ["control_plan_object_open_jaw_clearance_insufficient"]
+            ["control_plan_object_open_jaw_effective_clearance_insufficient"]
         )
     aperture_safe_arrival_tolerance = min(
         PHASE_ARRIVAL_TOLERANCE_M,
-        open_jaw_radial_clearance - OPEN_JAW_SAFETY_CLEARANCE_M,
+        open_jaw_effective_radial_clearance,
     )
     grasp_frame_z = start[2] + object_height / 2.0
     place_frame_z = target[2] + object_height / 2.0
@@ -318,7 +340,7 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
             if phase["phase_id"] in {"pregrasp", "descend", "grasp"}:
                 phase["arrival_tolerance_m"] = aperture_safe_arrival_tolerance
                 phase["arrival_tolerance_basis"] = (
-                    "open_jaw_radial_clearance_minus_safety_clearance"
+                    "open_jaw_radial_clearance_minus_effective_contact_envelope"
                 )
             else:
                 phase["arrival_tolerance_m"] = PHASE_ARRIVAL_TOLERANCE_M
@@ -356,11 +378,18 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_destination_position_world_m": target,
         "object_height_m": object_height,
         "object_radius_m": object_radius,
+        "contact_envelope": contact_envelope,
         "open_gripper_geometry": {
             "full_opening_m": GRIPPER_FULL_OPENING_M,
             "object_diameter_m": object_radius * 2.0,
             "radial_clearance_m": open_jaw_radial_clearance,
-            "safety_clearance_m": OPEN_JAW_SAFETY_CLEARANCE_M,
+            "effective_contact_envelope_m": effective_contact_envelope,
+            "radial_clearance_after_effective_contact_envelope_m": (
+                open_jaw_effective_radial_clearance
+            ),
+            "clearance_accounting": (
+                "radial_clearance_m_minus_effective_contact_envelope_m"
+            ),
             "aperture_safe_arrival_tolerance_m": (
                 aperture_safe_arrival_tolerance
             ),
@@ -580,7 +609,7 @@ def _canonical_dynamics_observation(value: Mapping[str, Any]) -> dict[str, Any]:
         result = json.loads(json.dumps(dict(value), allow_nan=False))
     except (TypeError, ValueError) as exc:
         raise ControlEpisodeError(["control_episode_arm_dynamics_invalid"]) from exc
-    if result.get("schema_version") != "adp009d_arm_dynamics_observation.v1":
+    if result.get("schema_version") != ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION:
         raise ControlEpisodeError(["control_episode_arm_dynamics_schema_invalid"])
     required = {
         "joint_position_rad",
@@ -592,6 +621,7 @@ def _canonical_dynamics_observation(value: Mapping[str, Any]) -> dict[str, Any]:
         "joint_effort_utilization",
         "body_contact_force_world_n",
         "body_incoming_joint_wrench_body",
+        "contact_envelope",
     }
     if required - set(result):
         raise ControlEpisodeError(["control_episode_arm_dynamics_field_missing"])
@@ -622,7 +652,29 @@ def _canonical_dynamics_observation(value: Mapping[str, Any]) -> dict[str, Any]:
             for vector in body_values.values()
         ):
             raise ControlEpisodeError(["control_episode_arm_dynamics_body_vector_invalid"])
+    try:
+        result["contact_envelope"] = validate_contact_envelope(
+            result["contact_envelope"]
+        )
+    except ContactEnvelopeError as exc:
+        raise ControlEpisodeError([str(exc)]) from exc
     return result
+
+
+def _plan_contact_envelope(plan: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        return validate_contact_envelope(plan.get("contact_envelope"))
+    except ContactEnvelopeError as exc:
+        raise ControlEpisodeError([str(exc)]) from exc
+
+
+def _require_dynamics_contact_envelope(
+    dynamics: Mapping[str, Any],
+    *,
+    expected: Mapping[str, Any],
+) -> None:
+    if dynamics.get("contact_envelope") != dict(expected):
+        raise ControlEpisodeError(["control_episode_contact_envelope_plan_mismatch"])
 
 
 def _vector_norm(values: Sequence[Any]) -> float:
@@ -633,9 +685,17 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
     """Summarize tracking, saturation, and contact without declaring a cause."""
 
     phases: dict[str, dict[str, Any]] = {}
+    contact_envelope: dict[str, Any] | None = None
     for action in actions:
         phase_id = str(action["phase_id"])
         dynamics = dict(action["arm_dynamics_after"])
+        observed_contact_envelope = _canonical_dynamics_observation(dynamics)[
+            "contact_envelope"
+        ]
+        if contact_envelope is None:
+            contact_envelope = observed_contact_envelope
+        elif observed_contact_envelope != contact_envelope:
+            raise ControlEpisodeError(["control_episode_contact_envelope_drifted"])
         positions = dynamics["joint_position_rad"]
         targets = dynamics["joint_position_target_rad"]
         velocities = dynamics["joint_velocity_rad_s"]
@@ -747,8 +807,11 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
             "filtered_partner_contact_force_n": maximum_partner_force,
             "unattributed_contact_force_n": unattributed_contact_force,
         }
+    if contact_envelope is None:
+        raise ControlEpisodeError(["control_episode_arm_dynamics_missing"])
     return {
-        "schema_version": "adp009d_arm_dynamics_summary.v1",
+        "schema_version": ARM_DYNAMICS_SUMMARY_SCHEMA_VERSION,
+        "contact_envelope": contact_envelope,
         "stall_tracking_error_threshold_rad": STALL_TRACKING_ERROR_THRESHOLD_RAD,
         "stall_joint_velocity_threshold_rad_s": (
             STALL_JOINT_VELOCITY_THRESHOLD_RAD_S
@@ -779,11 +842,19 @@ def run_control_episode(
         raise ControlEpisodeError(["control_episode_plan_schema_invalid"])
     if plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest"):
         raise ControlEpisodeError(["control_episode_plan_digest_mismatch"])
+    plan_contact_envelope = _plan_contact_envelope(plan)
     output = Path(media_output_dir).expanduser().resolve()
     if not episode_id.strip():
         raise ControlEpisodeError(["control_episode_id_missing"])
 
     environment.reset()
+    initial_arm_dynamics = _canonical_dynamics_observation(
+        environment.read_arm_dynamics_observation()
+    )
+    _require_dynamics_contact_envelope(
+        initial_arm_dynamics,
+        expected=plan_contact_envelope,
+    )
     samples = [_sample(environment, 0)]
     actions: list[dict[str, Any]] = []
     policy_inputs: list[dict[str, Any]] = [
@@ -832,7 +903,13 @@ def run_control_episode(
         held_action: Sequence[float] | None = None
         for phase_step_index in range(phase_step_limit):
             before = [float(v) for v in environment.read_arm_joint_positions()]
-            dynamics_before = environment.read_arm_dynamics_observation()
+            dynamics_before = _canonical_dynamics_observation(
+                environment.read_arm_dynamics_observation()
+            )
+            _require_dynamics_contact_envelope(
+                dynamics_before,
+                expected=plan_contact_envelope,
+            )
             if phase["mode"] == "hold_current_joint_positions":
                 action = environment.hold_action(gripper_command=gripper_command)
                 action_recomputed = True
@@ -865,7 +942,13 @@ def run_control_episode(
             step_index += 1
             phase_steps_executed += 1
             after = [float(v) for v in environment.read_arm_joint_positions()]
-            dynamics_after = environment.read_arm_dynamics_observation()
+            dynamics_after = _canonical_dynamics_observation(
+                environment.read_arm_dynamics_observation()
+            )
+            _require_dynamics_contact_envelope(
+                dynamics_after,
+                expected=plan_contact_envelope,
+            )
             actions.append(
                 _record_action(
                     step_index=step_index,
@@ -1004,6 +1087,8 @@ def run_control_episode(
         "episode_id": episode_id,
         "instance_digest": plan["instance_digest"],
         "control_plan_digest": plan["plan_digest"],
+        "contact_envelope": plan_contact_envelope,
+        "initial_arm_dynamics": initial_arm_dynamics,
         "control_passed": passed,
         "blockers": sorted(set(blockers)),
         "environment_steps": step_index,
@@ -1086,7 +1171,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v11.json", plan)
+    _write_json(output / CONTROL_PLAN_FILENAME, plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
@@ -1104,6 +1189,15 @@ def run_required_controls(
     blockers: list[str] = []
     for receipt in controls:
         blockers.extend(receipt.get("blockers") or [])
+    plan_contact_envelope = _plan_contact_envelope(plan)
+    for receipt in controls:
+        dynamics_summary = receipt.get("arm_dynamics_summary")
+        if (
+            receipt.get("contact_envelope") != plan_contact_envelope
+            or not isinstance(dynamics_summary, Mapping)
+            or dynamics_summary.get("contact_envelope") != plan_contact_envelope
+        ):
+            raise ControlEpisodeError(["control_pair_contact_envelope_unretained"])
     pair: dict[str, Any] = {
         "schema_version": CONTROL_PAIR_SCHEMA_VERSION,
         "program_id": "arm-decision-proof-v1",
@@ -1112,12 +1206,14 @@ def run_required_controls(
         "suite_digest": plan["suite_digest"],
         "instance_digest": plan["instance_digest"],
         "control_plan_digest": plan["plan_digest"],
+        "contact_envelope": plan_contact_envelope,
         "execution_order": list(REQUIRED_CONTROLS),
         "controls": [
             {
                 "control_id": receipt["control_id"],
                 "control_passed": receipt["control_passed"],
                 "observed_outcome": receipt["observed_outcome"],
+                "contact_envelope": receipt["contact_envelope"],
                 "receipt_digest": receipt["receipt_digest"],
             }
             for receipt in controls
@@ -1137,7 +1233,10 @@ __all__ = [
     "BLOCKER_POSITIVE_FAILED",
     "BLOCKER_PHASE_NOT_REACHED",
     "BLOCKER_ZERO_COMPLETED_TASK",
+    "ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION",
+    "ARM_DYNAMICS_SUMMARY_SCHEMA_VERSION",
     "CONTROL_EPISODE_SCHEMA_VERSION",
+    "CONTROL_PLAN_FILENAME",
     "CONTROL_PAIR_SCHEMA_VERSION",
     "CONTROL_PLAN_SCHEMA_VERSION",
     "ControlEpisodeError",

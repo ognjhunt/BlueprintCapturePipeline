@@ -10,6 +10,7 @@ from blueprint_pipeline.adp009d_droid_observation import (
     DROID_EXTERIOR_VIEW_1,
     DROID_WRIST_VIEW,
 )
+from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelope
 from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     CAMERA_VIEW_BINDING,
     FINGER_BODIES,
@@ -262,7 +263,7 @@ def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -
     assert '"raw_finger_body_midpoint_world_m"' in callback
     assert "grasp_frame_target_for_task_space_strategy(" in callback
     assert "task_space_translation_strategy" in callback
-    assert 'runtime / "adp009d_control_plan.v11.json"' in callback
+    assert "CONTROL_PLAN_FILENAME" in callback
 
 
 class _Tensor(list):
@@ -403,6 +404,7 @@ def _adapter(env=None, *, with_contact_sensor=False):
         to_torch=_to_torch,
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.06,
+        contact_envelope=canonical_contact_envelope(),
         contact_sensor=(
             _ContactSensor(robot.data.body_names) if with_contact_sensor else None
         ),
@@ -415,7 +417,8 @@ def test_arm_dynamics_observation_retains_actuator_and_contact_readback() -> Non
     dynamics = adapter.read_arm_dynamics_observation()
     sample = adapter.read_object_sample()
 
-    assert dynamics["schema_version"] == "adp009d_arm_dynamics_observation.v1"
+    assert dynamics["schema_version"] == "adp009d_arm_dynamics_observation.v2"
+    assert dynamics["contact_envelope"] == canonical_contact_envelope()
     assert dynamics["joint_effort_limit_nm"] == [87.0] * 4 + [12.0] * 3
     assert dynamics["body_contact_force_world_n"]["left_inner_finger"] == [
         3.0,
@@ -542,6 +545,7 @@ def test_linkage_overtravel_is_bounded_and_raw_measurement_is_retained() -> None
         to_torch=_to_torch,
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.0831756591796875,
+        contact_envelope=canonical_contact_envelope(),
     )
 
     sample = dict(adapter.read_object_sample())
@@ -575,6 +579,7 @@ def test_droid_gripper_state_is_closed_fraction_from_the_measured_probe_span() -
         to_torch=_to_torch,
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.06,
+        contact_envelope=canonical_contact_envelope(),
     )
 
     assert adapter.read_policy_inputs()["gripper_position"] == pytest.approx(0.5)
@@ -629,6 +634,7 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
         gripper_open_width_m=0.06,
         simulation_step_seconds=1.0 / 15.0,
         scripted_pose_action_callback=scripted,
+        contact_envelope=canonical_contact_envelope(),
     )
     adapter.reset()
 
@@ -688,6 +694,7 @@ def test_control_metadata_uses_live_wrist_mount_pose_callback() -> None:
         gripper_open_width_m=0.06,
         simulation_step_seconds=1.0 / 15.0,
         camera_pose_callback=camera_pose,
+        contact_envelope=canonical_contact_envelope(),
     )
 
     metadata = adapter.read_control_observation_metadata()
@@ -720,6 +727,7 @@ def test_reset_callback_can_restore_a_wrist_observable_episode_start() -> None:
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.06,
         reset_callback=lambda: calls.append("observable_start_restored"),
+        contact_envelope=canonical_contact_envelope(),
     )
 
     adapter.reset()
@@ -746,6 +754,7 @@ def test_a_missing_finger_body_is_refused_at_construction() -> None:
             to_torch=_to_torch,
             gripper_closed_width_m=0.0,
             gripper_open_width_m=0.06,
+            contact_envelope=canonical_contact_envelope(),
         )
 
 
@@ -760,6 +769,7 @@ def test_unmeasured_gripper_width_span_is_refused() -> None:
             to_torch=_to_torch,
             gripper_closed_width_m=0.04,
             gripper_open_width_m=0.04,
+            contact_envelope=canonical_contact_envelope(),
         )
 
 
@@ -791,8 +801,10 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
         "rotate_linear_and_angular_rows_world_to_robot_root"
     )
     assert bindings["arm_dynamics_observation_schema_version"] == (
-        "adp009d_arm_dynamics_observation.v1"
+        "adp009d_arm_dynamics_observation.v2"
     )
+    assert bindings["contact_envelope_runtime_validation_required"] is True
+    assert bindings["contact_envelope_retained_in_arm_dynamics_observation"] is True
     assert bindings["contact_force_source"] == (
         "IsaacLab ContactSensor.data.net_forces_w"
     )

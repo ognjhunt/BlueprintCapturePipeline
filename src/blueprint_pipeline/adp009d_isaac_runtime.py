@@ -72,6 +72,16 @@ except ModuleNotFoundError:  # imported as part of the repository package
         validate_wrist_observable_episode_start_restore,
         world_to_base_rotation_row_major_xyzw,
     )
+try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        contact_envelope_from_physx_sdf_settings,
+    )
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        contact_envelope_from_physx_sdf_settings,
+    )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
 EXPECTED_ASSETS = {
@@ -154,7 +164,7 @@ def _resolve_aura_appearance(runtime: Path) -> tuple[Path | None, str | None]:
 
 AURA_PARTICLEFIELD_PRIM = "/World/AuraAppearance/GaussianSurflets"
 APPROVED_CAN_ADAPTER_SHA256 = (
-    "sha256:5db5bc33b72983065bd47e30db0c5945ab3cba8fb3caeb6290bf07edc7337adc"
+    "sha256:086199710beaeacea0d4894cc71b260f39a8357b562c8e6af298c924df11cc66"
 )
 APPROVED_CAN_SOURCE_COLLIDER_PRIM = "/canned_beverage/colliders/body_collider"
 APPROVED_CAN_LIVE_COLLIDER_PRIM = "/World/envs/env_0/approved_can/colliders/body_collider"
@@ -628,11 +638,21 @@ def _inspect_physx_sdf_collider(stage: Any, prim_path: str) -> dict[str, Any]:
     }
     if any(value is None for value in settings.values()):
         raise RuntimeError(f"physx_sdf_cooking_settings_missing:{prim_path}")
+    try:
+        contact_envelope = contact_envelope_from_physx_sdf_settings(
+            sdf_margin_m=settings["sdf_margin"],
+            sdf_narrow_band_thickness_m=settings["sdf_narrow_band_thickness"],
+            sdf_resolution=settings["sdf_resolution"],
+            sdf_subgrid_resolution=settings["sdf_subgrid_resolution"],
+        )
+    except ContactEnvelopeError as exc:
+        raise RuntimeError(str(exc)) from exc
     return {
         "prim_path": prim_path,
         "applied_schemas": applied_schemas,
         "approximation": str(approximation),
         **settings,
+        "contact_envelope": contact_envelope,
     }
 
 
@@ -2209,7 +2229,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     semantic_finger_tool_midpoint_world_m,
                 )
                 from adp009d_droid_action_execution import GripperConvention
-                from adp009d_control_episode import run_required_controls
+                from adp009d_control_episode import (
+                    CONTROL_PLAN_FILENAME,
+                    run_required_controls,
+                )
                 from adp009d_episode_batch import (
                     run_episode_batch,
                     summarize_candidate_batches,
@@ -2508,6 +2531,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         else None
                     ),
                     contact_sensor=env.unwrapped.scene["robot_contact"],
+                    contact_envelope=live_collider["contact_envelope"],
                 )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),
@@ -2584,7 +2608,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v11.json"
+                        control_plan_path = runtime / CONTROL_PLAN_FILENAME
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(
@@ -2752,6 +2776,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "decimation": cfg.decimation,
                 "solver": "TGS",
                 "enhanced_determinism": True,
+                "contact_envelope": live_collider["contact_envelope"],
                 "static_collider_validation": static_collider,
                 "live_collider_validation": live_collider,
                 "static_sage_collision_validation": static_sage_collision,
