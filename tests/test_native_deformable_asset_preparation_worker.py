@@ -260,3 +260,47 @@ def test_main_starts_and_closes_one_app_and_retains_payload_only(
         "simulator_qualified": False,
         "physical_material_equivalence": False,
     }
+
+
+def test_main_writes_terminal_before_simulation_app_close_can_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    class Application:
+        def __init__(self, _configuration):
+            pass
+
+        def close(self):
+            raise SystemExit(0)
+
+    package = types.ModuleType("isaacsim")
+    module = types.ModuleType("isaacsim.simulation_app")
+    module.SimulationApp = Application
+    monkeypatch.setitem(sys.modules, "isaacsim", package)
+    monkeypatch.setitem(sys.modules, "isaacsim.simulation_app", module)
+    monkeypatch.setattr(
+        worker,
+        "run_native_deformable_asset_preparation_worker",
+        lambda **_kwargs: {"worker_result_digest": "sha256:" + "c" * 64},
+    )
+    terminal = tmp_path / "terminal.json"
+    with pytest.raises(SystemExit):
+        worker.main(
+            [
+                "--plan",
+                str(tmp_path / "plan.json"),
+                "--expected-plan-digest",
+                "sha256:" + "a" * 64,
+                "--package-root",
+                str(tmp_path / "package"),
+                "--output-root",
+                str(tmp_path / "output"),
+                "--isaaclab-source-root",
+                str(tmp_path / "source"),
+                "--terminal-output",
+                str(terminal),
+            ]
+        )
+
+    receipt = json.loads(terminal.read_text())
+    assert receipt["status"] == "worker_payload_materialized_pending_trusted_execution_join"
+    assert receipt["worker_result_digest"] == "sha256:" + "c" * 64

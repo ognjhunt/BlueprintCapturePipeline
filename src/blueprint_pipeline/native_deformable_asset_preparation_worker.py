@@ -322,6 +322,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "physical_material_equivalence": False,
         },
     }
+    terminal_path = Path(args.terminal_output)
+    terminal_written = False
     try:
         from isaacsim.simulation_app import SimulationApp
 
@@ -340,16 +342,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         terminal["errors"] = list(errors) if errors else [type(exc).__name__]
     finally:
         if application is not None:
+            _write_terminal(terminal_path, terminal)
+            terminal_written = True
             close = getattr(application, "close", None)
             if callable(close):
                 try:
                     close()
                 except Exception as exc:  # noqa: BLE001 - retain cleanup failure
-                    terminal["status"] = "blocked"
-                    terminal["errors"] = sorted(
-                        {*terminal["errors"], f"application_close_failed:{type(exc).__name__}"}
-                    )
-    _write_terminal(Path(args.terminal_output), terminal)
+                    if not terminal_written:
+                        terminal["status"] = "blocked"
+                        terminal["errors"] = sorted(
+                            {
+                                *terminal["errors"],
+                                f"application_close_failed:{type(exc).__name__}",
+                            }
+                        )
+    if not terminal_written:
+        _write_terminal(terminal_path, terminal)
     return 0 if terminal["status"].startswith("worker_payload_materialized") else 1
 
 
