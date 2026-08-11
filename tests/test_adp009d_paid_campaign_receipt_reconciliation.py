@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline import paid_campaign_receipt_reconciliation as R
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -67,6 +69,7 @@ def test_reconciles_both_scene_fixtures_without_scene_specific_code(
 
     manifest = R.reconcile_paid_campaign_receipts(
         roots=[root],
+        implementation_commit="a" * 40,
         include_path_substrings=["840796"],
         inventory_receipts=[zero],
         generated_at="fixed",
@@ -93,7 +96,10 @@ def test_deduplicates_allocation_and_selects_conservative_max_estimate(
     zero = _inventory(tmp_path / "zero.json", live=0, when="2026-08-10T02:00:00Z")
 
     manifest = R.reconcile_paid_campaign_receipts(
-        roots=[root], inventory_receipts=[zero], generated_at="fixed"
+        roots=[root],
+        implementation_commit="a" * 40,
+        inventory_receipts=[zero],
+        generated_at="fixed",
     )
 
     assert manifest["status"] == "qualified"
@@ -124,7 +130,10 @@ def test_only_provider_billing_api_cost_is_labeled_actual(tmp_path: Path) -> Non
     zero = _inventory(tmp_path / "zero.json", live=0, when="2026-08-10T02:00:00Z")
 
     manifest = R.reconcile_paid_campaign_receipts(
-        roots=[root], inventory_receipts=[zero], generated_at="fixed"
+        roots=[root],
+        implementation_commit="a" * 40,
+        inventory_receipts=[zero],
+        generated_at="fixed",
     )
 
     assert manifest["status"] == "qualified"
@@ -140,7 +149,10 @@ def test_paid_cost_without_allocation_identity_blocks(tmp_path: Path) -> None:
     zero = _inventory(tmp_path / "zero.json", live=0, when="2026-08-10T02:00:00Z")
 
     manifest = R.reconcile_paid_campaign_receipts(
-        roots=[root], inventory_receipts=[zero], generated_at="fixed"
+        roots=[root],
+        implementation_commit="a" * 40,
+        inventory_receipts=[zero],
+        generated_at="fixed",
     )
 
     assert manifest["status"] == "blocked"
@@ -162,6 +174,7 @@ def test_latest_inventory_must_prove_provider_zero(tmp_path: Path) -> None:
 
     manifest = R.reconcile_paid_campaign_receipts(
         roots=[root],
+        implementation_commit="a" * 40,
         inventory_receipts=[newer_live, older_zero],
         generated_at="fixed",
     )
@@ -182,6 +195,8 @@ def test_cli_writes_digest_bound_manifest(tmp_path: Path) -> None:
             [
                 "--root",
                 str(root),
+                "--implementation-commit",
+                "a" * 40,
                 "--inventory-receipt",
                 str(zero),
                 "--output",
@@ -193,4 +208,15 @@ def test_cli_writes_digest_bound_manifest(tmp_path: Path) -> None:
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["status"] == "qualified"
     assert manifest["campaign_spend_accounting_usd"] == 0.3
+    assert manifest["implementation_commit"] == "a" * 40
 
+
+def test_reconciliation_refuses_unbound_implementation(tmp_path: Path) -> None:
+    with pytest.raises(
+        ValueError, match="campaign_reconciliation_implementation_commit_invalid"
+    ):
+        R.reconcile_paid_campaign_receipts(
+            roots=[tmp_path],
+            implementation_commit="mutable-head",
+            generated_at="fixed",
+        )

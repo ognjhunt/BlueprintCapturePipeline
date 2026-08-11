@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -33,6 +34,7 @@ SCHEMA_VERSION = "paid_campaign_receipt_reconciliation.v1"
 VAST_LEDGER_SCHEMA_VERSION = "vast_budget_ledger.v1"
 GPU_SPEND_GUARD_SCHEMA_VERSION = "gpu_spend_guard.v1"
 AUTHORITATIVE_ACTUAL_SOURCE = "provider_billing_api"
+COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _sha256(path: Path) -> str:
@@ -239,6 +241,7 @@ def _inventory_observation(path: Path) -> tuple[dict[str, Any] | None, list[str]
 def reconcile_paid_campaign_receipts(
     *,
     roots: Sequence[str | Path],
+    implementation_commit: str,
     include_path_substrings: Sequence[str] = (),
     inventory_receipts: Sequence[str | Path] = (),
     generated_at: str | None = None,
@@ -250,6 +253,9 @@ def reconcile_paid_campaign_receipts(
     one provider allocation or when the latest inventory does not prove zero.
     """
 
+    commit = str(implementation_commit or "").strip().lower()
+    if COMMIT_PATTERN.fullmatch(commit) is None:
+        raise ValueError("campaign_reconciliation_implementation_commit_invalid")
     receipt_paths, root_bindings, blockers = _receipt_paths(
         [Path(item) for item in roots],
         include_path_substrings=include_path_substrings,
@@ -333,6 +339,10 @@ def reconcile_paid_campaign_receipts(
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at or utc_now_iso(),
+        "implementation_commit": commit,
+        "implementation_module": (
+            "blueprint_pipeline.paid_campaign_receipt_reconciliation"
+        ),
         "status": "qualified" if not blockers else "blocked",
         "selection": {
             "roots": root_bindings,
@@ -371,6 +381,7 @@ def reconcile_paid_campaign_receipts(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", action="append", required=True)
+    parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--include-path-substring", action="append", default=[])
     parser.add_argument("--inventory-receipt", action="append", default=[])
     parser.add_argument("--output", required=True)
@@ -381,6 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     manifest = reconcile_paid_campaign_receipts(
         roots=args.root,
+        implementation_commit=args.implementation_commit,
         include_path_substrings=args.include_path_substring,
         inventory_receipts=args.inventory_receipt,
     )
