@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from blueprint_pipeline.adp009d_contact_envelope import (
 )
 from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     APPROVED_CAN_ADAPTER_FILENAME,
+    CA_CERTIFICATE_PATH,
     DEFAULT_IMAGE,
     PROBE_KIND,
     SUPPORT_COLLIDER_PRIM,
@@ -230,6 +232,11 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
     assert receipt["control_plan_digest"].startswith("sha256:")
     assert receipt["media_toolchain_required"] == ["ffmpeg", "ffprobe"]
     assert receipt["media_toolchain_preflight_before_simulator"] is True
+    assert receipt["source_transport_trust"] == {
+        "ca_certificate_package": "ca-certificates",
+        "ca_certificate_path": CA_CERTIFICATE_PATH,
+        "git_ssl_verify": True,
+    }
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
         entrypoint = archive.read(
@@ -252,8 +259,15 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
     assert media_preflight < provision_loop < runner
     assert "command -v ffmpeg" in entrypoint
     assert "command -v ffprobe" in entrypoint
-    assert "apt-get install -y -qq ffmpeg" in entrypoint
+    assert "apt-get install -y -qq ca-certificates ffmpeg" in entrypoint
+    assert f'export BLUEPRINT_ADP009D_CA_CERT_PATH="{CA_CERTIFICATE_PATH}"' in entrypoint
+    assert 'test -s "$BLUEPRINT_ADP009D_CA_CERT_PATH"' in entrypoint
+    assert 'export GIT_SSL_CAINFO="$BLUEPRINT_ADP009D_CA_CERT_PATH"' in entrypoint
+    assert "unset GIT_SSL_NO_VERIFY" in entrypoint
     assert "adp009d_media_toolchain_status.json" in entrypoint
+    entrypoint_path = tmp_path / "run_adp_arena_provider_runtime.sh"
+    entrypoint_path.write_text(entrypoint, encoding="utf-8")
+    subprocess.run(["bash", "-n", str(entrypoint_path)], check=True)
 
 
 def test_bundle_rejects_a_harness_contact_offset_drift(tmp_path: Path) -> None:
@@ -727,6 +741,51 @@ def test_worker_rewrites_only_public_isaac_lab_submodule_transport() -> None:
 
     assert "url.https://github.com/.insteadOf=git@github.com:" in text
     assert '"submodules/IsaacLab"' in text
+    assert "http.sslVerify=true" in text
+    assert "http.sslVerify=false" not in text
+
+
+def test_worker_stops_before_submodule_when_pinned_checkout_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed filtered checkout must retain its real cause, not a pathspec echo."""
+
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    observed: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> dict[str, object]:
+        observed.append(command)
+        return {"returncode": 0 if "clone" in command else 1}
+
+    monkeypatch.setattr(worker, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="arena_source_checkout_failed"):
+        worker._materialize_source(tmp_path / "arena", tmp_path / "output")
+
+    assert not any("submodule" in command for command in observed)
+
+
+def test_worker_classifies_submodule_materialization_after_a_clean_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    observed: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> dict[str, object]:
+        observed.append(command)
+        return {"returncode": 1 if "submodule" in command else 0}
+
+    monkeypatch.setattr(worker, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="arena_source_submodule_materialization_failed"):
+        worker._materialize_source(tmp_path / "arena", tmp_path / "output")
+
+    assert any("submodule" in command for command in observed)
+    assert all("http.sslVerify=true" in command for command in observed)
 
 
 def test_worker_uses_smallest_pinned_official_arena_physx_install_closure(tmp_path: Path) -> None:
