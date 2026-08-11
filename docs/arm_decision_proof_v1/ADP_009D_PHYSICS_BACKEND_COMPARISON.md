@@ -55,11 +55,13 @@ phase completion, lossless policy-input-equivalent frames, review media,
 teardown, spend, and API-confirmed provider-zero.
 
 A Newton `--execute` request is rejected before provider mutation unless it has
-a current explicit Newton canary admission plus the canonical paid-resource
-admission, spend cap, TTL, watchdog, artifact storage, teardown, and
-provider-inventory gates. The normal gate requires provider-zero. A concurrent
-run is admitted only by a fresh explicit authorization that binds every allowed
-live Vast instance ID into both the Newton admission and allocator request;
+a current explicit, task-scoped Newton GPU authorization plus the canonical
+paid-resource admission, spend cap, TTL, watchdog, artifact storage, teardown, and
+provider-inventory gates. One authorization may cover the bounded series of GPU
+runs genuinely needed for this controls comparison, but every allocation still
+requires a fresh immutable admission and zero retries. The normal gate requires
+provider-zero. A concurrent run additionally binds every allowed live Vast
+instance ID into both the Newton admission and allocator request;
 RunPod, DigitalOcean, and all unlisted Vast resources must remain zero. The Vast
 transport arms a separate name- and instance-bound hard-TTL watchdog before
 object staging or compute allocation, and it validates the current canonical
@@ -91,13 +93,28 @@ versions and reached Newton environment construction. It then failed closed
 before reset because the PhysX regular-expression selector for the two Robotiq
 inner fingers was not valid Newton `fnmatch` syntax, so Newton matched zero
 contact-sensor bodies. Terminal receipt
-`sha256:3c7d60acf54a5fc92451245b59cc045eb95e202393af150c807f4cf540c68a5a`
+`sha256:6fd97b7f7bcbcccc1008e156f345b247933cde3bcb546434526400df898c6fdf`
 records the typed pre-controls blocker, zero policy queries, zero retries, a
-`$0.154` provider charge, 20 retained artifacts, successful teardown, and fresh
+settled `$0.173` provider charge, 20 retained artifacts, successful teardown, and fresh
 API-confirmed provider-zero. The runtime now preserves the PhysX selector and
 uses an equivalent Newton-only suffix glob selecting exactly the two terminal
-finger bodies; that repair remains candidate code until a new native canary
-proves contact-force and contact-partner readback.
+finger bodies.
+
+A third controls-only canary at implementation commit
+`fb59e16b4905eca4bcb1e0537a6d191b29adc572` proved that two-body Newton
+contact-sensor selection now succeeds. It then failed closed before reset when
+the per-finger can filter used the PhysX spawn label `approved_can`, which
+matched no Newton counterpart. The sealed USD's sole authored rigid body is its
+`canned_beverage` root.
+Terminal receipt
+`sha256:9816ed8355a38e11111eb87d5adf5d63735470f92f86e8779a1e4fd28412e901`
+records the typed blocker, zero policy queries, zero retries, a settled `$0.133`
+provider charge, 20 retained artifacts, successful teardown, and fresh
+API-confirmed provider-zero. The candidate repair keeps PhysX's existing body
+filter unchanged, tests Newton against that exact source body label, and filters
+the static SAGE counterpart through the exact 15 shape labels bound by the sealed task
+collision manifest. A new native canary must still prove both force matrices
+before controls begin.
 
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.

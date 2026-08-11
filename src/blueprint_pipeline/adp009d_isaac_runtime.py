@@ -241,6 +241,11 @@ APPROVED_CAN_HEIGHT_M = 0.1694279937744141
 # `PhysicsCollisionAPI`.
 CONTACT_PARTNER_FILTER_LABEL = "approved_can"
 CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can"
+# Canary 47488171 proved that the PhysX spawn label ``approved_can`` matches no
+# Newton counterpart.  The sealed USD has exactly one authored rigid body and
+# applies ``PhysicsRigidBodyAPI`` to its ``canned_beverage`` root, so the next
+# fail-closed candidate filter targets that exact source label.
+NEWTON_CONTACT_PARTNER_FILTER_BODY_EXPR = "*canned_beverage"
 # The retained paid controls receipt proved that the can filter resolved one
 # shape and carried zero force while the left finger carried 8.6 N net force.
 # That rules out the can, but not the sealed SAGE collision asset versus any
@@ -248,6 +253,30 @@ CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can"
 # distinction without changing collision, controller, or task geometry.
 CONTACT_SAGE_COLLISION_FILTER_LABEL = "sage_collision"
 CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/sage_collision"
+# SAGE is a static collection of collision shapes and deliberately has no
+# rigid body.  Newton therefore needs shape-level filters.  These suffixes are
+# the exact 15 active shapes in the digest-bound task-collision derivative;
+# suffix globs work whether Newton labels shapes by bare name or full USD path.
+NEWTON_SAGE_COLLISION_SHAPE_LABELS = (
+    "SM_floorplan",
+    "Z6TL2HRVAIIBIPTUKE888888",
+    "ZBRQEFBVAI3DWPTUKY888888",
+    "ZE6ZHARVAII2IPTUL4888888",
+    "ZEMALJZVAJTQWPTUK4888888",
+    "ZEO7DVBVAI7DEPTUKU888888",
+    "ZEOP4DRVAIJFSPTUKE888888",
+    "ZHQYBPJVAI3AUPTULE888888",
+    "ZHQYGJJVAJYEYPTUK4888888",
+    "ZV67OQJVAJSVCPTULY888888",
+    "ZXXPXAZVAJ3T6PTULI888888",
+    "_IMCHJBVAV7AMPTUKI888888",
+    "_K7DXDRVAZU7IPTULI888888_004",
+    "_LTFTHJVAZ3VMPTUJU888888",
+    "_PROTIZVAJTMCPTULU888888",
+)
+NEWTON_SAGE_COLLISION_FILTER_SHAPE_EXPRS = tuple(
+    f"*{label}" for label in NEWTON_SAGE_COLLISION_SHAPE_LABELS
+)
 # PhysX filtered contact reporting is strictly one-to-many: one sensor body may
 # be filtered against many partners, never many sensor bodies against one.  The
 # pinned IsaacLab docstring calls out this exact shape as unsupported, so each
@@ -280,6 +309,30 @@ def _robot_contact_sensor_prim_path(physics_backend: str) -> str:
     if backend == "newton":
         return base + "*inner_finger"
     return base + "(left_inner_finger|right_inner_finger)"
+
+
+def _contact_partner_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
+    """Return an explicit body-level can filter for the selected backend."""
+
+    backend = normalize_physics_backend(physics_backend)
+    if backend == "newton":
+        return {
+            "filter_prim_paths_expr": [NEWTON_CONTACT_PARTNER_FILTER_BODY_EXPR]
+        }
+    return {"filter_prim_paths_expr": [CONTACT_PARTNER_FILTER_PRIM_PATH]}
+
+
+def _sage_collision_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
+    """Keep PhysX body filtering and Newton static-shape filtering distinct."""
+
+    backend = normalize_physics_backend(physics_backend)
+    if backend == "newton":
+        return {
+            "filter_shape_prim_expr": list(
+                NEWTON_SAGE_COLLISION_FILTER_SHAPE_EXPRS
+            )
+        }
+    return {"filter_prim_paths_expr": [CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH]}
 
 
 # The worker imports the episode adapter under a flattened module name, so this
@@ -1132,6 +1185,16 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     from isaaclab_arena.tasks.no_task import NoTask
     from isaaclab_arena.utils.pose import Pose
 
+    # Shape-level filtering is intentionally a Newton-only extension.  The
+    # PhysX lane keeps the existing factory configuration and native readback.
+    BackendContactSensorCfg = ContactSensorCfg
+    if args.physics_backend == "newton":
+        from isaaclab_newton.sensors import (
+            ContactSensorCfg as NewtonContactSensorCfg,
+        )
+
+        BackendContactSensorCfg = NewtonContactSensorCfg
+
     class SpawnerObject(Object):
         """Use Arena's composition seam without importing its full asset registry."""
 
@@ -1360,7 +1423,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     # Neither filter changes contact behavior.
     robot_contact = ContactSensorAsset(
         name="robot_contact",
-        sensor_cfg=ContactSensorCfg(
+        sensor_cfg=BackendContactSensorCfg(
             prim_path=_robot_contact_sensor_prim_path(args.physics_backend),
             update_period=0.0,
             history_length=1,
@@ -1370,12 +1433,12 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     partner_contacts = [
         ContactSensorAsset(
             name=sensor_name,
-            sensor_cfg=ContactSensorCfg(
+            sensor_cfg=BackendContactSensorCfg(
                 prim_path=f"{{ENV_REGEX_NS}}/Robot/Gripper/Robotiq_2F_85/{body_name}",
                 update_period=0.0,
                 history_length=1,
                 debug_vis=False,
-                filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH],
+                **_contact_partner_filter_kwargs(args.physics_backend),
             ),
         )
         for body_name, sensor_name in sorted(CONTACT_PARTNER_SENSOR_NAMES.items())
@@ -1383,12 +1446,12 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     sage_collision_contacts = [
         ContactSensorAsset(
             name=sensor_name,
-            sensor_cfg=ContactSensorCfg(
+            sensor_cfg=BackendContactSensorCfg(
                 prim_path=f"{{ENV_REGEX_NS}}/Robot/Gripper/Robotiq_2F_85/{body_name}",
                 update_period=0.0,
                 history_length=1,
                 debug_vis=False,
-                filter_prim_paths_expr=[CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH],
+                **_sage_collision_filter_kwargs(args.physics_backend),
             ),
         )
         for body_name, sensor_name in sorted(
@@ -1605,8 +1668,13 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         "rigid_body_count": 0,
         "triangle_mesh_count": int(task_collision_manifest["active_source_prim_count"]),
     }
+    task_collision_shape_labels = tuple(
+        str(row.get("source_prim", "")).rsplit("/", 1)[-1]
+        for row in task_collision_manifest.get("source_prim_rows", [])
+    )
     if (
         expected_sage_profile != SAGE_RUNTIME_PROFILE
+        or task_collision_shape_labels != NEWTON_SAGE_COLLISION_SHAPE_LABELS
         or task_collision_manifest.get("candidate_source_prim_count") != 16
         or task_collision_manifest.get("source_face_count") != 47_359
         or task_collision_manifest.get("roi_min_m") != [2.4681748, -4.3100837, -0.1]
@@ -2909,6 +2977,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 partner_forces = probe_dynamics.get(
                     "body_contact_partner_force_world_n"
                 )
+                sage_collision_forces = probe_dynamics.get(
+                    "body_contact_sage_collision_force_world_n"
+                )
                 net_forces = probe_dynamics.get("body_contact_force_world_n")
                 probe_sample = adapter.read_object_sample()
                 probe_camera_inputs = adapter.read_evaluation_camera_inputs()
@@ -2918,6 +2989,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     or not net_forces
                     or not isinstance(partner_forces, dict)
                     or not partner_forces
+                    or not isinstance(sage_collision_forces, dict)
+                    or not sage_collision_forces
                     or "closest_geometric_clearance_m" not in probe_sample
                     or set(probe_camera_inputs) != {"external", "wrist", "overview"}
                 ):
@@ -2960,7 +3033,13 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         "partner_force_vectors_world_n": list(
                             partner_forces.values()
                         ),
-                        "partner_prim_paths": [CONTACT_PARTNER_FILTER_PRIM_PATH],
+                        "partner_filter": _contact_partner_filter_kwargs(backend),
+                        "sage_collision_force_vectors_world_n": list(
+                            sage_collision_forces.values()
+                        ),
+                        "sage_collision_filter": _sage_collision_filter_kwargs(
+                            backend
+                        ),
                     },
                     "asset_conversion": {
                         "source_asset_digest": EXPECTED_ASSETS[

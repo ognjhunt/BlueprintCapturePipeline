@@ -3163,9 +3163,60 @@ def test_contact_partner_filter_uses_one_sensor_per_finger_and_the_rigid_body() 
     assert "_robot_contact_sensor_prim_path(args.physics_backend)" in primary
 
     per_finger = source[source.index("partner_contacts = [") : source.index("light = SpawnerObject")]
-    assert "filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH]" in per_finger
-    assert "filter_prim_paths_expr=[CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH]" in per_finger
+    assert "**_contact_partner_filter_kwargs(args.physics_backend)" in per_finger
+    assert "**_sage_collision_filter_kwargs(args.physics_backend)" in per_finger
     assert "Robotiq_2F_85/{body_name}" in per_finger
+
+
+def test_newton_contact_partner_filters_bind_converted_body_and_exact_sage_shapes() -> None:
+    """Newton counterpart matching uses fnmatch labels, not PhysX prim scopes.
+
+    Vast instance 47488171 proved the PhysX spawn label ``approved_can``
+    resolves no Newton counterpart.  The sealed source body is named
+    ``canned_beverage``; static SAGE geometry has no body and therefore uses
+    the exact 15 digest-bound task-derivative shape labels.
+    """
+
+    from fnmatch import fnmatchcase
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    assert runtime._contact_partner_filter_kwargs("physx") == {
+        "filter_prim_paths_expr": ["{ENV_REGEX_NS}/approved_can"]
+    }
+    newton_can = runtime._contact_partner_filter_kwargs("newton")
+    assert newton_can == {"filter_prim_paths_expr": ["*canned_beverage"]}
+    assert fnmatchcase("canned_beverage", newton_can["filter_prim_paths_expr"][0])
+    assert fnmatchcase(
+        "/World/envs/env_0/approved_can/canned_beverage",
+        newton_can["filter_prim_paths_expr"][0],
+    )
+    assert not fnmatchcase("approved_can_visual", newton_can["filter_prim_paths_expr"][0])
+
+    assert runtime._sage_collision_filter_kwargs("physx") == {
+        "filter_prim_paths_expr": ["{ENV_REGEX_NS}/sage_collision"]
+    }
+    newton_sage = runtime._sage_collision_filter_kwargs("newton")
+    assert set(newton_sage) == {"filter_shape_prim_expr"}
+    expressions = newton_sage["filter_shape_prim_expr"]
+    assert len(expressions) == 15
+    assert len(expressions) == len(set(expressions))
+    for label, expression in zip(
+        runtime.NEWTON_SAGE_COLLISION_SHAPE_LABELS,
+        expressions,
+        strict=True,
+    ):
+        assert expression == f"*{label}"
+        assert fnmatchcase(label, expression)
+        assert fnmatchcase(
+            f"/World/envs/env_0/sage_collision/Root/{label}", expression
+        )
+        assert not fnmatchcase(f"Robot/{label}_other", expression)
+
+    assert not any(
+        fnmatchcase("/World/envs/env_0/approved_can/canned_beverage", expression)
+        for expression in expressions
+    )
 
 
 def test_finger_collision_envelope_probe_measures_reach_and_cannot_break_a_run() -> None:
