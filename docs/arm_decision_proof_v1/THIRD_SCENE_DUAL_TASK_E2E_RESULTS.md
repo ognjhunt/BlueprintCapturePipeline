@@ -21,7 +21,11 @@ learned policies were therefore not admitted. This is not a policy result.
   Latest reusable construction-gate hardening commit:
   `84268ee16881673aed5de44f79b285538e9381e1`. Latest static asset/evidence-index
   follow-up commit: `09b4c1c739322e49c61f9a50115ad66f9ebb8fce`.
-  Both are pushed on `codex/adp-third-scene-dual-task-20260810`.
+  Those are pushed on `codex/adp-third-scene-dual-task-20260810`.
+  Latest agent-CAD/Content Agents follow-up commits are
+  `f53dc2775` (manifest-derived agent-CAD references required) and
+  `a1a73e0db` (portable agent-CAD evidence indexed), pushed on
+  `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
 - External 840796 worktrees and evidence roots were not modified.
@@ -417,8 +421,15 @@ digest-verified `supporting_evidence_inventory.v2.json`. Those inventories cover
 all eight source masks,
 the authorized render/mask receipt, excision freeze, exact collider removal,
 authored replacement, static authored-structure qualification, paid
-run/teardown/watchdog evidence, and repaired-bundle closure without embedding
-rights-bounded dataset-derived bytes.
+run/teardown/watchdog evidence, repaired-bundle closure, the original
+source-object contact sheet, the four-candidate CAD comparison board, both
+agent-CAD backend execution receipts and STEP candidates for the task, both
+Content Agents Mesh projection receipts, and both Content Agents autoref bundle
+receipts/ZIPs without embedding rights-bounded dataset-derived bytes. Current
+inventory digests: Task A
+`sha256:91237e7f5bbab78f4dd7860f0fd17d975b28da3fa2c66223074c888f5cc7fab5`;
+Task B
+`sha256:adc9f236b11a3d3d415a437dd8f776eb4bbcb00534ee8f7671453f966f9df355`.
 
 ## Verification
 
@@ -426,12 +437,18 @@ Recent reusable-code and manifest commits:
 
 - `PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode or nurec or aura"`
   — `1155 passed, 9918 deselected` before commit `f7fdbc972`, then
-  `1155 passed, 9919 deselected` before commit `86718e6e`.
+  `1155 passed, 9919 deselected` before commit `86718e6e`, and
+  `1155 passed, 9923 deselected` before commits `f53dc2775` and
+  `a1a73e0db`.
 - `.venv/bin/ruff check src/ tests/` — passed.
 - Focused Content Agents/CAD adapter regressions before `f7fdbc972` —
   `59 passed`.
 - Focused Content Agents adapter/manifest regressions before `86718e6e` —
   `46 passed`.
+- Focused Content Agents authority/reference regressions before `f53dc2775` —
+  `50 passed`.
+- Focused evidence-index plus Content Agents regressions before `a1a73e0db` —
+  `59 passed`.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
