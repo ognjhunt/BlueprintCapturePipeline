@@ -584,6 +584,41 @@ class IsaacEpisodeAdapter:
             result[str(name)] = vector
         return result
 
+    def _body_contact_partner_forces_n(self) -> dict[str, list[float]] | None:
+        """Name the contact partner when the sensor was built with a filter.
+
+        Supplementary to ``net_forces_w``: a stalled finger reporting a large net
+        force but a zero partner force is being held by geometry outside the
+        filter, which is the distinction the net force alone cannot make.  A
+        sensor built without a filter degrades to ``None`` rather than failing a
+        paid run, because the primary contact evidence is unaffected.
+        """
+
+        if self._contact_sensor is None:
+            return None
+        matrix = getattr(self._contact_sensor.data, "force_matrix_w", None)
+        if matrix is None:
+            return None
+        values = self._to_torch(matrix)
+        if values.ndim != 4 or values.shape[0] < 1 or values.shape[2] < 1:
+            return None
+        body_names = list(self._contact_sensor.body_names)
+        result: dict[str, list[float]] = {}
+        for index, name in enumerate(body_names):
+            if index >= values.shape[1]:
+                break
+            # One filter partner is configured; sum any additional partners into
+            # the same reading so a widened filter cannot silently drop force.
+            vector = [
+                float(values[0, index, :, axis].sum()) for axis in range(3)
+            ]
+            if not all(math.isfinite(value) for value in vector):
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_contact_partner_force_invalid:{name}"]
+                )
+            result[str(name)] = vector
+        return result or None
+
     def _body_incoming_joint_wrenches(self) -> dict[str, list[float]]:
         raw = getattr(self._robot.data, "body_incoming_joint_wrench_b", None)
         if raw is None:
@@ -628,6 +663,7 @@ class IsaacEpisodeAdapter:
                 for before, after in zip(computed, applied, strict=True)
             ],
             "body_contact_force_world_n": self._body_contact_forces_world_n(),
+            "body_contact_partner_force_world_n": self._body_contact_partner_forces_n(),
             "body_incoming_joint_wrench_body": self._body_incoming_joint_wrenches(),
         }
 

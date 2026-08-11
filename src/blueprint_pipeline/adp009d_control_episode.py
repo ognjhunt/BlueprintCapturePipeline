@@ -611,6 +611,7 @@ def _canonical_dynamics_observation(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ControlEpisodeError(["control_episode_arm_dynamics_vector_invalid"])
     for field, width, allow_none in (
         ("body_contact_force_world_n", 3, True),
+        ("body_contact_partner_force_world_n", 3, True),
         ("body_incoming_joint_wrench_body", 6, False),
     ):
         body_values = result.get(field)
@@ -673,6 +674,18 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
             (_vector_norm(wrench[:3]) for wrench in incoming_wrenches.values()),
             default=0.0,
         )
+        partner_forces = dynamics.get("body_contact_partner_force_world_n")
+        partner_available = partner_forces is not None
+        maximum_partner_force = max(
+            (_vector_norm(vector) for vector in (partner_forces or {}).values()),
+            default=0.0,
+        )
+        # Force the sensor's filtered partner does not account for.  A large
+        # unattributed residual means geometry outside the filter is holding the
+        # arm; it names where to look and never asserts which prim.
+        unattributed_contact_force = max(
+            maximum_contact_force - maximum_partner_force, 0.0
+        )
         phase = phases.setdefault(
             phase_id,
             {
@@ -685,6 +698,9 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
                 "maximum_body_contact_force_n": 0.0,
                 "peak_contact_body": None,
                 "maximum_incoming_joint_force_n": 0.0,
+                "contact_partner_matrix_available": partner_available,
+                "maximum_filtered_partner_contact_force_n": 0.0,
+                "maximum_unattributed_contact_force_n": 0.0,
                 "final": None,
             },
         )
@@ -712,6 +728,15 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
         phase["maximum_incoming_joint_force_n"] = max(
             phase["maximum_incoming_joint_force_n"], maximum_incoming_force
         )
+        phase["contact_partner_matrix_available"] = (
+            phase["contact_partner_matrix_available"] and partner_available
+        )
+        phase["maximum_filtered_partner_contact_force_n"] = max(
+            phase["maximum_filtered_partner_contact_force_n"], maximum_partner_force
+        )
+        phase["maximum_unattributed_contact_force_n"] = max(
+            phase["maximum_unattributed_contact_force_n"], unattributed_contact_force
+        )
         phase["final"] = {
             "step_index": int(action["step_index"]),
             "joint_position_tracking_error_rad": tracking_error,
@@ -719,6 +744,8 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
             "maximum_joint_effort_utilization": maximum_effort_utilization,
             "maximum_body_contact_force_n": maximum_contact_force,
             "peak_contact_body": peak_contact_body,
+            "filtered_partner_contact_force_n": maximum_partner_force,
+            "unattributed_contact_force_n": unattributed_contact_force,
         }
     return {
         "schema_version": "adp009d_arm_dynamics_summary.v1",
