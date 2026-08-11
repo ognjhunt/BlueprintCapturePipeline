@@ -1,0 +1,30 @@
+{
+  "schema_version": "nvidia_warehouse_native_control_provider_zero.v1",
+  "status": "passed",
+  "observed_at": "2026-08-03T21:31:55Z",
+  "vast": {
+    "api_confirmed": true,
+    "global_live_resource_count": 0,
+    "final_instance_id": "46736649",
+    "final_instance_absent": true,
+    "watchdog_provider_absence_confirmed": true
+  },
+  "runpod": {
+    "api_confirmed": true,
+    "global_live_resource_count": 0
+  },
+  "digitalocean_builders": {
+    "completed_droplet_ids": ["589676321", "589680942", "589683645", "589700719", "589714424", "589719296", "589722827"],
+    "every_droplet_has_delete_204_and_verify_404_evidence": true,
+    "provider_absence_confirmed": true
+  },
+  "object_store": {
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "each_head_status": 404,
+    "signed_url_files_removed": true,
+    "cleanup_evidence_sha256": "468d487cf55c41b2d52b99a2a899ccc58fa1736fc7a49e6c4a572b73c40ed869"
+  },
+  "continuing_spend": false,
+  "raw_secret_values_recorded": false
+}

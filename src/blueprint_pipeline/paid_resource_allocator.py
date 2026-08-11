@@ -80,6 +80,7 @@ from .openpi_policy_ranking_gpu_admission import (
 )
 from .openpi_policy_ranking_runpod import run_openpi_policy_ranking_campaign
 from .nvidia_warehouse_native_camera_gpu_admission import (
+    CONTROL_PROBE_KIND as NVIDIA_WAREHOUSE_NATIVE_CONTROL_PROBE_KIND,
     PROBE_KIND as NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
     run_native_camera_gpu_lane,
 )
@@ -1057,6 +1058,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             OPENPI_POLICY_RANKING_PROBE_KIND,
             NEW_SITE_CANARY_PROBE_KIND,
             NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
+            NVIDIA_WAREHOUSE_NATIVE_CONTROL_PROBE_KIND,
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
@@ -1099,6 +1101,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--openpi-hard-ttl-seconds", type=int, default=14_400)
     gpu.add_argument("--openpi-max-spend-usd", type=float, default=3.0)
+    gpu.add_argument(
+        "--maximum-concurrent-paid-gpus-global",
+        type=int,
+        default=1,
+        help=(
+            "Prospective all-task paid-GPU ceiling. The native camera lane "
+            "supports one or two and rechecks Vast plus RunPod immediately "
+            "before provider mutation."
+        ),
+    )
     gpu.add_argument("--successor-public-base-url")
     gpu.add_argument("--successor-token-file")
     gpu.add_argument("--successor-secret-env-file")
@@ -2702,7 +2714,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind == NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND:
+        if args.probe_kind in {
+            NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
+            NVIDIA_WAREHOUSE_NATIVE_CONTROL_PROBE_KIND,
+        }:
             missing = [
                 name
                 for name in (
@@ -2755,6 +2770,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                     write_json(Path(args.admission_out), result)
                 else:
+                    image_source_commit = (
+                        args.expected_image_source_commit or checkout_commit
+                    )
                     result = run_native_camera_gpu_lane(
                         release_evidence=args.release_evidence,
                         input_bundle_receipt=args.native_camera_input_bundle_receipt,
@@ -2763,7 +2781,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bound_request_out=args.bound_request_out,
                         adapter_output=args.adapter_output,
                         pod_name=args.pod_name,
-                        expected_source_commit=checkout_commit,
+                        expected_source_commit=image_source_commit,
+                        launcher_source_commit=checkout_commit,
                         execute=args.execute,
                         hard_ttl_seconds=args.openpi_hard_ttl_seconds,
                         max_spend_usd=args.openpi_max_spend_usd,
@@ -2780,6 +2799,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             else 36_000
                         ),
                         provider_name=args.provider,
+                        maximum_concurrent_paid_gpus_global=(
+                            args.maximum_concurrent_paid_gpus_global
+                        ),
                     )
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))

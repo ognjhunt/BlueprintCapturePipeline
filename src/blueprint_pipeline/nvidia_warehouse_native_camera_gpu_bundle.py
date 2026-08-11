@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import traceback
 import urllib.parse
 import urllib.request
 import zipfile
@@ -20,24 +21,31 @@ from .nvidia_warehouse_native_camera_canary import (
     isaac_sim_6_backend,
     run_native_camera_canary,
 )
+from .nvidia_warehouse_native_control_canary import (
+    SPEC_SCHEMA_VERSION as CONTROL_SPEC_SCHEMA_VERSION,
+    isaac_sim_6_native_control_backend,
+    run_native_control_canary,
+)
 from .nvidia_warehouse_workcell import (
     CANARY_SPEC_SCHEMA_VERSION,
     DATASET_REVISION,
+    DEPENDENCY_CONTRACT,
     SCHEMA_VERSION as MATERIALIZATION_SCHEMA_VERSION,
 )
 from .policy_ranking_thesis import canonical_sha256, file_sha256
 
 
-BUNDLE_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_bundle.v1"
-RECEIPT_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_bundle_receipt.v1"
+BUNDLE_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_bundle.v2"
+RECEIPT_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_bundle_receipt.v2"
 BUNDLE_MANIFEST_NAME = "bundle_manifest.json"
 SPEC_NAME = "native_camera_canary_spec.json"
 MATERIALIZATION_MANIFEST_NAME = "materialization_manifest.json"
 ASSET_PREFIX = "assets"
-MAX_BUNDLE_BYTES = 512 * 1024 * 1024
-MAX_UNCOMPRESSED_BYTES = 768 * 1024 * 1024
+MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_UNCOMPRESSED_BYTES = 3 * 1024 * 1024 * 1024
 MAX_MEMBERS = 256
 MAX_WORKER_OUTPUT_BYTES = 128 * 1024 * 1024
+MAX_INPUT_DOWNLOAD_ATTEMPTS = 2
 # These constants name environment variables; they do not contain credentials.
 INPUT_SECRET_URL_ENV = "BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_INPUT_URL"  # nosec B105
 INPUT_SHA256_ENV = "BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_INPUT_SHA256"
@@ -66,13 +74,17 @@ def require_clean_bundle_source_checkout(
         else Path(__file__).resolve().parents[2]
     )
     try:
-        head = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip().lower()
+        head = (
+            subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            .stdout.strip()
+            .lower()
+        )
         status = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain=v1"],
             check=True,
@@ -116,8 +128,9 @@ def build_native_camera_gpu_bundle(
     source_commit: str,
     output_zip: str | Path,
     receipt_path: str | Path | None = None,
+    canary_kind: str = "camera",
 ) -> dict[str, Any]:
-    """Package the exact materialized USD closure and prospective camera spec."""
+    """Package the exact USD closure and prospective camera/control spec."""
 
     commit = str(source_commit).strip().lower()
     if not _COMMIT.fullmatch(commit):
@@ -134,19 +147,24 @@ def build_native_camera_gpu_bundle(
         or materialization.get("status") != "completed"
         or materialization.get("dataset_revision") != DATASET_REVISION
         or materialization.get("dataset_local_dependency_closure_complete") is not True
+        or materialization.get("dependency_contract") != DEPENDENCY_CONTRACT
     ):
         raise ValueError("nvidia_warehouse_gpu_bundle_materialization_invalid")
 
     spec_file = Path(spec_path).expanduser().resolve()
     spec = _validated_identity(_read_object(spec_file), field="spec_sha256")
+    if canary_kind not in {"camera", "control"}:
+        raise ValueError("nvidia_warehouse_gpu_bundle_canary_kind_invalid")
+    expected_spec_schema = (
+        CANARY_SPEC_SCHEMA_VERSION if canary_kind == "camera" else CONTROL_SPEC_SCHEMA_VERSION
+    )
     if (
-        spec.get("schema_version") != CANARY_SPEC_SCHEMA_VERSION
+        spec.get("schema_version") != expected_spec_schema
         or spec.get("dataset_revision") != DATASET_REVISION
-        or spec.get("materialization_manifest_sha256")
-        != materialization.get("manifest_sha256")
-        or spec.get("label_free") is not True
+        or spec.get("materialization_manifest_sha256") != materialization.get("manifest_sha256")
         or spec.get("rankings_or_policy_outcomes_accessed") is not False
         or spec.get("paid_gpu_execution_admitted") is not False
+        or (canary_kind == "camera" and spec.get("label_free") is not True)
     ):
         raise ValueError("nvidia_warehouse_gpu_bundle_spec_invalid")
 
@@ -192,9 +210,15 @@ def build_native_camera_gpu_bundle(
         "assets": sorted(asset_rows, key=lambda row: str(row["member"])),
         "label_free": True,
         "rankings_or_policy_outcomes_accessed": False,
-        "purpose": "private_internal_nvidia_warehouse_native_camera_canary",
+        "purpose": (
+            "private_internal_nvidia_warehouse_native_camera_canary"
+            if canary_kind == "camera"
+            else "private_internal_nvidia_warehouse_native_control_canary"
+        ),
+        "canary_kind": canary_kind,
         "claim_boundary": {
-            "camera_technical_canary_only": True,
+            "camera_technical_canary_only": canary_kind == "camera",
+            "native_control_experiment": canary_kind == "control",
             "policy_wam_loop_proven": False,
             "ranking_accuracy": False,
             "physical_success": False,
@@ -238,6 +262,12 @@ def build_native_camera_gpu_bundle(
             raise FileExistsError("nvidia_warehouse_gpu_bundle_receipt_exists")
         write_json(receipt_destination, receipt)
     return receipt
+
+
+def build_native_control_gpu_bundle(**kwargs: Any) -> dict[str, Any]:
+    """Build the native-control variant through the shared hash-bound transport."""
+
+    return build_native_camera_gpu_bundle(canary_kind="control", **kwargs)
 
 
 def extract_native_camera_gpu_bundle(
@@ -316,10 +346,9 @@ def extract_native_camera_gpu_bundle(
                         ),
                         {},
                     )
-                    if (
-                        hashlib.sha256(data).hexdigest() != row.get("sha256")
-                        or len(data) != row.get("size_bytes")
-                    ):
+                    if hashlib.sha256(data).hexdigest() != row.get("sha256") or len(
+                        data
+                    ) != row.get("size_bytes"):
                         raise ValueError(f"nvidia_warehouse_gpu_bundle_asset_sha_invalid:{name}")
                 target = (output / name).resolve()
                 if not target.is_relative_to(output):
@@ -359,6 +388,14 @@ def run_native_camera_gpu_bundle(
         expected_sha256=expected_sha256,
         output_dir=root / "input",
     )
+    spec = _read_object(extracted["spec_path"])
+    if spec.get("schema_version") == CONTROL_SPEC_SCHEMA_VERSION:
+        return run_native_control_canary(
+            spec_path=extracted["spec_path"],
+            assets_root=extracted["assets_root"],
+            output_dir=root / "output",
+            backend=isaac_sim_6_native_control_backend,
+        )
     return run_native_camera_canary(
         spec_path=extracted["spec_path"],
         assets_root=extracted["assets_root"],
@@ -386,9 +423,12 @@ def _download_https(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, method="GET")
     size = 0
     # _validated_https_url rejects non-HTTPS and credential-bearing URLs.
-    with urllib.request.urlopen(  # nosec B310
-        request, timeout=300
-    ) as response, destination.open("wb") as handle:
+    with (
+        urllib.request.urlopen(  # nosec B310
+            request, timeout=300
+        ) as response,
+        destination.open("wb") as handle,
+    ):
         while chunk := response.read(1024 * 1024):
             size += len(chunk)
             if size > MAX_BUNDLE_BYTES:
@@ -426,8 +466,44 @@ def _archive_worker_output(source: Path, destination: Path) -> None:
         raise ValueError("nvidia_warehouse_gpu_worker_output_too_large")
 
 
+def _safe_missing_module(exc: BaseException) -> str | None:
+    if not isinstance(exc, ModuleNotFoundError):
+        return None
+    value = str(getattr(exc, "name", "") or "").strip()
+    return value if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", value) else None
+
+
+def _safe_failure_code(exc: BaseException) -> str | None:
+    value = str(exc).strip()
+    if len(value) > 200:
+        return None
+    if not value.startswith(("native_", "nvidia_warehouse_")):
+        return None
+    return value if re.fullmatch(r"[A-Za-z0-9_:,.-]+", value) else None
+
+
+def _safe_traceback_frames(exc: BaseException) -> list[dict[str, Any]]:
+    """Preserve failure location without exception text, source, locals, or host paths."""
+
+    return [
+        {
+            "filename": Path(frame.filename).name,
+            "line_number": int(frame.lineno),
+            "function": str(frame.name),
+        }
+        for frame in traceback.extract_tb(exc.__traceback__)[-12:]
+    ]
+
+
 def _write_worker_failure_output(
-    *, output_dir: Path, phase: str, error_type: str
+    *,
+    output_dir: Path,
+    phase: str,
+    error_type: str,
+    missing_module: str | None = None,
+    failure_code: str | None = None,
+    traceback_frames: Sequence[Mapping[str, Any]] = (),
+    transport_diagnostics: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     failure_dir = output_dir / "failure"
@@ -438,6 +514,10 @@ def _write_worker_failure_output(
         "status": "failed",
         "phase": str(phase),
         "error_type": str(error_type),
+        "missing_module": missing_module,
+        "failure_code": failure_code,
+        "traceback_frames": [dict(frame) for frame in traceback_frames],
+        "transport_diagnostics": dict(transport_diagnostics or {}),
         "failure_before_frames": True,
         "label_free": True,
         "rankings_or_policy_outcomes_accessed": False,
@@ -457,6 +537,10 @@ def _write_worker_failure_output(
         "failure_evidence": {
             "phase": str(phase),
             "error_type": str(error_type),
+            "missing_module": missing_module,
+            "failure_code": failure_code,
+            "traceback_frames": [dict(frame) for frame in traceback_frames],
+            "transport_diagnostics": dict(transport_diagnostics or {}),
             "failure_before_frames": True,
             "media": [
                 {
@@ -495,9 +579,7 @@ def run_native_camera_gpu_worker(
     root = Path(workspace).expanduser().resolve()
     if root.exists():
         raise FileExistsError("nvidia_warehouse_gpu_worker_workspace_exists")
-    input_url = _validated_https_url(
-        environment.get(INPUT_SECRET_URL_ENV, ""), field="input_url"
-    )
+    input_url = _validated_https_url(environment.get(INPUT_SECRET_URL_ENV, ""), field="input_url")
     output_url = _validated_https_url(
         environment.get(OUTPUT_SECRET_PUT_URL_ENV, ""), field="output_url"
     )
@@ -506,10 +588,42 @@ def run_native_camera_gpu_worker(
         raise ValueError("nvidia_warehouse_gpu_worker_input_sha256_invalid")
     root.mkdir(parents=True)
     phase = "download"
+    download_attempts: list[dict[str, Any]] = []
     try:
         bundle = root / "input.zip"
-        downloader(input_url, bundle)
-        if not bundle.is_file() or file_sha256(bundle) != expected_sha256:
+        input_integrity_verified = False
+        for attempt in range(1, MAX_INPUT_DOWNLOAD_ATTEMPTS + 1):
+            bundle.unlink(missing_ok=True)
+            try:
+                downloader(input_url, bundle)
+            except Exception as exc:
+                download_attempts.append(
+                    {
+                        "attempt": attempt,
+                        "status": "transport_error",
+                        "error_type": type(exc).__name__,
+                        "raw_secret_values_recorded": False,
+                    }
+                )
+                if attempt == MAX_INPUT_DOWNLOAD_ATTEMPTS:
+                    raise
+                continue
+            observed_size = bundle.stat().st_size if bundle.is_file() else 0
+            observed_sha256 = file_sha256(bundle) if bundle.is_file() else None
+            input_integrity_verified = observed_sha256 == expected_sha256
+            download_attempts.append(
+                {
+                    "attempt": attempt,
+                    "status": "verified" if input_integrity_verified else "hash_mismatch",
+                    "observed_size_bytes": observed_size,
+                    "observed_sha256": observed_sha256,
+                    "expected_sha256_match": input_integrity_verified,
+                    "raw_secret_values_recorded": False,
+                }
+            )
+            if input_integrity_verified:
+                break
+        if not input_integrity_verified:
             raise ValueError("nvidia_warehouse_gpu_worker_download_sha256_mismatch")
         phase = "native_camera_execution"
         result = dict(
@@ -524,6 +638,15 @@ def run_native_camera_gpu_worker(
             output_dir=root / "execution" / "output",
             phase=phase,
             error_type=type(exc).__name__,
+            missing_module=_safe_missing_module(exc),
+            failure_code=_safe_failure_code(exc),
+            traceback_frames=_safe_traceback_frames(exc),
+            transport_diagnostics={
+                "policy": "bounded_checksum_verified_retry",
+                "maximum_attempts": MAX_INPUT_DOWNLOAD_ATTEMPTS,
+                "attempts": download_attempts,
+                "raw_secret_values_recorded": False,
+            },
         )
     output_zip = root / "output.zip"
     _archive_worker_output(root / "execution" / "output", output_zip)
@@ -536,6 +659,15 @@ def run_native_camera_gpu_worker(
         "output_zip_size_bytes": output_zip.stat().st_size,
         "input_url_recorded": False,
         "output_url_recorded": False,
+        "input_download": {
+            "policy": "bounded_checksum_verified_retry",
+            "maximum_attempts": MAX_INPUT_DOWNLOAD_ATTEMPTS,
+            "attempts": download_attempts,
+            "integrity_verified": any(
+                attempt.get("expected_sha256_match") is True for attempt in download_attempts
+            ),
+            "raw_secret_values_recorded": False,
+        },
         "rankings_or_policy_outcomes_accessed": False,
         "physical_robot_operated": False,
     }
@@ -554,6 +686,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build.add_argument("--source-commit", required=True)
     build.add_argument("--output", required=True)
     build.add_argument("--receipt", required=True)
+    build.add_argument("--canary-kind", choices=("camera", "control"), default="camera")
     run = commands.add_parser("run")
     run.add_argument("--bundle", required=True)
     run.add_argument("--expected-sha256", required=True)
@@ -569,6 +702,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_commit=args.source_commit,
             output_zip=args.output,
             receipt_path=args.receipt,
+            canary_kind=args.canary_kind,
         )
     elif args.command == "run":
         result = run_native_camera_gpu_bundle(

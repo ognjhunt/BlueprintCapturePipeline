@@ -596,6 +596,26 @@ def run_watchdog(
         deadline_epoch=deadline_epoch,
         provider_name=resolved_provider,
     )
+    handoff_receipt_path = root / "provider_lane_handoff_receipt.json"
+    authorized_concurrency = 1
+    if handoff_receipt_path.exists() and not handoff_receipt_path.is_symlink():
+        try:
+            handoff_stat = handoff_receipt_path.stat()
+            handoff_receipt = json.loads(
+                handoff_receipt_path.read_text(encoding="utf-8")
+            )
+            receipt_concurrency = handoff_receipt.get(
+                "maximum_concurrent_paid_gpus_global"
+            )
+            if (
+                not handoff_stat.st_mode & 0o077
+                and handoff_receipt.get("pod_name_prefix") == pod_name_prefix
+                and type(receipt_concurrency) is int
+                and receipt_concurrency == 2
+            ):
+                authorized_concurrency = 2
+        except (OSError, ValueError, json.JSONDecodeError):
+            authorized_concurrency = 1
     owner_teardown_cancel: dict[str, Any] = {}
     cancel_zero_result: dict[str, Any] = {}
     while clock() < deadline_epoch:
@@ -668,18 +688,21 @@ def run_watchdog(
                 second_zero = {}
                 second_global_zero = {}
                 exact_contract_zero = False
-            independently_zero = (
-                all(
-                    inventory.get("api_confirmed") is True
-                    and inventory.get("live_resource_count") == 0
-                    for inventory in (
-                        first_zero,
-                        first_global_zero,
-                        second_zero,
-                        second_global_zero,
-                    )
-                )
-                and exact_contract_zero
+            prefix_zero = all(
+                inventory.get("api_confirmed") is True
+                and inventory.get("live_resource_count") == 0
+                for inventory in (first_zero, second_zero)
+            )
+            global_inventory_safe = all(
+                inventory.get("api_confirmed") is True
+                and type(inventory.get("live_resource_count")) is int
+                and 0
+                <= inventory["live_resource_count"]
+                <= authorized_concurrency - 1
+                for inventory in (first_global_zero, second_global_zero)
+            )
+            independently_zero = bool(
+                prefix_zero and global_inventory_safe and exact_contract_zero
             )
             if independently_zero:
                 owner_teardown_cancel = cancel_candidate
@@ -693,6 +716,12 @@ def run_watchdog(
                     "final_inventory": second_zero,
                     "final_global_inventory": second_global_zero,
                     "provider_absence_confirmed": True,
+                    "provider_absence_scope": (
+                        "name_prefix_exact_instance_with_authorized_concurrency"
+                        if authorized_concurrency == 2
+                        else "provider_global"
+                    ),
+                    "maximum_concurrent_paid_gpus_global": authorized_concurrency,
                     "provider_mutations_performed": 0,
                     "teardown_error_type": None,
                     "raw_secret_values_recorded": False,
@@ -758,6 +787,7 @@ def run_watchdog(
                 build_paid_provider_lane_reconciliation,
                 release_transferred_paid_provider_lane_lease,
                 restore_paid_provider_lane_lease_to_retained_watchdog,
+                scope_pending_teardowns_for_concurrent_lane,
             )
 
             pending_path = str(receipt.get("pod_pending_teardown_record") or "")
@@ -817,7 +847,13 @@ def run_watchdog(
                         if isinstance(result.get("final_inventory"), Mapping)
                         else {}
                     ),
-                    open_pending_teardowns=load_pending_teardowns(),
+                    open_pending_teardowns=scope_pending_teardowns_for_concurrent_lane(
+                        load_pending_teardowns(),
+                        resource_name_prefix=pod_name_prefix,
+                        maximum_concurrent_paid_resources=int(
+                            receipt.get("maximum_concurrent_paid_gpus_global") or 1
+                        ),
+                    ),
                 )
                 result["provider_lane_terminal_release"] = (
                     release_transferred_paid_provider_lane_lease(

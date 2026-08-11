@@ -21,8 +21,12 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_gpu_bundle import (
 )
 from blueprint_pipeline.nvidia_warehouse_workcell import (
     CANARY_SPEC_SCHEMA_VERSION,
+    DEPENDENCY_CONTRACT,
     DATASET_REVISION,
     SCHEMA_VERSION as MATERIALIZATION_SCHEMA_VERSION,
+)
+from blueprint_pipeline.nvidia_warehouse_native_control_canary import (
+    SPEC_SCHEMA_VERSION as CONTROL_SPEC_SCHEMA_VERSION,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256, file_sha256
 
@@ -37,6 +41,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
         "status": "completed",
         "dataset_revision": DATASET_REVISION,
         "dataset_local_dependency_closure_complete": True,
+        "dependency_contract": dict(DEPENDENCY_CONTRACT),
         "files": [
             {
                 "relative_path": "Props/workcell.usd",
@@ -96,9 +101,7 @@ def test_gpu_bundle_cli_source_identity_requires_exact_clean_head(tmp_path: Path
         text=True,
     ).stdout.strip()
 
-    assert require_clean_bundle_source_checkout(
-        source_commit=head, repo_root=repo
-    ) == head
+    assert require_clean_bundle_source_checkout(source_commit=head, repo_root=repo) == head
     with pytest.raises(ValueError, match="source_commit_not_checkout_head"):
         require_clean_bundle_source_checkout(source_commit="a" * 40, repo_root=repo)
     (repo / "untracked.txt").write_text("dirty", encoding="utf-8")
@@ -130,11 +133,50 @@ def test_gpu_bundle_round_trip_binds_source_spec_manifest_and_assets(tmp_path: P
     assert receipt_path.is_file()
 
 
+def test_gpu_bundle_round_trip_accepts_frozen_native_control_spec(tmp_path: Path) -> None:
+    assets, spec_path = _inputs(tmp_path)
+    spec = json.loads(spec_path.read_text())
+    spec.pop("spec_sha256")
+    spec.pop("label_free")
+    spec["schema_version"] = CONTROL_SPEC_SCHEMA_VERSION
+    spec["spec_sha256"] = canonical_sha256(spec)
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    receipt = build_native_camera_gpu_bundle(
+        assets_root=assets,
+        spec_path=spec_path,
+        source_commit="a" * 40,
+        output_zip=tmp_path / "control.zip",
+        canary_kind="control",
+    )
+
+    assert receipt["manifest"]["canary_kind"] == "control"
+    assert receipt["manifest"]["purpose"].endswith("native_control_canary")
+
+
 def test_gpu_bundle_rejects_asset_mutation_before_packaging(tmp_path: Path) -> None:
     assets, spec = _inputs(tmp_path)
     (assets / "Props" / "workcell.usd").write_bytes(b"mutated")
 
     with pytest.raises(ValueError, match="asset_invalid"):
+        build_native_camera_gpu_bundle(
+            assets_root=assets,
+            spec_path=spec,
+            source_commit="a" * 40,
+            output_zip=tmp_path / "camera.zip",
+        )
+
+
+def test_gpu_bundle_rejects_legacy_usd_only_dependency_claim(tmp_path: Path) -> None:
+    assets, spec = _inputs(tmp_path)
+    manifest_path = assets / "materialization_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("manifest_sha256")
+    manifest.pop("dependency_contract")
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="materialization_invalid"):
         build_native_camera_gpu_bundle(
             assets_root=assets,
             spec_path=spec,
@@ -211,6 +253,95 @@ def test_gpu_worker_downloads_runs_and_uploads_without_recording_urls(tmp_path: 
     assert output_url not in json.dumps(receipt)
 
 
+def test_gpu_worker_retries_one_hash_mismatch_and_records_integrity_evidence(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.zip"
+    source.write_bytes(b"hash-bound-input")
+    expected = file_sha256(source)
+    calls = 0
+    uploaded: dict[str, bytes] = {}
+
+    def downloader(_url: str, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        destination.write_bytes(b"corrupt" if calls == 1 else source.read_bytes())
+
+    def runner(**kwargs):
+        output = Path(kwargs["workspace"]) / "output"
+        output.mkdir(parents=True)
+        (output / "native_camera_canary_result.json").write_text(
+            json.dumps({"status": "passed"}), encoding="utf-8"
+        )
+        return {"status": "passed"}
+
+    def uploader(url: str, path: Path) -> None:
+        uploaded[url] = path.read_bytes()
+
+    output_url = "https://storage.example/output?secret=value"
+    receipt = run_native_camera_gpu_worker(
+        workspace=tmp_path / "worker",
+        environment={
+            INPUT_SECRET_URL_ENV: "https://storage.example/input?secret=value",
+            INPUT_SHA256_ENV: expected,
+            OUTPUT_SECRET_PUT_URL_ENV: output_url,
+        },
+        downloader=downloader,
+        uploader=uploader,
+        bundle_runner=runner,
+    )
+
+    assert calls == 2
+    assert receipt["input_download"]["integrity_verified"] is True
+    assert [attempt["status"] for attempt in receipt["input_download"]["attempts"]] == [
+        "hash_mismatch",
+        "verified",
+    ]
+    assert "secret=value" not in json.dumps(receipt)
+
+
+def test_gpu_worker_preserves_bounded_hash_mismatch_diagnostics(
+    tmp_path: Path,
+) -> None:
+    uploaded: dict[str, bytes] = {}
+    runner_called = False
+
+    def downloader(_url: str, destination: Path) -> None:
+        destination.write_bytes(b"persistent-corruption")
+
+    def runner(**_kwargs):
+        nonlocal runner_called
+        runner_called = True
+        return {"status": "passed"}
+
+    def uploader(url: str, path: Path) -> None:
+        uploaded[url] = path.read_bytes()
+
+    output_url = "https://storage.example/output?secret=value"
+    run_native_camera_gpu_worker(
+        workspace=tmp_path / "worker",
+        environment={
+            INPUT_SECRET_URL_ENV: "https://storage.example/input?secret=value",
+            INPUT_SHA256_ENV: "a" * 64,
+            OUTPUT_SECRET_PUT_URL_ENV: output_url,
+        },
+        downloader=downloader,
+        uploader=uploader,
+        bundle_runner=runner,
+    )
+
+    validation = validate_native_camera_gpu_output_archive(uploaded[output_url])
+    diagnostics = validation["canary_result"]["failure_evidence"]["transport_diagnostics"]
+    assert runner_called is False
+    assert diagnostics["policy"] == "bounded_checksum_verified_retry"
+    assert diagnostics["maximum_attempts"] == 2
+    assert [attempt["status"] for attempt in diagnostics["attempts"]] == [
+        "hash_mismatch",
+        "hash_mismatch",
+    ]
+    assert "secret=value" not in json.dumps(validation)
+
+
 def test_gpu_worker_uploads_hash_bound_failure_media_and_exits_transport_cleanly(
     tmp_path: Path,
 ) -> None:
@@ -247,7 +378,79 @@ def test_gpu_worker_uploads_hash_bound_failure_media_and_exits_transport_cleanly
     assert validation["status"] == "completed"
     assert validation["canary_status"] == "failed"
     assert validation["canary_result"]["failure_evidence"]["error_type"] == "TypeError"
+    assert validation["canary_result"]["failure_evidence"]["failure_code"] is None
+    frames = validation["canary_result"]["failure_evidence"]["traceback_frames"]
+    assert frames[-1]["function"] == "runner"
+    assert frames[-1]["filename"] == Path(__file__).name
+    assert isinstance(frames[-1]["line_number"], int)
+    assert "live Isaac SimulationApp shim" not in json.dumps(validation)
     assert validation["canary_result"]["claim_boundary"]["policy_wam_loop_proven"] is False
+
+
+def test_gpu_worker_records_safe_missing_module_without_exception_message(tmp_path: Path) -> None:
+    source = tmp_path / "source.zip"
+    source.write_bytes(b"hash-bound-input")
+    uploaded: dict[str, bytes] = {}
+
+    def downloader(_url: str, destination: Path) -> None:
+        destination.write_bytes(source.read_bytes())
+
+    def runner(**_kwargs):
+        raise ModuleNotFoundError("signed-url-secret-must-not-leak", name="isaacsim.core.api")
+
+    def uploader(url: str, path: Path) -> None:
+        uploaded[url] = path.read_bytes()
+
+    output_url = "https://storage.example/output?secret=value"
+    run_native_camera_gpu_worker(
+        workspace=tmp_path / "worker",
+        environment={
+            INPUT_SECRET_URL_ENV: "https://storage.example/input?secret=value",
+            INPUT_SHA256_ENV: file_sha256(source),
+            OUTPUT_SECRET_PUT_URL_ENV: output_url,
+        },
+        downloader=downloader,
+        uploader=uploader,
+        bundle_runner=runner,
+    )
+    validation = validate_native_camera_gpu_output_archive(uploaded[output_url])
+    evidence = validation["canary_result"]["failure_evidence"]
+    assert evidence["error_type"] == "ModuleNotFoundError"
+    assert evidence["missing_module"] == "isaacsim.core.api"
+    assert "signed-url-secret" not in json.dumps(validation)
+
+
+def test_gpu_worker_records_allowlisted_failure_code_without_arbitrary_message(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.zip"
+    source.write_bytes(b"hash-bound-input")
+    uploaded: dict[str, bytes] = {}
+
+    def downloader(_url: str, destination: Path) -> None:
+        destination.write_bytes(source.read_bytes())
+
+    def runner(**_kwargs):
+        raise ValueError("native_franka_joint_hold_apply_action_failed:ValueError")
+
+    def uploader(url: str, path: Path) -> None:
+        uploaded[url] = path.read_bytes()
+
+    output_url = "https://storage.example/output?secret=value"
+    run_native_camera_gpu_worker(
+        workspace=tmp_path / "worker",
+        environment={
+            INPUT_SECRET_URL_ENV: "https://storage.example/input?secret=value",
+            INPUT_SHA256_ENV: file_sha256(source),
+            OUTPUT_SECRET_PUT_URL_ENV: output_url,
+        },
+        downloader=downloader,
+        uploader=uploader,
+        bundle_runner=runner,
+    )
+    validation = validate_native_camera_gpu_output_archive(uploaded[output_url])
+    evidence = validation["canary_result"]["failure_evidence"]
+    assert evidence["failure_code"] == ("native_franka_joint_hold_apply_action_failed:ValueError")
 
 
 def test_gpu_worker_rejects_non_https_signed_urls_before_download(tmp_path: Path) -> None:

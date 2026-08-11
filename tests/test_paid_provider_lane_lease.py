@@ -30,11 +30,75 @@ from blueprint_pipeline.paid_provider_lane_lease import (
     read_lease,
     rebind_paid_provider_lane_lease_to_replacement_volume,
     release_paid_provider_lane_lease,
+    release_transferred_paid_provider_lane_lease,
     restore_paid_provider_lane_lease_to_retained_watchdog,
     rotate_paid_provider_lane_lease_to_retention_watchdog,
+    scope_pending_teardowns_for_concurrent_lane,
     transfer_paid_provider_lane_lease_to_watchdog,
     transfer_paid_provider_compute_lane_lease_to_watchdog,
 )
+
+
+def test_terminal_compute_release_recovers_dead_same_host_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lane = "nvidia_warehouse_native_camera_gpu_canary"
+    path = lease_path("vast", lane, tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "paid_provider_lane_lease.v1",
+                "provider": "vast",
+                "lane": lane,
+                "hostname": lease_module._hostname(),
+                "owner_pid": 3177,
+                "retained_teardown_owner_pid": 3177,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(lease_module, "_pid_is_alive", lambda _pid: False)
+    reconciliation = build_paid_provider_lane_reconciliation(
+        provider="vast",
+        lane=lane,
+        provider_inventory={"api_confirmed": True, "live_resource_count": 0},
+        open_pending_teardowns=[],
+    )
+
+    released = release_transferred_paid_provider_lane_lease(
+        lease_path_value=path,
+        teardown_owner_pid=os.getpid(),
+        terminal_reconciliation=reconciliation,
+        reason="restarted_watchdog_terminal_recovery",
+    )
+
+    assert released["status"] == "released"
+    assert released["recovered_dead_owner"] is True
+    assert not path.exists()
+
+
+def test_two_slot_scope_preserves_same_lane_and_excludes_other_lane() -> None:
+    records = [
+        {"resource_name": "blueprint-native-warehouse-camera-first", "status": "open"},
+        {"resource_name": "blueprint-groot-oscar-canary-other", "status": "open"},
+    ]
+
+    assert scope_pending_teardowns_for_concurrent_lane(
+        records,
+        resource_name_prefix="blueprint-native-warehouse-camera-",
+        maximum_concurrent_paid_resources=1,
+    ) == records
+    assert scope_pending_teardowns_for_concurrent_lane(
+        records,
+        resource_name_prefix="blueprint-native-warehouse-camera-",
+        maximum_concurrent_paid_resources=2,
+    ) == [records[0]]
+    assert scope_pending_teardowns_for_concurrent_lane(
+        records,
+        resource_name_prefix="blueprint-native-warehouse-camera-",
+        maximum_concurrent_paid_resources=3,
+    ) == records
 
 
 def test_compute_lane_transfers_directly_to_live_teardown_watchdog(

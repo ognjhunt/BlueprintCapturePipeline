@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import io
 import json
@@ -31,6 +32,10 @@ from .isaac_worker_image_manifest import (
 )
 from .nvidia_warehouse_native_camera_canary import (
     RESULT_SCHEMA_VERSION as CAMERA_RESULT_SCHEMA_VERSION,
+)
+from .nvidia_warehouse_native_control_canary import (
+    CLAIM_LABEL as CONTROL_CLAIM_LABEL,
+    RESULT_SCHEMA_VERSION as CONTROL_RESULT_SCHEMA_VERSION,
 )
 from .nvidia_warehouse_native_camera_gpu_bundle import (
     BUNDLE_SCHEMA_VERSION,
@@ -61,6 +66,7 @@ from .paid_provider_lane_lease import (
     acquire_paid_provider_lane_lease,
     build_paid_provider_lane_reconciliation,
     release_paid_provider_lane_lease,
+    scope_pending_teardowns_for_concurrent_lane,
     transfer_paid_provider_compute_lane_lease_to_watchdog,
 )
 from .paid_resource_admission import (
@@ -80,6 +86,7 @@ from .safe_outbound_http import request as safe_http_request
 SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_admission.v1"
 RELEASE_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_release.v1"
 PROBE_KIND = "new-site-native-camera"
+CONTROL_PROBE_KIND = "new-site-native-control"
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MIN_CONTAINER_DISK_BYTES = 80 * 1024**3
 MIN_GPU_MEMORY_BYTES = 16 * 1024**3
@@ -91,9 +98,13 @@ PAID_LANE = "nvidia_warehouse_native_camera_gpu_canary"
 OUTPUT_ARCHIVE_NAME = "nvidia_warehouse_native_camera_provider_output.zip"
 OUTPUT_VALIDATION_NAME = "nvidia_warehouse_native_camera_output_validation.json"
 MONITOR_NAME = "nvidia_warehouse_native_camera_monitor.json"
-MAX_OUTPUT_ARCHIVE_MEMBERS = 32
+MAX_OUTPUT_ARCHIVE_MEMBERS = 256
 MAX_OUTPUT_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_CONSECUTIVE_TRANSIENT_OUTPUT_ERRORS = 3
+MAXIMUM_SUPPORTED_GLOBAL_PAID_GPUS = 2
+GLOBAL_PAID_GPU_LAUNCH_LOCK = (
+    Path.home() / ".blueprint-secrets" / "paid_gpu_global_launch.lock"
+)
 
 
 def _read_object(path: str | Path) -> dict[str, Any]:
@@ -101,6 +112,153 @@ def _read_object(path: str | Path) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"nvidia_warehouse_camera_gpu_json_not_object:{path}")
     return dict(value)
+
+
+def _provider_machine_ids(values: Any) -> list[int]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        return []
+    machine_ids = {
+        int(value)
+        for value in values[:64]
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+        )
+        or (isinstance(value, str) and value.isdigit() and int(value) > 0)
+    }
+    return sorted(machine_ids)
+
+
+def _global_paid_gpu_inventory(
+    *, vast_provider: Any, runpod_provider: Any | None = None
+) -> dict[str, Any]:
+    """Read both configured paid-GPU providers without mutating either."""
+
+    providers = {
+        "vast": vast_provider,
+        "runpod": runpod_provider or get_render_provider("runpod"),
+    }
+    observations: dict[str, Any] = {}
+    total = 0
+    blockers: list[str] = []
+    for name, provider in providers.items():
+        try:
+            inventory = provider.billable_inventory(name_prefix="")
+        except Exception as exc:  # noqa: BLE001 - fail closed before allocation
+            inventory = {
+                "api_confirmed": False,
+                "live_resource_count": None,
+                "error_type": type(exc).__name__,
+            }
+        count = inventory.get("live_resource_count")
+        confirmed = inventory.get("api_confirmed") is True
+        valid_count = type(count) is int and count >= 0
+        if not confirmed or not valid_count:
+            blockers.append(f"native_camera_global_{name}_inventory_unverified")
+        else:
+            total += count
+        observations[name] = {
+            "api_confirmed": confirmed,
+            "live_resource_count": count if valid_count else None,
+            "resources": [
+                {
+                    "instance_id": row.get("instance_id"),
+                    "name": row.get("name"),
+                    "provider_status": row.get("provider_status"),
+                    "gpu_name": row.get("gpu_name"),
+                }
+                for row in inventory.get("resources", [])
+                if isinstance(row, Mapping)
+            ],
+        }
+    result = {
+        "schema_version": "blueprint_global_paid_gpu_inventory.v1",
+        "status": "verified" if not blockers else "blocked",
+        "observed_at_epoch": time.time(),
+        "providers": observations,
+        "total_live_paid_gpus_observed": total if not blockers else None,
+        "blockers": blockers,
+        "provider_mutations_performed": 0,
+        "raw_provider_response_recorded": False,
+    }
+    result["manifest_sha256"] = canonical_sha256(result)
+    return result
+
+
+def _concurrency_aware_native_preflight(
+    *,
+    preflight: Mapping[str, Any],
+    global_inventory: Mapping[str, Any],
+    maximum_concurrent_paid_gpus_global: int,
+) -> dict[str, Any]:
+    """Bind a normal Vast capacity snapshot to the prospective global ceiling."""
+
+    result = dict(preflight)
+    blockers = [
+        str(value)
+        for value in result.get("blockers", [])
+        if value != "openpi_gpu_preflight_billable_inventory_not_zero"
+    ]
+    total = global_inventory.get("total_live_paid_gpus_observed")
+    ceiling_valid = (
+        type(maximum_concurrent_paid_gpus_global) is int
+        and 1
+        <= maximum_concurrent_paid_gpus_global
+        <= MAXIMUM_SUPPORTED_GLOBAL_PAID_GPUS
+    )
+    below_ceiling = bool(
+        ceiling_valid
+        and global_inventory.get("status") == "verified"
+        and type(total) is int
+        and total < maximum_concurrent_paid_gpus_global
+    )
+    if not ceiling_valid:
+        blockers.append("native_camera_global_paid_gpu_ceiling_invalid")
+    blockers.extend(str(value) for value in global_inventory.get("blockers", []))
+    if not below_ceiling:
+        blockers.append("native_camera_global_paid_gpu_ceiling_reached_or_unverified")
+    attempt_inventory = result.get("attempt_billable_inventory")
+    attempt_inventory = (
+        attempt_inventory if isinstance(attempt_inventory, Mapping) else {}
+    )
+    if not (
+        attempt_inventory.get("api_confirmed") is True
+        and attempt_inventory.get("live_resource_count") == 0
+    ):
+        blockers.append("native_camera_attempt_inventory_not_zero")
+    result.update(
+        {
+            "status": "verified" if not blockers else "blocked",
+            "blockers": sorted(set(blockers)),
+            "provider_inventory_verified_zero": total == 0,
+            "provider_inventory_below_global_ceiling": below_ceiling,
+            "maximum_concurrent_paid_gpus_global": (
+                maximum_concurrent_paid_gpus_global
+            ),
+            "global_paid_gpu_inventory": dict(global_inventory),
+        }
+    )
+    result.pop("manifest_sha256", None)
+    result["manifest_sha256"] = canonical_sha256(result)
+    return result
+
+
+def _acquire_global_paid_gpu_launch_lock() -> Any:
+    """Serialize the final cross-provider inventory check and camera create."""
+
+    GLOBAL_PAID_GPU_LAUNCH_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    handle = GLOBAL_PAID_GPU_LAUNCH_LOCK.open("a+", encoding="utf-8")
+    GLOBAL_PAID_GPU_LAUNCH_LOCK.chmod(0o600)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
+def _release_global_paid_gpu_launch_lock(handle: Any) -> None:
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def build_native_camera_gpu_release_evidence(
@@ -213,13 +371,17 @@ def build_native_camera_gpu_admission(
     manifest_declared = str(manifest.get("manifest_sha256") or "")
     manifest_payload = dict(manifest)
     manifest_payload.pop("manifest_sha256", None)
+    purpose = manifest.get("purpose")
     if (
         manifest.get("schema_version") != BUNDLE_SCHEMA_VERSION
         or manifest.get("source_commit") != expected_commit
         or manifest.get("label_free") is not True
         or manifest.get("rankings_or_policy_outcomes_accessed") is not False
-        or manifest.get("purpose")
-        != "private_internal_nvidia_warehouse_native_camera_canary"
+        or purpose
+        not in {
+            "private_internal_nvidia_warehouse_native_camera_canary",
+            "private_internal_nvidia_warehouse_native_control_canary",
+        }
     ):
         blockers.append("native_camera_gpu_input_freeze_invalid")
     if manifest_declared != canonical_sha256(manifest_payload):
@@ -241,8 +403,21 @@ def build_native_camera_gpu_admission(
         blockers.append("native_camera_gpu_preflight_observed_at_invalid")
     elif not 0 <= now - float(observed) <= MAX_PREFLIGHT_AGE_SECONDS:
         blockers.append("native_camera_gpu_preflight_stale_or_future")
-    if preflight.get("provider_inventory_verified_zero") is not True:
-        blockers.append("native_camera_gpu_provider_inventory_not_zero")
+    global_ceiling = preflight.get("maximum_concurrent_paid_gpus_global", 1)
+    if not (
+        type(global_ceiling) is int
+        and 1 <= global_ceiling <= MAXIMUM_SUPPORTED_GLOBAL_PAID_GPUS
+    ):
+        blockers.append("native_camera_gpu_global_paid_gpu_ceiling_invalid")
+    below_ceiling_proven = (
+        preflight.get("provider_inventory_below_global_ceiling") is True
+        or (
+            "maximum_concurrent_paid_gpus_global" not in preflight
+            and preflight.get("provider_inventory_verified_zero") is True
+        )
+    )
+    if not below_ceiling_proven:
+        blockers.append("native_camera_gpu_global_paid_gpu_ceiling_not_proven")
     if preflight.get("single_gpu_available") is not True:
         blockers.append("native_camera_gpu_single_gpu_unavailable")
     gpu_memory = preflight.get("gpu_memory_bytes")
@@ -265,7 +440,12 @@ def build_native_camera_gpu_admission(
         blockers.append("native_camera_gpu_watchdog_missing")
     if spend.get("watchdog_armed_before_allocation") is not True:
         blockers.append("native_camera_gpu_watchdog_not_armed_before_allocation")
-    if type(ttl) is not int or not 60 <= ttl <= 3600:
+    maximum_ttl_seconds = (
+        14_400
+        if purpose == "private_internal_nvidia_warehouse_native_control_canary"
+        else 3_600
+    )
+    if type(ttl) is not int or not 60 <= ttl <= maximum_ttl_seconds:
         blockers.append("native_camera_gpu_ttl_invalid")
     if type(max_spend) not in {int, float} or not math.isfinite(float(max_spend)) or float(max_spend) <= 0:
         blockers.append("native_camera_gpu_max_spend_invalid")
@@ -289,7 +469,11 @@ def build_native_camera_gpu_admission(
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "admitted" if not blockers and shared["status"] == "admitted" else "blocked",
-        "probe_kind": PROBE_KIND,
+        "probe_kind": (
+            CONTROL_PROBE_KIND
+            if purpose == "private_internal_nvidia_warehouse_native_control_canary"
+            else PROBE_KIND
+        ),
         "blockers": sorted(set(blockers)),
         "source_commit": source_commit or None,
         "release_image_ref": image_ref or None,
@@ -299,12 +483,17 @@ def build_native_camera_gpu_admission(
         "gpu_type_id": preflight.get("gpu_type_id"),
         "limits": {
             "hard_ttl_seconds": ttl,
+            "maximum_hard_ttl_seconds": maximum_ttl_seconds,
             "max_spend_usd": max_spend,
             "one_resource": True,
+            "maximum_concurrent_paid_gpus_global": global_ceiling,
         },
         "shared_paid_lane_admission": shared,
         "claim_boundary": {
-            "camera_technical_canary_only": True,
+            "camera_technical_canary_only": purpose
+            == "private_internal_nvidia_warehouse_native_camera_canary",
+            "native_control_experiment": purpose
+            == "private_internal_nvidia_warehouse_native_control_canary",
             "policy_wam_loop_proven": False,
             "ranking_accuracy": False,
             "physical_success": False,
@@ -356,6 +545,86 @@ def validate_native_camera_gpu_output_archive(
             total_uncompressed += int(member.file_size)
         if total_uncompressed > MAX_OUTPUT_UNCOMPRESSED_BYTES:
             blockers.append("native_camera_output_archive_uncompressed_size_exceeded")
+
+        control_name = "native_control_result.json"
+        if control_name in names:
+            try:
+                control_value = json.loads(archive.read(control_name).decode("utf-8"))
+            except (UnicodeError, ValueError, json.JSONDecodeError):
+                control_value = {}
+                blockers.append("native_control_output_result_unreadable")
+            control = dict(control_value) if isinstance(control_value, Mapping) else {}
+            if control.get("schema_version") != CONTROL_RESULT_SCHEMA_VERSION:
+                blockers.append("native_control_output_result_schema_invalid")
+            declared = str(control.get("result_sha256") or "")
+            identity = dict(control)
+            identity.pop("result_sha256", None)
+            if declared != canonical_sha256(identity):
+                blockers.append("native_control_output_result_identity_invalid")
+            if control.get("status") not in {"passed", "failed"}:
+                blockers.append("native_control_output_result_not_terminal")
+            if control.get("claim_label") != CONTROL_CLAIM_LABEL:
+                blockers.append("native_control_output_claim_label_invalid")
+            if control.get("runtime_backend") != "isaac_sim_6_physx":
+                blockers.append("native_control_output_native_backend_unproven")
+            if control.get("hybrid_or_mujoco_backend_used") is not False:
+                blockers.append("native_control_output_hybrid_backend_not_denied")
+            claim_value = control.get("claim_boundary")
+            claim = claim_value if isinstance(claim_value, Mapping) else {}
+            if not (
+                claim.get("simulation_only") is True
+                and claim.get("capture_qualification") is False
+                and claim.get("arkitscenes_collision_readiness") is False
+                and claim.get("physical_success") is False
+                and claim.get("deployment_readiness") is False
+                and claim.get("safety") is False
+            ):
+                blockers.append("native_control_output_claim_boundary_invalid")
+            assessment_value = control.get("assessment")
+            assessment = assessment_value if isinstance(assessment_value, Mapping) else {}
+            controller_rows = assessment.get("controller_results")
+            controller_rows = controller_rows if isinstance(controller_rows, list) else []
+            if control.get("status") == "passed" and len(controller_rows) != 5:
+                blockers.append("native_control_output_five_controllers_missing")
+            for required in ("decision_envelope.json", "evidence_index.json"):
+                if required not in names:
+                    blockers.append(f"native_control_output_required_artifact_missing:{required}")
+            if "evidence_index.json" in names:
+                try:
+                    index_value = json.loads(archive.read("evidence_index.json").decode("utf-8"))
+                except (UnicodeError, ValueError, json.JSONDecodeError):
+                    index_value = {}
+                    blockers.append("native_control_output_evidence_index_unreadable")
+                index = index_value if isinstance(index_value, Mapping) else {}
+                index_identity = dict(index)
+                index_declared = index_identity.pop("index_sha256", None)
+                if index_declared != canonical_sha256(index_identity):
+                    blockers.append("native_control_output_evidence_index_identity_invalid")
+                for row_value in index.get("files") or []:
+                    row = row_value if isinstance(row_value, Mapping) else {}
+                    relative = str(row.get("relative_path") or "")
+                    if (
+                        not relative
+                        or Path(relative).is_absolute()
+                        or ".." in Path(relative).parts
+                        or relative not in names
+                    ):
+                        blockers.append("native_control_output_indexed_file_missing")
+                        continue
+                    if hashlib.sha256(archive.read(relative)).hexdigest() != row.get("sha256"):
+                        blockers.append("native_control_output_indexed_file_sha256_mismatch")
+            return {
+                "schema_version": "nvidia_warehouse_native_control_output_validation.v1",
+                "status": "completed" if not blockers else "blocked",
+                "blockers": sorted(set(blockers)),
+                "terminal_output_present": True,
+                "canary_status": control.get("status"),
+                "canary_result": control,
+                "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                "archive_size_bytes": len(archive_bytes),
+                "archive_member_count": len(members),
+                "raw_secret_values_recorded": False,
+            }
 
         manifest_name = "native_camera_canary_result.json"
         manifest: dict[str, Any] = {}
@@ -488,6 +757,7 @@ def _build_native_camera_vast_launch_request(
     preflight: Mapping[str, Any],
     input_secret_url: str,
     output_secret_put_url: str,
+    excluded_machine_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     capacity = preflight.get("capacity_request")
     capacity = capacity if isinstance(capacity, Mapping) else {}
@@ -528,6 +798,7 @@ def _build_native_camera_vast_launch_request(
             "require_avx": True,
             "require_known_supported_isaac_driver": True,
             "preferred_gpu_keywords": capacity.get("preferred_gpu_keywords"),
+            "excluded_machine_ids": sorted(set(excluded_machine_ids)),
         }
     )
     return request
@@ -541,6 +812,7 @@ def build_native_camera_gpu_provider_request(
     spend: Mapping[str, Any],
     expected_source_commit: str,
     job_id: str,
+    launcher_source_commit: str | None = None,
 ) -> dict[str, Any]:
     """Bind the admitted canary to its exact worker without persisting secrets."""
 
@@ -560,6 +832,12 @@ def build_native_camera_gpu_provider_request(
             "provider_mutations_performed": 0,
         }
     provider = str(preflight["provider"])
+    global_ceiling = int(
+        admission["limits"]["maximum_concurrent_paid_gpus_global"]
+    )
+    excluded_machine_ids = _provider_machine_ids(
+        preflight.get("excluded_machine_ids")
+    )
     ttl = int(spend["hard_ttl_seconds"])
     bundle_sha = str(input_bundle["bundle_sha256"])
     worker_command = (
@@ -575,6 +853,7 @@ def build_native_camera_gpu_provider_request(
         "provider": provider,
         "image": str(release["resolved_digest_ref"]),
         "input_bundle_sha256": bundle_sha,
+        "launcher_source_commit": launcher_source_commit,
         "provider_request_shape": {
             "api_payload_is_provider_adapter_template": True,
             "api_payload_values_are_redacted": True,
@@ -603,8 +882,12 @@ def build_native_camera_gpu_provider_request(
                 "hard_timeout_seconds": ttl,
                 "independent_watchdog_required": True,
                 "watchdog_armed_before_allocation": True,
-                "provider_zero_required_before_and_after": True,
+                "attempt_inventory_zero_required_before_launch": True,
+                "global_inventory_below_ceiling_required_before_launch": True,
+                "owned_resource_absence_required_after_launch": True,
+                "maximum_concurrent_paid_gpus_global": int(global_ceiling),
                 "terminal_delete_required": True,
+                "excluded_machine_ids": excluded_machine_ids,
             },
             "output_contract": {
                 "individual_external_camera_frame_required": True,
@@ -645,7 +928,6 @@ def _camera_cleanup_handoff(
     absence_proven = bool(
         cleanup.get("provider_absence_confirmed") is True
         and global_inventory.get("api_confirmed") is True
-        and global_inventory.get("live_resource_count") == 0
     )
     cancel_request = (
         write_owner_teardown_cancel_request(
@@ -788,12 +1070,9 @@ def _monitor_native_camera_output_and_teardown(
         provider_name=provider_name,
     )
     global_inventory = provider.billable_inventory(name_prefix="")
-    global_absent = bool(
-        global_inventory.get("api_confirmed") is True
-        and global_inventory.get("live_resource_count") == 0
-    )
     absence_proven = bool(
-        teardown.get("provider_absence_confirmed") is True and global_absent
+        teardown.get("provider_absence_confirmed") is True
+        and global_inventory.get("api_confirmed") is True
     )
     if absence_proven:
         write_owner_teardown_cancel_request(
@@ -866,6 +1145,7 @@ def run_native_camera_gpu_lane(
     adapter_output: str | Path,
     pod_name: str,
     expected_source_commit: str,
+    launcher_source_commit: str | None = None,
     execute: bool,
     hard_ttl_seconds: int,
     max_spend_usd: float,
@@ -878,11 +1158,20 @@ def run_native_camera_gpu_lane(
     campaign_total_spend_cap_usd: float = 20.0,
     campaign_wall_cap_seconds: int = 36_000,
     provider_name: str = "vast",
+    maximum_concurrent_paid_gpus_global: int = 1,
 ) -> dict[str, Any]:
     """Validate or launch one guarded, label-free native camera canary."""
 
     root = Path(adapter_output).expanduser().resolve().parent
     root.mkdir(parents=True, exist_ok=True)
+    if not _COMMIT.fullmatch(str(launcher_source_commit or "")):
+        result = {
+            "status": "blocked",
+            "blockers": ["native_camera_gpu_launcher_source_commit_invalid"],
+            "provider_mutations_performed": 0,
+        }
+        write_json(Path(admission_out), result)
+        return result
     if not pod_name.startswith(CANARY_NAME_PREFIX):
         result = {
             "status": "blocked",
@@ -894,6 +1183,7 @@ def run_native_camera_gpu_lane(
     release = _read_object(release_evidence)
     bundle = _read_object(input_bundle_receipt)
     preflight = _read_object(preflight_bundle)
+    excluded_machine_ids = list(preflight.get("excluded_machine_ids") or [])
     resolved_provider = str(provider_name or "vast").strip().lower()
     if resolved_provider != "vast":
         result = {
@@ -905,7 +1195,7 @@ def run_native_camera_gpu_lane(
         return result
     provider = get_render_provider(resolved_provider) if execute else None
     if execute and provider is not None:
-        preflight = collect_openpi_policy_ranking_vast_preflight(
+        base_preflight = collect_openpi_policy_ranking_vast_preflight(
             name_prefix=CANARY_NAME_PREFIX,
             container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
             capacity_probe=provider.capacity_preflight,
@@ -913,6 +1203,18 @@ def run_native_camera_gpu_lane(
                 name_prefix=prefix
             ),
         )
+        global_inventory = _global_paid_gpu_inventory(vast_provider=provider)
+        preflight = _concurrency_aware_native_preflight(
+            preflight=base_preflight,
+            global_inventory=global_inventory,
+            maximum_concurrent_paid_gpus_global=(
+                maximum_concurrent_paid_gpus_global
+            ),
+        )
+        if excluded_machine_ids:
+            preflight["excluded_machine_ids"] = excluded_machine_ids
+            preflight.pop("manifest_sha256", None)
+            preflight["manifest_sha256"] = canonical_sha256(preflight)
         write_json(root / "native_camera_provider_preflight_launch_refresh.json", preflight)
     if str(preflight.get("provider") or "") != resolved_provider:
         result = {
@@ -940,6 +1242,7 @@ def run_native_camera_gpu_lane(
         spend=spend,
         expected_source_commit=expected_source_commit,
         job_id=pod_name,
+        launcher_source_commit=launcher_source_commit,
     )
     write_json(Path(admission_out), prepared)
     request = prepared.get("bound_request")
@@ -1081,7 +1384,11 @@ def run_native_camera_gpu_lane(
         provider=resolved_provider,
         lane=PAID_LANE,
         provider_inventory=inventory,
-        open_pending_teardowns=load_pending_teardowns(),
+        open_pending_teardowns=scope_pending_teardowns_for_concurrent_lane(
+            load_pending_teardowns(),
+            resource_name_prefix=CANARY_NAME_PREFIX,
+            maximum_concurrent_paid_resources=maximum_concurrent_paid_gpus_global,
+        ),
     )
     lease = acquire_paid_provider_lane_lease(
         provider=resolved_provider,
@@ -1118,7 +1425,7 @@ def run_native_camera_gpu_lane(
             job_dir=root,
             max_age_seconds=hard_ttl_seconds + 600,
         )
-        grant = require_paid_resource_admission(
+        require_paid_resource_admission(
             prepared["admission"]["shared_paid_lane_admission"],
             resource_class=str(prepared["admission"]["provider_resource_class"]),
             expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
@@ -1149,6 +1456,7 @@ def run_native_camera_gpu_lane(
         "pod_name_prefix": CANARY_NAME_PREFIX,
         "campaign_kind": "nvidia_warehouse_native_camera",
         "paid_lane": PAID_LANE,
+        "maximum_concurrent_paid_gpus_global": maximum_concurrent_paid_gpus_global,
         "campaign_budget": budget_context,
     }
     _write_private_json(receipt_path, receipt)
@@ -1195,27 +1503,99 @@ def run_native_camera_gpu_lane(
         "pod_name_prefix": CANARY_NAME_PREFIX,
         "campaign_kind": "nvidia_warehouse_native_camera",
         "paid_lane": PAID_LANE,
+        "maximum_concurrent_paid_gpus_global": maximum_concurrent_paid_gpus_global,
         "campaign_budget": budget_context,
     }
     _write_private_json(receipt_path, receipt)
 
     try:
-        launch_request = _build_native_camera_vast_launch_request(
-            provider=provider,
-            root=root,
-            pod_name=pod_name,
-            release=release,
-            input_bundle=bundle,
-            preflight=preflight,
-            input_secret_url=input_secret_url,
-            output_secret_put_url=output_secret_put_url,
-        )
-        launch = provider.launch(
-            root,
-            launch_request,
-            cold=True,
-            paid_resource_admission_grant=grant,
-        )
+        launch_lock = _acquire_global_paid_gpu_launch_lock()
+        try:
+            final_base_preflight = collect_openpi_policy_ranking_vast_preflight(
+                name_prefix=CANARY_NAME_PREFIX,
+                container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
+                capacity_probe=provider.capacity_preflight,
+                inventory_probe=lambda prefix: provider.billable_inventory(
+                    name_prefix=prefix
+                ),
+            )
+            final_global_inventory = _global_paid_gpu_inventory(
+                vast_provider=provider
+            )
+            write_json(
+                root / "native_camera_global_gpu_inventory_final_prelaunch.json",
+                final_global_inventory,
+            )
+            final_preflight = _concurrency_aware_native_preflight(
+                preflight=final_base_preflight,
+                global_inventory=final_global_inventory,
+                maximum_concurrent_paid_gpus_global=(
+                    maximum_concurrent_paid_gpus_global
+                ),
+            )
+            if excluded_machine_ids:
+                final_preflight["excluded_machine_ids"] = excluded_machine_ids
+                final_preflight.pop("manifest_sha256", None)
+                final_preflight["manifest_sha256"] = canonical_sha256(
+                    final_preflight
+                )
+            write_json(
+                root / "native_camera_provider_preflight_final_prelaunch.json",
+                final_preflight,
+            )
+            final_prepared = build_native_camera_gpu_provider_request(
+                release=release,
+                input_bundle=bundle,
+                preflight=final_preflight,
+                spend=spend,
+                expected_source_commit=expected_source_commit,
+                job_id=pod_name,
+                launcher_source_commit=launcher_source_commit,
+            )
+            write_json(
+                root / "native_camera_gpu_admission_final_prelaunch.json",
+                final_prepared,
+            )
+            if final_prepared.get("status") != "admitted":
+                launch = {
+                    "status": "blocked",
+                    "blockers": list(final_prepared.get("blockers") or []),
+                    "allocation_created": False,
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                launch_grant = require_paid_resource_admission(
+                    final_prepared["admission"]["shared_paid_lane_admission"],
+                    resource_class=str(
+                        final_prepared["admission"]["provider_resource_class"]
+                    ),
+                    expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                )
+                prepared = final_prepared
+                final_request = final_prepared.get("bound_request")
+                if isinstance(final_request, Mapping):
+                    write_json(Path(bound_request_out), dict(final_request))
+                launch_request = _build_native_camera_vast_launch_request(
+                    provider=provider,
+                    root=root,
+                    pod_name=pod_name,
+                    release=release,
+                    input_bundle=bundle,
+                    preflight=final_preflight,
+                    input_secret_url=input_secret_url,
+                    output_secret_put_url=output_secret_put_url,
+                    excluded_machine_ids=_provider_machine_ids(
+                        final_preflight.get("excluded_machine_ids")
+                    ),
+                )
+                launch = provider.launch(
+                    root,
+                    launch_request,
+                    cold=True,
+                    paid_resource_admission_grant=launch_grant,
+                )
+        finally:
+            _release_global_paid_gpu_launch_lock(launch_lock)
         adapter = {
             **dict(launch),
             "status": "submitted" if launch.get("status") == "launched" else "blocked",

@@ -227,6 +227,31 @@ def build_paid_provider_lane_reconciliation(
     }
 
 
+def scope_pending_teardowns_for_concurrent_lane(
+    records: list[Mapping[str, Any]],
+    *,
+    resource_name_prefix: str,
+    maximum_concurrent_paid_resources: int,
+) -> list[Mapping[str, Any]]:
+    """Keep the historical provider-global guard unless concurrency is explicit.
+
+    A two-slot caller still owns only its name-bound lane.  The separate global
+    inventory check and launch mutex enforce the account-wide ceiling; this
+    scope keeps another lane's pending teardown from masquerading as ownership
+    of this lane while preserving same-prefix serialization.
+    """
+
+    if maximum_concurrent_paid_resources <= 1:
+        return list(records)
+    if maximum_concurrent_paid_resources != 2 or not resource_name_prefix:
+        return list(records)
+    return [
+        record
+        for record in records
+        if str(record.get("resource_name") or "").startswith(resource_name_prefix)
+    ]
+
+
 def paid_launch_pending_teardown_max_age(
     *,
     marker_timeout: int,
@@ -1541,10 +1566,24 @@ def release_transferred_paid_provider_lane_lease(
             current = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {"status": "already_released", "released": False, "reason": reason}
-        if teardown_owner_pid not in {
+        direct_owner = teardown_owner_pid in {
             current.get("owner_pid"),
             current.get("retained_teardown_owner_pid"),
-        }:
+        }
+        recorded_owner = current.get("owner_pid")
+        recorded_retained_owner = current.get("retained_teardown_owner_pid")
+        recoverable_dead_owner = bool(
+            current.get("hostname") == _hostname()
+            and type(recorded_owner) is int
+            and recorded_owner > 0
+            and not _pid_is_alive(recorded_owner)
+            and (
+                type(recorded_retained_owner) is not int
+                or recorded_retained_owner <= 0
+                or not _pid_is_alive(recorded_retained_owner)
+            )
+        )
+        if not direct_owner and not recoverable_dead_owner:
             return {
                 "status": "refused_not_teardown_owner",
                 "released": False,
@@ -1567,6 +1606,7 @@ def release_transferred_paid_provider_lane_lease(
         "released": True,
         "reason": reason,
         "teardown_verified": True,
+        "recovered_dead_owner": bool(recoverable_dead_owner and not direct_owner),
     }
 
 
