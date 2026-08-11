@@ -185,11 +185,16 @@ class _ControlEnvironment:
         max_joint_delta_rad,
         max_task_space_translation_step_m,
         orientation_tolerance_deg,
+        task_space_translation_strategy,
     ):
         assert target_quaternion_world_xyzw == [1.0, 0.0, 0.0, 0.0]
         assert max_joint_delta_rad == 0.03
         assert max_task_space_translation_step_m == 0.01
         assert orientation_tolerance_deg == 2.0
+        assert task_space_translation_strategy in {
+            "direct_global_pose_target",
+            "orientation_first_bounded_local_increment",
+        }
         self.pending_target = [float(value) for value in target_position_world_m]
         self.pending_gripper = float(gripper_command)
         target_joints = [
@@ -281,6 +286,10 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
         "horizontal_support_top_down_task_orientation"
     )
     assert first["controlled_body_quaternion_world_xyzw"] == [1.0, 0.0, 0.0, 0.0]
+    pregrasp = next(
+        phase for phase in first["scripted_positive_phases"]
+        if phase["phase_id"] == "pregrasp"
+    )
     grasp = next(
         phase for phase in first["scripted_positive_phases"]
         if phase["phase_id"] == "grasp"
@@ -329,6 +338,9 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
     assert grasp["max_task_space_translation_step_m"] == 0.01
     assert grasp["task_space_translation_strategy"] == (
         "orientation_first_bounded_local_increment"
+    )
+    assert pregrasp["task_space_translation_strategy"] == (
+        "direct_global_pose_target"
     )
     assert [phase["phase_id"] for phase in first["scripted_positive_phases"]] == [
         "pregrasp",
@@ -417,7 +429,7 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         for row in positive["phase_arrivals"]
         if row["phase_id"] in {"grasp", "release"}
     } == {"grasp": 30, "release": 30}
-    assert (tmp_path / "adp009d_control_plan.v7.json").is_file()
+    assert (tmp_path / "adp009d_control_plan.v8.json").is_file()
     assert negative["action_trace"][0]["isaac_action"][:7] == negative[
         "action_trace"
     ][0]["observed_joint_position_before_rad"]

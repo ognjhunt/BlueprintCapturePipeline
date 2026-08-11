@@ -2161,8 +2161,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             try:
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
                 from adp009d_isaac_episode_adapter import (
-                    bounded_grasp_frame_target_for_task_orientation,
                     controlled_body_pose_for_grasp_frame_target,
+                    grasp_frame_target_for_task_space_strategy,
                     semantic_finger_tool_midpoint_world_m,
                 )
                 from adp009d_droid_action_execution import GripperConvention
@@ -2282,6 +2282,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     max_joint_delta_rad,
                     max_task_space_translation_step_m,
                     orientation_tolerance_deg,
+                    task_space_translation_strategy,
                 ):
                     """One bounded native differential-IK action for a control phase."""
 
@@ -2310,7 +2311,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         ],
                     )
                     bounded_grasp_target = (
-                        bounded_grasp_frame_target_for_task_orientation(
+                        grasp_frame_target_for_task_space_strategy(
                             current_position_world_m=finger_midpoint,
                             current_quaternion_world_xyzw=[
                                 float(value) for value in body_pose[3:7]
@@ -2323,6 +2324,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 max_task_space_translation_step_m
                             ),
                             orientation_tolerance_deg=orientation_tolerance_deg,
+                            task_space_translation_strategy=(
+                                task_space_translation_strategy
+                            ),
                         )
                     )
                     target_body_position_world, held_body_quaternion_world = (
@@ -2536,7 +2540,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v7.json"
+                        control_plan_path = runtime / "adp009d_control_plan.v8.json"
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(
