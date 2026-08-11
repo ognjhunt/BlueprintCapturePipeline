@@ -15,6 +15,60 @@ LAUNCH_WEBAPP_URL_ENV = "PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL"
 LAUNCH_SUPERVISION_WEBAPP_URL_ENV = (
     "PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL"
 )
+LAUNCH_PROGRESS_WEBAPP_URL_ENV = "PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL"
+
+
+def sync_launch_progress_to_webapp(
+    *,
+    progress: Mapping[str, Any],
+    endpoint_url: str | None = None,
+    token: str | None = None,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """Publish one non-terminal progress record for an in-flight launch.
+
+    Progress is best effort by design: a failed publish must never affect the
+    run, so every failure is recorded and returned rather than raised. It also
+    carries no receipt digest, because it is an observation rather than an
+    immutable result.
+    """
+
+    payload = dict(progress)
+    common = {
+        "schema_version": "task_evaluation_launch_webapp_progress_result.v1",
+        "launch_id": payload.get("launch_id"),
+        "run_id": payload.get("run_id"),
+        "request_digest": payload.get("request_digest"),
+    }
+    resolved_url = str(
+        endpoint_url or os.getenv(LAUNCH_PROGRESS_WEBAPP_URL_ENV) or ""
+    ).strip()
+    resolved_token = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
+    if not resolved_url or not resolved_token:
+        return {**common, "status": "skipped", "reason": "progress_sync_not_configured"}
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    try:
+        url = validated_https_sync_url(resolved_url)
+    except ValueError:
+        return {**common, "status": "failed", "reason": "sync_url_invalid"}
+    outbound = urllib_request.Request(
+        url,
+        data=body,
+        headers=_pipeline_sync_headers(resolved_token, body),
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(  # nosec B310 - URL is pinned to validated HTTPS
+            outbound, timeout=max(0.1, timeout_seconds)
+        ) as response:
+            response.read()
+    except urllib_error.HTTPError as exc:
+        return {**common, "status": "failed", "reason": f"http_error:{exc.code}"}
+    except urllib_error.URLError as exc:
+        return {**common, "status": "failed", "reason": f"url_error:{exc.reason}"}
+    except (TimeoutError, ValueError) as exc:
+        return {**common, "status": "failed", "reason": type(exc).__name__.lower()}
+    return {**common, "status": "succeeded"}
 
 
 def sync_launch_receipt_to_webapp(
