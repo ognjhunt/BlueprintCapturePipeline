@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import shlex
@@ -1408,6 +1409,60 @@ def test_request_logs_persists_last_redacted_snapshot_before_interruption(
     assert output.read_text(encoding="utf-8") == (
         "BLUEPRINT_WAM_RUNTIME_PHASE:worker:static_sdf:completed\nREDACTED_SECRET\n"
     )
+    preserved = tmp_path / "onstart_last_nontrivial.log"
+    assert preserved.read_text(encoding="utf-8") == output.read_text(encoding="utf-8")
+
+
+def test_request_logs_preserves_last_nontrivial_output_after_terminal_daemon_noise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    snapshots = iter(
+        [
+            "Vast wrapper build Step 8/8 completed\nsecret\n",
+            "Error response from daemon: No such container: C.123\n",
+            "Error response from daemon: No such container: C.123\n",
+        ]
+    )
+    liveness = iter(
+        [
+            {"observed": True, "exited": False, "status": "loading"},
+            {"observed": True, "exited": True, "status": "absent"},
+            {"observed": True, "exited": True, "status": "absent"},
+        ]
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(snapshots))
+    monkeypatch.setattr(vpa, "_instance_liveness", lambda **_kwargs: next(liveness))
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=999,
+    )
+
+    preserved = tmp_path / "onstart_last_nontrivial.log"
+    assert result["break_reason"] == "instance_exited"
+    assert result["last_nontrivial_output_log_path"] == str(preserved)
+    assert result["last_nontrivial_output_log_attempt"] == 1
+    assert result["last_nontrivial_output_log_sha256"] == (
+        "sha256:" + hashlib.sha256(preserved.read_bytes()).hexdigest()
+    )
+    assert preserved.read_text(encoding="utf-8") == (
+        "Vast wrapper build Step 8/8 completed\nREDACTED_SECRET\n"
+    )
+    assert "No such container" in (tmp_path / "onstart.log").read_text(encoding="utf-8")
 
 
 def test_vast_adapter_dry_run_writes_required_artifacts(tmp_path: Path) -> None:

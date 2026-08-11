@@ -4692,6 +4692,11 @@ def _request_logs_and_fetch(
     # run; still detects a dead container in about a minute rather than thirty.
     instance_exited_count = 0
     last_instance_liveness: dict[str, Any] = {}
+    last_nontrivial_log_path = output_log_path.with_name(
+        output_log_path.stem + "_last_nontrivial" + output_log_path.suffix
+    )
+    last_nontrivial_log_sha256: str | None = None
+    last_nontrivial_log_attempt: int | None = None
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -4742,6 +4747,13 @@ def _request_logs_and_fetch(
         container_or_daemon_error_only = container_missing or (
             "Error response from daemon" in attempt_text
         )
+        if attempt_text.strip() and not container_or_daemon_error_only:
+            redacted_attempt = _redact_text(attempt_text, secret_values)
+            last_nontrivial_log_path.write_text(redacted_attempt, encoding="utf-8")
+            last_nontrivial_log_sha256 = (
+                "sha256:" + hashlib.sha256(last_nontrivial_log_path.read_bytes()).hexdigest()
+            )
+            last_nontrivial_log_attempt = attempt_index
         # Once a worker has emitted structured phase markers, only a new phase marker
         # is scientific progress.  Benign container noise (for example, sshd session
         # lines produced by a read-only diagnostic) must not keep a paid run alive.
@@ -4837,6 +4849,11 @@ def _request_logs_and_fetch(
         "instance_final_status": last_instance_liveness.get("status"),
         "instance_exited_observed": instance_exited_count >= 2,
         "break_reason": break_reason,
+        "last_nontrivial_output_log_path": (
+            str(last_nontrivial_log_path) if last_nontrivial_log_sha256 is not None else None
+        ),
+        "last_nontrivial_output_log_sha256": last_nontrivial_log_sha256,
+        "last_nontrivial_output_log_attempt": last_nontrivial_log_attempt,
     }
 
 
