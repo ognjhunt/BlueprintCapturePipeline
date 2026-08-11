@@ -244,8 +244,6 @@ def reconcile_launches(
             continue
         try:
             receipt = _read(receipt_path)
-            if receipt.get("execute_requested") is not True:
-                continue
             profile = _read(run_root / "launch_profile.json")
             sync_policy = profile.get("webapp_sync")
             sync_policy = sync_policy if isinstance(sync_policy, Mapping) else {}

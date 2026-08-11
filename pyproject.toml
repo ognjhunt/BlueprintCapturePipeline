@@ -28,6 +28,10 @@ dependencies = [
     # robot_eval_job_request.v1 schema cannot fall back silently.
     "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@7708a4e4c5dedeeb39cc73d3f6869304de295b81",
     "pyyaml>=6.0",
+    # The canonical paid-resource allocator imports PEP 508 marker parsing at
+    # module load. Keep this direct in the production base instead of relying
+    # on a developer-only transitive dependency.
+    "packaging>=24.0",
     "numpy>=1.24.0",
     # Exact-camera frame registration uses scipy.spatial.cKDTree in the core
     # external-scene admission path, so this cannot be left to a transitive

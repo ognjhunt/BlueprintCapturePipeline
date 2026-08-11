@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher_module
+import blueprint_pipeline.task_evaluation_launch_webapp_sync as webapp_sync_module
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     EXECUTE_ENV,
@@ -607,6 +608,67 @@ def test_reconciler_retains_stale_processing_when_provider_inventory_is_uncertai
     assert result["launches"][0]["status"] == "recovery_pending"
     assert processing.is_file()
     assert not (run_root / "orphan_recovery_receipt.json").exists()
+
+
+def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    run_root = tmp_path / "state" / request["launch_id"]
+    receipt = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": "dry_run_completed",
+        "launch_id": request["launch_id"],
+        "run_id": request["run_id"],
+        "request_digest": request["request_digest"],
+        "receipt_digest": "sha256:" + "e" * 64,
+        "execute_requested": False,
+        "provider_mutation_attempted": False,
+    }
+    _write(run_root / "launch_profile.json", profile)
+    _write(run_root / "launch_receipt.json", receipt)
+    _write(
+        run_root / "webapp_sync_attempts" / "first.json",
+        {
+            "status": "failed",
+            "attempt_number": 1,
+            "reason": "timeouterror",
+        },
+    )
+    sync_calls: list[dict] = []
+
+    def sync_receipt(*, receipt: dict) -> dict:
+        sync_calls.append(receipt)
+        return {
+            "schema_version": "task_evaluation_launch_webapp_sync_result.v1",
+            "status": "succeeded",
+            "launch_id": receipt["launch_id"],
+            "run_id": receipt["run_id"],
+            "request_digest": receipt["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+        }
+
+    monkeypatch.setattr(webapp_sync_module, "sync_launch_receipt_to_webapp", sync_receipt)
+
+    result = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "missing-guard.json",
+    )
+
+    assert sync_calls == [receipt]
+    assert result["status"] == "passed"
+    assert result["webapp_sync"] == [{
+        "launch_id": request["launch_id"],
+        "status": "webapp_sync_succeeded",
+        "attempts": 2,
+        "provider_mutation_performed": False,
+    }]
+    succeeded = json.loads((run_root / "webapp_sync_succeeded.json").read_text())
+    assert succeeded["attempt_number"] == 2
+    assert succeeded["provider_mutation_performed"] is False
 
 
 def test_profile_publisher_emits_webapp_descriptor_without_allocator_arguments(
