@@ -368,6 +368,11 @@ def materialize_cad_agent_visual_comparison(
         "cad_matrix_digest": matrix["matrix_digest"],
         "object_count": object_count,
         "maximum_replacement_objects": MAX_REPLACEMENT_OBJECTS,
+        "replacement_object_capacity": {
+            "minimum": 1,
+            "maximum": MAX_REPLACEMENT_OBJECTS,
+            "sealed_slots": object_count,
+        },
         "backend_ids": sorted(ADMITTED_BACKENDS),
         "rows": rows,
         "contact_sheet": _output_file_record(contact_sheet_path),

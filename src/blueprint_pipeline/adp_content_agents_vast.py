@@ -281,6 +281,9 @@ def materialize_content_agents_execution_readiness(
                 "cad_agent_output_receipt_digest"
             ),
             "cad_agent_request_digest": item.get("cad_agent_request_digest"),
+            "cad_agent_reference_manifest_object_digest": item.get(
+                "cad_agent_reference_manifest_object_digest"
+            ),
             "mesh_projection_receipt_digest": item.get(
                 "mesh_projection_receipt_digest"
             ),
@@ -294,7 +297,12 @@ def materialize_content_agents_execution_readiness(
             raise ValueError("adp_content_agents_readiness_bundle_binding_mismatch")
         if not all(
             _file_record_matches_current_bytes(bindings.get(field))
-            for field in ("cad_agent_output_manifest", "mesh_projection_receipt")
+            for field in (
+                "cad_agent_output_manifest",
+                "cad_agent_reference_manifest",
+                "cad_agent_selected_reference_image",
+                "mesh_projection_receipt",
+            )
         ):
             raise ValueError(
                 "adp_content_agents_readiness_bundle_binding_file_mismatch"
@@ -789,19 +797,36 @@ def _resolve_input_variant(
             )
             or []
         )
+        request_inputs = (cad_output.get("request") or {}).get("inputs") or {}
+        reference_manifest_record = request_inputs.get("reference_manifest")
+        reference_manifest_object_digest = request_inputs.get(
+            "reference_manifest_object_digest"
+        )
+        selected_reference_record: Mapping[str, Any] | None = None
+        for record in reference_records:
+            if not isinstance(record, Mapping):
+                continue
+            record_path = Path(str(record.get("path") or "")).expanduser().resolve()
+            if (
+                reference_source == record_path
+                and _sha256(reference_source) == record.get("sha256")
+            ):
+                selected_reference_record = record
+                break
         if (
             not usd_source.is_file()
             or _sha256(usd_source) != usd_record.get("sha256")
             or not isinstance(reference_records, list)
-            or not any(
-                reference_source
-                == Path(str(record.get("path") or "")).expanduser().resolve()
-                and _sha256(reference_source) == record.get("sha256")
-                for record in reference_records
-                if isinstance(record, Mapping)
-            )
+            or selected_reference_record is None
         ):
             raise ValueError("adp_content_agents_agent_cad_source_identity_mismatch")
+        if (
+            not isinstance(reference_manifest_record, Mapping)
+            or not _file_record_matches_current_bytes(reference_manifest_record)
+            or not isinstance(reference_manifest_object_digest, str)
+            or not reference_manifest_object_digest.startswith("sha256:")
+        ):
+            raise ValueError("adp_content_agents_agent_cad_reference_binding_invalid")
         mesh_prim_paths = projection.get("mesh_prim_paths")
         if (
             not isinstance(mesh_prim_paths, list)
@@ -831,6 +856,11 @@ def _resolve_input_variant(
             "cad_agent_request_digest": cad_output["request_digest"],
             "cad_agent_backend_id": backend.get("backend_id"),
             "cad_agent_execution_mode": backend.get("execution_mode"),
+            "cad_agent_reference_manifest": dict(reference_manifest_record),
+            "cad_agent_reference_manifest_object_digest": (
+                reference_manifest_object_digest
+            ),
+            "cad_agent_selected_reference_image": dict(selected_reference_record),
             "mesh_projection_receipt": projection_record,
             "mesh_projection_receipt_digest": projection["receipt_digest"],
             "mesh_packet_digest": projection["packet_digest"],
@@ -1551,6 +1581,9 @@ def build_content_agents_vast_bundle(
                 "mesh_packet_digest",
                 "candidate_step_sha256",
                 "cad_agent_request_digest",
+                "cad_agent_reference_manifest",
+                "cad_agent_reference_manifest_object_digest",
+                "cad_agent_selected_reference_image",
                 "cad_agent_backend_id",
                 "cad_agent_execution_mode",
                 "task_id",

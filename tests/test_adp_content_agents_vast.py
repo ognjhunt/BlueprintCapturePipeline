@@ -524,6 +524,11 @@ def test_agent_cad_variant_binds_agent_output_and_mesh_projection(
         "/Asset/links/door/geometry/panel",
     ]
     assert resolved["candidate_step_sha256"].startswith("sha256:")
+    assert resolved["cad_agent_reference_manifest"]["sha256"].startswith("sha256:")
+    assert resolved["cad_agent_reference_manifest_object_digest"].startswith("sha256:")
+    assert resolved["cad_agent_selected_reference_image"]["path"] == str(
+        reference.resolve()
+    )
 
 
 def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
@@ -588,6 +593,9 @@ def _single_agent_cad_content_bundle_matrix(
         "cad_agent_backend_id": cad_output["request"]["backend"]["backend_id"],
         "cad_agent_output_receipt_digest": cad_output["receipt_digest"],
         "cad_agent_request_digest": cad_output["request_digest"],
+        "cad_agent_reference_manifest_object_digest": cad_output["request"]["inputs"][
+            "reference_manifest_object_digest"
+        ],
         "mesh_projection_receipt_digest": projection["receipt_digest"],
         "mesh_packet_digest": projection["packet_digest"],
         "candidate_step_sha256": cad_output["artifacts"]["step"]["sha256"],
@@ -995,6 +1003,32 @@ def test_content_agents_execution_readiness_rejects_stale_bound_manifest_bytes(
         bound_output.read_text(encoding="utf-8") + "\n",
         encoding="utf-8",
     )
+
+    with pytest.raises(
+        ValueError,
+        match="adp_content_agents_readiness_bundle_binding_file_mismatch",
+    ):
+        content_agents.materialize_content_agents_execution_readiness(
+            content_agents_bundle_matrix=matrix,
+            output_path=tmp_path / "readiness.json",
+            generated_at="fixed",
+        )
+
+
+def test_content_agents_execution_readiness_rejects_stale_selected_reference_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
+    first_receipt_path, _first_receipt = _bundle_receipt_from_item(matrix["items"][0])
+    first_receipt = json.loads(first_receipt_path.read_text(encoding="utf-8"))
+    selected_reference = Path(
+        first_receipt["input_variant_bindings"]["cad_agent_selected_reference_image"][
+            "path"
+        ]
+    )
+    selected_reference.write_bytes(selected_reference.read_bytes() + b"changed")
 
     with pytest.raises(
         ValueError,

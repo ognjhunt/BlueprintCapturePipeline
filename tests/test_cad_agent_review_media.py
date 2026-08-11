@@ -48,6 +48,19 @@ def _write(path: Path, payload: str | bytes) -> Path:
     return path
 
 
+def _task_freeze_fixture(root: Path, *, task_id: str, asset_id: str) -> Path:
+    freeze = json.loads(TASK_A_FREEZE.read_text(encoding="utf-8"))
+    freeze["task_id"] = task_id
+    freeze["removal_plan"]["replacement_asset_id"] = asset_id
+    freeze["task_freeze_digest"] = canonical_digest(
+        freeze, digest_field="task_freeze_digest"
+    )
+    path = root / f"{task_id}_freeze.v1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(freeze, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
 def _backend(root: Path, backend_id: str) -> dict[str, object]:
     commit = "1" * 40
     archive = root / f"{backend_id}.zip"
@@ -83,19 +96,23 @@ def _candidate(
     root: Path,
     *,
     backend_id: str,
+    replacement_slot: int = 1,
+    task_id: str = "task_a_washer_door_open",
+    asset_id: str = "840920_simready_washer_candidate",
+    task_freeze_path: Path = TASK_A_FREEZE,
     reference_color: tuple[int, int, int] = (120, 10, 10),
 ) -> dict[str, object]:
-    candidate_root = root / backend_id
+    candidate_root = root / task_id / f"slot_{replacement_slot}" / backend_id
     brief = _write(candidate_root / "brief.md", "make fixture CAD\n")
     reference = _write_png(candidate_root / "reference.png", reference_color)
     reference_manifest = seal_cad_agent_reference_manifest(
         scene_id="fixture_scene",
         objects=[
             {
-                "replacement_slot": 1,
-                "task_id": "task_a_washer_door_open",
-                "asset_id": "840920_simready_washer_candidate",
-                "task_freeze_path": TASK_A_FREEZE,
+                "replacement_slot": replacement_slot,
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "task_freeze_path": task_freeze_path,
                 "reference_image_paths": [reference],
             }
         ],
@@ -108,11 +125,11 @@ def _candidate(
     request = seal_cad_agent_request(
         request_id=f"fixture-{backend_id}",
         scene_id="fixture_scene",
-        task_id="task_a_washer_door_open",
-        asset_id="840920_simready_washer_candidate",
-        replacement_slot=1,
+        task_id=task_id,
+        asset_id=asset_id,
+        replacement_slot=replacement_slot,
         backend=_backend(root / "sources", backend_id),
-        task_freeze_path=TASK_A_FREEZE,
+        task_freeze_path=task_freeze_path,
         cad_brief_path=brief,
         metric_envelope_mm=[600.112, 604.104004, 847.564026],
         reference_manifest_path=reference_manifest_path,
@@ -196,6 +213,48 @@ def _matrix(root: Path, *, mismatch_reference: bool = False) -> Path:
     return path
 
 
+def _five_object_matrix(root: Path) -> Path:
+    objects = []
+    for slot in range(1, 6):
+        task_id = f"task_{slot}_replacement"
+        asset_id = f"asset_{slot}"
+        task_freeze_path = _task_freeze_fixture(
+            root / "freezes", task_id=task_id, asset_id=asset_id
+        )
+        candidates = [
+            _candidate(
+                root,
+                backend_id="earthtojake_text_to_cad",
+                replacement_slot=slot,
+                task_id=task_id,
+                asset_id=asset_id,
+                task_freeze_path=task_freeze_path,
+                reference_color=(100 + slot, 10, 10),
+            ),
+            _candidate(
+                root,
+                backend_id="pan_chera_multi_agent_cad",
+                replacement_slot=slot,
+                task_id=task_id,
+                asset_id=asset_id,
+                task_freeze_path=task_freeze_path,
+                reference_color=(100 + slot, 10, 10),
+            ),
+        ]
+        objects.append(
+            {
+                "replacement_slot": slot,
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "candidates": candidates,
+            }
+        )
+    matrix = seal_cad_agent_matrix(objects=objects)
+    path = root / "cad_matrix_five_objects.v1.json"
+    path.write_text(json.dumps(matrix, indent=2, sort_keys=True) + "\n")
+    return path
+
+
 def test_visual_comparison_materializes_manifest_bound_contact_sheet(tmp_path: Path) -> None:
     matrix_path = _matrix(tmp_path)
     receipt = materialize_cad_agent_visual_comparison(
@@ -207,6 +266,11 @@ def test_visual_comparison_materializes_manifest_bound_contact_sheet(tmp_path: P
     assert receipt["schema_version"] == "scene_replacement_cad_agent_visual_comparison.v1"
     assert receipt["object_count"] == 1
     assert receipt["maximum_replacement_objects"] == 5
+    assert receipt["replacement_object_capacity"] == {
+        "minimum": 1,
+        "maximum": 5,
+        "sealed_slots": 1,
+    }
     assert receipt["backend_ids"] == [
         "earthtojake_text_to_cad",
         "pan_chera_multi_agent_cad",
@@ -214,6 +278,32 @@ def test_visual_comparison_materializes_manifest_bound_contact_sheet(tmp_path: P
     assert receipt["rows"][0]["reference_signature"].startswith("sha256:")
     assert receipt["rows"][0]["candidates"][0]["backend_id"] == "earthtojake_text_to_cad"
     assert receipt["claim_boundary"]["simready_qualified"] is False
+    assert (tmp_path / "review" / CONTACT_SHEET_FILENAME).is_file()
+    assert (tmp_path / "review" / HTML_FILENAME).is_file()
+    assert (tmp_path / "review" / RECEIPT_FILENAME).is_file()
+
+
+def test_visual_comparison_materializes_five_object_contact_sheet(
+    tmp_path: Path,
+) -> None:
+    matrix_path = _five_object_matrix(tmp_path)
+    receipt = materialize_cad_agent_visual_comparison(
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "review",
+        title="Five object CAD comparison",
+    )
+
+    assert receipt["object_count"] == 5
+    assert receipt["replacement_object_capacity"] == {
+        "minimum": 1,
+        "maximum": 5,
+        "sealed_slots": 5,
+    }
+    assert [row["replacement_slot"] for row in receipt["rows"]] == [1, 2, 3, 4, 5]
+    assert {row["task_id"] for row in receipt["rows"]} == {
+        f"task_{slot}_replacement" for slot in range(1, 6)
+    }
+    assert all(len(row["candidates"]) == 2 for row in receipt["rows"])
     assert (tmp_path / "review" / CONTACT_SHEET_FILENAME).is_file()
     assert (tmp_path / "review" / HTML_FILENAME).is_file()
     assert (tmp_path / "review" / RECEIPT_FILENAME).is_file()

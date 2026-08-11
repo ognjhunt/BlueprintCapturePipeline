@@ -137,7 +137,7 @@ def _cad_output_fixture(
         task_id=task_id,
         asset_id=asset_id,
         replacement_slot=slot,
-        backend=_cad_backend(source_root / "sources", backend_id),
+        backend=_cad_backend(source_root / "sources" / task_id / f"slot_{slot}", backend_id),
         task_freeze_path=task_freeze_path,
         cad_brief_path=brief,
         metric_envelope_mm=[600.0, 604.0, 848.0],
@@ -272,6 +272,10 @@ def _content_bundle_matrix(*, fixture_rows: list[dict[str, object]]) -> dict[str
                 "asset_id": request["asset_id"],
                 "cad_agent_backend_id": backend_id,
                 "cad_agent_output_receipt_digest": output["receipt_digest"],
+                "cad_agent_request_digest": output["request_digest"],
+                "cad_agent_reference_manifest_object_digest": request["inputs"][
+                    "reference_manifest_object_digest"
+                ],
                 "mesh_projection_receipt_digest": projection["receipt_digest"],
                 "mesh_packet_digest": projection["packet_digest"],
                 "candidate_step_sha256": output["artifacts"]["step"]["sha256"],
