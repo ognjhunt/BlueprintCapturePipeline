@@ -459,6 +459,7 @@ class IsaacEpisodeAdapter:
         contact_sensor: Any | None = None,
         contact_envelope: Mapping[str, Any] | None = None,
         partner_contact_sensors: Mapping[str, Any] | None = None,
+        sage_collision_contact_sensors: Mapping[str, Any] | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -483,6 +484,10 @@ class IsaacEpisodeAdapter:
             raise IsaacEpisodeAdapterError([str(exc)]) from exc
         self._partner_contact_sensors = dict(partner_contact_sensors or {})
         self._partner_filter_shapes: dict[str, int] = {}
+        self._sage_collision_contact_sensors = dict(
+            sage_collision_contact_sensors or {}
+        )
+        self._sage_collision_filter_shapes: dict[str, int] = {}
         self._control_step_index = 0
         if (
             not math.isfinite(self._gripper_closed_width_m)
@@ -603,11 +608,16 @@ class IsaacEpisodeAdapter:
             result[str(name)] = vector
         return result
 
-    def _body_contact_partner_forces_n(self) -> dict[str, list[float]] | None:
-        """Name the contact partner using one filtered sensor per finger.
+    def _body_filtered_contact_forces_n(
+        self,
+        contact_sensors: Mapping[str, Any],
+        *,
+        filter_label: str,
+    ) -> tuple[dict[str, list[float]] | None, dict[str, int]]:
+        """Read one explicit filtered-contact category without changing physics.
 
         Supplementary to ``net_forces_w``: a stalled finger reporting a large net
-        force but a zero partner force is being held by geometry outside the
+        force but a zero filtered force is being held by geometry outside that
         filter, which is the distinction the net force alone cannot make.
 
         PhysX filtered reporting is one-to-many, so each sensor here covers
@@ -617,17 +627,17 @@ class IsaacEpisodeAdapter:
         remains the primary evidence and must not fail a paid run.
         """
 
-        if not self._partner_contact_sensors:
-            return None
+        if not contact_sensors:
+            return None, {}
         result: dict[str, list[float]] = {}
         filter_shapes: dict[str, int] = {}
-        for name, sensor in sorted(self._partner_contact_sensors.items()):
+        for name, sensor in sorted(contact_sensors.items()):
             body_names = list(sensor.body_names)
             if len(body_names) != 1:
                 raise IsaacEpisodeAdapterError(
                     [
-                        "isaac_episode_contact_partner_sensor_not_one_to_many:"
-                        + f"{name}:{len(body_names)}"
+                        "isaac_episode_contact_filtered_sensor_not_one_to_many:"
+                        + f"{filter_label}:{name}:{len(body_names)}"
                     ]
                 )
             matrix = getattr(sensor.data, "force_matrix_w", None)
@@ -645,14 +655,41 @@ class IsaacEpisodeAdapter:
             vector = [float(values[0, 0, :, axis].sum()) for axis in range(3)]
             if not all(math.isfinite(value) for value in vector):
                 raise IsaacEpisodeAdapterError(
-                    [f"isaac_episode_contact_partner_force_invalid:{name}"]
+                    [
+                        "isaac_episode_contact_filtered_force_invalid:"
+                        + f"{filter_label}:{name}"
+                    ]
                 )
             result[str(body_names[0])] = vector
             filter_shapes[str(body_names[0])] = resolved_filter_shapes
         if not result:
-            return None
+            return None, {}
+        return result, filter_shapes
+
+    def _body_contact_partner_forces_n(self) -> dict[str, list[float]] | None:
+        """Read the approved-can filtered-contact category."""
+
+        forces, filter_shapes = self._body_filtered_contact_forces_n(
+            self._partner_contact_sensors,
+            filter_label="approved_can",
+        )
         self._partner_filter_shapes = filter_shapes
-        return result
+        return forces
+
+    def _body_contact_sage_collision_forces_n(self) -> dict[str, list[float]] | None:
+        """Read the sealed SAGE collision-scene filtered-contact category.
+
+        A nonzero result names this configured collision scope only.  A zero is
+        interpretable as no SAGE contact only when the accompanying resolved
+        filter-shape count is nonzero; an unmatched expression is withheld.
+        """
+
+        forces, filter_shapes = self._body_filtered_contact_forces_n(
+            self._sage_collision_contact_sensors,
+            filter_label="sage_collision",
+        )
+        self._sage_collision_filter_shapes = filter_shapes
+        return forces
 
     def _body_incoming_joint_wrenches(self) -> dict[str, list[float]]:
         raw = getattr(self._robot.data, "body_incoming_joint_wrench_b", None)
@@ -703,6 +740,12 @@ class IsaacEpisodeAdapter:
             # partner force evidence that the partner is not in contact, rather
             # than evidence that the filter expression never matched anything.
             "body_contact_partner_filter_shapes": dict(self._partner_filter_shapes),
+            "body_contact_sage_collision_force_world_n": (
+                self._body_contact_sage_collision_forces_n()
+            ),
+            "body_contact_sage_collision_filter_shapes": dict(
+                self._sage_collision_filter_shapes
+            ),
             "body_incoming_joint_wrench_body": self._body_incoming_joint_wrenches(),
             "contact_envelope": dict(self._contact_envelope),
         }

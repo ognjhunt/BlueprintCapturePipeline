@@ -773,7 +773,7 @@ def test_partner_matrix_separates_filtered_contact_from_unattributed_force() -> 
     residual and never assert a prim."""
     from blueprint_pipeline.adp009d_control_episode import _summarize_arm_dynamics
 
-    def action(step, contact, partner):
+    def action(step, contact, partner, sage_collision=None):
         zeros = [0.0] * 7
         return {
             "step_index": step,
@@ -792,6 +792,11 @@ def test_partner_matrix_separates_filtered_contact_from_unattributed_force() -> 
                 "body_contact_partner_force_world_n": (
                     None if partner is None else {"left_inner_finger": [0.0, 0.0, partner]}
                 ),
+                "body_contact_sage_collision_force_world_n": (
+                    None
+                    if sage_collision is None
+                    else {"left_inner_finger": [0.0, 0.0, sage_collision]}
+                ),
                 "body_incoming_joint_wrench_body": {"panda_link1": [0.0] * 6},
                 "contact_envelope": canonical_contact_envelope(),
             },
@@ -805,6 +810,16 @@ def test_partner_matrix_separates_filtered_contact_from_unattributed_force() -> 
     object_held = _summarize_arm_dynamics([action(0, 8.62, 8.62)])["phases"]["descend"]
     assert object_held["maximum_filtered_partner_contact_force_n"] == pytest.approx(8.62)
     assert object_held["maximum_unattributed_contact_force_n"] == 0.0
+
+    sage_held = _summarize_arm_dynamics([action(0, 8.62, 0.0, 8.62)])["phases"][
+        "descend"
+    ]
+    assert sage_held["contact_partner_matrix_available"] is True
+    assert sage_held["contact_sage_collision_matrix_available"] is True
+    assert sage_held["maximum_filtered_partner_contact_force_n"] == 0.0
+    assert sage_held["maximum_sage_collision_contact_force_n"] == pytest.approx(8.62)
+    assert sage_held["maximum_accounted_filtered_contact_force_n"] == pytest.approx(8.62)
+    assert sage_held["maximum_unattributed_contact_force_n"] == 0.0
 
     unfiltered = _summarize_arm_dynamics([action(0, 8.62, None)])["phases"]["descend"]
     assert unfiltered["contact_partner_matrix_available"] is False
@@ -840,8 +855,20 @@ def test_contact_partner_force_shape_is_validated_and_optional() -> None:
     assert _canonical_dynamics_observation(
         {**base, "body_contact_partner_force_world_n": None}
     )
+    assert _canonical_dynamics_observation(
+        {**base, "body_contact_sage_collision_force_world_n": None}
+    )
 
     with pytest.raises(ControlEpisodeError):
         _canonical_dynamics_observation(
             {**base, "body_contact_partner_force_world_n": {"left_inner_finger": [0.0, 1.0]}}
+        )
+    with pytest.raises(ControlEpisodeError):
+        _canonical_dynamics_observation(
+            {
+                **base,
+                "body_contact_sage_collision_force_world_n": {
+                    "left_inner_finger": [0.0, 1.0]
+                },
+            }
         )
