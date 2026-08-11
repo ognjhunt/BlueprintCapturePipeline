@@ -1,0 +1,102 @@
+{
+  "blocker_summary": "Both replacement candidates and both independent collider deletions are authored. The current smallest blocker is fresh paid authority for qualified FlashSplat contribution/ownership output from each separately frozen, repaired bundle. Both historical zero-retry attempts and both repaired-but-unexecuted bundle receipts are retained. This package contains no fake media or episode links.",
+  "cad_summary": "Agent-authored CAD comparison evidence has been added for both replacement objects using both admitted CAD backends. The manifest-driven visual comparison binding, CAD matrix, reference manifest, reference-binding audit, Content Agents bundle matrix, and Content Agents execution-readiness receipt are all linked below. Paid model access and paid attempt authority remain missing, so Content Agents were not executed and no SimReady/native/physics/appearance/physical-equivalence claim is made.",
+  "overview_review_only": true,
+  "package_index_digest": "sha256:7bda017c776db8bfe6ce1ddd30ac1754d740fc01fc4149066e33de9a2b4c6cb2",
+  "schema_version": "adp_dual_task_evidence_package_index.v1",
+  "shared_manifest_count": 6,
+  "shared_manifests": [
+    {
+      "digest_field": "matrix_digest",
+      "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json",
+      "label": "Four-candidate CAD-agent matrix manifest",
+      "receipt_digest": "sha256:5c156afb6837e6e796dc0092e4a7a2f9060962b29f820b8fe5738ee25049dfbb",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json",
+      "schema_version": "scene_replacement_cad_agent_matrix.v1",
+      "sha256": "sha256:543bb16cac30578fbda2d0ba02f2aa11a3106bd60ee891a726cd5c61a61a0c73",
+      "size_bytes": 36884
+    },
+    {
+      "digest_field": "manifest_digest",
+      "html_link": "../manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+      "label": "CAD-agent observed-reference manifest",
+      "receipt_digest": "sha256:7c584095a4e67104057d613f67c97e92fbd26d1a762bb2966f52b1c02a1b7ed2",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+      "schema_version": "simready_cad_agent_reference_manifest.v1",
+      "sha256": "sha256:f8bfe3bd2df5650a768314ef634e5029ed3233602ebca2817bd2041ca24d9372",
+      "size_bytes": 3331
+    },
+    {
+      "digest_field": "audit_digest",
+      "html_link": "../manifests/third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json",
+      "label": "CAD-agent historical reference-binding audit",
+      "receipt_digest": "sha256:f4c32aa0b83a17ff879b1cb243f6598ddfd8650e12bc21d0c57cbe8211a7c0b9",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json",
+      "schema_version": "cad_agent_reference_binding_audit.v1",
+      "sha256": "sha256:6d2e9281a40074bdfefb25a4fd2ba06e8f4b2644d878a0bb669db0afa588508e",
+      "size_bytes": 4815
+    },
+    {
+      "digest_field": "binding_digest",
+      "html_link": "../manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json",
+      "label": "Manifest-driven CAD visual comparison binding",
+      "receipt_digest": "sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json",
+      "schema_version": "third_scene_cad_agent_visual_comparison_binding.v1",
+      "sha256": "sha256:722bc9699f23083364d1066b42547140841f3b2926a94b8d9fe5a44c51645ba0",
+      "size_bytes": 1931
+    },
+    {
+      "digest_field": "receipt_digest",
+      "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json",
+      "label": "Four-candidate Content Agents bundle matrix manifest",
+      "receipt_digest": "sha256:a716b923e7a65d9ea204eeee8e01080db164c7d5f38aa482a4a821ea1ce19494",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json",
+      "schema_version": "third_scene_agent_cad_content_agents_bundle_matrix.v1",
+      "sha256": "sha256:ee747a7ed402a0bd889103c76ded7b570ce3e42822b7e92972d376b766b25be6",
+      "size_bytes": 9117
+    },
+    {
+      "digest_field": "receipt_digest",
+      "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
+      "label": "Four-candidate Content Agents execution-readiness receipt",
+      "receipt_digest": "sha256:1114f9c1ee78df53f07c904f0a794fbd5d833aaceaeaf21db8a7f38c1e4e853a",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
+      "schema_version": "adp_content_agents_execution_readiness.v1",
+      "sha256": "sha256:e52eca9b4dcade9a42c1acbeab6a250a04c1786904a2674c3e1a95855baf2cbf",
+      "size_bytes": 11264
+    }
+  ],
+  "simulator_artifacts_are_not_physical_truth": true,
+  "status_summary": "typed evidence-backed abstention. No control or learned-policy episode was admitted.",
+  "task_count": 2,
+  "tasks": [
+    {
+      "episode_count": 0,
+      "html_relative_path": "task_a/OPEN_ME_episode_evidence_index.html",
+      "html_sha256": "sha256:18b5e4b4e1bccb78e913eb47c97f06895b17fe97d3c3126bf3a434d18f911485",
+      "html_size_bytes": 2233,
+      "index_digest": "sha256:84973d5557079dce28fd2caf91fdff4c98916f2d3715b78903cae885c90a4914",
+      "label": "Task A: washer-door evidence index",
+      "relative_path": "task_a/episode_evidence_index.v1.json",
+      "sha256": "sha256:237e3b15ecb8f42fcf689bf0ea0f82e76e30dcb7f4ce82f3c2b21c11e279342c",
+      "size_bytes": 4411,
+      "task_id": "task_a_washer_door_open",
+      "typed_abstention_status": "typed_evidence_backed_abstention"
+    },
+    {
+      "episode_count": 0,
+      "html_relative_path": "task_b/OPEN_ME_episode_evidence_index.html",
+      "html_sha256": "sha256:52d29d351813cb9466119da7085909a34175b26a4dcd4ae5564831c5d1b90c28",
+      "html_size_bytes": 2236,
+      "index_digest": "sha256:7e61fe901025bf5cb0878b580b885c3f5580bde8be80b6a33504697ae1fcb368",
+      "label": "Task B: notebook-relocation evidence index",
+      "relative_path": "task_b/episode_evidence_index.v1.json",
+      "sha256": "sha256:8035eb18c157deeda1133ff0127c25c405d4f6c6493fa3455f94da9191e97358",
+      "size_bytes": 4412,
+      "task_id": "task_b_notebook_relocation",
+      "typed_abstention_status": "typed_evidence_backed_abstention"
+    }
+  ],
+  "title": "Third-Scene Dual-Task Generalization Rehearsal"
+}

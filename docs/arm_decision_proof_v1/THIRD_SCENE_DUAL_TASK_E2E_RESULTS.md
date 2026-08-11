@@ -520,6 +520,11 @@ scenario, scoring, and evidence contracts.
 
 Portable evidence index:
 [`third_scene_dual_task_evidence/index.html`](third_scene_dual_task_evidence/index.html).
+The top-level package index is now generated from verified task indexes and
+shared manifest receipts; its JSON receipt is
+[`third_scene_dual_task_evidence/evidence_package_index.v1.json`](third_scene_dual_task_evidence/evidence_package_index.v1.json)
+with digest
+`sha256:7bda017c776db8bfe6ce1ddd30ac1754d740fc01fc4149066e33de9a2b4c6cb2`.
 Each task index links its attempt and recovery receipts plus its current
 digest-verified `supporting_evidence_inventory.v2.json`. Those inventories cover
 all eight source masks,
