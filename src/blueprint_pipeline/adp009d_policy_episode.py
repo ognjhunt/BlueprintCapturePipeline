@@ -89,20 +89,24 @@ except ModuleNotFoundError:  # repository package
 try:  # flat provider-bundle layout
     from adp_task_scoring import (
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TASK_KIND_DEFORMABLE_TRANSFER,
         TASK_KIND_RIGID_PICK_PLACE,
         TASK_SPEC_SCHEMA_VERSION,
         TaskNeutralScoringError,
         score_task_episode_from_spec,
         validate_articulated_task_spec,
+        validate_deformable_task_spec,
     )
 except ModuleNotFoundError:  # repository package
     from .adp_task_scoring import (
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TASK_KIND_DEFORMABLE_TRANSFER,
         TASK_KIND_RIGID_PICK_PLACE,
         TASK_SPEC_SCHEMA_VERSION,
         TaskNeutralScoringError,
         score_task_episode_from_spec,
         validate_articulated_task_spec,
+        validate_deformable_task_spec,
     )
 try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
@@ -197,9 +201,7 @@ def _sample_with_index(
     sample = dict(raw)
     sample["step_index"] = step_index
     if required_field is not None and required_field not in sample:
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{required_field}_missing"]
-        )
+        raise PolicyEpisodeError([f"{BLOCKER_ENVIRONMENT_CONTRACT}:{required_field}_missing"])
     return sample
 
 
@@ -207,6 +209,7 @@ def _resolved_task_spec(
     *,
     task_spec: Mapping[str, Any] | None,
     destination_position_world_m: Sequence[float] | None,
+    prompt: str,
     settle_window_samples: int,
     max_policy_queries: int,
     open_loop_horizon: int,
@@ -236,44 +239,59 @@ def _resolved_task_spec(
             validate_articulated_task_spec(resolved)
         except TaskNeutralScoringError as exc:
             raise PolicyEpisodeError(exc.errors) from exc
+    elif kind == TASK_KIND_DEFORMABLE_TRANSFER:
+        try:
+            validate_deformable_task_spec(resolved)
+        except TaskNeutralScoringError as exc:
+            raise PolicyEpisodeError(exc.errors) from exc
+        if resolved.get("prompt") != prompt:
+            raise PolicyEpisodeError(["policy_episode_prompt_task_spec_mismatch"])
     elif kind != TASK_KIND_RIGID_PICK_PLACE:
         raise PolicyEpisodeError(["policy_episode_task_kind_unsupported"])
-    if int(resolved.get("settle_window_samples", -1)) != int(
-        settle_window_samples
-    ):
+    if int(resolved.get("settle_window_samples", -1)) != int(settle_window_samples):
         raise PolicyEpisodeError(["policy_episode_settle_window_task_spec_mismatch"])
     expected_hz = resolved.get("control_frequency_hz")
     if expected_hz is not None and float(expected_hz) != float(DROID_CONTROL_HZ):
         raise PolicyEpisodeError(["policy_episode_control_frequency_task_spec_mismatch"])
     maximum_steps = resolved.get("maximum_action_steps")
-    if maximum_steps is not None and int(max_policy_queries) * int(
-        open_loop_horizon
-    ) > int(maximum_steps):
+    if maximum_steps is not None and int(max_policy_queries) * int(open_loop_horizon) > int(
+        maximum_steps
+    ):
         raise PolicyEpisodeError(["policy_episode_action_budget_exceeds_task_spec"])
     return resolved
 
 
-def _read_task_sample(
-    environment: EpisodeEnvironment, *, task_kind: str
-) -> Mapping[str, Any]:
+def _read_task_sample(environment: EpisodeEnvironment, *, task_kind: str) -> Mapping[str, Any]:
     if task_kind == TASK_KIND_RIGID_PICK_PLACE:
         return environment.read_object_sample()
     reader = getattr(environment, "read_task_sample", None)
     if not callable(reader):
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:read_task_sample_missing"]
-        )
+        raise PolicyEpisodeError([f"{BLOCKER_ENVIRONMENT_CONTRACT}:read_task_sample_missing"])
     sample = reader()
     if not isinstance(sample, Mapping):
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:task_sample_invalid"]
-        )
+        raise PolicyEpisodeError([f"{BLOCKER_ENVIRONMENT_CONTRACT}:task_sample_invalid"])
     return sample
 
 
-def _policy_view_composite(
-    observation: Mapping[str, Any], *, candidate_id: str
-) -> Any:
+def _required_task_sample_field(task_kind: str) -> str | None:
+    """Return only a task-kind discriminator owned by the shared scorer.
+
+    Rigid and articulated historical samples have a stable top-level field.
+    Deformable samples are entity-keyed and are therefore validated in full by
+    the deformable scorer; requiring an articulated joint field here would
+    silently make the generic task path unrunnable.
+    """
+
+    if task_kind == TASK_KIND_RIGID_PICK_PLACE:
+        return "can_pose_world"
+    if task_kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
+        return "joint_positions_rad"
+    if task_kind == TASK_KIND_DEFORMABLE_TRANSFER:
+        return None
+    raise PolicyEpisodeError(["policy_episode_task_kind_unsupported"])
+
+
+def _policy_view_composite(observation: Mapping[str, Any], *, candidate_id: str) -> Any:
     """One lossless RGB canvas containing every exact image shown to a policy."""
 
     import numpy as np
@@ -281,17 +299,13 @@ def _policy_view_composite(
     view_order = list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
     if candidate_id == "groot_n17_droid":
         view_order = [
-            GROOT_HISTORICAL_VIEW_KEYS[view]
-            for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
+            GROOT_HISTORICAL_VIEW_KEYS[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
         ] + view_order
     views = [np.asarray(observation[name]) for name in view_order]
     if not views or any(
-        view.dtype != np.uint8 or view.ndim != 3 or view.shape[2] != 3
-        for view in views
+        view.dtype != np.uint8 or view.ndim != 3 or view.shape[2] != 3 for view in views
     ):
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_invalid"]
-        )
+        raise PolicyEpisodeError([f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_invalid"])
     if len({view.shape[0] for view in views}) != 1:
         raise PolicyEpisodeError(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_height_mismatch"]
@@ -365,11 +379,7 @@ def _historical_camera_rgb(
         raise PolicyEpisodeError(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:groot_history_step_missing:{target_index}"]
         )
-    return {
-        view: sample[view]
-        for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
-        if view in sample
-    }
+    return {view: sample[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in sample}
 
 
 def _read_arm_joint_positions(environment: EpisodeEnvironment) -> list[float]:
@@ -387,10 +397,7 @@ def _read_arm_joint_positions(environment: EpisodeEnvironment) -> list[float]:
         ) from exc
     if len(values) != ARM_JOINT_COUNT or not all(math.isfinite(value) for value in values):
         raise PolicyEpisodeError(
-            [
-                f"{BLOCKER_ENVIRONMENT_CONTRACT}:"
-                f"arm_joint_positions_invalid:{len(values)}"
-            ]
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:arm_joint_positions_invalid:{len(values)}"]
         )
     return values
 
@@ -426,13 +433,9 @@ def _motion_and_command_evidence(
         if action["joint_velocity_command_rad_s"]
     ]
     source_arm_commands = [
-        float(value)
-        for action in commanded_actions
-        for value in action["source_arm_command"]
+        float(value) for action in commanded_actions for value in action["source_arm_command"]
     ]
-    source_action_spaces = {
-        str(action["source_action_space"]) for action in commanded_actions
-    }
+    source_action_spaces = {str(action["source_action_space"]) for action in commanded_actions}
     if len(source_action_spaces) != 1:
         raise PolicyEpisodeError(["policy_episode_source_action_space_inconsistent"])
     source_action_space = next(iter(source_action_spaces))
@@ -450,8 +453,7 @@ def _motion_and_command_evidence(
         for action in commanded_actions
     ]
     gripper_commands = [
-        abs(float(action["isaac_action"][ARM_JOINT_COUNT]))
-        for action in commanded_actions
+        abs(float(action["isaac_action"][ARM_JOINT_COUNT])) for action in commanded_actions
     ]
     nontrivial_rows = sum(
         any(
@@ -497,15 +499,11 @@ def _motion_and_command_evidence(
         ),
         "joint_velocity_command_clipped_value_count": sum(
             abs(raw - clipped) > 1e-12
-            for raw, clipped in zip(
-                velocity_commands, clipped_velocity_commands, strict=True
-            )
+            for raw, clipped in zip(velocity_commands, clipped_velocity_commands, strict=True)
         ),
         "arm_target_max_abs_rad": max((abs(value) for value in arm_targets), default=0.0),
         "arm_target_mean_abs_rad": (
-            sum(abs(value) for value in arm_targets) / len(arm_targets)
-            if arm_targets
-            else 0.0
+            sum(abs(value) for value in arm_targets) / len(arm_targets) if arm_targets else 0.0
         ),
         "arm_target_delta_from_observed_max_abs_rad": max(target_deltas, default=0.0),
         "arm_target_delta_from_observed_mean_abs_rad": (
@@ -569,12 +567,11 @@ def run_policy_episode(
         raise PolicyEpisodeError(
             [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_binding_incomplete"]
         )
-    policy_action_space = str(
-        getattr(policy, "action_space", ACTION_SPACE_JOINT_VELOCITY)
-    )
+    policy_action_space = str(getattr(policy, "action_space", ACTION_SPACE_JOINT_VELOCITY))
     resolved_task_spec = _resolved_task_spec(
         task_spec=task_spec,
         destination_position_world_m=destination_position_world_m,
+        prompt=str(prompt),
         settle_window_samples=int(settle_window_samples),
         max_policy_queries=int(max_policy_queries),
         open_loop_horizon=int(open_loop_horizon),
@@ -582,9 +579,7 @@ def run_policy_episode(
     task_kind = str(resolved_task_spec["task_kind"])
 
     media_root = (
-        Path(media_output_dir).expanduser().resolve()
-        if media_output_dir is not None
-        else None
+        Path(media_output_dir).expanduser().resolve() if media_output_dir is not None else None
     )
     retained_policy_frames: list[dict[str, Any]] = []
     retained_multicamera_observations: list[dict[str, Any]] = []
@@ -624,11 +619,7 @@ def run_policy_episode(
             _read_task_sample(environment, task_kind=task_kind),
             step_index,
             previous_index,
-            required_field=(
-                "can_pose_world"
-                if task_kind == TASK_KIND_RIGID_PICK_PLACE
-                else "joint_positions_rad"
-            ),
+            required_field=_required_task_sample_field(task_kind),
         )
     )
     previous_index = step_index
@@ -642,9 +633,7 @@ def run_policy_episode(
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
         inputs = environment.read_policy_inputs()
-        _retain_policy_input_sample(
-            policy_input_history, step_index=step_index, inputs=inputs
-        )
+        _retain_policy_input_sample(policy_input_history, step_index=step_index, inputs=inputs)
         timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
@@ -670,9 +659,7 @@ def run_policy_episode(
             ) from exc
         except DroidObservationError:
             raise
-        timings_seconds["observation_preprocessing"] += (
-            time.monotonic() - phase_started
-        )
+        timings_seconds["observation_preprocessing"] += time.monotonic() - phase_started
 
         if media_root is not None and episode_id is not None:
             phase_started = time.monotonic()
@@ -690,9 +677,7 @@ def run_policy_episode(
             else:
                 retained_policy_frames.append(
                     persist_observation_frame(
-                        _policy_view_composite(
-                            observation, candidate_id=candidate_id
-                        ),
+                        _policy_view_composite(observation, candidate_id=candidate_id),
                         output_dir=media_root,
                         episode_id=episode_id,
                         frame_index=query_index,
@@ -708,9 +693,7 @@ def run_policy_episode(
             raise PolicyEpisodeError([BLOCKER_CLIENT_RETURNED_NOTHING])
         inference_evidence_reader = getattr(policy, "last_inference_evidence", None)
         policy_inference_evidence = (
-            inference_evidence_reader()
-            if callable(inference_evidence_reader)
-            else None
+            inference_evidence_reader() if callable(inference_evidence_reader) else None
         )
 
         phase_started = time.monotonic()
@@ -733,9 +716,7 @@ def run_policy_episode(
             query_clamped_rows += int(action["joint_limit_clamped"])
             phase_started = time.monotonic()
             environment.step(action["isaac_action"])
-            timings_seconds["environment_step_including_render"] += (
-                time.monotonic() - phase_started
-            )
+            timings_seconds["environment_step_including_render"] += time.monotonic() - phase_started
             phase_started = time.monotonic()
             after = _read_arm_joint_positions(environment)
             timings_seconds["joint_state_read"] += time.monotonic() - phase_started
@@ -750,9 +731,7 @@ def run_policy_episode(
             commanded_actions.append(
                 {
                     "joint_position_target_rad": target,
-                    "joint_velocity_command_rad_s": list(
-                        action["joint_velocity_command_rad_s"]
-                    ),
+                    "joint_velocity_command_rad_s": list(action["joint_velocity_command_rad_s"]),
                     "source_arm_command": list(action["source_arm_command"]),
                     "source_action_space": action["source_action_space"],
                     "clipped_droid_action": list(action["clipped_droid_action"]),
@@ -778,9 +757,7 @@ def run_policy_episode(
                     )
                 )
                 media_observation_index += 1
-                timings_seconds["media_persistence"] += (
-                    time.monotonic() - phase_started
-                )
+                timings_seconds["media_persistence"] += time.monotonic() - phase_started
             if candidate_id == "groot_n17_droid":
                 phase_started = time.monotonic()
                 post_step_inputs = environment.read_policy_inputs()
@@ -789,20 +766,14 @@ def run_policy_episode(
                     step_index=step_index,
                     inputs=post_step_inputs,
                 )
-                timings_seconds["policy_input_read"] += (
-                    time.monotonic() - phase_started
-                )
+                timings_seconds["policy_input_read"] += time.monotonic() - phase_started
             phase_started = time.monotonic()
             samples.append(
                 _sample_with_index(
                     _read_task_sample(environment, task_kind=task_kind),
                     step_index,
                     previous_index,
-                    required_field=(
-                        "can_pose_world"
-                        if task_kind == TASK_KIND_RIGID_PICK_PLACE
-                        else "joint_positions_rad"
-                    ),
+                    required_field=_required_task_sample_field(task_kind),
                 )
             )
             timings_seconds["object_state_sample"] += time.monotonic() - phase_started
@@ -843,9 +814,7 @@ def run_policy_episode(
         phase_started = time.monotonic()
         environment.step(release_action)
         joint_trace.append(_read_arm_joint_positions(environment))
-        timings_seconds["settle_steps_including_render"] += (
-            time.monotonic() - phase_started
-        )
+        timings_seconds["settle_steps_including_render"] += time.monotonic() - phase_started
         step_index += 1
         if (
             media_root is not None
@@ -864,9 +833,7 @@ def run_policy_episode(
                 )
             )
             media_observation_index += 1
-            timings_seconds["media_persistence"] += (
-                time.monotonic() - phase_started
-            )
+            timings_seconds["media_persistence"] += time.monotonic() - phase_started
         if candidate_id == "groot_n17_droid":
             phase_started = time.monotonic()
             post_step_inputs = environment.read_policy_inputs()
@@ -882,11 +849,7 @@ def run_policy_episode(
                 _read_task_sample(environment, task_kind=task_kind),
                 step_index,
                 previous_index,
-                required_field=(
-                    "can_pose_world"
-                    if task_kind == TASK_KIND_RIGID_PICK_PLACE
-                    else "joint_positions_rad"
-                ),
+                required_field=_required_task_sample_field(task_kind),
             )
         )
         timings_seconds["object_state_sample"] += time.monotonic() - phase_started
@@ -919,22 +882,20 @@ def run_policy_episode(
                 observation_index=media_observation_index,
                 kind="terminal-observation",
             )
-            visual_evidence, media_artifacts = (
-                finalize_manipulation_evaluation_visual_evidence(
-                    output_dir=media_root,
-                    episode_id=episode_id,
-                    identity={
-                        "candidate_id": candidate_id,
-                        "prompt": str(prompt),
-                        "policy_input_camera_ids": ["external", "wrist"],
-                        "review_only_camera_ids": ["overview"],
-                        "overview_camera_used_by_policy": False,
-                        "overview_camera_used_by_grader": False,
-                    },
-                    policy_input_observations=retained_multicamera_observations,
-                    review_observations=retained_review_observations,
-                    terminal_observation=terminal_observation,
-                )
+            visual_evidence, media_artifacts = finalize_manipulation_evaluation_visual_evidence(
+                output_dir=media_root,
+                episode_id=episode_id,
+                identity={
+                    "candidate_id": candidate_id,
+                    "prompt": str(prompt),
+                    "policy_input_camera_ids": ["external", "wrist"],
+                    "review_only_camera_ids": ["overview"],
+                    "overview_camera_used_by_policy": False,
+                    "overview_camera_used_by_grader": False,
+                },
+                policy_input_observations=retained_multicamera_observations,
+                review_observations=retained_review_observations,
+                terminal_observation=terminal_observation,
             )
         else:
             terminal_inputs = environment.read_policy_inputs()
@@ -965,9 +926,7 @@ def run_policy_episode(
                     [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{exc.args[0]}_missing"]
                 ) from exc
             terminal_frame = persist_observation_frame(
-                _policy_view_composite(
-                    terminal_policy_observation, candidate_id=candidate_id
-                ),
+                _policy_view_composite(terminal_policy_observation, candidate_id=candidate_id),
                 output_dir=media_root,
                 episode_id=episode_id,
                 frame_index=len(retained_policy_frames),
@@ -995,9 +954,7 @@ def run_policy_episode(
             )
         timings_seconds["media_persistence"] += time.monotonic() - phase_started
 
-    timings_seconds = {
-        key: round(float(value), 6) for key, value in timings_seconds.items()
-    }
+    timings_seconds = {key: round(float(value), 6) for key, value in timings_seconds.items()}
     timings_seconds["total"] = round(time.monotonic() - episode_started, 6)
 
     receipt: dict[str, Any] = {
@@ -1031,11 +988,7 @@ def run_policy_episode(
         "media_artifacts": media_artifacts,
         "observation_trace_digest": (
             canonical_digest(
-                {
-                    "observations": [
-                        row["raw_rgb_sha256"] for row in retained_policy_frames
-                    ]
-                }
+                {"observations": [row["raw_rgb_sha256"] for row in retained_policy_frames]}
             )
             if retained_policy_frames
             else None

@@ -21,9 +21,7 @@ from blueprint_pipeline.adp009d_task_scoring import (
     SUPPORT_PLANE_Z_M,
 )
 
-_MEASURED = GripperConvention(
-    closed_command=1.0, open_command=0.0, measured_by_probe=True
-)
+_MEASURED = GripperConvention(closed_command=1.0, open_command=0.0, measured_by_probe=True)
 # The frozen destination, derived from the sealed SAGE support triangles.
 _DESTINATION = [3.750152333333333, -3.4074919, SUPPORT_PLANE_Z_M]
 _UPRIGHT_XYZW = (0.0, 0.0, 0.0, 1.0)
@@ -150,6 +148,39 @@ def _articulated_task_spec(*, maximum_action_steps: int = 32) -> dict:
     }
 
 
+def _deformable_task_spec(*, maximum_action_steps: int = 8) -> dict:
+    return {
+        "schema_version": "adp_task_spec.v1",
+        "task_kind": "deformable_transfer",
+        "prompt": "Pick up the cloth, place it inside the bin, release it, and retreat.",
+        "deformable_entity_id": "cloth",
+        "destination_entity_id": "bin",
+        "robot_entity_id": "franka",
+        "destination_interior_obb": {
+            "center_world_m": [0.0, 0.0, 0.2],
+            "half_extents_m": [0.2, 0.2, 0.2],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "receptacle_reference_pose_world": {
+            "position_m": [0.0, 0.0, 0.0],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "minimum_particle_fraction_inside": 0.8,
+        "settle_window_samples": 2,
+        "maximum_node_speed_mps": 0.01,
+        "maximum_principal_strain": 0.5,
+        "minimum_grasp_contact_force_n": 0.1,
+        "maximum_release_contact_force_n": 0.01,
+        "minimum_robot_clearance_m": 0.05,
+        "maximum_receptacle_translation_drift_m": 0.01,
+        "maximum_receptacle_rotation_drift_rad": 0.01,
+        "maximum_receptacle_linear_speed_mps": 0.01,
+        "maximum_receptacle_angular_speed_radps": 0.01,
+        "control_frequency_hz": 15,
+        "maximum_action_steps": maximum_action_steps,
+    }
+
+
 class _ArticulatedEnvironment(_Environment):
     """Second fixture: native joint state, without any canned-object fields."""
 
@@ -188,6 +219,48 @@ class _ArticulatedEnvironment(_Environment):
         }
 
 
+class _DeformableEnvironment(_Environment):
+    """Third fixture: entity-keyed native state, with no articulated fields."""
+
+    def read_object_sample(self):
+        raise AssertionError("deformable episode must not read canned-object state")
+
+    def read_task_sample(self):
+        return {
+            "sample_index": self._t,
+            "time_seconds": self._t / 15.0,
+            "entities": {
+                "cloth": {
+                    "nodal_positions_world_m": [
+                        [0.5, 0.0, 0.2],
+                        [0.5, 0.05, 0.2],
+                    ],
+                    "nodal_velocities_world_mps": [[0.0, 0.0, 0.0]] * 2,
+                    "deformation_gradients": [np.eye(3).tolist()],
+                    "nodal_kinematic_flags": [1.0, 1.0],
+                    "state_write_count_after_episode_start": 0,
+                    "solver_divergence_count": 0,
+                },
+                "bin": {
+                    "pose_world": {
+                        "position_m": [0.0, 0.0, 0.0],
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                    "linear_velocity_world_mps": [0.0, 0.0, 0.0],
+                    "angular_velocity_world_radps": [0.0, 0.0, 0.0],
+                },
+                "franka": {
+                    "gripper_clearance_points_world_m": [
+                        [1.0, 1.0, 1.0],
+                        [1.0, 1.1, 1.0],
+                    ],
+                    "gripper_contact_pair_count_by_entity_id": {"cloth": 0},
+                    "gripper_contact_normal_force_n_by_entity_id": {"cloth": 0.0},
+                },
+            },
+        }
+
+
 def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     """The whole point: observation, query, execution and scoring in one path."""
 
@@ -218,26 +291,26 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     timings = receipt["performance_diagnostics"]["timings_seconds"]
     assert timings["policy_inference"] >= 0.0
     assert timings["environment_step_including_render"] >= 0.0
-    assert timings["total"] >= sum(
-        timings[key]
-        for key in (
-            "policy_inference",
-            "environment_step_including_render",
-            "settle_steps_including_render",
-        )
-    ) - 1e-5
     assert (
-        receipt["performance_diagnostics"][
-            "environment_step_bucket_includes_renderer_when_enabled"
-        ]
+        timings["total"]
+        >= sum(
+            timings[key]
+            for key in (
+                "policy_inference",
+                "environment_step_including_render",
+                "settle_steps_including_render",
+            )
+        )
+        - 1e-5
+    )
+    assert (
+        receipt["performance_diagnostics"]["environment_step_bucket_includes_renderer_when_enabled"]
         is True
     )
 
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
-    assert receipt["receipt_digest"] == canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
 
 
 def test_same_policy_episode_loop_scores_second_scene_native_articulation_state() -> None:
@@ -254,9 +327,7 @@ def test_same_policy_episode_loop_scores_second_scene_native_articulation_state(
     assert receipt["destination_position_world_m"] is None
     assert receipt["score"]["outcome"] == "opened_and_settled"
     assert receipt["score"]["outcome_rank"] == 4
-    assert receipt["score"]["judgement_source"] == (
-        "deterministic_native_simulator_joint_state"
-    )
+    assert receipt["score"]["judgement_source"] == ("deterministic_native_simulator_joint_state")
     assert environment.reset_count == 1
     assert len(environment.steps) == receipt["environment_steps"]
 
@@ -264,13 +335,69 @@ def test_same_policy_episode_loop_scores_second_scene_native_articulation_state(
 def test_policy_episode_rejects_actions_beyond_frozen_articulated_budget() -> None:
     environment = _ArticulatedEnvironment()
 
-    with pytest.raises(
-        PolicyEpisodeError, match="policy_episode_action_budget_exceeds_task_spec"
-    ):
+    with pytest.raises(PolicyEpisodeError, match="policy_episode_action_budget_exceeds_task_spec"):
         _run(
             environment,
             task_spec=_articulated_task_spec(maximum_action_steps=31),
             destination_position_world_m=None,
+        )
+
+    assert environment.reset_count == 0
+
+
+def test_same_policy_episode_loop_accepts_entity_keyed_deformable_samples() -> None:
+    environment = _DeformableEnvironment()
+    task_spec = _deformable_task_spec()
+
+    receipt = _run(
+        environment,
+        task_spec=task_spec,
+        destination_position_world_m=None,
+        prompt=task_spec["prompt"],
+        max_policy_queries=1,
+        settle_window_samples=2,
+    )
+
+    assert receipt["task_kind"] == "deformable_transfer"
+    assert receipt["destination_position_world_m"] is None
+    assert receipt["score"]["task_kind"] == "deformable_transfer"
+    assert receipt["score"]["status"] == "scored"
+    assert receipt["score"]["task_succeeded"] is False
+    assert receipt["score"]["failure_reasons"] == [
+        "qualified_gripper_deformable_contact_not_observed",
+        "insufficient_particle_containment",
+        "centroid_outside_destination",
+    ]
+    assert environment.reset_count == 1
+    assert len(environment.steps) == receipt["environment_steps"]
+
+
+def test_deformable_policy_episode_rejects_actions_beyond_frozen_budget() -> None:
+    environment = _DeformableEnvironment()
+    task_spec = _deformable_task_spec(maximum_action_steps=7)
+    with pytest.raises(PolicyEpisodeError, match="policy_episode_action_budget_exceeds_task_spec"):
+        _run(
+            environment,
+            task_spec=task_spec,
+            destination_position_world_m=None,
+            prompt=task_spec["prompt"],
+            max_policy_queries=1,
+            settle_window_samples=2,
+        )
+
+    assert environment.reset_count == 0
+
+
+def test_deformable_policy_episode_requires_exact_frozen_prompt() -> None:
+    environment = _DeformableEnvironment()
+    with pytest.raises(PolicyEpisodeError, match="policy_episode_prompt_task_spec_mismatch"):
+        _run(
+            environment,
+            task_spec=_deformable_task_spec(),
+            destination_position_world_m=None,
+            prompt="Put the cloth somewhere else.",
+            max_policy_queries=1,
+            settle_window_samples=2,
         )
 
     assert environment.reset_count == 0
@@ -303,9 +430,7 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         settle_window_samples=1,
     )
 
-    assert environment.steps[0][:7] == pytest.approx(
-        [0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2]
-    )
+    assert environment.steps[0][:7] == pytest.approx([0.7, -0.8, 0.3, -1.2, 0.4, 1.1, -0.2])
     assert receipt["action_space"] == (
         "groot_decoded_absolute_joint_position_plus_absolute_gripper"
     )
@@ -316,9 +441,7 @@ def test_groot_absolute_joint_actions_take_the_direct_position_path() -> None:
         "native_action_chunk_shape": [40, 17],
         "native_action_chunk_sha256": "a" * 64,
     }
-    assert receipt["commanded_action_magnitudes"][
-        "joint_velocity_command_max_abs_rad_s"
-    ] == 0.0
+    assert receipt["commanded_action_magnitudes"]["joint_velocity_command_max_abs_rad_s"] == 0.0
     assert "observation/eef_9d" in policy.observations[0]
 
 
@@ -327,9 +450,7 @@ def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -
         def read_policy_inputs(self):
             inputs = super().read_policy_inputs()
             for view in (DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW):
-                inputs[view] = np.full(
-                    (720, 1280, 3), self._t, dtype=np.uint8
-                )
+                inputs[view] = np.full((720, 1280, 3), self._t, dtype=np.uint8)
             return inputs
 
     class _AbsolutePolicy(_Policy):
@@ -350,10 +471,7 @@ def test_groot_history_is_exactly_fifteen_simulator_steps_not_policy_queries() -
 
     third = policy.observations[2]  # query steps are 0, 8, 16
     assert third[DROID_EXTERIOR_VIEW_1][0, 0, 0] == 16
-    assert (
-        third["observation_history/exterior_image_1_left_t_minus_15"][0, 0, 0]
-        == 1
-    )
+    assert third["observation_history/exterior_image_1_left_t_minus_15"][0, 0, 0] == 1
 
 
 def test_successful_episode_retains_exact_policy_inputs_and_review_video(
@@ -371,13 +489,9 @@ def test_successful_episode_retains_exact_policy_inputs_and_review_video(
     assert visual["human_review_available"] is True
     assert visual["policy_input_frame_count"] == receipt["policy_queries"]
     assert visual["video"]["frame_count"] == receipt["policy_queries"] + 1
-    assert visual["video"]["derived_from_frame_manifest_digest"] == visual[
-        "frame_manifest_digest"
-    ]
+    assert visual["video"]["derived_from_frame_manifest_digest"] == visual["frame_manifest_digest"]
     assert receipt["observation_trace_digest"].startswith("sha256:")
-    first = next(
-        row for row in receipt["media_artifacts"] if row["role"] == "policy_input_frame"
-    )
+    first = next(row for row in receipt["media_artifacts"] if row["role"] == "policy_input_frame")
     with Image.open(tmp_path / first["relative_path"]) as image:
         pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
     # Both post-preprocessing 224x224 views shown to the policy are retained,
@@ -420,12 +534,8 @@ def test_native_evaluation_media_adds_review_only_overview_without_policy_input(
             return {
                 "timestamp_ns": self._t * 1_000_000,
                 "simulation_time_s": self._t / 15.0,
-                "calibrations": {
-                    camera_id: calibration for camera_id in camera_ids
-                },
-                "source_devices": {
-                    camera_id: "cpu" for camera_id in camera_ids
-                },
+                "calibrations": {camera_id: calibration for camera_id in camera_ids},
+                "source_devices": {camera_id: "cpu" for camera_id in camera_ids},
                 "synchronizations": {
                     camera_id: {"host_bytes_ready": True, "method": "test"}
                     for camera_id in camera_ids
@@ -617,9 +727,7 @@ def test_arm_motion_and_command_delivery_evidence_fail_closed() -> None:
     assert evidence["arm_moved"] is False
     assert evidence["actions_reached_robot"] is False
     assert evidence["policy_outcome_interpretable"] is False
-    assert evidence["interpretation"] == (
-        "nontrivial_actions_not_observed_at_robot_harness_fault"
-    )
+    assert evidence["interpretation"] == ("nontrivial_actions_not_observed_at_robot_harness_fault")
     magnitudes = receipt["commanded_action_magnitudes"]
     assert magnitudes["policy_action_rows_submitted"] == 16
     assert magnitudes["nontrivial_arm_target_rows"] == 16

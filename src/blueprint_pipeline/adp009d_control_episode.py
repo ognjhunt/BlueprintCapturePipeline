@@ -36,19 +36,23 @@ try:  # flat provider-bundle layout
     from adp_task_scoring import (
         OUTCOME_NEVER_MOVED as TASK_NEUTRAL_OUTCOME_NEVER_MOVED,
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TASK_KIND_DEFORMABLE_TRANSFER,
         TASK_KIND_RIGID_PICK_PLACE,
         TaskNeutralScoringError,
         score_task_episode_from_spec,
         validate_articulated_task_spec,
+        validate_deformable_task_spec,
     )
 except ModuleNotFoundError:  # repository package
     from .adp_task_scoring import (
         OUTCOME_NEVER_MOVED as TASK_NEUTRAL_OUTCOME_NEVER_MOVED,
         TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TASK_KIND_DEFORMABLE_TRANSFER,
         TASK_KIND_RIGID_PICK_PLACE,
         TaskNeutralScoringError,
         score_task_episode_from_spec,
         validate_articulated_task_spec,
+        validate_deformable_task_spec,
     )
 try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
@@ -177,9 +181,7 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
     if value.get("schema_version") != SCENARIO_INSTANCE_SCHEMA_VERSION:
         errors.append("control_plan_instance_schema_invalid")
-    if value.get("instance_digest") != canonical_digest(
-        value, digest_field="instance_digest"
-    ):
+    if value.get("instance_digest") != canonical_digest(value, digest_field="instance_digest"):
         errors.append("control_plan_instance_digest_mismatch")
     if set(value.get("required_controls") or []) != set(REQUIRED_CONTROLS):
         errors.append("control_plan_required_controls_invalid")
@@ -292,9 +294,7 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         if phase["target_position_world_m"] is not None:
             phase["target_frame"] = GRASP_TARGET_FRAME
             phase["orientation_strategy"] = CONTROLLED_BODY_ORIENTATION_STRATEGY
-            phase["target_quaternion_world_xyzw"] = list(
-                CONTROLLED_BODY_QUATERNION_WORLD_XYZW
-            )
+            phase["target_quaternion_world_xyzw"] = list(CONTROLLED_BODY_QUATERNION_WORLD_XYZW)
             phase["arrival_tolerance_m"] = PHASE_ARRIVAL_TOLERANCE_M
             phase["arrival_stability_steps"] = PHASE_ARRIVAL_STABILITY_STEPS
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
@@ -313,13 +313,9 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "object_height_m": object_height,
         "grasp_target_frame": GRASP_TARGET_FRAME,
         "controlled_body_orientation_strategy": CONTROLLED_BODY_ORIENTATION_STRATEGY,
-        "controlled_body_quaternion_world_xyzw": list(
-            CONTROLLED_BODY_QUATERNION_WORLD_XYZW
-        ),
+        "controlled_body_quaternion_world_xyzw": list(CONTROLLED_BODY_QUATERNION_WORLD_XYZW),
         "zero_action": {
-            "semantics": (
-                "zero_joint_velocity_realized_as_hold_current_absolute_joint_positions"
-            ),
+            "semantics": ("zero_joint_velocity_realized_as_hold_current_absolute_joint_positions"),
             "gripper": "open",
             "steps": ZERO_ACTION_STEPS,
         },
@@ -353,9 +349,7 @@ def _phase_arrival(
 
     target = [float(value) for value in phase["target_position_world_m"]]
     start = [float(value) for value in start_sample["grasp_frame_position_world_m"]]
-    achieved = [
-        float(value) for value in terminal_sample["grasp_frame_position_world_m"]
-    ]
+    achieved = [float(value) for value in terminal_sample["grasp_frame_position_world_m"]]
     tolerance = float(phase["arrival_tolerance_m"])
     error = math.dist(achieved, target)
     stability_steps_required = int(phase["arrival_stability_steps"])
@@ -378,13 +372,9 @@ def _phase_arrival(
     }
 
 
-def _within_phase_arrival_tolerance(
-    *, phase: Mapping[str, Any], sample: Mapping[str, Any]
-) -> bool:
+def _within_phase_arrival_tolerance(*, phase: Mapping[str, Any], sample: Mapping[str, Any]) -> bool:
     target = [float(value) for value in phase["target_position_world_m"]]
-    achieved = [
-        float(value) for value in sample["grasp_frame_position_world_m"]
-    ]
+    achieved = [float(value) for value in sample["grasp_frame_position_world_m"]]
     return math.dist(achieved, target) <= float(phase["arrival_tolerance_m"])
 
 
@@ -503,9 +493,7 @@ def run_control_episode(
             if phase["gripper"] == "open"
             else float(gripper_closed_command)
         )
-        phase_step_limit = int(
-            phase.get("maximum_steps", phase.get("steps", 0))
-        )
+        phase_step_limit = int(phase.get("maximum_steps", phase.get("steps", 0)))
         for _ in range(phase_step_limit):
             before = [float(v) for v in environment.read_arm_joint_positions()]
             if phase["mode"] == "hold_current_joint_positions":
@@ -513,14 +501,10 @@ def run_control_episode(
             else:
                 action = environment.scripted_action_for_pose(
                     target_position_world_m=phase["target_position_world_m"],
-                    target_quaternion_world_xyzw=phase[
-                        "target_quaternion_world_xyzw"
-                    ],
+                    target_quaternion_world_xyzw=phase["target_quaternion_world_xyzw"],
                     gripper_command=gripper_command,
                     max_joint_delta_rad=float(phase["max_joint_delta_rad"]),
-                    max_joint_setpoint_lead_rad=float(
-                        phase["max_joint_setpoint_lead_rad"]
-                    ),
+                    max_joint_setpoint_lead_rad=float(phase["max_joint_setpoint_lead_rad"]),
                 )
             environment.step(action)
             step_index += 1
@@ -537,9 +521,7 @@ def run_control_episode(
             )
             samples.append(_sample(environment, step_index))
             if phase["mode"] == "ik_pose":
-                if _within_phase_arrival_tolerance(
-                    phase=phase, sample=samples[-1]
-                ):
+                if _within_phase_arrival_tolerance(phase=phase, sample=samples[-1]):
                     stability_steps_observed += 1
                 else:
                     stability_steps_observed = 0
@@ -557,17 +539,13 @@ def run_control_episode(
             if (
                 phase["mode"] == "ik_pose"
                 and phase_steps_executed >= int(phase["minimum_steps"])
-                and stability_steps_observed
-                >= int(phase["arrival_stability_steps"])
+                and stability_steps_observed >= int(phase["arrival_stability_steps"])
             ):
                 termination_reason = "stable_arrival"
                 break
         if phase["mode"] == "ik_pose" and termination_reason != "stable_arrival":
             termination_reason = "maximum_steps_exhausted"
-        if (
-            phase_index < len(phases) - 1
-            and step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS != 0
-        ):
+        if phase_index < len(phases) - 1 and step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS != 0:
             review_observations.append(
                 _persist_observation(
                     environment,
@@ -634,11 +612,7 @@ def run_control_episode(
         blockers = [] if passed else [BLOCKER_ZERO_COMPLETED_TASK]
     else:
         passed = score.get("status") == "scored" and score.get("outcome") == OUTCOME_PLACED
-        blockers = (
-            []
-            if passed
-            else [f"{BLOCKER_POSITIVE_FAILED}:{score.get('outcome')}"]
-        )
+        blockers = [] if passed else [f"{BLOCKER_POSITIVE_FAILED}:{score.get('outcome')}"]
         if phase_execution_blocker is not None:
             blockers.append(phase_execution_blocker)
             passed = False
@@ -698,9 +672,7 @@ def run_control_episode(
         "caller_asserted_success_accepted": False,
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return receipt
 
 
@@ -708,9 +680,7 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     if path.exists() or path.is_symlink():
         raise ControlEpisodeError([f"control_receipt_overwrite_forbidden:{path.name}"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(dict(value), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(dict(value), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def run_required_controls(
@@ -728,8 +698,7 @@ def run_required_controls(
     if expected_control_plan is not None:
         expected = json.loads(json.dumps(dict(expected_control_plan), allow_nan=False))
         if (
-            expected.get("plan_digest")
-            != canonical_digest(expected, digest_field="plan_digest")
+            expected.get("plan_digest") != canonical_digest(expected, digest_field="plan_digest")
             or expected != plan
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
@@ -813,18 +782,14 @@ def validate_task_control_plan(
     errors: list[str] = []
     if checked.get("schema_version") != TASK_CONTROL_PLAN_SCHEMA_VERSION:
         errors.append("task_control_plan_schema_invalid")
-    if checked.get("plan_digest") != canonical_digest(
-        checked, digest_field="plan_digest"
-    ):
+    if checked.get("plan_digest") != canonical_digest(checked, digest_field="plan_digest"):
         errors.append("task_control_plan_digest_mismatch")
     if checked.get("task_spec_digest") != canonical_digest(task):
         errors.append("task_control_plan_task_spec_mismatch")
     if checked.get("trajectory_source") != "native_ik_preflight":
         errors.append("task_control_trajectory_source_invalid")
     planner_receipt_digest = str(checked.get("planner_receipt_digest") or "")
-    if not planner_receipt_digest.startswith("sha256:") or len(
-        planner_receipt_digest
-    ) != 71:
+    if not planner_receipt_digest.startswith("sha256:") or len(planner_receipt_digest) != 71:
         errors.append("task_control_planner_receipt_digest_invalid")
     zero_steps = checked.get("zero_action_steps")
     if isinstance(zero_steps, bool) or not isinstance(zero_steps, int) or zero_steps < 1:
@@ -845,18 +810,14 @@ def validate_task_control_plan(
                 position = [float(value) for value in raw["target_position_world_m"]]
                 quaternion_raw = raw.get("target_quaternion_world_xyzw")
                 quaternion = (
-                    None
-                    if quaternion_raw is None
-                    else [float(value) for value in quaternion_raw]
+                    None if quaternion_raw is None else [float(value) for value in quaternion_raw]
                 )
                 minimum_steps = int(raw["minimum_steps"])
                 maximum_steps = int(raw["maximum_steps"])
                 arrival_tolerance_m = float(raw["arrival_tolerance_m"])
                 arrival_stability_steps = int(raw["arrival_stability_steps"])
                 max_joint_delta_rad = float(raw["max_joint_delta_rad"])
-                max_joint_setpoint_lead_rad = float(
-                    raw["max_joint_setpoint_lead_rad"]
-                )
+                max_joint_setpoint_lead_rad = float(raw["max_joint_setpoint_lead_rad"])
             except (KeyError, TypeError, ValueError):
                 position = []
                 quaternion = []
@@ -925,9 +886,7 @@ def validate_task_control_plan(
             ):
                 errors.append(f"task_control_scripted_action_invalid:{index}")
             else:
-                normalized_actions.append(
-                    {"phase_id": phase_id, "isaac_action": action}
-                )
+                normalized_actions.append({"phase_id": phase_id, "isaac_action": action})
                 maximum_scripted_steps += 1
             continue
         values = raw.get("arm_joint_positions")
@@ -958,14 +917,15 @@ def validate_task_control_plan(
             validate_articulated_task_spec(task)
         except TaskNeutralScoringError as exc:
             errors.extend(exc.errors)
+    elif kind == TASK_KIND_DEFORMABLE_TRANSFER:
+        try:
+            validate_deformable_task_spec(task)
+        except TaskNeutralScoringError as exc:
+            errors.extend(exc.errors)
     elif kind != TASK_KIND_RIGID_PICK_PLACE:
         errors.append("task_control_task_kind_unsupported")
     settle_steps = task.get("settle_window_samples")
-    if (
-        isinstance(settle_steps, bool)
-        or not isinstance(settle_steps, int)
-        or settle_steps < 1
-    ):
+    if isinstance(settle_steps, bool) or not isinstance(settle_steps, int) or settle_steps < 1:
         errors.append("task_control_settle_window_invalid")
         settle_steps = 0
     maximum_steps = task.get("maximum_action_steps")
@@ -995,9 +955,7 @@ def _run_task_control_episode(
 ) -> dict[str, Any]:
     task_kind = str(task_spec["task_kind"])
     environment.reset()
-    samples = [
-        _task_neutral_sample(environment, task_kind=task_kind, step_index=0)
-    ]
+    samples = [_task_neutral_sample(environment, task_kind=task_kind, step_index=0)]
     policy_inputs = [
         _persist_observation(
             environment,
@@ -1040,15 +998,11 @@ def _run_task_control_episode(
         for _ in range(phase_steps):
             before = [float(value) for value in environment.read_arm_joint_positions()]
             if row.get("mode") == "hold_current_joint_positions":
-                action = environment.hold_action(
-                    gripper_command=float(gripper_open_command)
-                )
+                action = environment.hold_action(gripper_command=float(gripper_open_command))
             elif pose_mode:
                 state = str(row["gripper_state"])
                 if state == "closed" and gripper_closed_command is None:
-                    raise ControlEpisodeError(
-                        ["task_control_gripper_closed_command_missing"]
-                    )
+                    raise ControlEpisodeError(["task_control_gripper_closed_command_missing"])
                 command = (
                     float(gripper_open_command)
                     if state == "open"
@@ -1056,23 +1010,17 @@ def _run_task_control_episode(
                 )
                 action = environment.scripted_action_for_pose(
                     target_position_world_m=row["target_position_world_m"],
-                    target_quaternion_world_xyzw=row[
-                        "target_quaternion_world_xyzw"
-                    ],
+                    target_quaternion_world_xyzw=row["target_quaternion_world_xyzw"],
                     gripper_command=command,
                     max_joint_delta_rad=float(row["max_joint_delta_rad"]),
-                    max_joint_setpoint_lead_rad=float(
-                        row["max_joint_setpoint_lead_rad"]
-                    ),
+                    max_joint_setpoint_lead_rad=float(row["max_joint_setpoint_lead_rad"]),
                 )
             elif "isaac_action" in row:
                 action = row["isaac_action"]
             else:
                 state = str(row["gripper_state"])
                 if state == "closed" and gripper_closed_command is None:
-                    raise ControlEpisodeError(
-                        ["task_control_gripper_closed_command_missing"]
-                    )
+                    raise ControlEpisodeError(["task_control_gripper_closed_command_missing"])
                 command = (
                     float(gripper_open_command)
                     if state == "open"
@@ -1094,9 +1042,7 @@ def _run_task_control_episode(
                 )
             )
             samples.append(
-                _task_neutral_sample(
-                    environment, task_kind=task_kind, step_index=step_index
-                )
+                _task_neutral_sample(environment, task_kind=task_kind, step_index=step_index)
             )
             if step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS == 0:
                 review_observations.append(
@@ -1111,12 +1057,8 @@ def _run_task_control_episode(
                 observation_index += 1
             if pose_mode:
                 measured = samples[-1].get("grasp_frame_position_world_m")
-                if not isinstance(measured, Sequence) or isinstance(
-                    measured, (str, bytes)
-                ):
-                    raise ControlEpisodeError(
-                        ["task_control_grasp_frame_readback_missing"]
-                    )
+                if not isinstance(measured, Sequence) or isinstance(measured, (str, bytes)):
+                    raise ControlEpisodeError(["task_control_grasp_frame_readback_missing"])
                 try:
                     error = math.dist(
                         [float(value) for value in measured],
@@ -1126,14 +1068,9 @@ def _run_task_control_episode(
                     raise ControlEpisodeError(
                         ["task_control_grasp_frame_readback_invalid"]
                     ) from exc
-                stable_steps = (
-                    stable_steps + 1
-                    if error <= float(row["arrival_tolerance_m"])
-                    else 0
-                )
-                if (
-                    phase_steps_executed >= int(row["minimum_steps"])
-                    and stable_steps >= int(row["arrival_stability_steps"])
+                stable_steps = stable_steps + 1 if error <= float(row["arrival_tolerance_m"]) else 0
+                if phase_steps_executed >= int(row["minimum_steps"]) and stable_steps >= int(
+                    row["arrival_stability_steps"]
                 ):
                     termination_reason = "stable_arrival"
                     break
@@ -1144,16 +1081,12 @@ def _run_task_control_episode(
             )
             arrival = {
                 "phase_id": str(row["phase_id"]),
-                "start_position_world_m": start_sample.get(
-                    "grasp_frame_position_world_m"
-                ),
+                "start_position_world_m": start_sample.get("grasp_frame_position_world_m"),
                 "target_position_world_m": row["target_position_world_m"],
                 "terminal_position_world_m": measured,
                 "terminal_position_error_m": terminal_error,
                 "arrival_tolerance_m": float(row["arrival_tolerance_m"]),
-                "arrival_stability_steps_required": int(
-                    row["arrival_stability_steps"]
-                ),
+                "arrival_stability_steps_required": int(row["arrival_stability_steps"]),
                 "arrival_stability_steps_observed": stable_steps,
                 "termination_reason": termination_reason,
                 "target_reached": termination_reason == "stable_arrival",
@@ -1233,9 +1166,7 @@ def _run_task_control_episode(
         "caller_asserted_success_accepted": False,
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return receipt
 
 
@@ -1263,18 +1194,14 @@ def run_task_neutral_controls(
             control_id=control_id,
             gripper_open_command=float(gripper_open_command),
             gripper_closed_command=(
-                None
-                if gripper_closed_command is None
-                else float(gripper_closed_command)
+                None if gripper_closed_command is None else float(gripper_closed_command)
             ),
             output=output,
             episode_id=f"{plan['cell_id']}-{control_id}",
         )
         receipts.append(receipt)
         _write_json(output / f"adp_task_control_episode.{control_id}.json", receipt)
-    blockers = [
-        blocker for receipt in receipts for blocker in receipt.get("blockers", [])
-    ]
+    blockers = [blocker for receipt in receipts for blocker in receipt.get("blockers", [])]
     pair: dict[str, Any] = {
         "schema_version": TASK_CONTROL_PAIR_SCHEMA_VERSION,
         "program_id": "arm-decision-proof-v1",

@@ -8,6 +8,7 @@ import pytest
 from blueprint_pipeline.adp009d_control_episode import (
     ControlEpisodeError,
     run_task_neutral_controls,
+    validate_task_control_plan,
 )
 from blueprint_pipeline.adp009d_task_scoring import (
     CAN_START_POSITION_M,
@@ -212,6 +213,82 @@ def _cartesian_articulated_plan(task: dict) -> dict:
     return plan
 
 
+def _deformable_task() -> dict:
+    return {
+        "schema_version": "adp_task_spec.v1",
+        "task_kind": "deformable_transfer",
+        "prompt": "Transfer the deformable into the destination and retreat.",
+        "deformable_entity_id": "movable",
+        "destination_entity_id": "destination",
+        "robot_entity_id": "robot",
+        "destination_interior_obb": {
+            "center_world_m": [0.5, 0.0, 0.2],
+            "half_extents_m": [0.2, 0.15, 0.1],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "receptacle_reference_pose_world": {
+            "position_m": [0.5, 0.0, 0.1],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "minimum_particle_fraction_inside": 0.75,
+        "settle_window_samples": 3,
+        "maximum_node_speed_mps": 0.02,
+        "maximum_principal_strain": 0.25,
+        "minimum_grasp_contact_force_n": 0.1,
+        "maximum_release_contact_force_n": 0.0,
+        "minimum_robot_clearance_m": 0.1,
+        "maximum_receptacle_translation_drift_m": 0.01,
+        "maximum_receptacle_rotation_drift_rad": 0.03,
+        "maximum_receptacle_linear_speed_mps": 0.01,
+        "maximum_receptacle_angular_speed_radps": 0.03,
+        "control_frequency_hz": 15,
+        "maximum_action_steps": 10,
+    }
+
+
+def _deformable_plan(task: dict) -> dict:
+    plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "cell_id": "deformable-canonical",
+        "task_spec_digest": canonical_digest(task),
+        "trajectory_source": "native_ik_preflight",
+        "planner_receipt_digest": "sha256:" + "d" * 64,
+        "zero_action_steps": 3,
+        "scripted_positive_actions": [
+            {
+                "phase_id": "grasp",
+                "isaac_action": [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            },
+            {
+                "phase_id": "release_and_retreat",
+                "isaac_action": [0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            },
+        ],
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+def test_task_control_plan_accepts_the_shared_deformable_scorer_contract() -> None:
+    task = _deformable_task()
+    plan = _deformable_plan(task)
+
+    assert validate_task_control_plan(plan, task_spec=task) == plan
+
+
+def test_task_control_plan_rejects_a_deformable_scorer_contract_drift() -> None:
+    task = _deformable_task()
+    plan = _deformable_plan(task)
+    task["minimum_grasp_contact_force_n"] = 0.0
+
+    with pytest.raises(
+        ControlEpisodeError,
+        match="deformable_transfer_grasp_contact_force_invalid",
+    ):
+        validate_task_control_plan(plan, task_spec=task)
+
+
 class _CartesianEnvironment(_Environment):
     def scripted_action_for_pose(
         self,
@@ -289,9 +366,7 @@ def test_task_control_plan_rejects_unbound_or_over_budget_trajectory(
     plan["scripted_positive_actions"] *= 4
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
 
-    with pytest.raises(
-        ControlEpisodeError, match="task_control_action_budget_exceeds_task_spec"
-    ):
+    with pytest.raises(ControlEpisodeError, match="task_control_action_budget_exceeds_task_spec"):
         run_task_neutral_controls(
             environment=_Environment("articulated_open_close"),
             task_spec=copy.deepcopy(task),
