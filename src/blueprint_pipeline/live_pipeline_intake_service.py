@@ -93,6 +93,8 @@ from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     load_public_launch_profile_catalog,
     stage_launch_request,
+    validate_launch_request,
+    validate_launch_request_against_public_catalog,
 )
 
 
@@ -2122,8 +2124,42 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(payload, Mapping):
             raise HTTPException(status_code=400, detail="expected JSON object")
+        catalog_value = _string(os.getenv(TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV))
+        if not catalog_value:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "task_evaluation_launch_intake_receipt.v1",
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": ["task_evaluation_launch_public_catalog_not_configured"],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "canonical_allocator_required": True,
+                },
+            )
         manifest_path = _manifest_path().resolve()
         try:
+            request_blockers = validate_launch_request(payload)
+            if request_blockers:
+                raise TaskEvaluationLaunchError(",".join(request_blockers))
+            catalog_blockers = validate_launch_request_against_public_catalog(
+                payload,
+                catalog_path=catalog_value,
+            )
+            if "launch_profile_public_catalog_invalid" in catalog_blockers:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "schema_version": "task_evaluation_launch_intake_receipt.v1",
+                        "status": "blocked",
+                        "accepted": False,
+                        "blockers": ["task_evaluation_launch_public_catalog_invalid"],
+                        "provider_mutation_performed_inside_http_request": False,
+                        "canonical_allocator_required": True,
+                    },
+                )
+            if catalog_blockers:
+                raise TaskEvaluationLaunchError(",".join(catalog_blockers))
             queued = stage_launch_request(
                 value=payload,
                 queue_root=_task_evaluation_launch_queue_root(manifest_path),

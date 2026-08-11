@@ -33,7 +33,10 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "task_evaluation_launch_dispatcher" in dispatcher
     assert "--execute" in dispatcher
     assert "--execute-launch-id" in dispatcher
+    assert "--public-catalog" in dispatcher
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID" in dispatcher
+    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in dispatcher
+    assert "task-evaluation-launch-profile-catalog.json" in dispatcher
     assert (
         'ARGS+=(--execute --execute-launch-id '
         '"$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}")'

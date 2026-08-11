@@ -542,6 +542,44 @@ def load_public_launch_profile_catalog(
     }
 
 
+def validate_launch_request_against_public_catalog(
+    value: Mapping[str, Any], *, catalog_path: str | Path
+) -> list[str]:
+    """Require the signed request to name one currently published profile.
+
+    The profile directory retains immutable historical profiles for evidence and
+    replay.  It is not a selector.  Only the publisher-generated catalog is
+    allowed to authorize a new Website or signed intake request.
+    """
+
+    request = _mapping(value)
+    try:
+        catalog = load_public_launch_profile_catalog(catalog_path)
+    except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+        return ["launch_profile_public_catalog_invalid"]
+    descriptor = next(
+        (
+            row
+            for row in catalog["profiles"]
+            if row["profile_id"] == request.get("launch_profile_id")
+            and row["profile_digest"] == request.get("launch_profile_digest")
+        ),
+        None,
+    )
+    if descriptor is None:
+        return ["launch_profile_not_published"]
+    blockers: list[str] = []
+    for request_field, descriptor_field in (
+        ("source_bundle", "source_bundle"),
+        ("evaluation_run_spec", "evaluation_run_spec"),
+        ("required_controls", "required_controls"),
+        ("claim_ceiling", "claim_ceiling"),
+    ):
+        if request.get(request_field) != descriptor.get(descriptor_field):
+            blockers.append(f"launch_profile_public_catalog_{request_field}_mismatch")
+    return blockers
+
+
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
     payload = (_canonical_json(value) + "\n").encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -691,11 +729,18 @@ def dispatch_launch_request(
     state_root: str | Path,
     execute: bool = False,
     execute_launch_id: str | None = None,
+    public_catalog_path: str | Path | None = None,
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
 ) -> dict[str, Any]:
     request_source = Path(request_path).expanduser().resolve()
     request = _read_json(request_source)
     blockers = validate_launch_request(request)
+    if public_catalog_path is not None:
+        blockers.extend(
+            validate_launch_request_against_public_catalog(
+                request, catalog_path=public_catalog_path
+            )
+        )
     profile_path = (
         Path(profile_dir).expanduser().resolve() / f"{request.get('launch_profile_id', '')}.json"
     )
@@ -975,6 +1020,7 @@ def process_launch_queue(
     state_root: str | Path,
     execute: bool = False,
     execute_launch_id: str | None = None,
+    public_catalog_path: str | Path | None = None,
     max_messages: int = 1,
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
 ) -> dict[str, Any]:
@@ -1016,6 +1062,7 @@ def process_launch_queue(
                 state_root=state_root,
                 execute=execute,
                 execute_launch_id=execution_scope_launch_id if execute else None,
+                public_catalog_path=public_catalog_path,
                 allocator_runner=allocator_runner,
             )
         except Exception as exc:  # noqa: BLE001 - the queue must retain a terminal receipt
@@ -1066,6 +1113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-messages", type=int, default=1)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--execute-launch-id")
+    parser.add_argument("--public-catalog")
     args = parser.parse_args(argv)
     result = process_launch_queue(
         queue_root=args.queue_root,
@@ -1073,6 +1121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         state_root=args.state_root,
         execute=args.execute,
         execute_launch_id=args.execute_launch_id,
+        public_catalog_path=args.public_catalog,
         max_messages=args.max_messages,
     )
     print(json.dumps(result, sort_keys=True))
