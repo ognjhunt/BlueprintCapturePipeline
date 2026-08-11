@@ -826,6 +826,99 @@ def _load_contribution_array(path: Path, *, expected_shape: tuple[int, int, int]
     return value
 
 
+def materialize_excision_ownership_aggregation_policy(
+    *,
+    freeze_path: str | Path,
+    contribution_manifest_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze the sole admitted conservative reconciliation rule.
+
+    Released GPU contribution accumulators can differ below the frozen
+    quantization boundary.  This materializer binds the only permitted
+    reconciliation rule to the completed calibration evidence *before* any
+    held-out view is accessed: a Gaussian is owned or retained only if every
+    repetition agrees; every disagreement becomes ambiguous.  It deliberately
+    does not inspect contribution values, ownership labels, replacement depth,
+    or held-out evidence.
+    """
+
+    freeze_file = Path(freeze_path).expanduser().resolve()
+    manifest_file = Path(contribution_manifest_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    for path, code in (
+        (freeze_file, "excision_freeze_missing"),
+        (manifest_file, "excision_contribution_manifest_missing"),
+    ):
+        if not path.is_file() or path.is_symlink():
+            raise GaussianExcisionAuditError([code])
+    if output.exists():
+        raise GaussianExcisionAuditError(["excision_ownership_aggregation_policy_exists"])
+    try:
+        freeze = json.loads(freeze_file.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GaussianExcisionAuditError(["excision_bound_json_invalid"]) from exc
+    if (
+        freeze.get("schema_version") != FREEZE_SCHEMA
+        or freeze.get("freeze_digest")
+        != canonical_digest(freeze, digest_field="freeze_digest")
+        or freeze.get("status") != "frozen_before_excision_execution"
+    ):
+        raise GaussianExcisionAuditError(["excision_freeze_invalid"])
+    if (
+        manifest.get("schema_version") != CONTRIBUTION_EVIDENCE_SCHEMA
+        or manifest.get("manifest_digest")
+        != canonical_digest(manifest, digest_field="manifest_digest")
+        or manifest.get("freeze_digest") != freeze["freeze_digest"]
+        or manifest.get("class_order") != list(CONTRIBUTION_CLASS_ORDER)
+        or manifest.get("camera_ids")
+        != freeze.get("camera_split", {}).get("calibration_camera_ids")
+    ):
+        raise GaussianExcisionAuditError(["excision_contribution_manifest_invalid"])
+    method = manifest.get("method")
+    frozen_method = freeze.get("contribution_method")
+    if not isinstance(method, Mapping) or not isinstance(frozen_method, Mapping):
+        raise GaussianExcisionAuditError(["excision_contribution_method_missing"])
+    for key in (
+        "name",
+        "repository",
+        "commit",
+        "rasterizer_repository",
+        "rasterizer_commit",
+        "contribution_semantics",
+        "source_modified",
+        "depth_anything_3_used",
+    ):
+        if method.get(key) != frozen_method.get(key):
+            raise GaussianExcisionAuditError(
+                [f"excision_contribution_method_mismatch:{key}"]
+            )
+    if method.get("released_code_executed") is not True:
+        raise GaussianExcisionAuditError(["excision_released_contribution_not_executed"])
+    decimals = freeze.get("policy", {}).get("contribution_quantization_decimals")
+    if isinstance(decimals, bool) or not isinstance(decimals, int) or not 3 <= decimals <= 12:
+        raise GaussianExcisionAuditError(["excision_contribution_quantization_invalid"])
+
+    policy: dict[str, Any] = {
+        "schema_version": OWNERSHIP_AGGREGATION_POLICY_SCHEMA,
+        "status": "frozen_after_calibration_before_heldout_evaluation",
+        "freeze_digest": freeze["freeze_digest"],
+        "contribution_manifest_digest": manifest["manifest_digest"],
+        "quantization_decimals": decimals,
+        "rule": "unanimous_owned_and_retained_else_ambiguous",
+        "heldout_cameras_accessed": False,
+        "calibration_evidence_only": True,
+        "aggregation_policy_digest": "",
+    }
+    policy["aggregation_policy_digest"] = canonical_digest(
+        policy, digest_field="aggregation_policy_digest"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(canonical_json(policy) + "\n", encoding="utf-8")
+    return policy
+
+
 def materialize_excision_ownership(
     *,
     freeze_path: str | Path,
@@ -1322,6 +1415,7 @@ __all__ = [
     "OWNERSHIP_AGGREGATION_POLICY_SCHEMA",
     "classify_excision_ownership",
     "materialize_excision_audit_freeze",
+    "materialize_excision_ownership_aggregation_policy",
     "materialize_excision_ownership",
     "materialize_excision_ownership_replay",
     "metric_geometry_score",

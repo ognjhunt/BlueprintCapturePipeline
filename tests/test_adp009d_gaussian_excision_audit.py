@@ -27,6 +27,7 @@ from blueprint_pipeline.public_scene_gaussian_excision_audit import (
     OWNERSHIP_REPLAY_SCHEMA,
     classify_excision_ownership,
     materialize_excision_audit_freeze,
+    materialize_excision_ownership_aggregation_policy,
     materialize_excision_ownership,
     materialize_excision_ownership_replay,
     select_maximally_diverse_holdout_pair,
@@ -1348,20 +1349,15 @@ def Xform "Root"
     manifest["repetitions"][1] = _record(jittered_path, gpu_root)
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     manifest_path.write_text(canonical_json(manifest) + "\n", encoding="utf-8")
-    aggregation_policy = {
-        "schema_version": OWNERSHIP_AGGREGATION_POLICY_SCHEMA,
-        "status": "frozen_after_calibration_before_heldout_evaluation",
-        "freeze_digest": freeze["freeze_digest"],
-        "contribution_manifest_digest": manifest["manifest_digest"],
-        "quantization_decimals": POLICY["contribution_quantization_decimals"],
-        "rule": "unanimous_owned_and_retained_else_ambiguous",
-        "heldout_cameras_accessed": False,
-    }
-    aggregation_policy["aggregation_policy_digest"] = canonical_digest(
-        aggregation_policy, digest_field="aggregation_policy_digest"
-    )
     aggregation_policy_path = tmp_path / "aggregation-policy.json"
-    aggregation_policy_path.write_text(canonical_json(aggregation_policy) + "\n", encoding="utf-8")
+    aggregation_policy = materialize_excision_ownership_aggregation_policy(
+        freeze_path=tmp_path / "freeze" / f"{FREEZE_SCHEMA}.json",
+        contribution_manifest_path=manifest_path,
+        output_path=aggregation_policy_path,
+    )
+    assert aggregation_policy["schema_version"] == OWNERSHIP_AGGREGATION_POLICY_SCHEMA
+    assert aggregation_policy["heldout_cameras_accessed"] is False
+    assert aggregation_policy["calibration_evidence_only"] is True
 
     aggregated = materialize_excision_ownership(
         freeze_path=tmp_path / "freeze" / f"{FREEZE_SCHEMA}.json",
