@@ -1252,6 +1252,86 @@ def test_full_resolution_calibrated_residual_masks_can_bound_future_inpainting(
     }
 
 
+def test_source_coverage_binds_co_present_depth_composition_identity(
+    tmp_path: Path,
+) -> None:
+    usd = _fixture_usd(tmp_path / "fixture.usda")
+    depth_root = tmp_path / "depth"
+    depth = materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0],
+        moving_link_path="/Asset/door",
+        hinge_origin_asset_m=[0.0, 0.0, 0.0],
+        hinge_axis_asset=[0.0, 0.0, 1.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=depth_root,
+        resolution_scale=1.0,
+    )
+    composition_root = tmp_path / "composition"
+    composition_root.mkdir()
+    depth_array = np.load(depth_root / str(depth["arrays"]["relative_path"]), allow_pickle=False)
+    composition_array = composition_root / "replacement_depth_composition.npy"
+    np.save(composition_array, depth_array, allow_pickle=False)
+    composition: dict[str, object] = {
+        "schema_version": "public_scene_replacement_depth_composition.v1",
+        "status": "co_present_replacement_depth_rasterized",
+        "task_id": "fixture_task",
+        "task_freeze_digest": "sha256:" + "1" * 64,
+        "scored_task_asset_id": "fixture_asset_a",
+        "replacement_asset_ids": ["fixture_asset_a", "fixture_asset_b"],
+        "cells": depth["cells"],
+        "arrays": {
+            "relative_path": composition_array.name,
+            "size_bytes": composition_array.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(composition_array.read_bytes()).hexdigest(),
+        },
+        "resolution_scale": 1.0,
+        "actual_usd_geometry_depth_rasterized": True,
+        "actual_composed_depth_rasterized": True,
+        "caller_supplied_coverage_mask": False,
+        "receipt_digest": "",
+    }
+    composition["receipt_digest"] = canonical_digest(
+        composition, digest_field="receipt_digest"
+    )
+    composition_path = composition_root / "composition.json"
+    composition_path.write_text(json.dumps(composition), encoding="utf-8")
+    image = np.full((48, 64, 3), 96, dtype=np.uint8)
+    black_manifest = _render_manifest(
+        tmp_path / "black",
+        background="#000000",
+        image=image,
+        scene_id="fixture",
+        inpainting_mask_input_authorized=True,
+    )
+    white_manifest = _render_manifest(
+        tmp_path / "white",
+        background="#ffffff",
+        image=image,
+        scene_id="fixture",
+        inpainting_mask_input_authorized=True,
+    )
+
+    receipt = materialize_source_layer_replacement_coverage_audit(
+        black_render_manifest_path=black_manifest,
+        white_render_manifest_path=white_manifest,
+        depth_sweep_manifest_path=composition_path,
+        output_root=tmp_path / "audit",
+        coverage_margin_pixels=1,
+    )
+
+    assert receipt["task_id"] == "fixture_task"
+    assert receipt["task_freeze_digest"] == composition["task_freeze_digest"]
+    assert receipt["co_present_replacement_asset_ids"] == [
+        "fixture_asset_a",
+        "fixture_asset_b",
+    ]
+    assert receipt["replacement_depth_composition"]["receipt_digest"] == composition[
+        "receipt_digest"
+    ]
+
+
 def test_full_resolution_review_only_residual_masks_cannot_authorize_inpainting(
     tmp_path: Path,
 ) -> None:

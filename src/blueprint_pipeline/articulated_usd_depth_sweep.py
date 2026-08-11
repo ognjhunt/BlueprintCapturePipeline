@@ -28,6 +28,7 @@ from .public_scene_gaussian_excision_heldout import (
 DEPTH_SWEEP_SCHEMA = "adp009b_articulated_usd_depth_sweep.v1"
 GENERAL_DEPTH_SWEEP_REQUEST_SCHEMA = "replacement_usd_depth_sweep_request.v2"
 GENERAL_DEPTH_SWEEP_SCHEMA = "replacement_usd_depth_sweep.v2"
+COMPOSED_DEPTH_SWEEP_SCHEMA = "public_scene_replacement_depth_composition.v1"
 SOURCE_COVERAGE_AUDIT_SCHEMA = "adp009b_source_layer_replacement_coverage_audit.v1"
 REFERENCE_HYBRID_REVIEW_SCHEMA = "adp009b_reference_hybrid_review.v1"
 TARGET_CORE_COVERAGE_AUDIT_SCHEMA = "articulated_excision_coverage.v1"
@@ -82,10 +83,15 @@ def _read_object(path: Path, code: str) -> dict[str, Any]:
 
 def _qualified_depth_manifest(value: Mapping[str, Any]) -> bool:
     schema = value.get("schema_version")
+    digest_field = "receipt_digest" if schema == COMPOSED_DEPTH_SWEEP_SCHEMA else "manifest_digest"
     return bool(
-        schema in {DEPTH_SWEEP_SCHEMA, GENERAL_DEPTH_SWEEP_SCHEMA}
-        and value.get("manifest_digest")
-        == canonical_digest(dict(value), digest_field="manifest_digest")
+        schema in {
+            DEPTH_SWEEP_SCHEMA,
+            GENERAL_DEPTH_SWEEP_SCHEMA,
+            COMPOSED_DEPTH_SWEEP_SCHEMA,
+        }
+        and value.get(digest_field)
+        == canonical_digest(dict(value), digest_field=digest_field)
         and value.get("caller_supplied_coverage_mask") is False
         and (
             (
@@ -96,8 +102,21 @@ def _qualified_depth_manifest(value: Mapping[str, Any]) -> bool:
                 schema == GENERAL_DEPTH_SWEEP_SCHEMA
                 and value.get("actual_usd_geometry_depth_rasterized") is True
             )
+            or (
+                schema == COMPOSED_DEPTH_SWEEP_SCHEMA
+                and value.get("actual_usd_geometry_depth_rasterized") is True
+                and value.get("actual_composed_depth_rasterized") is True
+            )
         )
     )
+
+
+def _depth_manifest_identity(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the schema-correct digest binding for a depth source."""
+
+    if value.get("schema_version") == COMPOSED_DEPTH_SWEEP_SCHEMA:
+        return {"receipt_digest": value["receipt_digest"]}
+    return {"manifest_digest": value["manifest_digest"]}
 
 
 def _cell_state_fields(cell: Mapping[str, Any]) -> dict[str, Any]:
@@ -1751,7 +1770,7 @@ def materialize_source_layer_replacement_coverage_audit(
         },
         "depth_sweep_manifest": {
             "sha256": _sha256(depth_path),
-            "manifest_digest": depth_manifest["manifest_digest"],
+            **_depth_manifest_identity(depth_manifest),
         },
         "camera_ids": camera_ids,
         "significant_alpha_threshold": float(significant_alpha_threshold),
@@ -1792,6 +1811,23 @@ def materialize_source_layer_replacement_coverage_audit(
         "coverage_qualified": False,
         "claim_ceiling": "measured_source_layer_visibility_against_actual_usd_depth",
     }
+    if depth_manifest.get("schema_version") == COMPOSED_DEPTH_SWEEP_SCHEMA:
+        manifest.update(
+            {
+                "task_id": depth_manifest["task_id"],
+                "task_freeze_digest": depth_manifest["task_freeze_digest"],
+                "replacement_asset_id": depth_manifest["scored_task_asset_id"],
+                "co_present_replacement_asset_ids": depth_manifest[
+                    "replacement_asset_ids"
+                ],
+                "replacement_depth_composition": {
+                    "path": str(depth_path),
+                    "size_bytes": depth_path.stat().st_size,
+                    "sha256": _sha256(depth_path),
+                    "receipt_digest": depth_manifest["receipt_digest"],
+                },
+            }
+        )
     manifest["manifest_digest"] = canonical_digest(
         manifest, digest_field="manifest_digest"
     )
@@ -1853,7 +1889,10 @@ def materialize_deleted_source_layer_replacement_coverage_qualification(
     if (
         not isinstance(bound_depth, Mapping)
         or bound_depth.get("sha256") != _sha256(depth_path)
-        or bound_depth.get("manifest_digest") != depth.get("manifest_digest")
+        or any(
+            bound_depth.get(key) != value
+            for key, value in _depth_manifest_identity(depth).items()
+        )
     ):
         raise ArticulatedUsdDepthSweepError(
             ["source_layer_coverage_qualification_depth_join_mismatch"]
@@ -1984,7 +2023,7 @@ def materialize_deleted_source_layer_replacement_coverage_qualification(
         "depth_sweep_manifest": {
             "path": str(depth_path),
             "sha256": _sha256(depth_path),
-            "manifest_digest": depth["manifest_digest"],
+            **_depth_manifest_identity(depth),
             "replacement_usd": depth.get("replacement_usd"),
         },
         "camera_ids": expected_camera_ids,
@@ -2242,7 +2281,7 @@ def materialize_target_core_replacement_coverage_audit(
         "coverage_qualified": coverage_qualified,
         "depth_sweep_manifest": {
             "sha256": _sha256(depth_path),
-            "manifest_digest": depth_manifest["manifest_digest"],
+            **_depth_manifest_identity(depth_manifest),
             "replacement_usd": depth_manifest.get("replacement_usd"),
         },
         "camera_ids": camera_ids,
@@ -2479,7 +2518,7 @@ def materialize_reference_hybrid_review(
         },
         "depth_sweep": {
             "sha256": _sha256(depth_manifest_path),
-            "manifest_digest": depth_manifest.get("manifest_digest"),
+            **_depth_manifest_identity(depth_manifest),
             "replacement_usd": depth_manifest.get("replacement_usd"),
         },
         "replacement_rgb": list(color),
