@@ -57,7 +57,9 @@ teardown, spend, and API-confirmed provider-zero.
 A Newton `--execute` request is rejected before provider mutation unless it has
 a current explicit Newton canary admission plus the canonical paid-resource
 admission, spend cap, TTL, watchdog, artifact storage, teardown, and
-provider-zero gates. This change does not authorize or launch a paid canary.
+provider-zero gates. The Vast transport arms a separate name- and instance-bound
+hard-TTL watchdog before object staging or compute allocation; failure to arm
+blocks both. This change does not authorize or launch a paid canary.
 
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.
