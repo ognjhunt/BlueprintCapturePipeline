@@ -482,6 +482,7 @@ class IsaacEpisodeAdapter:
         except ContactEnvelopeError as exc:
             raise IsaacEpisodeAdapterError([str(exc)]) from exc
         self._partner_contact_sensors = dict(partner_contact_sensors or {})
+        self._partner_filter_shapes: dict[str, int] = {}
         self._control_step_index = 0
         if (
             not math.isfinite(self._gripper_closed_width_m)
@@ -619,6 +620,7 @@ class IsaacEpisodeAdapter:
         if not self._partner_contact_sensors:
             return None
         result: dict[str, list[float]] = {}
+        filter_shapes: dict[str, int] = {}
         for name, sensor in sorted(self._partner_contact_sensors.items()):
             body_names = list(sensor.body_names)
             if len(body_names) != 1:
@@ -633,7 +635,11 @@ class IsaacEpisodeAdapter:
                 continue
             values = self._to_torch(matrix)
             if values.ndim != 4 or values.shape[0] < 1 or values.shape[2] < 1:
+                # Zero filter shapes means the filter expression matched nothing,
+                # which is indistinguishable from "the partner is not touching"
+                # unless it is reported.  Withhold rather than read as zero.
                 continue
+            resolved_filter_shapes = int(values.shape[2])
             # Sum across filter partners so widening the filter later cannot
             # silently drop force from the attribution.
             vector = [float(values[0, 0, :, axis].sum()) for axis in range(3)]
@@ -642,7 +648,11 @@ class IsaacEpisodeAdapter:
                     [f"isaac_episode_contact_partner_force_invalid:{name}"]
                 )
             result[str(body_names[0])] = vector
-        return result or None
+            filter_shapes[str(body_names[0])] = resolved_filter_shapes
+        if not result:
+            return None
+        self._partner_filter_shapes = filter_shapes
+        return result
 
     def _body_incoming_joint_wrenches(self) -> dict[str, list[float]]:
         raw = getattr(self._robot.data, "body_incoming_joint_wrench_b", None)
@@ -689,6 +699,10 @@ class IsaacEpisodeAdapter:
             ],
             "body_contact_force_world_n": self._body_contact_forces_world_n(),
             "body_contact_partner_force_world_n": self._body_contact_partner_forces_n(),
+            # A resolved filter-shape count of at least one is what makes a zero
+            # partner force evidence that the partner is not in contact, rather
+            # than evidence that the filter expression never matched anything.
+            "body_contact_partner_filter_shapes": dict(self._partner_filter_shapes),
             "body_incoming_joint_wrench_body": self._body_incoming_joint_wrenches(),
             "contact_envelope": dict(self._contact_envelope),
         }

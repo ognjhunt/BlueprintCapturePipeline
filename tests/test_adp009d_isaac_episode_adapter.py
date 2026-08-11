@@ -941,3 +941,40 @@ def test_partner_sensor_covering_two_bodies_is_rejected_not_trusted() -> None:
 
     adapter._partner_contact_sensors = {}
     assert adapter._body_contact_partner_forces_n() is None
+
+
+def test_resolved_filter_shape_count_is_reported_with_partner_forces() -> None:
+    """A zero partner force means "not touching" only if the filter actually
+    resolved. Without the resolved shape count, a filter expression that matched
+    nothing is indistinguishable from a partner that is not in contact."""
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
+
+    class _Data:
+        def __init__(self, matrix):
+            self.force_matrix_w = matrix
+
+    class _Sensor:
+        def __init__(self, body, matrix):
+            self.body_names = [body]
+            self.data = _Data(matrix)
+
+    adapter = IsaacEpisodeAdapter.__new__(IsaacEpisodeAdapter)
+    adapter._to_torch = lambda value: value
+    adapter._partner_filter_shapes = {}
+
+    # One env, one body, one resolved filter shape, zero force.
+    import numpy as np
+
+    resolved = np.zeros((1, 1, 1, 3))
+    adapter._partner_contact_sensors = {"s": _Sensor("left_inner_finger", resolved)}
+    forces = adapter._body_contact_partner_forces_n()
+    assert forces == {"left_inner_finger": [0.0, 0.0, 0.0]}
+    assert adapter._partner_filter_shapes == {"left_inner_finger": 1}
+
+    # Zero filter shapes: the expression matched nothing, so withhold rather
+    # than report a zero that would read as "the partner is not touching".
+    unmatched = np.zeros((1, 1, 0, 3))
+    adapter._partner_filter_shapes = {}
+    adapter._partner_contact_sensors = {"s": _Sensor("left_inner_finger", unmatched)}
+    assert adapter._body_contact_partner_forces_n() is None
+    assert adapter._partner_filter_shapes == {}
