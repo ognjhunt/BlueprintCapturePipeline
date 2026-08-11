@@ -277,6 +277,67 @@ def test_main_starts_and_closes_one_app_and_retains_payload_only(
         "simulator_qualified": False,
         "physical_material_equivalence": False,
     }
+    assert receipt["exception_diagnostic"] is None
+
+
+def test_main_retains_bounded_exception_diagnostic_without_claim_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    events: list[str] = []
+
+    class Application:
+        def __init__(self, _configuration):
+            events.append("start")
+
+        def close(self):
+            events.append("close")
+
+    package = types.ModuleType("isaacsim")
+    module = types.ModuleType("isaacsim.simulation_app")
+    module.SimulationApp = Application
+    monkeypatch.setitem(sys.modules, "isaacsim", package)
+    monkeypatch.setitem(sys.modules, "isaacsim.simulation_app", module)
+
+    def fail(**_kwargs):
+        raise TypeError("native call rejected stage keyword")
+
+    monkeypatch.setattr(worker, "run_native_deformable_asset_preparation_worker", fail)
+    terminal = tmp_path / "terminal.json"
+    exit_code = worker.main(
+        [
+            "--plan",
+            str(tmp_path / "plan.json"),
+            "--expected-plan-digest",
+            "sha256:" + "a" * 64,
+            "--package-root",
+            str(tmp_path / "package"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--isaaclab-source-root",
+            str(tmp_path / "source"),
+            "--terminal-output",
+            str(terminal),
+        ]
+    )
+
+    assert exit_code == 1
+    assert events == ["start", "close"]
+    receipt = json.loads(terminal.read_text())
+    assert receipt["status"] == "blocked"
+    assert receipt["errors"] == ["TypeError"]
+    diagnostic = receipt["exception_diagnostic"]
+    assert diagnostic["type"] == "TypeError"
+    assert diagnostic["message"] == "native call rejected stage keyword"
+    assert diagnostic["message_truncated"] is False
+    assert diagnostic["traceback_truncated"] is False
+    assert "native call rejected stage keyword" in diagnostic["traceback_tail"]
+    assert receipt["claim_boundary"] == {
+        "worker_payload_only": True,
+        "trusted_execution_authority": False,
+        "native_cook_qualified": False,
+        "simulator_qualified": False,
+        "physical_material_equivalence": False,
+    }
 
 
 def test_main_writes_terminal_before_simulation_app_close_can_exit(

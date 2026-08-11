@@ -192,7 +192,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 
 ## Cost and provider lifecycle
 
-- Deformable Vast/GPU spend retained so far: `$0.386178`.
+- Deformable Vast/GPU spend retained so far: `$0.412122`.
 - Palatial/Newton local attempt 001: retained free null, 120 requested CPU
   frames, hard timeout at 300 seconds, `$0.00`, scratch removed, receipt file
   SHA-256 `a159530bca09fccf07cd42dc0e6a097e876621e47861e323ad6f779f647164fb`.
@@ -246,13 +246,28 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   as a pre-execution provider null: Vast instance `47449847` never produced a
   container, GPU sanity, Isaac smoke, or worker output. Cost: `$0.042127`; no
   policy query. Machine `95005` is excluded by the retained avoidlist.
-- Current provider state is not zero as of the latest live refresh in this
-  thread: Vast instance `47450341`, label `blueprint-adp009d-1786438041`, belongs
-  to a separate ADP009D canary lane and blocks the next deformable launch under
-  the shared single-flight guard. The deformable lane owns no live provider
-  instance and provider-zero was confirmed after v16 and v17 teardown.
-- Deformable Vast/GPU attempts with allocation: `7`; prelaunch-blocked attempts:
-  `2`; uploads: `5`; automatic retries: `0`.
+- Deformable native canary v18 was a dry-run-only bundle prepared while provider
+  nonzero blocked launch. It was superseded before execution by commit
+  `0fa6271a4`, which preserves Vast machine avoidlist updates learned inside a
+  job-local run.
+- Deformable native canary v19 and v20 were local dry-run command-shape nulls:
+  v19 pre-created the bundle output directory, and v20 passed a bundle-receipt
+  path as an input during dry-run. Both performed `0` provider mutations and
+  spent `$0.00`.
+- Deformable native canary v21 launched Vast instance `47451893` on machine
+  `41847` (`RTX 3090`, `$0.215556/hr`), reached Isaac Sim 6.0.1, Warp CUDA
+  startup, bundle download, verified runtime-source provisioning, and worker
+  execution. The worker then returned a terminal blocker `TypeError` before
+  materializing a native asset result. Cost: `$0.025944`; no policy query;
+  teardown, object-store cleanup, final validation, and provider-zero all passed.
+  The reusable evidence gap was that the worker terminal retained only exception
+  type, not message or traceback; the diagnostic fix is implemented for v22.
+- Current provider state is zero as of the latest live refresh after v21 teardown:
+  `vastai show instances --raw` returned `[]`. The deformable lane owns no live
+  provider instance.
+- Deformable Vast/GPU attempts with allocation: `8`; prelaunch-blocked attempts:
+  `2`; local dry-run command-shape nulls: `2`; uploads: `6`; automatic retries:
+  `0`.
 
 ## Claim table
 
@@ -260,7 +275,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Current operational blocker is provider nonzero from a separate ADP009D lane. Native cook/contact qualification remains unproven; the latest deformable native attempts exposed and fixed stale Blueprint contract/input-package gaps before cook |
+| Blocked/abstained | Historical rights abstention superseded. Provider-zero is currently true after v21 teardown. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, now fixed locally for the next canary |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -285,10 +300,11 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `c367d004e` | Match deformable authoring runtime signature |
 | `86ae08f53` | Recognize deformable asset Vast results |
 | `4716f49ce` | Drop stale deformable cook symbol requirement |
+| `0fa6271a4` | Preserve Vast machine avoidlist updates |
 
 Each listed commit was pushed to
 `origin/codex/adp-deformable-scene-e2e-20260810`. Commit `4716f49ce` is the
-current published implementation head for the next native canary.
+current published implementation head before the worker-diagnostic follow-up commit.
 
 ## Completion and single next action
 
@@ -300,9 +316,9 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to wait for provider-zero, then run exactly one
-fresh no-retry Vast native canary from the current `4716f49ce` implementation and
-the regenerated source package v2 in a new evidence root. If the canary qualifies
+The single next action is to commit the worker exception-diagnostic repair, then
+run exactly one fresh no-retry Vast native canary from the current implementation
+and regenerated source package v2 in a new evidence root. If the canary qualifies
 cook/load/reset/contact/cameras, the run continues to zero-action and scripted
 controls before any learned policy. If the native backend cannot provide
 qualified rigid--deformable contact attribution, the run seals a typed native

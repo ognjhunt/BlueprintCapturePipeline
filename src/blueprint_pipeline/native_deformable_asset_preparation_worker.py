@@ -16,6 +16,7 @@ import inspect
 import json
 import os
 import stat
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from types import ModuleType
@@ -45,6 +46,8 @@ _ISAAC_SYMBOLS = (
     DEFORMABLE_PHYSICS_BINDING_API,
 )
 _ALL_SYMBOLS = NATIVE_REQUIRED_API_SYMBOLS
+_MAX_EXCEPTION_MESSAGE_CHARS = 2048
+_MAX_EXCEPTION_TRACEBACK_CHARS = 8192
 
 
 class NativeDeformableAssetPreparationWorkerError(ValueError):
@@ -291,6 +294,21 @@ def _write_terminal(path: Path, value: Mapping[str, Any]) -> None:
         ) from exc
 
 
+def _exception_diagnostic(exc: BaseException) -> dict[str, Any]:
+    """Return bounded exception diagnostics for paid native failures."""
+
+    message = str(exc)
+    formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    return {
+        "schema_version": "native_deformable_worker_exception_diagnostic.v1",
+        "type": type(exc).__name__,
+        "message": message[:_MAX_EXCEPTION_MESSAGE_CHARS],
+        "message_truncated": len(message) > _MAX_EXCEPTION_MESSAGE_CHARS,
+        "traceback_tail": formatted[-_MAX_EXCEPTION_TRACEBACK_CHARS:],
+        "traceback_truncated": len(formatted) > _MAX_EXCEPTION_TRACEBACK_CHARS,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan", required=True)
@@ -308,6 +326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "expected_plan_digest": args.expected_plan_digest,
         "worker_result_digest": None,
         "errors": [],
+        "exception_diagnostic": None,
         "claim_boundary": {
             "worker_payload_only": True,
             "trusted_execution_authority": False,
@@ -334,6 +353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - terminal boundary retains a typed null
         errors = getattr(exc, "errors", None)
         terminal["errors"] = list(errors) if errors else [type(exc).__name__]
+        terminal["exception_diagnostic"] = _exception_diagnostic(exc)
     finally:
         if application is not None:
             _write_terminal(terminal_path, terminal)
