@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from inspect import signature
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -224,12 +225,14 @@ def test_request_validator_rejects_unbound_reference_images(
     )
 
 
-def test_request_sealer_rejects_manual_reference_images_without_manifest(
+def test_request_sealer_exposes_no_manual_reference_image_override() -> None:
+    assert "reference_image_paths" not in signature(seal_cad_agent_request).parameters
+
+
+def test_request_sealer_requires_manifest_reference_binding(
     tmp_path: Path,
 ) -> None:
     brief = _write(tmp_path / "brief.md", "CAD brief")
-    image = _write(tmp_path / "reference.png", b"png-reference")
-
     with pytest.raises(SimReadyCadAgentContractError) as excinfo:
         seal_cad_agent_request(
             request_id="manual-reference-rejected",
@@ -240,7 +243,6 @@ def test_request_sealer_rejects_manual_reference_images_without_manifest(
             backend=_backend(tmp_path, "earthtojake_text_to_cad"),
             task_freeze_path=FREEZE_A,
             cad_brief_path=brief,
-            reference_image_paths=[image],
             metric_envelope_mm=[600.112, 604.104004, 847.564026],
         )
     assert "cad_agent_request_reference_manifest_required" in excinfo.value.codes
@@ -270,21 +272,26 @@ def test_request_sealer_rejects_off_manifest_reference_override(
         encoding="utf-8",
     )
 
+    request = seal_cad_agent_request(
+        request_id="off-manifest-reference-rejected",
+        scene_id="fixture_scene",
+        task_id="task_a_washer_door_open",
+        asset_id="840920_simready_washer_candidate",
+        replacement_slot=1,
+        backend=_backend(tmp_path, "earthtojake_text_to_cad"),
+        task_freeze_path=FREEZE_A,
+        cad_brief_path=brief,
+        metric_envelope_mm=[600.112, 604.104004, 847.564026],
+        reference_manifest_path=reference_manifest_path,
+    )
+    request["inputs"]["reference_images"] = [file_record(off_manifest)]
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
     with pytest.raises(SimReadyCadAgentContractError) as excinfo:
-        seal_cad_agent_request(
-            request_id="off-manifest-reference-rejected",
-            scene_id="fixture_scene",
-            task_id="task_a_washer_door_open",
-            asset_id="840920_simready_washer_candidate",
-            replacement_slot=1,
-            backend=_backend(tmp_path, "earthtojake_text_to_cad"),
-            task_freeze_path=FREEZE_A,
-            cad_brief_path=brief,
-            reference_image_paths=[off_manifest],
-            metric_envelope_mm=[600.112, 604.104004, 847.564026],
-            reference_manifest_path=reference_manifest_path,
-        )
-    assert "cad_agent_request_manual_reference_images_forbidden" in excinfo.value.codes
+        validate_cad_agent_request(request)
+    assert "cad_agent_request_reference_manifest_join_invalid" in excinfo.value.codes
 
 
 def test_reference_manifest_accepts_five_replacement_objects(tmp_path: Path) -> None:

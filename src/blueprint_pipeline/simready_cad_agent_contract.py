@@ -738,7 +738,6 @@ def seal_cad_agent_request(
     cad_brief_path: str | Path,
     metric_envelope_mm: Sequence[float],
     reference_manifest_path: str | Path | None = None,
-    reference_image_paths: Sequence[str | Path] | None = None,
     envelope_tolerance_mm: float = 0.25,
 ) -> dict[str, Any]:
     task_freeze_record = file_record(task_freeze_path)
@@ -756,10 +755,6 @@ def seal_cad_agent_request(
             ["cad_agent_request_reference_manifest_required"]
         )
     else:
-        if reference_image_paths is not None:
-            raise SimReadyCadAgentContractError(
-                ["cad_agent_request_manual_reference_images_forbidden"]
-            )
         reference_manifest_record = file_record(reference_manifest_path)
         manifest = _read_json_record(
             reference_manifest_record, "cad_agent_request_reference_manifest_invalid"
