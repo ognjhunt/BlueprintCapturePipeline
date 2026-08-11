@@ -1,6 +1,6 @@
 # Deformable Scene End-to-End Protocol
 
-Status: outcome-blind pre-insertion freeze
+Status: outcome-blind freeze; terminal completion path B on external upload rights
 
 Program: `arm-decision-proof-v1`
 
@@ -47,10 +47,27 @@ required generalized-harness commits:
   packaging; and
 - `b7d57b1c3d7c2c4d5c4d851a398d0c52e7b394c2`, robot-scoped Arena imports.
 
-The current published branch head is
-`04e6b6d6d0724a1e66840bc83fe44884b8663771`. User-owned primary and sibling
+The published implementation head before the terminal evidence seal is
+`1b04968b5c121032f33d6f07e0bda168022b39ca`. User-owned primary and sibling
 worktrees remain untouched; only exact reviewed files from this isolated
 worktree may be staged.
+
+## Terminal prelaunch outcome
+
+All locally decidable reusable construction gaps were exhausted through static
+asset intake, clean pinned-PhysX preparation, native stage/readback contracts,
+entity-keyed controls/cameras/policy sampling, trusted canary packaging, and
+portable evidence indexing. The supplied Lightwheel job output may be inspected
+locally, but no exact output license or service terms authorize copying it to
+Vast. The frozen terminal blocker is
+`lightwheel_simreadygen_job_output_rights_receipt_missing`.
+
+No paid launch, provider upload, native control, or learned-policy episode is
+permitted under this freeze. This is completion path B at an external-input
+boundary, not a native capability result and not a policy failure. A later
+rights resolution starts a new admission: fresh provider-zero, a single
+zero-retry blank-stage canary, and backend re-freeze only after cook/contact,
+reset, cameras, and both policy adapters pass.
 
 ## Outcome-blind scene selection
 

@@ -30,6 +30,11 @@ INDEX_FILENAME = "episode_evidence_index.v1.json"
 HTML_FILENAME = "OPEN_ME_episode_evidence_index.html"
 REQUIRED_CAMERA_IDS = ("external", "wrist", "overview")
 ABSTENTION_SCHEMA_VERSION = "adp_task_evaluation_run_abstention.v1"
+PRELAUNCH_ABSTENTION_SCHEMA_VERSION = "task_evaluation_prelaunch_external_input_abstention.v1"
+ABSTENTION_SCHEMA_VERSIONS = {
+    ABSTENTION_SCHEMA_VERSION,
+    PRELAUNCH_ABSTENTION_SCHEMA_VERSION,
+}
 ALLOWED_RECEIPT_SCHEMAS = {
     "adp009d_control_episode.v2",
     "adp_task_control_episode.v1",
@@ -69,9 +74,7 @@ def _inside(root: Path, relative_path: str, *, role: str) -> Path:
     return candidate
 
 
-def _verify_artifact(
-    root: Path, artifact: Mapping[str, Any], *, role: str
-) -> dict[str, Any]:
+def _verify_artifact(root: Path, artifact: Mapping[str, Any], *, role: str) -> dict[str, Any]:
     relative_path = str(artifact.get("relative_path") or "")
     if not relative_path:
         raise EpisodeEvidenceIndexError(f"episode_artifact_path_missing:{role}")
@@ -97,9 +100,7 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
         raise EpisodeEvidenceIndexError(
             f"episode_receipt_schema_not_admitted:{schema_version or 'missing'}"
         )
-    if receipt.get("receipt_digest") != canonical_digest(
-        receipt, digest_field="receipt_digest"
-    ):
+    if receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest"):
         raise EpisodeEvidenceIndexError("episode_receipt_digest_mismatch")
 
     episode_id = str(receipt.get("episode_id") or "")
@@ -119,8 +120,7 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
     manifests = [
         row
         for row in artifacts
-        if isinstance(row, Mapping)
-        and row.get("role") == "multicamera_observation_frame_manifest"
+        if isinstance(row, Mapping) and row.get("role") == "multicamera_observation_frame_manifest"
     ]
     if len(manifests) != 1:
         raise EpisodeEvidenceIndexError(f"episode_frame_manifest_not_unique:{episode_id}")
@@ -139,9 +139,7 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
             raise EpisodeEvidenceIndexError(
                 f"episode_camera_video_not_unique:{episode_id}:{camera_id}"
             )
-        videos[camera_id] = _verify_artifact(
-            root, matches[0], role=f"{episode_id}:{camera_id}"
-        )
+        videos[camera_id] = _verify_artifact(root, matches[0], role=f"{episode_id}:{camera_id}")
 
     score = receipt.get("score")
     if not isinstance(score, Mapping) or not score.get("status"):
@@ -165,9 +163,7 @@ def _episode_row(root: Path, receipt_path: Path) -> dict[str, Any]:
             "outcome": score.get("outcome"),
             "task_succeeded": score.get("task_succeeded"),
             "outcome_rank": score.get("outcome_rank"),
-            "grader_authority": receipt.get(
-                "grader_authority", "deterministic_simulator_state"
-            ),
+            "grader_authority": receipt.get("grader_authority", "deterministic_simulator_state"),
         },
         "frame_manifest": manifest,
         "videos": videos,
@@ -180,9 +176,7 @@ def _render_html(payload: Mapping[str, Any]) -> str:
         links = []
         for camera_id in REQUIRED_CAMERA_IDS:
             path = episode["videos"][camera_id]["relative_path"]
-            links.append(
-                f'<a href="{quote(path)}">{html.escape(camera_id)}</a>'
-            )
+            links.append(f'<a href="{quote(path)}">{html.escape(camera_id)}</a>')
         manifest_path = episode["frame_manifest"]["relative_path"]
         receipt_path = episode["receipt"]["relative_path"]
         score = episode["score"]
@@ -203,14 +197,14 @@ def _render_html(payload: Mapping[str, Any]) -> str:
     abstention_html = (
         "<h2>Typed abstention</h2>"
         f"<p>No control or learned-policy episode exists. Smallest missing "
-        f"capability: <code>{html.escape(str(abstention['smallest_missing_capability']))}</code>. "
+        f"capability: <code>{html.escape(str(abstention.get('smallest_missing_capability') or abstention.get('smallest_missing_external_input')))}</code>. "
         "This is an evidence gap, not a policy result.</p>"
         if isinstance(abstention, Mapping)
         else ""
     )
     return "".join(
         [
-            "<!doctype html>\n<html><head><meta charset=\"utf-8\">",
+            '<!doctype html>\n<html><head><meta charset="utf-8">',
             "<title>ADP episode evidence index</title>",
             "<style>body{font-family:-apple-system,sans-serif;margin:2rem}",
             "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:.5rem}",
@@ -255,23 +249,22 @@ def materialize_episode_evidence_index(
     abstention = None
     if abstention_receipt is not None:
         try:
-            abstention = json.loads(
-                json.dumps(dict(abstention_receipt), allow_nan=False)
-            )
+            abstention = json.loads(json.dumps(dict(abstention_receipt), allow_nan=False))
         except (TypeError, ValueError) as exc:
-            raise EpisodeEvidenceIndexError(
-                "episode_index_abstention_invalid"
-            ) from exc
+            raise EpisodeEvidenceIndexError("episode_index_abstention_invalid") from exc
         if (
-            abstention.get("schema_version") != ABSTENTION_SCHEMA_VERSION
+            abstention.get("schema_version") not in ABSTENTION_SCHEMA_VERSIONS
             or abstention.get("status") != "typed_evidence_backed_abstention"
             or abstention.get("receipt_digest")
             != canonical_digest(abstention, digest_field="receipt_digest")
-            or not str(abstention.get("smallest_missing_capability") or "")
+            or not str(
+                abstention.get("smallest_missing_capability")
+                or abstention.get("smallest_missing_external_input")
+                or ""
+            )
             or abstention.get("controls_executed") is not False
             or abstention.get("learned_candidate_episodes_executed") is not False
-            or abstention.get("candidate_ids")
-            != ["pi05_droid", "groot_n17_droid"]
+            or abstention.get("candidate_ids") != ["pi05_droid", "groot_n17_droid"]
         ):
             raise EpisodeEvidenceIndexError("episode_index_abstention_invalid")
         if episode_receipt_paths:
@@ -309,9 +302,7 @@ def materialize_episode_evidence_index(
     html_path = root / HTML_FILENAME
     if json_path.exists() or json_path.is_symlink() or html_path.exists() or html_path.is_symlink():
         raise EpisodeEvidenceIndexError("episode_evidence_index_overwrite_forbidden")
-    json_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     html_path.write_text(_render_html(payload), encoding="utf-8")
     return {
         "index": payload,
@@ -336,6 +327,8 @@ def materialize_episode_evidence_index(
 __all__ = [
     "EpisodeEvidenceIndexError",
     "ABSTENTION_SCHEMA_VERSION",
+    "ABSTENTION_SCHEMA_VERSIONS",
+    "PRELAUNCH_ABSTENTION_SCHEMA_VERSION",
     "HTML_FILENAME",
     "INDEX_FILENAME",
     "INDEX_SCHEMA_VERSION",

@@ -43,17 +43,11 @@ def _receipt(
         f"media/{episode_id}/multicamera_frame_manifest.json",
         b'{"schema_version":"fixture"}\n',
     )
-    artifacts.append(
-        {"role": "multicamera_observation_frame_manifest", **manifest}
-    )
+    artifacts.append({"role": "multicamera_observation_frame_manifest", **manifest})
     videos = {}
     for camera_id in ("external", "wrist", "overview"):
-        artifact = _artifact(
-            root, f"media/{episode_id}/{camera_id}.mp4", camera_id.encode("utf-8")
-        )
-        artifacts.append(
-            {"role": "camera_review_video", "camera_id": camera_id, **artifact}
-        )
+        artifact = _artifact(root, f"media/{episode_id}/{camera_id}.mp4", camera_id.encode("utf-8"))
+        artifacts.append({"role": "camera_review_video", "camera_id": camera_id, **artifact})
         videos[camera_id] = {
             **artifact,
             "camera_id": camera_id,
@@ -81,9 +75,7 @@ def _receipt(
         "media_artifacts": artifacts,
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     path = root / "receipts" / f"{episode_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -166,9 +158,7 @@ def test_portable_episode_index_rejects_overview_as_policy_input(tmp_path: Path)
     )
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["visual_evidence"]["review_only_camera_ids"] = []
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
 
     with pytest.raises(
@@ -198,9 +188,7 @@ def test_portable_index_represents_terminal_abstention_without_fake_episodes(
         "learned_candidate_episodes_executed": False,
         "receipt_digest": "",
     }
-    abstention["receipt_digest"] = canonical_digest(
-        abstention, digest_field="receipt_digest"
-    )
+    abstention["receipt_digest"] = canonical_digest(abstention, digest_field="receipt_digest")
 
     result = materialize_episode_evidence_index(
         run_root=tmp_path,
@@ -218,3 +206,31 @@ def test_portable_index_represents_terminal_abstention_without_fake_episodes(
     html = (tmp_path / HTML_FILENAME).read_text(encoding="utf-8")
     assert "No control or learned-policy episode exists" in html
     assert "joint_agent_local_ovrtx_renderer_not_ready" in html
+
+
+def test_portable_index_accepts_prelaunch_external_input_abstention(
+    tmp_path: Path,
+) -> None:
+    abstention = {
+        "schema_version": "task_evaluation_prelaunch_external_input_abstention.v1",
+        "status": "typed_evidence_backed_abstention",
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_external_input": "generated_output_rights_missing",
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "receipt_digest": "",
+    }
+    abstention["receipt_digest"] = canonical_digest(abstention, digest_field="receipt_digest")
+    result = materialize_episode_evidence_index(
+        run_root=tmp_path,
+        episode_receipt_paths=[],
+        run_identity={
+            "scene_id": "840873",
+            "task_id": "840873_towel_to_basket_v1",
+            "scenario_suite_digest": "sha256:frozen-suite",
+        },
+        abstention_receipt=abstention,
+    )
+    assert result["index"]["episode_count"] == 0
+    html = (tmp_path / HTML_FILENAME).read_text(encoding="utf-8")
+    assert "generated_output_rights_missing" in html

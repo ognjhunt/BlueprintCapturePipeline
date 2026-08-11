@@ -1,6 +1,6 @@
 # Deformable Scene End-to-End Results
 
-Status: construction in progress; no learned-policy outcome exists
+Status: **terminal completion path B — typed, evidence-backed prelaunch abstention**
 
 Run: `adp-deformable-scene-e2e-v1`
 
@@ -12,20 +12,28 @@ This is a development-only public-dataset simulator rehearsal. It does not
 qualify partner capture, physical towel fidelity, real Franka performance,
 deployment readiness, or customer value.
 
-## Current gate
+## Terminal gate
 
-The run has not reached a policy evaluation. Exact static intake of the
-user-supplied Lightwheel-derived rolled-towel USD and a paid-free pinned-PhysX
-preparation plan/package are complete. Independent review is now closing the
-last local preparation boundaries: live cooked-topology/schema/configuration
-readback, confined stage composition/output assets, bounded descriptor-relative
-output snapshots, and parent-directory race protection. None requires GPU
-execution or changes the frozen towel geometry.
+The run did not reach a policy evaluation. Exact static intake of the
+user-supplied Lightwheel-derived rolled-towel USD, a clean metric-scaled
+pinned-PhysX preparation package, hardened native stage adapter, worker
+contract, camera/control/policy seams, and fail-closed canary package are
+complete and published. The terminal receipt is
+[`840873_task_evaluation_prelaunch_abstention.v1.json`](deformable_scene/840873_task_evaluation_prelaunch_abstention.v1.json),
+digest `sha256:0b5e9013bf5aed09086da4a09dde0d55be275a2c3a710efed0dcc6ed405fa889`.
+
+The smallest genuinely missing external input is
+`lightwheel_simreadygen_job_output_rights_receipt_missing`. The supplied job
+archive contains no output license, and no official SimReadyGen service terms
+were found that authorize third-party Vast copying, internal/commercial
+simulation, derived-evidence redistribution, or define retention/training use.
+Vast requires the uploader to possess all necessary permissions. Therefore no
+towel byte was uploaded and no deformable GPU attempt was launched.
 
 The frozen Isaac Lab/Arena backend can load and read volumetric deformable
 state, but its currently implemented evaluation seam does not yet expose
 qualified rigid--deformable contact-pair attribution and normal force. The
-blank-stage canary must test that native capability against the prepared towel;
+blank-stage canary must later test that native capability against the prepared towel;
 if unavailable it will retain the typed blocker
 `native_rigid_deformable_contact_attribution_unavailable`. That would be a
 native capability abstention, not a learned-policy failure. Backend re-freeze
@@ -151,7 +159,12 @@ Implemented and covered by hermetic regressions:
   grasp pair/force, ordered post-contact displacement, later containment and
   release, action/inference/frame joins, and video-to-lossless-frame replay;
 - paired canonical/held-out composed placement receipts; and
-- one-shot static deformable capability preflight and packaging contracts.
+- one-shot static deformable capability preflight and packaging contracts;
+- external-asset inspection, clean pinned-PhysX preparation, live stage
+  readback, and a canary package that can never mint paid authority or accept
+  worker-authored provider-zero; and
+- a task-neutral prelaunch external-input abstention contract plus portable
+  zero-episode evidence index.
 
 The original rigid fixture, articulated refrigerator fixture, and synthetic
 deformable-plus-receptacle fixture remain compatibility fixtures. No
@@ -183,41 +196,46 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 - Separate Pan-Chera/Luna CAD-agent attempt: retained paid null, exactly one API
   call, no retry, `$0.010374`, no CAD artifact.
 - No deformable-owned Vast instance has been launched.
-- A read-only Vast API inventory at `2026-08-11T02:29:18Z` returned `[]`;
-  provider zero was observed and no canonical launch-lock holder was present.
-  This is a status checkpoint, not the future canary admission receipt. The run
-  will re-query immediately before launch and require a fresh provider-zero
-  receipt after final teardown.
+- A terminal read-only Vast API inventory at
+  `2026-08-11T03:23:22.683869+00:00` returned `[]`; provider-zero receipt digest
+  `sha256:945ee4dfa8684c18695d925cb027a93030efbc776ebcb117e9624bf66ae24be8`.
+- Deformable Vast/GPU attempts: `0`; deformable Vast/GPU cost: `$0.00`; uploads:
+  `0`; automatic retries: `0`.
 
 ## Claim table
 
 | Claim class | Current result |
 | --- | --- |
-| Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, evidence, and preflight code exist with hermetic fixtures |
-| Simulator-qualified | Static towel geometry only; neither the inserted towel nor engineered basket is yet natively qualified in the frozen scene |
-| Blocked/abstained | Direct source-USD deformable loading is incompatible; local stage/preparation verifiers are being hardened; exact generated-output upload rights remain unresolved; native rigid--deformable pair/force attribution is a pending canary gate |
+| Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
+| Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
+| Blocked/abstained | Terminal prelaunch abstention on exact generated-output/cloud-copying rights; native cook/contact/reset/camera/adapter gates were correctly not attempted |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
-## Remaining bounded work
+## Landed commits and publication
 
-1. Finish the live native-stage and descriptor-relative preparation-verifier
-   repairs, then land and publish them after the mandatory focused/sentinel gate
-   and independent red-team reviews are green.
-2. Bind exact generated-output rights and upload authority to the already
-   materialized static-ingest replay and clean pinned-PhysX source package.
-3. Materialize and seal the production scene/task/rights/entity/camera/scenario
-   pre-insertion receipts with the supplied candidate bound to the sole movable
-   deformable slot.
-4. After provider zero and upload-rights admission, run one Vast blank-stage
-   cook/load and Franka grasp/release canary with a cap, TTL, watchdog, no retry,
-   and teardown. The canary owns contact/reset/camera/adapter gates and cannot be
-   promoted from worker-authored JSON.
-5. Re-freeze the backend only if loading, contact, reset, cameras, and both
-   adapters pass; otherwise seal the typed native-capability abstention.
-6. If re-frozen, insert the qualified towel, run zero action then scripted
-   positive in both cells, and only then evaluate both frozen policies.
+| Commit | Published change |
+| --- | --- |
+| `04e6b6d6d` | Entity-keyed deformable Arena routing and typed native contact-capability stop |
+| `84aec4fc8` | Causal, trusted deformable episode evidence |
+| `0a52612cb` | Supplied external towel intake and clean pinned-PhysX preparation/runtime boundaries |
+| `9637fb5f4` | Deformable policy, camera, and controls routing |
+| `ceb895694` | Vast inventory binding to opaque paid admission grants |
+| `1b04968b5` | Fail-closed deformable native-canary evidence package |
 
-The single next action is to finish, independently verify, and publish the
-native stage/preparation gates. The next external action is the one authorized
-blank-stage towel/backend canary after generated-output rights are bound and a
-fresh launch admission again proves provider zero.
+Each listed commit was pushed to
+`origin/codex/adp-deformable-scene-e2e-20260810`. The final abstention/evidence
+commit is the published successor of `1b04968b5`.
+
+## Completion and single next action
+
+Completion path B is satisfied at the smallest external-input boundary. The
+portable Finder index is
+[`OPEN_ME_episode_evidence_index.html`](evidence/deformable_scene_840873/OPEN_ME_episode_evidence_index.html).
+It contains zero episode rows because no control or learned-policy episode was
+authorized; that absence is evidence, not a policy null.
+
+The single next action is to obtain an immutable job-specific SimReadyGen terms
+receipt or written Lightwheel authorization covering internal/commercial
+simulation, third-party cloud copying, derived evidence redistribution,
+attribution, retention/deletion, and model-training use. Only then may a fresh
+provider-zero admission authorize one no-retry Vast blank-stage canary.
