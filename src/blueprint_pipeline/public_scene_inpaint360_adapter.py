@@ -136,7 +136,6 @@ def _tracked_repository_file(repo: Path, path: Path, code: str) -> str:
 def _external_input_receipt_binding(
     *,
     receipt_path: Path,
-    input_root: Path,
     repo: Path,
     data: Path,
     binding_path: str | Path | None,
@@ -212,6 +211,64 @@ def _external_input_receipt_binding(
         "task_id": binding.get("task_id"),
         "task_freeze_digest": binding.get("task_freeze_digest"),
     }
+
+
+def _resolve_input_artifact(
+    record: Mapping[str, Any],
+    *,
+    input_root: Path,
+    data_root: Path,
+    code: str,
+) -> tuple[Path, str]:
+    """Resolve one receipt-bound artifact without assuming a single root.
+
+    A task packet commonly owns cameras, source frames, and masks, while a
+    shared scene conversion owns the standard splat.  The receipt's digest is
+    authoritative; a record may optionally declare ``input_root`` or
+    ``data_root``.  Legacy records without that field remain valid only when
+    exactly one permitted root contains the exact recorded bytes.
+    """
+
+    if not isinstance(record, Mapping):
+        raise Inpaint360AdapterError([f"{code}_record_invalid"])
+    relative_path = record.get("relative_path")
+    expected_size = record.get("size_bytes")
+    expected_sha256 = record.get("sha256")
+    if (
+        not isinstance(relative_path, str)
+        or not relative_path
+        or isinstance(expected_size, bool)
+        or not isinstance(expected_size, int)
+        or expected_size < 0
+        or not isinstance(expected_sha256, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_sha256)
+    ):
+        raise Inpaint360AdapterError([f"{code}_record_invalid"])
+    declared_root = record.get("root")
+    roots = {
+        "input_root": input_root,
+        "data_root": data_root,
+    }
+    if declared_root is not None:
+        if declared_root not in roots:
+            raise Inpaint360AdapterError([f"{code}_root_invalid"])
+        candidates = [(str(declared_root), roots[str(declared_root)])]
+    else:
+        candidates = list(roots.items())
+    matching: list[tuple[Path, str]] = []
+    for root_name, root in candidates:
+        candidate = _under(root / relative_path, root, f"{code}_path_invalid")
+        if (
+            candidate.is_file()
+            and candidate.stat().st_size == expected_size
+            and _sha256(candidate) == expected_sha256
+        ):
+            matching.append((candidate, root_name))
+    if not matching:
+        raise Inpaint360AdapterError([f"{code}_bytes_changed"])
+    if len(matching) != 1:
+        raise Inpaint360AdapterError([f"{code}_root_ambiguous"])
+    return matching[0]
 
 
 def _rotmat_to_qvec(rotation: np.ndarray) -> np.ndarray:
@@ -365,7 +422,6 @@ def materialize_inpaint360_adapter(
         )
         input_receipt_binding = _external_input_receipt_binding(
             receipt_path=receipt_path,
-            input_root=input_dir,
             repo=repo,
             data=data,
             binding_path=input_receipt_binding_path,
@@ -403,14 +459,34 @@ def materialize_inpaint360_adapter(
     derived = receipt.get("derived_artifacts") or {}
     cameras_record = derived.get("cameras") or {}
     standard_record = derived.get("standard_splat") or {}
-    cameras_path = _under(input_dir / str(cameras_record.get("relative_path")), input_dir, "inpaint360_camera_path_invalid")
-    standard_splat = _under(input_dir / str(standard_record.get("relative_path")), input_dir, "inpaint360_splat_path_invalid")
-    for path, record, code in (
-        (cameras_path, cameras_record, "inpaint360_camera_bytes_changed"),
-        (standard_splat, standard_record, "inpaint360_splat_bytes_changed"),
-    ):
-        if not path.is_file() or path.stat().st_size != record.get("size_bytes") or _sha256(path) != record.get("sha256"):
-            raise Inpaint360AdapterError([code])
+    cameras_path, cameras_root = _resolve_input_artifact(
+        cameras_record,
+        input_root=input_dir,
+        data_root=data,
+        code="inpaint360_camera",
+    )
+    standard_splat, standard_splat_root = _resolve_input_artifact(
+        standard_record,
+        input_root=input_dir,
+        data_root=data,
+        code="inpaint360_splat",
+    )
+    input_artifact_bindings: list[dict[str, Any]] = [
+        {
+            "role": "cameras",
+            "root": cameras_root,
+            "relative_path": cameras_record["relative_path"],
+            "sha256": cameras_record["sha256"],
+            "size_bytes": cameras_record["size_bytes"],
+        },
+        {
+            "role": "standard_splat",
+            "root": standard_splat_root,
+            "relative_path": standard_record["relative_path"],
+            "sha256": standard_record["sha256"],
+            "size_bytes": standard_record["size_bytes"],
+        },
+    ]
     cameras = json.loads(cameras_path.read_text(encoding="utf-8"))
     if not isinstance(cameras, list) or len(cameras) != 8:
         raise Inpaint360AdapterError(["inpaint360_camera_count_invalid"])
@@ -432,14 +508,38 @@ def materialize_inpaint360_adapter(
         camera_id = str(camera["camera_id"])
         if camera_id not in image_records or camera_id not in mask_records:
             raise Inpaint360AdapterError(["inpaint360_camera_artifact_join_missing"])
-        source_image = input_dir / image_records[camera_id]["relative_path"]
-        source_mask = input_dir / mask_records[camera_id]["relative_path"]
-        for path, record, code in (
-            (source_image, image_records[camera_id], "inpaint360_image_bytes_changed"),
-            (source_mask, mask_records[camera_id], "inpaint360_mask_bytes_changed"),
-        ):
-            if not path.is_file() or path.stat().st_size != record["size_bytes"] or _sha256(path) != record["sha256"]:
-                raise Inpaint360AdapterError([f"{code}:{camera_id}"])
+        source_image, source_image_root = _resolve_input_artifact(
+            image_records[camera_id],
+            input_root=input_dir,
+            data_root=data,
+            code="inpaint360_image",
+        )
+        source_mask, source_mask_root = _resolve_input_artifact(
+            mask_records[camera_id],
+            input_root=input_dir,
+            data_root=data,
+            code="inpaint360_mask",
+        )
+        input_artifact_bindings.extend(
+            [
+                {
+                    "role": "image",
+                    "camera_id": camera_id,
+                    "root": source_image_root,
+                    "relative_path": image_records[camera_id]["relative_path"],
+                    "sha256": image_records[camera_id]["sha256"],
+                    "size_bytes": image_records[camera_id]["size_bytes"],
+                },
+                {
+                    "role": "mask",
+                    "camera_id": camera_id,
+                    "root": source_mask_root,
+                    "relative_path": mask_records[camera_id]["relative_path"],
+                    "sha256": mask_records[camera_id]["sha256"],
+                    "size_bytes": mask_records[camera_id]["size_bytes"],
+                },
+            ]
+        )
         image_out = source_dir / "images" / f"{camera_id}.png"
         _copy_exact(source_image, image_out)
         mask_pixels = np.asarray(Image.open(source_mask).convert("L"))
@@ -583,6 +683,7 @@ def materialize_inpaint360_adapter(
                 f"config/object_removal/blueprint/{method_config_id}.json_to_"
                 f"config/object_inpaint/blueprint/{method_config_id}.json"
             ),
+            "input_artifact_bindings": input_artifact_bindings,
             "upstream_cfg_args_materialized": True,
             "staged_artifacts": artifacts,
         },

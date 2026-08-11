@@ -163,6 +163,27 @@ def _external_receipt_binding(paths: dict[str, Path], *, task_id: str) -> Path:
     return path
 
 
+def _rebase_standard_splat_to_data_root(paths: dict[str, Path]) -> Path:
+    """Model the shared-scene conversion used by a task-local input packet."""
+
+    source = paths["input"] / "scene_standard.ply"
+    target = paths["data"] / "shared_scene" / "scene_standard.ply"
+    target.parent.mkdir(parents=True)
+    source.replace(target)
+    receipt = json.loads(paths["receipt"].read_text())
+    receipt["derived_artifacts"]["standard_splat"] = _record(
+        target, paths["data"]
+    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    paths["receipt"].write_text(json.dumps(receipt))
+    subprocess.run(["git", "-C", str(paths["repo"]), "add", "input_receipt.json"], check=True)
+    subprocess.run(
+        ["git", "-C", str(paths["repo"]), "commit", "-qm", "rebase shared splat"],
+        check=True,
+    )
+    return target
+
+
 def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -267,6 +288,37 @@ def test_adapter_rejects_mutated_frame(tmp_path: Path, monkeypatch: pytest.Monke
             repo_root=paths["repo"], data_root=paths["data"], method_root=paths["method"],
             output_root=paths["data"] / "adapter",
         )
+
+
+def test_adapter_resolves_shared_standard_splat_from_data_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path)
+    shared_splat = _rebase_standard_splat_to_data_root(paths)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.INPAINT360_COMMIT",
+        subprocess.run(
+            ["git", "-C", str(paths["method"]), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
+    receipt = materialize_inpaint360_adapter(
+        input_receipt_path=paths["receipt"],
+        input_root=paths["input"],
+        repo_root=paths["repo"],
+        data_root=paths["data"],
+        method_root=paths["method"],
+        output_root=paths["data"] / "adapter",
+    )
+    bindings = receipt["adapter"]["input_artifact_bindings"]
+    standard = next(row for row in bindings if row["role"] == "standard_splat")
+    assert standard["root"] == "data_root"
+    assert standard["relative_path"] == shared_splat.relative_to(paths["data"]).as_posix()
+    assert {row["root"] for row in bindings if row["role"] in {"image", "mask"}} == {
+        "input_root"
+    }
 
 
 def test_adapter_binds_task_specific_config_name(
