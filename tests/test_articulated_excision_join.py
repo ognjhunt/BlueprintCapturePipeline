@@ -27,6 +27,8 @@ CAMERA_IDS = [
     "right_translate",
 ]
 DOOR_STATES = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0]
+GENERAL_CAMERA_IDS = ["external", "wrist", "overview", "left_detail"]
+STATE_CELL_IDS = ["reset", "mid_sweep", "success_bound"]
 T_WORLD_ASSET = [
     [1.0, 0.0, 0.0, 1.9742142],
     [0.0, 1.0, 0.0, 1.4792181],
@@ -107,6 +109,40 @@ def _door_matrix(*, classes: list[str], blocked: bool = False) -> dict:
     )
 
 
+def _state_matrix(*, blocked: bool = False) -> dict:
+    return _digest(
+        {
+            "schema_version": "articulated_state_cell_clearance.v1",
+            "status": (
+                "blocked_by_state_cell_contact"
+                if blocked
+                else "state_cell_matrix_clearance_candidate_only"
+            ),
+            "state_cell_ids": list(STATE_CELL_IDS),
+            "state_rows": [
+                {
+                    "cell_id": cell_id,
+                    "clear": not blocked,
+                    "joint_positions": {"washer_hinge": 0.1 * index},
+                }
+                for index, cell_id in enumerate(STATE_CELL_IDS)
+            ],
+            "required_obstacle_classes_bound": [
+                "replacement_body",
+                "franka_base",
+                "support_surface",
+            ],
+            "static_obstacle_classes_bound": [
+                "replacement_body",
+                "franka_base",
+                "support_surface",
+            ],
+            "receipt_digest": "",
+        },
+        "receipt_digest",
+    )
+
+
 def _coverage(
     *,
     residual: int = 0,
@@ -131,6 +167,44 @@ def _coverage(
             "schema_version": COVERAGE_SCHEMA_VERSION,
             "camera_ids": list(CAMERA_IDS),
             "door_state_angles_degrees": list(DOOR_STATES),
+            "cells": cells,
+            "maximum_residual_connected_component_pixels": 4,
+            "maximum_protected_changed_pixels": 0,
+            "coverage_qualified": True,
+            "caller_asserted_coverage_accepted": False,
+            "rendered_pixels_changed_by_audit": False,
+            "receipt_digest": "",
+        },
+        "receipt_digest",
+    )
+
+
+def _state_coverage(
+    *,
+    residual: int = 0,
+    protected_changed: int = 0,
+    contained: bool = True,
+) -> dict:
+    cells = []
+    for camera_id in GENERAL_CAMERA_IDS:
+        for cell_id in STATE_CELL_IDS:
+            cells.append(
+                {
+                    "camera_id": camera_id,
+                    "state_cell_id": cell_id,
+                    "joint_positions": {"washer_hinge": 0.1},
+                    "T_world_task_scoring": [list(row) for row in T_WORLD_ASSET],
+                    "residual_significant_pixels": residual,
+                    "residual_max_connected_component_pixels": residual,
+                    "residual_inside_target_core_mask": contained,
+                    "outside_mask_changed_pixels": protected_changed,
+                }
+            )
+    return _digest(
+        {
+            "schema_version": COVERAGE_SCHEMA_VERSION,
+            "camera_ids": list(GENERAL_CAMERA_IDS),
+            "state_cell_ids": list(STATE_CELL_IDS),
             "cells": cells,
             "maximum_residual_connected_component_pixels": 4,
             "maximum_protected_changed_pixels": 0,
@@ -208,6 +282,45 @@ def test_join_permits_only_narrow_contained_seam_repair() -> None:
 
     assert decision["status"] == "join_admitted"
     assert decision["inpainting_policy"] == "narrow_mask_contained_seam_repair_only"
+
+
+def test_join_accepts_general_state_cell_coverage_without_door_or_camera_counts() -> None:
+    decision = _join(
+        door_state_receipt=_state_matrix(),
+        coverage_receipt=_state_coverage(),
+        expected_camera_ids=list(GENERAL_CAMERA_IDS),
+        expected_door_state_angles_degrees=(),
+        expected_state_cell_ids=list(STATE_CELL_IDS),
+    )
+
+    assert decision["status"] == "join_admitted"
+    assert decision["inpainting_policy"] == "inpainting_not_required"
+    assert decision["bindings"]["state_binding"] == {
+        "kind": "state_cell_ids",
+        "state_cell_ids": STATE_CELL_IDS,
+    }
+    assert decision["bindings"]["state_clearance_receipt_digest"] == _state_matrix()[
+        "receipt_digest"
+    ]
+
+
+def test_join_blocks_incomplete_general_state_cell_coverage_grid() -> None:
+    coverage = _state_coverage()
+    coverage["cells"] = coverage["cells"][:-1]
+    coverage["receipt_digest"] = canonical_digest(
+        coverage, digest_field="receipt_digest"
+    )
+
+    with pytest.raises(ArticulatedExcisionJoinError) as excinfo:
+        _join(
+            door_state_receipt=_state_matrix(),
+            coverage_receipt=coverage,
+            expected_camera_ids=list(GENERAL_CAMERA_IDS),
+            expected_door_state_angles_degrees=(),
+            expected_state_cell_ids=list(STATE_CELL_IDS),
+        )
+
+    assert any("coverage_grid_incomplete" in error for error in excinfo.value.errors)
 
 
 def test_join_accepts_coverage_conditioned_cutout_without_claiming_ownership() -> None:

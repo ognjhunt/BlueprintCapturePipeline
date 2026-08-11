@@ -1,15 +1,14 @@
 """Digest-bound join seam between Gaussian excision and the articulated USD.
 
 The excision branch owns source-Gaussian ownership (owned/ambiguous/retained
-index sets plus the held-out residual audit). This branch owns the articulated
-SimReady replacement. Neither may re-derive the other's result: the join
-consumes both sides' immutable receipts, verifies the shared world transform,
-requires the twelve-door-state clearance matrix with every static obstacle
-class bound, checks the eight-camera x twelve-door-state coverage grid, and
-resolves the final inpainting policy:
+index sets plus the held-out residual audit). This branch owns the replacement
+USD and its bounded motion/pose coverage. Neither may re-derive the other's
+result: the join consumes both sides' immutable receipts, verifies the shared
+world transform, binds a task-specific clearance matrix, checks the complete
+camera x state-cell coverage grid, and resolves the final inpainting policy:
 
 - ``inpainting_not_required`` when the posed replacement hides every measured
-  residual at every camera/door-state cell;
+  residual at every camera/state cell;
 - ``narrow_mask_contained_seam_repair_only`` when residuals exist but every
   one stays inside the target-core mask and below the frozen component
   threshold;
@@ -40,9 +39,10 @@ COVERAGE_SCHEMA_VERSION = "articulated_excision_coverage.v1"
 COVERAGE_CONDITIONED_CUTOUT_SCHEMA_VERSION = (
     "adp009b_coverage_conditioned_cutout.v1"
 )
-_REQUIRED_DOOR_CLASSES = frozenset(
+_REQUIRED_LEGACY_DOOR_CLASSES = frozenset(
     {"replacement_body", "replacement_lower_door", "franka_base"}
 )
+GENERIC_STATE_CLEARANCE_SCHEMA_VERSION = "articulated_state_cell_clearance.v1"
 
 
 class ArticulatedExcisionJoinError(ValueError):
@@ -110,6 +110,15 @@ def _matrix4(value: Any) -> list[list[float]] | None:
             values.append(number)
         rows.append(values)
     return rows
+
+
+def _state_ids(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    result = [str(item) for item in value]
+    if any(not item for item in result) or len(result) != len(set(result)):
+        return []
+    return result
 
 
 def compile_coverage_conditioned_cutout_receipt(
@@ -318,7 +327,8 @@ def compile_articulated_excision_join(
     coverage_receipt: Mapping[str, Any],
     expected_T_world_asset: Sequence[Sequence[float]],
     expected_camera_ids: Sequence[str],
-    expected_door_state_angles_degrees: Sequence[float],
+    expected_door_state_angles_degrees: Sequence[float] = (),
+    expected_state_cell_ids: Sequence[str] = (),
     transform_tolerance_m: float = 1e-6,
     suppression_mode: str = "deletion",
     suppression_receipts: Sequence[Mapping[str, Any]] = (),
@@ -335,7 +345,11 @@ def compile_articulated_excision_join(
     if expected_transform is None:
         errors.append("articulated_excision_join_expected_transform_invalid")
     expected_cameras = [str(item) for item in expected_camera_ids]
-    if len(expected_cameras) != 8 or len(set(expected_cameras)) != 8:
+    if (
+        not expected_cameras
+        or any(not camera for camera in expected_cameras)
+        or len(set(expected_cameras)) != len(expected_cameras)
+    ):
         errors.append("articulated_excision_join_expected_camera_ids_invalid")
     expected_states: list[float] = []
     for value in expected_door_state_angles_degrees:
@@ -349,12 +363,16 @@ def compile_articulated_excision_join(
             break
         expected_states.append(float(value))
     if expected_states and (
-        len(expected_states) != 12
-        or any(
+        any(
             late <= early for early, late in zip(expected_states, expected_states[1:])
         )
     ):
         errors.append("articulated_excision_join_expected_door_states_invalid")
+    expected_state_ids = _state_ids(expected_state_cell_ids)
+    if expected_state_cell_ids and not expected_state_ids:
+        errors.append("articulated_excision_join_expected_state_cell_ids_invalid")
+    if bool(expected_states) == bool(expected_state_ids):
+        errors.append("articulated_excision_join_expected_state_binding_invalid")
 
     ownership = _canonical(
         ownership_receipt,
@@ -461,32 +479,75 @@ def compile_articulated_excision_join(
                     f"deviation={deviation!r}"
                 )
 
-    door_states = _canonical(
+    state_clearance = _canonical(
         door_state_receipt,
         digest_field="receipt_digest",
         error="articulated_excision_join_door_state_receipt_digest_invalid",
         errors=errors,
     )
-    if door_states:
-        if door_states.get("schema_version") != "articulated_door_state_clearance.v1":
-            errors.append("articulated_excision_join_door_state_schema_invalid")
-        bound = set(
-            str(item) for item in door_states.get("static_obstacle_classes_bound") or []
-        )
-        if not _REQUIRED_DOOR_CLASSES.issubset(bound):
-            errors.append(
-                "articulated_excision_join_door_state_obstacle_classes_incomplete:"
-                f"missing={sorted(_REQUIRED_DOOR_CLASSES - bound)}"
+    if state_clearance:
+        schema_version = state_clearance.get("schema_version")
+        if schema_version == "articulated_door_state_clearance.v1":
+            bound = set(
+                str(item)
+                for item in state_clearance.get("static_obstacle_classes_bound") or []
             )
-        if door_states.get("status") != "door_state_matrix_clearance_candidate_only":
-            errors.append("articulated_excision_join_door_state_matrix_not_clear")
-        observed_angles = [
-            row.get("angle_degrees")
-            for row in door_states.get("door_state_rows") or []
-            if isinstance(row, Mapping)
-        ]
-        if expected_states and observed_angles != expected_states:
-            errors.append("articulated_excision_join_door_state_angles_mismatch")
+            if not _REQUIRED_LEGACY_DOOR_CLASSES.issubset(bound):
+                errors.append(
+                    "articulated_excision_join_door_state_obstacle_classes_incomplete:"
+                    f"missing={sorted(_REQUIRED_LEGACY_DOOR_CLASSES - bound)}"
+                )
+            if (
+                state_clearance.get("status")
+                != "door_state_matrix_clearance_candidate_only"
+            ):
+                errors.append("articulated_excision_join_door_state_matrix_not_clear")
+            observed_angles = [
+                row.get("angle_degrees")
+                for row in state_clearance.get("door_state_rows") or []
+                if isinstance(row, Mapping)
+            ]
+            if expected_states and observed_angles != expected_states:
+                errors.append("articulated_excision_join_door_state_angles_mismatch")
+            if expected_state_ids:
+                errors.append(
+                    "articulated_excision_join_door_state_schema_for_state_cells"
+                )
+        elif schema_version == GENERIC_STATE_CLEARANCE_SCHEMA_VERSION:
+            bound = set(
+                str(item)
+                for item in state_clearance.get("static_obstacle_classes_bound") or []
+            )
+            required = set(
+                str(item)
+                for item in state_clearance.get("required_obstacle_classes_bound")
+                or []
+            )
+            rows = [
+                row
+                for row in state_clearance.get("state_rows") or []
+                if isinstance(row, Mapping)
+            ]
+            observed_state_ids = [str(row.get("cell_id") or "") for row in rows]
+            if not required or not required.issubset(bound):
+                errors.append(
+                    "articulated_excision_join_state_obstacle_classes_incomplete"
+                )
+            if (
+                state_clearance.get("status")
+                != "state_cell_matrix_clearance_candidate_only"
+            ):
+                errors.append("articulated_excision_join_state_matrix_not_clear")
+            if expected_state_ids and observed_state_ids != expected_state_ids:
+                errors.append("articulated_excision_join_state_cell_ids_mismatch")
+            if expected_states:
+                errors.append(
+                    "articulated_excision_join_state_schema_for_door_angles"
+                )
+            if any(row.get("clear") is not True for row in rows):
+                errors.append("articulated_excision_join_state_matrix_not_clear")
+        else:
+            errors.append("articulated_excision_join_door_state_schema_invalid")
 
     coverage = _canonical(
         coverage_receipt,
@@ -499,15 +560,22 @@ def compile_articulated_excision_join(
         if coverage.get("schema_version") != COVERAGE_SCHEMA_VERSION:
             errors.append("articulated_excision_join_coverage_schema_invalid")
         cameras = [str(item) for item in coverage.get("camera_ids") or []]
-        states = [
-            float(item)
-            for item in coverage.get("door_state_angles_degrees") or []
-            if isinstance(item, (int, float)) and not isinstance(item, bool)
-        ]
         if expected_cameras and sorted(cameras) != sorted(expected_cameras):
             errors.append("articulated_excision_join_coverage_camera_ids_mismatch")
-        if expected_states and states != expected_states:
-            errors.append("articulated_excision_join_coverage_door_states_mismatch")
+        states: list[float] = []
+        state_ids: list[str] = []
+        if expected_states:
+            states = [
+                float(item)
+                for item in coverage.get("door_state_angles_degrees") or []
+                if isinstance(item, (int, float)) and not isinstance(item, bool)
+            ]
+            if states != expected_states:
+                errors.append("articulated_excision_join_coverage_door_states_mismatch")
+        else:
+            state_ids = _state_ids(coverage.get("state_cell_ids") or [])
+            if state_ids != expected_state_ids:
+                errors.append("articulated_excision_join_coverage_state_cell_ids_mismatch")
         component_threshold = coverage.get(
             "maximum_residual_connected_component_pixels"
         )
@@ -525,22 +593,31 @@ def compile_articulated_excision_join(
         cells = [
             cell for cell in coverage.get("cells") or [] if isinstance(cell, Mapping)
         ]
-        expected_cells = {
-            (camera, angle) for camera in cameras for angle in states
-        }
+        expected_cells = (
+            {(camera, angle) for camera in cameras for angle in states}
+            if expected_states
+            else {(camera, state_id) for camera in cameras for state_id in state_ids}
+        )
         observed_cells = set()
         residual_total = 0
         for cell in cells:
             camera = str(cell.get("camera_id") or "")
-            angle = cell.get("door_state_angle_degrees")
-            if (
-                isinstance(angle, bool)
-                or not isinstance(angle, (int, float))
-                or not math.isfinite(float(angle))
-            ):
-                errors.append("articulated_excision_join_coverage_cell_invalid")
-                continue
-            observed_cells.add((camera, float(angle)))
+            if expected_states:
+                angle = cell.get("door_state_angle_degrees")
+                if (
+                    isinstance(angle, bool)
+                    or not isinstance(angle, (int, float))
+                    or not math.isfinite(float(angle))
+                ):
+                    errors.append("articulated_excision_join_coverage_cell_invalid")
+                    continue
+                state_key: float | str = float(angle)
+            else:
+                state_key = str(cell.get("state_cell_id") or "")
+                if not state_key:
+                    errors.append("articulated_excision_join_coverage_cell_invalid")
+                    continue
+            observed_cells.add((camera, state_key))
             residual = cell.get("residual_significant_pixels")
             component = cell.get("residual_max_connected_component_pixels")
             outside = cell.get("outside_mask_changed_pixels")
@@ -553,19 +630,19 @@ def compile_articulated_excision_join(
             if outside > 0:
                 errors.append(
                     "articulated_excision_join_untouched_scene_pixels_changed:"
-                    f"{camera}:{float(angle)!r}:pixels={outside}"
+                    f"{camera}:{state_key!r}:pixels={outside}"
                 )
             if residual > 0:
                 residual_total += residual
                 if cell.get("residual_inside_target_core_mask") is not True:
                     errors.append(
                         "articulated_excision_join_residual_outside_target_core_mask:"
-                        f"{camera}:{float(angle)!r}"
+                        f"{camera}:{state_key!r}"
                     )
                 if component_threshold >= 0 and component > component_threshold:
                     errors.append(
                         "articulated_excision_join_residual_component_above_threshold:"
-                        f"{camera}:{float(angle)!r}:{component}>{component_threshold}"
+                        f"{camera}:{state_key!r}:{component}>{component_threshold}"
                     )
         if expected_cells and observed_cells != expected_cells:
             errors.append(
@@ -609,7 +686,19 @@ def compile_articulated_excision_join(
             "replacement_physics_receipt_digest": replacement.get(
                 "physics_receipt_digest"
             ),
-            "door_state_receipt_digest": door_states.get("receipt_digest"),
+            "door_state_receipt_digest": state_clearance.get("receipt_digest"),
+            "state_clearance_receipt_digest": state_clearance.get("receipt_digest"),
+            "state_binding": (
+                {
+                    "kind": "door_angles",
+                    "door_state_angles_degrees": expected_states,
+                }
+                if expected_states
+                else {
+                    "kind": "state_cell_ids",
+                    "state_cell_ids": expected_state_ids,
+                }
+            ),
             "coverage_receipt_digest": coverage.get("receipt_digest"),
             "suppression_receipt_digests": suppression["digests"],
             "ownership_audit_status": str(ownership.get("status") or "unreported"),
