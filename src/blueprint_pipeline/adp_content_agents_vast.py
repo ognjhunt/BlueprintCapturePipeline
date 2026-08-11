@@ -19,6 +19,10 @@ import yaml
 from pxr import Usd, UsdGeom, UsdPhysics
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .adp_content_agents_bundle_matrix import (
+    SCHEMA_VERSION as AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA,
+    validate_agent_cad_content_agents_bundle_matrix,
+)
 from .content_agents_execution_route import (
     ContentAgentsExecutionRouteError,
     nvidia_content_agents_required,
@@ -165,13 +169,21 @@ def materialize_content_agents_execution_readiness(
     """
 
     matrix = dict(content_agents_bundle_matrix)
-    if (
+    if matrix.get("schema_version") == AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA:
+        try:
+            matrix = validate_agent_cad_content_agents_bundle_matrix(matrix)
+        except Exception as exc:
+            raise ValueError(
+                "adp_content_agents_readiness_bundle_matrix_invalid"
+            ) from exc
+    elif (
         matrix.get("schema_version")
         != "third_scene_agent_cad_content_agents_bundle_matrix.v1"
-        or matrix.get("input_variant") != "agent_cad_v1"
         or matrix.get("receipt_digest")
         != canonical_digest(matrix, digest_field="receipt_digest")
     ):
+        raise ValueError("adp_content_agents_readiness_bundle_matrix_invalid")
+    if matrix.get("input_variant") != "agent_cad_v1":
         raise ValueError("adp_content_agents_readiness_bundle_matrix_invalid")
     if matrix.get("claim_boundary") != {
         "content_agents_bundles_built": True,

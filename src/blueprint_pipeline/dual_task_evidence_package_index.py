@@ -36,6 +36,8 @@ SHARED_DIGEST_FIELDS_BY_SCHEMA = {
     "adp_portable_evidence_receipt_mirror.v1": "receipt_mirror_digest",
     "third_scene_cad_agent_visual_comparison_binding.v1": "binding_digest",
     "third_scene_agent_cad_content_agents_bundle_matrix.v1": "receipt_digest",
+    "adp_agent_cad_content_agents_bundle_matrix.v2": "receipt_digest",
+    "adp_content_agents_codex_advisory_review.v1": "receipt_digest",
     "adp_content_agents_execution_readiness.v1": "receipt_digest",
 }
 

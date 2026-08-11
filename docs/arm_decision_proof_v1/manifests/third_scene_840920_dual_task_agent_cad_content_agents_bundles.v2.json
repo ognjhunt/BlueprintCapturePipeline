@@ -1,0 +1,199 @@
+{
+  "schema_version": "adp_agent_cad_content_agents_bundle_matrix.v2",
+  "generated_at": "2026-08-11T17:25:00Z",
+  "status": "local_bundles_ready_for_paid_resource_preflight",
+  "input_variant": "agent_cad_v1",
+  "candidate_count": 4,
+  "replacement_object_capacity": {
+    "minimum": 1,
+    "maximum": 5,
+    "sealed_slots": 2
+  },
+  "items": [
+    {
+      "replacement_slot": 1,
+      "task_id": "task_a_washer_door_open",
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "cad_agent_output_receipt_digest": "sha256:5dd960e4ae4e481b4ffabac7eaeca30564f1070c43146cd593d27f045c3b2845",
+      "cad_agent_request_digest": "sha256:bb86bc5385a42dfc15a23032182eab56605c3a9da82c2de3c80f4d0a5407bf6b",
+      "cad_agent_reference_manifest_object_digest": "sha256:6de02c167b204de6850ae99e39fdcad1ba2d48be7b40a56846b68194eddb8a9c",
+      "mesh_projection_receipt_digest": "sha256:b05b312f3b37db5c33aa3e9b6ffe261a5e59f0fa175c3337e755e531e06becac",
+      "mesh_packet_digest": "sha256:c11207bf8b52d7ad2d2c41082c71b931cfce94922450158adb6819efa38d16e8",
+      "candidate_step_sha256": "sha256:d1db5a6d354923899894b45753a8b9ce8a6c41acccd053c42fcd199cf91a950a",
+      "mesh_count": 15,
+      "bundle": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v8_20260811T_codex_first_route/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:179ac49ef72255d8eb9fbf89bc8e40131c71cc005cbd3cca4ab96cb2110996bb",
+        "size_bytes": 50693737
+      },
+      "bundle_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v8_20260811T_codex_first_route/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:90e0db73fc7ad7711d7d65d894c9936f433b64b61cdaca9c0187b45c62f6d916",
+        "size_bytes": 15878
+      },
+      "content_agents_execution_route": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_codex_routes_v1/content_agents_execution_route.v1.json",
+        "sha256": "sha256:6f7e1f8f755ad91eca29ce97b75049173814b7128ece25b594fa534f219617c8",
+        "size_bytes": 2456,
+        "route_digest": "sha256:10c3540e5a579e21d708e4abef1c813a9b2f56d66bdf2684d1a375caa8255846",
+        "codex_local_capabilities": [
+          "appearance_scope_review",
+          "bundle_preflight_review",
+          "configuration_review",
+          "input_packet_review",
+          "material_group_proposal",
+          "output_receipt_review",
+          "physics_scope_review"
+        ],
+        "nvidia_content_agents_capabilities": [
+          "released_material_texture_physics_validation_pipeline"
+        ]
+      },
+      "exact_bundle_entrypoint_rehearsal_status": "passed",
+      "agent_output_is_simready_authority": false,
+      "canonical_simready_construction_unresolved": true
+    },
+    {
+      "replacement_slot": 1,
+      "task_id": "task_a_washer_door_open",
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "cad_agent_output_receipt_digest": "sha256:ce5ea65c46460da265c25c4b5bdbd57d48037e448fc05253c8557b55035c3673",
+      "cad_agent_request_digest": "sha256:ea8358971df0febe8159d18caa93c88d0d05b018d60c6711547b58e5859998ec",
+      "cad_agent_reference_manifest_object_digest": "sha256:6de02c167b204de6850ae99e39fdcad1ba2d48be7b40a56846b68194eddb8a9c",
+      "mesh_projection_receipt_digest": "sha256:7f72bca1fa48c620909fbfb45abe537209cddfc435ef6bf26686b07c707edf9b",
+      "mesh_packet_digest": "sha256:4d3977c4641149961e88c35172bf6a4d7a31ad6c33a010fd79b9304a98b7b4d4",
+      "candidate_step_sha256": "sha256:509af5523b4fa4c66c0a7304b0c33ab5fa862a7174436e6495c22974913efa74",
+      "mesh_count": 40,
+      "bundle": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v8_20260811T_codex_first_route/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:74c85720226e09e6849de8c0cf0052d67d7f8cf8ffcee897b16d47a836acec7a",
+        "size_bytes": 50730936
+      },
+      "bundle_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v8_20260811T_codex_first_route/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:2aae7d1a9e688b4f53bacfe3c7c099a0d396f76da48f3bf3fa29078524245a11",
+        "size_bytes": 17740
+      },
+      "content_agents_execution_route": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_codex_routes_v1/content_agents_execution_route.v1.json",
+        "sha256": "sha256:7b9a895de0a5c33d8278cead8c63d7da6e430515f794beda39194609fe2a3f3b",
+        "size_bytes": 2456,
+        "route_digest": "sha256:e3b3f5ed37fdb87062e6b5f9f050f6aa3be2bdbdb570aa18eba53bfbdc67be89",
+        "codex_local_capabilities": [
+          "appearance_scope_review",
+          "bundle_preflight_review",
+          "configuration_review",
+          "input_packet_review",
+          "material_group_proposal",
+          "output_receipt_review",
+          "physics_scope_review"
+        ],
+        "nvidia_content_agents_capabilities": [
+          "released_material_texture_physics_validation_pipeline"
+        ]
+      },
+      "exact_bundle_entrypoint_rehearsal_status": "passed",
+      "agent_output_is_simready_authority": false,
+      "canonical_simready_construction_unresolved": true
+    },
+    {
+      "replacement_slot": 2,
+      "task_id": "task_b_notebook_relocation",
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "cad_agent_output_receipt_digest": "sha256:abe0feb7f0e805838312ad0f1902aa4e43cff7b6ba111b764937ed47d9bdc707",
+      "cad_agent_request_digest": "sha256:fecd936d1a55ced69f9a50ee961eab68542d7b2afe0f74c85c3788c017f1b0fb",
+      "cad_agent_reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
+      "mesh_projection_receipt_digest": "sha256:36fcb32e67764c7f14c4f346d5193fb0b1db30e8cd38788d1516a9d716d0d348",
+      "mesh_packet_digest": "sha256:fbc05fc2ea99ea2535e8edc0f17689f22870178164407ecd71a7057ca3bade80",
+      "candidate_step_sha256": "sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c",
+      "mesh_count": 79,
+      "bundle": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v8_20260811T_codex_first_route/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:b6016a7dca337491848fe193b5a0825aa753b129ff0f0610c9e2da074dcc0a24",
+        "size_bytes": 50522147
+      },
+      "bundle_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v8_20260811T_codex_first_route/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:d4182fedcbe4cccbc3bde97c86753bed95cf635904a14a1953325bd78a711886",
+        "size_bytes": 18874
+      },
+      "content_agents_execution_route": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_codex_routes_v1/content_agents_execution_route.v1.json",
+        "sha256": "sha256:83284a2d49d53604f67d63592028639b059ad3e8fd60b27008ca426399fdeb10",
+        "size_bytes": 2461,
+        "route_digest": "sha256:ad3acf0091b5b13c656a1fb05801d5f7e205446740b32f7cf107883a380c0b85",
+        "codex_local_capabilities": [
+          "appearance_scope_review",
+          "bundle_preflight_review",
+          "configuration_review",
+          "input_packet_review",
+          "material_group_proposal",
+          "output_receipt_review",
+          "physics_scope_review"
+        ],
+        "nvidia_content_agents_capabilities": [
+          "released_material_texture_physics_validation_pipeline"
+        ]
+      },
+      "exact_bundle_entrypoint_rehearsal_status": "passed",
+      "agent_output_is_simready_authority": false,
+      "canonical_simready_construction_unresolved": true
+    },
+    {
+      "replacement_slot": 2,
+      "task_id": "task_b_notebook_relocation",
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "cad_agent_output_receipt_digest": "sha256:406d1e35a38555952792412b29962229cf62331e781ca9b03edfd389d9127829",
+      "cad_agent_request_digest": "sha256:3baa31fb89e399d9d3cfb3e67121aae9b494d0c3b5b771a9a033ae36f377f2f6",
+      "cad_agent_reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
+      "mesh_projection_receipt_digest": "sha256:c4aa978d8b10592c4775f54fda23acb414ac4a785845464d8462a4dd614bab84",
+      "mesh_packet_digest": "sha256:c004166eb55f3046a24bece7c8aa9066a0b42010838168dacad2dc536fd3540e",
+      "candidate_step_sha256": "sha256:fb72f8e3f23a1260a54bd0620bf994ba09bd58d37cbcfec93134c9213e33863b",
+      "mesh_count": 135,
+      "bundle": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v8_20260811T_codex_first_route/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:d3cb576ec5b967004b68c4775fd877355a90e441deb44ab07c8d979a6c7c3446",
+        "size_bytes": 50747029
+      },
+      "bundle_receipt": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v8_20260811T_codex_first_route/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:a4522e2ff8a86715afaf17d2deb408c8285aedfa101a072d1088201f5577e055",
+        "size_bytes": 22537
+      },
+      "content_agents_execution_route": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_codex_routes_v1/content_agents_execution_route.v1.json",
+        "sha256": "sha256:947f458c1a8cf3d2035dfeaf333e80afd817bb6a1333a7027b05852cc037fa85",
+        "size_bytes": 2461,
+        "route_digest": "sha256:781a5ed822431ba8b526d88d0e9e5a5974b9bc5743b0f6922e13b43d9fbbcebf",
+        "codex_local_capabilities": [
+          "appearance_scope_review",
+          "bundle_preflight_review",
+          "configuration_review",
+          "input_packet_review",
+          "material_group_proposal",
+          "output_receipt_review",
+          "physics_scope_review"
+        ],
+        "nvidia_content_agents_capabilities": [
+          "released_material_texture_physics_validation_pipeline"
+        ]
+      },
+      "exact_bundle_entrypoint_rehearsal_status": "passed",
+      "agent_output_is_simready_authority": false,
+      "canonical_simready_construction_unresolved": true
+    }
+  ],
+  "claim_boundary": {
+    "content_agents_bundles_built": true,
+    "exact_entrypoint_rehearsed": true,
+    "content_agents_executed": false,
+    "simready_qualified": false,
+    "native_simulator_import_qualified": false,
+    "physical_equivalence": false
+  },
+  "receipt_digest": "sha256:12c5a9a6dd62a2dbe5b23158cbdb67acda8aebf29fade09efa47fa4f7bb8c559"
+}

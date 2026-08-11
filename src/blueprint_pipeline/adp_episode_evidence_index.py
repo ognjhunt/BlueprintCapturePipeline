@@ -23,12 +23,20 @@ from typing import Any
 from urllib.parse import quote
 
 try:  # flat provider-bundle layout
+    from adp_content_agents_bundle_matrix import (
+        SCHEMA_VERSION as AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA,
+        validate_agent_cad_content_agents_bundle_matrix,
+    )
     from decision_evidence_contracts import canonical_digest
     from simready_cad_agent_contract import (
         SimReadyCadAgentContractError,
         validate_cad_agent_matrix,
     )
 except ModuleNotFoundError:  # repository package
+    from .adp_content_agents_bundle_matrix import (
+        SCHEMA_VERSION as AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA,
+        validate_agent_cad_content_agents_bundle_matrix,
+    )
     from .decision_evidence_contracts import canonical_digest
     from .simready_cad_agent_contract import (
         SimReadyCadAgentContractError,
@@ -470,13 +478,25 @@ def agent_cad_content_agents_supporting_artifacts(
         ) from exc
 
     bundle_matrix = dict(content_agents_bundle_matrix)
-    if (
+    if bundle_matrix.get("schema_version") == AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA:
+        try:
+            bundle_matrix = validate_agent_cad_content_agents_bundle_matrix(
+                bundle_matrix
+            )
+        except Exception as exc:
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_content_agents_matrix_invalid"
+            ) from exc
+    elif (
         bundle_matrix.get("schema_version")
         != "third_scene_agent_cad_content_agents_bundle_matrix.v1"
-        or bundle_matrix.get("input_variant") != "agent_cad_v1"
         or bundle_matrix.get("receipt_digest")
         != canonical_digest(bundle_matrix, digest_field="receipt_digest")
     ):
+        raise EpisodeEvidenceIndexError(
+            "agent_cad_supporting_content_agents_matrix_invalid"
+        )
+    if bundle_matrix.get("input_variant") != "agent_cad_v1":
         raise EpisodeEvidenceIndexError(
             "agent_cad_supporting_content_agents_matrix_invalid"
         )

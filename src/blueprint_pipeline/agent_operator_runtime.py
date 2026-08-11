@@ -36,6 +36,13 @@ class OperatorRunConfig:
     cwd: str | None = None
     timeout_seconds: int = 120
     codex_bin: str = "codex"
+    # Keep the default system CLI path for existing callers, while allowing a
+    # digest-pinned, isolated CLI wrapper (for example ``npx ...@<version>``)
+    # when a host ships an older Codex binary than the requested model needs.
+    # This is a tokenized argv prefix, never a shell command string.
+    codex_command_prefix: tuple[str, ...] = ()
+    codex_ephemeral: bool = False
+    codex_ignore_user_config: bool = False
 
 
 def env_truthy(name: str) -> bool:
@@ -238,9 +245,19 @@ def run_codex_sdk_operator(config: OperatorRunConfig) -> Dict[str, Any]:
 def run_codex_cli_operator(config: OperatorRunConfig) -> Dict[str, Any]:
     if config.executor is not None:
         return normalize_operator_output(config.executor(config.prompt, config.plan_context))
-    path = codex_cli_path(config.codex_bin)
-    if not path:
-        raise RuntimeError("missing_codex_cli")
+    prefix = tuple(string(item) for item in config.codex_command_prefix)
+    if prefix:
+        if any(not item for item in prefix):
+            raise RuntimeError("missing_codex_cli")
+        path = codex_cli_path(prefix[0])
+        if not path:
+            raise RuntimeError("missing_codex_cli")
+        command_prefix = [path, *prefix[1:]]
+    else:
+        path = codex_cli_path(config.codex_bin)
+        if not path:
+            raise RuntimeError("missing_codex_cli")
+        command_prefix = [path]
     sandbox = config.sandbox or "read-only"
     if sandbox not in {"read-only", "workspace-write"}:
         sandbox = "read-only"
@@ -248,7 +265,7 @@ def run_codex_cli_operator(config: OperatorRunConfig) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="blueprint-codex-cli-") as tmp_dir:
         output_path = Path(tmp_dir) / "codex-last-message.txt"
         command = [
-            path,
+            *command_prefix,
             "exec",
             "--skip-git-repo-check",
             "--sandbox",
@@ -258,6 +275,10 @@ def run_codex_cli_operator(config: OperatorRunConfig) -> Dict[str, Any]:
             "--cd",
             str(cwd),
         ]
+        if config.codex_ephemeral:
+            command.append("--ephemeral")
+        if config.codex_ignore_user_config:
+            command.append("--ignore-user-config")
         if config.model:
             command.extend(["--model", config.model])
         if config.reasoning_effort:

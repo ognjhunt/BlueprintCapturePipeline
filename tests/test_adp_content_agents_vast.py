@@ -13,6 +13,10 @@ import pytest
 import yaml
 
 from blueprint_pipeline import adp_content_agents_vast as content_agents
+from blueprint_pipeline import adp_content_agents_bundle_matrix as content_matrix
+from blueprint_pipeline import (
+    adp_content_agents_codex_advisory_review as codex_advisory,
+)
 from blueprint_pipeline import adp_content_agents_bundle_preflight as bundle_preflight
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.common import write_json
@@ -905,6 +909,127 @@ def _agent_cad_content_bundle_matrix(
     }
     matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
     return matrix
+
+
+def test_agent_cad_bundle_matrix_derives_one_to_five_slot_rows_with_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    legacy_matrix = _agent_cad_content_bundle_matrix(
+        tmp_path=tmp_path,
+        source=source,
+        replacement_slots=2,
+    )
+    receipt_paths = [
+        Path(str(item["bundle_receipt"]["path"]))
+        for item in legacy_matrix["items"]
+    ]
+
+    matrix = content_matrix.materialize_agent_cad_content_agents_bundle_matrix(
+        bundle_receipt_paths=receipt_paths,
+        output_path=tmp_path / "matrix-v2.json",
+        generated_at="fixed",
+    )
+
+    assert matrix["schema_version"] == content_matrix.SCHEMA_VERSION
+    assert matrix["replacement_object_capacity"] == {
+        "minimum": 1,
+        "maximum": 5,
+        "sealed_slots": 2,
+    }
+    assert matrix["candidate_count"] == 4
+    assert all(
+        row["content_agents_execution_route"]["codex_local_capabilities"]
+        == ["input_packet_review"]
+        for row in matrix["items"]
+    )
+    assert content_matrix.validate_agent_cad_content_agents_bundle_matrix(matrix) == matrix
+
+    with pytest.raises(
+        content_matrix.AgentCadContentAgentsBundleMatrixError,
+        match="adp_content_agents_bundle_matrix_duplicate_candidate",
+    ):
+        content_matrix.materialize_agent_cad_content_agents_bundle_matrix(
+            bundle_receipt_paths=[receipt_paths[0], receipt_paths[0]],
+            output_path=tmp_path / "duplicate.json",
+            generated_at="fixed",
+        )
+
+
+def test_codex_advisory_review_is_metadata_only_and_cannot_upgrade_claims(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    legacy_matrix = _agent_cad_content_bundle_matrix(
+        tmp_path=tmp_path,
+        source=source,
+    )
+    matrix = content_matrix.materialize_agent_cad_content_agents_bundle_matrix(
+        bundle_receipt_paths=[
+            Path(str(item["bundle_receipt"]["path"]))
+            for item in legacy_matrix["items"]
+        ],
+        output_path=tmp_path / "matrix-v2.json",
+        generated_at="fixed",
+    )
+    calls: list[object] = []
+
+    def fake_version(command_prefix):
+        calls.append(tuple(command_prefix))
+        return "codex-cli 0.147.0"
+
+    def fake_runner(config):
+        calls.append(config)
+        assert config.model == "gpt-5.6-luna"
+        assert config.sandbox == "read-only"
+        assert config.codex_ephemeral is True
+        assert config.codex_ignore_user_config is True
+        assert "reference.png" not in config.prompt
+        assert "candidate.step" not in config.prompt
+        return {
+            "final_output": (
+                '{"summary":"metadata-only","codex_local_work":['
+                '"input packet review"],"residual_nvidia_work":['
+                '"released pipeline"],"claim_boundary":"advisory"}'
+            ),
+            "raw_result_type": "fixture_codex_cli",
+        }
+
+    receipt = codex_advisory.run_content_agents_codex_advisory_review(
+        bundle_matrix=matrix,
+        replacement_slot=1,
+        cad_agent_backend_id="earthtojake_text_to_cad",
+        output_path=tmp_path / "codex-review.json",
+        generated_at="fixed",
+        live_codex_host_oauth_authorized=True,
+        codex_command_prefix=("fixture-codex",),
+        runner=fake_runner,
+        version_probe=fake_version,
+    )
+
+    assert calls[0] == ("fixture-codex",)
+    assert receipt["status"] == "completed_metadata_only_advisory_review"
+    assert receipt["codex_operator"]["live_codex_host_oauth_authorized"] is True
+    assert receipt["model_output"]["interpreted_as_deterministic_evidence"] is False
+    assert receipt["request"]["disclosure"] == {
+        "prompt_contains_only": "digest_bound_metadata",
+        "raw_interiorgs_bytes_disclosed": False,
+        "scene_derived_image_bytes_disclosed": False,
+        "cad_step_or_usd_bytes_disclosed": False,
+        "mesh_bytes_disclosed": False,
+        "secrets_or_api_keys_disclosed": False,
+        "provider_upload_performed": False,
+    }
+    assert receipt["claim_boundary"] == {
+        "codex_advisory_review_completed": True,
+        "content_agents_executed": False,
+        "simready_qualified": False,
+        "native_simulator_import_qualified": False,
+        "appearance_materially_qualified": False,
+        "physical_equivalence": False,
+    }
 
 
 def _bundle_receipt_from_item(item: Mapping[str, object]) -> tuple[Path, dict]:
