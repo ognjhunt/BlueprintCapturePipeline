@@ -26,8 +26,12 @@ from .wam_provider_object_store import (
 
 PROBE_KIND = "adp009b-exact-simready-isaac"
 RESULT_SCHEMA_VERSION = "adp009b_simready_isaac_vast_run.v1"
+PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_simready_isaac_paid_attempt_authority.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/exact-simready-isaac"
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
+AUTHORIZATION_CONSUMPTION_ROOT = (
+    Path.home() / ".blueprint-spend-authority" / "consumed"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -251,11 +255,153 @@ def adjudicate_retained_simready_isaac_execution(
     return receipt
 
 
+def validate_simready_isaac_paid_attempt_authority(
+    authority: Mapping[str, Any],
+    *,
+    prepared_bundle: Mapping[str, Any],
+    bundle_receipt_sha256: str | None,
+    max_hourly_rate_usd: float,
+    hard_cap_usd: float,
+    hard_ttl_seconds: int,
+) -> dict[str, Any]:
+    """Bind one explicit paid native-import probe attempt to exact bundle bytes."""
+
+    value = dict(authority)
+    errors: list[str] = []
+    if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA:
+        errors.append("schema_invalid")
+    if value.get("authority_kind") != "explicit_user_direction_in_current_goal":
+        errors.append("authority_kind_invalid")
+    if not str(value.get("authority_reference") or "").strip():
+        errors.append("authority_reference_invalid")
+    if not str(value.get("authorized_by") or "").strip():
+        errors.append("authorized_by_invalid")
+    if not str(value.get("authorized_on") or "").strip():
+        errors.append("authorized_on_invalid")
+    if value.get("purpose") != "simready_native_import_probe":
+        errors.append("purpose_invalid")
+    if value.get("provider") != "vast":
+        errors.append("provider_invalid")
+    if value.get("paid_compute_authorized") is not True:
+        errors.append("paid_compute_not_authorized")
+    if value.get("bundle_sha256") != prepared_bundle.get("bundle_sha256"):
+        errors.append("bundle_sha256_mismatch")
+    if value.get("bundle_receipt_sha256") != bundle_receipt_sha256:
+        errors.append("bundle_receipt_sha256_mismatch")
+    if value.get("probe_spec_sha256") != prepared_bundle.get("probe_spec_sha256"):
+        errors.append("probe_spec_sha256_mismatch")
+    if value.get("container_image") != DEFAULT_IMAGE:
+        errors.append("container_image_mismatch")
+    if value.get("maximum_paid_attempts") != 1:
+        errors.append("maximum_paid_attempts_invalid")
+    if value.get("maximum_automatic_retries") != 0:
+        errors.append("maximum_automatic_retries_invalid")
+    if value.get("automatic_paid_retry_authorized") is not False:
+        errors.append("automatic_paid_retry_authorized_invalid")
+    if value.get("zero_retry") is not True:
+        errors.append("zero_retry_invalid")
+    if value.get("hard_attempt_spend_cap_usd") != hard_cap_usd:
+        errors.append("hard_attempt_spend_cap_mismatch")
+    if value.get("maximum_hourly_rate_usd") != max_hourly_rate_usd:
+        errors.append("maximum_hourly_rate_mismatch")
+    if value.get("maximum_single_resource_ttl_seconds") != hard_ttl_seconds:
+        errors.append("maximum_single_resource_ttl_mismatch")
+    if value.get("native_simulator_import_probe_only") is not True:
+        errors.append("native_import_probe_scope_invalid")
+    if value.get("physical_success_established") is not False:
+        errors.append("physical_claim_boundary_invalid")
+    if value.get("candidate_policy_queried") is not False:
+        errors.append("candidate_policy_query_claim_invalid")
+    if value.get("authorization_digest") != canonical_digest(
+        value, digest_field="authorization_digest"
+    ):
+        errors.append("authorization_digest_invalid")
+    if errors:
+        raise ValueError(
+            "simready_isaac_paid_attempt_authority_invalid:"
+            + ",".join(sorted(set(errors)))
+        )
+    return value
+
+
+def consume_simready_isaac_paid_attempt_authority_once(
+    authority: Mapping[str, Any], *, blueprint_commit: str
+) -> dict[str, Any]:
+    """Atomically consume a validated native-import grant before provider mutation."""
+
+    authorization_digest = str(authority.get("authorization_digest") or "")
+    if not authorization_digest.startswith("sha256:") or len(authorization_digest) != 71:
+        return {
+            "status": "blocked",
+            "blockers": ["simready_isaac_paid_attempt_authority_identity_invalid"],
+        }
+    root = AUTHORIZATION_CONSUMPTION_ROOT
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = root.stat()
+        if (
+            root.is_symlink()
+            or root_stat.st_uid != os.getuid()
+            or root_stat.st_mode & 0o077
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["simready_isaac_authority_consumption_root_insecure"],
+            }
+        identity = authorization_digest.removeprefix("sha256:")
+        destination = root / f"simready-isaac-{identity}.json"
+        record = {
+            "schema_version": "simready_isaac_paid_attempt_consumption.v1",
+            "authorization_digest": authorization_digest,
+            "bundle_sha256": authority.get("bundle_sha256"),
+            "probe_spec_sha256": authority.get("probe_spec_sha256"),
+            "blueprint_commit": blueprint_commit,
+            "consumed_at": utc_now_iso(),
+            "maximum_provider_allocations": 1,
+        }
+        raw = (
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        temporary = root / f".simready-isaac-{identity}.{os.getpid()}.tmp"
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, destination)
+            directory_descriptor = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except FileExistsError:
+        return {
+            "status": "blocked",
+            "blockers": ["simready_isaac_paid_attempt_authority_consumed"],
+        }
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["simready_isaac_authority_consumption_write_failed"],
+        }
+    return {
+        "status": "consumed",
+        "authorization_digest": authorization_digest,
+        "consumption_record_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "record_location_disclosed": False,
+    }
+
+
 def run_simready_isaac_vast(
     *,
     job_dir: str | Path,
     prepared_bundle: Mapping[str, Any],
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    paid_attempt_authority: Mapping[str, Any] | None = None,
+    bundle_receipt_sha256: str | None = None,
     execute: bool,
     machine_avoidlist_path: str | Path | None = None,
     expected_probe_names: frozenset[str] | None = None,
@@ -290,6 +436,40 @@ def run_simready_isaac_vast(
         return result
     if paid_resource_admission_grant is None:
         raise ValueError("simready_isaac_paid_resource_admission_grant_missing")
+    if paid_attempt_authority is None:
+        raise ValueError("simready_isaac_paid_attempt_authority_missing")
+    validated_attempt_authority = validate_simready_isaac_paid_attempt_authority(
+        paid_attempt_authority,
+        prepared_bundle=bundle,
+        bundle_receipt_sha256=bundle_receipt_sha256,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+    )
+    blueprint_commit = str(
+        bundle.get("source_commit_sha")
+        or validated_attempt_authority.get("blueprint_commit")
+        or ""
+    )
+    authorization_consumption = consume_simready_isaac_paid_attempt_authority_once(
+        validated_attempt_authority, blueprint_commit=blueprint_commit
+    )
+    if authorization_consumption.get("status") != "consumed":
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "paid_attempt_authority_digest": validated_attempt_authority.get(
+                "authorization_digest"
+            ),
+            "authorization_consumption": authorization_consumption,
+            "blockers": authorization_consumption.get("blockers")
+            or ["simready_isaac_paid_attempt_authority_consumption_blocked"],
+        }
+        write_json(job / "adp009b_simready_isaac_vast_result.json", result)
+        return result
 
     number, attempt_root = _next_attempt(job)
     ensure_dir(attempt_root)
@@ -307,6 +487,10 @@ def run_simready_isaac_vast(
             "status": "blocked",
             "attempt_number": number,
             "provider_mutations_performed": 0,
+            "paid_attempt_authority_digest": validated_attempt_authority.get(
+                "authorization_digest"
+            ),
+            "authorization_consumption": authorization_consumption,
             "blockers": ["simready_isaac_cumulative_budget_below_minimum_live_window"],
         }
         write_json(job / "adp009b_simready_isaac_vast_result.json", result)
@@ -326,6 +510,10 @@ def run_simready_isaac_vast(
             "status": "blocked",
             "attempt_number": number,
             "provider_mutations_performed": 0,
+            "paid_attempt_authority_digest": validated_attempt_authority.get(
+                "authorization_digest"
+            ),
+            "authorization_consumption": authorization_consumption,
             "blockers": staging.get("blockers") or ["simready_isaac_object_store_staging_blocked"],
         }
         write_json(job / "adp009b_simready_isaac_vast_result.json", result)
@@ -412,6 +600,10 @@ def run_simready_isaac_vast(
         "attempt_root": str(attempt_root),
         "bundle_sha256": bundle["bundle_sha256"],
         "probe_spec_sha256": bundle.get("probe_spec_sha256"),
+        "paid_attempt_authority_digest": validated_attempt_authority.get(
+            "authorization_digest"
+        ),
+        "authorization_consumption": authorization_consumption,
         "native_result_path": extracted.get("result_path"),
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
         "hard_cap_usd": hard_cap_usd,
@@ -428,4 +620,10 @@ def run_simready_isaac_vast(
     return result
 
 
-__all__ = ["PROBE_KIND", "run_simready_isaac_vast"]
+__all__ = [
+    "PAID_ATTEMPT_AUTHORITY_SCHEMA",
+    "PROBE_KIND",
+    "consume_simready_isaac_paid_attempt_authority_once",
+    "run_simready_isaac_vast",
+    "validate_simready_isaac_paid_attempt_authority",
+]

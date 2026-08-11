@@ -34,6 +34,45 @@ def _bundle(tmp_path: Path, *, commit: str = "a" * 40) -> dict:
     }
 
 
+def _paid_attempt_authority(
+    prepared_bundle: dict,
+    *,
+    bundle_receipt_sha256: str | None = "sha256:" + "c" * 64,
+    hard_cap_usd: float = 3.0,
+    max_hourly_rate_usd: float = 1.0,
+    hard_ttl_seconds: int = 10_800,
+) -> dict:
+    authority = {
+        "schema_version": runtime.PAID_ATTEMPT_AUTHORITY_SCHEMA,
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authority_reference": "user-message-2026-08-11-gpu-authority",
+        "authorized_by": "user",
+        "authorized_on": "2026-08-11",
+        "purpose": "simready_native_import_probe",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "bundle_sha256": prepared_bundle["bundle_sha256"],
+        "bundle_receipt_sha256": bundle_receipt_sha256,
+        "probe_spec_sha256": prepared_bundle["probe_spec_sha256"],
+        "container_image": DEFAULT_IMAGE,
+        "maximum_paid_attempts": 1,
+        "maximum_automatic_retries": 0,
+        "automatic_paid_retry_authorized": False,
+        "zero_retry": True,
+        "hard_attempt_spend_cap_usd": hard_cap_usd,
+        "maximum_hourly_rate_usd": max_hourly_rate_usd,
+        "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
+        "native_simulator_import_probe_only": True,
+        "physical_success_established": False,
+        "candidate_policy_queried": False,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    return authority
+
+
 def _completed_execution() -> dict:
     value = {
         "schema_version": "adp009b_simready_isaac_result.v1",
@@ -161,6 +200,15 @@ def test_dry_run_never_stages_or_mutates(tmp_path: Path, monkeypatch: pytest.Mon
 def test_live_run_requires_all_four_native_probes_and_provider_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    prepared_bundle = _bundle(tmp_path)
+    bundle_receipt_sha256 = "sha256:" + "c" * 64
+    authority = _paid_attempt_authority(
+        prepared_bundle, bundle_receipt_sha256=bundle_receipt_sha256
+    )
+    monkeypatch.setattr(
+        runtime, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
+    )
+
     def fake_stage(**kwargs):
         staging = Path(kwargs["job_dir"])
         staging.mkdir(parents=True)
@@ -196,15 +244,62 @@ def test_live_run_requires_all_four_native_probes_and_provider_zero(
 
     result = runtime.run_simready_isaac_vast(
         job_dir=tmp_path / "job",
-        prepared_bundle=_bundle(tmp_path),
+        prepared_bundle=prepared_bundle,
         paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        paid_attempt_authority=authority,
+        bundle_receipt_sha256=bundle_receipt_sha256,
         execute=True,
     )
 
     assert result["status"] == "completed"
     assert result["retry_cap"] == 0
+    assert result["authorization_consumption"]["status"] == "consumed"
     assert result["continuing_spend_from_this_run"] is False
     assert result["all_staged_objects_absent"] is True
+
+
+def test_live_run_consumes_paid_attempt_authority_once_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared_bundle = _bundle(tmp_path)
+    bundle_receipt_sha256 = "sha256:" + "c" * 64
+    authority = _paid_attempt_authority(
+        prepared_bundle, bundle_receipt_sha256=bundle_receipt_sha256
+    )
+    monkeypatch.setattr(
+        runtime, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
+    )
+    stage_calls = 0
+
+    def fake_stage(**kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
+        return {"status": "blocked", "blockers": ["synthetic_stop_after_consumption"]}
+
+    monkeypatch.setattr(runtime, "stage_wam_provider_bundle_object_store", fake_stage)
+
+    first = runtime.run_simready_isaac_vast(
+        job_dir=tmp_path / "job",
+        prepared_bundle=prepared_bundle,
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        paid_attempt_authority=authority,
+        bundle_receipt_sha256=bundle_receipt_sha256,
+        execute=True,
+    )
+    second = runtime.run_simready_isaac_vast(
+        job_dir=tmp_path / "job",
+        prepared_bundle=prepared_bundle,
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        paid_attempt_authority=authority,
+        bundle_receipt_sha256=bundle_receipt_sha256,
+        execute=True,
+    )
+
+    assert first["authorization_consumption"]["status"] == "consumed"
+    assert second["status"] == "blocked"
+    assert second["provider_mutations_performed"] == 0
+    assert "simready_isaac_paid_attempt_authority_consumed" in second["blockers"]
+    assert stage_calls == 1
 
 
 def _allocator_args(tmp_path: Path, receipt: Path) -> list[str]:
@@ -272,4 +367,71 @@ def test_canonical_allocator_binds_exact_bundle_and_withholds_dry_run_grant(
     assert admission["retry_cap"] == 0
     assert admission["allocation_binding"]["bundle_sha256"] == bundle_receipt[
         "bundle_sha256"
+    ]
+
+
+def test_allocator_execute_requires_paid_attempt_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = tmp_path / "bundle_receipt.json"
+    write_json(receipt, _bundle(tmp_path))
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+
+    rc = allocator.main([*_allocator_args(tmp_path, receipt), "--execute"])
+
+    assert rc == 2
+    result = json.loads((tmp_path / "adapter.json").read_text(encoding="utf-8"))
+    assert "simready_isaac_paid_attempt_authority_missing" in result["blockers"]
+
+
+def test_allocator_execute_binds_paid_attempt_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = tmp_path / "bundle_receipt.json"
+    bundle_receipt = _bundle(tmp_path)
+    write_json(receipt, bundle_receipt)
+    receipt_sha256 = _sha256(receipt)
+    authority = _paid_attempt_authority(
+        bundle_receipt, bundle_receipt_sha256=receipt_sha256
+    )
+    authority_path = tmp_path / "attempt_authority.json"
+    write_json(authority_path, authority)
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+
+    def fake_admission(_admission, **_kwargs):
+        return object()
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "require_paid_resource_admission", fake_admission)
+    monkeypatch.setattr(allocator, "run_simready_isaac_vast", fake_run)
+
+    rc = allocator.main(
+        [
+            *_allocator_args(tmp_path, receipt),
+            "--adp-simready-isaac-attempt-authority",
+            str(authority_path),
+            "--execute",
+        ]
+    )
+
+    assert rc == 0
+    assert observed["execute"] is True
+    assert observed["paid_attempt_authority"] == authority
+    assert observed["bundle_receipt_sha256"] == receipt_sha256
+    admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
+    assert admission["paid_attempt_authority_required_for_execute"] is True
+    assert admission["paid_attempt_authority_digest"] == authority[
+        "authorization_digest"
     ]

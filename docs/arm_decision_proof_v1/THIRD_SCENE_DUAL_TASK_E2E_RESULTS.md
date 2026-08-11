@@ -474,6 +474,13 @@ forks:
   policies. No 840920 depth, construction, or control qualification is claimed
   because its evaluation cameras, source removals, native asset imports, and
   construction packets remain unavailable.
+- Current paid-native follow-up: the exact SimReady Isaac/native-import probe
+  lane now requires an execution-only
+  `adp_simready_isaac_paid_attempt_authority.v1` on `--execute`, binds it to
+  the immutable bundle receipt, probe spec, container image, hourly rate, hard
+  spend cap, TTL, zero-retry terms, and native-import-only claim boundary, and
+  atomically consumes it before object-store staging or any provider mutation.
+  Dry-runs remain zero-mutation and do not require the grant.
 - The exact v2 Task A and Task B USDs now pass the general local GPU-collision
   schema audit using `10` and `2` dynamic primitive colliders respectively:
   [Task A receipt](manifests/third_scene_840920_task_a_gpu_collision_static_qualification.v1.json)

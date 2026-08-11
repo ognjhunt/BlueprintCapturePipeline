@@ -176,6 +176,7 @@ from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as ADP_SIMREADY_IS
 from .public_scene_simready_isaac_vast import (
     PROBE_KIND as ADP_SIMREADY_ISAAC_PROBE_KIND,
     run_simready_isaac_vast,
+    validate_simready_isaac_paid_attempt_authority,
 )
 from .adp_content_agents_vast import (
     DEFAULT_IMAGE as ADP_CONTENT_AGENTS_IMAGE,
@@ -1234,6 +1235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp009d-aura-native-probe-manifest")
     gpu.add_argument("--adp009d-aura-source-root")
     gpu.add_argument("--adp-simready-isaac-bundle-receipt")
+    gpu.add_argument("--adp-simready-isaac-attempt-authority")
     gpu.add_argument("--adp-job-dir")
     gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
     gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
@@ -2776,6 +2778,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if receipt_path and receipt_path.is_file()
                 else None
             )
+            paid_attempt_authority: dict[str, Any] | None = None
+            if args.adp_simready_isaac_attempt_authority:
+                try:
+                    paid_attempt_authority = _load(
+                        Path(args.adp_simready_isaac_attempt_authority)
+                        .expanduser()
+                        .resolve()
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("simready_isaac_paid_attempt_authority_invalid")
+            elif args.execute:
+                blockers.append("simready_isaac_paid_attempt_authority_missing")
+            if paid_attempt_authority is not None and prepared_bundle is not None:
+                try:
+                    validate_simready_isaac_paid_attempt_authority(
+                        paid_attempt_authority,
+                        prepared_bundle=prepared_bundle,
+                        bundle_receipt_sha256=receipt_sha256,
+                        max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                        hard_cap_usd=args.adp_max_spend_usd,
+                        hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    )
+                except ValueError:
+                    blockers.append("simready_isaac_paid_attempt_authority_invalid")
             avoidlist_sha256 = None
             if args.adp_machine_avoidlist:
                 avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
@@ -2805,6 +2831,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "machine_avoidlist_sha256": avoidlist_sha256,
                 "retry_cap": 0,
+                "paid_attempt_authority_digest": (
+                    paid_attempt_authority.get("authorization_digest")
+                    if paid_attempt_authority
+                    else None
+                ),
             }
             allocation_binding_digest = (
                 "sha256:"
@@ -2827,6 +2858,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                     "retry_cap": 0,
                     "authority": "user_authorized_all_in_scope_goal_resources_including_gpu_usage",
+                    "paid_attempt_authority_required_for_execute": True,
+                    "paid_attempt_authority_digest": (
+                        paid_attempt_authority.get("authorization_digest")
+                        if paid_attempt_authority
+                        else None
+                    ),
                     "private_data_uploaded": False,
                     "physical_success_established": False,
                     "allocation_binding": allocation_binding,
@@ -2845,7 +2882,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 except PaidResourceAdmissionBlocked as exc:
                     result = {
                         "status": "blocked",
-                        "blockers": exc.blockers,
+                        "blockers": sorted(set([*exc.blockers, *blockers])),
                         "provider_mutations_performed": 0,
                     }
                     write_json(Path(args.adapter_output), result)
@@ -2862,6 +2899,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     job_dir=args.adp_job_dir,
                     prepared_bundle=prepared_bundle,
                     paid_resource_admission_grant=grant,
+                    paid_attempt_authority=paid_attempt_authority,
+                    bundle_receipt_sha256=receipt_sha256,
                     execute=args.execute,
                     machine_avoidlist_path=args.adp_machine_avoidlist,
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
