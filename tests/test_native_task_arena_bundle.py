@@ -1088,6 +1088,75 @@ def test_canonical_allocator_blocks_exhausted_paid_campaign_before_provider(
     assert ledger["reservations"] == []
 
 
+def test_canonical_allocator_blocks_exhausted_campaign_before_bundle_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "build_native_task_arena_construction_bundle",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bundle construction reached after campaign exhaustion")
+        ),
+    )
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        PROBE_KIND,
+        "--provider",
+        "vast",
+        "--provider-launch-request",
+        str(tmp_path / "unused-request.json"),
+        "--release-evidence",
+        str(tmp_path / "unused-release.json"),
+        "--model-cache-evidence",
+        str(tmp_path / "unused-model.json"),
+        "--preflight-bundle",
+        str(tmp_path / "unused-preflight.json"),
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--bound-request-out",
+        str(tmp_path / "unused-bound.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--pod-name",
+        "native-task-arena",
+        "--native-task-arena-packet",
+        str(tmp_path / "packet-not-read-after-budget-block"),
+        "--native-task-arena-runtime-source-packet",
+        str(tmp_path / "source-packet-not-read-after-budget-block.json"),
+        "--adp-job-dir",
+        str(tmp_path / "job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.0",
+        "--adp-hard-ttl-seconds",
+        "5400",
+    ]
+    args.extend(
+        _paid_campaign_args(
+            tmp_path,
+            initial_spent_usd=13.492669,
+            total_cap_usd=12.0,
+        )
+    )
+
+    assert allocator.main(args) == 2
+    adapter = json.loads((tmp_path / "adapter.json").read_text())
+    assert adapter["blockers"] == [
+        "native_task_arena_paid_campaign_total_spend_cap_exceeded"
+    ]
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["paid_campaign"]["bundle_construction_skipped_for_budget"] is True
+    assert admission["paid_campaign"]["committed_usd_before"] == 13.492669
+    assert not (tmp_path / "job" / "bundle").exists()
+
+
 def test_canonical_allocator_releases_reservation_when_admission_blocks_before_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

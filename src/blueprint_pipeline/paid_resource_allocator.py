@@ -3063,6 +3063,77 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "sha256:"
                         + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
                     )
+            campaign_budget = None
+            campaign_context = None
+            campaign_reservation = None
+            if not blockers:
+                preflight_reservation_material = json.dumps(
+                    {
+                        "campaign_id": args.adp_campaign_id,
+                        "probe_kind": args.probe_kind,
+                        "job_dir": str(Path(args.adp_job_dir).expanduser().resolve()),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                preflight_reservation_id = (
+                    "native-task-arena-preflight:"
+                    + hashlib.sha256(preflight_reservation_material).hexdigest()
+                )
+                try:
+                    campaign_budget = PaidCampaignSpendBudget(
+                        args.adp_campaign_budget_ledger,
+                        campaign_id=args.adp_campaign_id,
+                        authority_id=args.adp_campaign_authority_id,
+                        initial_spent_usd=args.adp_campaign_initial_spent_usd,
+                        total_spend_cap_usd=(
+                            args.adp_campaign_total_spend_cap_usd
+                        ),
+                        initial_spend_basis=args.adp_campaign_initial_spend_basis,
+                    )
+                    campaign_snapshot = campaign_budget.snapshot()
+                    campaign_preview = campaign_budget.preview(
+                        reservation_id=preflight_reservation_id,
+                        max_spend_usd=args.adp_max_spend_usd,
+                    )
+                    campaign_context = {
+                        "schema_version": "native_task_paid_campaign_binding.v1",
+                        "ledger_path": str(campaign_budget.path),
+                        "campaign_id": args.adp_campaign_id,
+                        "authority_id": args.adp_campaign_authority_id,
+                        "initial_spent_usd": args.adp_campaign_initial_spent_usd,
+                        "initial_spend_basis": (
+                            args.adp_campaign_initial_spend_basis
+                        ),
+                        "total_spend_cap_usd": (
+                            args.adp_campaign_total_spend_cap_usd
+                        ),
+                        "reservation_id": preflight_reservation_id,
+                        "reservation_max_spend_usd": args.adp_max_spend_usd,
+                        "preview": campaign_preview,
+                        "bundle_construction_skipped_for_budget": (
+                            campaign_preview["admitted"] is not True
+                        ),
+                        "snapshot_digest_before": campaign_snapshot[
+                            "snapshot_digest"
+                        ],
+                        "committed_usd_before": campaign_snapshot[
+                            "committed_usd"
+                        ],
+                        "cap_overrun_usd_before": campaign_snapshot[
+                            "cap_overrun_usd"
+                        ],
+                    }
+                    if campaign_preview["admitted"] is not True:
+                        blockers.append(
+                            "native_task_arena_"
+                            + str(campaign_preview["blocker"])
+                        )
+                except (OSError, ValueError) as exc:
+                    blockers.append(
+                        "native_task_arena_campaign_budget_invalid:"
+                        + str(exc)
+                    )
             prepared_bundle = None
             if not blockers:
                 try:
@@ -3122,10 +3193,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "native_task_arena_bundle_preparation_failed:"
                         f"{type(exc).__name__}"
                     )
-            campaign_budget = None
-            campaign_context = None
-            campaign_reservation = None
-            if prepared_bundle is not None and not blockers:
+            if (
+                prepared_bundle is not None
+                and campaign_budget is not None
+                and campaign_context is not None
+                and not blockers
+            ):
                 reservation_material = json.dumps(
                     {
                         "campaign_id": args.adp_campaign_id,
@@ -3141,47 +3214,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 reservation_owner_id = "controller:" + uuid.uuid4().hex
                 try:
-                    campaign_budget = PaidCampaignSpendBudget(
-                        args.adp_campaign_budget_ledger,
-                        campaign_id=args.adp_campaign_id,
-                        authority_id=args.adp_campaign_authority_id,
-                        initial_spent_usd=args.adp_campaign_initial_spent_usd,
-                        total_spend_cap_usd=(
-                            args.adp_campaign_total_spend_cap_usd
-                        ),
-                        initial_spend_basis=args.adp_campaign_initial_spend_basis,
-                    )
                     campaign_snapshot = campaign_budget.snapshot()
                     campaign_preview = campaign_budget.preview(
                         reservation_id=reservation_id,
                         max_spend_usd=args.adp_max_spend_usd,
                     )
-                    campaign_context = {
-                        "schema_version": "native_task_paid_campaign_binding.v1",
-                        "ledger_path": str(campaign_budget.path),
-                        "campaign_id": args.adp_campaign_id,
-                        "authority_id": args.adp_campaign_authority_id,
-                        "initial_spent_usd": args.adp_campaign_initial_spent_usd,
-                        "initial_spend_basis": (
-                            args.adp_campaign_initial_spend_basis
-                        ),
-                        "total_spend_cap_usd": (
-                            args.adp_campaign_total_spend_cap_usd
-                        ),
-                        "reservation_id": reservation_id,
-                        "reservation_owner_id": reservation_owner_id,
-                        "reservation_max_spend_usd": args.adp_max_spend_usd,
-                        "preview": campaign_preview,
-                        "snapshot_digest_before": campaign_snapshot[
+                    campaign_context.update(
+                        reservation_id=reservation_id,
+                        reservation_owner_id=reservation_owner_id,
+                        preview=campaign_preview,
+                        bundle_construction_skipped_for_budget=False,
+                        snapshot_digest_before=campaign_snapshot[
                             "snapshot_digest"
                         ],
-                        "committed_usd_before": campaign_snapshot[
+                        committed_usd_before=campaign_snapshot[
                             "committed_usd"
                         ],
-                        "cap_overrun_usd_before": campaign_snapshot[
+                        cap_overrun_usd_before=campaign_snapshot[
                             "cap_overrun_usd"
                         ],
-                    }
+                    )
                     if campaign_preview["admitted"] is not True:
                         blockers.append(
                             "native_task_arena_"
