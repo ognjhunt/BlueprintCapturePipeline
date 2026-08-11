@@ -30,7 +30,8 @@ from blueprint_pipeline.task_evaluation_profile_preflight import (
 )
 
 
-PROFILE_ID = "adp009d-840313-franka-dry-v1"
+READINESS_PROFILE_ID = "adp009d-840313-franka-dry-v1"
+PROFILE_ID_PREFIX = "adp009d-840313-franka-dry"
 BUNDLE_ID = "adp009d-840313-interiorgs-sage-v1"
 EXPECTED_BUNDLE_DIGEST = (
     "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
@@ -50,6 +51,18 @@ RAW_GITHUB_ROOT = "https://raw.githubusercontent.com/ognjhunt/BlueprintCapturePi
 
 class ProductionProfileBuildError(ValueError):
     """Raised when the exact production profile cannot be proven."""
+
+
+def profile_id_for_source_commit(source_commit: str) -> str:
+    """Give every immutable allocator identity its own publishable profile ID."""
+
+    normalized = source_commit.strip().lower()
+    if (
+        len(normalized) != 40
+        or any(character not in "0123456789abcdef" for character in normalized)
+    ):
+        raise ProductionProfileBuildError("production_profile_source_commit_invalid")
+    return f"{PROFILE_ID_PREFIX}-{normalized}"
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -150,6 +163,7 @@ def build_profile_release(
     guard = Path(provider_guard_path).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     verify_protected_main_checkout(repo, source_commit)
+    profile_id = profile_id_for_source_commit(source_commit)
 
     manifest_root = repo / MANIFEST_RELATIVE_ROOT
     source_path = manifest_root / SOURCE_MANIFEST_NAME
@@ -165,7 +179,7 @@ def build_profile_release(
         or validation.get("status") != "passed"
         or validation.get("spec_digest") != EXPECTED_SPEC_DIGEST
         or readiness.get("receipt_digest") != EXPECTED_READINESS_DIGEST
-        or readiness.get("profile_id") != PROFILE_ID
+        or readiness.get("profile_id") != READINESS_PROFILE_ID
         or readiness.get("status") != "blocked"
         or readiness.get("live_execution_enabled") is not False
     ):
@@ -186,7 +200,7 @@ def build_profile_release(
     }
     preflight_request = {
         "schema_version": REQUEST_SCHEMA_VERSION,
-        "profile_id": PROFILE_ID,
+        "profile_id": profile_id,
         "provider": "vast",
         "retry_cap": 0,
         "live_execution_authorized": False,
@@ -237,7 +251,7 @@ def build_profile_release(
     source_uri = f"{RAW_GITHUB_ROOT}/{source_commit}/{MANIFEST_RELATIVE_ROOT.as_posix()}"
     profile = {
         "schema_version": "task_evaluation_launch_profile.v1",
-        "profile_id": PROFILE_ID,
+        "profile_id": profile_id,
         "program_id": "arm-decision-proof-v1",
         "source_bundle": {
             "bundle_id": BUNDLE_ID,
@@ -269,7 +283,7 @@ def build_profile_release(
                 "--adapter-output",
                 f"{LAUNCH_RUN_ROOT_PLACEHOLDER}/allocator/result.json",
                 "--pod-name",
-                PROFILE_ID,
+                profile_id,
                 "--expected-source-commit",
                 source_commit,
                 "--provider",
@@ -327,13 +341,13 @@ def build_profile_release(
     blockers = [*validate_launch_profile(profile), *verify_profile_immutable_inputs(profile)]
     if blockers:
         raise ProductionProfileBuildError(",".join(sorted(set(blockers))))
-    profile_path = output / f"{PROFILE_ID}.json"
+    profile_path = output / f"{profile_id}.json"
     _write_exact(profile_path, profile)
     receipt = {
         "schema_version": "adp009d_840313_launch_profile_build_receipt.v1",
         "status": "built",
         "source_commit": source_commit,
-        "profile_id": PROFILE_ID,
+        "profile_id": profile_id,
         "profile_digest": profile["profile_digest"],
         "source_bundle_digest": EXPECTED_BUNDLE_DIGEST,
         "evaluation_run_spec_digest": EXPECTED_SPEC_DIGEST,
