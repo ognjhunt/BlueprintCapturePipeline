@@ -587,6 +587,8 @@ def _single_agent_cad_content_bundle_matrix(
         "agent_output_is_simready_authority": False,
         "canonical_simready_construction_unresolved": True,
     }
+    second_item = json.loads(json.dumps(item))
+    second_item["cad_agent_backend_id"] = "pan_chera_multi_agent_cad"
     matrix = {
         "schema_version": "third_scene_agent_cad_content_agents_bundle_matrix.v1",
         "status": "local_bundles_ready_for_paid_resource_preflight",
@@ -596,8 +598,8 @@ def _single_agent_cad_content_bundle_matrix(
             "maximum": 5,
             "sealed_slots": 1,
         },
-        "candidate_count": 1,
-        "items": [item],
+        "candidate_count": 2,
+        "items": [item, second_item],
         "claim_boundary": {
             "content_agents_bundles_built": True,
             "exact_entrypoint_rehearsed": True,
@@ -755,6 +757,121 @@ def test_content_agents_execution_readiness_accepts_static_no_docker_preflight(
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing",
     ]
+
+
+def test_content_agents_execution_readiness_accepts_five_replacement_objects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    bundle_receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-bundle",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
+        "adp_content_agents_bundle_receipt.json"
+    )
+    matrix = _single_agent_cad_content_bundle_matrix(
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+        cad_output_path=output_path,
+        projection_path=projection_path,
+    )
+    base_item = matrix["items"][0]
+    items = []
+    for slot in range(1, 6):
+        for backend_id in ("earthtojake_text_to_cad", "pan_chera_multi_agent_cad"):
+            item = json.loads(json.dumps(base_item))
+            item["replacement_slot"] = slot
+            item["task_id"] = f"task_{slot}"
+            item["asset_id"] = f"asset_{slot}"
+            item["cad_agent_backend_id"] = backend_id
+            items.append(item)
+    matrix["items"] = items
+    matrix["candidate_count"] = len(items)
+    matrix["replacement_object_capacity"]["sealed_slots"] = 5
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+
+    readiness = content_agents.materialize_content_agents_execution_readiness(
+        content_agents_bundle_matrix=matrix,
+        output_path=tmp_path / "readiness.json",
+        generated_at="fixed",
+    )
+
+    assert readiness["candidate_count"] == 10
+    assert readiness["replacement_object_capacity"] == {
+        "minimum": 1,
+        "maximum": 5,
+        "sealed_slots": 5,
+    }
+    assert {
+        (row["replacement_slot"], row["cad_agent_backend_id"])
+        for row in readiness["items"]
+    } == {
+        (slot, backend_id)
+        for slot in range(1, 6)
+        for backend_id in ("earthtojake_text_to_cad", "pan_chera_multi_agent_cad")
+    }
+
+
+def test_content_agents_execution_readiness_rejects_duplicate_or_partial_backend_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    bundle_receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-bundle",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
+        "adp_content_agents_bundle_receipt.json"
+    )
+    matrix = _single_agent_cad_content_bundle_matrix(
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+        cad_output_path=output_path,
+        projection_path=projection_path,
+    )
+    first = json.loads(json.dumps(matrix["items"][0]))
+    second = json.loads(json.dumps(matrix["items"][0]))
+    matrix["items"] = [first, second]
+    matrix["candidate_count"] = 2
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+
+    with pytest.raises(
+        ValueError, match="adp_content_agents_readiness_matrix_item_identity_invalid"
+    ):
+        content_agents.materialize_content_agents_execution_readiness(
+            content_agents_bundle_matrix=matrix,
+            output_path=tmp_path / "readiness.json",
+            generated_at="fixed",
+        )
+
+    second["cad_agent_backend_id"] = "pan_chera_multi_agent_cad"
+    second["asset_id"] = "different_asset_same_slot"
+    matrix["items"] = [first, second]
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+
+    with pytest.raises(
+        ValueError, match="adp_content_agents_readiness_matrix_item_identity_invalid"
+    ):
+        content_agents.materialize_content_agents_execution_readiness(
+            content_agents_bundle_matrix=matrix,
+            output_path=tmp_path / "readiness.json",
+            generated_at="fixed",
+        )
 
 
 def test_content_agents_execution_readiness_rejects_tampered_bundle_identity(

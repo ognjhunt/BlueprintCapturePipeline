@@ -36,6 +36,7 @@ from .provider_bundle_rehearsal import (
     rehearse_provider_bundle_entrypoint,
 )
 from .simready_cad_agent_contract import (
+    ADMITTED_BACKENDS,
     SimReadyCadAgentContractError,
     validate_cad_agent_output,
 )
@@ -171,6 +172,44 @@ def materialize_content_agents_execution_readiness(
         or matrix.get("candidate_count") != len(items)
     ):
         raise ValueError("adp_content_agents_readiness_matrix_capacity_invalid")
+    expected_backends = set(ADMITTED_BACKENDS)
+    sealed_slots = int(capacity["sealed_slots"])
+    if matrix.get("candidate_count") != sealed_slots * len(expected_backends):
+        raise ValueError("adp_content_agents_readiness_matrix_capacity_invalid")
+    slot_rows: dict[int, dict[str, Any]] = {}
+    seen_item_keys: set[tuple[int, str]] = set()
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise ValueError("adp_content_agents_readiness_item_invalid")
+        slot = item.get("replacement_slot")
+        backend_id = str(item.get("cad_agent_backend_id") or "")
+        task_id = str(item.get("task_id") or "")
+        asset_id = str(item.get("asset_id") or "")
+        if (
+            not isinstance(slot, int)
+            or isinstance(slot, bool)
+            or slot < 1
+            or slot > sealed_slots
+            or backend_id not in expected_backends
+            or not task_id
+            or not asset_id
+        ):
+            raise ValueError("adp_content_agents_readiness_matrix_item_identity_invalid")
+        item_key = (slot, backend_id)
+        if item_key in seen_item_keys:
+            raise ValueError("adp_content_agents_readiness_matrix_item_identity_invalid")
+        seen_item_keys.add(item_key)
+        prior = slot_rows.setdefault(
+            slot,
+            {"task_id": task_id, "asset_id": asset_id, "backends": set()},
+        )
+        if prior["task_id"] != task_id or prior["asset_id"] != asset_id:
+            raise ValueError("adp_content_agents_readiness_matrix_item_identity_invalid")
+        prior["backends"].add(backend_id)
+    if set(slot_rows) != set(range(1, sealed_slots + 1)) or any(
+        row["backends"] != expected_backends for row in slot_rows.values()
+    ):
+        raise ValueError("adp_content_agents_readiness_matrix_item_identity_invalid")
 
     preflights = dict(config_preflight_receipts or {})
     rows: list[dict[str, Any]] = []
