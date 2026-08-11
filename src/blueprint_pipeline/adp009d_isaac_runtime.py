@@ -2540,7 +2540,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v10.json"
+                        control_plan_path = runtime / "adp009d_control_plan.v11.json"
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(
