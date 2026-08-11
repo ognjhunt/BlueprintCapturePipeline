@@ -58,6 +58,18 @@ except ModuleNotFoundError:  # repository package
         canonical_contact_envelope,
         validate_contact_envelope,
     )
+try:  # flat provider-bundle layout
+    from adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        normalize_physics_backend,
+        validate_backend_contact_configuration,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        normalize_physics_backend,
+        validate_backend_contact_configuration,
+    )
 
 
 CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v12"
@@ -188,7 +200,9 @@ def _position(parameters: Mapping[str, Any], prefix: str) -> list[float]:
     ]
 
 
-def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
+def materialize_control_plan(
+    instance: Mapping[str, Any], *, physics_backend: str = "physx"
+) -> dict[str, Any]:
     """Derive a fixed native control plan from one digest-bound scenario cell."""
 
     try:
@@ -223,10 +237,12 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         raise ControlEpisodeError(["control_plan_object_height_invalid"])
     if object_radius <= 0.0:
         raise ControlEpisodeError(["control_plan_object_radius_invalid"])
-    contact_envelope = canonical_contact_envelope()
+    backend = normalize_physics_backend(physics_backend)
+    backend_contact_configuration = build_backend_contact_configuration(backend)
+    contact_envelope = canonical_contact_envelope() if backend == "physx" else None
     open_jaw_radial_clearance = GRIPPER_FULL_OPENING_M / 2.0 - object_radius
     effective_contact_envelope = float(
-        contact_envelope["effective_contact_envelope_m"]
+        backend_contact_configuration["planner_contact_allowance_m"]
     )
     open_jaw_effective_radial_clearance = (
         open_jaw_radial_clearance - effective_contact_envelope
@@ -378,6 +394,8 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_destination_position_world_m": target,
         "object_height_m": object_height,
         "object_radius_m": object_radius,
+        "physics_backend": backend,
+        "backend_contact_configuration": backend_contact_configuration,
         "contact_envelope": contact_envelope,
         "open_gripper_geometry": {
             "full_opening_m": GRIPPER_FULL_OPENING_M,
@@ -409,8 +427,42 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "scripted_positive_phases": phases,
         "caller_asserted_success_accepted": False,
         "candidate_policy_queried": False,
+        "semantic_plan_digest": "",
         "plan_digest": "",
     }
+    semantic_plan = {
+        "instance_digest": plan["instance_digest"],
+        "cell_id": plan["cell_id"],
+        "seed": plan["seed"],
+        "resolved_start_position_world_m": plan["resolved_start_position_world_m"],
+        "resolved_destination_position_world_m": plan[
+            "resolved_destination_position_world_m"
+        ],
+        "object_height_m": object_height,
+        "object_radius_m": object_radius,
+        "grasp_target_frame": plan["grasp_target_frame"],
+        "controlled_body_orientation_strategy": plan[
+            "controlled_body_orientation_strategy"
+        ],
+        "controlled_body_quaternion_world_xyzw": plan[
+            "controlled_body_quaternion_world_xyzw"
+        ],
+        "phase_semantics": [
+            {
+                key: phase.get(key)
+                for key in (
+                    "phase_id",
+                    "mode",
+                    "target_position_world_m",
+                    "target_frame",
+                    "target_quaternion_world_xyzw",
+                    "gripper",
+                )
+            }
+            for phase in phases
+        ],
+    }
+    plan["semantic_plan_digest"] = canonical_digest(semantic_plan)
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return plan
 
@@ -652,16 +704,34 @@ def _canonical_dynamics_observation(value: Mapping[str, Any]) -> dict[str, Any]:
             for vector in body_values.values()
         ):
             raise ControlEpisodeError(["control_episode_arm_dynamics_body_vector_invalid"])
-    try:
-        result["contact_envelope"] = validate_contact_envelope(
-            result["contact_envelope"]
+    if result["contact_envelope"] is not None:
+        try:
+            result["contact_envelope"] = validate_contact_envelope(
+                result["contact_envelope"]
+            )
+        except ContactEnvelopeError as exc:
+            raise ControlEpisodeError([str(exc)]) from exc
+    contact_configuration = result.get("backend_contact_configuration")
+    if contact_configuration is None and result["contact_envelope"] is not None:
+        contact_configuration = build_backend_contact_configuration("physx")
+    if not isinstance(contact_configuration, Mapping):
+        raise ControlEpisodeError(
+            ["control_episode_backend_contact_configuration_missing"]
         )
-    except ContactEnvelopeError as exc:
-        raise ControlEpisodeError([str(exc)]) from exc
+    configuration_blockers = validate_backend_contact_configuration(
+        contact_configuration
+    )
+    if configuration_blockers:
+        raise ControlEpisodeError(configuration_blockers)
+    result["backend_contact_configuration"] = dict(contact_configuration)
     return result
 
 
-def _plan_contact_envelope(plan: Mapping[str, Any]) -> dict[str, Any]:
+def _plan_contact_envelope(plan: Mapping[str, Any]) -> dict[str, Any] | None:
+    if plan.get("physics_backend", "physx") == "newton":
+        if plan.get("contact_envelope") is not None:
+            raise ControlEpisodeError(["adp009d_newton_physx_contact_envelope_forbidden"])
+        return None
     try:
         return validate_contact_envelope(plan.get("contact_envelope"))
     except ContactEnvelopeError as exc:
@@ -671,10 +741,36 @@ def _plan_contact_envelope(plan: Mapping[str, Any]) -> dict[str, Any]:
 def _require_dynamics_contact_envelope(
     dynamics: Mapping[str, Any],
     *,
-    expected: Mapping[str, Any],
+    expected: Mapping[str, Any] | None,
 ) -> None:
-    if dynamics.get("contact_envelope") != dict(expected):
+    expected_value = None if expected is None else dict(expected)
+    if dynamics.get("contact_envelope") != expected_value:
         raise ControlEpisodeError(["control_episode_contact_envelope_plan_mismatch"])
+
+
+def _plan_backend_contact_configuration(plan: Mapping[str, Any]) -> dict[str, Any]:
+    configuration = plan.get("backend_contact_configuration")
+    if configuration is None and plan.get("physics_backend", "physx") == "physx":
+        configuration = build_backend_contact_configuration("physx")
+    if not isinstance(configuration, Mapping):
+        raise ControlEpisodeError(
+            ["control_plan_backend_contact_configuration_missing"]
+        )
+    blockers = validate_backend_contact_configuration(configuration)
+    if blockers:
+        raise ControlEpisodeError(blockers)
+    if configuration.get("physics_backend") != plan.get("physics_backend", "physx"):
+        raise ControlEpisodeError(["control_plan_physics_backend_mismatch"])
+    return dict(configuration)
+
+
+def _require_dynamics_contact_configuration(
+    dynamics: Mapping[str, Any], *, expected: Mapping[str, Any]
+) -> None:
+    if dynamics.get("backend_contact_configuration") != dict(expected):
+        raise ControlEpisodeError(
+            ["control_episode_backend_contact_configuration_plan_mismatch"]
+        )
 
 
 def _vector_norm(values: Sequence[Any]) -> float:
@@ -686,16 +782,26 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
 
     phases: dict[str, dict[str, Any]] = {}
     contact_envelope: dict[str, Any] | None = None
+    contact_configuration: dict[str, Any] | None = None
+    contact_observation_seen = False
     for action in actions:
         phase_id = str(action["phase_id"])
         dynamics = dict(action["arm_dynamics_after"])
-        observed_contact_envelope = _canonical_dynamics_observation(dynamics)[
-            "contact_envelope"
+        canonical_dynamics = _canonical_dynamics_observation(dynamics)
+        observed_contact_envelope = canonical_dynamics["contact_envelope"]
+        observed_contact_configuration = canonical_dynamics[
+            "backend_contact_configuration"
         ]
-        if contact_envelope is None:
+        if not contact_observation_seen:
             contact_envelope = observed_contact_envelope
+            contact_configuration = observed_contact_configuration
+            contact_observation_seen = True
         elif observed_contact_envelope != contact_envelope:
             raise ControlEpisodeError(["control_episode_contact_envelope_drifted"])
+        elif observed_contact_configuration != contact_configuration:
+            raise ControlEpisodeError(
+                ["control_episode_backend_contact_configuration_drifted"]
+            )
         positions = dynamics["joint_position_rad"]
         targets = dynamics["joint_position_target_rad"]
         velocities = dynamics["joint_velocity_rad_s"]
@@ -807,10 +913,11 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
             "filtered_partner_contact_force_n": maximum_partner_force,
             "unattributed_contact_force_n": unattributed_contact_force,
         }
-    if contact_envelope is None:
+    if not contact_observation_seen or contact_configuration is None:
         raise ControlEpisodeError(["control_episode_arm_dynamics_missing"])
     return {
         "schema_version": ARM_DYNAMICS_SUMMARY_SCHEMA_VERSION,
+        "backend_contact_configuration": contact_configuration,
         "contact_envelope": contact_envelope,
         "stall_tracking_error_threshold_rad": STALL_TRACKING_ERROR_THRESHOLD_RAD,
         "stall_joint_velocity_threshold_rad_s": (
@@ -843,6 +950,7 @@ def run_control_episode(
     if plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest"):
         raise ControlEpisodeError(["control_episode_plan_digest_mismatch"])
     plan_contact_envelope = _plan_contact_envelope(plan)
+    plan_contact_configuration = _plan_backend_contact_configuration(plan)
     output = Path(media_output_dir).expanduser().resolve()
     if not episode_id.strip():
         raise ControlEpisodeError(["control_episode_id_missing"])
@@ -854,6 +962,9 @@ def run_control_episode(
     _require_dynamics_contact_envelope(
         initial_arm_dynamics,
         expected=plan_contact_envelope,
+    )
+    _require_dynamics_contact_configuration(
+        initial_arm_dynamics, expected=plan_contact_configuration
     )
     samples = [_sample(environment, 0)]
     actions: list[dict[str, Any]] = []
@@ -910,6 +1021,9 @@ def run_control_episode(
                 dynamics_before,
                 expected=plan_contact_envelope,
             )
+            _require_dynamics_contact_configuration(
+                dynamics_before, expected=plan_contact_configuration
+            )
             if phase["mode"] == "hold_current_joint_positions":
                 action = environment.hold_action(gripper_command=gripper_command)
                 action_recomputed = True
@@ -948,6 +1062,9 @@ def run_control_episode(
             _require_dynamics_contact_envelope(
                 dynamics_after,
                 expected=plan_contact_envelope,
+            )
+            _require_dynamics_contact_configuration(
+                dynamics_after, expected=plan_contact_configuration
             )
             actions.append(
                 _record_action(
@@ -1087,6 +1204,9 @@ def run_control_episode(
         "episode_id": episode_id,
         "instance_digest": plan["instance_digest"],
         "control_plan_digest": plan["plan_digest"],
+        "control_plan_semantic_digest": plan["semantic_plan_digest"],
+        "physics_backend": plan.get("physics_backend", "physx"),
+        "backend_contact_configuration": plan_contact_configuration,
         "contact_envelope": plan_contact_envelope,
         "initial_arm_dynamics": initial_arm_dynamics,
         "control_passed": passed,
@@ -1190,12 +1310,17 @@ def run_required_controls(
     for receipt in controls:
         blockers.extend(receipt.get("blockers") or [])
     plan_contact_envelope = _plan_contact_envelope(plan)
+    plan_contact_configuration = _plan_backend_contact_configuration(plan)
     for receipt in controls:
         dynamics_summary = receipt.get("arm_dynamics_summary")
         if (
             receipt.get("contact_envelope") != plan_contact_envelope
+            or receipt.get("backend_contact_configuration")
+            != plan_contact_configuration
             or not isinstance(dynamics_summary, Mapping)
             or dynamics_summary.get("contact_envelope") != plan_contact_envelope
+            or dynamics_summary.get("backend_contact_configuration")
+            != plan_contact_configuration
         ):
             raise ControlEpisodeError(["control_pair_contact_envelope_unretained"])
     pair: dict[str, Any] = {
@@ -1206,6 +1331,9 @@ def run_required_controls(
         "suite_digest": plan["suite_digest"],
         "instance_digest": plan["instance_digest"],
         "control_plan_digest": plan["plan_digest"],
+        "control_plan_semantic_digest": plan["semantic_plan_digest"],
+        "physics_backend": plan.get("physics_backend", "physx"),
+        "backend_contact_configuration": plan_contact_configuration,
         "contact_envelope": plan_contact_envelope,
         "execution_order": list(REQUIRED_CONTROLS),
         "controls": [
@@ -1213,6 +1341,9 @@ def run_required_controls(
                 "control_id": receipt["control_id"],
                 "control_passed": receipt["control_passed"],
                 "observed_outcome": receipt["observed_outcome"],
+                "backend_contact_configuration": receipt[
+                    "backend_contact_configuration"
+                ],
                 "contact_envelope": receipt["contact_envelope"],
                 "receipt_digest": receipt["receipt_digest"],
             }

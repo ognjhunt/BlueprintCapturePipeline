@@ -4,6 +4,8 @@
   "program_id": "arm-decision-proof-v1",
   "publisher_scene_id": "840313",
   "status": "admitted_development_only",
+  "physics_backend": "physx",
+  "physics_backend_profile_digest": "sha256:0374c938150d7c433b4ef40f28e0075ddd342c98f93f47558ec2101bf9a7eda9",
   "source_bundle": {
     "bundle_id": "adp009d-840313-interiorgs-sage-v1",
     "bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
@@ -109,11 +111,13 @@
     "task_object_role": "approved_simready_can",
     "harness_role": "franka_evaluation_harness",
     "scenario_role": "canonical_scenario_instance",
+    "physics_backend_immutable_per_run": true,
+    "mid_run_backend_switch_allowed": false,
     "canonical_allocator": "python -m blueprint_pipeline.paid_resource_allocator",
     "provider": "vast",
     "retry_cap": 0
   },
   "claim_ceiling": "development_only",
   "physical_evidence": false,
-  "runtime_bundle_digest": "sha256:82bfef56d8d3941998e3f0b868df6a9494517076f5a86c117f6530db221aa120"
+  "runtime_bundle_digest": "sha256:fddc49ca9a74f96e7ca251bde4dfee78cd4c4fa0d5db9268bec7c2eaaadb520e"
 }

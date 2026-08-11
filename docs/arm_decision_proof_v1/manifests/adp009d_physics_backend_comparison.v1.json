@@ -1,0 +1,278 @@
+{
+  "backend_contact_configurations": {
+    "newton": {
+      "actual_contact_onset_and_clearance_measurement_required": true,
+      "backend_profile_digest": "sha256:7dab528752ba53fee17a93f99fac6ef18dd17d5194c951873162c6be12d3f95f",
+      "configuration_digest": "sha256:4718d9414616334eb8ea1eede7e35b63438655f3e1137db7099fde1d7478005b",
+      "contact_model": {
+        "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
+        "contact_buffer_limit": {
+          "field": "nconmax",
+          "value": 1024
+        },
+        "contact_generation": "mujoco_warp_from_generic_usd_import",
+        "friction_cone": "pyramidal",
+        "physx_sdf_overlay_allowed": false,
+        "physx_sdf_semantics_inherited": false,
+        "unsupported_or_ignored_setting_policy": "block"
+      },
+      "physics_backend": "newton",
+      "planner_contact_allowance_m": 0.0,
+      "planner_contact_allowance_source": "generic_surface_geometry_only_no_physx_standoff_assumed",
+      "schema_version": "adp009d_backend_contact_configuration.v1"
+    },
+    "physx": {
+      "actual_contact_onset_and_clearance_measurement_required": true,
+      "backend_profile_digest": "sha256:0374c938150d7c433b4ef40f28e0075ddd342c98f93f47558ec2101bf9a7eda9",
+      "configuration_digest": "sha256:5fa7582a0f72fd79f237e380a5528cf0a06b01303cd16bbf541a28987cada01b",
+      "contact_model": {
+        "approximation": "sdf",
+        "configuration_schema": "adp009d_physx_sdf_contact_model.v1",
+        "effective_contact_envelope_m": 0.01,
+        "finger_contact_offset_m": 0.005,
+        "sdf_margin_m": 0.0025,
+        "sdf_narrow_band_thickness_m": 0.0025,
+        "sdf_resolution": 256,
+        "sdf_subgrid_resolution": 6,
+        "semantics": "physx_specific_not_portable",
+        "source": "approved_can_physx_sdf_adapter.usda"
+      },
+      "physics_backend": "physx",
+      "planner_contact_allowance_m": 0.01,
+      "planner_contact_allowance_source": "physx_sdf_margin_plus_narrow_band_plus_finger_contact_offset",
+      "schema_version": "adp009d_backend_contact_configuration.v1"
+    }
+  },
+  "backend_profiles": {
+    "newton": {
+      "asset_conversion": {
+        "adapter": "approved_can_newton_generic_adapter.usda",
+        "franka_robotiq_conversion_probe_required": true,
+        "mode": "generic_usd_overlay_then_newton_model_builder",
+        "runtime_conversion_receipt_required": true,
+        "source_approximation_semantics_assumed": false,
+        "source_approximation_token": "sdf",
+        "source_approximation_token_blocked_by_overlay": true,
+        "source_usd_mutated": false
+      },
+      "backend_runtime": {
+        "mujoco_version": "3.5.0",
+        "mujoco_warp_version": "3.5.0.2",
+        "newton": {
+          "package_version": "1.1.0.dev0",
+          "revision": "2684d75bfa4bb8b058a93b81c458a74b7701c997",
+          "tree": "46bd29c9b0027cc31116f60250b61f2ac20b7aaa"
+        },
+        "package": "isaaclab_newton",
+        "version": "0.5.9",
+        "warp_version": "1.12.0"
+      },
+      "backend_selected_at_simulation_construction": true,
+      "candidate_outcome_access_allowed": false,
+      "claim_ceiling": "controls_comparison_evidence_only",
+      "contact_model": {
+        "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
+        "contact_buffer_limit": {
+          "field": "nconmax",
+          "value": 1024
+        },
+        "contact_generation": "mujoco_warp_from_generic_usd_import",
+        "friction_cone": "pyramidal",
+        "physx_sdf_overlay_allowed": false,
+        "physx_sdf_semantics_inherited": false,
+        "unsupported_or_ignored_setting_policy": "block"
+      },
+      "controls_only": true,
+      "maturity": "experimental_comparison_candidate",
+      "mid_run_backend_switch_allowed": false,
+      "physics_backend": "newton",
+      "policy_query_allowed": false,
+      "profile_digest": "sha256:7dab528752ba53fee17a93f99fac6ef18dd17d5194c951873162c6be12d3f95f",
+      "profile_id": "adp009d-840313-newton-controls-v1",
+      "program_id": "arm-decision-proof-v1",
+      "required_capabilities": {
+        "closest_geometric_clearance_measurement": true,
+        "contact_force_vector_readback": true,
+        "contact_partner_readback": true,
+        "eight_dimensional_actuation_roundtrip": true,
+        "franka_import": true,
+        "joint_torque_and_limit_readback": true,
+        "lossless_camera_frame_retention": true,
+        "robotiq_import": true
+      },
+      "runtime_identity": {
+        "container_image": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
+        "isaac_lab": {
+          "core_version": "4.5.24",
+          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+          "tree": "454115265327a80acabd07cbd36e10071fc0c065"
+        },
+        "isaac_lab_arena": {
+          "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+          "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
+        },
+        "isaac_sim_version": "6.0.0-dev2"
+      },
+      "schema_version": "adp009d_physics_backend_profile.v1",
+      "solver_configuration": {
+        "cone": "pyramidal",
+        "configuration_schema": "adp009d_newton_mjwarp_solver.v1",
+        "decimation": 8,
+        "dt_seconds": 0.008333333333333333,
+        "integrator": "implicitfast",
+        "iterations": 100,
+        "line_search_iterations": 20,
+        "nconmax": 1024,
+        "njmax": 2048,
+        "num_substeps": 1,
+        "solver": "mujoco_warp",
+        "solver_algorithm": "newton",
+        "use_cuda_graph": true,
+        "use_mujoco_contacts": true,
+        "use_mujoco_cpu": false
+      },
+      "source_bindings": {
+        "approved_can_digest": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+        "sage_collision_digest": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+        "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
+        "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
+      }
+    },
+    "physx": {
+      "asset_conversion": {
+        "conversion_receipt_required": true,
+        "mode": "physx_sdf_overlay",
+        "source_usd_mutated": false
+      },
+      "backend_runtime": {
+        "package": "isaaclab_physx",
+        "version": "0.5.13"
+      },
+      "backend_selected_at_simulation_construction": true,
+      "candidate_outcome_access_allowed": false,
+      "claim_ceiling": "controls_comparison_evidence_only",
+      "contact_model": {
+        "approximation": "sdf",
+        "configuration_schema": "adp009d_physx_sdf_contact_model.v1",
+        "effective_contact_envelope_m": 0.01,
+        "finger_contact_offset_m": 0.005,
+        "sdf_margin_m": 0.0025,
+        "sdf_narrow_band_thickness_m": 0.0025,
+        "sdf_resolution": 256,
+        "sdf_subgrid_resolution": 6,
+        "semantics": "physx_specific_not_portable",
+        "source": "approved_can_physx_sdf_adapter.usda"
+      },
+      "controls_only": true,
+      "maturity": "production_baseline",
+      "mid_run_backend_switch_allowed": false,
+      "physics_backend": "physx",
+      "policy_query_allowed": false,
+      "profile_digest": "sha256:0374c938150d7c433b4ef40f28e0075ddd342c98f93f47558ec2101bf9a7eda9",
+      "profile_id": "adp009d-840313-physx-controls-v1",
+      "program_id": "arm-decision-proof-v1",
+      "required_capabilities": {
+        "closest_geometric_clearance_measurement": true,
+        "contact_force_vector_readback": true,
+        "contact_partner_readback": true,
+        "eight_dimensional_actuation_roundtrip": true,
+        "franka_import": true,
+        "joint_torque_and_limit_readback": true,
+        "lossless_camera_frame_retention": true,
+        "robotiq_import": true
+      },
+      "runtime_identity": {
+        "container_image": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
+        "isaac_lab": {
+          "core_version": "4.5.24",
+          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+          "tree": "454115265327a80acabd07cbd36e10071fc0c065"
+        },
+        "isaac_lab_arena": {
+          "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+          "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
+        },
+        "isaac_sim_version": "6.0.0-dev2"
+      },
+      "schema_version": "adp009d_physics_backend_profile.v1",
+      "solver_configuration": {
+        "configuration_schema": "adp009d_physx_tgs_solver.v1",
+        "decimation": 8,
+        "dt_seconds": 0.008333333333333333,
+        "enable_enhanced_determinism": true,
+        "gpu_max_rigid_contact_count": 8388608,
+        "gpu_max_rigid_patch_count": 32768,
+        "solver": "TGS"
+      },
+      "source_bindings": {
+        "approved_can_digest": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+        "sage_collision_digest": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+        "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
+        "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
+      }
+    }
+  },
+  "backend_specific_contact_configuration_required": true,
+  "claim_ceiling": "controls_comparison_design_only",
+  "common_comparability_bindings": [
+    "source_bundle_digest",
+    "sealed_scene_digest",
+    "task_object_digest",
+    "robot_profile_digest",
+    "scenario_cell_id",
+    "scenario_instance_digest",
+    "seed",
+    "intended_grasp_geometry_digest",
+    "controls_plan_semantic_digest"
+  ],
+  "comparison_acceptance": {
+    "automatic_engine_promotion_allowed": false,
+    "evidence_parity_required": true,
+    "independently_meaningful_fidelity_result_required": true,
+    "physical_verdict_allowed": false,
+    "policy_verdict_allowed": false,
+    "task_success_verdict_allowed": false
+  },
+  "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
+  "contract_kind": "provider_free_design",
+  "default_physics_backend": "physx",
+  "design_digest": "sha256:3aee7bc3cc3eb9e652353587c44229f62f23894b506268513003a5401c7835e5",
+  "mid_run_backend_switch_allowed": false,
+  "newton_canary_admission": {
+    "artifact_storage_required": true,
+    "canonical_spend_admission_required": true,
+    "explicit_paid_run_authorization_required": true,
+    "provider_zero_precheck_required": true,
+    "retry_cap": 0,
+    "schema_version": "adp009d_newton_canary_admission.v1",
+    "teardown_required": true,
+    "watchdog_required": true
+  },
+  "one_backend_per_run": true,
+  "program_id": "arm-decision-proof-v1",
+  "provider_mutation_performed": false,
+  "required_backends": [
+    "physx",
+    "newton"
+  ],
+  "required_controls": [
+    "zero_action_negative",
+    "deterministic_scripted_positive"
+  ],
+  "required_measurements_per_backend": [
+    "initialization_reset",
+    "target_robot_pose",
+    "contacts_and_force_vectors",
+    "torque_utilization_and_clipping",
+    "closest_geometric_clearance",
+    "action_delivery",
+    "phase_completion",
+    "lossless_frames",
+    "review_media",
+    "teardown",
+    "spend",
+    "provider_zero"
+  ],
+  "schema_version": "adp009d_physics_backend_comparison.v1",
+  "status": "validated_without_provider_launch"
+}

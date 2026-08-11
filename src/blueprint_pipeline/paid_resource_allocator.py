@@ -130,6 +130,10 @@ from .adp009d_native_microcheck_bundle import (
     PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
     build_native_microcheck_bundle_isolated as build_native_microcheck_bundle,
 )
+from .adp009d_physics_backend_comparison import (
+    build_backend_profile,
+    validate_newton_canary_admission,
+)
 from .model_access_env import model_access_secret_status, normalize_model_access_env
 from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as ADP_SIMREADY_ISAAC_IMAGE
 from .public_scene_simready_isaac_vast import (
@@ -1128,6 +1132,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp009d-approved-can")
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
+    gpu.add_argument(
+        "--adp009d-physics-backend",
+        choices=("physx", "newton"),
+        default="physx",
+    )
+    gpu.add_argument("--adp009d-newton-canary-admission", default=None)
     gpu.add_argument(
         "--adp009d-aura-particlefield",
         default=None,
@@ -2256,6 +2266,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
+            physics_backend_profile = build_backend_profile(
+                args.adp009d_physics_backend
+            )
             if args.adp009d_controls and not args.adp009d_scenario_instance:
                 blockers.append("adp009d_control_scenario_instance_missing")
             selected_candidates = {
@@ -2274,6 +2287,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp009d_execution_mode_missing")
             elif args.adp009d_diagnostic_only and execution_modes != 1:
                 blockers.append("adp009d_execution_modes_conflict")
+            if args.adp009d_physics_backend == "newton":
+                if selected_candidates:
+                    blockers.append("adp009d_newton_policy_candidate_forbidden")
+                if not args.adp009d_controls or args.adp009d_diagnostic_only:
+                    blockers.append("adp009d_newton_controls_only_required")
+                if args.execute:
+                    admission_path = args.adp009d_newton_canary_admission
+                    if not admission_path:
+                        blockers.append("adp009d_newton_canary_admission_missing")
+                    else:
+                        try:
+                            newton_admission = json.loads(
+                                Path(admission_path)
+                                .expanduser()
+                                .resolve()
+                                .read_text(encoding="utf-8")
+                            )
+                            blockers.extend(
+                                validate_newton_canary_admission(
+                                    newton_admission,
+                                    profile=physics_backend_profile,
+                                )
+                            )
+                            if (
+                                newton_admission.get("max_spend_usd")
+                                != args.adp_max_spend_usd
+                                or newton_admission.get("hard_ttl_seconds")
+                                != args.adp_hard_ttl_seconds
+                            ):
+                                blockers.append(
+                                    "adp009d_newton_canary_admission_budget_binding_invalid"
+                                )
+                        except (OSError, ValueError, TypeError):
+                            blockers.append(
+                                "adp009d_newton_canary_admission_unreadable"
+                            )
             gated_backbone_selected = "groot_n17_droid" in selected_candidates
             gated_backbone_access: dict[str, Any] | None = None
             if gated_backbone_selected and not args.adp009d_authorize_gated_backbone:
@@ -2319,6 +2368,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sage_collision_path=args.adp009d_sage_collision,
                         harness_manifest_path=args.adp009d_harness_manifest,
                         implementation_commit=control_identity["orchestrator_source_commit"],
+                        physics_backend=args.adp009d_physics_backend,
                         policy_candidate_id=args.adp009d_policy_candidate,
                         run_controls=args.adp009d_controls,
                         scenario_instance_path=args.adp009d_scenario_instance,
@@ -2340,6 +2390,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared_bundle.get("input_digest") if prepared_bundle else None
                 ),
                 "candidate_policy_queried": False,
+                "physics_backend": args.adp009d_physics_backend,
+                "physics_backend_profile_digest": physics_backend_profile[
+                    "profile_digest"
+                ],
                 "controls_requested": bool(args.adp009d_controls),
                 "diagnostic_only_requested": bool(args.adp009d_diagnostic_only),
                 "scenario_instance_digest": (
@@ -2349,6 +2403,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "control_plan_digest": (
                     prepared_bundle.get("control_plan_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "control_plan_semantic_digest": (
+                    prepared_bundle.get("control_plan_semantic_digest")
                     if prepared_bundle
                     else None
                 ),
@@ -2413,7 +2472,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 except PaidResourceAdmissionBlocked as exc:
                     result = {
                         "status": "blocked",
-                        "blockers": exc.blockers,
+                        "blockers": sorted(set([*blockers, *exc.blockers])),
                         "provider_mutations_performed": 0,
                     }
                     write_json(Path(args.adapter_output), result)

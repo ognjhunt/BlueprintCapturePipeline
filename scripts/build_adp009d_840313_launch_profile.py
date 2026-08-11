@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline.evaluation_run_contract import validate_evaluation_run_spec
+from blueprint_pipeline.adp009d_physics_backend_comparison import (
+    DEFAULT_PHYSICS_BACKEND,
+    build_backend_profile,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     LAUNCH_RUN_ROOT_PLACEHOLDER,
@@ -280,6 +284,10 @@ def build_profile_release(
         "schema_version": "task_evaluation_launch_profile.v1",
         "profile_id": profile_id,
         "program_id": "arm-decision-proof-v1",
+        "physics_backend": DEFAULT_PHYSICS_BACKEND,
+        "physics_backend_profile_digest": build_backend_profile(
+            DEFAULT_PHYSICS_BACKEND
+        )["profile_digest"],
         "source_bundle": {
             "bundle_id": BUNDLE_ID,
             "source_kind": "interiorgs_sage",
@@ -376,6 +384,8 @@ def build_profile_release(
         "source_commit": source_commit,
         "profile_id": profile_id,
         "profile_digest": profile["profile_digest"],
+        "physics_backend": DEFAULT_PHYSICS_BACKEND,
+        "physics_backend_profile_digest": profile["physics_backend_profile_digest"],
         "source_bundle_digest": EXPECTED_BUNDLE_DIGEST,
         "evaluation_run_spec_digest": EXPECTED_SPEC_DIGEST,
         "runtime_readiness_digest": EXPECTED_READINESS_DIGEST,

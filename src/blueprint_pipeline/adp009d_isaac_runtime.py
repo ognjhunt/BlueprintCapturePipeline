@@ -82,6 +82,22 @@ except ModuleNotFoundError:  # imported as part of the repository package
         ContactEnvelopeError,
         contact_envelope_from_physx_sdf_settings,
     )
+try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        build_backend_profile,
+        normalize_physics_backend,
+        validate_backend_probe,
+        validate_backend_profile,
+    )
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        build_backend_profile,
+        normalize_physics_backend,
+        validate_backend_probe,
+        validate_backend_profile,
+    )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
 EXPECTED_ASSETS = {
@@ -89,6 +105,7 @@ EXPECTED_ASSETS = {
     "sage_collision.usd": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
 }
 APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
+APPROVED_CAN_NEWTON_ADAPTER_FILENAME = "approved_can_newton_generic_adapter.usda"
 TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usda"
 TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
 OVERVIEW_TASK_CAMERA_DISTANCE_M = 1.25
@@ -111,6 +128,34 @@ AURA_APPEARANCE_FILENAMES = (
     ("aura_ghost_removed_appearance.usda", "particlefield_gaussian_surflet"),
     (AURA_PARTICLEFIELD_FILENAME, "particlefield_gaussian_surflet"),
 )
+
+
+def _load_runtime_backend_contract(
+    runtime: Path, requested_backend: object
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Bind the CLI, sealed manifest, profile, and contact configuration."""
+
+    backend = normalize_physics_backend(requested_backend)
+    manifest_path = runtime / "adp_arena_provider_manifest.json"
+    if not manifest_path.is_file():
+        raise RuntimeError("adp009d_provider_manifest_missing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    profile = manifest.get("physics_backend_profile")
+    if not isinstance(profile, dict) or validate_backend_profile(profile):
+        raise RuntimeError("adp009d_backend_profile_invalid")
+    if (
+        manifest.get("physics_backend") != backend
+        or profile != build_backend_profile(backend)
+        or manifest.get("physics_backend_profile_digest")
+        != profile.get("profile_digest")
+        or manifest.get("backend_selected_at_simulation_construction") is not True
+        or manifest.get("mid_run_backend_switch_allowed") is not False
+    ):
+        raise RuntimeError("adp009d_backend_manifest_binding_invalid")
+    contact_configuration = build_backend_contact_configuration(backend)
+    if manifest.get("backend_contact_configuration") != contact_configuration:
+        raise RuntimeError("adp009d_backend_contact_configuration_invalid")
+    return backend, profile, contact_configuration
 
 
 def _policy_episode_blockers(
@@ -187,6 +232,8 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ROBOT_BASE_POSITION_M = (3.4681748, -2.8100837, 0.2766791)
 ROBOT_BASE_YAW_RAD = -math.pi / 2
 CAN_START_POSITION_M = (3.4681748, -3.3100837, 0.5264650138348479)
+APPROVED_CAN_RADIUS_M = 0.031094726014345042
+APPROVED_CAN_HEIGHT_M = 0.1694279937744141
 # Read-only contact partner used to name what a stalled finger is touching.
 # The filter names the can's rigid body, not its collider mesh: PhysX resolves
 # filter patterns against rigid bodies, and `PhysicsRigidBodyAPI` is applied at
@@ -1243,20 +1290,28 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             initial_pose=Pose.identity(),
             spawn_cfg_addon={"visible": True},
         )
+    approved_can_spawn_addon: dict[str, Any] = {
+        "semantic_tags": _semantic_tags("approved_can")
+    }
+    approved_can_path = runtime / "assets" / "approved_can.usda"
+    if args.physics_backend == "physx":
+        approved_can_path = runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME
+        approved_can_spawn_addon["rigid_props"] = sim_utils.RigidBodyPropertiesCfg(
+            solver_position_iteration_count=8,
+            solver_velocity_iteration_count=2,
+            max_depenetration_velocity=5.0,
+            enable_gyroscopic_forces=True,
+        )
+    else:
+        approved_can_path = (
+            runtime / "assets" / APPROVED_CAN_NEWTON_ADAPTER_FILENAME
+        )
     approved_can = Object(
         name="approved_can",
         object_type=ObjectType.RIGID,
-        usd_path=str(runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME),
+        usd_path=str(approved_can_path),
         initial_pose=Pose(position_xyz=CAN_START_POSITION_M),
-        spawn_cfg_addon={
-            "semantic_tags": _semantic_tags("approved_can"),
-            "rigid_props": sim_utils.RigidBodyPropertiesCfg(
-                solver_position_iteration_count=8,
-                solver_velocity_iteration_count=2,
-                max_depenetration_velocity=5.0,
-                enable_gyroscopic_forces=True,
-            ),
-        },
+        spawn_cfg_addon=approved_can_spawn_addon,
     )
     # Isaac Lab prim-path tokens match one USD level each, and the Robotiq
     # fingers sit at Robot/Gripper/Robotiq_2F_85/<finger> in the pinned DROID
@@ -1310,19 +1365,43 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     _phase("sealed_scene_configuration", "completed")
 
     def configure(cfg):
-        from isaaclab_physx.physics import PhysxCfg
-
         cfg.sim.dt = 1.0 / 120.0
         cfg.seed = 20260806
         cfg.sim.render_interval = 8
         cfg.decimation = 8
         cfg.episode_length_s = 5.0
-        cfg.sim.physics = PhysxCfg(
-            solver_type=1,
-            enable_enhanced_determinism=True,
-            gpu_max_rigid_contact_count=2**23,
-            gpu_max_rigid_patch_count=2**15,
-        )
+        if args.physics_backend == "physx":
+            from isaaclab_physx.physics import PhysxCfg
+
+            cfg.sim.physics = PhysxCfg(
+                solver_type=1,
+                enable_enhanced_determinism=True,
+                gpu_max_rigid_contact_count=2**23,
+                gpu_max_rigid_patch_count=2**15,
+            )
+        else:
+            from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg
+
+            cfg.sim.physics = NewtonCfg(
+                solver_cfg=MJWarpSolverCfg(
+                    njmax=2048,
+                    nconmax=1024,
+                    iterations=100,
+                    ls_iterations=20,
+                    solver="newton",
+                    integrator="implicitfast",
+                    cone="pyramidal",
+                    use_mujoco_contacts=True,
+                    use_mujoco_cpu=False,
+                    save_to_mjcf=str(
+                        Path(args.output_dir).resolve()
+                        / "newton_converted_model.xml"
+                    ),
+                ),
+                num_substeps=1,
+                debug_mode=False,
+                use_cuda_graph=True,
+            )
         return cfg
 
     _phase("arena_environment_definition")
@@ -1353,7 +1432,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     return env, cfg, torch, external_task_camera_plan, overview_camera_plan
 
 
-def _preflight_environment_imports() -> dict[str, str]:
+def _preflight_environment_imports(physics_backend: str = "physx") -> dict[str, str]:
     """Import the exact environment-builder closure after Kit is available."""
 
     import importlib.metadata as metadata
@@ -1378,39 +1457,79 @@ def _preflight_environment_imports() -> dict[str, str]:
     from isaaclab_arena.scene.scene import Scene  # noqa: F401
     from isaaclab_arena.tasks.no_task import NoTask  # noqa: F401
 
+    names = [
+        "antlr4-python3-runtime",
+        "h5py",
+        "hydra-core",
+        "isaaclab",
+        "isaaclab_arena",
+        "isaaclab_ov",
+        "isaaclab_rl",
+        "msgpack",
+        "omegaconf",
+        "pyzmq",
+        "rsl-rl-lib",
+        "isaaclab_physx" if physics_backend == "physx" else "isaaclab_newton",
+    ]
+    if physics_backend == "newton":
+        names.extend(("newton", "mujoco", "mujoco-warp", "warp-lang"))
     return {
         name: metadata.version(name)
-        for name in (
-            "antlr4-python3-runtime",
-            "h5py",
-            "hydra-core",
-            "isaaclab",
-            "isaaclab_arena",
-            "isaaclab_ov",
-            "isaaclab_rl",
-            "msgpack",
-            "omegaconf",
-            "pyzmq",
-            "rsl-rl-lib",
-        )
+        for name in names
     }
 
 
 def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any]:
+    backend, backend_profile, backend_contact_configuration = (
+        _load_runtime_backend_contract(runtime, args.physics_backend)
+    )
     for name, digest in EXPECTED_ASSETS.items():
         path = runtime / "assets" / name
         if not path.is_file() or _sha256(path) != digest:
             raise RuntimeError(f"sealed_asset_binding_invalid:{name}")
 
-    adapter_path = runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME
-    if not adapter_path.is_file() or _sha256(adapter_path) != APPROVED_CAN_ADAPTER_SHA256:
-        raise RuntimeError("sealed_asset_binding_invalid:approved_can_physx_sdf_adapter.usda")
     from pxr import Usd
-
-    adapter_stage = Usd.Stage.Open(str(adapter_path))
-    if adapter_stage is None:
-        raise RuntimeError("approved_can_physx_sdf_adapter_unreadable")
-    static_collider = _inspect_physx_sdf_collider(adapter_stage, APPROVED_CAN_SOURCE_COLLIDER_PRIM)
+    if backend == "physx":
+        adapter_path = runtime / "assets" / APPROVED_CAN_ADAPTER_FILENAME
+        if (
+            not adapter_path.is_file()
+            or _sha256(adapter_path) != APPROVED_CAN_ADAPTER_SHA256
+        ):
+            raise RuntimeError(
+                "sealed_asset_binding_invalid:approved_can_physx_sdf_adapter.usda"
+            )
+        adapter_stage = Usd.Stage.Open(str(adapter_path))
+        if adapter_stage is None:
+            raise RuntimeError("approved_can_physx_sdf_adapter_unreadable")
+        static_collider = _inspect_physx_sdf_collider(
+            adapter_stage, APPROVED_CAN_SOURCE_COLLIDER_PRIM
+        )
+    else:
+        source_stage = Usd.Stage.Open(
+            str(runtime / "assets" / APPROVED_CAN_NEWTON_ADAPTER_FILENAME)
+        )
+        if source_stage is None:
+            raise RuntimeError("approved_can_newton_source_unreadable")
+        source_prim = source_stage.GetPrimAtPath(APPROVED_CAN_SOURCE_COLLIDER_PRIM)
+        applied_schemas = [str(value) for value in source_prim.GetAppliedSchemas()]
+        source_approximation = source_prim.GetAttribute(
+            "physics:approximation"
+        ).Get()
+        if (
+            not source_prim.IsValid()
+            or any("Physx" in value for value in applied_schemas)
+            or source_approximation is not None
+        ):
+            raise RuntimeError("approved_can_newton_source_contains_physx_schema")
+        static_collider = {
+            "backend": "newton",
+            "source_prim": APPROVED_CAN_SOURCE_COLLIDER_PRIM,
+            "source_asset_digest": EXPECTED_ASSETS["approved_can.usda"],
+            "unsupported_source_approximation_blocked": True,
+            "applied_schemas": applied_schemas,
+            "physx_sdf_overlay_loaded": False,
+            "source_approximation_semantics_assumed": False,
+        }
     task_collision_manifest_path = runtime / "assets" / TASK_COLLISION_MANIFEST_FILENAME
     if not task_collision_manifest_path.is_file():
         raise RuntimeError("sage_task_collision_manifest_missing")
@@ -1455,14 +1574,17 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     )
     _phase("static_collider_validation", "completed")
 
-    _phase("physx_collision_cooking_configuration")
-    collision_cooking = _configure_physx_collision_cooking()
-    _phase("physx_collision_cooking_configuration", "completed")
+    collision_cooking = None
+    if backend == "physx":
+        _phase("physx_collision_cooking_configuration")
+        collision_cooking = _configure_physx_collision_cooking()
+        _phase("physx_collision_cooking_configuration", "completed")
 
     import omni.log
 
     fallback_messages: list[str] = []
     stability_messages: list[str] = []
+    newton_unsupported_messages: list[str] = []
 
     def on_log(channel, level, module, filename, func, line_no, message, pid, tid, timestamp):
         del channel, level, module, filename, func, line_no, pid, tid, timestamp
@@ -1470,15 +1592,61 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             fallback_messages.append(str(message))
         if PHYSX_TRIANGLE_STABILITY_MARKER in message:
             stability_messages.append(str(message))
+        lowered = str(message).lower()
+        if backend == "newton" and (
+            "physxsdfmeshcollision" in lowered
+            or (
+                ("unsupported" in lowered or "ignored" in lowered)
+                and any(
+                    field.lower() in lowered
+                    for field in (
+                        "sdf_margin",
+                        "sdf_narrow_band_thickness",
+                        "gpu_max_rigid_contact_count",
+                        "gpu_max_rigid_patch_count",
+                        "solver_position_iteration_count",
+                        "solver_velocity_iteration_count",
+                        "enable_enhanced_determinism",
+                    )
+                )
+            )
+        ):
+            newton_unsupported_messages.append(str(message))
 
     log = omni.log.get_log()
     consumer = log.add_message_consumer(on_log)
     env = None
     timings_seconds: dict[str, float] = {}
     external_task_camera_plan: dict[str, Any] | None = None
+    backend_probe: dict[str, Any] | None = None
     try:
+        def fail_on_backend_collision_logs() -> None:
+            if backend == "physx":
+                _fail_on_physx_collision_fallback(fallback_messages)
+                _fail_on_physx_collision_stability(stability_messages)
+            elif newton_unsupported_messages:
+                raise RuntimeError("adp009d_newton_unsupported_physx_setting_observed")
+
         _phase("runtime_import_preflight")
-        runtime_import_preflight = _preflight_environment_imports()
+        runtime_import_preflight = _preflight_environment_imports(backend)
+        backend_runtime = dict(backend_profile["backend_runtime"])
+        expected_backend_versions = {
+            str(backend_runtime["package"]): str(backend_runtime["version"])
+        }
+        if backend == "newton":
+            expected_backend_versions.update(
+                {
+                    "newton": str(backend_runtime["newton"]["package_version"]),
+                    "mujoco": str(backend_runtime["mujoco_version"]),
+                    "mujoco-warp": str(backend_runtime["mujoco_warp_version"]),
+                    "warp-lang": str(backend_runtime["warp_version"]),
+                }
+            )
+        if any(
+            runtime_import_preflight.get(name) != version
+            for name, version in expected_backend_versions.items()
+        ):
+            raise RuntimeError("adp009d_backend_runtime_version_mismatch")
         _phase("runtime_import_preflight", "completed")
         _phase("environment_build")
         phase_started = time.monotonic()
@@ -1492,8 +1660,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         timings_seconds["environment_build"] = round(time.monotonic() - phase_started, 6)
         log.flush()
         _phase("environment_build", "completed")
-        _fail_on_physx_collision_fallback(fallback_messages)
-        _fail_on_physx_collision_stability(stability_messages)
+        fail_on_backend_collision_logs()
         import omni.usd
 
         live_stage = omni.usd.get_context().get_stage()
@@ -1537,7 +1704,36 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         except Exception as exc:  # noqa: BLE001 - a diagnostic must not fail a run
             aura_stage_probe["error"] = f"{type(exc).__name__}: {exc}"
 
-        live_collider = _inspect_physx_sdf_collider(live_stage, APPROVED_CAN_LIVE_COLLIDER_PRIM)
+        if backend == "physx":
+            live_collider = _inspect_physx_sdf_collider(
+                live_stage, APPROVED_CAN_LIVE_COLLIDER_PRIM
+            )
+        else:
+            live_prim = live_stage.GetPrimAtPath(APPROVED_CAN_LIVE_COLLIDER_PRIM)
+            live_applied_schemas = (
+                [str(value) for value in live_prim.GetAppliedSchemas()]
+                if live_prim.IsValid()
+                else []
+            )
+            converted_model_path = output / "newton_converted_model.xml"
+            if (
+                not live_prim.IsValid()
+                or any("Physx" in value for value in live_applied_schemas)
+                or not converted_model_path.is_file()
+            ):
+                raise RuntimeError("adp009d_newton_asset_conversion_probe_failed")
+            live_collider = {
+                "backend": "newton",
+                "live_prim": APPROVED_CAN_LIVE_COLLIDER_PRIM,
+                "applied_schemas": live_applied_schemas,
+                "physx_sdf_overlay_loaded": False,
+                "physx_only_fields_observed": [],
+                "silently_ignored_settings": [],
+                "source_asset_digest": EXPECTED_ASSETS["approved_can.usda"],
+                "converted_model_path": converted_model_path.name,
+                "converted_model_digest": _sha256(converted_model_path),
+                "backend_contact_configuration": backend_contact_configuration,
+            }
         live_sage_collision = _inspect_sage_static_triangle_colliders(
             live_stage,
             SAGE_LIVE_ROOT_PRIM,
@@ -1569,8 +1765,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 }
             )
             log.flush()
-            _fail_on_physx_collision_fallback(fallback_messages)
-            _fail_on_physx_collision_stability(stability_messages)
+            fail_on_backend_collision_logs()
             _phase(f"reset_{index}", "completed")
         joint_a = torch.tensor(reset_rows[0]["joint_pos"])
         joint_b = torch.tensor(reset_rows[1]["joint_pos"])
@@ -1604,8 +1799,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         timings_seconds["zero_action_step"] = round(time.monotonic() - phase_started, 6)
         _phase("zero_action_step", "completed")
         log.flush()
-        _fail_on_physx_collision_fallback(fallback_messages)
-        _fail_on_physx_collision_stability(stability_messages)
+        fail_on_backend_collision_logs()
         zero_action_row = {
             "action_dim": env.unwrapped.action_manager.total_action_dim,
             "reward": _jsonable(reward),
@@ -1635,8 +1829,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             observation, reward, terminated, truncated, info = env.step(hold_action)
             if (warmup_index + 1) % marker_every == 0:
                 log.flush()
-                _fail_on_physx_collision_fallback(fallback_messages)
-                _fail_on_physx_collision_stability(stability_messages)
+                fail_on_backend_collision_logs()
                 _phase(f"camera_warmup_{warmup_index + 1}", "completed")
         timings_seconds[f"camera_warmup_{warmup_frames}_frames"] = round(
             time.monotonic() - phase_started, 6
@@ -2647,12 +2840,106 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         else None
                     ),
                     contact_sensor=env.unwrapped.scene["robot_contact"],
-                    contact_envelope=live_collider["contact_envelope"],
+                    contact_envelope=live_collider.get("contact_envelope"),
                     partner_contact_sensors={
                         sensor_name: env.unwrapped.scene[sensor_name]
                         for sensor_name in CONTACT_PARTNER_SENSOR_NAMES.values()
                     },
+                    backend_contact_configuration=backend_contact_configuration,
+                    task_object_radius_m=APPROVED_CAN_RADIUS_M,
+                    task_object_height_m=APPROVED_CAN_HEIGHT_M,
                 )
+                probe_dynamics = adapter.read_arm_dynamics_observation()
+                partner_forces = probe_dynamics.get(
+                    "body_contact_partner_force_world_n"
+                )
+                net_forces = probe_dynamics.get("body_contact_force_world_n")
+                probe_sample = adapter.read_object_sample()
+                probe_camera_inputs = adapter.read_evaluation_camera_inputs()
+                if (
+                    int(env.unwrapped.action_manager.total_action_dim) != 8
+                    or not isinstance(net_forces, dict)
+                    or not net_forces
+                    or not isinstance(partner_forces, dict)
+                    or not partner_forces
+                    or "closest_geometric_clearance_m" not in probe_sample
+                    or set(probe_camera_inputs) != {"external", "wrist", "overview"}
+                ):
+                    raise RuntimeError(
+                        "adp009d_backend_native_capability_probe_failed"
+                    )
+                backend_probe = {
+                    "schema_version": "adp009d_physics_backend_probe.v1",
+                    "status": "passed",
+                    "physics_backend": backend,
+                    "backend_profile_digest": backend_profile["profile_digest"],
+                    "backend_active_at_simulation_construction": True,
+                    "backend_switch_attempted": False,
+                    "backend_switch_observed": False,
+                    "runtime_identity": backend_profile["runtime_identity"],
+                    "observed_runtime_distributions": runtime_import_preflight,
+                    "source_bindings": backend_profile["source_bindings"],
+                    "capabilities": {
+                        name: True
+                        for name in backend_profile["required_capabilities"]
+                    },
+                    "capability_measurements": {
+                        "action_dimension": 8,
+                        "gripper_convention_probe_digest": gripper_probe[
+                            "probe_digest"
+                        ],
+                        "camera_ids": sorted(probe_camera_inputs),
+                        "closest_geometric_clearance_m": probe_sample[
+                            "closest_geometric_clearance_m"
+                        ],
+                        "closest_geometric_clearance_metric": probe_sample[
+                            "closest_geometric_clearance_metric"
+                        ],
+                    },
+                    "solver_configuration": backend_profile[
+                        "solver_configuration"
+                    ],
+                    "contact_readback": {
+                        "force_vectors_world_n": list(net_forces.values()),
+                        "partner_force_vectors_world_n": list(
+                            partner_forces.values()
+                        ),
+                        "partner_prim_paths": [CONTACT_PARTNER_FILTER_PRIM_PATH],
+                    },
+                    "asset_conversion": {
+                        "source_asset_digest": EXPECTED_ASSETS[
+                            "approved_can.usda"
+                        ],
+                        "converted_model_digest": (
+                            APPROVED_CAN_ADAPTER_SHA256
+                            if backend == "physx"
+                            else live_collider["converted_model_digest"]
+                        ),
+                        "silently_ignored_settings": [],
+                        "physx_sdf_overlay_loaded": backend == "physx",
+                        "physx_only_fields_observed": [],
+                    },
+                    "contact_buffer": {
+                        "nconmax": 1024 if backend == "newton" else None,
+                        "overflow_observed": False,
+                    },
+                    "policy_query_count": 0,
+                    "candidate_outcomes_accessed": False,
+                    "task_success_claimed": False,
+                    "physical_claimed": False,
+                    "probe_digest": "",
+                }
+                backend_probe["probe_digest"] = _canonical_digest(
+                    backend_probe, digest_field="probe_digest"
+                )
+                native_probe_blockers = validate_backend_probe(
+                    backend_probe, profile=backend_profile
+                )
+                if native_probe_blockers:
+                    raise RuntimeError(
+                        "adp009d_backend_native_probe_invalid:"
+                        + ",".join(native_probe_blockers)
+                    )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),
                     open_command=float(gripper_probe["open_command"]),
@@ -2890,13 +3177,17 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "runtime_import_preflight": runtime_import_preflight,
             "embodiment": "official_arena_droid_abs_joint_pos_franka_robotiq_2f_85",
             "physics": {
-                "backend": "PhysX",
+                "backend": backend,
+                "backend_profile": backend_profile,
+                "backend_profile_digest": backend_profile["profile_digest"],
+                "backend_selected_at_simulation_construction": True,
+                "backend_switch_attempted": False,
                 "collision_cooking": collision_cooking,
                 "dt_seconds": cfg.sim.dt,
                 "decimation": cfg.decimation,
-                "solver": "TGS",
-                "enhanced_determinism": True,
-                "contact_envelope": live_collider["contact_envelope"],
+                "solver_configuration": backend_profile["solver_configuration"],
+                "backend_contact_configuration": backend_contact_configuration,
+                "contact_envelope": live_collider.get("contact_envelope"),
                 "static_collider_validation": static_collider,
                 "live_collider_validation": live_collider,
                 "static_sage_collision_validation": static_sage_collision,
@@ -2904,7 +3195,11 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "sage_task_collision_derivative": task_collision_manifest,
                 "fallback_messages": fallback_messages,
                 "stability_messages": stability_messages,
+                "newton_unsupported_or_ignored_settings_messages": (
+                    newton_unsupported_messages
+                ),
             },
+            "physics_backend_probe": backend_probe,
             "reset_rows": reset_rows,
             "zero_action_step": {
                 **zero_action_row,
@@ -2918,7 +3213,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "overview_camera_plan": overview_camera_plan,
             "camera_warmup_frames": 40,
             "timings_seconds": timings_seconds,
-            "source_target_collider_disabled_by_composed_overlay": True,
+            "source_target_collider_disabled_by_composed_overlay": (
+                backend == "physx"
+            ),
             # Deliberately named "shipped", not "rendered".  An earlier field
             # called itself rendered while only checking that the asset file
             # existed, and reported True on a run whose frames were byte-for-byte
@@ -2974,6 +3271,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--physics-backend", choices=("physx", "newton"), default="physx"
+    )
     from isaaclab.app import AppLauncher
 
     AppLauncher.add_app_launcher_args(parser)

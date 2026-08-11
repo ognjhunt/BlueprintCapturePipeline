@@ -49,6 +49,16 @@ except ModuleNotFoundError:  # repository package
         ContactEnvelopeError,
         validate_contact_envelope,
     )
+try:  # flat provider-bundle layout
+    from adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        validate_backend_contact_configuration,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        validate_backend_contact_configuration,
+    )
 
 ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v11"
 ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
@@ -115,6 +125,41 @@ def _rotate_vector_by_quaternion_xyzw(
         vy + w * ty + (z * tx - x * tz),
         vz + w * tz + (x * ty - y * tx),
     ]
+
+
+def signed_point_to_vertical_cylinder_clearance_m(
+    *,
+    point_world_m: Sequence[float],
+    cylinder_pose_world_xyzw: Sequence[float],
+    radius_m: float,
+    height_m: float,
+) -> float:
+    """Return exact signed point clearance to a posed finite cylinder."""
+
+    point = [float(value) for value in point_world_m]
+    pose = [float(value) for value in cylinder_pose_world_xyzw]
+    radius = float(radius_m)
+    height = float(height_m)
+    if (
+        len(point) != 3
+        or len(pose) != 7
+        or radius <= 0.0
+        or height <= 0.0
+        or not all(math.isfinite(value) for value in [*point, *pose, radius, height])
+    ):
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_cylinder_clearance_geometry_invalid"]
+        )
+    displacement = [point[index] - pose[index] for index in range(3)]
+    qx, qy, qz, qw = pose[3:7]
+    local = _rotate_vector_by_quaternion_xyzw(
+        (-qx, -qy, -qz, qw), displacement
+    )
+    radial = math.hypot(local[0], local[1]) - radius
+    axial = abs(local[2]) - height / 2.0
+    outside = math.hypot(max(radial, 0.0), max(axial, 0.0))
+    inside = min(max(radial, axial), 0.0)
+    return outside + inside
 
 
 def semantic_finger_tool_midpoint_world_m(
@@ -459,6 +504,9 @@ class IsaacEpisodeAdapter:
         contact_sensor: Any | None = None,
         contact_envelope: Mapping[str, Any] | None = None,
         partner_contact_sensors: Mapping[str, Any] | None = None,
+        backend_contact_configuration: Mapping[str, Any] | None = None,
+        task_object_radius_m: float | None = None,
+        task_object_height_m: float | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -477,12 +525,48 @@ class IsaacEpisodeAdapter:
         self._scripted_pose_action_callback = scripted_pose_action_callback
         self._camera_pose_callback = camera_pose_callback
         self._contact_sensor = contact_sensor
-        try:
-            self._contact_envelope = validate_contact_envelope(contact_envelope)
-        except ContactEnvelopeError as exc:
-            raise IsaacEpisodeAdapterError([str(exc)]) from exc
+        if contact_envelope is None:
+            self._contact_envelope = None
+        else:
+            try:
+                self._contact_envelope = validate_contact_envelope(contact_envelope)
+            except ContactEnvelopeError as exc:
+                raise IsaacEpisodeAdapterError([str(exc)]) from exc
+        if backend_contact_configuration is None and self._contact_envelope is not None:
+            backend_contact_configuration = build_backend_contact_configuration("physx")
+        if not isinstance(backend_contact_configuration, Mapping):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_backend_contact_configuration_missing"]
+            )
+        contact_blockers = validate_backend_contact_configuration(
+            backend_contact_configuration
+        )
+        if contact_blockers:
+            raise IsaacEpisodeAdapterError(contact_blockers)
+        self._backend_contact_configuration = dict(backend_contact_configuration)
         self._partner_contact_sensors = dict(partner_contact_sensors or {})
         self._partner_filter_shapes: dict[str, int] = {}
+        self._task_object_radius_m = (
+            None if task_object_radius_m is None else float(task_object_radius_m)
+        )
+        self._task_object_height_m = (
+            None if task_object_height_m is None else float(task_object_height_m)
+        )
+        if (self._task_object_radius_m is None) != (
+            self._task_object_height_m is None
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_task_object_geometry_incomplete"]
+            )
+        if self._task_object_radius_m is not None and (
+            not math.isfinite(self._task_object_radius_m)
+            or not math.isfinite(self._task_object_height_m)
+            or self._task_object_radius_m <= 0.0
+            or self._task_object_height_m <= 0.0
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_task_object_geometry_invalid"]
+            )
         self._control_step_index = 0
         if (
             not math.isfinite(self._gripper_closed_width_m)
@@ -704,7 +788,14 @@ class IsaacEpisodeAdapter:
             # than evidence that the filter expression never matched anything.
             "body_contact_partner_filter_shapes": dict(self._partner_filter_shapes),
             "body_incoming_joint_wrench_body": self._body_incoming_joint_wrenches(),
-            "contact_envelope": dict(self._contact_envelope),
+            "backend_contact_configuration": dict(
+                self._backend_contact_configuration
+            ),
+            "contact_envelope": (
+                None
+                if self._contact_envelope is None
+                else dict(self._contact_envelope)
+            ),
         }
 
     def step(self, isaac_action: Sequence[float]) -> None:
@@ -911,6 +1002,35 @@ class IsaacEpisodeAdapter:
                 math.sqrt(sum(component * component for component in contact_forces[name]))
                 for name in FINGER_BODIES
             ]
+        if self._task_object_radius_m is not None:
+            object_pose = [
+                float(value)
+                for value in self._to_torch(self._can.data.root_pose_w)[0, :7]
+            ]
+            tool_points = (
+                semantic_finger_tool_midpoint_world_m(
+                    left_finger_pose_world_xyzw=left_pose,
+                    right_finger_pose_world_xyzw=left_pose,
+                ),
+                semantic_finger_tool_midpoint_world_m(
+                    left_finger_pose_world_xyzw=right_pose,
+                    right_finger_pose_world_xyzw=right_pose,
+                ),
+            )
+            clearances = [
+                signed_point_to_vertical_cylinder_clearance_m(
+                    point_world_m=point,
+                    cylinder_pose_world_xyzw=object_pose,
+                    radius_m=self._task_object_radius_m,
+                    height_m=self._task_object_height_m,
+                )
+                for point in tool_points
+            ]
+            sample["finger_tool_to_object_signed_clearance_m"] = clearances
+            sample["closest_geometric_clearance_m"] = min(clearances)
+            sample["closest_geometric_clearance_metric"] = (
+                "signed_semantic_finger_tool_point_to_posed_finite_cylinder"
+            )
         return sample
 
     # -- internals ----------------------------------------------------------
@@ -992,6 +1112,7 @@ def describe_adapter() -> dict[str, Any]:
         "scripted_control_body_pose_resolution": (
             "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
         ),
+        "scripted_control_jacobian_frame": "world",
         "scripted_control_physx_jacobian_frame": "world",
         "scripted_control_controller_error_frame": "robot_root",
         "scripted_control_jacobian_frame_transform": (
@@ -1002,6 +1123,7 @@ def describe_adapter() -> dict[str, Any]:
         ),
         "contact_envelope_runtime_validation_required": True,
         "contact_envelope_retained_in_arm_dynamics_observation": True,
+        "backend_contact_configuration_retained_in_arm_dynamics_observation": True,
         "contact_force_source": "IsaacLab ContactSensor.data.net_forces_w",
         "incoming_joint_wrench_source": (
             "IsaacLab ArticulationData.body_incoming_joint_wrench_b"
@@ -1113,5 +1235,6 @@ __all__ = [
     "rgb_from_camera_output",
     "rotation_row_major_from_quaternion_xyzw",
     "semantic_finger_tool_midpoint_world_m",
+    "signed_point_to_vertical_cylinder_clearance_m",
     "validate_adapter_bindings",
 ]

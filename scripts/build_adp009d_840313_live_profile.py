@@ -11,10 +11,14 @@ from typing import Any, Sequence
 from blueprint_pipeline.adp009d_840313_runtime_bundle import (
     verify_materialized_runtime_inputs,
 )
+from blueprint_pipeline.adp009d_physics_backend_comparison import (
+    DEFAULT_PHYSICS_BACKEND,
+    build_backend_profile,
+)
 from blueprint_pipeline.adp009d_live_readiness import (
     APPEARANCE_DIGEST,
     EVALUATION_RUN_SPEC_DIGEST,
-    PROFILE_ID as READINESS_PROFILE_ID,
+    PROFILE_ID as READINESS_PROFILE_ID,  # noqa: F401 - public builder constant
     RUNTIME_BUNDLE_DIGEST,
     SOURCE_BUNDLE_DIGEST,
     build_live_readiness,
@@ -200,6 +204,10 @@ def build_live_profile_release(
         "schema_version": "task_evaluation_launch_profile.v1",
         "profile_id": profile_id,
         "program_id": "arm-decision-proof-v1",
+        "physics_backend": DEFAULT_PHYSICS_BACKEND,
+        "physics_backend_profile_digest": build_backend_profile(
+            DEFAULT_PHYSICS_BACKEND
+        )["profile_digest"],
         "source_bundle": {
             "bundle_id": BUNDLE_ID,
             "source_kind": "interiorgs_sage",
@@ -237,6 +245,8 @@ def build_live_profile_release(
                 "vast",
                 "--probe-kind",
                 "adp009d-franka-native-microcheck",
+                "--adp009d-physics-backend",
+                DEFAULT_PHYSICS_BACKEND,
                 "--adp009d-approved-can",
                 runtime_by_name["approved_simready_can"]["path"],
                 "--adp009d-sage-collision",
@@ -307,6 +317,8 @@ def build_live_profile_release(
         "source_commit": source_commit,
         "profile_id": profile_id,
         "profile_digest": profile["profile_digest"],
+        "physics_backend": DEFAULT_PHYSICS_BACKEND,
+        "physics_backend_profile_digest": profile["physics_backend_profile_digest"],
         "source_bundle_digest": SOURCE_BUNDLE_DIGEST,
         "evaluation_run_spec_digest": EVALUATION_RUN_SPEC_DIGEST,
         "runtime_bundle_digest": RUNTIME_BUNDLE_DIGEST,

@@ -18,6 +18,7 @@ from blueprint_pipeline.adp009d_contact_envelope import (
 )
 from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     APPROVED_CAN_ADAPTER_FILENAME,
+    APPROVED_CAN_NEWTON_ADAPTER_FILENAME,
     DEFAULT_IMAGE,
     PROBE_KIND,
     SUPPORT_COLLIDER_PRIM,
@@ -254,6 +255,77 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
     assert "command -v ffprobe" in entrypoint
     assert "apt-get install -y -qq ffmpeg" in entrypoint
     assert "adp009d_media_toolchain_status.json" in entrypoint
+
+
+def test_newton_controls_bundle_is_distinct_and_contains_no_physx_overlay(
+    tmp_path: Path,
+) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "newton-controls",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        physics_backend="newton",
+        run_controls=True,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    assert receipt["physics_backend"] == "newton"
+    assert receipt["contact_envelope"] is None
+    assert receipt["control_plan_semantic_digest"].startswith("sha256:")
+    assert receipt["backend_contact_configuration"]["contact_model"][
+        "physx_sdf_overlay_allowed"
+    ] is False
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        plan = json.loads(
+            archive.read("provider_runtime/adp009d_control_plan.v12.json")
+        )
+    assert f"provider_runtime/assets/{APPROVED_CAN_ADAPTER_FILENAME}" not in names
+    assert (
+        f"provider_runtime/assets/{APPROVED_CAN_NEWTON_ADAPTER_FILENAME}" in names
+    )
+    assert plan["physics_backend"] == "newton"
+    assert plan["contact_envelope"] is None
+    assert plan["semantic_plan_digest"] == receipt[
+        "control_plan_semantic_digest"
+    ]
+    Usd = pytest.importorskip("pxr.Usd")
+    adapter = Usd.Stage.Open(
+        str(
+            Path(receipt["bundle_path"]).parent
+            / "provider_runtime/assets"
+            / APPROVED_CAN_NEWTON_ADAPTER_FILENAME
+        )
+    )
+    collider = adapter.GetPrimAtPath("/canned_beverage/colliders/body_collider")
+    assert collider.GetAttribute("physics:approximation").Get() is None
+    assert all("Physx" not in str(schema) for schema in collider.GetAppliedSchemas())
+
+
+def test_newton_bundle_rejects_policy_and_requires_controls(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    kwargs = {
+        "job_dir": tmp_path / "newton-invalid",
+        "approved_can_path": approved,
+        "sage_collision_path": sage,
+        "harness_manifest_path": harness,
+        "implementation_commit": "a" * 40,
+        "physics_backend": "newton",
+        "generated_at": "fixed",
+        "expected_asset_bindings": bindings,
+    }
+
+    with pytest.raises(ValueError, match="newton_controls_required"):
+        build_native_microcheck_bundle(**kwargs)
+    with pytest.raises(ValueError, match="newton_policy_candidate_forbidden"):
+        build_native_microcheck_bundle(
+            **kwargs, run_controls=True, policy_candidate_id="pi05_droid"
+        )
 
 
 def test_bundle_rejects_a_harness_contact_offset_drift(tmp_path: Path) -> None:
@@ -509,7 +581,10 @@ def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
 def test_runtime_preflights_exact_arena_environment_import_closure() -> None:
     source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
 
-    assert "def _preflight_environment_imports() -> dict[str, str]:" in source
+    assert (
+        'def _preflight_environment_imports(physics_backend: str = "physx")'
+        in source
+    )
     assert '_phase("runtime_import_preflight")' in source
     assert "from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder" in source
     assert '"hydra-core"' in source
@@ -701,6 +776,22 @@ def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> No
     assert '"foreground_semantic_pixel_fraction"' in source
 
 
+def test_runtime_keeps_physx_readback_and_constructs_newton_separately() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    assert 'if args.physics_backend == "physx":' in source
+    assert "from isaaclab_physx.physics import PhysxCfg" in source
+    assert "from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg" in source
+    assert "nconmax=1024" in source
+    assert 'integrator="implicitfast"' in source
+    assert 'save_to_mjcf=str(' in source
+    assert "approved_can_newton_source_contains_physx_schema" in source
+    assert "adp009d_newton_unsupported_physx_setting_observed" in source
+    assert "adp009d_backend_native_capability_probe_failed" in source
+    assert "validate_backend_probe(" in source
+    assert '"physics_backend_probe": backend_probe' in source
+
+
 def test_overview_camera_is_task_centered_and_fails_closed_when_object_is_absent() -> None:
     """The stock second Arena view faced backward and showed no task pixels."""
 
@@ -768,6 +859,23 @@ def test_worker_uses_smallest_pinned_official_arena_physx_install_closure(tmp_pa
     assert "source/isaaclab*/" not in flattened
     assert "apt-get" not in flattened
     worker._validate_install_commands(commands)
+
+
+def test_worker_newton_install_is_exact_and_does_not_select_physx(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    commands = worker._install_commands(tmp_path / "arena", physics_backend="newton")
+    flattened = "\n".join(" ".join(command) for command in commands)
+
+    assert (
+        "isaaclab.sh -i assets,newton,ov,rl[rsl-rl],tasks,teleop"
+        in flattened
+    )
+    assert "isaaclab_physx" not in flattened
+    assert "isaaclab_newton" in flattened
+    worker._validate_install_commands(commands, physics_backend="newton")
 
 
 def test_worker_rejects_expanded_install_profile() -> None:
@@ -996,6 +1104,77 @@ def test_allocator_refuses_an_ambiguous_paid_microcheck_without_an_execution_mod
     result = json.loads((tmp_path / "adapter.json").read_text())
     assert result["provider_mutations_performed"] == 0
     assert "adp009d_execution_mode_missing" in result["blockers"]
+
+
+def test_allocator_validates_newton_dry_run_without_provider_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+
+    def fake_build(**kwargs):
+        observed["build"] = kwargs
+        return {
+            "status": "ready",
+            "bundle_sha256": "sha256:" + "b" * 64,
+            "input_digest": "sha256:" + "c" * 64,
+            "control_plan_semantic_digest": "sha256:" + "d" * 64,
+        }
+
+    def fake_run(**kwargs):
+        observed["run"] = kwargs
+        return {"status": "dry_run_ready", "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(allocator, "build_native_microcheck_bundle", fake_build)
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+
+    args = _allocator_args(tmp_path, execute=False) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+    ]
+    assert allocator.main(args) == 0
+    assert observed["build"]["physics_backend"] == "newton"
+    assert observed["run"]["execute"] is False
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["allocation_binding"]["physics_backend"] == "newton"
+
+
+def test_allocator_blocks_newton_mutation_before_specific_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    args = _allocator_args(tmp_path, execute=True) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+    ]
+
+    assert allocator.main(args) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["provider_mutations_performed"] == 0
+    assert "adp009d_newton_canary_admission_missing" in result["blockers"]
 
 
 def test_paid_host_exit_before_control_receipt_is_avoidlisted_not_scored() -> None:

@@ -1,0 +1,356 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline.adp009d_physics_backend_comparison import (
+    CANARY_ADMISSION_SCHEMA_VERSION,
+    COMPARABILITY_BINDINGS,
+    MEASUREMENT_FIELDS,
+    PROBE_SCHEMA_VERSION,
+    PhysicsBackendContractError,
+    build_backend_control_run_receipt,
+    build_backend_profile,
+    build_comparison_design_contract,
+    build_comparison_receipt,
+    normalize_physics_backend,
+    validate_backend_probe,
+    validate_backend_profile,
+    validate_comparison_receipt,
+    validate_comparison_design_contract,
+    validate_newton_canary_admission,
+)
+from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+COMMITTED_DESIGN = (
+    ROOT
+    / "docs/arm_decision_proof_v1/manifests/"
+    "adp009d_physics_backend_comparison.v1.json"
+)
+
+
+def _probe(profile: dict) -> dict:
+    value = {
+        "schema_version": PROBE_SCHEMA_VERSION,
+        "status": "passed",
+        "physics_backend": profile["physics_backend"],
+        "backend_profile_digest": profile["profile_digest"],
+        "backend_active_at_simulation_construction": True,
+        "backend_switch_attempted": False,
+        "backend_switch_observed": False,
+        "runtime_identity": deepcopy(profile["runtime_identity"]),
+        "source_bindings": deepcopy(profile["source_bindings"]),
+        "capabilities": {
+            name: True for name in profile["required_capabilities"]
+        },
+        "solver_configuration": deepcopy(profile["solver_configuration"]),
+        "contact_readback": {
+            "force_vectors_world_n": [[1.0, 2.0, 3.0]],
+            "partner_prim_paths": ["/World/envs/env_0/approved_can"],
+        },
+        "asset_conversion": {
+            "source_asset_digest": profile["source_bindings"]["approved_can_digest"],
+            "converted_model_digest": "sha256:" + "a" * 64,
+            "silently_ignored_settings": [],
+            "physx_sdf_overlay_loaded": False,
+            "physx_only_fields_observed": [],
+        },
+        "contact_buffer": {"nconmax": 1024, "overflow_observed": False},
+        "policy_query_count": 0,
+        "candidate_outcomes_accessed": False,
+        "task_success_claimed": False,
+        "physical_claimed": False,
+    }
+    value["probe_digest"] = canonical_digest(value, digest_field="probe_digest")
+    return value
+
+
+def _admission(profile: dict, now: datetime) -> dict:
+    value = {
+        "schema_version": CANARY_ADMISSION_SCHEMA_VERSION,
+        "status": "passed",
+        "backend_profile_digest": profile["profile_digest"],
+        "controls_only": True,
+        "policy_query_allowed": False,
+        "candidate_outcome_access_allowed": False,
+        "canonical_allocator": (
+            "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
+        ),
+        "explicit_paid_run_authorization": True,
+        "canonical_spend_admission": True,
+        "watchdog_required": True,
+        "artifact_storage_required": True,
+        "teardown_required": True,
+        "provider_zero_precheck_passed": True,
+        "retry_cap": 0,
+        "max_spend_usd": 2.0,
+        "hard_ttl_seconds": 3600,
+        "expires_at": (now + timedelta(minutes=15)).isoformat(),
+        "provider_mutation_performed": False,
+    }
+    value["admission_digest"] = canonical_digest(
+        value, digest_field="admission_digest"
+    )
+    return value
+
+
+def _run(backend: str) -> dict:
+    bindings = {
+        name: (
+            20260806
+            if name == "seed"
+            else f"{name}-same-value"
+        )
+        for name in COMPARABILITY_BINDINGS
+    }
+    measurements = {
+        "initialization_reset": {
+            "initialization_completed": True,
+            "reset_completed": True,
+        },
+        "target_robot_pose": {
+            "target_pose_world": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            "robot_pose_world": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        },
+        "contacts_and_force_vectors": {
+            "force_vectors_world_n": [[1.0, 0.0, 0.0]],
+            "partner_prim_paths": ["/World/approved_can"],
+        },
+        "torque_utilization_and_clipping": {
+            "maximum_utilization": 0.5,
+            "clipping_observed": False,
+        },
+        "closest_geometric_clearance": {"minimum_m": 0.008},
+        "action_delivery": {
+            "requested_count": 10,
+            "delivered_count": 10,
+            "nontrivial_action_delivered": True,
+        },
+        "phase_completion": {"rows": [{"phase_id": "pregrasp"}]},
+        "lossless_frames": {
+            "frame_manifest_digest": "sha256:" + "b" * 64,
+            "frame_count": 2,
+            "lossless": True,
+        },
+        "review_media": {
+            "media_digest": "sha256:" + "c" * 64,
+            "derived_from_lossless_frames": True,
+        },
+        "teardown": {"completed": True, "continuing_spend": False},
+        "spend": {"total_usd": 0.5},
+        "provider_zero": {"api_confirmed": True, "live_instance_count": 0},
+    }
+    assert set(measurements) == set(MEASUREMENT_FIELDS)
+    return build_backend_control_run_receipt(
+        physics_backend=backend,
+        comparability_bindings=bindings,
+        backend_control_plan_digest=(
+            "sha256:" + ("d" if backend == "physx" else "e") * 64
+        ),
+        measurements=measurements,
+    )
+
+
+def _fidelity() -> dict:
+    return {
+        "metric_id": "closest_geometric_clearance_error_m",
+        "metric_authority": "deterministic_geometry",
+        "direction": "lower_is_better",
+        "physx_value": 0.01,
+        "newton_value": 0.008,
+        "delta": -0.002,
+        "meaningful_threshold": -0.001,
+        "meaningful_improvement_observed": True,
+    }
+
+
+def test_backend_contract_is_strict_and_physx_remains_default_profile() -> None:
+    physx = build_backend_profile("physx")
+    newton = build_backend_profile("newton")
+
+    assert validate_backend_profile(physx) == []
+    assert validate_backend_profile(newton) == []
+    assert physx["maturity"] == "production_baseline"
+    assert newton["maturity"] == "experimental_comparison_candidate"
+    assert newton["solver_configuration"]["nconmax"] == 1024
+    assert newton["contact_model"]["physx_sdf_semantics_inherited"] is False
+    with pytest.raises(PhysicsBackendContractError):
+        normalize_physics_backend("PhysX")
+    with pytest.raises(PhysicsBackendContractError):
+        normalize_physics_backend(None)
+
+
+def test_committed_design_is_canonical_and_provider_free() -> None:
+    committed = json.loads(COMMITTED_DESIGN.read_text(encoding="utf-8"))
+
+    assert committed == build_comparison_design_contract()
+    assert validate_comparison_design_contract(committed) == []
+    assert committed["default_physics_backend"] == "physx"
+    assert committed["provider_mutation_performed"] is False
+    assert committed["status"] == "validated_without_provider_launch"
+
+
+def test_backend_plans_share_semantics_but_not_contact_configuration() -> None:
+    instance_path = (
+        ROOT
+        / "docs/arm_decision_proof_v1/manifests/"
+        "adp009d_canonical_scenario_instance.v1.json"
+    )
+    instance = json.loads(instance_path.read_text(encoding="utf-8"))
+
+    physx = materialize_control_plan(instance, physics_backend="physx")
+    newton = materialize_control_plan(instance, physics_backend="newton")
+
+    assert physx["semantic_plan_digest"] == newton["semantic_plan_digest"]
+    assert physx["plan_digest"] != newton["plan_digest"]
+    assert physx["contact_envelope"] is not None
+    assert newton["contact_envelope"] is None
+    assert newton["backend_contact_configuration"]["contact_model"][
+        "physx_sdf_semantics_inherited"
+    ] is False
+
+
+def test_profile_and_digest_drift_fail_closed() -> None:
+    profile = build_backend_profile("newton")
+    profile["runtime_identity"]["isaac_sim_version"] = "latest"
+
+    assert validate_backend_profile(profile) == [
+        "adp009d_backend_profile_digest_invalid",
+        "adp009d_backend_profile_drifted",
+    ]
+
+
+def test_newton_profile_rejects_physx_only_fields_even_with_recomputed_digest() -> None:
+    profile = build_backend_profile("newton")
+    profile["solver_configuration"]["sdf_margin_m"] = 0.001
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+
+    blockers = validate_backend_profile(profile)
+
+    assert "adp009d_newton_profile_contains_physx_only_fields" in blockers
+    assert "adp009d_backend_profile_drifted" in blockers
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("franka_import", "adp009d_backend_probe_capability_missing"),
+        ("contact_partner_readback", "adp009d_backend_probe_capability_missing"),
+    ],
+)
+def test_unsupported_franka_or_contact_readback_blocks_probe(
+    field: str, expected: str
+) -> None:
+    profile = build_backend_profile("newton")
+    probe = _probe(profile)
+    probe["capabilities"][field] = False
+    probe["probe_digest"] = canonical_digest(probe, digest_field="probe_digest")
+
+    assert expected in validate_backend_probe(probe, profile=profile)
+
+
+def test_probe_rejects_silent_physx_field_handling_and_contact_overflow() -> None:
+    profile = build_backend_profile("newton")
+    probe = _probe(profile)
+    probe["asset_conversion"]["silently_ignored_settings"] = [
+        "physxSDFMeshCollision:sdfMargin"
+    ]
+    probe["contact_buffer"]["overflow_observed"] = True
+    probe["probe_digest"] = canonical_digest(probe, digest_field="probe_digest")
+
+    blockers = validate_backend_probe(probe, profile=profile)
+
+    assert "adp009d_backend_probe_asset_conversion_invalid" in blockers
+    assert "adp009d_newton_probe_contact_model_invalid" in blockers
+
+
+def test_provider_free_profiles_do_not_authorize_newton_mutation() -> None:
+    profile = build_backend_profile("newton")
+    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    admission = _admission(profile, now)
+    admission["explicit_paid_run_authorization"] = False
+    admission["admission_digest"] = canonical_digest(
+        admission, digest_field="admission_digest"
+    )
+
+    assert validate_newton_canary_admission(
+        admission, profile=profile, now=now
+    ) == ["adp009d_newton_canary_admission_invalid"]
+    assert profile["controls_only"] is True
+    assert profile["policy_query_allowed"] is False
+
+
+def test_complete_newton_admission_is_time_bounded_and_non_mutating() -> None:
+    profile = build_backend_profile("newton")
+    now = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    admission = _admission(profile, now)
+
+    assert validate_newton_canary_admission(
+        admission, profile=profile, now=now
+    ) == []
+    assert admission["provider_mutation_performed"] is False
+
+
+def test_comparison_receipt_requires_exact_common_bindings() -> None:
+    physx = _run("physx")
+    newton = _run("newton")
+    receipt = build_comparison_receipt(
+        physx_run=physx,
+        newton_run=newton,
+        fidelity_result=_fidelity(),
+    )
+
+    assert receipt["schema_version"] == "adp009d_physics_backend_comparison.v1"
+    assert receipt["status"] == "completed"
+    assert receipt["evidence_parity_observed"] is True
+    assert receipt["promotion_review_eligible"] is True
+    assert receipt["engine_promotion_performed"] is False
+    assert receipt["default_backend_after_comparison"] == "physx"
+    assert receipt["policy_verdict"] is None
+    assert validate_comparison_receipt(receipt) == []
+
+    newton["comparability_bindings"]["seed"] = 7
+    newton["run_digest"] = canonical_digest(newton, digest_field="run_digest")
+    blocked = build_comparison_receipt(
+        physx_run=physx,
+        newton_run=newton,
+        fidelity_result=_fidelity(),
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["promotion_review_eligible"] is False
+    assert "adp009d_backend_comparison_bindings_differ" in blocked["blockers"]
+
+
+def test_comparison_recomputes_fidelity_meaning_and_nested_receipts() -> None:
+    fidelity = _fidelity()
+    fidelity["meaningful_improvement_observed"] = False
+    receipt = build_comparison_receipt(
+        physx_run=_run("physx"),
+        newton_run=_run("newton"),
+        fidelity_result=fidelity,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert "adp009d_backend_comparison_fidelity_result_invalid" in receipt[
+        "blockers"
+    ]
+    assert validate_comparison_receipt(receipt) == []
+
+    receipt["backend_runs"]["newton"]["measurements"]["spend"][
+        "total_usd"
+    ] = 999.0
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert validate_comparison_receipt(receipt) == [
+        "adp009d_backend_comparison_receipt_invalid"
+    ]

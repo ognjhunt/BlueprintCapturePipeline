@@ -32,6 +32,14 @@ ISAAC_LAB_INSTALL_TARGETS = (
     "tasks",
     "teleop",
 )
+ISAAC_LAB_NEWTON_INSTALL_TARGETS = (
+    "assets",
+    "newton",
+    "ov",
+    "rl[rsl-rl]",
+    "tasks",
+    "teleop",
+)
 H5PY_VERSION = "3.16.0"
 H5PY_LINUX_CP312_WHEEL_SHA256 = (
     "dfc21898ff025f1e8e67e194965a95a8d4754f452f83454538f98f8a3fcb207e"
@@ -72,9 +80,7 @@ EXPECTED_RUNTIME_DISTRIBUTIONS = (
     "hydra-core",
     "isaaclab",
     "isaaclab_assets",
-    "isaaclab_newton",
     "isaaclab_ov",
-    "isaaclab_physx",
     "isaaclab_rl",
     "isaaclab_tasks",
     "isaaclab_teleop",
@@ -84,6 +90,15 @@ EXPECTED_RUNTIME_DISTRIBUTIONS = (
     "rsl-rl-lib",
     "isaaclab_arena",
 )
+
+
+def _expected_runtime_distributions(physics_backend: str) -> tuple[str, ...]:
+    backend_distributions = (
+        ("isaaclab_physx", "isaaclab_newton")
+        if physics_backend == "physx"
+        else ("isaaclab_newton",)
+    )
+    return (*EXPECTED_RUNTIME_DISTRIBUTIONS, *backend_distributions)
 
 
 def _sha256(path: Path) -> str:
@@ -188,7 +203,9 @@ def _materialize_source(source: Path, output: Path) -> dict[str, Any]:
     return {"commands": rows, **observed}
 
 
-def _install_commands(source: Path) -> list[list[str]]:
+def _install_commands(
+    source: Path, *, physics_backend: str = "physx"
+) -> list[list[str]]:
     """Return the pinned minimum official Lab/Arena runtime installation plan."""
 
     lab = source / "submodules/IsaacLab"
@@ -197,12 +214,17 @@ def _install_commands(source: Path) -> list[list[str]]:
         "from isaaclab_ov.renderers import OVRTXRendererCfg; "
         "from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper; "
         "from rsl_rl.runners import DistillationRunner, OnPolicyRunner; "
-        f"names={EXPECTED_RUNTIME_DISTRIBUTIONS!r}; "
+        f"names={_expected_runtime_distributions(physics_backend)!r}; "
         "print(json.dumps({name: m.version(name) for name in names}, sort_keys=True))"
+    )
+    targets = (
+        ISAAC_LAB_INSTALL_TARGETS
+        if physics_backend == "physx"
+        else ISAAC_LAB_NEWTON_INSTALL_TARGETS
     )
     return [
         ["ln", "-sfn", "/isaac-sim", str(lab / "_isaac_sim")],
-        [str(lab / "isaaclab.sh"), "-i", ",".join(ISAAC_LAB_INSTALL_TARGETS)],
+        [str(lab / "isaaclab.sh"), "-i", ",".join(targets)],
         [str(ISAAC_PYTHON), "-m", "pip", "install", H5PY_LINUX_CP312_WHEEL_URL],
         [
             str(ISAAC_PYTHON),
@@ -224,11 +246,18 @@ def _install_commands(source: Path) -> list[list[str]]:
     ]
 
 
-def _validate_install_commands(commands: list[list[str]]) -> None:
+def _validate_install_commands(
+    commands: list[list[str]], *, physics_backend: str = "physx"
+) -> None:
     """Fail closed if the paid worker expands beyond the admitted runtime profile."""
 
     flattened = "\n".join(" ".join(command) for command in commands)
-    expected_selector = f"-i {','.join(ISAAC_LAB_INSTALL_TARGETS)}"
+    targets = (
+        ISAAC_LAB_INSTALL_TARGETS
+        if physics_backend == "physx"
+        else ISAAC_LAB_NEWTON_INSTALL_TARGETS
+    )
+    expected_selector = f"-i {','.join(targets)}"
     forbidden = (
         "[dev]",
         "source/isaaclab*/",
@@ -249,9 +278,11 @@ def _validate_install_commands(commands: list[list[str]]) -> None:
         raise RuntimeError("adp009d_runtime_install_profile_expanded")
 
 
-def _install(source: Path, output: Path) -> list[dict[str, Any]]:
-    commands = _install_commands(source)
-    _validate_install_commands(commands)
+def _install(
+    source: Path, output: Path, *, physics_backend: str
+) -> list[dict[str, Any]]:
+    commands = _install_commands(source, physics_backend=physics_backend)
+    _validate_install_commands(commands, physics_backend=physics_backend)
     rows: list[dict[str, Any]] = []
     for index, command in enumerate(commands):
         row = _run(command, log_path=output / f"install_{index:02d}.log", cwd=source)
@@ -278,16 +309,36 @@ def main() -> int:
     output = Path(os.environ.get("BLUEPRINT_ADP009D_OUTPUT_DIR", runtime.parent / "runtime_output")).resolve()
     output.mkdir(parents=True, exist_ok=True)
     source = Path("/workspace/blueprint_adp009d_arena_source")
+    provider_manifest = json.loads(
+        (runtime / "adp_arena_provider_manifest.json").read_text(encoding="utf-8")
+    )
+    physics_backend = provider_manifest.get("physics_backend")
+    if physics_backend not in {"physx", "newton"}:
+        physics_backend = "invalid"
     outer: dict[str, Any] = {
         "schema_version": "adp009d_native_microcheck_worker.v1",
         "status": "blocked",
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
         "provider_zero_required_after_return": True,
+        "physics_backend": physics_backend,
+        "physics_backend_profile_digest": provider_manifest.get(
+            "physics_backend_profile_digest"
+        ),
         "install_profile": {
-            "profile_id": INSTALL_PROFILE_ID,
-            "isaac_lab_targets": list(ISAAC_LAB_INSTALL_TARGETS),
-            "expected_runtime_distributions": list(EXPECTED_RUNTIME_DISTRIBUTIONS),
+            "profile_id": (
+                INSTALL_PROFILE_ID
+                if physics_backend == "physx"
+                else "isaaclab_arena_newton_task_runtime.v1"
+            ),
+            "isaac_lab_targets": list(
+                ISAAC_LAB_INSTALL_TARGETS
+                if physics_backend == "physx"
+                else ISAAC_LAB_NEWTON_INSTALL_TARGETS
+            ),
+            "expected_runtime_distributions": list(
+                _expected_runtime_distributions(physics_backend)
+            ),
             "arena_development_extras_installed": False,
             "all_isaac_lab_extensions_installed": False,
             "fail_closed_plan_validation": True,
@@ -295,10 +346,14 @@ def main() -> int:
         "blockers": [],
     }
     try:
+        if physics_backend not in {"physx", "newton"}:
+            raise RuntimeError("adp009d_physics_backend_invalid")
         if not ISAAC_PYTHON.is_file():
             raise RuntimeError("isaac_python_missing")
         outer["source_materialization"] = _materialize_source(source, output)
-        outer["install_steps"] = _install(source, output)
+        outer["install_steps"] = _install(
+            source, output, physics_backend=physics_backend
+        )
         runtime_row = _run(
             [
                 str(ISAAC_PYTHON),
@@ -311,6 +366,8 @@ def main() -> int:
                 "--enable_cameras",
                 "--device",
                 "cuda:0",
+                "--physics-backend",
+                physics_backend,
             ],
             log_path=output / "native_microcheck.log",
             cwd=source,

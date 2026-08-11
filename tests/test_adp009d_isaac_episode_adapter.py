@@ -26,8 +26,26 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     rgb_from_camera_output,
     rotation_row_major_from_quaternion_xyzw,
     semantic_finger_tool_midpoint_world_m,
+    signed_point_to_vertical_cylinder_clearance_m,
     validate_adapter_bindings,
 )
+
+
+def test_signed_cylinder_clearance_is_pose_aware_and_signed() -> None:
+    pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+    assert signed_point_to_vertical_cylinder_clearance_m(
+        point_world_m=[0.04, 0.0, 0.0],
+        cylinder_pose_world_xyzw=pose,
+        radius_m=0.03,
+        height_m=0.1,
+    ) == pytest.approx(0.01)
+    assert signed_point_to_vertical_cylinder_clearance_m(
+        point_world_m=[0.02, 0.0, 0.0],
+        cylinder_pose_world_xyzw=pose,
+        radius_m=0.03,
+        height_m=0.1,
+    ) == pytest.approx(-0.01)
 
 
 def test_semantic_finger_midpoint_applies_pinned_local_tool_offsets() -> None:

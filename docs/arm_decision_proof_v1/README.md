@@ -47,6 +47,8 @@ ADP-008 is observed complete: SIMPLER already exercised the retrospective
 two-candidate decision, receipt, sealing, external-outcome join, and replay
 machinery. The bounded ADP-009 construction rehearsal is accepted. The active
 engineering item is **ADP-009D public-scene Franka policy rehearsal**.
+The controls-only PhysX/Newton precursor and its claim ceiling are defined in
+[`ADP_009D_PHYSICS_BACKEND_COMPARISON.md`](ADP_009D_PHYSICS_BACKEND_COMPARISON.md).
 
 Until the pre-capture Franka rehearsal is complete:
 
