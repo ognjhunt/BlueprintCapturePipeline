@@ -2446,23 +2446,39 @@ def _resolve_clip_source_path(
     row: Mapping[str, Any],
     source_roots: Sequence[Path],
 ) -> tuple[Path | None, str | None, str | None]:
-    canonical_roots = [root.resolve() for root in source_roots if root.exists()]
+    canonical_roots: list[tuple[Path, Path]] = []
+    for source_root in source_roots:
+        lexical_root = source_root.expanduser()
+        if not lexical_root.is_absolute():
+            lexical_root = lexical_root.absolute()
+        if not lexical_root.exists():
+            continue
+        try:
+            canonical_roots.append(
+                (lexical_root, lexical_root.resolve(strict=True))
+            )
+        except OSError:
+            continue
 
     def validated_candidate(candidate: Path) -> tuple[Path | None, str | None]:
-        absolute = candidate if candidate.is_absolute() else candidate.absolute()
-        allowed_root: Path | None = None
-        for root in canonical_roots:
+        absolute = candidate.expanduser()
+        if not absolute.is_absolute():
+            absolute = absolute.absolute()
+        allowed_lexical_root: Path | None = None
+        allowed_resolved_root: Path | None = None
+        for lexical_root, resolved_root in canonical_roots:
             try:
-                absolute.relative_to(root)
+                absolute.relative_to(lexical_root)
             except ValueError:
                 continue
-            allowed_root = root
+            allowed_lexical_root = lexical_root
+            allowed_resolved_root = resolved_root
             break
-        if allowed_root is None:
+        if allowed_lexical_root is None or allowed_resolved_root is None:
             return None, "clip_source_outside_canonical_roots"
-        current = allowed_root
+        current = allowed_lexical_root
         try:
-            relative_parts = absolute.relative_to(allowed_root).parts
+            relative_parts = absolute.relative_to(allowed_lexical_root).parts
         except ValueError:
             return None, "clip_source_outside_canonical_roots"
         for part in relative_parts:
@@ -2471,7 +2487,7 @@ def _resolve_clip_source_path(
                 return None, "clip_source_symlink_forbidden"
         try:
             resolved = absolute.resolve(strict=True)
-            resolved.relative_to(allowed_root)
+            resolved.relative_to(allowed_resolved_root)
         except (OSError, ValueError):
             return None, "clip_source_outside_canonical_roots"
         if not resolved.is_file():

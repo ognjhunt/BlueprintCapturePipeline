@@ -1295,6 +1295,24 @@ def test_clip_materialization_rejects_escape_symlink_corrupt_and_oversized_media
     assert reason == "clip_media_size_limit_exceeded"
 
 
+def test_clip_materialization_accepts_a_trusted_source_root_alias(tmp_path: Path) -> None:
+    canonical_root = tmp_path / "canonical"
+    canonical_root.mkdir()
+    alias_root = tmp_path / "trusted-root-alias"
+    alias_root.symlink_to(canonical_root, target_is_directory=True)
+    video_path = alias_root / "valid.mp4"
+    _write_valid_mp4_or_placeholder(video_path)
+
+    resolved, reference, reason = package_module._resolve_clip_source_path(
+        {"clip_path": "valid.mp4"},
+        [alias_root],
+    )
+
+    assert resolved == (canonical_root / "valid.mp4").resolve()
+    assert reference == "valid.mp4"
+    assert reason is None
+
+
 def test_training_export_rows_preserve_rights_claim_boundary_metadata() -> None:
     frame_rows, episodes, _tasks, shape = package_module._training_export_rows(
         rows=[
