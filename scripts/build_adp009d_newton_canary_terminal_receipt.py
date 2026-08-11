@@ -27,7 +27,6 @@ def main() -> int:
         "admission",
         "bundle_receipt",
         "allocator_result",
-        "native_result",
         "artifact_manifest",
         "teardown_manifest",
         "provider_inventory",
@@ -35,6 +34,7 @@ def main() -> int:
         "output",
     ):
         parser.add_argument("--" + name.replace("_", "-"), required=True)
+    parser.add_argument("--native-result")
     args = parser.parse_args()
     teardown = _read(args.teardown_manifest)
     instance_ids = teardown.get("vast_instance_ids")
@@ -53,7 +53,7 @@ def main() -> int:
         admission=_read(args.admission),
         bundle_receipt=_read(args.bundle_receipt),
         allocator_result=_read(args.allocator_result),
-        native_result=_read(args.native_result),
+        native_result=_read(args.native_result) if args.native_result else None,
         artifact_manifest=_read(args.artifact_manifest),
         teardown_manifest=teardown,
         provider_inventory=_read(args.provider_inventory),

@@ -190,6 +190,26 @@ inertia clamp or replacement robot model is allowed. This conversion remains
 comparison-only asset adaptation, not independently meaningful fidelity
 evidence.
 
+An eighth authorized controls-only canary at implementation commit
+`7f5602359b271e299fa897cf1a0f155da735a991` allocated Vast instance
+`47498893`, but the provider container never materialized an on-start log and
+the instance exited at the bounded no-progress check. It therefore produced no
+native runtime or inertia-conversion evidence. The terminal receipt, digest
+`sha256:c342ef55ee175367608ad0cc8cc940cad737c6d9b3a32f1cc32635e19e061ad4`,
+retains the typed `pre_runtime_blocked` gap, the observed missing
+provider-runtime artifact role, two control-plane/teardown artifacts totaling
+17,856 bytes, exact settled provider charge `$0.262`, successful destruction,
+zero retries and policy queries, and fresh API-confirmed provider-zero. Machine
+`144209` is retained in the run-local avoidlist with reason
+`vast_startup_control_plane_did_not_reach_onstart_heartbeat`. This is a provider
+startup failure only; it does not confirm or refute the Franka inertia repair.
+
+The terminal compiler accepts this pre-runtime case only when no native result
+exists, the allocator explicitly records both missing provider output and
+runtime non-completion, the artifact manifest is missing exactly the runtime
+evidence role, and teardown, exact billing, and provider-zero still validate.
+It never synthesizes a native result to close that gap.
+
 The admitted repair is Newton-only and digest-bound. It verifies the exact
 Arena DROID USD bytes, requires the exact nine massless Robotiq rigid bodies and
 at least one collider per body, then authors their physically sourced masses in

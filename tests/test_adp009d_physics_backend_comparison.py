@@ -173,6 +173,68 @@ def test_newton_blocked_canary_retains_terminal_comparison_evidence() -> None:
     )
 
 
+def test_newton_pre_runtime_failure_retains_terminal_receipt_without_fake_native_result() -> None:
+    inputs = _newton_terminal_inputs()
+    inputs["native_result"] = None
+    inputs["allocator_result"].update(
+        {
+            "native_control_result_path": None,
+            "blockers": [
+                "adp009d_candidate_policy_query_status_missing",
+                "adp009d_provider_output_zip_missing",
+                "adp009d_runtime_not_completed",
+                "task_evaluation_artifact_role_missing:provider_runtime_evidence",
+                "vast_heartbeat_instance_exited",
+            ],
+        }
+    )
+    inputs["artifact_manifest"].update(
+        {
+            "status": "blocked",
+            "blockers": [
+                "task_evaluation_artifact_role_missing:provider_runtime_evidence"
+            ],
+            "file_count": 2,
+            "required_roles": [
+                "allocator_adapter_result",
+                "provider_runtime_evidence",
+                "teardown_manifest",
+            ],
+            "observed_roles": [
+                "allocator_adapter_result",
+                "teardown_manifest",
+            ],
+        }
+    )
+
+    receipt = build_newton_canary_terminal_receipt(**inputs)
+
+    assert receipt["status"] == "blocked"
+    assert receipt["scientific_phase"] == "pre_runtime_blocked"
+    assert receipt["native_runtime_evidence_observed"] is False
+    assert receipt["media_gap"]["reason"] == "adp009d_runtime_not_completed"
+    assert "native_result" not in receipt["evidence_input_digests"]
+    assert receipt["policy_query_count"] == 0
+    assert receipt["policy_verdict"] is None
+
+
+def test_newton_pre_runtime_terminal_receipt_rejects_ambiguous_missing_runtime() -> None:
+    inputs = _newton_terminal_inputs()
+    inputs["native_result"] = None
+    inputs["allocator_result"].update(
+        {
+            "native_control_result_path": None,
+            "blockers": ["adp009d_runtime_not_completed"],
+        }
+    )
+
+    with pytest.raises(
+        PhysicsBackendContractError,
+        match="adp009d_newton_terminal_pre_runtime_invalid",
+    ):
+        build_newton_canary_terminal_receipt(**inputs)
+
+
 def test_newton_terminal_receipt_rejects_nonzero_provider_inventory() -> None:
     inputs = _newton_terminal_inputs()
     inputs["provider_inventory"]["live_instance_count"] = 1

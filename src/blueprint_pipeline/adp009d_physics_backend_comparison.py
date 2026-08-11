@@ -824,7 +824,7 @@ def build_newton_canary_terminal_receipt(
     admission: Mapping[str, Any],
     bundle_receipt: Mapping[str, Any],
     allocator_result: Mapping[str, Any],
-    native_result: Mapping[str, Any],
+    native_result: Mapping[str, Any] | None,
     artifact_manifest: Mapping[str, Any],
     teardown_manifest: Mapping[str, Any],
     provider_inventory: Mapping[str, Any],
@@ -856,24 +856,49 @@ def build_newton_canary_terminal_receipt(
         or bundle_receipt.get("retry_cap") != 0
     ):
         raise PhysicsBackendContractError("adp009d_newton_terminal_bundle_invalid")
-    native_status = native_result.get("status")
-    native_blockers = sorted(
-        {str(item) for item in native_result.get("blockers") or [] if str(item)}
+    native_evidence_observed = isinstance(native_result, Mapping)
+    allocator_blockers = sorted(
+        {str(item) for item in allocator_result.get("blockers") or [] if str(item)}
     )
+    if native_evidence_observed:
+        native_status = native_result.get("status")
+        native_blockers = sorted(
+            {str(item) for item in native_result.get("blockers") or [] if str(item)}
+        )
+        if (
+            native_result.get("schema_version") != "adp009d_native_microcheck.v1"
+            or native_status not in {"completed", "blocked"}
+            or (native_status == "blocked") is not bool(native_blockers)
+            or native_result.get("candidate_policy_queried") is not False
+            or native_result.get("candidate_outcomes_accessed") is not False
+            or allocator_result.get("status") != native_status
+            or allocator_blockers != native_blockers
+        ):
+            raise PhysicsBackendContractError(
+                "adp009d_newton_terminal_runtime_invalid"
+            )
+        control_pair = native_result.get("control_episode")
+    else:
+        native_status = "blocked"
+        native_blockers = allocator_blockers
+        control_pair = None
+        if (
+            allocator_result.get("status") != "blocked"
+            or allocator_result.get("native_control_result_path") is not None
+            or not {
+                "adp009d_provider_output_zip_missing",
+                "adp009d_runtime_not_completed",
+            }.issubset(native_blockers)
+        ):
+            raise PhysicsBackendContractError(
+                "adp009d_newton_terminal_pre_runtime_invalid"
+            )
     if (
-        native_result.get("schema_version") != "adp009d_native_microcheck.v1"
-        or native_status not in {"completed", "blocked"}
-        or (native_status == "blocked") is not bool(native_blockers)
-        or native_result.get("candidate_policy_queried") is not False
-        or native_result.get("candidate_outcomes_accessed") is not False
-        or allocator_result.get("status") != native_status
-        or sorted(allocator_result.get("blockers") or []) != native_blockers
-        or allocator_result.get("retry_cap") != 0
+        allocator_result.get("retry_cap") != 0
         or allocator_result.get("continuing_spend_from_this_run") is not False
         or allocator_result.get("all_staged_objects_absent") is not True
     ):
         raise PhysicsBackendContractError("adp009d_newton_terminal_runtime_invalid")
-    control_pair = native_result.get("control_episode")
     if native_status == "completed":
         probe = native_result.get("physics_backend_probe")
         if (
@@ -964,18 +989,40 @@ def build_newton_canary_terminal_receipt(
         )
     ):
         raise PhysicsBackendContractError("adp009d_newton_terminal_charge_invalid")
+    missing_runtime_role = (
+        set(artifact_manifest.get("required_roles") or [])
+        - set(artifact_manifest.get("observed_roles") or [])
+    )
+    expected_artifact_status = "completed" if native_evidence_observed else "blocked"
+    expected_artifact_blockers = (
+        []
+        if native_evidence_observed
+        else ["task_evaluation_artifact_role_missing:provider_runtime_evidence"]
+    )
     if (
-        artifact_manifest.get("status") != "completed"
-        or artifact_manifest.get("blockers") != []
+        artifact_manifest.get("status") != expected_artifact_status
+        or sorted(artifact_manifest.get("blockers") or [])
+        != expected_artifact_blockers
         or not isinstance(artifact_manifest.get("file_count"), int)
         or int(artifact_manifest.get("file_count", 0)) <= 0
         or not isinstance(artifact_manifest.get("manifest_digest"), str)
         or not str(artifact_manifest.get("manifest_digest")).startswith("sha256:")
-        or set(artifact_manifest.get("required_roles") or [])
-        - set(artifact_manifest.get("observed_roles") or [])
+        or missing_runtime_role
+        != (set() if native_evidence_observed else {"provider_runtime_evidence"})
     ):
         raise PhysicsBackendContractError("adp009d_newton_terminal_artifacts_invalid")
 
+    evidence_input_digests = {
+        "admission": canonical_digest(admission),
+        "bundle_receipt": canonical_digest(bundle_receipt),
+        "allocator_result": canonical_digest(allocator_result),
+        "artifact_manifest": canonical_digest(artifact_manifest),
+        "teardown_manifest": canonical_digest(teardown_manifest),
+        "provider_inventory": canonical_digest(provider_inventory),
+        "vast_charge": canonical_digest(vast_charge),
+    }
+    if native_evidence_observed:
+        evidence_input_digests["native_result"] = canonical_digest(native_result)
     receipt: dict[str, Any] = {
         "schema_version": CANARY_TERMINAL_SCHEMA_VERSION,
         "status": native_status,
@@ -991,23 +1038,19 @@ def build_newton_canary_terminal_receipt(
             "control_plan_semantic_digest"
         ),
         "admission_digest": admission.get("admission_digest"),
-        "evidence_input_digests": {
-            "admission": canonical_digest(admission),
-            "bundle_receipt": canonical_digest(bundle_receipt),
-            "allocator_result": canonical_digest(allocator_result),
-            "native_result": canonical_digest(native_result),
-            "artifact_manifest": canonical_digest(artifact_manifest),
-            "teardown_manifest": canonical_digest(teardown_manifest),
-            "provider_inventory": canonical_digest(provider_inventory),
-            "vast_charge": canonical_digest(vast_charge),
-        },
+        "evidence_input_digests": evidence_input_digests,
         "provider_instance_id": instance_id,
         "scientific_phase": (
             "controls_completed"
             if native_status == "completed"
-            else "pre_controls_blocked"
+            else (
+                "pre_controls_blocked"
+                if native_evidence_observed
+                else "pre_runtime_blocked"
+            )
         ),
         "scientific_blockers": native_blockers,
+        "native_runtime_evidence_observed": native_evidence_observed,
         "controls_evidence_observed": native_status == "completed",
         "control_pair_digest": (
             control_pair.get("pair_digest")
@@ -1018,7 +1061,11 @@ def build_newton_canary_terminal_receipt(
         if native_status == "completed"
         else {
             "status": "typed_gap",
-            "reason": native_blockers[0],
+            "reason": (
+                native_blockers[0]
+                if native_evidence_observed
+                else "adp009d_runtime_not_completed"
+            ),
             "lossless_policy_input_equivalent_frames_observed": False,
             "review_media_observed": False,
         },
