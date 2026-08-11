@@ -417,11 +417,16 @@ rights-bounded dataset-derived bytes.
 
 ## Verification
 
-Before the final reusable-code commit:
+Recent reusable-code and manifest commits:
 
 - `PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode or nurec or aura"`
-  — `1155 passed, 9903 deselected` in `357.24 s`.
+  — `1155 passed, 9918 deselected` before commit `f7fdbc972`, then
+  `1155 passed, 9919 deselected` before commit `86718e6e`.
 - `.venv/bin/ruff check src/ tests/` — passed.
+- Focused Content Agents/CAD adapter regressions before `f7fdbc972` —
+  `59 passed`.
+- Focused Content Agents adapter/manifest regressions before `86718e6e` —
+  `46 passed`.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
@@ -431,10 +436,11 @@ Before the final reusable-code commit:
   development lane, one aggregate invocation was interrupted by host `ENOSPC`
   while Git wrote a disposable fixture index; its exact affected test passed
   after this lane's temporary pytest directory was removed.
-- Focused graph-native state, bounded 1..5 replacement construction, independent
-  collider removal, runtime admission, static GPU-collision, and agent-CAD
-  contract regressions are retained; exact current counts are recorded at the
-  next commit gate.
+- Focused graph-native state, bounded 1..5 replacement construction,
+  independent collider removal, runtime admission, static GPU-collision, and
+  agent-CAD contract regressions are retained. The new agent-CAD Content Agents
+  path additionally proves manifest-derived references so bundle construction
+  no longer depends on hand-selected reference-frame CLI input.
 
 ## Claim table
 
