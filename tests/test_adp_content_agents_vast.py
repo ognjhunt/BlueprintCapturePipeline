@@ -38,6 +38,11 @@ TASK_A_FREEZE = (
     ROOT
     / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
+AGENT_CAD_CONTENT_BUNDLE_MATRIX = (
+    ROOT
+    / "docs/arm_decision_proof_v1/manifests/"
+    "third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json"
+)
 
 
 def _provider_runner_module():
@@ -569,6 +574,47 @@ def test_agent_cad_variant_rejects_changed_projection_usd(
             agent_cad_output_manifest_path=output_path,
             agent_mesh_projection_receipt_path=projection_path,
         )
+
+
+def test_checked_in_agent_cad_content_agents_bundle_matrix_is_claim_bounded() -> None:
+    manifest = json.loads(AGENT_CAD_CONTENT_BUNDLE_MATRIX.read_text(encoding="utf-8"))
+
+    assert manifest["receipt_digest"] == canonical_digest(
+        manifest, digest_field="receipt_digest"
+    )
+    assert manifest["schema_version"] == (
+        "third_scene_agent_cad_content_agents_bundle_matrix.v1"
+    )
+    assert manifest["replacement_object_capacity"] == {
+        "minimum": 1,
+        "maximum": 5,
+        "sealed_slots": 2,
+    }
+    assert manifest["candidate_count"] == 4
+    assert {
+        (row["replacement_slot"], row["cad_agent_backend_id"])
+        for row in manifest["items"]
+    } == {
+        (1, "earthtojake_text_to_cad"),
+        (1, "pan_chera_multi_agent_cad"),
+        (2, "earthtojake_text_to_cad"),
+        (2, "pan_chera_multi_agent_cad"),
+    }
+    assert all(
+        row["exact_bundle_entrypoint_rehearsal_status"] == "passed"
+        and row["blockers"] == []
+        and row["agent_output_is_simready_authority"] is False
+        and row["canonical_simready_construction_unresolved"] is True
+        for row in manifest["items"]
+    )
+    assert manifest["claim_boundary"] == {
+        "content_agents_bundles_built": True,
+        "exact_entrypoint_rehearsed": True,
+        "content_agents_executed": False,
+        "simready_qualified": False,
+        "native_simulator_import_qualified": False,
+        "physical_equivalence": False,
+    }
 
 
 def test_bundle_is_deterministic_and_provider_preflight_accepts_it(

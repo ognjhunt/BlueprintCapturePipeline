@@ -276,7 +276,10 @@ tree `d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3`):
 These bundle receipts authorize only a future advisory Material/Texture/Physics
 Agent run through the paid-resource allocator. They are not executed Content
 Agents results and still do not qualify appearance, physics, native simulator
-import, or physical equivalence.
+import, or physical equivalence. The checked-in bundle matrix manifest is
+`docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`
+with digest
+`sha256:a7aee85f65c5a57e955af293c342f9f67351a81f8c5dec4502bfde4e88fa6d1e`.
 
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
