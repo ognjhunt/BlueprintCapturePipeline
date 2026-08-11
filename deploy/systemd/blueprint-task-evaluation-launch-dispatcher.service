@@ -47,6 +47,11 @@ Environment=NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key
 Environment=DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username
 Environment=DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat
 Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
+Environment=BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_access_key_id
+Environment=BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_secret_access_key
+Environment=BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url
+Environment=BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket
+Environment=BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${BLUEPRINT_PIPELINE_REPO}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_dispatcher --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --max-messages 10) && if [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true ]; then ARGS+=(--execute); fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python "$${ARGS[@]}"; fi; exec env PYTHONPATH=src python3 "$${ARGS[@]}"'

@@ -13,10 +13,15 @@ def test_canonical_allocator_dependencies_are_in_the_production_base() -> None:
     base_dependencies = pyproject.split("[project.optional-dependencies]", 1)[0]
     frozen_base = _text("requirements.txt")
 
-    for requirement in ('"packaging>=24.0"', '"usd-core>=24.0"'):
+    for requirement in (
+        '"packaging>=24.0"',
+        '"usd-core>=24.0"',
+        '"boto3>=1.34.0"',
+        '"botocore>=1.34.0"',
+    ):
         assert requirement in base_dependencies
-    assert "packaging==" in frozen_base
-    assert "usd-core==" in frozen_base
+    for requirement in ("packaging==", "usd-core==", "boto3==", "botocore=="):
+        assert requirement in frozen_base
 
 
 def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
@@ -36,6 +41,11 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         "DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username",
         "DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat",
         "HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token",
+        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_access_key_id",
+        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_secret_access_key",
+        "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url",
+        "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket",
+        "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
     ):
         assert binding in dispatcher
     assert "PathExistsGlob=" in path_unit
@@ -85,5 +95,10 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
         "DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username",
         "DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat",
         "HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token",
+        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_access_key_id",
+        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_secret_access_key",
+        "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url",
+        "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket",
+        "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
     ):
         assert binding in environment

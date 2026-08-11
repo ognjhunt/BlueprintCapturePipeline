@@ -246,6 +246,8 @@ version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "blueprint-contracts" },
+    { name = "boto3" },
+    { name = "botocore" },
     { name = "cryptography" },
     { name = "defusedxml" },
     { name = "fastapi" },
@@ -271,7 +273,6 @@ dependencies = [
 
 [package.optional-dependencies]
 cloud = [
-    { name = "boto3" },
     { name = "google-auth" },
     { name = "google-cloud-storage" },
     { name = "requests" },
@@ -383,8 +384,9 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'retrieval'", specifier = ">=0.30.0" },
     { name = "bandit", marker = "extra == 'dev'", specifier = "==1.8.6" },
     { name = "blueprint-contracts", git = "https://github.com/ognjhunt/BlueprintContracts.git?rev=7708a4e4c5dedeeb39cc73d3f6869304de295b81" },
-    { name = "boto3", marker = "extra == 'cloud'", specifier = ">=1.34.0" },
+    { name = "boto3", specifier = ">=1.34.0" },
     { name = "boto3", marker = "extra == 'dev'", specifier = ">=1.34.0" },
+    { name = "botocore", specifier = ">=1.34.0" },
     { name = "botocore", marker = "extra == 'dev'", specifier = ">=1.34.0" },
     { name = "coal", marker = "extra == 'exact-geometry-development'", specifier = "==3.0.3" },
     { name = "cryptography", specifier = ">=46.0.5" },
