@@ -898,6 +898,115 @@ def test_content_agents_execution_readiness_accepts_static_no_docker_preflight(
     ]
 
 
+def test_blocked_local_content_agents_preflight_records_docker_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
+    bundle_receipt_path, _bundle_receipt = _bundle_receipt_from_item(
+        matrix["items"][0]
+    )
+
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["docker", "version"],
+            returncode=1,
+            stdout="",
+            stderr="Cannot connect to the Docker daemon",
+        )
+
+    monkeypatch.setattr(bundle_preflight.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        bundle_preflight,
+        "_orchestrator_source_identity",
+        lambda: {"commit": "fixture", "checkout_clean": True},
+    )
+
+    receipt = bundle_preflight.materialize_blocked_local_bundle_config_preflight(
+        bundle_receipt_path=bundle_receipt_path,
+        evidence_dir=tmp_path / "blocked-local-preflight",
+        generated_at="fixed",
+    )
+
+    assert receipt["schema_version"] == bundle_preflight.LOCAL_SCHEMA_VERSION
+    assert receipt["status"] == "blocked_local_docker_unavailable"
+    assert receipt["docker_executed"] is False
+    assert receipt["all_required_dry_runs_executed"] is False
+    assert receipt["blockers"] == [
+        "content_agents_local_docker_daemon_unavailable",
+        "content_agents_paid_model_access_preflight_missing",
+    ]
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_content_agents_readiness_retains_blocked_local_docker_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
+    bundle_receipt_path, bundle_receipt = _bundle_receipt_from_item(
+        matrix["items"][0]
+    )
+    static_preflight = _passing_static_config_preflight(
+        tmp_path / "static-preflight",
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+    )
+
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["docker", "version"],
+            returncode=1,
+            stdout="",
+            stderr="Cannot connect to the Docker daemon",
+        )
+
+    monkeypatch.setattr(bundle_preflight.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        bundle_preflight,
+        "_orchestrator_source_identity",
+        lambda: {"commit": "fixture", "checkout_clean": True},
+    )
+    blocked_local = bundle_preflight.materialize_blocked_local_bundle_config_preflight(
+        bundle_receipt_path=bundle_receipt_path,
+        evidence_dir=tmp_path / "blocked-local-preflight",
+        generated_at="fixed",
+    )
+    blocked_local_path = (
+        tmp_path
+        / "blocked-local-preflight"
+        / "adp_content_agents_bundle_config_preflight.json"
+    )
+    key = "task_a_washer_door_open|1|earthtojake_text_to_cad"
+
+    readiness = content_agents.materialize_content_agents_execution_readiness(
+        content_agents_bundle_matrix=matrix,
+        output_path=tmp_path / "readiness.json",
+        config_preflight_receipts={key: [static_preflight, blocked_local_path]},
+        generated_at="fixed",
+    )
+
+    row = readiness["items"][0]
+    assert row["static_config_preflight"]["receipt_digest"] == json.loads(
+        static_preflight.read_text(encoding="utf-8")
+    )["receipt_digest"]
+    assert row["local_config_preflight"]["receipt_digest"] == blocked_local[
+        "receipt_digest"
+    ]
+    assert row["blockers"] == [
+        "content_agents_local_docker_daemon_unavailable",
+        "content_agents_paid_attempt_authority_missing",
+        "content_agents_paid_model_access_preflight_missing",
+    ]
+    assert "content_agents_local_docker_config_preflight_missing" not in row[
+        "blockers"
+    ]
+
+
 def test_content_agents_execution_readiness_retains_static_and_local_preflights(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

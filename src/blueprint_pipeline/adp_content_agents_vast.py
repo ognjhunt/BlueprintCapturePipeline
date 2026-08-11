@@ -423,6 +423,21 @@ def materialize_content_agents_execution_readiness(
                     local_preflight_record = record
                 elif (
                     base_preflight_valid
+                    and schema == "adp_content_agents_local_bundle_config_preflight.v1"
+                    and preflight.get("status") == "blocked_local_docker_unavailable"
+                    and preflight.get("all_required_dry_runs_executed") is False
+                    and preflight.get("docker_executed") is False
+                    and preflight.get("docker_network_disabled") is True
+                    and preflight.get("paid_model_access_required") is False
+                    and preflight.get("provider_mutations_performed") == 0
+                    and preflight.get("paid_resource_allocated") is False
+                    and isinstance(preflight.get("blockers"), list)
+                    and preflight.get("blockers")
+                ):
+                    local_preflight_record = record
+                    blockers.extend(str(blocker) for blocker in preflight["blockers"])
+                elif (
+                    base_preflight_valid
                     and schema == "adp_content_agents_static_bundle_config_preflight.v1"
                     and preflight.get("status")
                     == "static_passed_docker_and_paid_model_access_not_checked"
@@ -474,7 +489,7 @@ def materialize_content_agents_execution_readiness(
                 "paid_attempt_authority_required_for_execute": True,
                 "execute_admitted": False,
                 "provider_mutations_performed": 0,
-                "blockers": sorted(blockers),
+                "blockers": sorted(set(blockers)),
             }
         )
 

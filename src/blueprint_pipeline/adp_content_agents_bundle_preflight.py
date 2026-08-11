@@ -865,6 +865,95 @@ def materialize_local_bundle_config_preflight(
     )
 
 
+def materialize_blocked_local_bundle_config_preflight(
+    *,
+    bundle_receipt_path: str | Path,
+    evidence_dir: str | Path,
+    docker: str = "docker",
+    image: str = LOCAL_IMAGE,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Record why local Docker-only Content Agents preflight cannot run."""
+
+    if image != LOCAL_IMAGE:
+        raise ContentAgentsBundlePreflightError("local_preflight_image_not_frozen")
+    receipt_path = Path(bundle_receipt_path).expanduser().resolve()
+    output = Path(evidence_dir).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
+    ensure_dir(output)
+    bundle_receipt = _read_json(receipt_path)
+    bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
+    if (
+        bundle_receipt.get("status") != "ready"
+        or bundle_receipt.get("source_commit") != SOURCE_COMMIT
+        or bundle_receipt.get("source_tree") != SOURCE_TREE
+        or not bundle_path.is_file()
+        or _sha256_file(bundle_path) != bundle_receipt.get("bundle_sha256")
+    ):
+        raise ContentAgentsBundlePreflightError("bundle_receipt_binding_invalid")
+    try:
+        probe = subprocess.run(
+            [docker, "version", "--format", "{{json .}}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        docker_probe = {
+            "command": [docker, "version", "--format", "{{json .}}"],
+            "returncode": probe.returncode,
+            "stdout_sha256": hashlib.sha256(probe.stdout.encode()).hexdigest(),
+            "stderr_sha256": hashlib.sha256(probe.stderr.encode()).hexdigest(),
+            "stdout_excerpt": probe.stdout[:240],
+            "stderr_excerpt": probe.stderr[:240],
+        }
+        blockers = (
+            ["content_agents_local_docker_daemon_unavailable"]
+            if probe.returncode != 0
+            else ["content_agents_local_docker_image_not_admitted"]
+        )
+    except FileNotFoundError:
+        docker_probe = {
+            "command": [docker, "version", "--format", "{{json .}}"],
+            "returncode": None,
+            "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_sha256": hashlib.sha256(b"docker executable not found").hexdigest(),
+            "stdout_excerpt": "",
+            "stderr_excerpt": "docker executable not found",
+        }
+        blockers = ["content_agents_local_docker_cli_missing"]
+    blockers.append("content_agents_paid_model_access_preflight_missing")
+    receipt: dict[str, Any] = {
+        "schema_version": LOCAL_SCHEMA_VERSION,
+        "generated_at": generated_at or utc_now_iso(),
+        "generated_by": "blueprint_pipeline.adp_content_agents_bundle_preflight",
+        "orchestrator_source_identity": _orchestrator_source_identity(),
+        "status": "blocked_local_docker_unavailable",
+        "bundle_receipt_path": str(receipt_path),
+        "bundle_receipt_sha256": _sha256_file(receipt_path),
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": _sha256_file(bundle_path),
+        "content_agents_source_commit": SOURCE_COMMIT,
+        "content_agents_source_tree": SOURCE_TREE,
+        "local_container_image_reference": image,
+        "docker_probe": docker_probe,
+        "configs": _bundle_config_records(bundle_path),
+        "executions": {},
+        "all_required_dry_runs_executed": False,
+        "docker_network_disabled": True,
+        "docker_executed": False,
+        "paid_model_access_required": False,
+        "provider_mutations_performed": 0,
+        "paid_resource_allocated": False,
+        "raw_secret_values_recorded": False,
+        "blockers": blockers,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(output / "adp_content_agents_bundle_config_preflight.json", receipt)
+    return receipt
+
+
 def validate_bundle_config_preflight(
     *,
     preflight: Mapping[str, Any],
