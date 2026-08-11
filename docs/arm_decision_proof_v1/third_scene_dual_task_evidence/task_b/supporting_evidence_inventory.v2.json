@@ -1,7 +1,16 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 46,
+  "artifact_count": 52,
   "artifacts": [
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/notebook.md",
+      "role": "agent_cad:earthtojake_text_to_cad:cad_brief",
+      "sha256": "sha256:cfc9ffc1d06536ef379267c383bb0b4c9f988f4940e5fc5c92d706c5ecaa4dc4",
+      "size_bytes": 1971,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
@@ -45,6 +54,15 @@
       "role": "agent_cad:earthtojake_text_to_cad:execution_receipt",
       "sha256": "sha256:75cbf1fb6ec1efb6da2763e212fb802b4eddaf10c2437a4f1dc5c9c66bbc2741",
       "size_bytes": 2144,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/notebook.py",
+      "role": "agent_cad:earthtojake_text_to_cad:generator_source",
+      "sha256": "sha256:b60721e11697918dae1a5bd5ac4f92383b1c495e08da2cc405886d2ecc977e3f",
+      "size_bytes": 7158,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
@@ -95,6 +113,24 @@
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/inspection_receipt_manifest_bound.v1.json",
+      "role": "agent_cad:earthtojake_text_to_cad:step_inspection_receipt",
+      "sha256": "sha256:e3432c614c758910c0f7a097e17ab82540ace6798fe6c38631a105cbc3c09287",
+      "size_bytes": 1353,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/CADBrief.json",
+      "role": "agent_cad:pan_chera_multi_agent_cad:cad_brief",
+      "sha256": "sha256:d138ffe5d9f627dcf833f2841b72a1c34eca2459537746ea9893223871b2986e",
+      "size_bytes": 4281,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_receipt",
       "sha256": "sha256:e6e3891495b15e5803cd56d19d310400ca152015618f70744228ba9ec9f2383c",
@@ -140,6 +176,15 @@
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/notebook_mac_codex.py",
+      "role": "agent_cad:pan_chera_multi_agent_cad:generator_source",
+      "sha256": "sha256:ed7d6b39f5a7682947dc724dc18d676ab7734c8be04163e1d549fba9c68767a5",
+      "size_bytes": 18798,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_input_v1/mesh_packet.v1.json",
       "role": "agent_cad:pan_chera_multi_agent_cad:mesh_packet",
       "sha256": "sha256:168e13a3c8b03520f5f5db6f9f408b1a485b723536f652a2237ccdc3dddf4da2",
@@ -180,6 +225,15 @@
       "role": "agent_cad:pan_chera_multi_agent_cad:review_snapshot",
       "sha256": "sha256:1a8256da6d7800228ebf52064e1294784efe880801e57c020b9c36f1a3aaa707",
       "size_bytes": 73052,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/inspection_receipt_manifest_bound.v1.json",
+      "role": "agent_cad:pan_chera_multi_agent_cad:step_inspection_receipt",
+      "sha256": "sha256:8980923958f07b5ea36ca4f3c53b46833dd37f50c1f73159747b6bc1d5020fd7",
+      "size_bytes": 1369,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
@@ -418,7 +472,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:6d18799063afcb667b1a8496a86b2b7de1288d1047a15b564bb28e22a615ad06",
+  "inventory_digest": "sha256:5021cfac8efd951c08512ec11ed709f0b88c65450c14eb8b349b8c68db7b8113",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,

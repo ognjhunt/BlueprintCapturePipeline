@@ -500,13 +500,13 @@ the authorized render/mask receipt, excision freeze, exact collider removal,
 authored replacement, static authored-structure qualification, paid
 run/teardown/watchdog evidence, repaired-bundle closure, the original
 source-object contact sheet, the four-candidate CAD comparison board, both
-agent-CAD backend execution receipts and STEP candidates for the task, both
-Content Agents Mesh projection receipts, and both Content Agents autoref bundle
-receipts/ZIPs without embedding rights-bounded dataset-derived bytes. Current
-inventory digests: Task A
-`sha256:39a96c53b4f979aa35456e9c6706d57de691f98cbbb1b6b3bc5b58c70538ec27`;
-Task B
-`sha256:6d18799063afcb667b1a8496a86b2b7de1288d1047a15b564bb28e22a615ad06`.
+agent-CAD backend briefs, generator sources, manifest-bound execution receipts,
+independent STEP inspection receipts, and STEP candidates for the task, both
+Content Agents Mesh projection receipts, static and local no-paid Content Agents
+preflight receipts, and both Content Agents autoref bundle receipts/ZIPs without
+embedding rights-bounded dataset-derived bytes. Current inventory digests: Task
+A `sha256:106163a6d7d09d195dd02fec9392cdf8c0693b861b9e007bdbc9eafceb242ac6`;
+Task B `sha256:5021cfac8efd951c08512ec11ed709f0b88c65450c14eb8b349b8c68db7b8113`.
 
 ## Verification
 

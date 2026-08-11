@@ -456,8 +456,29 @@ def agent_cad_content_agents_supporting_artifacts(
         rows.append(
             _external_file_record(
                 source,
+                candidate["artifacts"]["generator_source"],
+                role=f"{prefix}:generator_source",
+            )
+        )
+        rows.append(
+            _external_file_record(
+                source,
+                candidate["request"]["inputs"]["cad_brief"],
+                role=f"{prefix}:cad_brief",
+            )
+        )
+        rows.append(
+            _external_file_record(
+                source,
                 candidate["execution"]["execution_receipt"],
                 role=f"{prefix}:execution_receipt",
+            )
+        )
+        rows.append(
+            _external_file_record(
+                source,
+                candidate["artifacts"]["inspection_receipt"],
+                role=f"{prefix}:step_inspection_receipt",
             )
         )
         rows.append(

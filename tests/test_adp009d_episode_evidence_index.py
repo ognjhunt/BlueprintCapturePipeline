@@ -757,6 +757,9 @@ def test_agent_cad_content_agents_rows_materialize_task_inventory(
         "agent_cad:earthtojake_text_to_cad:content_agents_bundle_receipt"
         in roles
     )
+    assert "agent_cad:earthtojake_text_to_cad:cad_brief" in roles
+    assert "agent_cad:earthtojake_text_to_cad:generator_source" in roles
+    assert "agent_cad:earthtojake_text_to_cad:step_inspection_receipt" in roles
     assert (
         "agent_cad:earthtojake_text_to_cad:content_agents_static_preflight"
         in roles
