@@ -246,6 +246,26 @@ CHECKOUT_IDENTITY_PROBE_ATTEMPTS = 3
 CHECKOUT_IDENTITY_PROBE_BACKOFF_SECONDS = 2.0
 
 
+def _checkout_git_command(*arguments: str) -> list[str]:
+    """Build a Git command that trusts exactly the imported control-plane tree.
+
+    The runtime imports through an atomic active-release symlink, while
+    ``Path.resolve`` deliberately records the physical immutable worktree as
+    the allocator identity.  A systemd ``safe.directory`` value for only the
+    symlink does not cover that physical path.  Keep the exception local to
+    each identity probe instead of weakening Git's global trust policy.
+    """
+
+    return [
+        "git",
+        "-c",
+        f"safe.directory={ROOT}",
+        "-C",
+        str(ROOT),
+        *arguments,
+    ]
+
+
 def _run_checkout_probe(argv: Sequence[str]) -> subprocess.CompletedProcess | None:
     """Run one git identity probe, retrying a transient failure.
 
@@ -280,10 +300,10 @@ def _current_checkout_source_state() -> tuple[str, bool, bool]:
     """
 
     commit_result = _run_checkout_probe(
-        ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD^{commit}"]
+        _checkout_git_command("rev-parse", "--verify", "HEAD^{commit}")
     )
     status_result = _run_checkout_probe(
-        ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"]
+        _checkout_git_command("status", "--porcelain", "--untracked-files=no")
     )
     if commit_result is None or status_result is None:
         return "", False, False
@@ -301,14 +321,9 @@ def _current_checkout_source_state() -> tuple[str, bool, bool]:
 def _current_origin_main_commit() -> str:
     try:
         result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(ROOT),
-                "rev-parse",
-                "--verify",
-                "origin/main^{commit}",
-            ],
+            _checkout_git_command(
+                "rev-parse", "--verify", "origin/main^{commit}"
+            ),
             check=False,
             capture_output=True,
             text=True,
@@ -329,15 +344,9 @@ def _current_origin_main_commit() -> str:
 def _current_remote_main_commit() -> str:
     try:
         result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(ROOT),
-                "ls-remote",
-                "--exit-code",
-                "origin",
-                "refs/heads/main",
-            ],
+            _checkout_git_command(
+                "ls-remote", "--exit-code", "origin", "refs/heads/main"
+            ),
             check=False,
             capture_output=True,
             text=True,
@@ -360,7 +369,7 @@ def _current_remote_main_commit() -> str:
 def _current_branch_name() -> str:
     try:
         result = subprocess.run(
-            ["git", "-C", str(ROOT), "branch", "--show-current"],
+            _checkout_git_command("branch", "--show-current"),
             check=False,
             capture_output=True,
             text=True,
@@ -377,7 +386,9 @@ def _current_remote_branch_commit(branch: str) -> str:
     reference = f"refs/heads/{branch}"
     try:
         result = subprocess.run(
-            ["git", "-C", str(ROOT), "ls-remote", "--exit-code", "origin", reference],
+            _checkout_git_command(
+                "ls-remote", "--exit-code", "origin", reference
+            ),
             check=False,
             capture_output=True,
             text=True,
