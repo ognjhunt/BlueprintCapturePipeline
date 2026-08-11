@@ -27,6 +27,13 @@ from .task_evaluation_launch_dispatcher import (
 
 RECONCILIATION_SCHEMA_VERSION = "task_evaluation_launch_reconciliation.v1"
 ORPHAN_RECOVERY_SCHEMA_VERSION = "task_evaluation_launch_orphan_recovery.v1"
+POST_TEARDOWN_PROVIDER_ZERO_SCHEMA_VERSION = (
+    "task_evaluation_post_teardown_provider_zero.v1"
+)
+POST_TEARDOWN_PROVIDER_ZERO_FILENAME = "post_teardown_provider_zero_receipt.json"
+PROVIDER_ZERO_GUARD_SNAPSHOT_SCHEMA_VERSION = (
+    "task_evaluation_provider_zero_guard_snapshot.v1"
+)
 WEBAPP_SYNC_TERMINAL_UNMATCHED_SCHEMA_VERSION = (
     "task_evaluation_launch_webapp_sync_terminal_unmatched.v1"
 )
@@ -70,6 +77,10 @@ def _is_sha256_digest(value: Any) -> bool:
     )
 
 
+def _file_digest(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _guard_provider_zero(
     *,
     guard: Mapping[str, Any],
@@ -77,6 +88,7 @@ def _guard_provider_zero(
     max_age_seconds: int,
     now: datetime,
     not_before: datetime | None,
+    not_before_subject: str = "launch",
 ) -> tuple[bool, list[str]]:
     blockers: list[str] = []
     if not required_providers:
@@ -91,11 +103,23 @@ def _guard_provider_zero(
         if age < -60 or age > max_age_seconds:
             blockers.append("gpu_spend_guard_stale")
         if not_before is not None and generated_at < not_before:
-            blockers.append("gpu_spend_guard_predates_launch")
+            blockers.append(f"gpu_spend_guard_predates_{not_before_subject}")
     if guard.get("reap_mode") is not True:
         blockers.append("gpu_spend_guard_reap_mode_missing")
+    if guard.get("provider_zero_verified") is not True:
+        blockers.append("gpu_provider_zero_not_verified")
+    provider_zero = guard.get("provider_zero")
+    provider_zero = provider_zero if isinstance(provider_zero, Mapping) else {}
+    if provider_zero.get("status") != "verified":
+        blockers.append("gpu_provider_zero_status_unverified")
     if guard.get("live_instance_count") != 0:
         blockers.append("gpu_provider_nonzero")
+    if guard.get("total_burn_per_hour_usd") not in (0, 0.0):
+        blockers.append("gpu_provider_nonzero_burn")
+    if provider_zero.get("global_live_instance_count") != 0:
+        blockers.append("gpu_provider_zero_global_inventory_nonzero")
+    if provider_zero.get("global_total_burn_per_hour_usd") not in (0, 0.0):
+        blockers.append("gpu_provider_zero_global_burn_nonzero")
     if guard.get("reap_candidate_ids") not in ([], ()):
         blockers.append("gpu_orphan_reap_candidates_remaining")
     for result in guard.get("reap_results") or []:
@@ -113,7 +137,282 @@ def _guard_provider_zero(
             blockers.append(f"gpu_inventory_missing:{provider}")
         elif inventory.get("status") != "succeeded":
             blockers.append(f"gpu_inventory_not_confirmed:{provider}")
+        elif inventory.get("row_count") != 0:
+            blockers.append(f"gpu_inventory_nonzero:{provider}")
+        elif inventory.get("required") is not True:
+            blockers.append(f"gpu_inventory_scope_not_required:{provider}")
+        elif provider not in {
+            str(item) for item in provider_zero.get("required_provider_ids") or []
+        }:
+            blockers.append(f"gpu_provider_zero_scope_missing:{provider}")
     return not blockers, sorted(set(blockers))
+
+
+def _terminal_teardown_evidence(
+    *,
+    receipt: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Validate the retained teardown artifact named by a terminal receipt.
+
+    This deliberately uses the digest-bearing artifact descriptor in the
+    immutable dispatcher receipt rather than rediscovering an arbitrary JSON
+    file beneath a run directory.  A provider-zero observation before this
+    point cannot be attributed to a completed teardown.
+    """
+
+    blockers: list[str] = []
+    terminal = receipt.get("terminal_evidence")
+    terminal = terminal if isinstance(terminal, Mapping) else {}
+    artifacts = terminal.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, Mapping) else {}
+    descriptor = artifacts.get("teardown_manifest_path")
+    descriptor = descriptor if isinstance(descriptor, Mapping) else {}
+    raw_path = str(descriptor.get("path") or "").strip()
+    expected_digest = descriptor.get("digest")
+    if descriptor.get("exists") is not True or not raw_path:
+        blockers.append("terminal_teardown_manifest_descriptor_missing")
+        return None, blockers
+    if not _is_sha256_digest(expected_digest):
+        blockers.append("terminal_teardown_manifest_digest_invalid")
+        return None, blockers
+    source = Path(raw_path).expanduser()
+    if not source.is_absolute() or source.is_symlink() or not source.is_file():
+        blockers.append("terminal_teardown_manifest_missing")
+        return None, blockers
+    path = source.resolve()
+    actual_digest = _file_digest(path)
+    if actual_digest != expected_digest:
+        blockers.append("terminal_teardown_manifest_digest_mismatch")
+        return None, blockers
+    try:
+        manifest = _read(path)
+    except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+        blockers.append("terminal_teardown_manifest_invalid")
+        return None, blockers
+    generated_at = _timestamp(manifest.get("generated_at"))
+    if generated_at is None:
+        blockers.append("terminal_teardown_manifest_timestamp_invalid")
+    if manifest.get("status") != "completed":
+        blockers.append("terminal_teardown_manifest_not_completed")
+    if manifest.get("continuing_spend_from_this_run") is not False:
+        blockers.append("terminal_teardown_continuing_spend_not_false")
+    if blockers:
+        return None, sorted(set(blockers))
+    return {
+        "path": str(path),
+        "digest": actual_digest,
+        "schema_version": manifest.get("schema_version"),
+        "status": manifest.get("status"),
+        "generated_at": manifest.get("generated_at"),
+        "continuing_spend_from_this_run": False,
+    }, []
+
+
+def _retain_guard_snapshot(
+    *,
+    run_root: Path,
+    guard: Mapping[str, Any],
+    guard_path: Path,
+    guard_bytes: bytes,
+) -> tuple[Path, dict[str, Any]]:
+    """Copy the exact independently observed guard into immutable run evidence."""
+
+    source_digest = "sha256:" + hashlib.sha256(guard_bytes).hexdigest()
+    snapshot = {
+        "schema_version": PROVIDER_ZERO_GUARD_SNAPSHOT_SCHEMA_VERSION,
+        "source_guard_report_path": str(guard_path),
+        "source_guard_report_sha256": source_digest,
+        "source_guard_generated_at": guard.get("generated_at"),
+        "guard": dict(guard),
+    }
+    snapshot["snapshot_digest"] = canonical_digest(
+        snapshot, digest_field="snapshot_digest"
+    )
+    path = (
+        run_root
+        / "provider_zero_guard_snapshots"
+        / f"{snapshot['snapshot_digest'][7:]}.json"
+    )
+    _write_immutable(path, snapshot)
+    return path, snapshot
+
+
+def _validated_post_teardown_provider_zero_receipt(
+    *,
+    path: Path,
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a previously retained closure receipt only when bound to this run."""
+
+    value = _read(path)
+    if (
+        value.get("schema_version") != POST_TEARDOWN_PROVIDER_ZERO_SCHEMA_VERSION
+        or value.get("status") != "provider_zero_confirmed"
+        or value.get("provider_zero_verified") is not True
+        or value.get("continuing_spend_from_this_run") is not False
+        or value.get("allocator_invoked") is not False
+        or value.get("provider_mutation_performed") is not False
+        or value.get("automatic_retry_performed") is not False
+        or value.get("blockers") != []
+        or value.get("provider_zero_receipt_digest")
+        != canonical_digest(value, digest_field="provider_zero_receipt_digest")
+        or any(
+            value.get(field) != receipt.get(field)
+            for field in (
+                "launch_id",
+                "run_id",
+                "request_digest",
+                "receipt_digest",
+                "launch_profile_digest",
+            )
+        )
+    ):
+        raise TaskEvaluationLaunchError("post_teardown_provider_zero_receipt_invalid")
+    return value
+
+
+def _reconcile_terminal_provider_zero(
+    *,
+    run_root: Path,
+    receipt: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    guard: Mapping[str, Any],
+    guard_path: Path,
+    guard_bytes: bytes | None,
+    guard_error: str | None,
+    observed_at: datetime,
+) -> dict[str, Any]:
+    """Retain a post-teardown provider-zero receipt without provider mutation.
+
+    The reconciler never launches, retries, or tears down providers here.  It
+    only records a closure receipt after the independently scheduled GPU guard
+    proves that the entire required provider scope is zero *after* this run's
+    digest-bound teardown manifest.
+    """
+
+    retained_path = run_root / POST_TEARDOWN_PROVIDER_ZERO_FILENAME
+    if retained_path.is_file():
+        retained = _validated_post_teardown_provider_zero_receipt(
+            path=retained_path,
+            receipt=receipt,
+        )
+        return {
+            "launch_id": receipt.get("launch_id"),
+            "status": "provider_zero_receipt_retained",
+            "provider_zero_confirmed": True,
+            "provider_zero_receipt_digest": retained.get("provider_zero_receipt_digest"),
+            "provider_mutation_performed": False,
+            "allocator_invoked": False,
+            "automatic_retry_performed": False,
+            "blockers": [],
+        }
+
+    blockers: list[str] = []
+    receipt_digest = receipt.get("receipt_digest")
+    if (
+        not _is_sha256_digest(receipt_digest)
+        or receipt_digest != canonical_digest(receipt, digest_field="receipt_digest")
+    ):
+        blockers.append("terminal_launch_receipt_digest_invalid")
+    if receipt.get("launch_id") != run_root.name:
+        blockers.append("terminal_launch_receipt_run_binding_invalid")
+    if receipt.get("launch_profile_digest") != profile.get("profile_digest"):
+        blockers.append("terminal_launch_profile_binding_invalid")
+    reconciliation = profile.get("reconciliation")
+    reconciliation = reconciliation if isinstance(reconciliation, Mapping) else {}
+    required_providers = [
+        str(item) for item in reconciliation.get("required_providers") or []
+    ]
+    max_guard_age = reconciliation.get("max_guard_age_seconds")
+    max_guard_age_seconds = (
+        int(max_guard_age)
+        if isinstance(max_guard_age, int)
+        and not isinstance(max_guard_age, bool)
+        and max_guard_age > 0
+        else 300
+    )
+    controls = profile.get("required_controls")
+    controls = controls if isinstance(controls, Mapping) else {}
+    if controls.get("provider_zero_required") is not True:
+        blockers.append("terminal_provider_zero_control_missing")
+    teardown, teardown_blockers = _terminal_teardown_evidence(receipt=receipt)
+    blockers.extend(teardown_blockers)
+    if not blockers and teardown is not None:
+        provider_zero, guard_blockers = (
+            _guard_provider_zero(
+                guard=guard,
+                required_providers=required_providers,
+                max_age_seconds=max_guard_age_seconds,
+                now=observed_at,
+                not_before=_timestamp(teardown["generated_at"]),
+                not_before_subject="teardown",
+            )
+            if guard_error is None
+            else (False, [guard_error])
+        )
+        blockers.extend(guard_blockers)
+    else:
+        provider_zero = False
+    if blockers or not provider_zero or teardown is None or guard_bytes is None:
+        return {
+            "launch_id": receipt.get("launch_id"),
+            "status": "provider_zero_pending",
+            "provider_zero_confirmed": False,
+            "required_providers": required_providers,
+            "provider_mutation_performed": False,
+            "allocator_invoked": False,
+            "automatic_retry_performed": False,
+            "blockers": sorted(set(blockers or ["gpu_spend_guard_report_unavailable"])),
+        }
+
+    snapshot_path, snapshot = _retain_guard_snapshot(
+        run_root=run_root,
+        guard=guard,
+        guard_path=guard_path,
+        guard_bytes=guard_bytes,
+    )
+    closure = {
+        "schema_version": POST_TEARDOWN_PROVIDER_ZERO_SCHEMA_VERSION,
+        "status": "provider_zero_confirmed",
+        "launch_id": receipt.get("launch_id"),
+        "run_id": receipt.get("run_id"),
+        "request_digest": receipt.get("request_digest"),
+        "receipt_digest": receipt.get("receipt_digest"),
+        "launch_profile_digest": profile.get("profile_digest"),
+        "required_providers": required_providers,
+        "teardown_manifest": teardown,
+        "independent_guard_snapshot": {
+            "path": str(snapshot_path),
+            "snapshot_digest": snapshot["snapshot_digest"],
+            "source_guard_report_sha256": snapshot["source_guard_report_sha256"],
+            "source_guard_generated_at": snapshot["source_guard_generated_at"],
+        },
+        "observed_at": observed_at.isoformat(),
+        "provider_zero_verified": True,
+        "continuing_spend_from_this_run": False,
+        "allocator_invoked": False,
+        "provider_mutation_performed": False,
+        "automatic_retry_performed": False,
+        "claim_boundary": (
+            "Resource-closure evidence only; this receipt does not convert a "
+            "scientific or policy blocker into a completed evaluation."
+        ),
+        "blockers": [],
+    }
+    closure["provider_zero_receipt_digest"] = canonical_digest(
+        closure, digest_field="provider_zero_receipt_digest"
+    )
+    _write_immutable(retained_path, closure)
+    return {
+        "launch_id": receipt.get("launch_id"),
+        "status": "provider_zero_confirmed",
+        "provider_zero_confirmed": True,
+        "provider_zero_receipt_digest": closure["provider_zero_receipt_digest"],
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_performed": False,
+        "blockers": [],
+    }
 
 
 def _queue_destination(queue_root: Path, status: str) -> Path:
@@ -236,9 +535,14 @@ def reconcile_launches(
     state = Path(state_root).expanduser().resolve()
     guard_path = Path(guard_report_path).expanduser().resolve()
     guard: dict[str, Any] = {}
+    guard_bytes: bytes | None = None
     guard_error: str | None = None
     try:
-        guard = _read(guard_path)
+        guard_bytes = guard_path.read_bytes()
+        value = json.loads(guard_bytes.decode("utf-8"))
+        if not isinstance(value, Mapping):
+            raise TaskEvaluationLaunchError(f"json_object_required:{guard_path.name}")
+        guard = dict(value)
     except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
         guard_error = "gpu_spend_guard_report_unavailable"
 
@@ -338,8 +642,8 @@ def reconcile_launches(
                 "required_providers": required_providers,
                 "guard_report_path": str(guard_path),
                 "guard_report_sha256": (
-                    "sha256:" + hashlib.sha256(guard_path.read_bytes()).hexdigest()
-                    if guard_path.is_file()
+                    "sha256:" + hashlib.sha256(guard_bytes).hexdigest()
+                    if guard_bytes is not None
                     else None
                 ),
                 "provider_zero_confirmed": provider_zero,
@@ -373,10 +677,49 @@ def reconcile_launches(
                 "error_type": type(exc).__name__,
             })
 
+    terminal_provider_zero_rows: list[dict[str, Any]] = []
+    receipt_paths = sorted(state.glob("*/launch_receipt.json"))
+    for receipt_path in receipt_paths:
+        run_root = receipt_path.parent
+        try:
+            receipt = _read(receipt_path)
+            # Dry dispatch never mutates a provider.  It must not manufacture a
+            # paid-run closure obligation simply because it shares the same
+            # state-machine and WebApp sync path.
+            if (
+                receipt.get("execute_requested") is not True
+                or receipt.get("provider_mutation_attempted") is not True
+            ):
+                continue
+            profile = _read(run_root / "launch_profile.json")
+            terminal_provider_zero_rows.append(
+                _reconcile_terminal_provider_zero(
+                    run_root=run_root,
+                    receipt=receipt,
+                    profile=profile,
+                    guard=guard,
+                    guard_path=guard_path,
+                    guard_bytes=guard_bytes,
+                    guard_error=guard_error,
+                    observed_at=observed_at,
+                )
+            )
+        except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError) as exc:
+            terminal_provider_zero_rows.append({
+                "launch_id": run_root.name,
+                "status": "provider_zero_reconciliation_blocked",
+                "provider_zero_confirmed": False,
+                "provider_mutation_performed": False,
+                "allocator_invoked": False,
+                "automatic_retry_performed": False,
+                "blockers": ["terminal_provider_zero_reconciliation_input_invalid"],
+                "error_type": type(exc).__name__,
+            })
+
     sync_rows: list[dict[str, Any]] = []
     from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp
 
-    for receipt_path in sorted(state.glob("*/launch_receipt.json")):
+    for receipt_path in receipt_paths:
         run_root = receipt_path.parent
         if (run_root / "webapp_sync_succeeded.json").is_file():
             continue
@@ -472,15 +815,18 @@ def reconcile_launches(
             row.get("status") not in {
                 "recovery_pending",
                 "reconciliation_blocked",
+                "provider_zero_pending",
+                "provider_zero_reconciliation_blocked",
                 "webapp_sync_retry_exhausted",
                 "webapp_sync_not_configured",
                 "webapp_sync_failed",
                 "webapp_sync_reconciliation_blocked",
             }
-            for row in [*rows, *sync_rows]
+            for row in [*rows, *terminal_provider_zero_rows, *sync_rows]
         ) else "blocked",
         "processing_count": len(rows),
         "launches": rows,
+        "terminal_provider_zero": terminal_provider_zero_rows,
         "webapp_sync": sync_rows,
         "automatic_retry_performed": False,
         "allocator_invoked": False,
