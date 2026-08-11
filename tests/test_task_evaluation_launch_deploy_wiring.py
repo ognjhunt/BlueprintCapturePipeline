@@ -43,7 +43,10 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=" in unit
         assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=" in unit
         assert "BLUEPRINT_PIPELINE_REPO" not in unit
-        assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}"' in unit
+        assert (
+            'GIT_CONFIG_VALUE_0="$$(realpath '
+            '"$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}")"'
+        ) in unit
         assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
     for binding in (
         "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
@@ -88,7 +91,10 @@ def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> N
             "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
         ) in unit
         assert "BLUEPRINT_PIPELINE_REPO" not in unit
-        assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}"' in unit
+        assert (
+            'GIT_CONFIG_VALUE_0="$$(realpath '
+            '"$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}")"'
+        ) in unit
         assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
 
     assert "scripts/gpu_spend_guard.py" in guard
@@ -153,6 +159,7 @@ def test_installer_gives_the_service_account_ownership_of_the_checkout() -> None
     )
 
     assert 'chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${REPO_ROOT}"' in script
+    assert 'cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P' in script
     assert "dubious ownership" in script
 
 

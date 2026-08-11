@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve a promoted-release symlink before ownership changes.  Without the
+# physical path, recursive chown changes the link rather than the detached
+# checkout Git resolves, leaving the service account unable to prove identity.
+REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 ENV_DIR="${ENV_DIR:-/etc/blueprint}"
 ENV_FILE="${ENV_FILE:-${ENV_DIR}/pipeline-control-plane.env}"
