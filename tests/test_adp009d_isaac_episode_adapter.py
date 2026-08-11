@@ -262,7 +262,7 @@ def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -
     assert '"raw_finger_body_midpoint_world_m"' in callback
     assert "grasp_frame_target_for_task_space_strategy(" in callback
     assert "task_space_translation_strategy" in callback
-    assert 'runtime / "adp009d_control_plan.v8.json"' in callback
+    assert 'runtime / "adp009d_control_plan.v9.json"' in callback
 
 
 class _Tensor(list):

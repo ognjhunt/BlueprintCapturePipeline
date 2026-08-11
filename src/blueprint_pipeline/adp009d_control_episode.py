@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v8"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v9"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -70,7 +70,14 @@ PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
 PHASE_ORIENTATION_TOLERANCE_DEG = 2.0
-MAX_TASK_SPACE_TRANSLATION_STEP_M = 0.01
+# Production v8 preserved task orientation and held lateral error below 0.8 mm,
+# but its 10 mm Cartesian waypoint produced joint-position errors too small to
+# overcome the loaded actuator's tracking floor.  The arm stopped 119 mm above
+# the grasp even though the target remained reachable and the 240-step budget
+# was exhausted.  A 30 mm local waypoint keeps descent more than 11x smaller
+# than the failed historical 335 mm global request while retaining the 30 mrad
+# per-joint safety cap and enough command authority to keep making progress.
+MAX_TASK_SPACE_TRANSLATION_STEP_M = 0.03
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
     "orientation_first_bounded_local_increment"
@@ -850,7 +857,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v8.json", plan)
+    _write_json(output / "adp009d_control_plan.v9.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
