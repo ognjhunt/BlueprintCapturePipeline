@@ -372,7 +372,7 @@ def test_plan_bakes_metric_scale_and_rebuilds_only_allowlisted_content(
     assert PINNED_NATIVE_CALL_CONTRACT["physics_material_binding"] == {
         "symbol": DEFORMABLE_PHYSICS_BINDING_API,
         "source_relative_path": "source/isaaclab/isaaclab/sim/utils/prims.py",
-        "source_git_blob_sha1": "f78b8ec22e0e5576decaacc54ac32fbbedec925b",
+        "source_git_blob_sha1": "d0f0e8d9042a531ce617645cdc158fa4ac81f754",
         "parameters": [
             "prim_path",
             "material_path",

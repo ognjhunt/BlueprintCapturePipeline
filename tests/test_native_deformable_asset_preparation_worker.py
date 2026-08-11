@@ -127,6 +127,19 @@ def test_registry_rejects_signature_and_origin_substitution(
     assert "symbol_origin_invalid" in str(exc.value)
 
 
+def test_pinned_native_call_contract_matches_runtime_source_packet_v14_blobs():
+    expected = {
+        worker.DEFORMABLE_MATERIAL_API: "8c12bee9442dbf4122b67234ff9ccca40cc02a74",
+        worker.DEFORMABLE_AUTHORING_API: "8bd2c314bf931afe160759fb1ac3f92e24358ff3",
+        worker.DEFORMABLE_PHYSICS_BINDING_API: "d0f0e8d9042a531ce617645cdc158fa4ac81f754",
+        worker.DEFORMABLE_BODY_CFG: "d6dc99a847482a96fc7db07df023ad4f16584138",
+        worker.DEFORMABLE_MATERIAL_CFG: "5c88731cf8d5b056812eb4713e534312eab1dc68",
+    }
+
+    rows = worker._source_rows()
+    assert {symbol: rows[symbol]["source_git_blob_sha1"] for symbol in expected} == expected
+
+
 def test_worker_reads_one_frozen_plan_and_delegates_without_claim_upgrade(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

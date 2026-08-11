@@ -152,7 +152,7 @@ PINNED_NATIVE_CALL_CONTRACT = {
         "source_relative_path": (
             "source/isaaclab/isaaclab/sim/spawners/materials/physics_materials.py"
         ),
-        "source_git_blob_sha1": "1577f9e134dc36cc5b3ad678958951f4df6dcc04",
+        "source_git_blob_sha1": "8c12bee9442dbf4122b67234ff9ccca40cc02a74",
         "parameters": ["prim_path", "cfg"],
         "stage_keyword_supported": False,
         "configuration_symbol": DEFORMABLE_MATERIAL_CFG,
@@ -161,7 +161,7 @@ PINNED_NATIVE_CALL_CONTRACT = {
     "deformable_authoring": {
         "symbol": DEFORMABLE_AUTHORING_API,
         "source_relative_path": "source/isaaclab/isaaclab/sim/schemas/schemas.py",
-        "source_git_blob_sha1": "dec9de5bbadab9c9c40127094bfbd5f924b1dbb2",
+        "source_git_blob_sha1": "8bd2c314bf931afe160759fb1ac3f92e24358ff3",
         "parameters": ["prim_path", "cfg", "stage"],
         "configuration_symbol": DEFORMABLE_BODY_CFG,
         "embedded_cooking_symbol": DEFORMABLE_COOKING_API,
@@ -173,7 +173,7 @@ PINNED_NATIVE_CALL_CONTRACT = {
     "physics_material_binding": {
         "symbol": DEFORMABLE_PHYSICS_BINDING_API,
         "source_relative_path": "source/isaaclab/isaaclab/sim/utils/prims.py",
-        "source_git_blob_sha1": "f78b8ec22e0e5576decaacc54ac32fbbedec925b",
+        "source_git_blob_sha1": "d0f0e8d9042a531ce617645cdc158fa4ac81f754",
         "parameters": [
             "prim_path",
             "material_path",
@@ -187,14 +187,14 @@ PINNED_NATIVE_CALL_CONTRACT = {
     "configuration_sources": {
         DEFORMABLE_BODY_CFG: {
             "source_relative_path": "source/isaaclab/isaaclab/sim/schemas/schemas_cfg.py",
-            "source_git_blob_sha1": "df2569c577140ba3f81bc2ea979401574656b90d",
+            "source_git_blob_sha1": "d6dc99a847482a96fc7db07df023ad4f16584138",
             "allowed_fields": sorted(_BODY_CFG_FIELDS),
         },
         DEFORMABLE_MATERIAL_CFG: {
             "source_relative_path": (
                 "source/isaaclab/isaaclab/sim/spawners/materials/physics_materials_cfg.py"
             ),
-            "source_git_blob_sha1": "222ebd8ce28c9ab76638ae09f2d254b92bb6cd40",
+            "source_git_blob_sha1": "5c88731cf8d5b056812eb4713e534312eab1dc68",
             "allowed_fields": sorted(_MATERIAL_CFG_FIELDS),
         },
     },
