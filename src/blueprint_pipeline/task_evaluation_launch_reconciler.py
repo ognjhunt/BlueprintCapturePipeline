@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .task_evaluation_launch_progress import build_launch_progress
+from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     canonical_digest,
@@ -114,6 +116,7 @@ def reconcile_launches(
     guard_report_path: str | Path,
     now: datetime | None = None,
     fallback_stale_seconds: int = 14_400,
+    publish_progress: bool = True,
 ) -> dict[str, Any]:
     """Reconcile all launch leases without invoking or retrying the allocator."""
 
@@ -162,10 +165,34 @@ def reconcile_launches(
                 else observed_at.timestamp() - request_path.stat().st_mtime
             )
             if lease_age <= ttl_seconds:
+                # The dispatcher blocks on the allocator for the whole run, so
+                # this timer is the only place that can report progress while
+                # the launch is still in flight. Best effort: a failed publish
+                # is recorded and never affects the run.
+                progress_result = None
+                if publish_progress:
+                    try:
+                        progress_result = sync_launch_progress_to_webapp(
+                            progress=build_launch_progress(
+                                run_root=run_root,
+                                request=request,
+                                guard=guard,
+                                elapsed_seconds=lease_age,
+                                observed_at=observed_at,
+                            )
+                        )
+                    except (OSError, ValueError) as exc:
+                        progress_result = {
+                            "status": "failed",
+                            "reason": type(exc).__name__.lower(),
+                        }
                 rows.append({
                     "launch_id": launch_id,
                     "status": "processing_within_ttl",
                     "lease_age_seconds": round(max(0.0, lease_age), 3),
+                    "progress_publish": (
+                        progress_result.get("status") if progress_result else "disabled"
+                    ),
                 })
                 continue
 
