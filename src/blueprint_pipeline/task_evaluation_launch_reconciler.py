@@ -208,6 +208,48 @@ def _terminal_teardown_evidence(
     }, []
 
 
+def _terminal_preprovider_admission_blocked(*, receipt: Mapping[str, Any]) -> bool:
+    """Recognize the allocator's retained fail-closed pre-provider result.
+
+    ``provider_mutation_attempted`` means the dispatcher crossed the canonical
+    allocator boundary; it does not prove that the allocator reached a provider
+    API.  An exact, digest-bound allocator admission rejection therefore has no
+    teardown obligation.  Any other missing teardown remains a closure blocker.
+    """
+
+    terminal = receipt.get("terminal_evidence")
+    terminal = terminal if isinstance(terminal, Mapping) else {}
+    descriptor = terminal.get("result")
+    descriptor = descriptor if isinstance(descriptor, Mapping) else {}
+    raw_path = str(descriptor.get("path") or "").strip()
+    expected_digest = descriptor.get("digest")
+    if (
+        descriptor.get("exists") is not True
+        or not raw_path
+        or not _is_sha256_digest(expected_digest)
+    ):
+        return False
+    source = Path(raw_path).expanduser()
+    if not source.is_absolute() or source.is_symlink() or not source.is_file():
+        return False
+    path = source.resolve()
+    if _file_digest(path) != expected_digest:
+        return False
+    try:
+        result = _read(path)
+    except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+        return False
+    blockers = {
+        str(item)
+        for item in result.get("blockers") or []
+        if isinstance(item, str) and item
+    }
+    return result.get("status") == "blocked" and {
+        "paid_resource_admission_has_blockers",
+        "paid_resource_admission_not_admitted",
+    }.issubset(blockers)
+
+
 def _retain_guard_snapshot(
     *,
     run_root: Path,
@@ -305,6 +347,21 @@ def _reconcile_terminal_provider_zero(
             "allocator_invoked": False,
             "automatic_retry_performed": False,
             "blockers": [],
+        }
+
+    if _terminal_preprovider_admission_blocked(receipt=receipt):
+        return {
+            "launch_id": receipt.get("launch_id"),
+            "status": "provider_zero_not_applicable_pre_provider_admission_blocked",
+            "provider_zero_confirmed": None,
+            "provider_zero_receipt_required": False,
+            "provider_mutation_performed": False,
+            "allocator_invoked": False,
+            "automatic_retry_performed": False,
+            "blockers": [
+                "paid_resource_admission_has_blockers",
+                "paid_resource_admission_not_admitted",
+            ],
         }
 
     blockers: list[str] = []

@@ -25,6 +25,10 @@ canonical paid-resource allocator used by the maintained CLI path.
    digest-bound copy of that guard snapshot. A pending or missing receipt is a
    typed resource-closure blocker; a confirmed receipt never upgrades a
    scientific or policy blocker into a completed evaluation.
+   A digest-bound allocator result that explicitly rejected admission before
+   any provider call is recorded as `provider_zero_not_applicable_pre_provider_admission_blocked`,
+   rather than being misreported as an unfinished teardown. Any other missing
+   teardown artifact remains blocked.
 5. The optional OpenAI Agents SDK supervisor has no tools. It can explain
    blockers, recommend only a deterministically admissible Pipeline profile, or
    request one human decision. Its receipt history is a bounded, digest-bound

@@ -748,6 +748,125 @@ def test_reconciler_never_retains_provider_zero_before_teardown_or_while_nonzero
     assert not (run_root / "post_teardown_provider_zero_receipt.json").exists()
 
 
+def test_reconciler_separates_preprovider_admission_rejection_from_teardown_gap(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    run_root = tmp_path / "state" / request["launch_id"]
+    allocator_result = run_root / "allocator" / "result.json"
+    _write(
+        allocator_result,
+        {
+            "status": "blocked",
+            "blockers": [
+                "paid_resource_admission_has_blockers",
+                "paid_resource_admission_not_admitted",
+            ],
+        },
+    )
+    receipt = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": "blocked",
+        "launch_id": request["launch_id"],
+        "run_id": request["run_id"],
+        "request_digest": request["request_digest"],
+        "launch_profile_digest": profile["profile_digest"],
+        "execute_requested": True,
+        # Dispatcher intent alone is not evidence that a provider API was
+        # reached; the exact admission result below is the differentiator.
+        "provider_mutation_attempted": True,
+        "terminal_evidence": {
+            "status": "blocked",
+            "result": {
+                "path": str(allocator_result.resolve()),
+                "exists": True,
+                "digest": _path_digest(allocator_result),
+            },
+            "artifacts": {},
+        },
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _write(run_root / "launch_profile.json", profile)
+    _write(run_root / "launch_receipt.json", receipt)
+    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    guard_path = tmp_path / "gpu-spend-guard.json"
+    _write(guard_path, _zero_guard(generated_at=datetime.now(timezone.utc)))
+
+    reconciliation = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=guard_path,
+    )
+
+    assert reconciliation["status"] == "passed"
+    assert reconciliation["terminal_provider_zero"] == [{
+        "launch_id": request["launch_id"],
+        "status": "provider_zero_not_applicable_pre_provider_admission_blocked",
+        "provider_zero_confirmed": None,
+        "provider_zero_receipt_required": False,
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_performed": False,
+        "blockers": [
+            "paid_resource_admission_has_blockers",
+            "paid_resource_admission_not_admitted",
+        ],
+    }]
+    assert not (run_root / "post_teardown_provider_zero_receipt.json").exists()
+
+
+def test_reconciler_keeps_unknown_paid_terminal_without_teardown_pending(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    run_root = tmp_path / "state" / request["launch_id"]
+    allocator_result = run_root / "allocator" / "result.json"
+    _write(
+        allocator_result,
+        {"status": "blocked", "blockers": ["allocator_internal_failure"]},
+    )
+    receipt = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": "blocked",
+        "launch_id": request["launch_id"],
+        "run_id": request["run_id"],
+        "request_digest": request["request_digest"],
+        "launch_profile_digest": profile["profile_digest"],
+        "execute_requested": True,
+        "provider_mutation_attempted": True,
+        "terminal_evidence": {
+            "status": "blocked",
+            "result": {
+                "path": str(allocator_result.resolve()),
+                "exists": True,
+                "digest": _path_digest(allocator_result),
+            },
+            "artifacts": {},
+        },
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _write(run_root / "launch_profile.json", profile)
+    _write(run_root / "launch_receipt.json", receipt)
+    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    guard_path = tmp_path / "gpu-spend-guard.json"
+    _write(guard_path, _zero_guard(generated_at=datetime.now(timezone.utc)))
+
+    reconciliation = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=guard_path,
+    )
+
+    assert reconciliation["status"] == "blocked"
+    assert reconciliation["terminal_provider_zero"][0]["status"] == "provider_zero_pending"
+    assert "terminal_teardown_manifest_descriptor_missing" in reconciliation[
+        "terminal_provider_zero"
+    ][0]["blockers"]
+    assert not (run_root / "post_teardown_provider_zero_receipt.json").exists()
+
+
 def test_reconciler_retains_stale_processing_when_provider_inventory_is_uncertain(
     tmp_path: Path,
 ) -> None:
