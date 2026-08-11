@@ -205,7 +205,7 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
         ).decode()
     assert "provider_runtime/adp009d_control_episode.py" in names
     assert "provider_runtime/adp009d_scenario_instance.v1.json" in names
-    assert "provider_runtime/adp009d_control_plan.v5.json" in names
+    assert "provider_runtime/adp009d_control_plan.v6.json" in names
     assert 'BLUEPRINT_ADP009D_CONTROLS="1"' in entrypoint
     assert "adp009d_policy_provisioning.pi05_droid.sh" not in names
     media_preflight = entrypoint.index(

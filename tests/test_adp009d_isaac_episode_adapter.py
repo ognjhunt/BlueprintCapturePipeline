@@ -155,7 +155,7 @@ def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -
     assert "target_quaternion_world_xyzw" in callback
     assert "semantic_finger_tool_midpoint_world_m(" in callback
     assert '"raw_finger_body_midpoint_world_m"' in callback
-    assert 'runtime / "adp009d_control_plan.v5.json"' in callback
+    assert 'runtime / "adp009d_control_plan.v6.json"' in callback
 
 
 class _Tensor(list):

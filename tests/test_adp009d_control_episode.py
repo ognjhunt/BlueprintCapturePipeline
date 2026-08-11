@@ -104,6 +104,7 @@ class _ControlEnvironment:
         self.joints = [0.1 * index for index in range(7)]
         self.can = list(START)
         self.grasp_frame = list(START)
+        self.controlled_body_quaternion = [1.0, 0.0, 0.0, 0.0]
         self.gripper_width = 0.085
         self.gripped = False
         self.pending_target = None
@@ -116,6 +117,7 @@ class _ControlEnvironment:
         self.joints = [0.1 * index for index in range(7)]
         self.can = list(START)
         self.grasp_frame = list(START)
+        self.controlled_body_quaternion = [1.0, 0.0, 0.0, 0.0]
         self.gripper_width = 0.085
         self.gripped = False
         self.pending_target = None
@@ -163,6 +165,10 @@ class _ControlEnvironment:
             "can_pose_world": [*self.can, 0.0, 0.0, 0.0, 1.0],
             "gripper_width_m": self.gripper_width,
             "grasp_frame_position_world_m": list(self.grasp_frame),
+            "controlled_body_pose_world": [
+                *self.grasp_frame,
+                *self.controlled_body_quaternion,
+            ],
         }
 
     def hold_action(self, *, gripper_command: float):
@@ -242,6 +248,21 @@ class _LegacyToleranceStallEnvironment(_ControlEnvironment):
             ]
 
 
+class _PaidCanaryOrientationStallEnvironment(_ControlEnvironment):
+    """Replay the paid canary's safe position with its unsafe wrist angle."""
+
+    def step(self, isaac_action):
+        super().step(isaac_action)
+        # 9.1716 degrees from the preregistered [1, 0, 0, 0] task orientation.
+        half_angle = np.deg2rad(9.1716) / 2.0
+        self.controlled_body_quaternion = [
+            float(np.cos(half_angle)),
+            0.0,
+            0.0,
+            float(np.sin(half_angle)),
+        ]
+
+
 def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> None:
     instance = _instance()
 
@@ -297,6 +318,10 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
     assert grasp["minimum_steps"] == 30
     assert grasp["maximum_steps"] == 120
     assert grasp["arrival_stability_steps"] == 3
+    assert grasp["orientation_tolerance_deg"] == 2.0
+    assert grasp["orientation_tolerance_basis"] == (
+        "top_down_task_orientation_angular_distance"
+    )
     assert [phase["phase_id"] for phase in first["scripted_positive_phases"]] == [
         "pregrasp",
         "descend",
@@ -384,7 +409,7 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         for row in positive["phase_arrivals"]
         if row["phase_id"] in {"grasp", "release"}
     } == {"grasp": 30, "release": 30}
-    assert (tmp_path / "adp009d_control_plan.v5.json").is_file()
+    assert (tmp_path / "adp009d_control_plan.v6.json").is_file()
     assert negative["action_trace"][0]["isaac_action"][:7] == negative[
         "action_trace"
     ][0]["observed_joint_position_before_rad"]
@@ -458,6 +483,13 @@ def test_nonconverging_phase_aborts_before_grasp_and_retains_typed_evidence(
             "arrival_tolerance_basis": (
                 "open_jaw_radial_clearance_minus_safety_clearance"
             ),
+            "terminal_position_within_tolerance": False,
+            "terminal_orientation_error_deg": 0.0,
+            "orientation_tolerance_deg": 2.0,
+            "orientation_tolerance_basis": (
+                "top_down_task_orientation_angular_distance"
+            ),
+            "terminal_orientation_within_tolerance": True,
             "terminal_within_tolerance": False,
             "minimum_steps": 1,
             "maximum_steps": 240,
@@ -522,6 +554,37 @@ def test_paid_canary_legacy_pregrasp_residual_is_not_admitted(
     assert arrival["arrival_tolerance_m"] == pytest.approx(0.00840527398565496)
     assert arrival["target_reached"] is False
     assert "lateral_error_m=0.015850" in receipt["phase_execution_blocker"]
+
+
+def test_paid_canary_pregrasp_orientation_residual_is_not_admitted(
+    tmp_path: Path,
+) -> None:
+    plan = materialize_control_plan(_instance())
+    plan["scripted_positive_phases"] = [plan["scripted_positive_phases"][0]]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    receipt = run_control_episode(
+        environment=_PaidCanaryOrientationStallEnvironment(
+            positive_moves_object=False
+        ),
+        plan=plan,
+        control_id=SCRIPTED_POSITIVE,
+        gripper_open_command=1.0,
+        gripper_closed_command=0.0,
+        media_output_dir=tmp_path,
+        episode_id="paid-canary-pregrasp-orientation-residual",
+    )
+
+    arrival = receipt["phase_arrivals"][0]
+    assert arrival["terminal_position_within_tolerance"] is True
+    assert arrival["terminal_orientation_error_deg"] == pytest.approx(9.1716)
+    assert arrival["orientation_tolerance_deg"] == 2.0
+    assert arrival["terminal_orientation_within_tolerance"] is False
+    assert arrival["terminal_within_tolerance"] is False
+    assert arrival["target_reached"] is False
+    assert "orientation_error_deg=9.171600" in receipt[
+        "phase_execution_blocker"
+    ]
 
 
 def test_slowly_converging_phase_runs_past_legacy_budget_then_stops_early(
