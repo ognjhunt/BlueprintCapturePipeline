@@ -51,6 +51,7 @@ _ALLOWED_RUNTIME_ENV_KEYS = frozenset(
         "BLUEPRINT_ADP009D_STOP_AFTER_FRAMES",
     }
 )
+QUEUE_RUN_SCHEMA_VERSION = "task_evaluation_launch_queue_run.v1"
 PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
     "profile_id",
     "profile_digest",
@@ -1009,7 +1010,7 @@ def process_launch_queue(
         os.replace(claimed, destination_dir / claimed.name)
         processed.append(receipt)
     return {
-        "schema_version": "task_evaluation_launch_queue_run.v1",
+        "schema_version": QUEUE_RUN_SCHEMA_VERSION,
         "status": "completed"
         if all(row.get("status") != "blocked" for row in processed)
         else "blocked",
@@ -1035,7 +1036,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_messages=args.max_messages,
     )
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["status"] == "completed" else 2
+    # The queue status describes the launch outcome, not whether dispatch
+    # worked. Exiting non-zero on a blocked launch made systemd mark the unit
+    # failed and deactivate the path unit that watches the queue, so one
+    # blocked run -- an entirely normal scientific outcome -- silently stopped
+    # every later website trigger from ever dispatching. Reserve a non-zero
+    # exit for a dispatcher that could not process the queue at all.
+    return 0 if result.get("schema_version") == QUEUE_RUN_SCHEMA_VERSION else 2
 
 
 if __name__ == "__main__":  # pragma: no cover
