@@ -3,6 +3,13 @@
 Status: **typed evidence-backed abstention at the held-out Gaussian-ownership
 gate; no source removal, inpainting decision, control, or policy result**.
 
+The completed 840920 attempts remain terminal at that gate.  A later reusable
+contract hardening adds a distinct, stricter visibility-qualified route for a
+*new* evidence packet: owned-plus-ambiguous records may be considered only if
+an exact replacement-USD depth audit proves zero residual from the complete
+deleted source layer in every frozen camera/state cell.  It neither reclassifies
+ambiguous records as owned nor changes either completed attempt's abstention.
+
 The reusable harness work is locally qualified and both replacement candidates
 are authored. Scene `840920` and both tasks are preregistered, both exact source
 collider deletions are materialized, and the appearance source is converted
@@ -84,6 +91,13 @@ result.
   metadata-only Codex reviews into a complete matrix, mirrors their JSON
   receipts without copying source artifacts, and makes the portable evidence
   index fail closed on a missing, swapped, or relabelled review receipt.
+- Latest reusable Gaussian-removal hardening commit: `627ee3709`. It adds the
+  file-backed, `1..5`-object-compatible coverage-conditioned removal path:
+  exact three-way ownership partition, byte-verified `owned + ambiguous`
+  candidate, actual replacement USD/source-layer audit, and a zero-residue
+  requirement across every frozen camera/state cell. This is a new evidence
+  route for a newly frozen packet, not a retry or reinterpretation of the
+  completed 840920 ownership attempts.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
 - External 840796 worktrees and evidence roots were not modified.
@@ -589,6 +603,13 @@ forks:
   qualification receipt, but that receipt must now be derived from upstream
   evidence and fails closed when held-out ownership or coverage/inpainting
   admission is missing.
+- The general removal contract now has two non-interchangeable proof modes:
+  `heldout_factual_ownership` retains the existing held-out gate; and
+  `coverage_conditioned_visibility` can consider the ambiguous layer without
+  claiming ownership only after a byte-exact candidate and a file-backed
+  source-layer audit report exactly zero significant residual under actual
+  replacement-USD depth. Any residue stays a typed seam/inpainting blocker;
+  it never authorizes broader deletion or a flattering image edit.
 - A general CAD-agent request/output matrix now supports one to five replacement
   objects and requires both Earth-to-Jake and Pan-Chera Multi-Agent-CAD for every
   selected object at the same frozen scale. It fails closed on deterministic CAD,
@@ -804,12 +825,17 @@ Recent reusable-code and manifest commits:
   regression proves a missing explicit host-OAuth grant blocks before either
   the Codex operator or a version probe can execute, so it cannot fall back to
   an API-backed path.
+- Focused coverage-conditioned removal regressions for `627ee3709` — `124
+  passed` across source-layer depth coverage, partition candidate, excision
+  join, source-removal qualification, held-out, and paid-attempt contracts;
+  required precommit selector — `1170 passed, 10002 deselected in 68.31s`;
+  `.venv/bin/ruff check src/ tests/` passed.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, and held-out ownership audit; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; a receipt-only portable mirror that excludes all raw dataset bytes; two-backend agent-CAD comparison contracts with deterministic CAD rejected; a Codex-first 1..5-object Content Agents route plus four completed metadata-only `gpt-5.6-luna` host-OAuth reviews that use no API key or artifact bytes; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, held-out ownership audit, and a separate zero-residue coverage-conditioned deletion route that preserves the ownership/visibility distinction; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; a receipt-only portable mirror that excludes all raw dataset bytes; two-backend agent-CAD comparison contracts with deterministic CAD rejected; a Codex-first 1..5-object Content Agents route plus four completed metadata-only `gpt-5.6-luna` host-OAuth reviews that use no API key or artifact bytes; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Both released-code contribution runs completed, but both exact source-removal lanes abstained at `calibrated_gaussian_ownership_separation_without_protected_scene_deletion`. No source Gaussian deletion, replacement-depth coverage, occlusion/inpainting decision, native placement/camera/control gate, or candidate matrix is admitted. Content Agents enrichment remains advisory and not a replacement for source-removal evidence. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
@@ -822,7 +848,9 @@ dynamics/appearance, and all episode evidence remain unknown. The graph phase
 and native state/contact compilers are implemented and hermetically exercised;
 local collision-schema qualification is not native task qualification.
 
-**Single next action:** preserve this terminal abstention and require a new,
-independently preregistered object/evidence packet with sufficient calibrated
-ownership separation before spending again. Do not relax the held-out gate or
-retry these frozen source-object removals.
+**Single next action:** select one of the agent-authored CAD candidates per
+object, convert it through the general SimReady asset path, then materialize a
+new, independently preregistered replacement-depth/source-layer packet. It may
+proceed only if the existing factual-ownership gate passes or the new
+coverage-conditioned path proves zero residual over the entire deleted source
+layer. Do not reinterpret or retry the frozen ownership attempts.
