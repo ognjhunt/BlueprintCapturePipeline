@@ -432,6 +432,9 @@ forks:
   and construction-join enforcement requiring both static graph-asset
   qualification and native import receipts before a replacement can satisfy
   `simready_replacement_native_qualification.v1`.
+- `a5ef9eb7e`: retained native import execution receipts and a materializer that
+  derives construction-facing native import receipts from exact scene/task,
+  static-asset, and native-execution evidence.
 - `3475aaa25`: variable-camera registered excision evidence, authorized-render
   bindings, file-backed construction joins, general graph USD authoring, and
   fail-closed non-servo task-joint semantics.
@@ -662,6 +665,9 @@ Recent reusable-code and manifest commits:
   `1164 passed, 9969 deselected`; Ruff over `src/ tests/` passed.
 - Focused replacement native-qualification and construction-join regressions
   for `8783553a9` — `29 passed`; required precommit selector —
+  `1164 passed, 9972 deselected`; Ruff over `src/ tests/` passed.
+- Focused retained-native-import receipt and construction-join regressions for
+  `a5ef9eb7e` — `29 passed`; required precommit selector —
   `1164 passed, 9972 deselected`; Ruff over `src/ tests/` passed.
 
 ## Claim table
