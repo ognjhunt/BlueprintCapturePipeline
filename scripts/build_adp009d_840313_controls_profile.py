@@ -68,6 +68,15 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
     )
 
 PROFILE_ID_PREFIX = "adp009d-840313-franka-controls"
+# The controls pair is currently blocked by a scene-geometry stall during
+# descend, which halts every run before teardown evidence can show a terminal
+# success.  Diagnostic mode runs the same immutable bundle, provider, scene
+# construction, collider validation, resets, cameras, artifacts, and teardown
+# with no control pair and no policy, so the production path can be exercised
+# green while that physics problem is worked separately.  It proves the
+# pipeline, never the task.
+DIAGNOSTIC_PROFILE_ID_PREFIX = "adp009d-840313-franka-diagnostic"
+EXECUTION_MODES = ("controls", "diagnostic")
 MAX_SPEND_USD = 6.0
 MAX_HOURLY_RATE_USD = 0.80
 HARD_TTL_SECONDS = 5400
@@ -84,8 +93,9 @@ AURA_APPEARANCE_NAME = "aura_ghost_removed_appearance.usdz"
 LANE_INSTANCE_PREFIX = "blueprint-adp009d-"
 
 
-def profile_id_for_source_commit(source_commit: str) -> str:
-    return f"{PROFILE_ID_PREFIX}-{source_commit}"
+def profile_id_for_source_commit(source_commit: str, *, mode: str = "controls") -> str:
+    prefix = PROFILE_ID_PREFIX if mode == "controls" else DIAGNOSTIC_PROFILE_ID_PREFIX
+    return f"{prefix}-{source_commit}"
 
 
 def build_controls_profile_release(
@@ -96,7 +106,10 @@ def build_controls_profile_release(
     runtime_input_root: str | Path,
     provider_guard_path: str | Path,
     output_dir: str | Path,
+    mode: str = "controls",
 ) -> dict[str, Any]:
+    if mode not in EXECUTION_MODES:
+        raise ProductionProfileBuildError(f"controls_profile_mode_invalid:{mode}")
     repo = Path(repo_root).expanduser().resolve()
     inputs = Path(production_input_root).expanduser().resolve()
     runtime_inputs = Path(runtime_input_root).expanduser().resolve()
@@ -156,7 +169,7 @@ def build_controls_profile_release(
             raise ProductionProfileBuildError(f"controls_profile_input_missing:{name}")
     aura_digest = _file_digest(aura_appearance)
 
-    profile_id = profile_id_for_source_commit(source_commit)
+    profile_id = profile_id_for_source_commit(source_commit, mode=mode)
     immutable_inputs = [
         {"name": "source_bundle_manifest", "path": str(source_path), "digest": _file_digest(source_path)},
         {"name": "evaluation_run_spec", "path": str(spec_path), "digest": _file_digest(spec_path)},
@@ -219,7 +232,9 @@ def build_controls_profile_release(
                 str(aura_appearance),
                 "--adp009d-aura-particlefield-sha256",
                 aura_digest,
-                "--adp009d-controls",
+                # Exactly one execution mode: the allocator rejects a request
+                # that names more than one.
+                "--adp009d-controls" if mode == "controls" else "--adp009d-diagnostic-only",
                 "--adp-job-dir",
                 f"{LAUNCH_RUN_ROOT_PLACEHOLDER}/adp009d-job",
                 "--adp-max-hourly-rate-usd",
@@ -294,6 +309,7 @@ def build_controls_profile_release(
     receipt = {
         "schema_version": "adp009d_840313_controls_profile_build_receipt.v1",
         "status": "built",
+        "mode": mode,
         "source_commit": source_commit,
         "profile_id": profile_id,
         "profile_digest": profile["profile_digest"],
@@ -314,6 +330,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runtime-input-root", required=True)
     parser.add_argument("--provider-guard-path", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--mode", choices=EXECUTION_MODES, default="controls")
     args = parser.parse_args(argv)
     try:
         receipt = build_controls_profile_release(
@@ -323,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_input_root=args.runtime_input_root,
             provider_guard_path=args.provider_guard_path,
             output_dir=args.output_dir,
+            mode=args.mode,
         )
     except (OSError, ValueError) as exc:
         print(
