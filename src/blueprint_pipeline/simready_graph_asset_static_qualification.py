@@ -306,8 +306,16 @@ def qualify_simready_graph_asset_static(
                 or not geometry_prim.HasAPI(UsdPhysics.CollisionAPI)
                 or _custom(geometry_prim, "blueprint:geometryProvenance")
                 != geometry["provenance"]
+                or _custom(geometry_prim, "blueprint:collisionGeometryOnly")
+                is not True
             ):
                 geometry_findings.append("type_collision_or_provenance_mismatch")
+            imageable = UsdGeom.Imageable(geometry_prim)
+            if (
+                str(imageable.ComputePurpose()).lower() != "guide"
+                or str(imageable.ComputeVisibility()).lower() != "invisible"
+            ):
+                geometry_findings.append("collision_visual_isolation_mismatch")
             geometry_order, geometry_ops = _xform_ops(geometry_prim)
             expected_order = ["xformOp:translate", "xformOp:orient"]
             if geometry["kind"] == "box":

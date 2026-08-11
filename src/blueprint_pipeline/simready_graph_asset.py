@@ -474,12 +474,22 @@ def author_simready_graph_asset(
             primitive.CreateDisplayColorAttr(
                 [Gf.Vec3f(*geometry["display_color_rgb"])]
             )
+            # Collision geometry is an internal simulator aid, never the
+            # candidate's appearance geometry.  Keeping it render-visible can
+            # silently enlarge an authored asset's depth silhouette and make a
+            # replacement-coverage claim unsafe.  Agent-authored visual meshes
+            # must live in a distinct render/default-purpose scope.
+            primitive.CreatePurposeAttr(UsdGeom.Tokens.guide)
+            primitive.CreateVisibilityAttr(UsdGeom.Tokens.invisible)
             UsdPhysics.CollisionAPI.Apply(primitive.GetPrim())
             UsdShade.MaterialBindingAPI.Apply(primitive.GetPrim()).Bind(
                 material, materialPurpose="physics"
             )
             primitive.GetPrim().SetCustomDataByKey(
                 "blueprint:geometryProvenance", geometry["provenance"]
+            )
+            primitive.GetPrim().SetCustomDataByKey(
+                "blueprint:collisionGeometryOnly", True
             )
 
     frame_by_id = {row["joint_id"]: row for row in admitted["joint_frames"]}

@@ -182,6 +182,11 @@ def test_general_graph_compiler_authors_articulated_and_rigid_subjects(
     assert set(receipt["link_paths"]) == {"root", "child"}
     assert receipt["claim_boundary"]["native_simulator_import_qualified"] is False
     assert receipt["claim_boundary"]["generated_geometry_is_observed_truth"] is False
+    collider = stage.GetPrimAtPath("/Asset/links/root/geometry/root_shape")
+    imageable = UsdGeom.Imageable(collider)
+    assert imageable.ComputePurpose() == UsdGeom.Tokens.guide
+    assert imageable.ComputeVisibility() == UsdGeom.Tokens.invisible
+    assert collider.GetCustomDataByKey("blueprint:collisionGeometryOnly") is True
 
 
 def test_static_readback_qualifies_authored_structure_but_retains_claim_blockers(
