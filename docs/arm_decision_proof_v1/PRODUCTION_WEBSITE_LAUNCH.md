@@ -200,7 +200,12 @@ Pipeline host:
   generated catalog path;
 - set `BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER=true` to accept and
   dispatch signed dry routes. Keep `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE`
-  unset for dry proof;
+  unset or `false` in the canonical environment file for dry proof. A systemd
+  `Environment=...EXECUTE=false` drop-in is not a valid spend stop because
+  `EnvironmentFile` values win. For an independently testable temporary stop
+  while that canonical file still permits execution, set
+  `BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN=true` in a runtime dispatcher
+  drop-in; the service must omit `--execute` and retain a dry receipt;
 - set `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true` only after selecting a
   profile whose `execution_admission.live_enabled` is true and separately
   confirming current rights, execution, and spend authority.
