@@ -215,3 +215,61 @@ def test_published_controls_catalog_exposes_no_allocator_arguments(
     assert "allocator" not in descriptor
     assert "--adp009d-controls" not in serialized
     assert "provider-launch-request" not in serialized
+
+
+def test_diagnostic_mode_runs_the_pipeline_without_the_control_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The descend stall blocks every controls run before terminal success, so the
+    production path has never produced a completed run. Diagnostic mode must
+    exercise the same bundle, provider, and teardown path with no control pair
+    and no policy — proving the pipeline, never the task."""
+    env = _release(tmp_path, monkeypatch)
+    receipt = builder.build_controls_profile_release(
+        source_commit=COMMIT,
+        repo_root=env["repo"],
+        production_input_root=env["inputs"],
+        runtime_input_root=env["runtime_inputs"],
+        provider_guard_path=env["guard"],
+        output_dir=env["out"],
+        mode="diagnostic",
+    )
+
+    assert receipt["mode"] == "diagnostic"
+    assert receipt["profile_id"].startswith(builder.DIAGNOSTIC_PROFILE_ID_PREFIX)
+    profile = json.loads(Path(receipt["profile_path"]).read_text(encoding="utf-8"))
+    assert validate_launch_profile(profile) == []
+
+    argv = profile["allocator"]["argv"]
+    # Exactly one execution mode: the allocator rejects more than one.
+    assert "--adp009d-diagnostic-only" in argv
+    assert "--adp009d-controls" not in argv
+    assert "--adp009d-policy-candidate" not in argv
+    # Same ceilings and the same claim boundary as the controls profile.
+    assert profile["allocator"]["max_spend_usd"] == 6.0
+    assert profile["allocator"]["retry_cap"] == 0
+    assert profile["claim_ceiling"] == "development_only"
+
+    # Distinct profile id, so a diagnostic run can never be mistaken for
+    # controls evidence when the live profile is later assembled.
+    controls = builder.build_controls_profile_release(
+        source_commit=COMMIT,
+        repo_root=env["repo"],
+        production_input_root=env["inputs"],
+        runtime_input_root=env["runtime_inputs"],
+        provider_guard_path=env["guard"],
+        output_dir=env["out"] / "controls",
+        mode="controls",
+    )
+    assert controls["profile_id"] != receipt["profile_id"]
+
+    with pytest.raises(builder.ProductionProfileBuildError, match="mode_invalid"):
+        builder.build_controls_profile_release(
+            source_commit=COMMIT,
+            repo_root=env["repo"],
+            production_input_root=env["inputs"],
+            runtime_input_root=env["runtime_inputs"],
+            provider_guard_path=env["guard"],
+            output_dir=env["out"] / "bogus",
+            mode="policy",
+        )
