@@ -32,14 +32,17 @@
         "size_bytes": 12271
       },
       "config_preflight": null,
+      "local_config_preflight": null,
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
+      "paid_model_access_required_for_execute": true,
       "paid_attempt_authority_required_for_execute": true,
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_config_preflight_missing",
-        "content_agents_paid_attempt_authority_missing"
+        "content_agents_local_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing",
+        "content_agents_paid_model_access_preflight_missing"
       ]
     },
     {
@@ -58,14 +61,17 @@
         "size_bytes": 14127
       },
       "config_preflight": null,
+      "local_config_preflight": null,
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
+      "paid_model_access_required_for_execute": true,
       "paid_attempt_authority_required_for_execute": true,
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_config_preflight_missing",
-        "content_agents_paid_attempt_authority_missing"
+        "content_agents_local_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing",
+        "content_agents_paid_model_access_preflight_missing"
       ]
     },
     {
@@ -84,14 +90,17 @@
         "size_bytes": 15280
       },
       "config_preflight": null,
+      "local_config_preflight": null,
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
+      "paid_model_access_required_for_execute": true,
       "paid_attempt_authority_required_for_execute": true,
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_config_preflight_missing",
-        "content_agents_paid_attempt_authority_missing"
+        "content_agents_local_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing",
+        "content_agents_paid_model_access_preflight_missing"
       ]
     },
     {
@@ -110,14 +119,17 @@
         "size_bytes": 18937
       },
       "config_preflight": null,
+      "local_config_preflight": null,
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
+      "paid_model_access_required_for_execute": true,
       "paid_attempt_authority_required_for_execute": true,
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_config_preflight_missing",
-        "content_agents_paid_attempt_authority_missing"
+        "content_agents_local_config_preflight_missing",
+        "content_agents_paid_attempt_authority_missing",
+        "content_agents_paid_model_access_preflight_missing"
       ]
     }
   ],
@@ -129,5 +141,5 @@
     "native_simulator_import_qualified": false,
     "physical_equivalence": false
   },
-  "receipt_digest": "sha256:33c10a3df16111d6d0ac07f84a7670891b4d11a09a7bbdcb2c16b3ffcea31bb2"
+  "receipt_digest": "sha256:8aa239edecb5c84b42cbc30d86402306875096e2c9c41842c36fc7691e33ea39"
 }

@@ -29,6 +29,7 @@ learned policies were therefore not admitted. This is not a policy result.
   `7aa7b7fce` (four-candidate Content Agents execution-readiness receipt),
   plus the current manifest-bound CAD-agent request sealing follow-up,
   and the current historical CAD-output reference-binding audit follow-up,
+  and the current local/paid Content Agents preflight split follow-up,
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
@@ -311,12 +312,18 @@ with digest
 The no-provider execution-readiness receipt is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`
 with digest
-`sha256:33c10a3df16111d6d0ac07f84a7670891b4d11a09a7bbdcb2c16b3ffcea31bb2`.
+`sha256:8aa239edecb5c84b42cbc30d86402306875096e2c9c41842c36fc7691e33ea39`.
 It validates all four prepared bundle bytes and exact-entrypoint rehearsals, and
-records the current smallest blockers for every candidate:
-`content_agents_config_preflight_missing` and
-`content_agents_paid_attempt_authority_missing`. It performs no Docker, OpenAI,
-Vast, or object-store mutation and records `provider_mutations_performed: 0`.
+records the current blockers for every candidate:
+`content_agents_local_config_preflight_missing`,
+`content_agents_paid_model_access_preflight_missing`, and
+`content_agents_paid_attempt_authority_missing`. Local bundle/config/container
+preflight is now a separate no-paid, Docker-network-disabled gate from paid
+OpenAI model/image capability probing. In this worktree the Docker/Colima daemon
+was not available (`docker image inspect` could not connect to
+`~/.colima/default/docker.sock`), so the real four-bundle local preflight was not
+executed. The readiness refresh itself performs no Docker, OpenAI, Vast, or
+object-store mutation and records `provider_mutations_performed: 0`.
 
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
@@ -495,6 +502,8 @@ Recent reusable-code and manifest commits:
 - Focused CAD-agent reference-manifest and historical binding-audit regressions
   plus adjacent Content Agents/evidence-index regressions for the current
   follow-up — `81 passed`.
+- Focused local/paid Content Agents preflight split regressions for the current
+  follow-up — `54 passed`.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
