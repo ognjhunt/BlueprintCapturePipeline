@@ -1550,6 +1550,7 @@ def build_content_agents_vast_bundle(
                 "mesh_projection_receipt",
                 "mesh_packet_digest",
                 "candidate_step_sha256",
+                "cad_agent_request_digest",
                 "cad_agent_backend_id",
                 "cad_agent_execution_mode",
                 "task_id",

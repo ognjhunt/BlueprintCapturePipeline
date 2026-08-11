@@ -587,6 +587,7 @@ def _single_agent_cad_content_bundle_matrix(
         "asset_id": cad_output["request"]["asset_id"],
         "cad_agent_backend_id": cad_output["request"]["backend"]["backend_id"],
         "cad_agent_output_receipt_digest": cad_output["receipt_digest"],
+        "cad_agent_request_digest": cad_output["request_digest"],
         "mesh_projection_receipt_digest": projection["receipt_digest"],
         "mesh_packet_digest": projection["packet_digest"],
         "candidate_step_sha256": cad_output["artifacts"]["step"]["sha256"],
