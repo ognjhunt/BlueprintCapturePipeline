@@ -112,6 +112,11 @@ def test_builds_replayable_bundle_with_exact_native_runtime_contract(
         )
         == []
     )
+    assert '. "$RUNTIME_DIR/provisioned_runtime_sources/native_task_runtime_environment.sh"' in entrypoint
+    assert "BLUEPRINT_WAM_RUNTIME_PHASE:native_deformable_asset:worker:started" in entrypoint
+    assert entrypoint.index("native_task_runtime_environment.sh") < entrypoint.index(
+        "native_deformable_asset_preparation_worker"
+    )
     replay = load_verified_native_deformable_asset_provider_bundle(
         Path(receipt["bundle_path"]).parent
         / "native_deformable_asset_provider_bundle_receipt.v1.json",

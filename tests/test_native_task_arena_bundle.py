@@ -234,6 +234,13 @@ def test_rigid_and_articulated_packets_use_the_same_bundle_contract(
         assert "provider_runtime/native_task_packet/assets/task_object.usd" in names
         assert "provider_runtime/blueprint_pipeline/runtime_helper.py" in names
         assert archive.read("provider_runtime/adp_arena_provider_runner.py") == worker.read_bytes()
+        entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode(
+            "utf-8"
+        )
+    assert "native_task_runtime_environment.sh" in entrypoint
+    assert entrypoint.index("native_task_runtime_environment.sh") < entrypoint.index(
+        "adp_arena_provider_runner.py"
+    )
 
 
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])

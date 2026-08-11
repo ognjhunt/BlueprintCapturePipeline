@@ -259,6 +259,8 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     )["pure_python"] is False
     assert len(observed) == 1
     assert observed[0][1:3] == ["-I", "-c"]
+    assert "sys.path[:0]=" in observed[0][3]
+    assert str(tmp_path / "extracted/runtime_python_dependencies") in observed[0][3]
     assert "pip" not in observed[0]
     assert "setuptools" not in observed[0]
     assert len(result["install_roots"]) == len(ISAACLAB_PACKAGE_NAMES) + 1
@@ -268,6 +270,51 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert path_lines[0].startswith("import sys;sys.path[:0]=[")
     assert result["runtime_dependency_target"] in path_lines[0]
     assert all(path in path_lines[0] for path in result["install_roots"])
+    environment = Path(result["runtime_environment_path"])
+    environment_text = environment.read_text(encoding="utf-8")
+    assert environment_text.startswith("export PYTHONPATH=")
+    assert result["runtime_dependency_target"] in environment_text
+    assert all(path in environment_text for path in result["install_roots"])
+    assert result["runtime_environment_sha256"].startswith("sha256:")
+
+
+def test_isolated_probe_inserts_verified_dependency_closure_before_imports(
+    tmp_path: Path,
+) -> None:
+    receipt = _packet(tmp_path)
+    simulator = tmp_path / "isaac-sim"
+    simulator.mkdir()
+
+    def isolated_probe(command, **kwargs):
+        assert command[1] == "-I"
+        probe = command[3]
+        assert "sys.path[:0]=" in probe
+        dependency_target = tmp_path / "extracted/runtime_python_dependencies"
+        assert str(dependency_target) in probe
+        assert "importlib.util.find_spec" in probe
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    result = provision_native_task_runtime_sources(
+        source_receipt_path=tmp_path
+        / "packet/native_task_runtime_source_packet.v1.json",
+        source_packet_path=receipt["packet_path"],
+        extraction_dir=tmp_path / "extracted",
+        output_path=tmp_path / "provisioning.json",
+        simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
+        python_executable="/isaac-sim/python.sh",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=(
+            "manylinux_2_28_x86_64",
+            "manylinux_2_26_x86_64",
+            "manylinux_2_17_x86_64",
+            "manylinux2014_x86_64",
+        ),
+        run_command=isolated_probe,
+    )
+
+    assert result["status"] == "completed"
+    assert result["dependencies_installed"] is True
 
 
 def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe(

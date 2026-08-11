@@ -202,6 +202,9 @@ name = {quoted}
 PY
   exit $provision_rc
 fi
+if [ -f "$RUNTIME_DIR/provisioned_runtime_sources/native_task_runtime_environment.sh" ]; then
+  . "$RUNTIME_DIR/provisioned_runtime_sources/native_task_runtime_environment.sh"
+fi
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:runtime_sources:completed"
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:started"
 if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then

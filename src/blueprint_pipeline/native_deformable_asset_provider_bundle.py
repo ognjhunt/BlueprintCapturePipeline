@@ -203,6 +203,7 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_deformable_asset:runtime_sources:starte
   --simulator-root /isaac-sim
 provision_rc=$?
 if [ $provision_rc -eq 0 ]; then
+  . "$RUNTIME_DIR/provisioned_runtime_sources/native_task_runtime_environment.sh"
   echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_deformable_asset:worker:started"
   /isaac-sim/python.sh -m blueprint_pipeline.native_deformable_asset_preparation_worker \
     --plan "$RUNTIME_DIR/input_package/native_deformable_asset_preparation_plan.v1.json" \

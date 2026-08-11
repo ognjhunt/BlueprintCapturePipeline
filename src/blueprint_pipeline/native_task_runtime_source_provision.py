@@ -208,6 +208,8 @@ def provision_native_task_runtime_sources(
         "installation_method": "verified_source_roots_pth",
         "path_file": None,
         "path_file_sha256": None,
+        "runtime_environment_path": None,
+        "runtime_environment_sha256": None,
         "package_path_probe_command": [],
         "package_path_probe_returncode": None,
         "package_path_probe_stdout": "",
@@ -282,8 +284,18 @@ def provision_native_task_runtime_sources(
         )
         result["path_file"] = str(path_file)
         result["path_file_sha256"] = _sha256(path_file)
+        environment_file = destination / "native_task_runtime_environment.sh"
+        environment_file.write_text(
+            "export PYTHONPATH="
+            + json.dumps(":".join(priority_paths) + ":${PYTHONPATH:-}")
+            + "\n",
+            encoding="utf-8",
+        )
+        result["runtime_environment_path"] = str(environment_file)
+        result["runtime_environment_sha256"] = _sha256(environment_file)
         package_probe = (
-            "import importlib.util,json;"
+            "import importlib.util,json,sys;"
+            f"sys.path[:0]={priority_paths!r};"
             f"names={list(TOP_LEVEL_PACKAGES)!r};"
             "found={name:importlib.util.find_spec(name) is not None for name in names};"
             "print(json.dumps(found,sort_keys=True));"
