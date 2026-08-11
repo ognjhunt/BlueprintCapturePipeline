@@ -52,6 +52,30 @@ _REGISTERED_SCHEMA_MODULES = {
     "PhysxCollisionAPI": "PhysxSchema",
     "PhysxDeformableBodyMaterialAPI": "PhysxSchema",
 }
+_SCHEMA_VALIDATION_REGISTERED_API = "registered_physx_api_v1"
+_SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN = "pinned_native_authoring_schema_token_v1"
+_PINNED_DEFORMABLE_AUTHORING_SYMBOL = (
+    "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
+)
+_PINNED_DEFORMABLE_MATERIAL_SPAWN_SYMBOL = (
+    "isaaclab.sim.spawners.materials.physics_materials:spawn_deformable_body_material"
+)
+_PINNED_DEFORMABLE_MATERIAL_BINDING_SYMBOL = "isaaclab.sim.utils.prims:bind_physics_material"
+# A small number of Isaac/PhysX images author the schemas through the exact pinned
+# Isaac Lab call but do not ship the corresponding Python schema wrapper.  That is
+# distinct from accepting a raw schema token: this fallback is available only for
+# the clean stage after the exact native authoring calls have been recorded.
+_MODULELESS_SCHEMA_REQUIRED_NATIVE_SYMBOLS = {
+    "OmniPhysicsDeformableBodyAPI": frozenset({_PINNED_DEFORMABLE_AUTHORING_SYMBOL}),
+    "PhysxBaseDeformableBodyAPI": frozenset({_PINNED_DEFORMABLE_AUTHORING_SYMBOL}),
+    "PhysxCollisionAPI": frozenset({_PINNED_DEFORMABLE_AUTHORING_SYMBOL}),
+    "PhysxDeformableBodyMaterialAPI": frozenset(
+        {
+            _PINNED_DEFORMABLE_MATERIAL_SPAWN_SYMBOL,
+            _PINNED_DEFORMABLE_MATERIAL_BINDING_SYMBOL,
+        }
+    ),
+}
 _COOKING_FIELDS = frozenset(
     {
         "collision_simplification",
@@ -785,16 +809,35 @@ def _schema_names(prim: object) -> set[str]:
     return names
 
 
-def _registered_physx_schema_names(
+def _moduleless_schema_token_is_authorized(
+    prim: object, token: str, *, native_authoring_symbols: Sequence[str]
+) -> bool:
+    """Return whether an otherwise-unwrapped token has an exact native provenance."""
+
+    required = _MODULELESS_SCHEMA_REQUIRED_NATIVE_SYMBOLS.get(token)
+    return bool(
+        required
+        and required.issubset(set(native_authoring_symbols))
+        and token in _schema_names(prim)
+    )
+
+
+def _registered_physx_schema_validation(
     prim: object,
     expected: Mapping[str, str],
     *,
     error: str,
     native_authoring_symbols: Sequence[str] = (),
-) -> list[str]:
-    """Production-default proof that schema tokens resolve to registered APIs."""
+) -> tuple[list[str], dict[str, str]]:
+    """Validate schemas and retain whether a wrapper or pinned-token proof was used.
+
+    A token-only proof is deliberately narrow: it requires the exact native
+    authoring symbols recorded by the worker and is emitted as a separate
+    readback method.  A present wrapper that does not validate never falls back.
+    """
 
     observed: list[str] = []
+    methods: dict[str, str] = {}
     for token, qualified_name in expected.items():
         module_name = _REGISTERED_SCHEMA_MODULES.get(token)
         if module_name is None:
@@ -802,13 +845,11 @@ def _registered_physx_schema_names(
         try:
             schema_module = __import__("pxr", fromlist=[module_name]).__dict__[module_name]
         except (ImportError, KeyError) as exc:  # pragma: no cover - native runtime owns this path
-            if (
-                token == "OmniPhysicsDeformableBodyAPI"
-                and "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
-                in native_authoring_symbols
-                and token in _schema_names(prim)
+            if _moduleless_schema_token_is_authorized(
+                prim, token, native_authoring_symbols=native_authoring_symbols
             ):
                 observed.append(qualified_name)
+                methods[qualified_name] = _SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN
                 continue
             raise NativeDeformableAssetStageAdapterError(
                 ["native_deformable_stage_physx_schema_runtime_unavailable"]
@@ -820,13 +861,35 @@ def _registered_physx_schema_names(
             except Exception as exc:
                 raise NativeDeformableAssetStageAdapterError([error]) from exc
         else:
-            if module_name != "OmniPhysicsSchema":
-                raise NativeDeformableAssetStageAdapterError([error])
-            valid = token in _schema_names(prim)
+            if _moduleless_schema_token_is_authorized(
+                prim, token, native_authoring_symbols=native_authoring_symbols
+            ):
+                observed.append(qualified_name)
+                methods[qualified_name] = _SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN
+                continue
+            raise NativeDeformableAssetStageAdapterError([error])
         if not valid:
             raise NativeDeformableAssetStageAdapterError([error])
         observed.append(qualified_name)
-    return sorted(observed)
+        methods[qualified_name] = _SCHEMA_VALIDATION_REGISTERED_API
+    return sorted(observed), {name: methods[name] for name in sorted(methods)}
+
+
+def _registered_physx_schema_names(
+    prim: object,
+    expected: Mapping[str, str],
+    *,
+    error: str,
+    native_authoring_symbols: Sequence[str] = (),
+) -> list[str]:
+    """Compatibility projection of :func:`_registered_physx_schema_validation`."""
+
+    return _registered_physx_schema_validation(
+        prim,
+        expected,
+        error=error,
+        native_authoring_symbols=native_authoring_symbols,
+    )[0]
 
 
 class OpenUsdNativeDeformableStageAdapter:
@@ -1664,16 +1727,17 @@ class OpenUsdNativeDeformableStageAdapter:
             raise NativeDeformableAssetStageAdapterError(
                 ["native_deformable_stage_metadata_readback_invalid"]
             )
-        body_schemas = _registered_physx_schema_names(
+        body_schemas, body_schema_validation = _registered_physx_schema_validation(
             schema_prim,
             _BODY_SCHEMA_NAMES,
             error="native_deformable_stage_native_schema_readback_invalid",
             native_authoring_symbols=entry.get("native_authoring_symbols") or (),
         )
-        material_schemas = _registered_physx_schema_names(
+        material_schemas, material_schema_validation = _registered_physx_schema_validation(
             physics_material_prim,
             _MATERIAL_SCHEMA_NAMES,
             error="native_deformable_stage_native_schema_readback_invalid",
+            native_authoring_symbols=entry.get("native_authoring_symbols") or (),
         )
 
         live_mesh = UsdGeom.Mesh(visual_prim)
@@ -2014,6 +2078,10 @@ class OpenUsdNativeDeformableStageAdapter:
             "authoring_root_prim_path": output_authoring_root_prim_path,
             "deformable_schema_prim_path": output_deformable_schema_prim_path,
             "body_api_schemas": body_schemas,
+            "schema_validation": {
+                "body_api_schemas": body_schema_validation,
+                "physics_material_api_schemas": material_schema_validation,
+            },
             "physics_material": {
                 "prim_path": physics_material_path,
                 "api_schemas": material_schemas,

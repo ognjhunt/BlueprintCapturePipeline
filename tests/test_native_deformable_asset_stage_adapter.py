@@ -166,15 +166,17 @@ def _install_hermetic_registered_physx(monkeypatch: pytest.MonkeyPatch) -> None:
         del native_authoring_symbols
         authored = adapter_module._schema_names(prim)
         assert set(expected).issubset(authored)
-        return sorted(expected.values())
+        names = sorted(expected.values())
+        return names, {name: adapter_module._SCHEMA_VALIDATION_REGISTERED_API for name in names}
 
-    monkeypatch.setattr(adapter_module, "_registered_physx_schema_names", validate)
+    monkeypatch.setattr(adapter_module, "_registered_physx_schema_validation", validate)
 
 
 def _prepared_native_stage(
     root: Path,
     *,
     monkeypatch: pytest.MonkeyPatch | None,
+    native_authoring_symbols: tuple[str, ...] = (),
 ) -> tuple[OpenUsdNativeDeformableStageAdapter, Usd.Stage]:
     source, texture, center = _source_asset(root / "input")
     output = root / "result" / "deformable.usda"
@@ -210,6 +212,7 @@ def _prepared_native_stage(
         stage=stage,
         body_and_cooking_properties=body_and_cooking,
         material_properties=material_properties,
+        native_authoring_symbols=native_authoring_symbols,
     )
     _author_native_readback(
         stage,
@@ -482,6 +485,83 @@ def test_moduleless_omni_schema_token_requires_pinned_native_authoring_call() ->
     )
 
     assert observed == ["pxr.OmniPhysicsSchema.OmniPhysicsDeformableBodyAPI"]
+
+
+def test_moduleless_physx_schema_tokens_require_exact_native_call_chain() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    body = stage.DefinePrim("/Body", "Xform")
+    material = UsdShade.Material.Define(stage, "/Material").GetPrim()
+    for token in (
+        "OmniPhysicsDeformableBodyAPI",
+        "PhysxBaseDeformableBodyAPI",
+        "PhysxCollisionAPI",
+    ):
+        body.AddAppliedSchema(token)
+    material.AddAppliedSchema("PhysxDeformableBodyMaterialAPI")
+    symbols = [
+        "isaaclab.sim.spawners.materials.physics_materials:spawn_deformable_body_material",
+        "isaaclab.sim.schemas.schemas:define_deformable_body_properties",
+        "isaaclab.sim.utils.prims:bind_physics_material",
+    ]
+
+    body_names, body_methods = adapter_module._registered_physx_schema_validation(
+        body,
+        adapter_module._BODY_SCHEMA_NAMES,
+        error="native_deformable_stage_native_schema_readback_invalid",
+        native_authoring_symbols=symbols,
+    )
+    material_names, material_methods = adapter_module._registered_physx_schema_validation(
+        material,
+        adapter_module._MATERIAL_SCHEMA_NAMES,
+        error="native_deformable_stage_native_schema_readback_invalid",
+        native_authoring_symbols=symbols,
+    )
+
+    assert body_names == sorted(adapter_module._BODY_SCHEMA_NAMES.values())
+    assert material_names == sorted(adapter_module._MATERIAL_SCHEMA_NAMES.values())
+    assert set(body_methods.values()) == {adapter_module._SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN}
+    assert set(material_methods.values()) == {
+        adapter_module._SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN
+    }
+
+
+def test_moduleless_material_token_without_spawn_and_binding_is_rejected() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    material = UsdShade.Material.Define(stage, "/Material").GetPrim()
+    material.AddAppliedSchema("PhysxDeformableBodyMaterialAPI")
+
+    with pytest.raises(NativeDeformableAssetStageAdapterError) as exc:
+        adapter_module._registered_physx_schema_validation(
+            material,
+            adapter_module._MATERIAL_SCHEMA_NAMES,
+            error="native_deformable_stage_native_schema_readback_invalid",
+            native_authoring_symbols=[
+                "isaaclab.sim.spawners.materials.physics_materials:spawn_deformable_body_material"
+            ],
+        )
+
+    assert "native_deformable_stage_physx_schema_runtime_unavailable" in exc.value.errors
+
+
+def test_full_clean_stage_records_moduleless_schema_validation_method(tmp_path: Path) -> None:
+    adapter, stage = _prepared_native_stage(
+        tmp_path,
+        monkeypatch=None,
+        native_authoring_symbols=(
+            "isaaclab.sim.spawners.materials.physics_materials:spawn_deformable_body_material",
+            "isaaclab.sim.schemas.schemas:define_deformable_body_properties",
+            "isaaclab.sim.utils.prims:bind_physics_material",
+        ),
+    )
+
+    readback = _readback(adapter, stage)
+
+    assert set(readback["schema_validation"]["body_api_schemas"].values()) == {
+        adapter_module._SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN
+    }
+    assert set(readback["schema_validation"]["physics_material_api_schemas"].values()) == {
+        adapter_module._SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN
+    }
 
 
 def test_moduleless_omni_schema_token_without_native_authoring_call_fails() -> None:

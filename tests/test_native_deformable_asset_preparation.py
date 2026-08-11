@@ -130,6 +130,10 @@ def _readback(plan: dict[str, Any]) -> dict[str, Any]:
         "authoring_root_prim_path": required["authoring_root_prim_path"],
         "deformable_schema_prim_path": required["deformable_schema_prim_path"],
         "body_api_schemas": copy.deepcopy(required["body_api_schemas"]),
+        "schema_validation": {
+            group: {schema: allowed[0] for schema, allowed in rows.items()}
+            for group, rows in required["schema_validation"].items()
+        },
         "physics_material": copy.deepcopy(required["physics_material"]),
         "mass_properties": copy.deepcopy(required["mass_properties"]),
         "physics_material_binding": copy.deepcopy(required["physics_material_binding"]),
@@ -880,6 +884,13 @@ def test_exact_source_usd_path_cannot_be_a_symlink(tmp_path: Path) -> None:
                 "body_api_schemas", ["provider:experimental"]
             ),
             "native_deformable_return_body_schemas_mismatch",
+        ),
+        (
+            lambda result: result["readback"]["schema_validation"]["body_api_schemas"].__setitem__(
+                "pxr.PhysxSchema.PhysxCollisionAPI", "raw_schema_token_unproven"
+            ),
+            "native_deformable_return_schema_validation_method_invalid:"
+            "pxr.PhysxSchema.PhysxCollisionAPI",
         ),
         (
             lambda result: result["readback"].__setitem__(

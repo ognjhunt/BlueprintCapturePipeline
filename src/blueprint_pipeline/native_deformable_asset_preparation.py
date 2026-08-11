@@ -108,6 +108,8 @@ NATIVE_EXECUTED_API_SYMBOLS = (
 MATERIAL_API_STATUS = "positive_native_prim_returned"
 AUTHORING_API_STATUS = "pinned_none_returned_readback_required"
 PHYSICS_BINDING_API_STATUS = "pinned_none_returned_readback_required"
+SCHEMA_VALIDATION_REGISTERED_API = "registered_physx_api_v1"
+SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN = "pinned_native_authoring_schema_token_v1"
 _DIGEST_PREFIX = "sha256:"
 _IDENTITY_SCALE = [1.0, 1.0, 1.0]
 _DIMENSION_TOLERANCE_M = 1.0e-6
@@ -167,6 +169,28 @@ _MATERIAL_CFG_FIELDS = frozenset(
         "elasticity_damping",
     }
 )
+
+
+def _schema_validation_requirements() -> dict[str, dict[str, list[str]]]:
+    """Permit a missing wrapper only when the worker proves pinned native authoring.
+
+    The return evidence always names the exact applied schema.  The second
+    method is not a generic token escape hatch: the verified worker API-call
+    sequence below binds it to the pinned material/authoring calls.
+    """
+
+    methods = [
+        SCHEMA_VALIDATION_REGISTERED_API,
+        SCHEMA_VALIDATION_PINNED_AUTHORING_TOKEN,
+    ]
+    return {
+        "body_api_schemas": {schema: list(methods) for schema in sorted(DEFORMABLE_BODY_SCHEMAS)},
+        "physics_material_api_schemas": {
+            schema: list(methods) for schema in sorted(DEFORMABLE_MATERIAL_SCHEMAS)
+        },
+    }
+
+
 PINNED_NATIVE_CALL_CONTRACT = {
     "material_spawn": {
         "symbol": DEFORMABLE_MATERIAL_API,
@@ -1655,6 +1679,7 @@ def materialize_native_deformable_asset_preparation_plan(
             "authoring_root_prim_path": OUTPUT_BODY_PRIM_PATH,
             "deformable_schema_prim_path": OUTPUT_BODY_PRIM_PATH,
             "body_api_schemas": sorted(DEFORMABLE_BODY_SCHEMAS),
+            "schema_validation": _schema_validation_requirements(),
             "physics_material": {
                 "prim_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
                 "api_schemas": sorted(DEFORMABLE_MATERIAL_SCHEMAS),
@@ -2182,6 +2207,7 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
         "authoring_root_prim_path": OUTPUT_BODY_PRIM_PATH,
         "deformable_schema_prim_path": OUTPUT_BODY_PRIM_PATH,
         "body_api_schemas": sorted(DEFORMABLE_BODY_SCHEMAS),
+        "schema_validation": _schema_validation_requirements(),
         "physics_material": {
             "prim_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
             "api_schemas": sorted(DEFORMABLE_MATERIAL_SCHEMAS),
@@ -3262,6 +3288,7 @@ def verify_native_deformable_asset_preparation_return(
         "authoring_root_prim_path",
         "deformable_schema_prim_path",
         "body_api_schemas",
+        "schema_validation",
         "physics_material",
         "mass_properties",
         "physics_material_binding",
@@ -3365,6 +3392,38 @@ def verify_native_deformable_asset_preparation_return(
         errors.append("native_deformable_return_schema_prim_mismatch")
     if readback.get("body_api_schemas") != required["body_api_schemas"]:
         errors.append("native_deformable_return_body_schemas_mismatch")
+    schema_validation = _mapping(
+        readback.get("schema_validation"),
+        error="native_deformable_return_schema_validation_invalid",
+        errors=errors,
+    )
+    required_schema_validation = _mapping(
+        required.get("schema_validation"),
+        error="native_deformable_return_schema_validation_contract_invalid",
+        errors=errors,
+    )
+    if set(schema_validation) != set(required_schema_validation):
+        errors.append("native_deformable_return_schema_validation_fields_invalid")
+    for group, allowed_by_schema in required_schema_validation.items():
+        observed_by_schema = _mapping(
+            schema_validation.get(group),
+            error=f"native_deformable_return_schema_validation_group_invalid:{group}",
+            errors=errors,
+        )
+        if set(observed_by_schema) != set(allowed_by_schema):
+            errors.append(f"native_deformable_return_schema_validation_schema_set_invalid:{group}")
+            continue
+        for schema_name, allowed_methods in allowed_by_schema.items():
+            method = observed_by_schema.get(schema_name)
+            if (
+                not isinstance(allowed_methods, list)
+                or any(not isinstance(value, str) for value in allowed_methods)
+                or not isinstance(method, str)
+                or method not in allowed_methods
+            ):
+                errors.append(
+                    f"native_deformable_return_schema_validation_method_invalid:{schema_name}"
+                )
     if readback.get("physics_material") != required["physics_material"]:
         errors.append("native_deformable_return_physics_material_mismatch")
     if readback.get("physics_material_binding") != required["physics_material_binding"]:
