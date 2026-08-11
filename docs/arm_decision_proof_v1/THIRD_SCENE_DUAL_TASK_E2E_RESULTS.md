@@ -256,6 +256,28 @@ or appearance qualifications:
 | Task B notebook | Earth-to-Jake | 79 | `sha256:36fcb32e67764c7f14c4f346d5193fb0b1db30e8cd38788d1516a9d716d0d348` | `sha256:52ceda6a9b51dc79dcd9636f81c1468d24e2652ea1b73767d7a571cd46ffe1a7` |
 | Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:c4aa978d8b10592c4775f54fda23acb414ac4a785845464d8462a4dd614bab84` | `sha256:a0afcce7930ef8b0abbd526dcb85164c54cdc1ad9c6d42373e316bc16a1685f5` |
 
+The Content Agents adapter now supports a general `agent_cad_v1` path that
+derives the reference image from each CAD-agent output manifest. Manual
+reference-image overrides are still accepted only when they match one of the
+manifest-bound reference records. This closes the operator-error class where a
+bundle could be invoked with an unbound frame path. Local no-provider bundle
+construction and exact-entrypoint rehearsal passed for all four candidates
+against pinned NVIDIA USD Content Agents `0.5.2`
+(`36dbf3f274f8e256637230a05a085853f65cc175`,
+tree `d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3`):
+
+| Task | Backend | Meshes | Reference digest | Bundle digest | Rehearsal |
+|---|---:|---:|---|---|---|
+| Task A washer | Earth-to-Jake | 15 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:75b11c5b3515e88f6604d8fb567e7d254e6566475890912d370f96ebea98ddc0` | passed |
+| Task A washer | Pan-Chera Multi-Agent-CAD | 40 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:6419191ebd0dcc9e8d34bd1fd4614459d9fc4d3ec8f4ec8128f2b9acd635bf4b` | passed |
+| Task B notebook | Earth-to-Jake | 79 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:4b72121743246bff05e1d189da56cdab4e3cc9741ae394c7a25fe8138a09a823` | passed |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:c27bbd11e5352f73157decf5ba1b566dd7238c67ccbd6c5e5ab14eee790ffba3` | passed |
+
+These bundle receipts authorize only a future advisory Material/Texture/Physics
+Agent run through the paid-resource allocator. They are not executed Content
+Agents results and still do not qualify appearance, physics, native simulator
+import, or physical equivalence.
+
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
 | Task A canonical | Not run | Not run | Not admitted | Not admitted |
@@ -339,6 +361,11 @@ forks:
   caller-only inspection claims, metric-envelope mismatches, or shared candidate
   identities. Historical deterministic-CAD code remains replay-only and cannot
   be selected for new authoring.
+- The NVIDIA Content Agents bundle seam now accepts agent-authored CAD Mesh
+  working copies through a general `agent_cad_v1` variant, derives its reference
+  image from the CAD-agent manifest by default, and treats agent output as
+  advisory enrichment only. It does not construct simulator geometry, collision,
+  physics authority, native import evidence, or physical truth.
 
 Hermetic regressions preserve the 840313 rigid fixture, 840796 articulated
 fixture, and dual-task shared-asset fixture. Scene-specific values remain in
@@ -410,7 +437,7 @@ Before the final reusable-code commit:
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; agent-CAD-to-Content-Agents Mesh bundle adapter with manifest-derived references; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |

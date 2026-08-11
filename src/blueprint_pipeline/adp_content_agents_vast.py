@@ -13,7 +13,7 @@ import subprocess
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import yaml
 from pxr import Usd, UsdGeom, UsdPhysics
@@ -34,6 +34,10 @@ from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .provider_bundle_rehearsal import (
     provider_bundle_rehearsal_blockers,
     rehearse_provider_bundle_entrypoint,
+)
+from .simready_cad_agent_contract import (
+    SimReadyCadAgentContractError,
+    validate_cad_agent_output,
 )
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
@@ -116,12 +120,40 @@ def _verified_canonical_receipt(path: Path, *, error: str) -> dict[str, Any]:
     return receipt
 
 
+def _default_agent_cad_reference_image(
+    agent_cad_output_manifest_path: Path | None,
+) -> Path:
+    if agent_cad_output_manifest_path is None:
+        raise ValueError("adp_content_agents_agent_cad_output_manifest_missing")
+    try:
+        output = validate_cad_agent_output(
+            _read_json(agent_cad_output_manifest_path.expanduser().resolve()),
+            verify_files=True,
+        )
+    except (OSError, SimReadyCadAgentContractError) as exc:
+        raise ValueError("adp_content_agents_agent_cad_output_invalid") from exc
+    references = ((output.get("request") or {}).get("inputs") or {}).get(
+        "reference_images"
+    )
+    if not isinstance(references, list) or not references:
+        raise ValueError("adp_content_agents_agent_cad_reference_missing")
+    first = references[0]
+    if not isinstance(first, Mapping):
+        raise ValueError("adp_content_agents_agent_cad_reference_missing")
+    path = Path(str(first.get("path") or "")).expanduser().resolve()
+    if not path.is_file() or _sha256(path) != first.get("sha256"):
+        raise ValueError("adp_content_agents_agent_cad_reference_identity_mismatch")
+    return path
+
+
 def _resolve_input_variant(
     *,
     repo: Path,
     evidence_root: Path | None,
     reference_source: Path,
     variant: str,
+    agent_cad_output_manifest_path: Path | None = None,
+    agent_mesh_projection_receipt_path: Path | None = None,
 ) -> dict[str, Any]:
     assets = repo / "docs" / "arm_decision_proof_v1" / "assets"
     if variant == "control_v1":
@@ -210,6 +242,116 @@ def _resolve_input_variant(
             "physics_validation_receipt_digest": manifest[
                 "physics_validation_receipt_digest"
             ],
+        }
+    if variant == "agent_cad_v1":
+        if agent_cad_output_manifest_path is None:
+            raise ValueError("adp_content_agents_agent_cad_output_manifest_missing")
+        if agent_mesh_projection_receipt_path is None:
+            raise ValueError("adp_content_agents_agent_cad_projection_receipt_missing")
+        output_path = agent_cad_output_manifest_path.expanduser().resolve()
+        projection_path = agent_mesh_projection_receipt_path.expanduser().resolve()
+        output_record = {
+            "path": str(output_path),
+            "size_bytes": output_path.stat().st_size if output_path.is_file() else 0,
+            "sha256": _sha256(output_path) if output_path.is_file() else "",
+        }
+        projection_record = {
+            "path": str(projection_path),
+            "size_bytes": projection_path.stat().st_size
+            if projection_path.is_file()
+            else 0,
+            "sha256": _sha256(projection_path) if projection_path.is_file() else "",
+        }
+        try:
+            cad_output = validate_cad_agent_output(
+                _read_json(output_path), verify_files=True
+            )
+        except (OSError, SimReadyCadAgentContractError) as exc:
+            raise ValueError("adp_content_agents_agent_cad_output_invalid") from exc
+        projection = _verified_canonical_receipt(
+            projection_path,
+            error="adp_content_agents_agent_cad_projection_receipt_invalid",
+        )
+        if (
+            projection.get("schema_version") != "cad_agent_mesh_usd_projection.v1"
+            or projection.get("status") != "mesh_working_copy_authored"
+            or projection.get("content_agents_input_eligible") is not True
+            or projection.get("canonical_simulator_asset") is not False
+            or (projection.get("claim_boundary") or {}).get(
+                "deterministic_format_conversion_only"
+            )
+            is not True
+            or (projection.get("claim_boundary") or {}).get("collision_authority")
+            is not False
+            or (projection.get("claim_boundary") or {}).get("physics_authority")
+            is not False
+            or (cad_output.get("artifacts") or {}).get("step", {}).get("sha256")
+            != (projection.get("step") or {}).get("sha256")
+        ):
+            raise ValueError(
+                "adp_content_agents_agent_cad_projection_receipt_not_eligible"
+            )
+        usd_record = projection.get("output_usd") or {}
+        usd_source = Path(str(usd_record.get("path") or "")).expanduser().resolve()
+        reference_records = (
+            ((cad_output.get("request") or {}).get("inputs") or {}).get(
+                "reference_images"
+            )
+            or []
+        )
+        if (
+            not usd_source.is_file()
+            or _sha256(usd_source) != usd_record.get("sha256")
+            or not isinstance(reference_records, list)
+            or not any(
+                reference_source
+                == Path(str(record.get("path") or "")).expanduser().resolve()
+                and _sha256(reference_source) == record.get("sha256")
+                for record in reference_records
+                if isinstance(record, Mapping)
+            )
+        ):
+            raise ValueError("adp_content_agents_agent_cad_source_identity_mismatch")
+        mesh_prim_paths = projection.get("mesh_prim_paths")
+        if (
+            not isinstance(mesh_prim_paths, list)
+            or not mesh_prim_paths
+            or any(
+                not isinstance(path, str) or not path.startswith("/Asset/links/")
+                for path in mesh_prim_paths
+            )
+        ):
+            raise ValueError("adp_content_agents_agent_cad_mesh_scope_invalid")
+        backend = (cad_output.get("request") or {}).get("backend") or {}
+        return {
+            "usd_source": usd_source,
+            "config_sources": {
+                f"{agent}_agent.yaml": assets
+                / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
+                for agent in ("material", "texture", "physics")
+            },
+            "reference_image_sha256": _sha256(reference_source),
+            "reference_image_authority": (
+                "rights_admitted_observed_reference_image_for_agent_authored_"
+                "cad_candidate_not_raw_interiorgs_dataset_bytes"
+            ),
+            "variant": variant,
+            "cad_agent_output_manifest": output_record,
+            "cad_agent_output_receipt_digest": cad_output["receipt_digest"],
+            "cad_agent_request_digest": cad_output["request_digest"],
+            "cad_agent_backend_id": backend.get("backend_id"),
+            "cad_agent_execution_mode": backend.get("execution_mode"),
+            "mesh_projection_receipt": projection_record,
+            "mesh_projection_receipt_digest": projection["receipt_digest"],
+            "mesh_packet_digest": projection["packet_digest"],
+            "mesh_prim_paths": sorted(mesh_prim_paths),
+            "default_material_path": projection["default_material_path"],
+            "candidate_step_sha256": (projection.get("step") or {}).get("sha256"),
+            "task_id": (cad_output.get("request") or {}).get("task_id"),
+            "asset_id": (cad_output.get("request") or {}).get("asset_id"),
+            "replacement_slot": (cad_output.get("request") or {}).get(
+                "replacement_slot"
+            ),
         }
     if variant != "match_v2":
         raise ValueError("adp_content_agents_input_variant_invalid")
@@ -384,6 +526,49 @@ def _materialize_content_agents_input(
 ) -> dict[str, Any]:
     """Derive the exact NVIDIA-compatible USD without mutating canonical bytes."""
 
+    if variant == "agent_cad_v1":
+        shutil.copy2(source, destination)
+        stage = Usd.Stage.Open(str(destination))
+        if stage is None or stage.GetDefaultPrim().GetPath() != "/Asset":
+            raise ValueError("adp_content_agents_input_default_prim_invalid")
+        meshes = [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)]
+        joints = [prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.Joint)]
+        rigid_bodies = [
+            prim
+            for prim in stage.Traverse()
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        ]
+        roots = [
+            prim
+            for prim in stage.Traverse()
+            if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+        ]
+        cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        bounds = cache.ComputeWorldBound(stage.GetDefaultPrim()).ComputeAlignedRange()
+        if (
+            not meshes
+            or bounds.IsEmpty()
+            or joints
+            or rigid_bodies
+            or roots
+            or any(UsdGeom.Mesh(prim).ComputePurpose() != UsdGeom.Tokens.default_ for prim in meshes)
+        ):
+            raise ValueError("adp_content_agents_input_agent_cad_mesh_invalid")
+        return {
+            "source_input_usd_sha256": _sha256(source),
+            "normalized_input_usd_sha256": _sha256(destination),
+            "transformations": [
+                "copy_agent_authored_cad_mesh_working_copy_without_geometry_generation",
+            ],
+            "default_purpose_bbox_nonempty": True,
+            "agent_cad_mesh_working_copy": True,
+            "mesh_count": len(meshes),
+            "mesh_prim_paths": sorted(str(prim.GetPath()) for prim in meshes),
+            "articulation_preserved": True,
+            "joint_count": 0,
+            "rigid_body_count": 0,
+            "articulation_root_count": 0,
+        }
     if variant == "articulated_v1":
         return _materialize_articulated_content_agents_input(source, destination)
     shutil.copy2(source, destination)
@@ -457,10 +642,16 @@ def _derive_joint_agent_plan(
         reason = "preexisting_articulation_preserved_by_enrichment_pass"
         single_rigid_body = False
     else:
-        if root_count != 0 or rigid_body_count != 1:
+        if input_variant == "agent_cad_v1":
+            if root_count != 0 or rigid_body_count != 0:
+                raise ValueError("adp_content_agents_joint_agent_mesh_input_invalid")
+            reason = "agent_cad_mesh_working_copy_has_no_articulation_task"
+            single_rigid_body = False
+        elif root_count != 0 or rigid_body_count != 1:
             raise ValueError("adp_content_agents_joint_agent_rigid_input_invalid")
-        reason = "single_rigid_body_has_no_articulation_task"
-        single_rigid_body = True
+        else:
+            reason = "single_rigid_body_has_no_articulation_task"
+            single_rigid_body = True
     return {
         "planned": False,
         "executed_by_content_agents_bundle": False,
@@ -565,14 +756,76 @@ def _materialize_remote_configs(
     config_sources: Mapping[str, Path],
     destination: Path,
     variant: str,
+    agent_mesh_prim_paths: Sequence[str] | None = None,
+    agent_default_material_path: str | None = None,
 ) -> dict[str, str]:
     """Copy v1 configs or deterministically derive the approved v2 challenger."""
 
+    mesh_paths = sorted(str(path) for path in (agent_mesh_prim_paths or ()))
+    material_path = str(agent_default_material_path or "")
     config_hashes: dict[str, str] = {}
     for name, path in config_sources.items():
         target = destination / name
         if variant in {"control_v1", "articulated_v1"}:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        elif variant == "agent_cad_v1":
+            if not mesh_paths or not material_path.startswith("/"):
+                raise ValueError("adp_content_agents_agent_cad_config_scope_invalid")
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+            project = payload["project"]
+            project["name"] = "adp_agent_cad_mesh_enrichment"
+            project["session_id"] = "adp_agent_cad_mesh_enrichment"
+            project["description"] = (
+                "NVIDIA Content Agents advisory enrichment on an exact "
+                "agent-authored CAD Mesh working copy; output is not simulator, "
+                "collision, physics, or physical-equivalence authority."
+            )
+            if name == "material_agent.yaml":
+                dataset = payload["steps"]["build_dataset_usd"]
+                dataset["prim_filters"]["paths"] = mesh_paths
+                payload["steps"]["build_dataset_prepare_dataset"]["prompts"][
+                    "vlm_system"
+                ] = (
+                    "Classify visible materials on an agent-authored CAD "
+                    "candidate using the provided reference image and renders. "
+                    "Do not infer hidden, collision, physics, or physical truth. "
+                    "Select only from the provided material library. "
+                    "Available materials: {materials_list} "
+                    "Respond as <reasoning>brief reasoning</reasoning>"
+                    "<answer>{{\"material\": \"material name\"}}</answer>."
+                )
+                payload["steps"]["build_dataset_prepare_dataset"]["prompts"][
+                    "vlm_user"
+                ] = (
+                    "Classify this visible CAD candidate surface. Treat it as "
+                    "generated candidate appearance, not observed truth."
+                )
+            elif name == "texture_agent.yaml":
+                payload["texture"]["uv_target_prim_paths"] = mesh_paths
+                payload["target_prims"] = mesh_paths
+                payload["material_textures"] = {
+                    "agent_cad_visible_surfaces": {
+                        "prompt": (
+                            "neutral realistic surface texture consistent with "
+                            "the supplied observed reference image, no branding, "
+                            "no text, no unobserved claims"
+                        ),
+                        "opacity": 1.0,
+                        "material_path": material_path,
+                        "prim_paths": mesh_paths,
+                    }
+                }
+                payload["steps"]["render"]["focus_prim_paths"] = mesh_paths[:1]
+            elif name == "physics_agent.yaml":
+                payload["steps"]["build_dataset_usd"]["prim_filters"][
+                    "paths"
+                ] = mesh_paths
+                payload["steps"]["apply_physics"]["collision_approx"] = "none"
+                payload["steps"]["apply_physics"][
+                    "mass_scale_policy"
+                ] = "skip_mass"
+            else:
+                raise ValueError("adp_content_agents_config_sources_invalid")
         else:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
             project = payload["project"]
@@ -632,10 +885,12 @@ def build_content_agents_vast_bundle(
     *,
     repo_root: str | Path,
     content_agents_root: str | Path,
-    reference_image_path: str | Path,
     job_dir: str | Path,
+    reference_image_path: str | Path | None = None,
     input_variant: str = "control_v1",
     evidence_root: str | Path | None = None,
+    agent_cad_output_manifest_path: str | Path | None = None,
+    agent_mesh_projection_receipt_path: str | Path | None = None,
     generated_at: str | None = None,
     historical_replay_only: bool = False,
 ) -> dict[str, Any]:
@@ -646,11 +901,21 @@ def build_content_agents_vast_bundle(
     InteriorGS source bytes or Aura/InteriorGS appearance frames.
     """
 
-    if historical_replay_only is not True:
+    if historical_replay_only is not True and input_variant != "agent_cad_v1":
         raise ValueError("deterministic_cad_authoring_removed_use_agent_backend")
     repo = Path(repo_root).expanduser().resolve()
     source = Path(content_agents_root).expanduser().resolve()
-    reference_source = Path(reference_image_path).expanduser().resolve()
+    agent_output_path = (
+        Path(agent_cad_output_manifest_path)
+        if agent_cad_output_manifest_path is not None
+        else None
+    )
+    if reference_image_path is None:
+        if input_variant != "agent_cad_v1":
+            raise ValueError("adp_content_agents_reference_image_missing")
+        reference_source = _default_agent_cad_reference_image(agent_output_path)
+    else:
+        reference_source = Path(reference_image_path).expanduser().resolve()
     evidence = Path(evidence_root) if evidence_root is not None else None
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
@@ -670,6 +935,16 @@ def build_content_agents_vast_bundle(
         evidence_root=evidence,
         reference_source=reference_source,
         variant=input_variant,
+        agent_cad_output_manifest_path=(
+            agent_output_path.expanduser().resolve()
+            if agent_output_path is not None
+            else None
+        ),
+        agent_mesh_projection_receipt_path=(
+            Path(agent_mesh_projection_receipt_path)
+            if agent_mesh_projection_receipt_path is not None
+            else None
+        ),
     )
 
     source_zip = runtime / "content_agents_source.zip"
@@ -727,6 +1002,8 @@ def build_content_agents_vast_bundle(
         config_sources=config_sources,
         destination=runtime / "configs",
         variant=str(variant["variant"]),
+        agent_mesh_prim_paths=variant.get("mesh_prim_paths"),
+        agent_default_material_path=variant.get("default_material_path"),
     )
     runtime_configs = {
         name: runtime / "configs" / name for name in config_sources
@@ -773,6 +1050,18 @@ def build_content_agents_vast_bundle(
             key: value
             for key, value in variant.items()
             if key.endswith("_receipt_digest")
+            or key
+            in {
+                "cad_agent_output_manifest",
+                "mesh_projection_receipt",
+                "mesh_packet_digest",
+                "candidate_step_sha256",
+                "cad_agent_backend_id",
+                "cad_agent_execution_mode",
+                "task_id",
+                "asset_id",
+                "replacement_slot",
+            }
         },
         "reference_image_sha256": variant["reference_image_sha256"],
         "reference_image_authority": variant["reference_image_authority"],
@@ -809,7 +1098,10 @@ def build_content_agents_vast_bundle(
         "failure_blocks_deterministic_asset_construction": False,
         "failure_blocks_native_simulator_qualification": False,
         "agent_output_is_simready_authority": False,
-        "deterministic_usd_construction_remains_primary": True,
+        "canonical_simready_construction_unresolved": variant["variant"]
+        == "agent_cad_v1",
+        "deterministic_usd_construction_remains_primary": variant["variant"]
+        != "agent_cad_v1",
         "local_bundle_ready_for_remote_staging": not blockers,
         "provider_zero_required_after_return": True,
         "retry_cap": 0,
@@ -1095,14 +1387,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--content-agents-root", required=True)
-    parser.add_argument("--reference-image", required=True)
+    parser.add_argument("--reference-image")
     parser.add_argument("--job-dir", required=True)
     parser.add_argument(
         "--input-variant",
-        choices=("control_v1", "match_v2", "articulated_v1"),
+        choices=("control_v1", "match_v2", "articulated_v1", "agent_cad_v1"),
         default="control_v1",
     )
     parser.add_argument("--evidence-root")
+    parser.add_argument("--agent-cad-output-manifest")
+    parser.add_argument("--agent-mesh-projection-receipt")
     parser.add_argument("--historical-replay-only", action="store_true")
     args = parser.parse_args(argv)
     receipt = build_content_agents_vast_bundle(
@@ -1112,6 +1406,8 @@ def main(argv: list[str] | None = None) -> int:
         job_dir=args.job_dir,
         input_variant=args.input_variant,
         evidence_root=args.evidence_root,
+        agent_cad_output_manifest_path=args.agent_cad_output_manifest,
+        agent_mesh_projection_receipt_path=args.agent_mesh_projection_receipt,
         historical_replay_only=args.historical_replay_only,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))

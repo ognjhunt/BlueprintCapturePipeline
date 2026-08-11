@@ -17,6 +17,13 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
+from blueprint_pipeline.simready_cad_agent_contract import (
+    INSPECTION_SCHEMA_VERSION,
+    file_record,
+    seal_cad_agent_execution_receipt,
+    seal_cad_agent_output,
+    seal_cad_agent_request,
+)
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
     _probe_env,
@@ -27,6 +34,10 @@ from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_outp
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TASK_A_FREEZE = (
+    ROOT
+    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+)
 
 
 def _provider_runner_module():
@@ -124,6 +135,169 @@ def _write_receipt(path: Path, payload: dict) -> dict:
     payload["receipt_digest"] = canonical_digest(payload, digest_field="receipt_digest")
     write_json(path, payload)
     return payload
+
+
+def _cad_backend(tmp_path: Path) -> dict:
+    archive = tmp_path / "earthtojake.zip"
+    with zipfile.ZipFile(archive, "w") as source:
+        source.comment = b"1" * 40
+        source.writestr("LICENSE", "MIT\n")
+    return {
+        "backend_id": "earthtojake_text_to_cad",
+        "execution_mode": "codex_skill_step_first",
+        "agent_authored_geometry": True,
+        "deterministic_geometry_generator_used": False,
+        "graph_geometry_used_for_cad_authoring": False,
+        "deterministic_format_conversion_only": True,
+        "repository_url": "https://github.com/earthtojake/text-to-cad",
+        "commit": "1" * 40,
+        "tree": "2" * 40,
+        "source_archive": file_record(archive),
+        "license": "MIT",
+        "model_id": "codex_fixture_agent",
+    }
+
+
+def _agent_cad_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+    root = tmp_path / "agent-cad"
+    root.mkdir()
+    brief = root / "brief.md"
+    brief.write_text("agent CAD brief\n", encoding="utf-8")
+    reference = root / "reference.png"
+    reference.write_bytes(b"\x89PNG\r\n\x1a\nagent-cad-reference")
+    request = seal_cad_agent_request(
+        request_id="agent-cad-fixture-request",
+        scene_id="840920",
+        task_id="task_a_washer_door_open",
+        asset_id="840920_simready_washer_candidate",
+        replacement_slot=1,
+        backend=_cad_backend(root),
+        task_freeze_path=TASK_A_FREEZE,
+        cad_brief_path=brief,
+        reference_image_paths=[reference],
+        metric_envelope_mm=[600.112, 604.104004, 847.564026],
+    )
+    generator = root / "agent_source.py"
+    generator.write_text("def build(): return 'agent-authored'\n", encoding="utf-8")
+    step = root / "candidate.step"
+    step.write_bytes(b"agent-authored-step")
+    inspection_path = root / "inspection.json"
+    inspection = {
+        "schema_version": INSPECTION_SCHEMA_VERSION,
+        "status": "passed",
+        "step": file_record(step),
+        "measured_envelope_mm": [600.112, 604.104004, 847.564026],
+        "measured_center_mm": [0.0, 0.0, 423.782013],
+        "topology": {"face_count": 6, "edge_count": 12},
+        "inspector": {
+            "backend": "build123d_import_step",
+            "build123d_version": "fixture",
+            "ocp_version": "fixture",
+            "python_version": "fixture",
+            "module_source": file_record(
+                ROOT / "src/blueprint_pipeline/simready_cad_agent_contract.py"
+            ),
+        },
+        "claim_boundary": {
+            "step_bytes_reopened": True,
+            "metric_envelope_measured": True,
+            "visual_quality_qualified": False,
+            "simready_qualified": False,
+            "physical_equivalence": False,
+        },
+    }
+    inspection["receipt_digest"] = canonical_digest(
+        inspection, digest_field="receipt_digest"
+    )
+    write_json(inspection_path, inspection)
+    execution_path = root / "execution.json"
+    execution = seal_cad_agent_execution_receipt(
+        request=request,
+        generator_source_path=generator,
+        cad_brief_path=brief,
+        output_step_path=step,
+        event_rows=[{"event": "agent_authored_step", "status": "passed"}],
+    )
+    write_json(execution_path, execution)
+    snapshot = root / "snapshot.png"
+    snapshot.write_bytes(b"\x89PNG\r\n\x1a\nsnapshot")
+    output = seal_cad_agent_output(
+        request=request,
+        generator_source_path=generator,
+        step_path=step,
+        inspection_receipt_path=inspection_path,
+        snapshot_paths=[snapshot],
+        execution_receipt_path=execution_path,
+        measured_envelope_mm=[600.112, 604.104004, 847.564026],
+        actual_cost_usd=0.0,
+    )
+    output_path = root / "cad_agent_output.json"
+    write_json(output_path, output)
+
+    usd_path = root / "agent_input.usda"
+    stage = Usd.Stage.CreateNew(str(usd_path))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    asset = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(asset.GetPrim())
+    material = UsdShade.Material.Define(stage, "/Asset/materials/agent_input_neutral")
+    shader = UsdShade.Shader.Define(
+        stage, "/Asset/materials/agent_input_neutral/PreviewSurface"
+    )
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+        Gf.Vec3f(0.5, 0.5, 0.5)
+    )
+    shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    for prim_path in (
+        "/Asset/links/body/geometry/shell",
+        "/Asset/links/door/geometry/panel",
+    ):
+        mesh = UsdGeom.Mesh.Define(stage, prim_path)
+        mesh.CreatePointsAttr(
+            [Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)]
+        )
+        mesh.CreateFaceVertexCountsAttr([3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+        mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        mesh.CreatePurposeAttr(UsdGeom.Tokens.default_)
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+    stage.GetRootLayer().Save()
+    projection = {
+        "schema_version": "cad_agent_mesh_usd_projection.v1",
+        "status": "mesh_working_copy_authored",
+        "packet": {"path": str((root / "packet.json").resolve()), "size_bytes": 1, "sha256": "sha256:" + "a" * 64},
+        "packet_digest": "sha256:" + "b" * 64,
+        "step": file_record(step),
+        "output_usd": file_record(usd_path),
+        "mesh_prim_paths": [
+            "/Asset/links/body/geometry/shell",
+            "/Asset/links/door/geometry/panel",
+        ],
+        "mesh_count": 2,
+        "point_count": 6,
+        "triangle_count": 2,
+        "default_material_path": "/Asset/materials/agent_input_neutral",
+        "content_agents_input_eligible": True,
+        "canonical_simulator_asset": False,
+        "claim_boundary": {
+            "deterministic_format_conversion_only": True,
+            "cad_authored_by_projection": False,
+            "collision_authority": False,
+            "physics_authority": False,
+            "native_simulator_import_qualified": False,
+            "physical_equivalence": False,
+        },
+    }
+    projection["receipt_digest"] = canonical_digest(
+        projection, digest_field="receipt_digest"
+    )
+    projection_path = root / "projection_receipt.json"
+    write_json(projection_path, projection)
+    return output_path, projection_path, reference, usd_path
 
 
 def _qualified_model_access() -> dict:
@@ -283,6 +457,117 @@ def test_legacy_content_agents_input_is_not_selectable_for_new_authoring(
             content_agents_root=source,
             reference_image_path=reference,
             job_dir=tmp_path / "rejected",
+        )
+
+
+def test_agent_cad_variant_binds_agent_output_and_mesh_projection(
+    tmp_path: Path,
+) -> None:
+    output_path, projection_path, reference, usd = _agent_cad_evidence(tmp_path)
+
+    resolved = content_agents._resolve_input_variant(
+        repo=ROOT,
+        evidence_root=None,
+        reference_source=reference,
+        variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+    )
+
+    assert resolved["variant"] == "agent_cad_v1"
+    assert resolved["usd_source"] == usd
+    assert resolved["cad_agent_backend_id"] == "earthtojake_text_to_cad"
+    assert resolved["task_id"] == "task_a_washer_door_open"
+    assert resolved["replacement_slot"] == 1
+    assert resolved["mesh_prim_paths"] == [
+        "/Asset/links/body/geometry/shell",
+        "/Asset/links/door/geometry/panel",
+    ]
+    assert resolved["candidate_step_sha256"].startswith("sha256:")
+
+
+def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+
+    receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-bundle",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+
+    assert receipt["status"] == "ready"
+    assert receipt["input_variant"] == "agent_cad_v1"
+    assert receipt["input_usd_normalization"]["agent_cad_mesh_working_copy"] is True
+    assert receipt["input_usd_normalization"]["mesh_count"] == 2
+    assert receipt["joint_agent_plan"]["reason"] == (
+        "agent_cad_mesh_working_copy_has_no_articulation_task"
+    )
+    assert (
+        receipt["joint_agent_plan"]["joint_agent_inapplicable_single_rigid_body"]
+        is False
+    )
+    assert receipt["agent_output_is_simready_authority"] is False
+    assert receipt["canonical_simready_construction_unresolved"] is True
+    assert receipt["deterministic_usd_construction_remains_primary"] is False
+    runtime_configs = Path(receipt["bundle_path"]).with_name(
+        "provider_runtime"
+    ) / "configs"
+    texture = yaml.safe_load(
+        (runtime_configs / "texture_agent.yaml").read_text(encoding="utf-8")
+    )
+    assert texture["texture"]["uv_target_prim_paths"] == [
+        "/Asset/links/body/geometry/shell",
+        "/Asset/links/door/geometry/panel",
+    ]
+    assert texture["material_textures"]["agent_cad_visible_surfaces"][
+        "material_path"
+    ] == "/Asset/materials/agent_input_neutral"
+
+
+def test_agent_cad_reference_is_derived_from_manifest_not_operator_guess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+
+    receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-derived-reference",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+    first_reference = output["request"]["inputs"]["reference_images"][0]
+    assert receipt["reference_image_sha256"] == first_reference["sha256"]
+
+
+def test_agent_cad_variant_rejects_changed_projection_usd(
+    tmp_path: Path,
+) -> None:
+    output_path, projection_path, reference, usd = _agent_cad_evidence(tmp_path)
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source_identity_mismatch"):
+        content_agents._resolve_input_variant(
+            repo=ROOT,
+            evidence_root=None,
+            reference_source=reference,
+            variant="agent_cad_v1",
+            agent_cad_output_manifest_path=output_path,
+            agent_mesh_projection_receipt_path=projection_path,
         )
 
 
