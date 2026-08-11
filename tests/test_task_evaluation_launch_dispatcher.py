@@ -179,6 +179,62 @@ def _write(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _zero_guard(*, generated_at: datetime, live_instance_count: int = 0) -> dict:
+    provider_zero = live_instance_count == 0
+    return {
+        "schema_version": "gpu_spend_guard.v1",
+        "generated_at": generated_at.isoformat(),
+        "reap_mode": True,
+        "live_instance_count": live_instance_count,
+        "total_burn_per_hour_usd": 0.0 if provider_zero else 0.5,
+        "reap_candidate_ids": [],
+        "reap_results": [],
+        "inventory_results": [{
+            "provider": "vast",
+            "status": "succeeded",
+            "row_count": live_instance_count,
+            "required": True,
+        }],
+        "provider_zero_verified": provider_zero,
+        "provider_zero": {
+            "status": "verified" if provider_zero else "unverified",
+            "required_provider_ids": ["vast"],
+            "global_live_instance_count": live_instance_count,
+            "global_total_burn_per_hour_usd": 0.0 if provider_zero else 0.5,
+            "blockers": [] if provider_zero else ["provider_zero_live_instances_observed"],
+        },
+    }
+
+
+def _paid_terminal_receipt(
+    *, request: dict, profile: dict, teardown_path: Path
+) -> dict:
+    receipt = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        # This intentionally remains a scientific blocker. A provider-zero
+        # receipt proves resource closure only, never policy success.
+        "status": "blocked",
+        "launch_id": request["launch_id"],
+        "run_id": request["run_id"],
+        "request_digest": request["request_digest"],
+        "launch_profile_digest": profile["profile_digest"],
+        "execute_requested": True,
+        "provider_mutation_attempted": True,
+        "terminal_evidence": {
+            "status": "blocked",
+            "artifacts": {
+                "teardown_manifest_path": {
+                    "path": str(teardown_path.resolve()),
+                    "exists": True,
+                    "digest": _path_digest(teardown_path),
+                }
+            },
+        },
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    return receipt
+
+
 def test_contract_binds_web_authority_to_pipeline_owned_profile(tmp_path: Path) -> None:
     profile = _profile(tmp_path)
     request = _request(profile)
@@ -553,15 +609,7 @@ def test_reconciler_closes_stale_processing_only_after_fresh_provider_zero(
     guard_path = tmp_path / "gpu-spend-guard.json"
     _write(
         guard_path,
-        {
-            "schema_version": "gpu_spend_guard.v1",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "reap_mode": True,
-            "live_instance_count": 0,
-            "reap_candidate_ids": [],
-            "reap_results": [],
-            "inventory_results": [{"provider": "vast", "status": "succeeded"}],
-        },
+        _zero_guard(generated_at=datetime.now(timezone.utc)),
     )
 
     result = reconcile_launches(
@@ -577,6 +625,127 @@ def test_reconciler_closes_stale_processing_only_after_fresh_provider_zero(
     recovery = json.loads((run_root / "orphan_recovery_receipt.json").read_text())
     assert recovery["provider_zero_confirmed"] is True
     assert recovery["automatic_retry_performed"] is False
+
+
+def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    run_root = tmp_path / "state" / request["launch_id"]
+    teardown_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    teardown_path = run_root / "vast_teardown_manifest.json"
+    _write(
+        teardown_path,
+        {
+            "schema_version": "vast_teardown_manifest.v1",
+            "generated_at": teardown_at.isoformat(),
+            "status": "completed",
+            "vast_instance_ids": [47482504],
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    receipt = _paid_terminal_receipt(
+        request=request,
+        profile=profile,
+        teardown_path=teardown_path,
+    )
+    _write(run_root / "launch_profile.json", profile)
+    _write(run_root / "launch_receipt.json", receipt)
+    # Keep this focused on closure evidence rather than WebApp callback setup.
+    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    guard_path = tmp_path / "gpu-spend-guard.json"
+    observed_at = datetime.now(timezone.utc)
+    _write(guard_path, _zero_guard(generated_at=observed_at - timedelta(seconds=1)))
+
+    first = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=guard_path,
+        now=observed_at,
+    )
+    second = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=guard_path,
+        now=observed_at + timedelta(seconds=1),
+    )
+
+    assert first["status"] == "passed"
+    assert first["terminal_provider_zero"][0]["status"] == "provider_zero_confirmed"
+    assert first["terminal_provider_zero"][0]["provider_mutation_performed"] is False
+    assert second["terminal_provider_zero"][0]["status"] == "provider_zero_receipt_retained"
+    closure_path = run_root / "post_teardown_provider_zero_receipt.json"
+    closure = json.loads(closure_path.read_text())
+    assert closure["status"] == "provider_zero_confirmed"
+    assert closure["provider_zero_verified"] is True
+    assert closure["teardown_manifest"]["digest"] == _path_digest(teardown_path)
+    assert closure["provider_zero_receipt_digest"] == canonical_digest(
+        closure, digest_field="provider_zero_receipt_digest"
+    )
+    snapshot_path = Path(closure["independent_guard_snapshot"]["path"])
+    snapshot = json.loads(snapshot_path.read_text())
+    assert snapshot["guard"]["provider_zero_verified"] is True
+    assert snapshot["source_guard_report_sha256"] == _path_digest(guard_path)
+    assert len(list((run_root / "provider_zero_guard_snapshots").glob("*.json"))) == 1
+
+
+def test_reconciler_never_retains_provider_zero_before_teardown_or_while_nonzero(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    run_root = tmp_path / "state" / request["launch_id"]
+    teardown_at = datetime.now(timezone.utc)
+    teardown_path = run_root / "vast_teardown_manifest.json"
+    _write(
+        teardown_path,
+        {
+            "schema_version": "vast_teardown_manifest.v1",
+            "generated_at": teardown_at.isoformat(),
+            "status": "completed",
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    receipt = _paid_terminal_receipt(
+        request=request,
+        profile=profile,
+        teardown_path=teardown_path,
+    )
+    _write(run_root / "launch_profile.json", profile)
+    _write(run_root / "launch_receipt.json", receipt)
+    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    guard_path = tmp_path / "gpu-spend-guard.json"
+    _write(
+        guard_path,
+        _zero_guard(generated_at=teardown_at - timedelta(seconds=1)),
+    )
+
+    predating = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=guard_path,
+        now=teardown_at + timedelta(seconds=2),
+    )
+    assert predating["status"] == "blocked"
+    assert predating["terminal_provider_zero"][0]["status"] == "provider_zero_pending"
+    assert "gpu_spend_guard_predates_teardown" in predating["terminal_provider_zero"][0]["blockers"]
+    assert not (run_root / "post_teardown_provider_zero_receipt.json").exists()
+
+    _write(
+        guard_path,
+        _zero_guard(generated_at=teardown_at + timedelta(seconds=1), live_instance_count=1),
+    )
+    nonzero = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=guard_path,
+        now=teardown_at + timedelta(seconds=2),
+    )
+    assert nonzero["status"] == "blocked"
+    assert nonzero["terminal_provider_zero"][0]["provider_zero_confirmed"] is False
+    assert "gpu_provider_nonzero" in nonzero["terminal_provider_zero"][0]["blockers"]
+    assert not (run_root / "post_teardown_provider_zero_receipt.json").exists()
 
 
 def test_reconciler_retains_stale_processing_when_provider_inventory_is_uncertain(
@@ -667,6 +836,7 @@ def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
         "attempts": 2,
         "provider_mutation_performed": False,
     }]
+    assert result["terminal_provider_zero"] == []
     succeeded = json.loads((run_root / "webapp_sync_succeeded.json").read_text())
     assert succeeded["attempt_number"] == 2
     assert succeeded["provider_mutation_performed"] is False

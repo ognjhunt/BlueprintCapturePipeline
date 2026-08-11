@@ -17,6 +17,14 @@ canonical paid-resource allocator used by the maintained CLI path.
    secrets.
 4. The independent GPU spend guard and launch reconciler own liveness,
    provider inventory, orphan recovery, teardown closeout, and provider-zero.
+   For every provider-mutating terminal launch, the reconciler emits the
+   run-owned `post_teardown_provider_zero_receipt.json` only after the
+   digest-bound teardown manifest says continuing spend is false and a fresh
+   independent guard snapshot, generated after that teardown, confirms zero
+   across the immutable profile's required providers. The receipt retains a
+   digest-bound copy of that guard snapshot. A pending or missing receipt is a
+   typed resource-closure blocker; a confirmed receipt never upgrades a
+   scientific or policy blocker into a completed evaluation.
 5. The optional OpenAI Agents SDK supervisor has no tools. It can explain
    blockers, recommend only a deterministically admissible Pipeline profile, or
    request one human decision. Its receipt history is a bounded, digest-bound
@@ -236,7 +244,8 @@ Before the first paid website trigger, retain:
 - signed WebApp queue receipt and Pipeline launch binding;
 - allocator admission and spend authority;
 - watchdog heartbeat, lossless policy media, artifact manifest, terminal
-  receipt, teardown manifest, provider-zero report, and WebApp sync receipt;
+  receipt, teardown manifest, run-owned post-teardown provider-zero receipt,
+  retained guard snapshot, and WebApp sync receipt;
 - explicit confirmation that no provider mutation occurred inside either HTTP
   request path and no automatic paid retry occurred.
 
