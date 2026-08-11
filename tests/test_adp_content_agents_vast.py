@@ -2124,6 +2124,73 @@ def test_content_agents_authority_binds_external_instance_allowlist(
         )
 
 
+def test_content_agents_authority_binds_same_goal_concurrent_instances(
+    tmp_path: Path,
+) -> None:
+    receipt, receipt_value = _allocator_bundle(tmp_path)
+    preflight = _passing_config_preflight(tmp_path, receipt_value)
+    preflight_value = json.loads(preflight.read_text(encoding="utf-8"))
+    authority = _content_agents_attempt_authority(
+        receipt=receipt,
+        receipt_value=receipt_value,
+        preflight=preflight,
+        preflight_value=preflight_value,
+    )
+    authority.pop("external_instance_allowlist")
+    authority.update(
+        {
+            "active_instance_allowlist": {
+                "external_provider_owned": [17],
+                "same_goal_concurrent": [23],
+            },
+            "concurrent_goal_id": "fixture-bounded-objects",
+            "same_goal_concurrent_members": [
+                {
+                    "instance_id": 23,
+                    "paid_attempt_authority_digest": "sha256:" + "a" * 64,
+                }
+            ],
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    content_agents.validate_content_agents_paid_attempt_authority(
+        authority,
+        prepared_bundle=receipt_value,
+        bundle_receipt_sha256="sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        config_preflight=preflight_value,
+        config_preflight_receipt_sha256="sha256:"
+        + hashlib.sha256(preflight.read_bytes()).hexdigest(),
+        max_hourly_rate_usd=0.75,
+        hard_cap_usd=2.0,
+        hard_ttl_seconds=7200,
+        allowed_active_instance_ids=[23, 17],
+    )
+
+    authority["concurrent_goal_id"] = ""
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    with pytest.raises(
+        ValueError, match="same_goal_concurrent_allowlist_metadata_invalid"
+    ):
+        content_agents.validate_content_agents_paid_attempt_authority(
+            authority,
+            prepared_bundle=receipt_value,
+            bundle_receipt_sha256="sha256:"
+            + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+            config_preflight=preflight_value,
+            config_preflight_receipt_sha256="sha256:"
+            + hashlib.sha256(preflight.read_bytes()).hexdigest(),
+            max_hourly_rate_usd=0.75,
+            hard_cap_usd=2.0,
+            hard_ttl_seconds=7200,
+            allowed_active_instance_ids=[23, 17],
+        )
+
+
 def test_content_agents_execute_requires_paid_attempt_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

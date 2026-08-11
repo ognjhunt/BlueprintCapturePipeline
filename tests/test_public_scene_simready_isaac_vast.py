@@ -331,6 +331,59 @@ def test_simready_authority_binds_external_instance_allowlist(tmp_path: Path) ->
         )
 
 
+def test_simready_authority_binds_same_goal_concurrent_instances(
+    tmp_path: Path,
+) -> None:
+    prepared_bundle = _bundle(tmp_path)
+    authority = _paid_attempt_authority(prepared_bundle)
+    authority.pop("external_instance_allowlist")
+    authority.update(
+        {
+            "active_instance_allowlist": {
+                "external_provider_owned": [17],
+                "same_goal_concurrent": [23],
+            },
+            "concurrent_goal_id": "fixture-bounded-objects",
+            "same_goal_concurrent_members": [
+                {
+                    "instance_id": 23,
+                    "paid_attempt_authority_digest": "sha256:" + "a" * 64,
+                }
+            ],
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    runtime.validate_simready_isaac_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared_bundle,
+        bundle_receipt_sha256="sha256:" + "c" * 64,
+        max_hourly_rate_usd=1.0,
+        hard_cap_usd=3.0,
+        hard_ttl_seconds=10_800,
+        allowed_active_instance_ids=[23, 17],
+    )
+
+    authority["same_goal_concurrent_members"] = []
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    with pytest.raises(
+        ValueError, match="same_goal_concurrent_allowlist_metadata_invalid"
+    ):
+        runtime.validate_simready_isaac_paid_attempt_authority(
+            authority,
+            prepared_bundle=prepared_bundle,
+            bundle_receipt_sha256="sha256:" + "c" * 64,
+            max_hourly_rate_usd=1.0,
+            hard_cap_usd=3.0,
+            hard_ttl_seconds=10_800,
+            allowed_active_instance_ids=[23, 17],
+        )
+
+
 def _allocator_args(tmp_path: Path, receipt: Path) -> list[str]:
     return [
         "gpu-canary",

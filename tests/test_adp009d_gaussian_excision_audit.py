@@ -513,6 +513,53 @@ def test_paid_attempt_authority_binds_the_exact_external_instance_allowlist(
         )
 
 
+def test_paid_attempt_authority_binds_same_goal_concurrent_instances(
+    tmp_path: Path,
+) -> None:
+    bundle = _prepared_excision_bundle(tmp_path)
+    authority = _paid_attempt_authority(bundle)
+    authority.pop("external_instance_allowlist")
+    authority.update(
+        {
+            "active_instance_allowlist": {
+                "external_provider_owned": [17],
+                "same_goal_concurrent": [23],
+            },
+            "concurrent_goal_id": "fixture-bounded-objects",
+            "same_goal_concurrent_members": [
+                {
+                    "instance_id": 23,
+                    "paid_attempt_authority_digest": "sha256:" + "a" * 64,
+                }
+            ],
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    excision_vast.validate_gaussian_excision_paid_attempt_authority(
+        authority,
+        prepared_bundle=bundle,
+        previous_attempt_receipt=None,
+        allowed_active_instance_ids=[23, 17],
+    )
+
+    authority["same_goal_concurrent_members"] = []
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    with pytest.raises(
+        ValueError, match="same_goal_concurrent_allowlist_metadata_invalid"
+    ):
+        excision_vast.validate_gaussian_excision_paid_attempt_authority(
+            authority,
+            prepared_bundle=bundle,
+            previous_attempt_receipt=None,
+            allowed_active_instance_ids=[23, 17],
+        )
+
+
 def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None:
     result = excision_vast.run_gaussian_excision_vast(
         job_dir=tmp_path / "job",

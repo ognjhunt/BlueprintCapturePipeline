@@ -23,7 +23,11 @@ from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
 )
 from .decision_evidence_contracts import canonical_digest
-from .paid_attempt_authority import normalize_external_instance_allowlist
+from .paid_attempt_authority import (
+    active_instance_allowlist_metadata_error,
+    flatten_active_instance_allowlist,
+    normalize_active_instance_allowlist,
+)
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .openai_successor_models import (
     OPENAI_IMAGE_MODEL,
@@ -551,12 +555,11 @@ def validate_content_agents_paid_attempt_authority(
 
     value = dict(authority)
     errors: list[str] = []
-    authority_allowlist = normalize_external_instance_allowlist(
-        value.get("external_instance_allowlist")
+    structured_allowlist = "active_instance_allowlist" in value
+    authority_allowlist = normalize_active_instance_allowlist(
+        value.get("active_instance_allowlist", value.get("external_instance_allowlist"))
     )
-    expected_allowlist = normalize_external_instance_allowlist(
-        allowed_active_instance_ids
-    )
+    expected_allowlist = normalize_active_instance_allowlist(allowed_active_instance_ids)
     if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA:
         errors.append("schema_invalid")
     if value.get("authority_kind") != "explicit_user_direction_in_current_goal":
@@ -608,11 +611,25 @@ def validate_content_agents_paid_attempt_authority(
     if value.get("native_simulator_import_qualified") is not False:
         errors.append("native_simulator_import_claim_invalid")
     if authority_allowlist is None:
-        errors.append("external_instance_allowlist_invalid")
+        errors.append(
+            "active_instance_allowlist_invalid"
+            if structured_allowlist
+            else "external_instance_allowlist_invalid"
+        )
     elif expected_allowlist is None:
         errors.append("allowed_active_instance_ids_invalid")
-    elif authority_allowlist != expected_allowlist:
-        errors.append("external_instance_allowlist_mismatch")
+    elif flatten_active_instance_allowlist(
+        authority_allowlist
+    ) != flatten_active_instance_allowlist(expected_allowlist):
+        errors.append(
+            "active_instance_allowlist_mismatch"
+            if structured_allowlist
+            else "external_instance_allowlist_mismatch"
+        )
+    elif (metadata_error := active_instance_allowlist_metadata_error(
+        value, allowlist=authority_allowlist
+    )) is not None:
+        errors.append(metadata_error)
     if value.get("authorization_digest") != canonical_digest(
         value, digest_field="authorization_digest"
     ):
