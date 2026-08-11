@@ -1,15 +1,18 @@
 # Third-Scene Dual-Task Generalization Rehearsal Results
 
-Status: **typed construction abstention; no control or policy result**.
+Status: **typed evidence-backed abstention at the held-out Gaussian-ownership
+gate; no source removal, inpainting decision, control, or policy result**.
 
 The reusable harness work is locally qualified and both replacement candidates
 are authored. Scene `840920` and both tasks are preregistered, both exact source
 collider deletions are materialized, and the appearance source is converted
-locally to standard 3DGS without changing its Gaussian count. Two independent
-zero-retry Vast contribution attempts were made. Each terminated before released
-FlashSplat execution and retained a typed blocked result, so neither Gaussian
-ownership/removal nor native replacement qualification exists. Controls and
-learned policies were therefore not admitted. This is not a policy result.
+locally to standard 3DGS without changing its Gaussian count. The two independent
+released-code FlashSplat contribution runs completed, followed by deterministic,
+replay-identical three-way ownership classification and held-out audits. Both
+held-out ownership gates failed. Consequently no Gaussian record was deleted,
+no replacement-depth coverage was authorized, and neither inpainting nor native
+construction, controls, or learned policies was admitted. This is not a policy
+result.
 
 ## Identity and isolation
 
@@ -56,15 +59,23 @@ learned policies were therefore not admitted. This is not a policy result.
   source-removal qualification receipts derived from upstream evidence),
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
+- Current terminal-evidence commits on that branch are
+  `c1f978ed92c9d3965f2f3208e299279baffc1f26` (typed held-out ownership
+  abstentions) and `5d0c855145d525c7cb01d8bd2cc0fe188ce306f7` (portable
+  evidence-index support for ownership, replay, held-out, and CAD-comparison
+  receipts).
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
 - External 840796 worktrees and evidence roots were not modified.
 - External Vast instances from the independently running 840796 lane changed
   during this rehearsal. They were recorded as external inventory only and were
   never reused, inspected for scientific output, terminated, or charged here.
-  Third-scene instances were restricted to `47393332` and `47393331`; both are
-  now absent by double exact-ID inspection and their unique lane prefixes are
-  empty.
+  Third-scene instances were restricted to the isolated task-lane prefixes.
+  Earlier infrastructure-null instances `47393332` and `47393331`, intermediate
+  sealed attempts `47471710` and `47474897`, and the completed contribution
+  instances `47473321` and `47475316` are all terminal with provider absence
+  confirmed. No 840796 resource was reused, inspected for scientific output,
+  terminated, or charged here.
 
 ## Selected scene and complete survey
 
@@ -166,44 +177,60 @@ and
 These are method
 inputs, not ownership or deletion evidence.
 
-Task A Gaussian removal: **blocked before released-code execution**. Vast
-instance `47393332` passed the complete 11-module import preflight, then the
-provider runner returned `gaussian_excision_runtime_failed:ValueError` before
-classification and without accessing held-out cameras. Inspection of the frozen
-input and shared runner identified a general contract mismatch: the authorized
-camera packet used `T_world_camera_provider_frame`, while the provider runner
-accepted only the equivalent normalized `T_world_camera_opencv` spelling. The
-general adapter now accepts either, rejects conflicting aliases, and retains a
-sanitized deterministic failure code. This diagnosis is an inference from the
-sealed bytes because the old worker retained only the exception type. Attempt
-receipt:
-[`gaussian_excision_attempt.v1.json`](third_scene_dual_task_evidence/task_a/gaussian_excision_attempt.v1.json).
+Task A's removal target is the **entire observed washer instance**, not only its
+door. The frozen source is instance `165` / SAGE subtree
+`/Root/ZFAVSKZVAJTGUPTUKM888888`, with observed world bounds
+`[3.2154303, 9.456663998, -0.000000013]` to
+`[3.8155423, 10.060768002, 0.847564013]` m. “Door open” names the replacement
+task predicate; it does not narrow the source-object removal. The completed
+FlashSplat run used six calibration and two held-out cameras, front-to-back
+`alpha × transmittance` contribution semantics, FlashSplat commit
+`3e3b14786333bf0163ba1b8541e86a3765112d7d`, and rasterizer commit
+`189c483ffa33dd6d5661343ce496df0c6eb80a0c`. Its sealed attempt receipt is
+`sha256:1b007b1922c4324232b319bc0eb74cd4dcccc2f96fe02bfb9b528256fcc464ee`;
+instance `47473321` cost `$0.037398` and has confirmed provider absence.
+The frozen conservative aggregation rule `unanimous_owned_and_retained_else_ambiguous`
+classified `2,585` owned, `505,910` retained, and `982` ambiguous of `509,477`
+source Gaussians; its ownership receipt and exact replay are respectively
+`sha256:28024f62efd8204f57e34b4b50a00bf880ebb2e895fc4aceef62190fcc765c2b`
+and `sha256:90dba4f671635d3ea0cf8492710c98909ead4f655f549291db89ae008b820d91`.
+The two withheld views failed the frozen ownership gate: owned-only recall was
+`0.865224` / `0.864865` with `31,237` / `31,263` missing mask pixels, while
+the ambiguous layer had substantial protected-scene spill. Held-out audit:
+`sha256:24a86be734239d8bf837330df5a28948c767fa6abe5cf76acd6cef91de734322`.
 
-Task B Gaussian removal: **blocked before released-code execution**. Vast
-instance `47393331` exhausted the installer transport retries while fetching
-`nvidia-cublas-cu12==12.4.5.8`; its immutable blocker is
-`gaussian_excision_torch_install_failed`. Held-out cameras were not accessed.
-The general lane now uses immutable
-`pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel` image digest
-`sha256:14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014`
-and a locally materialized eight-wheel offline closure with manifest digest
-`sha256:e96bc10993da4644d5f320059151e0f267e3307daa013a1dd501bedfc52849dd`;
-provider-network dependency
-installation is forbidden at admission. Attempt receipt:
-[`gaussian_excision_attempt.v1.json`](third_scene_dual_task_evidence/task_b/gaussian_excision_attempt.v1.json).
+Task B independently targets the entire observed notebook instance `385` /
+SAGE subtree `/Root/ZFUHSLMTQ3RUOPTUKM888888`, not any washer-derived mask,
+collider, asset, or assumption. Its completed FlashSplat receipt is
+`sha256:eb94a05a1ae6dd4e0bf079adc75fb8a7103b43970306eae881747710f97e1540`;
+instance `47475316` cost `$0.015720` and has confirmed provider absence. The
+same preregistered conservative rule, applied to Task B's independent cameras
+and masks, classified `1,094` owned, `507,926` retained, and `457` ambiguous
+of `509,477` source Gaussians. Its ownership and replay receipts are
+`sha256:d44d4386601604d50cca7a09e5079a0302a4058d8fd15a9b13246f5abdd00826`
+and `sha256:844693e0532e404503692ef513fcf1dfe91680c757cd7f36279b887ed4cf5c94`.
+The withheld `side_high` and `side_low` views also failed; owned-only recall was
+`0.659265` / `0.617308`, and `side_low` additionally failed protected-spill
+limits. Held-out audit:
+`sha256:398c286cdcf0f1a928b73fb8858cf516347efa0e0d4e62cfa4acd742d249fb28`.
 
-Those two codes are immutable historical attempt outcomes, not current
-capability blockers. The generally materialized current abstentions join each
-failed attempt to its independently frozen task, removal binding, and locally
-rehearsed repair. Both now identify
-`fresh_paid_authority_for_qualified_gaussian_contribution_missing` as the
-smallest current blocker while retaining the old code under
-`historical_attempt_blockers`.
+The earlier `ValueError`, dependency-install, and vanished-instance outcomes
+are immutable historical infrastructure-null receipts, not the current
+capability blocker. The general provider adapter now normalizes equivalent
+camera-frame aliases, requires an immutable CUDA image and offline dependency
+closure, and retains typed terminal receipts. The current independent typed
+abstentions are Task A
+`sha256:449407e1a77cf286ea39613baa81bcf08c40a68cf96ab7dca59e3f9969ea2e97`
+and Task B
+`sha256:f7ff007fab4f0bee6c10709606644ba8fb2723e656e0ec6d2b581bffd0b28317`.
+Both name the smallest missing capability:
+`calibrated_gaussian_ownership_separation_without_protected_scene_deletion`.
 
-No shared mask, removal ID, replacement ID, or task-specific assumption was
-reused. Neither contribution attempt produced ownership evidence, so no
-Gaussians were deleted and no held-out deletion proof or replacement-depth sweep
-was claimed.
+No shared mask, removal ID, replacement ID, collider subtree, or task-specific
+assumption was reused. Both held-out audits deny replacement-coverage
+authorization. Therefore **no Gaussian was deleted**, no retained source record
+was modified, no source-removal qualification exists, and no held-out deletion
+proof is claimed.
 
 Both source collider deletions are materialized independently from the same
 immutable SAGE source, plus one shared stage with both exact subtrees absent.
@@ -216,12 +243,12 @@ The shared collider stage is `61,346,958` bytes with SHA-256
 `36bc6e6800f59c92b4f655ca7900e1041a5714447b82d4b7b7102d45ed4fa883`.
 Source bytes and all unrelated composed prims are unchanged.
 
-Task A inpainting decision: **not yet decidable**. The authored washer candidate
-has not passed native import or the complete articulated depth sweep, so
-replacement occlusion cannot be measured. Task B inpainting decision: **not yet
-decidable**. The authored notebook candidate has not passed the rigid pose range
-or replacement-depth coverage. Neither task is labeled
-`inpainting_not_required`, and no image edit was used as evidence.
+Task A and Task B inpainting decisions are both **not evaluated because source
+removal was not authorized**. The protocol first requires a safe removal plus
+actual replacement-USD depth coverage across the articulated sweep or rigid pose
+range. Neither held-out audit authorizes that step. Neither task is labeled
+`inpainting_not_required`, neither has a generative fill, and no image edit was
+used as evidence.
 
 Task A SimReady candidate: **authored and statically structure-qualified, not
 simulator-qualified**. Its general graph compiler emitted six links, five
@@ -535,56 +562,38 @@ scenario, scoring, and evidence contracts.
 
 - Local scientific/contract runs: focused tests plus the mandated ADP/DROID/
   episode/NUREC/Aura selection; no native simulator execution.
-- Paid third-scene runs: `2` independent, one per task.
-- Task A estimated cost: `$0.025951`; Task B estimated cost: `$0.070697`;
-  combined estimated cost: `$0.096648`. These are adapter estimates, not a
-  reconciled provider billing export.
-- Third-scene instances allocated: Task A `47393332`; Task B `47393331`.
-- Third-scene retries: `0`.
-- Teardown: both owned instances were destroyed through the Vast API with HTTP
-  `200`; both teardown manifests state zero continuing spend. Independent
-  watchdogs later wrote `provider_terminal`, double exact-ID absence, and empty
-  lane prefixes. External 840796 resources remained untouched. Portable
-  closeout digest:
-  `sha256:71f6d1843dc2c76ae0536e23495620d500c091ce630f73e6ff69fa388af4cefe`.
-- Repaired, unexecuted bundles are locally ready at commit `dd893aaed`:
-  Task A SHA-256
-  `80d8620a2ec89ba2f60e59c2f000b0cc5849a99bb11798ef449977dee9eb5e17`
-  (`125,326,062` bytes), Task B
-  `fe0a58c5d89fbc8bdf6135ff1934447047ab7f9c1d20c4f78c009169278aea87`
-  (`125,281,798` bytes). Exact entrypoint rehearsals and
-  canonical paid-admission dry-runs pass with zero provider mutations. Their
-  receipts explicitly require new authority and make no GPU/scientific claim:
-  [Task A](third_scene_dual_task_evidence/task_a/gaussian_excision_recovery_readiness.v1.json),
-  [Task B](third_scene_dual_task_evidence/task_b/gaussian_excision_recovery_readiness.v1.json).
+- Paid third-scene runs: three sealed zero-retry attempt ordinals per task.
+  Task A: `47393332` (`$0.025951`, historical pre-execution null), `47471710`
+  (`$0.061363`, historical provider-output null), and `47473321`
+  (`$0.037398`, completed contribution). Task B: `47393331` (`$0.070697`,
+  historical pre-execution null), `47474897` (`$0.011815`, historical
+  provider-output null), and `47475316` (`$0.015720`, completed contribution).
+  Task A's retained adapter-reported total is `$0.124712`; Task B's is
+  `$0.098232`; combined is `$0.222944`. These are retained adapter/provider
+  estimates, not a reconciled provider billing export.
+- Teardown: every listed third-scene instance has a terminal receipt with zero
+  continuing spend and provider absence confirmed. The current completed
+  attempts retain exact bundle, execution, teardown, and watchdog records.
+  External 840796 resources remained untouched.
+- A further paid retry is neither needed nor scientifically admitted for these
+  frozen objects: the terminal condition is the held-out ownership failure, not
+  an infrastructure failure.
 - Episode receipts, frame manifests, reset replays, terminal observations, and
   videos: none exist because controls were not admitted. The evidence index
   represents this explicitly and contains no synthetic episode links.
 
-Portable evidence index:
-[`third_scene_dual_task_evidence/index.html`](third_scene_dual_task_evidence/index.html).
-The top-level package index is now generated from verified task indexes and
-shared manifest receipts; its JSON receipt is
-[`third_scene_dual_task_evidence/evidence_package_index.v1.json`](third_scene_dual_task_evidence/evidence_package_index.v1.json)
-with digest
-`sha256:7bda017c776db8bfe6ce1ddd30ac1754d740fc01fc4149066e33de9a2b4c6cb2`.
-Each task index links its attempt and recovery receipts plus its current
-digest-verified `supporting_evidence_inventory.v2.json`. Those inventories cover
-all eight source masks,
-the authorized render/mask receipt, excision freeze, exact collider removal,
-authored replacement, static authored-structure qualification, paid
-run/teardown/watchdog evidence, repaired-bundle closure, the original
-source-object contact sheet, the four-candidate CAD comparison board, both
-agent-CAD backend briefs, generator sources, manifest-bound execution receipts,
-independent STEP inspection receipts, and STEP candidates for the task, both
-Content Agents Mesh projection receipts, Dockerless static Content Agents
-preflight receipts, and both Content Agents autoref bundle receipts/ZIPs without
-embedding rights-bounded dataset-derived bytes. Current inventory digests: Task
-A `sha256:6688b9e86d4f833814e29a2062f0c016dc11b15032fefeb5363d08e4e703cbbd`;
-Task B `sha256:7fe56526ca04b1acd7bd9eb643bb4c9b2d077683214a8015d712212db7363d67`.
-Current episode-index digests: Task A
-`sha256:6c7c8ffa5ac13768066f7dbbafe52ac28022211e6b185ee6718042ee3eda9422`;
-Task B `sha256:a4f18fe6061ce55122085bb7a6a14326606f053c5d962f05e1587dcf4d3b65ce`.
+The authoritative Finder-friendly evidence index is
+[`index.html`](/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/index.html),
+with package digest
+`sha256:b4afb32d42218ae18203dc7a04a9c9136d073a61c8ef772949d1a15624aacc62`.
+Its Task A and B pages retain the completed attempt, ownership receipt,
+ownership replay, held-out audit, typed abstention, and explicit blocked
+controls/policy placeholders. Current episode-index digests are Task A
+`sha256:e4282f63362118679f7b72069e8fec9af45314df075eb12730074e5110e28723`
+and Task B
+`sha256:8af6d02128eb87dc9bc33fdd15f1b4c3c393d360aac9bb15259a34aa28605431`.
+The index contains no synthetic episode links and no rights-bounded raw scene
+bytes.
 
 ## Verification
 
@@ -694,27 +703,30 @@ Recent reusable-code and manifest commits:
 - Focused native import probe-result producer regressions for `d9e0bd63d` —
   `32 passed`; required precommit selector — `1164 passed, 9975 deselected`;
   Ruff over `src/ tests/` passed.
+- Focused evidence-index/abstention regressions for `5d0c85514` — `37 passed`;
+  required precommit selector — `1168 passed, 9988 deselected in 69.01s`;
+  `.venv/bin/ruff check src/ tests/` passed. The test proves that ownership,
+  replay, held-out-audit, and external CAD-review receipts are digest-verified
+  supporting evidence, not source-removal or simulator qualification.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; evidence-backed replacement native-qualification receipts derived from static graph-asset qualification plus native import receipts; file-backed source-removal qualification receipts derived from scene/task freezes, calibrated masks, ownership/held-out audits, and excision/coverage joins; two-backend agent-CAD comparison contracts with deterministic CAD rejected; manifest-bound CAD-agent reference selection and historical CAD-output reference-binding audit; agent-CAD-to-Content-Agents Mesh bundle adapter with all manifest-derived references copied, configured, statically preflighted, local-Docker-preflighted, and readiness-validated; Dockerless static Content Agents bundle/config/input-USD preflight; no-paid Docker/network-disabled local Content Agents bundle/config preflight; Content Agents single-use paid-attempt authority; identity-bound agent-CAD supporting inventories that retain task, slot, asset, and backend metadata for 1..5 replacement-object matrices and fail closed on missing or relabeled identity even when rows are manually supplied; registered variable-camera excision evidence; generic state-cell excision coverage joins; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; generated abstention-bound blocker placeholders; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, and held-out ownership audit; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; two-backend agent-CAD comparison contracts with deterministic CAD rejected; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
-| Blocked/abstained | Two exact Gaussian removals and their derived source-removal qualification receipts remain unmaterialized because qualified paid Gaussian ownership/contribution outputs are missing; NVIDIA Content Agents enrichment passes (all four bundles passed Dockerless static preflight and no-paid Docker/network-disabled local preflight but remain blocked on paid model access and fresh paid authority), replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
+| Blocked/abstained | Both released-code contribution runs completed, but both exact source-removal lanes abstained at `calibrated_gaussian_ownership_separation_without_protected_scene_deletion`. No source Gaussian deletion, replacement-depth coverage, occlusion/inpainting decision, native placement/camera/control gate, or candidate matrix is admitted. Content Agents enrichment remains advisory and not a replacement for source-removal evidence. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
 
 ## Remaining ambiguity and single next action
 
-Independent metric/handedness qualification, Gaussian ownership/removal,
-replacement depth coverage, native reach/contact, asset dynamics/appearance,
-the evidence-backed Task A interaction affordance and native import/dynamics,
-and all episode evidence remain unknown. The graph phase and native
-state/contact compilers are implemented and hermetically exercised; local
-collision-schema qualification is not native task qualification.
+Independent metric/handedness qualification, a safely separable full-object
+Gaussian removal, replacement depth coverage, native reach/contact, asset
+dynamics/appearance, and all episode evidence remain unknown. The graph phase
+and native state/contact compilers are implemented and hermetically exercised;
+local collision-schema qualification is not native task qualification.
 
-**Single next action:** grant fresh explicit one-attempt, zero-retry authority for
-the two independently sealed repaired contribution bundles. If either attempt
-does not produce qualified contribution evidence, preserve its typed blocker;
-otherwise materialize ownership before any deletion, native control, or policy
-launch.
+**Single next action:** preserve this terminal abstention and require a new,
+independently preregistered object/evidence packet with sufficient calibrated
+ownership separation before spending again. Do not relax the held-out gate or
+retry these frozen source-object removals.
