@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -965,7 +966,12 @@ def _allocator_bundle(
 
 
 def _allocator_args(
-    tmp_path: Path, receipt: Path, preflight: Path, *, execute: bool
+    tmp_path: Path,
+    receipt: Path,
+    preflight: Path,
+    *,
+    execute: bool,
+    attempt_authority: Path | None = None,
 ) -> list[str]:
     args = [
         "gpu-canary",
@@ -1002,9 +1008,55 @@ def _allocator_args(
         "--adp-hard-ttl-seconds",
         "7200",
     ]
+    if attempt_authority is not None:
+        args.extend(["--adp-content-agents-attempt-authority", str(attempt_authority)])
     if execute:
         args.append("--execute")
     return args
+
+
+def _content_agents_attempt_authority(
+    *,
+    receipt: Path,
+    receipt_value: Mapping[str, object],
+    preflight: Path,
+    preflight_value: Mapping[str, object],
+    max_hourly_rate_usd: float = 0.75,
+    hard_cap_usd: float = 2.0,
+    hard_ttl_seconds: int = 7200,
+) -> dict[str, object]:
+    authority: dict[str, object] = {
+        "schema_version": content_agents.PAID_ATTEMPT_AUTHORITY_SCHEMA,
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authority_reference": "fixture-explicit-content-agents-authority",
+        "authorized_by": "fixture-user",
+        "authorized_on": "2026-08-11",
+        "purpose": "nvidia_content_agents_advisory_enrichment",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "bundle_sha256": receipt_value["bundle_sha256"],
+        "bundle_receipt_sha256": "sha256:"
+        + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        "config_preflight_receipt_sha256": "sha256:"
+        + hashlib.sha256(preflight.read_bytes()).hexdigest(),
+        "config_preflight_receipt_digest": preflight_value["receipt_digest"],
+        "content_agents_source_commit": content_agents.SOURCE_COMMIT,
+        "content_agents_source_tree": content_agents.SOURCE_TREE,
+        "container_image": content_agents.DEFAULT_IMAGE,
+        "maximum_paid_attempts": 1,
+        "maximum_automatic_retries": 0,
+        "automatic_paid_retry_authorized": False,
+        "zero_retry": True,
+        "hard_attempt_spend_cap_usd": hard_cap_usd,
+        "maximum_hourly_rate_usd": max_hourly_rate_usd,
+        "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
+        "agent_output_is_simready_authority": False,
+        "native_simulator_import_qualified": False,
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    return authority
 
 
 @pytest.mark.parametrize("execute", [False, True])
@@ -1013,6 +1065,17 @@ def test_canonical_allocator_issues_grant_only_for_execute(
 ) -> None:
     receipt, receipt_value = _allocator_bundle(tmp_path)
     preflight = _passing_config_preflight(tmp_path, receipt_value)
+    preflight_value = json.loads(preflight.read_text(encoding="utf-8"))
+    authority_path = None
+    if execute:
+        authority = _content_agents_attempt_authority(
+            receipt=receipt,
+            receipt_value=receipt_value,
+            preflight=preflight,
+            preflight_value=preflight_value,
+        )
+        authority_path = tmp_path / "content-agents-attempt-authority.json"
+        write_json(authority_path, authority)
     observed: dict = {}
     monkeypatch.setattr(
         allocator,
@@ -1025,7 +1088,21 @@ def test_canonical_allocator_issues_grant_only_for_execute(
         return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
 
     monkeypatch.setattr(allocator, "run_content_agents_vast", fake_run)
-    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=execute)) == 0
+    monkeypatch.setattr(
+        content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
+    )
+    assert (
+        allocator.main(
+            _allocator_args(
+                tmp_path,
+                receipt,
+                preflight,
+                execute=execute,
+                attempt_authority=authority_path,
+            )
+        )
+        == 0
+    )
     assert observed["execute"] is execute
     assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is (
         execute
@@ -1035,6 +1112,9 @@ def test_canonical_allocator_issues_grant_only_for_execute(
     assert admission["private_or_licensed_dataset_bytes_uploaded"] is False
     assert admission["hard_cap_usd"] == 2.0
     assert admission["allocation_binding"]["config_preflight_receipt_sha256"]
+    if execute:
+        assert admission["allocation_binding"]["paid_attempt_authority_digest"]
+        assert list((tmp_path / "consumed").glob("content-agents-*.json"))
 
 
 def test_canonical_allocator_discloses_public_sage_bytes(
@@ -1061,6 +1141,127 @@ def test_canonical_allocator_discloses_public_sage_bytes(
     assert admission["public_licensed_dataset_identity"]["license"] == "CC-BY-NC-4.0"
     assert admission["input_is_blueprint_owned_parametric_control"] is False
     assert admission["input_contains_blueprint_owned_parametric_control"] is True
+
+
+def test_content_agents_paid_attempt_authority_is_single_use(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receipt, receipt_value = _allocator_bundle(tmp_path)
+    preflight = _passing_config_preflight(tmp_path, receipt_value)
+    preflight_value = json.loads(preflight.read_text(encoding="utf-8"))
+    authority = _content_agents_attempt_authority(
+        receipt=receipt,
+        receipt_value=receipt_value,
+        preflight=preflight,
+        preflight_value=preflight_value,
+    )
+    validated = content_agents.validate_content_agents_paid_attempt_authority(
+        authority,
+        prepared_bundle=receipt_value,
+        bundle_receipt_sha256="sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        config_preflight=preflight_value,
+        config_preflight_receipt_sha256="sha256:"
+        + hashlib.sha256(preflight.read_bytes()).hexdigest(),
+        max_hourly_rate_usd=0.75,
+        hard_cap_usd=2.0,
+        hard_ttl_seconds=7200,
+    )
+    monkeypatch.setattr(
+        content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
+    )
+
+    first = content_agents.consume_content_agents_paid_attempt_authority_once(
+        validated, blueprint_commit="a" * 40
+    )
+    second = content_agents.consume_content_agents_paid_attempt_authority_once(
+        validated, blueprint_commit="a" * 40
+    )
+
+    assert first["status"] == "consumed"
+    assert second == {
+        "status": "blocked",
+        "blockers": ["adp_content_agents_paid_attempt_authority_consumed"],
+    }
+
+
+def test_content_agents_execute_requires_paid_attempt_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt, receipt_value = _allocator_bundle(tmp_path)
+    preflight = _passing_config_preflight(tmp_path, receipt_value)
+    observed = {"called": False}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_content_agents_vast",
+        lambda **_kwargs: observed.__setitem__("called", True) or {},
+    )
+
+    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=True)) == 2
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert result["blockers"] == [
+        "paid_resource_admission_has_blockers",
+        "paid_resource_admission_not_admitted",
+    ]
+    assert (
+        "adp_content_agents_paid_attempt_authority_missing"
+        in admission["blockers"]
+    )
+    assert observed["called"] is False
+
+
+def test_content_agents_consumed_authority_blocks_before_provider_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt, receipt_value = _allocator_bundle(tmp_path)
+    preflight = _passing_config_preflight(tmp_path, receipt_value)
+    preflight_value = json.loads(preflight.read_text(encoding="utf-8"))
+    authority = _content_agents_attempt_authority(
+        receipt=receipt,
+        receipt_value=receipt_value,
+        preflight=preflight,
+        preflight_value=preflight_value,
+    )
+    authority_path = tmp_path / "content-agents-attempt-authority.json"
+    write_json(authority_path, authority)
+    consumed_root = tmp_path / "consumed"
+    monkeypatch.setattr(content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", consumed_root)
+    content_agents.consume_content_agents_paid_attempt_authority_once(
+        authority, blueprint_commit="a" * 40
+    )
+    observed = {"called": False}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_content_agents_vast",
+        lambda **_kwargs: observed.__setitem__("called", True) or {},
+    )
+
+    assert (
+        allocator.main(
+            _allocator_args(
+                tmp_path,
+                receipt,
+                preflight,
+                execute=True,
+                attempt_authority=authority_path,
+            )
+        )
+        == 2
+    )
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["blockers"] == ["adp_content_agents_paid_attempt_authority_consumed"]
+    assert result["provider_mutations_performed"] == 0
+    assert observed["called"] is False
 
 
 def test_canonical_allocator_rejects_mutated_bundle(

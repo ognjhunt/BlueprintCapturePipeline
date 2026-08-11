@@ -49,6 +49,7 @@ from .wam_provider_object_store import (
 
 PROBE_KIND = "adp-usd-content-agents"
 RESULT_SCHEMA_VERSION = "adp_content_agents_vast_run.v1"
+PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_content_agents_paid_attempt_authority.v1"
 SOURCE_COMMIT = "36dbf3f274f8e256637230a05a085853f65cc175"
 SOURCE_TREE = "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3"
 SOURCE_VERSION = "0.5.2"
@@ -87,6 +88,9 @@ _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 _FORWARDED_SECRET_NAMES = (
     "OPENAI_API_KEY",
 )
+AUTHORIZATION_CONSUMPTION_ROOT = (
+    Path.home() / ".blueprint-spend-authority" / "consumed"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -118,6 +122,161 @@ def _verified_canonical_receipt(path: Path, *, error: str) -> dict[str, Any]:
     if not receipt or supplied != canonical_digest(receipt, digest_field="receipt_digest"):
         raise ValueError(error)
     return receipt
+
+
+def validate_content_agents_paid_attempt_authority(
+    authority: Mapping[str, Any],
+    *,
+    prepared_bundle: Mapping[str, Any],
+    bundle_receipt_sha256: str | None,
+    config_preflight: Mapping[str, Any],
+    config_preflight_receipt_sha256: str | None,
+    max_hourly_rate_usd: float,
+    hard_cap_usd: float,
+    hard_ttl_seconds: int,
+) -> dict[str, Any]:
+    """Bind one explicit paid Content Agents attempt to exact local receipts.
+
+    Bundle construction, config preflight, and allocator dry-runs intentionally
+    do not require this grant. It is an execution-only, single-use capability
+    layered over the immutable bundle and local preflight receipts.
+    """
+
+    value = dict(authority)
+    errors: list[str] = []
+    if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA:
+        errors.append("schema_invalid")
+    if value.get("authority_kind") != "explicit_user_direction_in_current_goal":
+        errors.append("authority_kind_invalid")
+    if not str(value.get("authority_reference") or "").strip():
+        errors.append("authority_reference_invalid")
+    if not str(value.get("authorized_by") or "").strip():
+        errors.append("authorized_by_invalid")
+    if not str(value.get("authorized_on") or "").strip():
+        errors.append("authorized_on_invalid")
+    if value.get("purpose") != "nvidia_content_agents_advisory_enrichment":
+        errors.append("purpose_invalid")
+    if value.get("provider") != "vast":
+        errors.append("provider_invalid")
+    if value.get("paid_compute_authorized") is not True:
+        errors.append("paid_compute_not_authorized")
+    if value.get("bundle_sha256") != prepared_bundle.get("bundle_sha256"):
+        errors.append("bundle_sha256_mismatch")
+    if value.get("bundle_receipt_sha256") != bundle_receipt_sha256:
+        errors.append("bundle_receipt_sha256_mismatch")
+    if value.get("config_preflight_receipt_sha256") != config_preflight_receipt_sha256:
+        errors.append("config_preflight_receipt_sha256_mismatch")
+    if value.get("config_preflight_receipt_digest") != config_preflight.get(
+        "receipt_digest"
+    ):
+        errors.append("config_preflight_receipt_digest_mismatch")
+    if value.get("content_agents_source_commit") != SOURCE_COMMIT:
+        errors.append("content_agents_source_commit_mismatch")
+    if value.get("content_agents_source_tree") != SOURCE_TREE:
+        errors.append("content_agents_source_tree_mismatch")
+    if value.get("container_image") != DEFAULT_IMAGE:
+        errors.append("container_image_mismatch")
+    if value.get("maximum_paid_attempts") != 1:
+        errors.append("maximum_paid_attempts_invalid")
+    if value.get("maximum_automatic_retries") != 0:
+        errors.append("maximum_automatic_retries_invalid")
+    if value.get("automatic_paid_retry_authorized") is not False:
+        errors.append("automatic_paid_retry_authorized_invalid")
+    if value.get("zero_retry") is not True:
+        errors.append("zero_retry_invalid")
+    if value.get("hard_attempt_spend_cap_usd") != hard_cap_usd:
+        errors.append("hard_attempt_spend_cap_mismatch")
+    if value.get("maximum_hourly_rate_usd") != max_hourly_rate_usd:
+        errors.append("maximum_hourly_rate_mismatch")
+    if value.get("maximum_single_resource_ttl_seconds") != hard_ttl_seconds:
+        errors.append("maximum_single_resource_ttl_mismatch")
+    if value.get("agent_output_is_simready_authority") is not False:
+        errors.append("agent_output_authority_claim_invalid")
+    if value.get("native_simulator_import_qualified") is not False:
+        errors.append("native_simulator_import_claim_invalid")
+    if value.get("authorization_digest") != canonical_digest(
+        value, digest_field="authorization_digest"
+    ):
+        errors.append("authorization_digest_invalid")
+    if errors:
+        raise ValueError(
+            "adp_content_agents_paid_attempt_authority_invalid:"
+            + ",".join(sorted(set(errors)))
+        )
+    return value
+
+
+def consume_content_agents_paid_attempt_authority_once(
+    authority: Mapping[str, Any], *, blueprint_commit: str
+) -> dict[str, Any]:
+    """Atomically consume a validated grant before object-store/provider mutation."""
+
+    authorization_digest = str(authority.get("authorization_digest") or "")
+    if not authorization_digest.startswith("sha256:") or len(authorization_digest) != 71:
+        return {
+            "status": "blocked",
+            "blockers": ["adp_content_agents_paid_attempt_authority_identity_invalid"],
+        }
+    root = AUTHORIZATION_CONSUMPTION_ROOT
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = root.stat()
+        if (
+            root.is_symlink()
+            or root_stat.st_uid != os.getuid()
+            or root_stat.st_mode & 0o077
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["adp_content_agents_authority_consumption_root_insecure"],
+            }
+        identity = authorization_digest.removeprefix("sha256:")
+        destination = root / f"content-agents-{identity}.json"
+        record = {
+            "schema_version": "adp_content_agents_paid_attempt_consumption.v1",
+            "authorization_digest": authorization_digest,
+            "bundle_sha256": authority.get("bundle_sha256"),
+            "config_preflight_receipt_digest": authority.get(
+                "config_preflight_receipt_digest"
+            ),
+            "blueprint_commit": blueprint_commit,
+            "consumed_at": utc_now_iso(),
+            "maximum_provider_allocations": 1,
+        }
+        raw = (
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        temporary = root / f".content-agents-{identity}.{os.getpid()}.tmp"
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, destination)
+            directory_descriptor = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except FileExistsError:
+        return {
+            "status": "blocked",
+            "blockers": ["adp_content_agents_paid_attempt_authority_consumed"],
+        }
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["adp_content_agents_authority_consumption_write_failed"],
+        }
+    return {
+        "status": "consumed",
+        "authorization_digest": authorization_digest,
+        "consumption_record_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "record_location_disclosed": False,
+    }
 
 
 def _default_agent_cad_reference_image(
@@ -1374,10 +1533,13 @@ def run_content_agents_vast(
 
 __all__ = [
     "DEFAULT_IMAGE",
+    "PAID_ATTEMPT_AUTHORITY_SCHEMA",
     "PROBE_KIND",
     "REFERENCE_IMAGE_SHA256",
     "build_content_agents_vast_bundle",
+    "consume_content_agents_paid_attempt_authority_once",
     "run_content_agents_vast",
+    "validate_content_agents_paid_attempt_authority",
 ]
 
 

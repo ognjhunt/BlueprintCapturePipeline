@@ -182,7 +182,9 @@ from .adp_content_agents_vast import (
     PROBE_KIND as ADP_CONTENT_AGENTS_PROBE_KIND,
     SOURCE_COMMIT as ADP_CONTENT_AGENTS_SOURCE_COMMIT,
     SOURCE_TREE as ADP_CONTENT_AGENTS_SOURCE_TREE,
+    consume_content_agents_paid_attempt_authority_once,
     run_content_agents_vast,
+    validate_content_agents_paid_attempt_authority,
 )
 from .adp_content_agents_bundle_preflight import validate_bundle_config_preflight
 from .adp_joint_agent_vast import (
@@ -1245,6 +1247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--adp-content-agents-bundle-receipt")
     gpu.add_argument("--adp-content-agents-config-preflight-receipt")
+    gpu.add_argument("--adp-content-agents-attempt-authority")
     gpu.add_argument("--adp-joint-agent-bundle-receipt")
     gpu.add_argument("--adp-gaussian-excision-bundle-receipt")
     gpu.add_argument("--adp-gaussian-excision-attempt-authority")
@@ -2542,6 +2545,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if config_preflight_path and config_preflight_path.is_file()
                 else None
             )
+            paid_attempt_authority: dict[str, Any] | None = None
+            if args.adp_content_agents_attempt_authority:
+                try:
+                    paid_attempt_authority = _load(
+                        Path(args.adp_content_agents_attempt_authority)
+                        .expanduser()
+                        .resolve()
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("adp_content_agents_paid_attempt_authority_invalid")
+            elif args.execute:
+                blockers.append("adp_content_agents_paid_attempt_authority_missing")
+            if (
+                paid_attempt_authority is not None
+                and prepared_bundle is not None
+                and config_preflight is not None
+            ):
+                try:
+                    validate_content_agents_paid_attempt_authority(
+                        paid_attempt_authority,
+                        prepared_bundle=prepared_bundle,
+                        bundle_receipt_sha256=receipt_sha256,
+                        config_preflight=config_preflight,
+                        config_preflight_receipt_sha256=(
+                            config_preflight_receipt_sha256
+                        ),
+                        max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                        hard_cap_usd=args.adp_max_spend_usd,
+                        hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    )
+                except ValueError as exc:
+                    blockers.append(str(exc))
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_CONTENT_AGENTS_PROBE_KIND,
@@ -2552,6 +2587,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "config_preflight_receipt_sha256": config_preflight_receipt_sha256,
                 "config_preflight_receipt_digest": (
                     config_preflight.get("receipt_digest") if config_preflight else None
+                ),
+                "paid_attempt_authority_digest": (
+                    paid_attempt_authority.get("authorization_digest")
+                    if paid_attempt_authority
+                    else None
                 ),
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
@@ -2636,6 +2676,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                     write_json(Path(args.adapter_output), result)
                     print(json.dumps({"success": False}, sort_keys=True))
                     return 2
+                if paid_attempt_authority is not None:
+                    consumption = consume_content_agents_paid_attempt_authority_once(
+                        paid_attempt_authority,
+                        blueprint_commit=str(
+                            control_identity.get("orchestrator_source_commit") or ""
+                        ),
+                    )
+                    if consumption.get("status") != "consumed":
+                        result = {
+                            "status": "blocked",
+                            "blockers": consumption.get("blockers")
+                            or [
+                                "adp_content_agents_paid_attempt_authority_not_consumed"
+                            ],
+                            "provider_mutations_performed": 0,
+                            "authorization_consumption": consumption,
+                        }
+                        write_json(Path(args.adapter_output), result)
+                        print(json.dumps({"success": False}, sort_keys=True))
+                        return 2
             if blockers or prepared_bundle is None or config_preflight is None:
                 result = {
                     "status": "blocked",
