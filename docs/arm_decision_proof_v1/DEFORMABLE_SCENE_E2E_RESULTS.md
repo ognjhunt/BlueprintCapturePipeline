@@ -1,6 +1,6 @@
 # Deformable Scene End-to-End Results
 
-Status: **historical rights abstention superseded; private native canary pending**
+Status: **historical rights abstention superseded; private native canary in progress**
 
 Run: `adp-deformable-scene-e2e-v1`
 
@@ -31,8 +31,9 @@ bound by
 and the historical abstention is superseded by
 [`840873_task_evaluation_prelaunch_abstention_supersession.v1.json`](deformable_scene/840873_task_evaluation_prelaunch_abstention_supersession.v1.json),
 digest `sha256:b9b6dd8b96e3021b6e6a8106821e60665a1745a95e903bc48dd2cbaff7bb5f11`.
-Private upload is admitted; public redistribution remains outside scope. No
-deformable GPU attempt had been launched at the time of this correction.
+Private upload is admitted; public redistribution remains outside scope. Native
+deformable canaries have since launched only under this private-processing
+authority; no learned-policy candidate has been queried.
 
 The frozen Isaac Lab/Arena backend can load and read volumetric deformable
 state, but its currently implemented evaluation seam does not yet expose
@@ -79,11 +80,17 @@ inventory and objective rejection reasons are frozen in
   `external_simready_deformable_asset_inspection.v2.json`, with receipt digest
   `sha256:cb20acbba9afd52deaabe8c1655c1900e7951091ef93df5a4a20f1fe84490709`
   and status `pending_pinned_physx_conversion_and_native_qualification`.
-- The paid-free pinned-PhysX preparation plan has digest
+- The superseded paid-free pinned-PhysX preparation plan has digest
   `sha256:0f1faa251b4148077e79702d8c75bc58542253086b2fe90d1c18e3485219f47b`;
   its immutable local source-package receipt has digest
   `sha256:06c4a678506cc25aec71f28d4e0e1be511fb59a895aca6d1d774c1dd0e33a6e5`.
-  Packaging does not qualify the cook or authorize provider disclosure.
+  That package retained the older native-runtime API symbol contract and was
+  replaced after canary v16.
+- The current paid-free pinned-PhysX preparation plan has digest
+  `sha256:5ad516bf28881fd38dc06527049eef65a936cf286c866218d356aaa758f54907`;
+  its immutable local source-package receipt has digest
+  `sha256:c915be13c8165211116d58eecf6b0e4b485e26bbddc5d509b9766f29836196ab`.
+  Packaging does not qualify the cook.
 - The local download-provenance xattr points to Lightwheel job
   `job_msnornab_95503606da`; this identifies the delivery origin but is not an
   output-license or provider-terms grant. The six-file archive contains no
@@ -185,7 +192,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 
 ## Cost and provider lifecycle
 
-- Deformable Vast/GPU spend retained so far: `$0.141578`.
+- Deformable Vast/GPU spend retained so far: `$0.386178`.
 - Palatial/Newton local attempt 001: retained free null, 120 requested CPU
   frames, hard timeout at 300 seconds, `$0.00`, scratch removed, receipt file
   SHA-256 `a159530bca09fccf07cd42dc0e6a097e876621e47861e323ad6f779f647164fb`.
@@ -210,13 +217,42 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   commit `efb09b036` but was blocked before any Vast allocation by a separate
   active provider instance. Cost: `$0.00`; provider mutations: `0`; no policy
   query.
+- Deformable native canary v12 launched Vast instance `47443474`, selected an
+  RTX 4090 machine, and failed before worker execution when the provider
+  instance disappeared during startup. Cost: `$0.056694`; no policy query.
+  Machine `123134` is excluded by the retained avoidlist.
+- Deformable native canary v13 launched Vast instance `47444863`, reached Isaac
+  Sim/Warp CUDA startup and worker execution on RTX 3090, then failed on a stale
+  Blueprint runtime signature check for
+  `isaaclab.sim.schemas.schemas:define_deformable_body_properties`. Cost:
+  `$0.037590`; no policy query. The reusable signature fix landed in commit
+  `c367d004e`.
+- Deformable native canary v14 packaged the fixed bundle and was blocked before
+  allocation by provider nonzero. Cost: `$0.00`; provider mutations: `0`; no
+  policy query.
+- Deformable native canary v15 launched Vast instance `47447681`, reached Isaac
+  Sim 6.0.1, Warp CUDA startup, bundle download, and worker execution on RTX
+  4090. It failed on a stale Blueprint requirement for the legacy
+  `omni.physx.scripts.deformableUtils:add_physx_deformable_body` symbol. Cost:
+  `$0.066286`; no policy query. The reusable call-contract fix landed in commit
+  `4716f49ce`.
+- Deformable native canary v16 launched Vast instance `47449068`, reached Isaac
+  Sim 6.0.1, Warp CUDA startup, bundle download, and worker execution on RTX
+  4090. It failed before cook because the input source package still carried the
+  superseded native-runtime API-symbol contract. Cost: `$0.066326`; no policy
+  query. The source package was regenerated as v2 with plan digest
+  `sha256:5ad516bf28881fd38dc06527049eef65a936cf286c866218d356aaa758f54907`.
+- Deformable native canary v17 used the regenerated source package v2 but ended
+  as a pre-execution provider null: Vast instance `47449847` never produced a
+  container, GPU sanity, Isaac smoke, or worker output. Cost: `$0.042127`; no
+  policy query. Machine `95005` is excluded by the retained avoidlist.
 - Current provider state is not zero as of the latest live refresh in this
-  thread: Vast instance `47435022`, label `blueprint-adp009d-1786424400`, belongs
+  thread: Vast instance `47450341`, label `blueprint-adp009d-1786438041`, belongs
   to a separate ADP009D canary lane and blocks the next deformable launch under
   the shared single-flight guard. The deformable lane owns no live provider
-  instance.
-- Deformable Vast/GPU attempts with allocation: `2`; prelaunch-blocked attempts:
-  `1`; uploads: `2`; automatic retries: `0`.
+  instance and provider-zero was confirmed after v16 and v17 teardown.
+- Deformable Vast/GPU attempts with allocation: `7`; prelaunch-blocked attempts:
+  `2`; uploads: `5`; automatic retries: `0`.
 
 ## Claim table
 
@@ -224,7 +260,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Current possible blocker is native cook/contact qualification, which has not yet been tested on Vast |
+| Blocked/abstained | Historical rights abstention superseded. Current operational blocker is provider nonzero from a separate ADP009D lane. Native cook/contact qualification remains unproven; the latest deformable native attempts exposed and fixed stale Blueprint contract/input-package gaps before cook |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -242,9 +278,16 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `e114138de` | Add the canonical Vast lane for the deformable asset cook |
 | `8271fb172` | Preserve meaningful Vast startup logs across terminal noise |
 | `efb09b036` | Fix generated deformable provider Python escaping |
+| `a9fbcef60` | Retain deformable worker failure receipts |
+| `b18c3b018` | Write deformable worker terminal before simulator close |
+| `d212fa52d` | Pin deformable native calls to runtime v14 sources |
+| `02544ccf6` | Record Vast launch lock release state |
+| `c367d004e` | Match deformable authoring runtime signature |
+| `86ae08f53` | Recognize deformable asset Vast results |
+| `4716f49ce` | Drop stale deformable cook symbol requirement |
 
 Each listed commit was pushed to
-`origin/codex/adp-deformable-scene-e2e-20260810`. Commit `efb09b036` is the
+`origin/codex/adp-deformable-scene-e2e-20260810`. Commit `4716f49ce` is the
 current published implementation head for the next native canary.
 
 ## Completion and single next action
@@ -258,9 +301,9 @@ It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
 The single next action is to wait for provider-zero, then run exactly one
-fresh no-retry Vast native canary from the fixed `efb09b036` bundle in a new
-evidence root. If the canary qualifies cook/load/reset/contact/cameras, the run
-continues to zero-action and scripted controls before any learned policy. If the
-native backend cannot provide qualified rigid--deformable contact attribution,
-the run seals a typed native capability abstention and does not evaluate
-`pi05_droid` or `groot_n17_droid`.
+fresh no-retry Vast native canary from the current `4716f49ce` implementation and
+the regenerated source package v2 in a new evidence root. If the canary qualifies
+cook/load/reset/contact/cameras, the run continues to zero-action and scripted
+controls before any learned policy. If the native backend cannot provide
+qualified rigid--deformable contact attribution, the run seals a typed native
+capability abstention and does not evaluate `pi05_droid` or `groot_n17_droid`.
