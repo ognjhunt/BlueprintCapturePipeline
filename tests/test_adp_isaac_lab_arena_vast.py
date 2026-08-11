@@ -343,3 +343,101 @@ def test_avoidlist_already_in_the_job_directory_does_not_abort_the_launch(
     staged.unlink()
     assert _stage_machine_avoidlist(job, None) == staged
     assert not staged.exists()
+
+
+def test_staged_machine_avoidlist_sync_merges_provider_failures_back(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.adp_isaac_lab_arena_vast import (
+        _stage_machine_avoidlist,
+        _sync_staged_machine_avoidlist,
+    )
+
+    job = tmp_path / "job"
+    job.mkdir()
+    external = tmp_path / "shared_avoidlist.json"
+    write_json(
+        external,
+        {
+            "schema_version": "vast_machine_avoidlist.v1",
+            "status": "completed",
+            "machine_ids": [111],
+            "entries": [{"machine_id": 111, "reason": "preexisting"}],
+        },
+    )
+
+    staged = _stage_machine_avoidlist(job, external)
+    write_json(
+        staged,
+        {
+            "schema_version": "vast_machine_avoidlist.v1",
+            "status": "completed",
+            "machine_ids": [111, 222],
+            "entries": [
+                {"machine_id": 111, "reason": "preexisting"},
+                {"machine_id": 222, "reason": "heartbeat_exited"},
+            ],
+        },
+    )
+
+    # Simulate a concurrent safe writer adding a third machine to the shared path
+    # while this paid attempt was running.  Sync must merge, not overwrite.
+    write_json(
+        external,
+        {
+            "schema_version": "vast_machine_avoidlist.v1",
+            "status": "completed",
+            "machine_ids": [333],
+            "entries": [{"machine_id": 333, "reason": "concurrent"}],
+        },
+    )
+
+    receipt = _sync_staged_machine_avoidlist(
+        job=job,
+        configured_path=external,
+        staged_path=staged,
+        generated_at="fixed",
+    )
+
+    merged = json.loads(external.read_text())
+    assert receipt["status"] == "completed"
+    assert receipt["sync_performed"] is True
+    assert merged["machine_ids"] == [111, 222, 333]
+    assert {entry["reason"] for entry in merged["entries"]} == {
+        "preexisting",
+        "heartbeat_exited",
+        "concurrent",
+    }
+
+
+def test_machine_avoidlist_sync_is_noop_for_same_or_missing_path(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.adp_isaac_lab_arena_vast import (
+        _sync_staged_machine_avoidlist,
+    )
+
+    job = tmp_path / "job"
+    job.mkdir()
+    staged = job / "adp_arena_vast_machine_avoidlist.json"
+    write_json(staged, {"machine_ids": [123]})
+
+    same = _sync_staged_machine_avoidlist(
+        job=job,
+        configured_path=staged,
+        staged_path=staged,
+        generated_at="fixed",
+    )
+    assert same["status"] == "same_path"
+    assert same["sync_performed"] is False
+    assert json.loads(staged.read_text()) == {"machine_ids": [123]}
+
+    staged.unlink()
+    missing = _sync_staged_machine_avoidlist(
+        job=job,
+        configured_path=tmp_path / "shared.json",
+        staged_path=staged,
+        generated_at="fixed",
+    )
+    assert missing["status"] == "blocked"
+    assert missing["blockers"] == ["staged_machine_avoidlist_missing"]

@@ -111,6 +111,109 @@ def _stage_machine_avoidlist(job: Path, machine_avoidlist_path: str | Path | Non
     return local_avoidlist
 
 
+def _machine_avoidlist_entry_key(entry: Mapping[str, Any]) -> str:
+    """Stable de-duplication key for provider-learned machine avoidlist rows."""
+
+    return json.dumps(dict(entry), sort_keys=True, separators=(",", ":"))
+
+
+def _merge_machine_avoidlist_payloads(
+    *payloads: Mapping[str, Any],
+    generated_at: str,
+) -> dict[str, Any]:
+    """Merge machine avoidlist payloads without dropping concurrent external rows."""
+
+    machine_ids: set[int] = set()
+    entries: list[dict[str, Any]] = []
+    seen_entries: set[str] = set()
+    for payload in payloads:
+        for raw_machine_id in payload.get("machine_ids") or ():
+            try:
+                machine_id = int(raw_machine_id)
+            except (TypeError, ValueError):
+                continue
+            if machine_id >= 0:
+                machine_ids.add(machine_id)
+        for raw_entry in payload.get("entries") or ():
+            if not isinstance(raw_entry, Mapping):
+                continue
+            entry = dict(raw_entry)
+            raw_machine_id = entry.get("machine_id")
+            try:
+                machine_id = int(raw_machine_id)
+            except (TypeError, ValueError):
+                machine_id = None
+            if machine_id is not None and machine_id >= 0:
+                machine_ids.add(machine_id)
+            key = _machine_avoidlist_entry_key(entry)
+            if key in seen_entries:
+                continue
+            seen_entries.add(key)
+            entries.append(entry)
+    return {
+        "schema_version": "vast_machine_avoidlist.v1",
+        "generated_at": generated_at,
+        "status": "completed",
+        "machine_ids": sorted(machine_ids),
+        "entries": entries,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _sync_staged_machine_avoidlist(
+    *,
+    job: Path,
+    configured_path: str | Path | None,
+    staged_path: Path,
+    generated_at: str,
+) -> dict[str, Any]:
+    """Merge provider-updated staged avoidlist back to the caller's shared file."""
+
+    receipt: dict[str, Any] = {
+        "schema_version": "adp_arena_vast_machine_avoidlist_sync.v1",
+        "generated_at": generated_at,
+        "status": "not_configured",
+        "job_dir": str(job),
+        "staged_path": str(staged_path),
+        "configured_path": None,
+        "sync_performed": False,
+        "blockers": [],
+        "raw_secret_values_recorded": False,
+    }
+    if configured_path is None:
+        return receipt
+    target = Path(configured_path).expanduser().resolve()
+    receipt["configured_path"] = str(target)
+    if target == staged_path.resolve():
+        receipt["status"] = "same_path"
+        return receipt
+    if not staged_path.is_file():
+        receipt["status"] = "blocked"
+        receipt["blockers"] = ["staged_machine_avoidlist_missing"]
+        return receipt
+
+    staged_payload = _read_json(staged_path)
+    existing_payload = _read_json(target)
+    merged = _merge_machine_avoidlist_payloads(
+        existing_payload,
+        staged_payload,
+        generated_at=generated_at,
+    )
+    ensure_dir(target.parent)
+    write_json(target, merged)
+    receipt.update(
+        {
+            "status": "completed",
+            "sync_performed": True,
+            "staged_sha256": _file_sha256(staged_path),
+            "configured_sha256": _file_sha256(target),
+            "machine_ids": merged["machine_ids"],
+            "entry_count": len(merged["entries"]),
+        }
+    )
+    return receipt
+
+
 def _next_attempt_root(job: Path) -> tuple[int, Path]:
     """Return a fresh evidence root without ever reusing paid-run staging state."""
 
@@ -415,6 +518,7 @@ def run_arena_native_control_vast(
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     local_avoidlist = _stage_machine_avoidlist(job, machine_avoidlist_path)
     adapter: dict[str, Any] = {}
+    machine_avoidlist_sync: dict[str, Any] = {}
     try:
         with _vast_authority_environment(
             gated_backbone_authorized=forward_hf_token
@@ -465,6 +569,12 @@ def run_arena_native_control_vast(
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     finally:
+        machine_avoidlist_sync = _sync_staged_machine_avoidlist(
+            job=job,
+            configured_path=machine_avoidlist_path,
+            staged_path=local_avoidlist,
+            generated_at=utc_now_iso(),
+        )
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     extracted = _extract_provider_output(
         output_zip,
@@ -507,6 +617,7 @@ def run_arena_native_control_vast(
         "candidate_policy_query_expected": bool(candidate_policy_query_expected),
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+        "machine_avoidlist_sync": machine_avoidlist_sync,
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
