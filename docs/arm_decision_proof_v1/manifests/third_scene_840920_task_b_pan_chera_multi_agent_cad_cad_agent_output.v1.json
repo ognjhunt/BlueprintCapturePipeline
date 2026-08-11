@@ -7,8 +7,8 @@
       "size_bytes": 18798
     },
     "inspection_receipt": {
-      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/inspection_receipt.v1.json",
-      "sha256": "sha256:d713a2bd86cd2d705a71264475bf931a936ca047041372d0a7eb58401f3643d9",
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/inspection_receipt_manifest_bound.v1.json",
+      "sha256": "sha256:8980923958f07b5ea36ca4f3c53b46833dd37f50c1f73159747b6bc1d5020fd7",
       "size_bytes": 1369
     },
     "snapshots": [
@@ -50,8 +50,8 @@
     "deterministic_geometry_generator_used": false,
     "execution_mode": "codex_agent_direct_repo_route",
     "execution_receipt": {
-      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/cad_agent_execution_receipt.v1.json",
-      "sha256": "sha256:041d506f22840428addbb52b11d566732f68ae51d140aa8bd414523eb60499a4",
+      "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/cad_agent_execution_receipt_manifest_bound.v1.json",
+      "sha256": "sha256:085b40a26c8811fd6c19e2901b5654bd03856c38bb05bb696f17bcb2de1fc752",
       "size_bytes": 2311
     },
     "graph_geometry_used_for_cad_authoring": false,
@@ -62,7 +62,7 @@
     429.63102800003446,
     299.7640079999828
   ],
-  "receipt_digest": "sha256:30e5b5e56e313ec085c381ffd0c2e7f63a9d9affa6c930fea6e340a6fbe21acf",
+  "receipt_digest": "sha256:406d1e35a38555952792412b29962229cf62331e781ca9b03edfd389d9127829",
   "request": {
     "asset_id": "840920_simready_notebook_candidate",
     "backend": {
@@ -111,6 +111,7 @@
         299.764008
       ],
       "primitive_graph_used_as_cad_candidate": false,
+      "reference_binding_source": "manifest_derived",
       "reference_images": [
         {
           "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/reconnaissance/rigid_alternates_v1/frames/notebook_front.png",
@@ -128,6 +129,12 @@
           "size_bytes": 903111
         }
       ],
+      "reference_manifest": {
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+        "sha256": "sha256:f8bfe3bd2df5650a768314ef634e5029ed3233602ebca2817bd2041ca24d9372",
+        "size_bytes": 3331
+      },
+      "reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
       "task_freeze": {
         "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json",
         "sha256": "sha256:2911d1c37b7f96b68c5b71b3272769f5f6ba27e5fd2a01a45f81f33395abff13",
@@ -135,13 +142,13 @@
       }
     },
     "replacement_slot": 2,
-    "request_digest": "sha256:7731ce013a5c3a4bcfbab0d11779577ecdfd5eafec8efb4578901f89e32b89d8",
+    "request_digest": "sha256:3baa31fb89e399d9d3cfb3e67121aae9b494d0c3b5b771a9a033ae36f377f2f6",
     "request_id": "third_scene_840920_slot_2_pan_chera_multi_agent_cad_request_v1",
     "scene_id": "840920",
     "schema_version": "simready_cad_agent_request.v1",
     "task_id": "task_b_notebook_relocation"
   },
-  "request_digest": "sha256:7731ce013a5c3a4bcfbab0d11779577ecdfd5eafec8efb4578901f89e32b89d8",
+  "request_digest": "sha256:3baa31fb89e399d9d3cfb3e67121aae9b494d0c3b5b771a9a033ae36f377f2f6",
   "schema_version": "simready_cad_agent_output.v1",
   "status": "candidate_authored"
 }

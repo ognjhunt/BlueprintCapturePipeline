@@ -26,7 +26,8 @@
         "size_bytes": 12271
       },
       "cad_agent_backend_id": "earthtojake_text_to_cad",
-      "cad_agent_output_receipt_digest": "sha256:f833d05c801ae8352118127e8f7a4f179f14cf9f51a9f44bfeca3234702ad3dc",
+      "cad_agent_output_receipt_digest": "sha256:5dd960e4ae4e481b4ffabac7eaeca30564f1070c43146cd593d27f045c3b2845",
+      "cad_agent_request_digest": "sha256:bb86bc5385a42dfc15a23032182eab56605c3a9da82c2de3c80f4d0a5407bf6b",
       "candidate_step_sha256": "sha256:d1db5a6d354923899894b45753a8b9ce8a6c41acccd053c42fcd199cf91a950a",
       "canonical_simready_construction_unresolved": true,
       "content_agents_source": {
@@ -57,7 +58,8 @@
         "size_bytes": 14127
       },
       "cad_agent_backend_id": "pan_chera_multi_agent_cad",
-      "cad_agent_output_receipt_digest": "sha256:91b37071f5ed30df4f1c1f917b7e18e6a3fce6f14947fd718afac563634c4f4e",
+      "cad_agent_output_receipt_digest": "sha256:ce5ea65c46460da265c25c4b5bdbd57d48037e448fc05253c8557b55035c3673",
+      "cad_agent_request_digest": "sha256:ea8358971df0febe8159d18caa93c88d0d05b018d60c6711547b58e5859998ec",
       "candidate_step_sha256": "sha256:509af5523b4fa4c66c0a7304b0c33ab5fa862a7174436e6495c22974913efa74",
       "canonical_simready_construction_unresolved": true,
       "content_agents_source": {
@@ -88,7 +90,8 @@
         "size_bytes": 15280
       },
       "cad_agent_backend_id": "earthtojake_text_to_cad",
-      "cad_agent_output_receipt_digest": "sha256:36a7d633a6cf346df796f0d6dbbcd4834195872e1f7e28505875fe43028aaad7",
+      "cad_agent_output_receipt_digest": "sha256:abe0feb7f0e805838312ad0f1902aa4e43cff7b6ba111b764937ed47d9bdc707",
+      "cad_agent_request_digest": "sha256:fecd936d1a55ced69f9a50ee961eab68542d7b2afe0f74c85c3788c017f1b0fb",
       "candidate_step_sha256": "sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c",
       "canonical_simready_construction_unresolved": true,
       "content_agents_source": {
@@ -119,7 +122,8 @@
         "size_bytes": 18937
       },
       "cad_agent_backend_id": "pan_chera_multi_agent_cad",
-      "cad_agent_output_receipt_digest": "sha256:30e5b5e56e313ec085c381ffd0c2e7f63a9d9affa6c930fea6e340a6fbe21acf",
+      "cad_agent_output_receipt_digest": "sha256:406d1e35a38555952792412b29962229cf62331e781ca9b03edfd389d9127829",
+      "cad_agent_request_digest": "sha256:3baa31fb89e399d9d3cfb3e67121aae9b494d0c3b5b771a9a033ae36f377f2f6",
       "candidate_step_sha256": "sha256:fb72f8e3f23a1260a54bd0620bf994ba09bd58d37cbcfec93134c9213e33863b",
       "canonical_simready_construction_unresolved": true,
       "content_agents_source": {
@@ -138,7 +142,7 @@
   ],
   "paid_resource_allocated": false,
   "provider_mutations_performed": 0,
-  "receipt_digest": "sha256:a7aee85f65c5a57e955af293c342f9f67351a81f8c5dec4502bfde4e88fa6d1e",
+  "receipt_digest": "sha256:a716b923e7a65d9ea204eeee8e01080db164c7d5f38aa482a4a821ea1ce19494",
   "replacement_object_capacity": {
     "maximum": 5,
     "minimum": 1,

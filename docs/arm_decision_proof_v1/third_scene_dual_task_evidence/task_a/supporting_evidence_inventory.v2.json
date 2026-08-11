@@ -1,6 +1,6 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 44,
+  "artifact_count": 48,
   "artifacts": [
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
@@ -23,9 +23,27 @@
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "task_a/earthtojake_cad_v1/cad_agent_execution_receipt.v1.json",
+      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/local_bundle_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+      "role": "agent_cad:earthtojake_text_to_cad:content_agents_local_docker_preflight",
+      "sha256": "sha256:3feb39867a748dae44e7f1b925f98160aaca891ecae82f55adeb605f743adef0",
+      "size_bytes": 7487,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+      "role": "agent_cad:earthtojake_text_to_cad:content_agents_static_preflight",
+      "sha256": "sha256:f60bc6d2c5366a7a9d458819934f1503b6577fdb434fe0d8ef8ce751b878dfe3",
+      "size_bytes": 5060,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_a/earthtojake_cad_v1/cad_agent_execution_receipt_manifest_bound.v1.json",
       "role": "agent_cad:earthtojake_text_to_cad:execution_receipt",
-      "sha256": "sha256:a792f0fb49aa6f68c9d0e8a8d5e86ba21bbe107f591511761c306e2bb32b45e1",
+      "sha256": "sha256:2bd35adabdef157f05656c006f15d3242056ea1a905fb13bdfa47be7195244d4",
       "size_bytes": 2137,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
@@ -104,9 +122,27 @@
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "task_a/multi_agent_cad_codex_v1/cad_agent_execution_receipt.v1.json",
+      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/local_bundle_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+      "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_local_docker_preflight",
+      "sha256": "sha256:6094dd3455cd692b8b9c0bb27c293f09af0998483571035c2ba7a3f385bb0000",
+      "size_bytes": 7529,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+      "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_static_preflight",
+      "sha256": "sha256:68d6085ac6b644ade56bba6c4210dc5579c562dc69aafb42a7309b0dcbbb2ad0",
+      "size_bytes": 6899,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_a/multi_agent_cad_codex_v1/cad_agent_execution_receipt_manifest_bound.v1.json",
       "role": "agent_cad:pan_chera_multi_agent_cad:execution_receipt",
-      "sha256": "sha256:12055b0458e43d14f87e412c516ed586955bc4fd090a5cd9f689c564536fade4",
+      "sha256": "sha256:cbb29e53790f91d3fb2350d9edd5c8bb0485948a7ad99044846f33a3adb64315",
       "size_bytes": 2313,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
@@ -400,7 +436,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:91237e7f5bbab78f4dd7860f0fd17d975b28da3fa2c66223074c888f5cc7fab5",
+  "inventory_digest": "sha256:39a96c53b4f979aa35456e9c6706d57de691f98cbbb1b6b3bc5b58c70538ec27",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,

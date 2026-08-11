@@ -153,6 +153,7 @@ def materialize_supporting_evidence_inventory(
     source_root_id: str,
     artifacts: Sequence[Mapping[str, Any]],
     disclosure_class: str,
+    replace_existing: bool = False,
 ) -> dict[str, Any]:
     """Verify external construction bytes and emit a portable receipt inventory.
 
@@ -223,11 +224,12 @@ def materialize_supporting_evidence_inventory(
         receipt, digest_field="inventory_digest"
     )
     destination = _inside(output, output_relative_path, role="supporting_inventory")
-    if destination.exists() or destination.is_symlink():
+    if (destination.exists() or destination.is_symlink()) and not replace_existing:
         raise EpisodeEvidenceIndexError("supporting_evidence_inventory_overwrite_forbidden")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    _atomic_write_text(
+        destination,
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
     )
     return receipt
 

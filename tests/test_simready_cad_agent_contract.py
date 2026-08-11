@@ -498,6 +498,39 @@ def test_reference_binding_audit_binds_outputs_to_manifest(tmp_path: Path) -> No
     assert audit["replacement_object_count"] == 1
     assert audit["candidate_rows"][0]["binding_status"] == "manifest_bound"
     assert audit["candidate_rows"][0]["cad_agent_output_artifacts_verified"] is True
+    assert audit["historical_requests_rewritten"] is False
+    assert audit["cad_output_receipts_resealed"] is False
+
+
+def test_reference_binding_audit_records_receipt_reseal_without_geometry_regen(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path / "request")
+    output = _output(tmp_path / "output", request, "earth")
+    output_path = tmp_path / "output.json"
+    output_path.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
+    manifest_path = Path(request["inputs"]["reference_manifest"]["path"])
+
+    audit = materialize_cad_agent_reference_binding_audit(
+        scene_id=request["scene_id"],
+        reference_manifest_path=manifest_path,
+        cad_agent_output_paths=[output_path],
+        historical_requests_rewritten=True,
+        cad_output_receipts_resealed=True,
+    )
+
+    assert validate_cad_agent_reference_binding_audit(audit) == audit
+    assert audit["historical_requests_rewritten"] is True
+    assert audit["cad_output_receipts_resealed"] is True
+    assert audit["agent_outputs_regenerated"] is False
+    audit["agent_outputs_regenerated"] = True
+    audit["audit_digest"] = canonical_digest(audit, digest_field="audit_digest")
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        validate_cad_agent_reference_binding_audit(audit)
+    assert (
+        "cad_agent_reference_binding_audit_claim_boundary_invalid"
+        in excinfo.value.codes
+    )
 
 
 def test_reference_binding_audit_can_bind_historical_output_without_artifact_reopen(

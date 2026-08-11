@@ -660,6 +660,49 @@ def test_supporting_inventory_rejects_tampered_external_artifact(
         )
 
 
+def test_supporting_inventory_requires_explicit_replace_existing(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "external"
+    package_root = tmp_path / "package"
+    external_root.mkdir()
+    package_root.mkdir()
+    first = _artifact(external_root, "mask-a.png", b"mask-a")
+    second = _artifact(external_root, "mask-b.png", b"mask-b")
+    materialize_supporting_evidence_inventory(
+        source_root=external_root,
+        output_root=package_root,
+        output_relative_path="supporting_evidence_inventory.v1.json",
+        source_root_id="rights_bounded_construction_root",
+        artifacts=[{"role": "source_mask", **first}],
+        disclosure_class="digest_receipt_only",
+    )
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="supporting_evidence_inventory_overwrite_forbidden",
+    ):
+        materialize_supporting_evidence_inventory(
+            source_root=external_root,
+            output_root=package_root,
+            output_relative_path="supporting_evidence_inventory.v1.json",
+            source_root_id="rights_bounded_construction_root",
+            artifacts=[{"role": "source_mask", **second}],
+            disclosure_class="digest_receipt_only",
+        )
+
+    updated = materialize_supporting_evidence_inventory(
+        source_root=external_root,
+        output_root=package_root,
+        output_relative_path="supporting_evidence_inventory.v1.json",
+        source_root_id="rights_bounded_construction_root",
+        artifacts=[{"role": "source_mask", **second}],
+        disclosure_class="digest_receipt_only",
+        replace_existing=True,
+    )
+
+    assert updated["artifacts"][0]["relative_path"] == "mask-b.png"
+
+
 def test_agent_cad_content_agents_rows_materialize_task_inventory(
     tmp_path: Path,
 ) -> None:

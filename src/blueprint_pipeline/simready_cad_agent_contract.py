@@ -434,7 +434,8 @@ def validate_cad_agent_reference_binding_audit(
     if audit.get("replacement_object_count") != len(object_keys):
         errors.append("cad_agent_reference_binding_audit_object_count_invalid")
     if (
-        audit.get("historical_requests_rewritten") is not False
+        not isinstance(audit.get("historical_requests_rewritten"), bool)
+        or not isinstance(audit.get("cad_output_receipts_resealed"), bool)
         or audit.get("agent_outputs_regenerated") is not False
         or audit.get("all_candidate_references_manifest_bound") is not True
     ):
@@ -455,6 +456,8 @@ def materialize_cad_agent_reference_binding_audit(
     cad_agent_output_paths: Sequence[str | Path],
     output_path: str | Path | None = None,
     verify_cad_output_artifact_files: bool = True,
+    historical_requests_rewritten: bool = False,
+    cad_output_receipts_resealed: bool = False,
 ) -> dict[str, Any]:
     manifest_record = file_record(reference_manifest_path)
     manifest = validate_cad_agent_reference_manifest(
@@ -520,11 +523,13 @@ def materialize_cad_agent_reference_binding_audit(
             ),
         ),
         "replacement_object_count": len(object_keys),
-        "historical_requests_rewritten": False,
+        "historical_requests_rewritten": bool(historical_requests_rewritten),
+        "cad_output_receipts_resealed": bool(cad_output_receipts_resealed),
         "agent_outputs_regenerated": False,
         "all_candidate_references_manifest_bound": True,
         "claim_boundary": {
             "historical_request_reference_binding_audited": True,
+            "cad_output_receipts_resealed": bool(cad_output_receipts_resealed),
             "cad_geometry_regenerated": False,
             "simready_qualified": False,
             "physical_equivalence": False,

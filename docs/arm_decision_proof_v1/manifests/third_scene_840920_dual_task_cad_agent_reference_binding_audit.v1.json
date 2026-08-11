@@ -1,23 +1,24 @@
 {
   "agent_outputs_regenerated": false,
   "all_candidate_references_manifest_bound": true,
-  "audit_digest": "sha256:dd4363e6c5feb62cddbbfbcf080a4e859778855bb3afb489dacb96616c311003",
+  "audit_digest": "sha256:f4c32aa0b83a17ff879b1cb243f6598ddfd8650e12bc21d0c57cbe8211a7c0b9",
+  "cad_output_receipts_resealed": true,
   "candidate_rows": [
     {
       "asset_id": "840920_simready_washer_candidate",
       "binding_status": "manifest_bound",
       "cad_agent_backend_id": "earthtojake_text_to_cad",
       "cad_agent_output": {
-        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_earthtojake_text_to_cad_cad_agent_output.v1.json",
-        "sha256": "sha256:3c2698a0787d3bdc59bd66ffb680ae271d5f0e732b179508b6b22fa8b2058ff5",
-        "size_bytes": 7209
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_earthtojake_text_to_cad_cad_agent_output.v1.json",
+        "sha256": "sha256:23176eb122f41d4708c7bfb4160a0213c952335888d537d627313e14304411d0",
+        "size_bytes": 7749
       },
-      "cad_agent_output_artifacts_verified": false,
-      "cad_agent_output_receipt_digest": "sha256:f833d05c801ae8352118127e8f7a4f179f14cf9f51a9f44bfeca3234702ad3dc",
+      "cad_agent_output_artifacts_verified": true,
+      "cad_agent_output_receipt_digest": "sha256:5dd960e4ae4e481b4ffabac7eaeca30564f1070c43146cd593d27f045c3b2845",
       "reference_image_count": 3,
       "reference_manifest_object_digest": "sha256:6de02c167b204de6850ae99e39fdcad1ba2d48be7b40a56846b68194eddb8a9c",
       "replacement_slot": 1,
-      "request_contains_reference_manifest_field": false,
+      "request_contains_reference_manifest_field": true,
       "task_id": "task_a_washer_door_open"
     },
     {
@@ -25,16 +26,16 @@
       "binding_status": "manifest_bound",
       "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "cad_agent_output": {
-        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_pan_chera_multi_agent_cad_cad_agent_output.v1.json",
-        "sha256": "sha256:898436ba7f4d8a20fa9802dc5083d96f111f8b59fab68d0404a0b7d70f389a99",
-        "size_bytes": 7294
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_pan_chera_multi_agent_cad_cad_agent_output.v1.json",
+        "sha256": "sha256:0e6823b2d801b961cccff7c4eda21898ca8e25acfcd8ed87d4673b06b1191200",
+        "size_bytes": 7834
       },
-      "cad_agent_output_artifacts_verified": false,
-      "cad_agent_output_receipt_digest": "sha256:91b37071f5ed30df4f1c1f917b7e18e6a3fce6f14947fd718afac563634c4f4e",
+      "cad_agent_output_artifacts_verified": true,
+      "cad_agent_output_receipt_digest": "sha256:ce5ea65c46460da265c25c4b5bdbd57d48037e448fc05253c8557b55035c3673",
       "reference_image_count": 3,
       "reference_manifest_object_digest": "sha256:6de02c167b204de6850ae99e39fdcad1ba2d48be7b40a56846b68194eddb8a9c",
       "replacement_slot": 1,
-      "request_contains_reference_manifest_field": false,
+      "request_contains_reference_manifest_field": true,
       "task_id": "task_a_washer_door_open"
     },
     {
@@ -42,16 +43,16 @@
       "binding_status": "manifest_bound",
       "cad_agent_backend_id": "earthtojake_text_to_cad",
       "cad_agent_output": {
-        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_earthtojake_text_to_cad_cad_agent_output.v1.json",
-        "sha256": "sha256:b78ed442f807db2383c7a8a134ad7643d1f099d09f5a60a51344fd1015081885",
-        "size_bytes": 7230
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_earthtojake_text_to_cad_cad_agent_output.v1.json",
+        "sha256": "sha256:eef4bfbeec5f8fd11cfa47cf94485131004f484ac1c09d66945686dbe9bccb7d",
+        "size_bytes": 7770
       },
-      "cad_agent_output_artifacts_verified": false,
-      "cad_agent_output_receipt_digest": "sha256:36a7d633a6cf346df796f0d6dbbcd4834195872e1f7e28505875fe43028aaad7",
+      "cad_agent_output_artifacts_verified": true,
+      "cad_agent_output_receipt_digest": "sha256:abe0feb7f0e805838312ad0f1902aa4e43cff7b6ba111b764937ed47d9bdc707",
       "reference_image_count": 3,
       "reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
       "replacement_slot": 2,
-      "request_contains_reference_manifest_field": false,
+      "request_contains_reference_manifest_field": true,
       "task_id": "task_b_notebook_relocation"
     },
     {
@@ -59,28 +60,29 @@
       "binding_status": "manifest_bound",
       "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "cad_agent_output": {
-        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_pan_chera_multi_agent_cad_cad_agent_output.v1.json",
-        "sha256": "sha256:93e3a93914f6716b5a82744350ae4f83b43793aaabde8f844b44691222c8aa6d",
-        "size_bytes": 7351
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_pan_chera_multi_agent_cad_cad_agent_output.v1.json",
+        "sha256": "sha256:4e9442e742c0d67e05daeb285dc6e1a5c65986c41062f61bb1a7cf3195d5f7fa",
+        "size_bytes": 7891
       },
-      "cad_agent_output_artifacts_verified": false,
-      "cad_agent_output_receipt_digest": "sha256:30e5b5e56e313ec085c381ffd0c2e7f63a9d9affa6c930fea6e340a6fbe21acf",
+      "cad_agent_output_artifacts_verified": true,
+      "cad_agent_output_receipt_digest": "sha256:406d1e35a38555952792412b29962229cf62331e781ca9b03edfd389d9127829",
       "reference_image_count": 3,
       "reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
       "replacement_slot": 2,
-      "request_contains_reference_manifest_field": false,
+      "request_contains_reference_manifest_field": true,
       "task_id": "task_b_notebook_relocation"
     }
   ],
   "claim_boundary": {
     "cad_geometry_regenerated": false,
+    "cad_output_receipts_resealed": true,
     "historical_request_reference_binding_audited": true,
     "physical_equivalence": false,
     "simready_qualified": false
   },
-  "historical_requests_rewritten": false,
+  "historical_requests_rewritten": true,
   "reference_manifest": {
-    "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+    "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
     "sha256": "sha256:f8bfe3bd2df5650a768314ef634e5029ed3233602ebca2817bd2041ca24d9372",
     "size_bytes": 3331
   },

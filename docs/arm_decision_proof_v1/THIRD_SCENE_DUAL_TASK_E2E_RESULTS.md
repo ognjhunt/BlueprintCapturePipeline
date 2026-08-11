@@ -251,16 +251,16 @@ or physical equivalents.
 The sealed dual-task CAD-agent matrix is checked in at
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json`
 with digest
-`sha256:bf64ddab12de51d7f3f6fcf863d82e085eef80e512df99743e1485b230ba2426`.
+`sha256:5c156afb6837e6e796dc0092e4a7a2f9060962b29f820b8fe5738ee25049dfbb`.
 It binds exactly two replacement slots today while preserving the general
 one-to-five object capacity:
 
 | Task | Backend | Execution route | STEP digest | Output receipt | Cost |
 |---|---|---|---|---|---|
-| Task A washer | Earth-to-Jake | `codex_skill_step_first` | `sha256:d1db5a6d354923899894b45753a8b9ce8a6c41acccd053c42fcd199cf91a950a` | `sha256:f833d05c801ae8352118127e8f7a4f179f14cf9f51a9f44bfeca3234702ad3dc` | `$0.00` |
-| Task A washer | Pan-Chera Multi-Agent-CAD | `codex_agent_direct_repo_route` | `sha256:509af5523b4fa4c66c0a7304b0c33ab5fa862a7174436e6495c22974913efa74` | `sha256:91b37071f5ed30df4f1c1f917b7e18e6a3fce6f14947fd718afac563634c4f4e` | `$0.00` |
-| Task B notebook | Earth-to-Jake | `codex_skill_step_first` | `sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c` | `sha256:36a7d633a6cf346df796f0d6dbbcd4834195872e1f7e28505875fe43028aaad7` | `$0.00` |
-| Task B notebook | Pan-Chera Multi-Agent-CAD | `codex_agent_direct_repo_route` | `sha256:fb72f8e3f23a1260a54bd0620bf994ba09bd58d37cbcfec93134c9213e33863b` | `sha256:30e5b5e56e313ec085c381ffd0c2e7f63a9d9affa6c930fea6e340a6fbe21acf` | `$0.00` |
+| Task A washer | Earth-to-Jake | `codex_skill_step_first` | `sha256:d1db5a6d354923899894b45753a8b9ce8a6c41acccd053c42fcd199cf91a950a` | `sha256:5dd960e4ae4e481b4ffabac7eaeca30564f1070c43146cd593d27f045c3b2845` | `$0.00` |
+| Task A washer | Pan-Chera Multi-Agent-CAD | `codex_agent_direct_repo_route` | `sha256:509af5523b4fa4c66c0a7304b0c33ab5fa862a7174436e6495c22974913efa74` | `sha256:ce5ea65c46460da265c25c4b5bdbd57d48037e448fc05253c8557b55035c3673` | `$0.00` |
+| Task B notebook | Earth-to-Jake | `codex_skill_step_first` | `sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c` | `sha256:abe0feb7f0e805838312ad0f1902aa4e43cff7b6ba111b764937ed47d9bdc707` | `$0.00` |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | `codex_agent_direct_repo_route` | `sha256:fb72f8e3f23a1260a54bd0620bf994ba09bd58d37cbcfec93134c9213e33863b` | `sha256:406d1e35a38555952792412b29962229cf62331e781ca9b03edfd389d9127829` | `$0.00` |
 
 For NVIDIA Content Agents, each STEP was deterministically projected into a
 Mesh-only USD working copy. These are agent-input artifacts only; they are not
@@ -290,18 +290,19 @@ against pinned NVIDIA USD Content Agents `0.5.2`
 (`36dbf3f274f8e256637230a05a085853f65cc175`,
 tree `d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3`):
 
-The four already-authored historical CAD outputs predate that manifest-bound
-request sealer, so their request/output digests were not rewritten. Instead,
-`third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json` binds the
-two observed-reference packets for the two replacement slots, and
+The four already-authored CAD geometry candidates were not regenerated. Their
+request/output receipts were re-bound to the manifest-derived reference packet,
+independently re-inspected from exact STEP bytes, and re-sealed without changing
+the generated STEP geometry. `third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json`
+binds the two observed-reference packets for the two replacement slots, and
 `third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json` proves
-that all four historical CAD outputs used the reference packet admitted for
-their exact slot/task/asset. Manifest digest:
+that all four CAD outputs use the reference packet admitted for their exact
+slot/task/asset. Manifest digest:
 `sha256:7c584095a4e67104057d613f67c97e92fbd26d1a762bb2966f52b1c02a1b7ed2`;
 audit digest:
-`sha256:dd4363e6c5feb62cddbbfbcf080a4e859778855bb3afb489dacb96616c311003`.
-The audit explicitly records `historical_requests_rewritten=false` and
-`agent_outputs_regenerated=false`.
+`sha256:f4c32aa0b83a17ff879b1cb243f6598ddfd8650e12bc21d0c57cbe8211a7c0b9`.
+The audit explicitly records `historical_requests_rewritten=true`,
+`cad_output_receipts_resealed=true`, and `agent_outputs_regenerated=false`.
 
 | Task | Backend | Meshes | Reference digest | Bundle digest | Rehearsal |
 |---|---:|---:|---|---|---|
@@ -316,11 +317,11 @@ Agents results and still do not qualify appearance, physics, native simulator
 import, or physical equivalence. The checked-in bundle matrix manifest is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`
 with digest
-`sha256:a7aee85f65c5a57e955af293c342f9f67351a81f8c5dec4502bfde4e88fa6d1e`.
+`sha256:a716b923e7a65d9ea204eeee8e01080db164c7d5f38aa482a4a821ea1ce19494`.
 The no-provider execution-readiness receipt is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`
 with digest
-`sha256:1e6c2e85ffecb85a14fc6106803b457173645b606b82f0910932a151c6a2deff`.
+`sha256:1114f9c1ee78df53f07c904f0a794fbd5d833aaceaeaf21db8a7f38c1e4e853a`.
 It validates all four prepared bundle bytes, exact-entrypoint rehearsals,
 Dockerless static bundle/config/input-USD preflight receipts, and no-paid
 Docker/network-disabled local bundle/config dry-run receipts. The current
@@ -503,9 +504,9 @@ agent-CAD backend execution receipts and STEP candidates for the task, both
 Content Agents Mesh projection receipts, and both Content Agents autoref bundle
 receipts/ZIPs without embedding rights-bounded dataset-derived bytes. Current
 inventory digests: Task A
-`sha256:91237e7f5bbab78f4dd7860f0fd17d975b28da3fa2c66223074c888f5cc7fab5`;
+`sha256:39a96c53b4f979aa35456e9c6706d57de691f98cbbb1b6b3bc5b58c70538ec27`;
 Task B
-`sha256:adc9f236b11a3d3d415a437dd8f776eb4bbcb00534ee8f7671453f966f9df355`.
+`sha256:6d18799063afcb667b1a8496a86b2b7de1288d1047a15b564bb28e22a615ad06`.
 
 ## Verification
 
