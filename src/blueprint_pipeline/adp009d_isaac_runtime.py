@@ -177,6 +177,9 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ROBOT_BASE_POSITION_M = (3.4681748, -2.8100837, 0.2766791)
 ROBOT_BASE_YAW_RAD = -math.pi / 2
 CAN_START_POSITION_M = (3.4681748, -3.3100837, 0.5264650138348479)
+# Read-only contact partner used to name what a stalled finger is touching.
+CONTACT_PARTNER_FILTER_LABEL = "approved_can"
+CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can/colliders/body_collider"
 # Semantics are authored as a runtime spawn-config override so the sealed can
 # and SAGE USD bytes are never mutated.  The exact override is emitted with the
 # result and digest-bound, so a downstream composition can prove which labelling
@@ -1146,6 +1149,13 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     # embodiment (the same paths its own FrameTransformer binds), so a
     # single-level Robot/.* wildcard can never resolve them.  Arm-link
     # constraint evidence still comes from the per-link incoming joint wrench.
+    # The a0cf16c9 canary measured an 8.6 N vertical contact on one finger while
+    # the nearest scene triangle sat 70 mm from that finger's body origin and the
+    # can lid 81 mm below it, so the net force alone cannot name the partner.
+    # Filtering on the can collider resolves it without touching the static SAGE
+    # mesh: a can-carried force means the jaw is landing on the object, while a
+    # zero can force under a nonzero net force means the scene geometry is the
+    # obstruction.  The filter is read-only and never changes contact behavior.
     robot_contact = ContactSensorAsset(
         name="robot_contact",
         sensor_cfg=ContactSensorCfg(
@@ -1156,6 +1166,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             update_period=0.0,
             history_length=1,
             debug_vis=False,
+            filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH],
         ),
     )
     light = SpawnerObject(

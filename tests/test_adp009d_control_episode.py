@@ -716,3 +716,81 @@ def test_control_episode_rejects_legacy_plan_schema(tmp_path: Path) -> None:
         )
 
     assert "control_episode_plan_schema_invalid" in excinfo.value.errors
+
+
+def test_partner_matrix_separates_filtered_contact_from_unattributed_force() -> None:
+    """The a0cf16c9 canary held the arm at 8.6 N with the nearest scene triangle
+    70 mm from the finger body origin, so the net force alone cannot say what is
+    pushing. The summary must split the filtered partner's share from the
+    residual and never assert a prim."""
+    from blueprint_pipeline.adp009d_control_episode import _summarize_arm_dynamics
+
+    def action(step, contact, partner):
+        zeros = [0.0] * 7
+        return {
+            "step_index": step,
+            "phase_id": "descend",
+            "arm_dynamics_after": {
+                "joint_position_rad": zeros,
+                "joint_velocity_rad_s": zeros,
+                "joint_position_target_rad": zeros,
+                "computed_torque_nm": zeros,
+                "applied_torque_nm": zeros,
+                "joint_effort_limit_nm": [87.0] * 4 + [12.0] * 3,
+                "joint_effort_utilization": zeros,
+                "torque_clip_residual_nm": zeros,
+                "body_contact_force_world_n": {"left_inner_finger": [0.0, 0.0, contact]},
+                "body_contact_partner_force_world_n": (
+                    None if partner is None else {"left_inner_finger": [0.0, 0.0, partner]}
+                ),
+                "body_incoming_joint_wrench_body": {"panda_link1": [0.0] * 6},
+            },
+        }
+
+    scene_held = _summarize_arm_dynamics([action(0, 8.62, 0.0)])["phases"]["descend"]
+    assert scene_held["contact_partner_matrix_available"] is True
+    assert scene_held["maximum_filtered_partner_contact_force_n"] == 0.0
+    assert scene_held["maximum_unattributed_contact_force_n"] == pytest.approx(8.62)
+
+    object_held = _summarize_arm_dynamics([action(0, 8.62, 8.62)])["phases"]["descend"]
+    assert object_held["maximum_filtered_partner_contact_force_n"] == pytest.approx(8.62)
+    assert object_held["maximum_unattributed_contact_force_n"] == 0.0
+
+    unfiltered = _summarize_arm_dynamics([action(0, 8.62, None)])["phases"]["descend"]
+    assert unfiltered["contact_partner_matrix_available"] is False
+    assert unfiltered["maximum_unattributed_contact_force_n"] == pytest.approx(8.62)
+
+    summary = _summarize_arm_dynamics([action(0, 8.62, 0.0)])
+    assert "does not by itself assign root cause" in summary["claim_boundary"]
+
+
+def test_contact_partner_force_shape_is_validated_and_optional() -> None:
+    from blueprint_pipeline.adp009d_control_episode import (
+        ControlEpisodeError,
+        _canonical_dynamics_observation,
+    )
+
+    zeros = [0.0] * 7
+    base = {
+        "schema_version": "adp009d_arm_dynamics_observation.v1",
+        "joint_position_rad": zeros,
+        "joint_velocity_rad_s": zeros,
+        "joint_position_target_rad": zeros,
+        "computed_torque_nm": zeros,
+        "applied_torque_nm": zeros,
+        "joint_effort_limit_nm": [87.0] * 4 + [12.0] * 3,
+        "joint_effort_utilization": zeros,
+        "torque_clip_residual_nm": zeros,
+        "body_contact_force_world_n": {"left_inner_finger": [0.0, 0.0, 1.0]},
+        "body_incoming_joint_wrench_body": {"panda_link1": [0.0] * 6},
+    }
+
+    assert _canonical_dynamics_observation(dict(base)) is not None
+    assert _canonical_dynamics_observation(
+        {**base, "body_contact_partner_force_world_n": None}
+    )
+
+    with pytest.raises(ControlEpisodeError):
+        _canonical_dynamics_observation(
+            {**base, "body_contact_partner_force_world_n": {"left_inner_finger": [0.0, 1.0]}}
+        )
