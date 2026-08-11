@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import zipfile
@@ -127,6 +128,27 @@ def test_builds_replayable_bundle_with_exact_native_runtime_contract(
     )
     assert dry["status"] == "dry_run_ready"
     assert dry["provider_mutations_performed"] == 0
+
+
+def test_embedded_runtime_result_writer_is_valid_python(tmp_path: Path) -> None:
+    source, runtime_path, runtime = _fixture(tmp_path)
+    receipt = build_native_deformable_asset_provider_bundle(
+        job_dir=tmp_path / "bundle",
+        source_package_receipt_path=source,
+        runtime_source_packet_receipt_path=runtime_path,
+        implementation_commit="a" * 40,
+        package_source_root=Path(__file__).parents[1] / "src" / "blueprint_pipeline",
+        container_image="registry.example/isaac@sha256:" + "b" * 64,
+        runtime_source_packet_verifier=lambda _: runtime,
+    )
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        entrypoint = archive.read(
+            "provider_runtime/run_native_deformable_asset_provider_runtime.sh"
+        ).decode()
+
+    embedded_python = entrypoint.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    ast.parse(embedded_python)
+    assert '+ "\\n")' in embedded_python
 
 
 def test_source_package_tamper_fails_before_bundle_materialization(tmp_path: Path) -> None:

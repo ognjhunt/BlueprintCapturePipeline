@@ -237,7 +237,7 @@ result = {{
     "provider_zero_required_after_return": True,
     "native_qualification_requires_trusted_return_verification": True,
 }}
-(out / {output_name}).write_text(json.dumps(result, sort_keys=True, indent=2) + "\n")
+(out / {output_name}).write_text(json.dumps(result, sort_keys=True, indent=2) + "\\n")
 PY
 result_rc=$?
 if [ $result_rc -ne 0 ]; then
