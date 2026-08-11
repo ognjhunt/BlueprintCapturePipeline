@@ -144,32 +144,51 @@ def _write_receipt(path: Path, payload: dict) -> dict:
     return payload
 
 
-def _cad_backend(tmp_path: Path) -> dict:
-    archive = tmp_path / "earthtojake.zip"
+def _cad_backend(
+    tmp_path: Path, backend_id: str = "earthtojake_text_to_cad"
+) -> dict:
+    archive = tmp_path / f"{backend_id}.zip"
     with zipfile.ZipFile(archive, "w") as source:
         source.comment = b"1" * 40
         source.writestr("LICENSE", "MIT\n")
+    if backend_id == "earthtojake_text_to_cad":
+        execution_mode = "codex_skill_step_first"
+        repository_url = "https://github.com/earthtojake/text-to-cad"
+        model_id = "codex_fixture_agent"
+    elif backend_id == "pan_chera_multi_agent_cad":
+        execution_mode = "codex_agent_direct_repo_route"
+        repository_url = "https://github.com/Pan-Chera/Multi-Agent-CAD"
+        model_id = "codex_fixture_agent"
+    else:
+        raise AssertionError(backend_id)
     return {
-        "backend_id": "earthtojake_text_to_cad",
-        "execution_mode": "codex_skill_step_first",
+        "backend_id": backend_id,
+        "execution_mode": execution_mode,
         "agent_authored_geometry": True,
         "deterministic_geometry_generator_used": False,
         "graph_geometry_used_for_cad_authoring": False,
         "deterministic_format_conversion_only": True,
-        "repository_url": "https://github.com/earthtojake/text-to-cad",
+        "repository_url": repository_url,
         "commit": "1" * 40,
         "tree": "2" * 40,
         "source_archive": file_record(archive),
         "license": "MIT",
-        "model_id": "codex_fixture_agent",
+        "model_id": model_id,
     }
 
 
-def _agent_cad_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+def _agent_cad_evidence(
+    tmp_path: Path,
+    backend_id: str = "earthtojake_text_to_cad",
+    *,
+    replacement_slot: int = 1,
+    task_id: str = "task_a_washer_door_open",
+    asset_id: str = "840920_simready_washer_candidate",
+) -> tuple[Path, Path, Path, Path]:
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
     root = tmp_path / "agent-cad"
-    root.mkdir()
+    root.mkdir(parents=True)
     brief = root / "brief.md"
     brief.write_text("agent CAD brief\n", encoding="utf-8")
     reference = root / "reference.png"
@@ -178,9 +197,9 @@ def _agent_cad_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         scene_id="840920",
         objects=[
             {
-                "replacement_slot": 1,
-                "task_id": "task_a_washer_door_open",
-                "asset_id": "840920_simready_washer_candidate",
+                "replacement_slot": replacement_slot,
+                "task_id": task_id,
+                "asset_id": asset_id,
                 "task_freeze_path": TASK_A_FREEZE,
                 "reference_image_paths": [reference],
             }
@@ -189,12 +208,12 @@ def _agent_cad_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     reference_manifest_path = root / "reference_manifest.json"
     write_json(reference_manifest_path, reference_manifest)
     request = seal_cad_agent_request(
-        request_id="agent-cad-fixture-request",
+        request_id=f"agent-cad-fixture-request-{backend_id}",
         scene_id="840920",
-        task_id="task_a_washer_door_open",
-        asset_id="840920_simready_washer_candidate",
-        replacement_slot=1,
-        backend=_cad_backend(root),
+        task_id=task_id,
+        asset_id=asset_id,
+        replacement_slot=replacement_slot,
+        backend=_cad_backend(root, backend_id),
         task_freeze_path=TASK_A_FREEZE,
         cad_brief_path=brief,
         metric_envelope_mm=[600.112, 604.104004, 847.564026],
@@ -203,7 +222,7 @@ def _agent_cad_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     generator = root / "agent_source.py"
     generator.write_text("def build(): return 'agent-authored'\n", encoding="utf-8")
     step = root / "candidate.step"
-    step.write_bytes(b"agent-authored-step")
+    step.write_bytes(f"agent-authored-step-{backend_id}".encode("utf-8"))
     inspection_path = root / "inspection.json"
     inspection = {
         "schema_version": INSPECTION_SCHEMA_VERSION,
@@ -252,7 +271,7 @@ def _agent_cad_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         snapshot_paths=[snapshot],
         execution_receipt_path=execution_path,
         measured_envelope_mm=[600.112, 604.104004, 847.564026],
-        actual_cost_usd=0.0,
+        actual_cost_usd=0.0 if backend_id == "earthtojake_text_to_cad" else 1.0,
     )
     output_path = root / "cad_agent_output.json"
     write_json(output_path, output)
@@ -614,16 +633,23 @@ def _single_agent_cad_content_bundle_matrix(
     return matrix
 
 
-def test_content_agents_execution_readiness_records_missing_authority_boundary(
+def _agent_cad_bundle_item(
+    *,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _fake_source(tmp_path, monkeypatch)
-    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    source: Path,
+    backend_id: str,
+    replacement_slot: int = 1,
+    job_name: str | None = None,
+) -> dict[str, object]:
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(
+        tmp_path / backend_id / f"slot-{replacement_slot}",
+        backend_id,
+        replacement_slot=replacement_slot,
+    )
     bundle_receipt = content_agents.build_content_agents_vast_bundle(
         repo_root=ROOT,
         content_agents_root=source,
-        job_dir=tmp_path / "agent-cad-bundle",
+        job_dir=tmp_path / (job_name or f"bundle-{replacement_slot}-{backend_id}"),
         input_variant="agent_cad_v1",
         agent_cad_output_manifest_path=output_path,
         agent_mesh_projection_receipt_path=projection_path,
@@ -632,14 +658,72 @@ def test_content_agents_execution_readiness_records_missing_authority_boundary(
     bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
         "adp_content_agents_bundle_receipt.json"
     )
+    matrix = _single_agent_cad_content_bundle_matrix(
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+        cad_output_path=output_path,
+        projection_path=projection_path,
+    )
+    return dict(matrix["items"][0])
+
+
+def _agent_cad_content_bundle_matrix(
+    *,
+    tmp_path: Path,
+    source: Path,
+    replacement_slots: int = 1,
+) -> dict[str, object]:
+    items = [
+        _agent_cad_bundle_item(
+            tmp_path=tmp_path,
+            source=source,
+            backend_id=backend_id,
+            replacement_slot=slot,
+        )
+        for slot in range(1, replacement_slots + 1)
+        for backend_id in ("earthtojake_text_to_cad", "pan_chera_multi_agent_cad")
+    ]
+    matrix = {
+        "schema_version": "third_scene_agent_cad_content_agents_bundle_matrix.v1",
+        "status": "local_bundles_ready_for_paid_resource_preflight",
+        "input_variant": "agent_cad_v1",
+        "replacement_object_capacity": {
+            "minimum": 1,
+            "maximum": 5,
+            "sealed_slots": replacement_slots,
+        },
+        "candidate_count": len(items),
+        "items": items,
+        "claim_boundary": {
+            "content_agents_bundles_built": True,
+            "exact_entrypoint_rehearsed": True,
+            "content_agents_executed": False,
+            "simready_qualified": False,
+            "native_simulator_import_qualified": False,
+            "physical_equivalence": False,
+        },
+        "receipt_digest": "",
+    }
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+    return matrix
+
+
+def _bundle_receipt_from_item(item: Mapping[str, object]) -> tuple[Path, dict]:
+    record = item["bundle_receipt"]
+    assert isinstance(record, Mapping)
+    path = Path(str(record["path"]))
+    return path, json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_content_agents_execution_readiness_records_missing_authority_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
 
     readiness = content_agents.materialize_content_agents_execution_readiness(
-        content_agents_bundle_matrix=_single_agent_cad_content_bundle_matrix(
-            bundle_receipt_path=bundle_receipt_path,
-            bundle_receipt=bundle_receipt,
-            cad_output_path=output_path,
-            projection_path=projection_path,
-        ),
+        content_agents_bundle_matrix=matrix,
         output_path=tmp_path / "readiness.json",
         generated_at="fixed",
     )
@@ -666,18 +750,9 @@ def test_content_agents_execution_readiness_accepts_local_no_paid_preflight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _fake_source(tmp_path, monkeypatch)
-    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
-    bundle_receipt = content_agents.build_content_agents_vast_bundle(
-        repo_root=ROOT,
-        content_agents_root=source,
-        job_dir=tmp_path / "agent-cad-bundle",
-        input_variant="agent_cad_v1",
-        agent_cad_output_manifest_path=output_path,
-        agent_mesh_projection_receipt_path=projection_path,
-        generated_at="fixed",
-    )
-    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
-        "adp_content_agents_bundle_receipt.json"
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
+    bundle_receipt_path, bundle_receipt = _bundle_receipt_from_item(
+        matrix["items"][0]
     )
     local_preflight = _passing_local_config_preflight(
         tmp_path / "local-preflight",
@@ -687,12 +762,7 @@ def test_content_agents_execution_readiness_accepts_local_no_paid_preflight(
     key = "task_a_washer_door_open|1|earthtojake_text_to_cad"
 
     readiness = content_agents.materialize_content_agents_execution_readiness(
-        content_agents_bundle_matrix=_single_agent_cad_content_bundle_matrix(
-            bundle_receipt_path=bundle_receipt_path,
-            bundle_receipt=bundle_receipt,
-            cad_output_path=output_path,
-            projection_path=projection_path,
-        ),
+        content_agents_bundle_matrix=matrix,
         output_path=tmp_path / "readiness.json",
         config_preflight_receipts={key: local_preflight},
         generated_at="fixed",
@@ -714,18 +784,9 @@ def test_content_agents_execution_readiness_accepts_static_no_docker_preflight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _fake_source(tmp_path, monkeypatch)
-    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
-    bundle_receipt = content_agents.build_content_agents_vast_bundle(
-        repo_root=ROOT,
-        content_agents_root=source,
-        job_dir=tmp_path / "agent-cad-bundle",
-        input_variant="agent_cad_v1",
-        agent_cad_output_manifest_path=output_path,
-        agent_mesh_projection_receipt_path=projection_path,
-        generated_at="fixed",
-    )
-    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
-        "adp_content_agents_bundle_receipt.json"
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
+    bundle_receipt_path, bundle_receipt = _bundle_receipt_from_item(
+        matrix["items"][0]
     )
     static_preflight = _passing_static_config_preflight(
         tmp_path / "static-preflight",
@@ -735,12 +796,7 @@ def test_content_agents_execution_readiness_accepts_static_no_docker_preflight(
     key = "task_a_washer_door_open|1|earthtojake_text_to_cad"
 
     readiness = content_agents.materialize_content_agents_execution_readiness(
-        content_agents_bundle_matrix=_single_agent_cad_content_bundle_matrix(
-            bundle_receipt_path=bundle_receipt_path,
-            bundle_receipt=bundle_receipt,
-            cad_output_path=output_path,
-            projection_path=projection_path,
-        ),
+        content_agents_bundle_matrix=matrix,
         output_path=tmp_path / "readiness.json",
         config_preflight_receipts={key: static_preflight},
         generated_at="fixed",
@@ -764,18 +820,9 @@ def test_content_agents_execution_readiness_retains_static_and_local_preflights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _fake_source(tmp_path, monkeypatch)
-    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
-    bundle_receipt = content_agents.build_content_agents_vast_bundle(
-        repo_root=ROOT,
-        content_agents_root=source,
-        job_dir=tmp_path / "agent-cad-bundle",
-        input_variant="agent_cad_v1",
-        agent_cad_output_manifest_path=output_path,
-        agent_mesh_projection_receipt_path=projection_path,
-        generated_at="fixed",
-    )
-    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
-        "adp_content_agents_bundle_receipt.json"
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
+    bundle_receipt_path, bundle_receipt = _bundle_receipt_from_item(
+        matrix["items"][0]
     )
     static_preflight = _passing_static_config_preflight(
         tmp_path / "static-preflight",
@@ -790,12 +837,7 @@ def test_content_agents_execution_readiness_retains_static_and_local_preflights(
     key = "task_a_washer_door_open|1|earthtojake_text_to_cad"
 
     readiness = content_agents.materialize_content_agents_execution_readiness(
-        content_agents_bundle_matrix=_single_agent_cad_content_bundle_matrix(
-            bundle_receipt_path=bundle_receipt_path,
-            bundle_receipt=bundle_receipt,
-            cad_output_path=output_path,
-            projection_path=projection_path,
-        ),
+        content_agents_bundle_matrix=matrix,
         output_path=tmp_path / "readiness.json",
         config_preflight_receipts={key: [static_preflight, local_preflight]},
         generated_at="fixed",
@@ -820,39 +862,11 @@ def test_content_agents_execution_readiness_accepts_five_replacement_objects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _fake_source(tmp_path, monkeypatch)
-    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
-    bundle_receipt = content_agents.build_content_agents_vast_bundle(
-        repo_root=ROOT,
-        content_agents_root=source,
-        job_dir=tmp_path / "agent-cad-bundle",
-        input_variant="agent_cad_v1",
-        agent_cad_output_manifest_path=output_path,
-        agent_mesh_projection_receipt_path=projection_path,
-        generated_at="fixed",
+    matrix = _agent_cad_content_bundle_matrix(
+        tmp_path=tmp_path,
+        source=source,
+        replacement_slots=5,
     )
-    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
-        "adp_content_agents_bundle_receipt.json"
-    )
-    matrix = _single_agent_cad_content_bundle_matrix(
-        bundle_receipt_path=bundle_receipt_path,
-        bundle_receipt=bundle_receipt,
-        cad_output_path=output_path,
-        projection_path=projection_path,
-    )
-    base_item = matrix["items"][0]
-    items = []
-    for slot in range(1, 6):
-        for backend_id in ("earthtojake_text_to_cad", "pan_chera_multi_agent_cad"):
-            item = json.loads(json.dumps(base_item))
-            item["replacement_slot"] = slot
-            item["task_id"] = f"task_{slot}"
-            item["asset_id"] = f"asset_{slot}"
-            item["cad_agent_backend_id"] = backend_id
-            items.append(item)
-    matrix["items"] = items
-    matrix["candidate_count"] = len(items)
-    matrix["replacement_object_capacity"]["sealed_slots"] = 5
-    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
 
     readiness = content_agents.materialize_content_agents_execution_readiness(
         content_agents_bundle_matrix=matrix,
@@ -922,6 +936,41 @@ def test_content_agents_execution_readiness_rejects_duplicate_or_partial_backend
 
     with pytest.raises(
         ValueError, match="adp_content_agents_readiness_matrix_item_identity_invalid"
+    ):
+        content_agents.materialize_content_agents_execution_readiness(
+            content_agents_bundle_matrix=matrix,
+            output_path=tmp_path / "readiness.json",
+            generated_at="fixed",
+        )
+
+
+def test_content_agents_execution_readiness_rejects_relabelled_bundle_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    bundle_receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-bundle",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
+        "adp_content_agents_bundle_receipt.json"
+    )
+    matrix = _single_agent_cad_content_bundle_matrix(
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+        cad_output_path=output_path,
+        projection_path=projection_path,
+    )
+
+    with pytest.raises(
+        ValueError, match="adp_content_agents_readiness_bundle_binding_mismatch"
     ):
         content_agents.materialize_content_agents_execution_readiness(
             content_agents_bundle_matrix=matrix,

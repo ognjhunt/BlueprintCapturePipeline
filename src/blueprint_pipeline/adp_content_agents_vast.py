@@ -257,6 +257,29 @@ def materialize_content_agents_execution_readiness(
             )
         ):
             raise ValueError("adp_content_agents_readiness_bundle_receipt_invalid")
+        bindings = receipt.get("input_variant_bindings")
+        if not isinstance(bindings, Mapping) or receipt.get("input_variant") != "agent_cad_v1":
+            raise ValueError("adp_content_agents_readiness_bundle_binding_invalid")
+        expected_binding_fields = {
+            "task_id": item.get("task_id"),
+            "asset_id": item.get("asset_id"),
+            "replacement_slot": item.get("replacement_slot"),
+            "cad_agent_backend_id": item.get("cad_agent_backend_id"),
+            "cad_agent_output_receipt_digest": item.get(
+                "cad_agent_output_receipt_digest"
+            ),
+            "cad_agent_request_digest": item.get("cad_agent_request_digest"),
+            "mesh_projection_receipt_digest": item.get(
+                "mesh_projection_receipt_digest"
+            ),
+            "mesh_packet_digest": item.get("mesh_packet_digest"),
+            "candidate_step_sha256": item.get("candidate_step_sha256"),
+        }
+        if any(
+            bindings.get(field) != expected_value
+            for field, expected_value in expected_binding_fields.items()
+        ):
+            raise ValueError("adp_content_agents_readiness_bundle_binding_mismatch")
         key = (
             f"{item.get('task_id')}|{item.get('replacement_slot')}|"
             f"{item.get('cad_agent_backend_id')}"
