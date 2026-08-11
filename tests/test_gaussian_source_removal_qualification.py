@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -453,3 +454,195 @@ def test_materializer_rejects_failed_heldout_audit_before_construction_input(
         )
 
     assert "gaussian_source_removal_heldout_not_passed" in excinfo.value.codes
+
+
+def test_materializer_accepts_only_zero_residue_coverage_conditioned_deletion(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture_receipts(tmp_path)
+    ownership = json.loads(paths["ownership"].read_text(encoding="utf-8"))
+    ownership["source_standard_splat"] = {"sha256": _sha(90)}
+    ownership["receipt_digest"] = canonical_digest(
+        ownership, digest_field="receipt_digest"
+    )
+    paths["ownership"].write_text(
+        json.dumps(ownership, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    candidate_root = tmp_path / "coverage-candidate"
+    candidate_root.mkdir()
+    deleted_artifact = candidate_root / "deleted_source_indices.npy"
+    retained_artifact = candidate_root / "retained_scene_gaussians.ply"
+    deleted_artifact.write_bytes(b"fixture-deleted-indices")
+    retained_artifact.write_bytes(b"fixture-retained-scene")
+
+    def candidate_record(path: Path) -> dict[str, object]:
+        return {
+            "relative_path": path.relative_to(candidate_root).as_posix(),
+            "size_bytes": path.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    candidate_path = _write(
+        candidate_root / "candidate.json",
+        {
+            "schema_version": "adp009b_ownership_coverage_cutout_candidate.v1",
+            "status": "ownership_coverage_cutout_materialized_pending_actual_usd_source_layer_coverage",
+            "source_standard_splat": {"sha256": _sha(90)},
+            "source_ownership_receipt": {"receipt_digest": ownership["receipt_digest"]},
+            "outputs": {
+                "deleted_source_indices": candidate_record(deleted_artifact),
+                "retained_scene_gaussians": candidate_record(retained_artifact),
+            },
+            "receipt_digest": "",
+        },
+        field="receipt_digest",
+    )
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    audit_path = tmp_path / "source-layer-audit.json"
+    audit = {
+        "schema_version": "adp009b_source_layer_replacement_coverage_audit.v1",
+        "status": "source_layer_coverage_measured",
+        "source_layer_splat_digest": _sha(90),
+        "camera_ids": ["external"],
+        "significant_alpha_threshold": 1.0 / 255.0,
+        "coverage_margin_pixels": 1,
+        "cells": [
+            {
+                "camera_id": "external",
+                "uncovered_significant_pixel_count": 0,
+                "largest_uncovered_component_pixels": 0,
+                "uncovered_alpha_sum": 0.0,
+                "uncovered_alpha_fraction": 0.0,
+            }
+        ],
+        "manifest_digest": "",
+    }
+    audit["manifest_digest"] = canonical_digest(audit, digest_field="manifest_digest")
+    audit_path.write_text(json.dumps(audit, sort_keys=True) + "\n", encoding="utf-8")
+    coverage_path = _write(
+        tmp_path / "source-layer-coverage.json",
+        {
+            "schema_version": "articulated_excision_coverage.v1",
+            "status": "deleted_source_layer_replacement_coverage_qualified",
+            "coverage_scope": "deleted_source_layer",
+            "coverage_qualified": True,
+            "all_deleted_source_contribution_occluded": True,
+            "source_layer_splat_digest": _sha(90),
+            "source_layer_coverage_audit": {
+                "path": str(audit_path),
+                "size_bytes": audit_path.stat().st_size,
+                "sha256": "sha256:" + hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+                "manifest_digest": audit["manifest_digest"],
+            },
+            "camera_ids": ["external"],
+            "cells": [
+                {
+                    "camera_id": "external",
+                    "residual_significant_pixels": 0,
+                    "residual_max_connected_component_pixels": 0,
+                    "outside_mask_changed_pixels": 0,
+                }
+            ],
+            "receipt_digest": "",
+        },
+        field="receipt_digest",
+    )
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    cutout_path = _write(
+        tmp_path / "coverage-cutout.json",
+        {
+            "schema_version": "adp009b_coverage_conditioned_cutout.v1",
+            "status": "coverage_conditioned_cutout_admitted",
+            "bound_cutout_candidate_digest": candidate["receipt_digest"],
+            "source_ownership_receipt_digest": ownership["receipt_digest"],
+            "coverage_receipt_digest": coverage["receipt_digest"],
+            "deleted_index_set_sha256": candidate["outputs"]["deleted_source_indices"][
+                "sha256"
+            ],
+            "retained_scene_ply_sha256": candidate["outputs"][
+                "retained_scene_gaussians"
+            ]["sha256"],
+            "coverage_qualified": True,
+            "retained_rows_byte_exact": True,
+            "learned_policy_outcomes_used": False,
+            "factual_gaussian_ownership_claimed": False,
+            "receipt_digest": "",
+        },
+        field="receipt_digest",
+    )
+    cutout = json.loads(cutout_path.read_text(encoding="utf-8"))
+    join_path = _write(
+        tmp_path / "coverage-join.json",
+        {
+            "schema_version": "articulated_excision_join.v1",
+            "status": "join_admitted",
+            "inpainting_policy": "inpainting_not_required",
+            "suppression": {
+                "mode": "deletion",
+                "canonical_scan_modified": True,
+                "reversible": False,
+                "task_ids": [],
+            },
+            "bindings": {
+                "ownership_receipt_digest": cutout["receipt_digest"],
+                "source_ownership_receipt_digest": ownership["receipt_digest"],
+                "coverage_receipt_digest": coverage["receipt_digest"],
+                "deleted_index_set_sha256": cutout["deleted_index_set_sha256"],
+                "retained_scene_ply_sha256": cutout["retained_scene_ply_sha256"],
+            },
+            "claim_boundary": {
+                "gaussian_ownership_established": False,
+                "visibility_after_replacement_is_the_criterion": True,
+            },
+            "receipt_digest": "",
+        },
+        field="receipt_digest",
+    )
+
+    receipt = materialize_gaussian_source_removal_qualification(
+        scene_freeze_path=paths["scene"],
+        task_freeze_path=paths["task"],
+        mask_set_receipt_path=paths["mask"],
+        ownership_receipt_path=paths["ownership"],
+        heldout_audit_receipt_path=None,
+        excision_join_receipt_path=join_path,
+        coverage_conditioned_cutout_receipt_path=cutout_path,
+        coverage_cutout_candidate_path=candidate_path,
+        source_layer_coverage_receipt_path=coverage_path,
+        output_path=tmp_path / "coverage-qualified.json",
+    )
+
+    assert receipt["source_removal_qualified"] is True
+    assert receipt["ownership_proof_mode"] == "coverage_conditioned_visibility"
+    assert receipt["claim_boundary"] == {
+        "source_gaussian_removal_qualified": True,
+        "protected_scene_geometry_deleted": False,
+        "factual_gaussian_ownership_established": False,
+        "coverage_conditioned_visibility_qualified": True,
+        "replacement_native_import_qualified": False,
+        "learned_policy_outcomes_used": False,
+        "physical_equivalence": False,
+    }
+    assert receipt["coverage_conditioned_cutout_receipt_digest"] == cutout[
+        "receipt_digest"
+    ]
+
+    coverage["all_deleted_source_contribution_occluded"] = False
+    coverage["receipt_digest"] = canonical_digest(
+        coverage, digest_field="receipt_digest"
+    )
+    coverage_path.write_text(json.dumps(coverage, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(GaussianSourceRemovalQualificationError) as excinfo:
+        materialize_gaussian_source_removal_qualification(
+            scene_freeze_path=paths["scene"],
+            task_freeze_path=paths["task"],
+            mask_set_receipt_path=paths["mask"],
+            ownership_receipt_path=paths["ownership"],
+            heldout_audit_receipt_path=None,
+            excision_join_receipt_path=join_path,
+            coverage_conditioned_cutout_receipt_path=cutout_path,
+            coverage_cutout_candidate_path=candidate_path,
+            source_layer_coverage_receipt_path=coverage_path,
+            output_path=tmp_path / "blocked-coverage-qualified.json",
+        )
+    assert "gaussian_source_removal_coverage_conditioned_coverage_mismatch" in excinfo.value.codes

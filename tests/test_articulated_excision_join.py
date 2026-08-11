@@ -249,6 +249,56 @@ def _bound_cutout() -> dict:
     )
 
 
+def _ownership_coverage_cutout() -> dict:
+    return _digest(
+        {
+            "schema_version": "adp009b_ownership_coverage_cutout_candidate.v1",
+            "status": "ownership_coverage_cutout_materialized_pending_actual_usd_source_layer_coverage",
+            "source_ownership_receipt": {"receipt_digest": "sha256:" + "6" * 64},
+            "counts": {
+                "source": 100,
+                "deleted_total": 10,
+                "retained_total": 90,
+            },
+            "outputs": {
+                "deleted_source_indices": {"sha256": "sha256:" + "3" * 64},
+                "retained_source_indices": {"sha256": "sha256:" + "4" * 64},
+                "retained_scene_gaussians": {"sha256": "sha256:" + "5" * 64},
+            },
+            "preservation": {
+                "retained_rows_byte_exact": True,
+                "retained_order_matches_source": True,
+                "retained_vertex_count": 90,
+                "source_vertex_count": 100,
+            },
+            "selection": {
+                "caller_asserted_coverage": False,
+                "heldout_pixels_used_to_select_indices": False,
+                "learned_policy_outcomes_used": False,
+            },
+            "receipt_digest": "",
+        },
+        "receipt_digest",
+    )
+
+
+def _source_layer_coverage() -> dict:
+    coverage = _coverage()
+    coverage.update(
+        {
+            "status": "deleted_source_layer_replacement_coverage_qualified",
+            "coverage_scope": "deleted_source_layer",
+            "all_deleted_source_contribution_occluded": True,
+            "source_layer_splat_digest": "sha256:" + "7" * 64,
+            "source_layer_coverage_audit": {"manifest_digest": "sha256:" + "8" * 64},
+        }
+    )
+    coverage["receipt_digest"] = canonical_digest(
+        coverage, digest_field="receipt_digest"
+    )
+    return coverage
+
+
 def _join(**overrides):
     arguments = {
         "ownership_receipt": _ownership(),
@@ -342,6 +392,31 @@ def test_join_accepts_coverage_conditioned_cutout_without_claiming_ownership() -
     assert decision["bindings"]["cutout_method"] == (
         "byte_exact_deletion_plus_actual_usd_coverage"
     )
+
+
+def test_ownership_coverage_cutout_requires_exact_source_layer_coverage() -> None:
+    coverage = _source_layer_coverage()
+    cutout = compile_coverage_conditioned_cutout_receipt(
+        bound_cutout_candidate=_ownership_coverage_cutout(),
+        coverage_receipt=coverage,
+    )
+
+    decision = _join(
+        ownership_receipt=cutout,
+        coverage_receipt=coverage,
+    )
+
+    assert cutout["source_ownership_receipt_digest"] == "sha256:" + "6" * 64
+    assert decision["claim_boundary"]["visibility_after_replacement_is_the_criterion"] is True
+
+    with pytest.raises(
+        ArticulatedExcisionJoinError,
+        match="coverage_conditioned_cutout_source_layer_coverage_invalid",
+    ):
+        compile_coverage_conditioned_cutout_receipt(
+            bound_cutout_candidate=_ownership_coverage_cutout(),
+            coverage_receipt=_coverage(),
+        )
 
 
 def test_coverage_conditioned_cutout_rejects_unqualified_coverage() -> None:

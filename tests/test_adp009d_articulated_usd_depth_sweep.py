@@ -18,6 +18,7 @@ from blueprint_pipeline.articulated_usd_depth_sweep import (
     load_articulated_usd_triangles,
     load_usd_link_triangles,
     materialize_articulated_usd_depth_sweep,
+    materialize_deleted_source_layer_replacement_coverage_qualification,
     materialize_replacement_usd_depth_sweep,
     materialize_reference_hybrid_review,
     materialize_source_layer_replacement_coverage_audit,
@@ -1029,6 +1030,83 @@ def test_source_alpha_coverage_is_conservative_and_scene_neutral() -> None:
     )
     assert rows[0]["uncovered_significant_pixel_count"] == 0
     assert rows[1]["uncovered_significant_pixel_count"] == 1
+
+
+def _zero_residue_source_layer_audit(depth_path: Path, *, residue: int = 0) -> Path:
+    depth = json.loads(depth_path.read_text(encoding="utf-8"))
+    rows = []
+    for index, cell in enumerate(depth["cells"]):
+        rows.append(
+            {
+                "cell_index": index,
+                "camera_id": cell["camera_id"],
+                "commanded_door_angle_deg": cell["commanded_door_angle_deg"],
+                "readback_door_angle_deg": cell["readback_door_angle_deg"],
+                "uncovered_significant_pixel_count": residue,
+                "largest_uncovered_component_pixels": residue,
+                "uncovered_alpha_sum": float(residue),
+                "uncovered_alpha_fraction": float(residue),
+            }
+        )
+    audit = {
+        "schema_version": "adp009b_source_layer_replacement_coverage_audit.v1",
+        "status": "source_layer_coverage_measured",
+        "source_layer_splat_digest": "sha256:" + "4" * 64,
+        "depth_sweep_manifest": {
+            "sha256": _sha256(depth_path),
+            "manifest_digest": depth["manifest_digest"],
+        },
+        "camera_ids": ["external"],
+        "significant_alpha_threshold": 1.0 / 255.0,
+        "coverage_margin_pixels": 1,
+        "cells": rows,
+        "manifest_digest": "",
+    }
+    audit["manifest_digest"] = canonical_digest(audit, digest_field="manifest_digest")
+    path = depth_path.parent / f"source-layer-audit-{residue}.json"
+    path.write_text(json.dumps(audit, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def test_deleted_source_layer_coverage_requires_zero_residue(
+    tmp_path: Path,
+) -> None:
+    usd = _fixture_usd(tmp_path / "fixture.usda")
+    depth_root = tmp_path / "depth"
+    materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0],
+        moving_link_path="/Asset/door",
+        hinge_origin_asset_m=[0.0, 0.0, 0.0],
+        hinge_axis_asset=[0.0, 0.0, 1.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=depth_root,
+        resolution_scale=0.5,
+    )
+    depth_path = depth_root / "adp009b_articulated_usd_depth_sweep.v1.json"
+    receipt = materialize_deleted_source_layer_replacement_coverage_qualification(
+        source_layer_coverage_audit_path=_zero_residue_source_layer_audit(depth_path),
+        depth_sweep_manifest_path=depth_path,
+        output_path=tmp_path / "qualified-coverage.json",
+    )
+
+    assert receipt["coverage_qualified"] is True
+    assert receipt["coverage_scope"] == "deleted_source_layer"
+    assert receipt["all_deleted_source_contribution_occluded"] is True
+    assert receipt["cells"][0]["residual_significant_pixels"] == 0
+
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="source_layer_coverage_qualification_source_residue_observed",
+    ):
+        materialize_deleted_source_layer_replacement_coverage_qualification(
+            source_layer_coverage_audit_path=_zero_residue_source_layer_audit(
+                depth_path, residue=1
+            ),
+            depth_sweep_manifest_path=depth_path,
+            output_path=tmp_path / "blocked-coverage.json",
+        )
 
 
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])

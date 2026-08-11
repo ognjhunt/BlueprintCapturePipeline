@@ -31,6 +31,10 @@ GENERAL_DEPTH_SWEEP_SCHEMA = "replacement_usd_depth_sweep.v2"
 SOURCE_COVERAGE_AUDIT_SCHEMA = "adp009b_source_layer_replacement_coverage_audit.v1"
 REFERENCE_HYBRID_REVIEW_SCHEMA = "adp009b_reference_hybrid_review.v1"
 TARGET_CORE_COVERAGE_AUDIT_SCHEMA = "articulated_excision_coverage.v1"
+DELETED_SOURCE_LAYER_COVERAGE_STATUS = (
+    "deleted_source_layer_replacement_coverage_qualified"
+)
+_EXACT_SOURCE_ALPHA_THRESHOLD = 1.0 / 255.0
 
 
 class ArticulatedUsdDepthSweepError(ValueError):
@@ -1694,6 +1698,219 @@ def materialize_source_layer_replacement_coverage_audit(
     return manifest
 
 
+def materialize_deleted_source_layer_replacement_coverage_qualification(
+    *,
+    source_layer_coverage_audit_path: str | Path,
+    depth_sweep_manifest_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Promote an exact zero-residue source-layer audit into joinable coverage.
+
+    A target-core silhouette audit is not enough to delete ambiguous source
+    Gaussians: the exact *deleted* source layer must be hidden by the
+    replacement in every frozen camera/state cell.  This is intentionally the
+    strict, no-inpainting branch.  Any nonzero source residue remains a typed
+    seam/inpainting blocker rather than becoming permission to delete more
+    records.
+    """
+
+    audit_path = Path(source_layer_coverage_audit_path).expanduser().resolve()
+    depth_path = Path(depth_sweep_manifest_path).expanduser().resolve()
+    audit = _read_object(audit_path, "source_layer_coverage_qualification_audit_unreadable")
+    if (
+        audit.get("schema_version") != SOURCE_COVERAGE_AUDIT_SCHEMA
+        or audit.get("status") != "source_layer_coverage_measured"
+        or audit.get("manifest_digest")
+        != canonical_digest(audit, digest_field="manifest_digest")
+        or not _is_sha256_digest(audit.get("source_layer_splat_digest"))
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_layer_coverage_qualification_audit_invalid"]
+        )
+    threshold = audit.get("significant_alpha_threshold")
+    margin = audit.get("coverage_margin_pixels")
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, (int, float))
+        or not math.isclose(
+            float(threshold), _EXACT_SOURCE_ALPHA_THRESHOLD, abs_tol=1e-12, rel_tol=0.0
+        )
+        or isinstance(margin, bool)
+        or not isinstance(margin, int)
+        or margin < 1
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_layer_coverage_qualification_policy_not_conservative"]
+        )
+    depth = _read_object(depth_path, "source_layer_coverage_qualification_depth_unreadable")
+    if not _qualified_depth_manifest(depth):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_layer_coverage_qualification_depth_invalid"]
+        )
+    bound_depth = audit.get("depth_sweep_manifest")
+    if (
+        not isinstance(bound_depth, Mapping)
+        or bound_depth.get("sha256") != _sha256(depth_path)
+        or bound_depth.get("manifest_digest") != depth.get("manifest_digest")
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_layer_coverage_qualification_depth_join_mismatch"]
+        )
+    cells = depth.get("cells")
+    audit_cells = audit.get("cells")
+    camera_ids = audit.get("camera_ids")
+    if (
+        not isinstance(cells, list)
+        or not cells
+        or not isinstance(audit_cells, list)
+        or len(audit_cells) != len(cells)
+        or not isinstance(camera_ids, list)
+        or not camera_ids
+        or any(not isinstance(camera_id, str) or not camera_id for camera_id in camera_ids)
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_layer_coverage_qualification_cells_invalid"]
+        )
+    expected_camera_ids = list(
+        dict.fromkeys(str(cell.get("camera_id") or "") for cell in cells)
+    )
+    if (
+        any(not camera_id for camera_id in expected_camera_ids)
+        or camera_ids != expected_camera_ids
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_layer_coverage_qualification_camera_join_mismatch"]
+        )
+
+    normalized_cells: list[dict[str, Any]] = []
+    for index, (audit_cell, depth_cell) in enumerate(zip(audit_cells, cells, strict=True)):
+        if not isinstance(audit_cell, Mapping) or not isinstance(depth_cell, Mapping):
+            raise ArticulatedUsdDepthSweepError(
+                ["source_layer_coverage_qualification_cells_invalid"]
+            )
+        state_fields = _cell_state_fields(depth_cell)
+        if (
+            audit_cell.get("cell_index") != index
+            or audit_cell.get("camera_id") != depth_cell.get("camera_id")
+            or any(audit_cell.get(key) != value for key, value in state_fields.items())
+        ):
+            raise ArticulatedUsdDepthSweepError(
+                ["source_layer_coverage_qualification_cell_join_mismatch"]
+            )
+        numeric = {
+            key: audit_cell.get(key)
+            for key in (
+                "uncovered_significant_pixel_count",
+                "largest_uncovered_component_pixels",
+                "uncovered_alpha_sum",
+                "uncovered_alpha_fraction",
+            )
+        }
+        if (
+            isinstance(numeric["uncovered_significant_pixel_count"], bool)
+            or not isinstance(numeric["uncovered_significant_pixel_count"], int)
+            or numeric["uncovered_significant_pixel_count"] < 0
+            or isinstance(numeric["largest_uncovered_component_pixels"], bool)
+            or not isinstance(numeric["largest_uncovered_component_pixels"], int)
+            or numeric["largest_uncovered_component_pixels"] < 0
+            or any(
+                isinstance(numeric[key], bool)
+                or not isinstance(numeric[key], (int, float))
+                or not math.isfinite(float(numeric[key]))
+                or float(numeric[key]) < 0.0
+                for key in ("uncovered_alpha_sum", "uncovered_alpha_fraction")
+            )
+        ):
+            raise ArticulatedUsdDepthSweepError(
+                ["source_layer_coverage_qualification_metrics_invalid"]
+            )
+        if (
+            numeric["uncovered_significant_pixel_count"] != 0
+            or numeric["largest_uncovered_component_pixels"] != 0
+            or float(numeric["uncovered_alpha_sum"]) > 1e-12
+            or float(numeric["uncovered_alpha_fraction"]) > 1e-12
+        ):
+            raise ArticulatedUsdDepthSweepError(
+                ["source_layer_coverage_qualification_source_residue_observed"]
+            )
+        normalized_cells.append(
+            {
+                "camera_id": str(depth_cell["camera_id"]),
+                **state_fields,
+                "residual_significant_pixels": 0,
+                "residual_max_connected_component_pixels": 0,
+                # There is no residual to authorize.  The true value is
+                # therefore vacuously contained and can never broaden a seam.
+                "residual_inside_target_core_mask": True,
+                "outside_mask_changed_pixels": 0,
+                "source_residual_alpha_fraction": 0.0,
+            }
+        )
+
+    state_cell_ids = list(
+        dict.fromkeys(
+            str(cell.get("cell_id") or "") for cell in cells if cell.get("cell_id")
+        )
+    )
+    door_angles = (
+        list(
+            dict.fromkeys(
+                float(cell["commanded_door_angle_deg"])
+                for cell in cells
+                if "commanded_door_angle_deg" in cell
+            )
+        )
+        if depth.get("schema_version") == DEPTH_SWEEP_SCHEMA
+        else []
+    )
+    if bool(state_cell_ids) == bool(door_angles):
+        raise ArticulatedUsdDepthSweepError(
+            ["source_layer_coverage_qualification_state_binding_invalid"]
+        )
+    receipt: dict[str, Any] = {
+        "schema_version": TARGET_CORE_COVERAGE_AUDIT_SCHEMA,
+        "status": DELETED_SOURCE_LAYER_COVERAGE_STATUS,
+        "coverage_scope": "deleted_source_layer",
+        "coverage_qualified": True,
+        "source_layer_coverage_audit": {
+            "path": str(audit_path),
+            "size_bytes": audit_path.stat().st_size,
+            "sha256": _sha256(audit_path),
+            "manifest_digest": audit["manifest_digest"],
+        },
+        "source_layer_splat_digest": audit.get("source_layer_splat_digest"),
+        "depth_sweep_manifest": {
+            "path": str(depth_path),
+            "sha256": _sha256(depth_path),
+            "manifest_digest": depth["manifest_digest"],
+            "replacement_usd": depth.get("replacement_usd"),
+        },
+        "camera_ids": expected_camera_ids,
+        "state_cell_ids": state_cell_ids,
+        **({"door_state_angles_degrees": door_angles} if door_angles else {}),
+        "cells": normalized_cells,
+        "significant_alpha_threshold": float(threshold),
+        "coverage_margin_pixels": margin,
+        "maximum_residual_connected_component_pixels": 0,
+        "maximum_protected_changed_pixels": 0,
+        "all_deleted_source_contribution_occluded": True,
+        "caller_asserted_coverage_accepted": False,
+        "rendered_pixels_changed_by_audit": False,
+        "residual_is_narrow_seam_candidate_not_inpainting_success": False,
+        "claim_ceiling": "actual_usd_depth_zero_residue_visibility_qualification_not_native_or_physical",
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    destination = Path(output_path).expanduser().resolve()
+    if destination.exists() or destination.is_symlink():
+        raise ArticulatedUsdDepthSweepError(
+            ["source_layer_coverage_qualification_output_exists"]
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def materialize_target_core_replacement_coverage_audit(
     *,
     target_core_mask_paths: Mapping[str, str | Path],
@@ -2189,6 +2406,7 @@ __all__ = [
     "DEPTH_SWEEP_SCHEMA",
     "GENERAL_DEPTH_SWEEP_REQUEST_SCHEMA",
     "GENERAL_DEPTH_SWEEP_SCHEMA",
+    "DELETED_SOURCE_LAYER_COVERAGE_STATUS",
     "REFERENCE_HYBRID_REVIEW_SCHEMA",
     "SOURCE_COVERAGE_AUDIT_SCHEMA",
     "TARGET_CORE_COVERAGE_AUDIT_SCHEMA",
@@ -2199,6 +2417,7 @@ __all__ = [
     "materialize_articulated_usd_depth_sweep",
     "materialize_replacement_usd_depth_sweep",
     "materialize_reference_hybrid_review",
+    "materialize_deleted_source_layer_replacement_coverage_qualification",
     "materialize_source_layer_replacement_coverage_audit",
     "materialize_target_core_replacement_coverage_audit",
     "rasterize_triangle_depth",

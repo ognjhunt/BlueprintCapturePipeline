@@ -28,6 +28,17 @@ REQUEST_SCHEMA = "adp009b_replacement_occlusion_request.v1"
 CONTRIBUTION_SCHEMA = "adp009b_gaussian_contribution_evidence.v1"
 COVERAGE_SCHEMA = "adp009b_replacement_depth_coverage.v1"
 RECEIPT_SCHEMA = "adp009b_replacement_occlusion_receipt.v1"
+OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA = (
+    "adp009b_ownership_coverage_cutout_candidate.v1"
+)
+
+_OWNERSHIP_RECEIPT_SCHEMA = "adp009b_gaussian_excision_ownership_receipt.v1"
+_OWNERSHIP_RECEIPT_STATUSES = frozenset(
+    {
+        "three_way_ownership_materialized_heldout_not_evaluated",
+        "three_way_ownership_materialized_by_frozen_conservative_aggregation_heldout_not_evaluated",
+    }
+)
 
 LABEL_RETAINED = np.uint8(0)
 LABEL_OWNED_DELETED = np.uint8(1)
@@ -619,6 +630,212 @@ def materialize_bound_index_union_candidate(
     return receipt
 
 
+def _ownership_output_array(
+    *, ownership_path: Path, record: object, code: str
+) -> tuple[Path, np.ndarray]:
+    if not isinstance(record, Mapping):
+        raise ReplacementOcclusionError([code])
+    relative = str(record.get("relative_path") or "")
+    path = (ownership_path.parent / relative).resolve()
+    if (
+        not relative
+        or path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size != record.get("size_bytes")
+        or _sha256(path) != record.get("sha256")
+    ):
+        raise ReplacementOcclusionError([code])
+    values = _load_array(path, code)
+    if (
+        values.ndim != 1
+        or values.dtype.kind not in {"i", "u"}
+        or (values.size > 1 and np.any(values[1:] <= values[:-1]))
+    ):
+        raise ReplacementOcclusionError([code])
+    return path, values.astype(np.int64, copy=False)
+
+
+def materialize_ownership_coverage_cutout_candidate(
+    *,
+    source_standard_splat_path: str | Path,
+    ownership_receipt_path: str | Path,
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Prepare owned-plus-ambiguous deletion for later actual-USD coverage.
+
+    Ambiguous records are deliberately not relabelled as owned.  They are only
+    included in this byte-exact *candidate* so a later all-camera/state
+    source-layer coverage audit can independently decide whether their removal
+    is safe.  The source ownership receipt must have been made without either
+    held-out classification pixels or a replacement asset.
+    """
+
+    source = Path(source_standard_splat_path).expanduser().resolve()
+    ownership_path = Path(ownership_receipt_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_output_not_empty"]
+        )
+    if not source.is_file() or source.is_symlink():
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_source_splat_missing"]
+        )
+    ownership = _read_object(
+        ownership_path, code="ownership_coverage_cutout_ownership_unreadable"
+    )
+    if (
+        ownership.get("schema_version") != _OWNERSHIP_RECEIPT_SCHEMA
+        or ownership.get("status") not in _OWNERSHIP_RECEIPT_STATUSES
+        or ownership.get("receipt_digest")
+        != canonical_digest(ownership, digest_field="receipt_digest")
+        or ownership.get("heldout_cameras_accessed_for_classification") is not False
+        or ownership.get("replacement_usd_inserted") is not False
+    ):
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_ownership_receipt_invalid"]
+        )
+    source_record = ownership.get("source_standard_splat")
+    if (
+        not isinstance(source_record, Mapping)
+        or source_record.get("sha256") != _sha256(source)
+        or source_record.get("size_bytes") != source.stat().st_size
+    ):
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_source_identity_mismatch"]
+        )
+    outputs = ownership.get("outputs")
+    if not isinstance(outputs, Mapping):
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_ownership_outputs_invalid"]
+        )
+    _owned_path, owned = _ownership_output_array(
+        ownership_path=ownership_path,
+        record=outputs.get("owned_indices"),
+        code="ownership_coverage_cutout_owned_indices_invalid",
+    )
+    _ambiguous_path, ambiguous = _ownership_output_array(
+        ownership_path=ownership_path,
+        record=outputs.get("ambiguous_indices"),
+        code="ownership_coverage_cutout_ambiguous_indices_invalid",
+    )
+    _retained_path, retained = _ownership_output_array(
+        ownership_path=ownership_path,
+        record=outputs.get("retained_indices"),
+        code="ownership_coverage_cutout_retained_indices_invalid",
+    )
+    splat = read_standard_3dgs_ply(source)
+    if any(
+        values.size and (values[0] < 0 or values[-1] >= splat.count)
+        for values in (owned, ambiguous, retained)
+    ):
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_indices_out_of_range"]
+        )
+    deleted = np.union1d(owned, ambiguous).astype(np.int64)
+    if (
+        not deleted.size
+        or not retained.size
+        or np.intersect1d(owned, ambiguous, assume_unique=True).size
+        or np.intersect1d(owned, retained, assume_unique=True).size
+        or np.intersect1d(ambiguous, retained, assume_unique=True).size
+        or np.intersect1d(deleted, retained, assume_unique=True).size
+        or not np.array_equal(
+            np.union1d(deleted, retained), np.arange(splat.count, dtype=np.int64)
+        )
+    ):
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_partition_invalid"]
+        )
+    counts = ownership.get("ownership")
+    if (
+        not isinstance(counts, Mapping)
+        or counts.get("source_gaussian_count") != splat.count
+        or counts.get("owned_count") != int(owned.size)
+        or counts.get("ambiguous_count") != int(ambiguous.size)
+        or counts.get("retained_count") != int(retained.size)
+        or int(owned.size) + int(ambiguous.size) + int(retained.size)
+        != splat.count
+        or counts.get("exhaustive") is not True
+        or counts.get("pairwise_disjoint") is not True
+    ):
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_ownership_counts_invalid"]
+        )
+
+    output.mkdir(parents=True, exist_ok=True)
+    deleted_path = output / "deleted_source_indices.npy"
+    retained_path = output / "retained_source_indices.npy"
+    ambiguous_path = output / "coverage_conditioned_ambiguous_indices.npy"
+    np.save(deleted_path, deleted, allow_pickle=False)
+    np.save(retained_path, retained, allow_pickle=False)
+    np.save(ambiguous_path, ambiguous, allow_pickle=False)
+    deleted_ply = write_standard_3dgs_ply_subset_exact(
+        source, output / "deleted_source_gaussians.ply", deleted
+    )
+    retained_ply = write_standard_3dgs_ply_subset_exact(
+        source, output / "retained_scene_gaussians.ply", retained
+    )
+    preservation = verify_standard_3dgs_ply_subset_exact(
+        source, retained_ply, retained
+    )
+    if preservation.get("retained_rows_byte_exact") is not True:
+        raise ReplacementOcclusionError(
+            ["ownership_coverage_cutout_retained_rows_changed"]
+        )
+    receipt: dict[str, Any] = {
+        "schema_version": OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA,
+        "status": "ownership_coverage_cutout_materialized_pending_actual_usd_source_layer_coverage",
+        "source_standard_splat": {
+            "path": str(source),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha256(source),
+        },
+        "source_ownership_receipt": {
+            "path": str(ownership_path),
+            "size_bytes": ownership_path.stat().st_size,
+            "sha256": _sha256(ownership_path),
+            "receipt_digest": ownership["receipt_digest"],
+            "freeze_digest": ownership.get("freeze_digest"),
+        },
+        "selection": {
+            "rule": "owned_and_ambiguous_union_from_calibration_only_ownership.v1",
+            "heldout_pixels_used_to_select_indices": False,
+            "learned_policy_outcomes_used": False,
+            "caller_asserted_coverage": False,
+            "replacement_usd_used_to_select_indices": False,
+        },
+        "counts": {
+            "source": splat.count,
+            "owned": int(owned.size),
+            "ambiguous_pending_coverage": int(ambiguous.size),
+            "deleted_total": int(deleted.size),
+            "retained_total": int(retained.size),
+        },
+        "preservation": preservation,
+        "outputs": {
+            "deleted_source_indices": _record(deleted_path, output),
+            "retained_source_indices": _record(retained_path, output),
+            "coverage_conditioned_ambiguous_indices": _record(
+                ambiguous_path, output
+            ),
+            "deleted_source_gaussians": _record(deleted_ply, output),
+            "retained_scene_gaussians": _record(retained_ply, output),
+        },
+        "claim_boundary": {
+            "factual_gaussian_ownership_established": False,
+            "ambiguous_records_deleted_only_if_actual_usd_source_layer_coverage_qualifies": True,
+            "replacement_asset_inserted": False,
+            "native_simulator_import_qualified": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = output / f"{OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA}.json"
+    receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def evaluate_depth_coverage(
     removal_alpha: np.ndarray,
     replacement_depth_m: np.ndarray,
@@ -962,6 +1179,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "CONTRIBUTION_SCHEMA",
     "COVERAGE_SCHEMA",
+    "OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA",
     "RECEIPT_SCHEMA",
     "REQUEST_SCHEMA",
     "ReplacementOcclusionError",
@@ -971,6 +1189,7 @@ __all__ = [
     "evaluate_depth_coverage",
     "materialize_replacement_occlusion_cutout",
     "materialize_direct_evidence_expansion_candidate",
+    "materialize_ownership_coverage_cutout_candidate",
     "materialize_bound_index_union_candidate",
     "select_direct_calibration_evidence_expansion",
 ]

@@ -39,6 +39,9 @@ COVERAGE_SCHEMA_VERSION = "articulated_excision_coverage.v1"
 COVERAGE_CONDITIONED_CUTOUT_SCHEMA_VERSION = (
     "adp009b_coverage_conditioned_cutout.v1"
 )
+OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA_VERSION = (
+    "adp009b_ownership_coverage_cutout_candidate.v1"
+)
 _REQUIRED_LEGACY_DOOR_CLASSES = frozenset(
     {"replacement_body", "replacement_lower_door", "franka_base"}
 )
@@ -147,12 +150,29 @@ def compile_coverage_conditioned_cutout_receipt(
         error="coverage_conditioned_cutout_coverage_digest_invalid",
         errors=errors,
     )
+    candidate_schema = str(cutout.get("schema_version") or "")
+    ownership_coverage_candidate = (
+        candidate_schema == OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA_VERSION
+    )
     if cutout:
-        if cutout.get("schema_version") != "adp009b_bound_index_union_candidate.v1":
+        if candidate_schema == "adp009b_bound_index_union_candidate.v1":
+            expected_status = "bound_cutout_materialized_pending_coverage_and_seam_gates"
+        elif ownership_coverage_candidate:
+            expected_status = (
+                "ownership_coverage_cutout_materialized_pending_actual_usd_source_layer_coverage"
+            )
+            source_ownership = cutout.get("source_ownership_receipt")
+            if (
+                not isinstance(source_ownership, Mapping)
+                or not _sha256_field(source_ownership.get("receipt_digest"))
+            ):
+                errors.append(
+                    "coverage_conditioned_cutout_source_ownership_binding_invalid"
+                )
+        else:
+            expected_status = ""
             errors.append("coverage_conditioned_cutout_candidate_schema_invalid")
-        if cutout.get("status") != (
-            "bound_cutout_materialized_pending_coverage_and_seam_gates"
-        ):
+        if cutout.get("status") != expected_status:
             errors.append("coverage_conditioned_cutout_candidate_status_invalid")
         counts = cutout.get("counts")
         preservation = cutout.get("preservation")
@@ -211,6 +231,22 @@ def compile_coverage_conditioned_cutout_receipt(
             errors.append("coverage_conditioned_cutout_caller_assertion_forbidden")
         if coverage.get("rendered_pixels_changed_by_audit") is not False:
             errors.append("coverage_conditioned_cutout_pixel_mutation_forbidden")
+        if ownership_coverage_candidate and (
+            coverage.get("status")
+            != "deleted_source_layer_replacement_coverage_qualified"
+            or coverage.get("coverage_scope") != "deleted_source_layer"
+            or coverage.get("all_deleted_source_contribution_occluded") is not True
+            or not _sha256_field(coverage.get("source_layer_splat_digest"))
+            or not isinstance(coverage.get("source_layer_coverage_audit"), Mapping)
+            or not _sha256_field(
+                (coverage.get("source_layer_coverage_audit") or {}).get(
+                    "manifest_digest"
+                )
+            )
+        ):
+            errors.append(
+                "coverage_conditioned_cutout_source_layer_coverage_invalid"
+            )
     if errors:
         raise ArticulatedExcisionJoinError(errors)
 
@@ -231,6 +267,12 @@ def compile_coverage_conditioned_cutout_receipt(
         "retained_order_matches_source": True,
         "coverage_receipt_digest": coverage["receipt_digest"],
         "coverage_qualified": True,
+        "cutout_candidate_schema_version": candidate_schema,
+        "source_ownership_receipt_digest": (
+            (cutout.get("source_ownership_receipt") or {}).get("receipt_digest")
+            if ownership_coverage_candidate
+            else None
+        ),
         "uncovered_pixels_are_explicit_seam_candidates": True,
         "broad_inpainting_authorized": False,
         "learned_policy_outcomes_used": False,
@@ -672,6 +714,9 @@ def compile_articulated_excision_join(
         "suppression": suppression["summary"],
         "bindings": {
             "ownership_receipt_digest": ownership.get("receipt_digest"),
+            "source_ownership_receipt_digest": ownership.get(
+                "source_ownership_receipt_digest"
+            ),
             "cutout_method": ownership.get("cutout_method", "three_way_ownership"),
             "owned_index_set_sha256": ownership.get("owned_index_set_sha256"),
             "ambiguous_index_set_sha256": ownership.get("ambiguous_index_set_sha256"),
@@ -709,7 +754,9 @@ def compile_articulated_excision_join(
             "gaussian_ownership_authored_here": False,
             "gaussian_ownership_established": ownership.get("heldout_audit_passed")
             is True,
-            "visibility_after_replacement_is_the_criterion": not ownership_required,
+            "visibility_after_replacement_is_the_criterion": (
+                not ownership_required or coverage_conditioned_ownership
+            ),
             "hidden_interior_is_observed_truth": False,
             "native_simulator_qualified": False,
             "physical_equivalence_proven": False,

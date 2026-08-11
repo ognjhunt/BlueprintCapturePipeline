@@ -17,6 +17,7 @@ from blueprint_pipeline.gaussian_splat_decode import (
 from blueprint_pipeline.public_scene_replacement_occlusion import (
     CONTRIBUTION_SCHEMA,
     COVERAGE_SCHEMA,
+    OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA,
     REQUEST_SCHEMA,
     ReplacementOcclusionError,
     build_replacement_occlusion_request,
@@ -24,6 +25,7 @@ from blueprint_pipeline.public_scene_replacement_occlusion import (
     coverage_safe_ambiguous,
     materialize_bound_index_union_candidate,
     materialize_direct_evidence_expansion_candidate,
+    materialize_ownership_coverage_cutout_candidate,
     materialize_replacement_occlusion_cutout,
     select_direct_calibration_evidence_expansion,
 )
@@ -384,3 +386,82 @@ def test_bound_index_union_preserves_all_unselected_rows(tmp_path: Path) -> None
     assert np.load(tmp_path / "output/deleted_source_indices.npy").tolist() == [0, 1, 4, 5]
     assert np.load(tmp_path / "output/retained_source_indices.npy").tolist() == [2, 3]
     assert receipt["preservation"]["retained_rows_byte_exact"] is True
+
+
+def test_ownership_coverage_candidate_keeps_ambiguous_claims_conditional(
+    tmp_path: Path,
+) -> None:
+    source = _source_splat(tmp_path / "source.ply")
+    ownership_root = tmp_path / "ownership"
+    ownership_root.mkdir()
+    owned_path = ownership_root / "owned_source_indices.npy"
+    ambiguous_path = ownership_root / "ambiguous_source_indices.npy"
+    retained_path = ownership_root / "retained_source_indices.npy"
+    np.save(owned_path, np.array([0, 1], dtype=np.int64), allow_pickle=False)
+    np.save(ambiguous_path, np.array([2, 3], dtype=np.int64), allow_pickle=False)
+    np.save(retained_path, np.array([4, 5], dtype=np.int64), allow_pickle=False)
+    ownership = {
+        "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
+        "status": "three_way_ownership_materialized_heldout_not_evaluated",
+        "freeze_digest": "sha256:" + "1" * 64,
+        "source_standard_splat": {
+            "path": str(source),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha256(source),
+        },
+        "ownership": {
+            "source_gaussian_count": 6,
+            "owned_count": 2,
+            "retained_count": 2,
+            "ambiguous_count": 2,
+            "exhaustive": True,
+            "pairwise_disjoint": True,
+        },
+        "heldout_cameras_accessed_for_classification": False,
+        "replacement_usd_inserted": False,
+        "outputs": {
+            "owned_indices": _record(owned_path, ownership_root),
+            "ambiguous_indices": _record(ambiguous_path, ownership_root),
+            "retained_indices": _record(retained_path, ownership_root),
+        },
+        "receipt_digest": "",
+    }
+    ownership["receipt_digest"] = canonical_digest(
+        ownership, digest_field="receipt_digest"
+    )
+    ownership_path = ownership_root / "ownership.json"
+    _write_json(ownership_path, ownership)
+
+    receipt = materialize_ownership_coverage_cutout_candidate(
+        source_standard_splat_path=source,
+        ownership_receipt_path=ownership_path,
+        output_root=tmp_path / "cutout",
+    )
+
+    assert receipt["schema_version"] == OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA
+    assert receipt["counts"] == {
+        "source": 6,
+        "owned": 2,
+        "ambiguous_pending_coverage": 2,
+        "deleted_total": 4,
+        "retained_total": 2,
+    }
+    assert receipt["selection"]["heldout_pixels_used_to_select_indices"] is False
+    assert receipt["claim_boundary"]["factual_gaussian_ownership_established"] is False
+    assert np.load(tmp_path / "cutout/deleted_source_indices.npy").tolist() == [0, 1, 2, 3]
+    assert receipt["preservation"]["retained_rows_byte_exact"] is True
+
+    ownership["heldout_cameras_accessed_for_classification"] = True
+    ownership["receipt_digest"] = canonical_digest(
+        ownership, digest_field="receipt_digest"
+    )
+    _write_json(ownership_path, ownership)
+    with pytest.raises(
+        ReplacementOcclusionError,
+        match="ownership_coverage_cutout_ownership_receipt_invalid",
+    ):
+        materialize_ownership_coverage_cutout_candidate(
+            source_standard_splat_path=source,
+            ownership_receipt_path=ownership_path,
+            output_root=tmp_path / "blocked-cutout",
+        )
