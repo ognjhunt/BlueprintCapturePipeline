@@ -1,6 +1,6 @@
 {
   "schema_version": "adp_content_agents_execution_readiness.v1",
-  "generated_at": "2026-08-11T00:00:00Z",
+  "generated_at": "2026-08-11T07:38:21.201583+00:00",
   "status": "blocked_before_paid_execution",
   "input_variant": "agent_cad_v1",
   "candidate_count": 4,
@@ -32,13 +32,13 @@
         "size_bytes": 12271
       },
       "config_preflight": null,
-      "local_config_preflight": null,
-      "static_config_preflight": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
-        "sha256": "sha256:f60bc6d2c5366a7a9d458819934f1503b6577fdb434fe0d8ef8ce751b878dfe3",
-        "size_bytes": 5060,
-        "receipt_digest": "sha256:7301ce9b9e6776b56b4ee649d06f9bab6c9807c225c8a39182e714a2dc366c41"
+      "local_config_preflight": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/local_bundle_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+        "sha256": "sha256:3feb39867a748dae44e7f1b925f98160aaca891ecae82f55adeb605f743adef0",
+        "size_bytes": 7487,
+        "receipt_digest": "sha256:b87004ef5cd52b117a7048efc16dc7467937f4e8af992cae496817341fc2a4c4"
       },
+      "static_config_preflight": null,
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
       "paid_model_access_required_for_execute": true,
@@ -46,7 +46,6 @@
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_local_docker_config_preflight_missing",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing"
       ]
@@ -67,13 +66,13 @@
         "size_bytes": 14127
       },
       "config_preflight": null,
-      "local_config_preflight": null,
-      "static_config_preflight": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
-        "sha256": "sha256:68d6085ac6b644ade56bba6c4210dc5579c562dc69aafb42a7309b0dcbbb2ad0",
-        "size_bytes": 6899,
-        "receipt_digest": "sha256:06e06ac75f2dfd9dfb508a3de93fff4bb67622a445137cd2fdd8db5365ecb0b6"
+      "local_config_preflight": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/local_bundle_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+        "sha256": "sha256:6094dd3455cd692b8b9c0bb27c293f09af0998483571035c2ba7a3f385bb0000",
+        "size_bytes": 7529,
+        "receipt_digest": "sha256:5d3cd81536e720bd1c34e833554756401056f163348c53145dd0cc8e2a45182e"
       },
+      "static_config_preflight": null,
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
       "paid_model_access_required_for_execute": true,
@@ -81,7 +80,6 @@
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_local_docker_config_preflight_missing",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing"
       ]
@@ -102,13 +100,13 @@
         "size_bytes": 15280
       },
       "config_preflight": null,
-      "local_config_preflight": null,
-      "static_config_preflight": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
-        "sha256": "sha256:bc8dd306fc1b0f876b34345d908b7a136c7fb494dfe8bbfe87b2053ba6ad478e",
-        "size_bytes": 8064,
-        "receipt_digest": "sha256:95280e9fea76d5cfae35e7554f771971143baca8226d9bb5ec56771e0c63b584"
+      "local_config_preflight": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/local_bundle_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+        "sha256": "sha256:b1d834e2cb8b8044d1ae3c2b0f474ffe46e91e2d1e01cf13c4ce17fd08a3e504",
+        "size_bytes": 7487,
+        "receipt_digest": "sha256:5b2aab4e1fa030d1321b5933772622eaef47082b23c9087c46a07424be03cf19"
       },
+      "static_config_preflight": null,
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
       "paid_model_access_required_for_execute": true,
@@ -116,7 +114,6 @@
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_local_docker_config_preflight_missing",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing"
       ]
@@ -137,13 +134,13 @@
         "size_bytes": 18937
       },
       "config_preflight": null,
-      "local_config_preflight": null,
-      "static_config_preflight": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
-        "sha256": "sha256:65bbedded165f22f011873f17c07cea18b2b0326d0491d50ff82ae649b4080f3",
-        "size_bytes": 11709,
-        "receipt_digest": "sha256:0fadc0b54657c78ce1ec32d6ad41a201f11d4fd64235dea764afe17042a729fe"
+      "local_config_preflight": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/local_bundle_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+        "sha256": "sha256:afd84cfa647969580ce45776f272bcc378ceb1609030d0ce6df274aa8b8f32b4",
+        "size_bytes": 7530,
+        "receipt_digest": "sha256:f3605be2a3192477f35492de2c6b4424736fee7ce46c5c76e177e51cd412860b"
       },
+      "static_config_preflight": null,
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
       "paid_model_access_required_for_execute": true,
@@ -151,7 +148,6 @@
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_local_docker_config_preflight_missing",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing"
       ]
@@ -165,5 +161,5 @@
     "native_simulator_import_qualified": false,
     "physical_equivalence": false
   },
-  "receipt_digest": "sha256:7d1b50d9d84f5083c7d70fc56cbc2da2703d5ad9dfb1cf68f60195affbc08885"
+  "receipt_digest": "sha256:c12d976afab87186f27e702abf023b2424907a4c10f870b7bc0e597f0b99b7d9"
 }

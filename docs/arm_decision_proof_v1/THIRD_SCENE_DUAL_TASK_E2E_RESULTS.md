@@ -30,7 +30,8 @@ learned policies were therefore not admitted. This is not a policy result.
   plus the current manifest-bound CAD-agent request sealing follow-up,
   and the current historical CAD-output reference-binding audit follow-up,
   and the current local/paid Content Agents preflight split follow-up,
-  and the current Dockerless static Content Agents preflight follow-up,
+  and the current Dockerless static plus no-paid Docker Content Agents preflight
+  follow-up,
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
@@ -313,21 +314,17 @@ with digest
 The no-provider execution-readiness receipt is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`
 with digest
-`sha256:7d1b50d9d84f5083c7d70fc56cbc2da2703d5ad9dfb1cf68f60195affbc08885`.
-It validates all four prepared bundle bytes, exact-entrypoint rehearsals, and
-Dockerless static bundle/config/input-USD preflight receipts, and records the
-current blockers for every candidate:
-`content_agents_local_docker_config_preflight_missing`,
-`content_agents_paid_model_access_preflight_missing`, and
-`content_agents_paid_attempt_authority_missing`. The static preflight opened the
-exact bundle zips, parsed the three YAML configs, safely extracted the bundled
-Content Agents source archive, opened `source_asset.usda`, verified a default
-prim, verified every declared target path is a Mesh, and computed a
-default-purpose bbox. It performs no Docker, OpenAI, Vast, or object-store
-mutation and records `provider_mutations_performed: 0`. In this worktree the
-Docker/Colima daemon was not available (`docker image inspect` could not connect
-to `~/.colima/default/docker.sock`), so the no-paid Docker dry-run remains
-missing.
+`sha256:c12d976afab87186f27e702abf023b2424907a4c10f870b7bc0e597f0b99b7d9`.
+It validates all four prepared bundle bytes, exact-entrypoint rehearsals,
+Dockerless static bundle/config/input-USD preflight receipts, and no-paid
+Docker/network-disabled local bundle/config dry-run receipts. The current
+blockers for every candidate are now only
+`content_agents_paid_model_access_preflight_missing` and
+`content_agents_paid_attempt_authority_missing`. The local Docker preflight ran
+material, texture, and physics agent dry-runs, material input validation, and
+default-purpose USD bbox probes against the exact upload bundles with Docker
+networking disabled, no paid model probe, no OpenAI call, no Vast allocation, no
+object-store mutation, and `provider_mutations_performed: 0`.
 
 Static Content Agents bundle/config/input-USD preflight receipts:
 
@@ -337,6 +334,15 @@ Static Content Agents bundle/config/input-USD preflight receipts:
 | Task A washer | Pan-Chera Multi-Agent-CAD | 40 | `sha256:06e06ac75f2dfd9dfb508a3de93fff4bb67622a445137cd2fdd8db5365ecb0b6` |
 | Task B notebook | Earth-to-Jake | 79 | `sha256:95280e9fea76d5cfae35e7554f771971143baca8226d9bb5ec56771e0c63b584` |
 | Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:0fadc0b54657c78ce1ec32d6ad41a201f11d4fd64235dea764afe17042a729fe` |
+
+No-paid Docker/network-disabled Content Agents local dry-run receipts:
+
+| Task | Backend | Receipt digest |
+|---|---|---|
+| Task A washer | Earth-to-Jake | `sha256:b87004ef5cd52b117a7048efc16dc7467937f4e8af992cae496817341fc2a4c4` |
+| Task A washer | Pan-Chera Multi-Agent-CAD | `sha256:5d3cd81536e720bd1c34e833554756401056f163348c53145dd0cc8e2a45182e` |
+| Task B notebook | Earth-to-Jake | `sha256:5b2aab4e1fa030d1321b5933772622eaef47082b23c9087c46a07424be03cf19` |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | `sha256:f3605be2a3192477f35492de2c6b4424736fee7ce46c5c76e177e51cd412860b` |
 
 A local human-review-only visual comparison was materialized from the
 manifest-bound original reference frames and CAD snapshots. Receipt:
@@ -524,8 +530,8 @@ Recent reusable-code and manifest commits:
   follow-up — `81 passed`.
 - Focused local/paid Content Agents preflight split regressions for the current
   follow-up — `54 passed`.
-- Focused Dockerless static Content Agents bundle/config/input preflight
-  regressions for the current follow-up — `56 passed`.
+- Focused Dockerless static plus no-paid Docker Content Agents preflight
+  regressions for the current follow-up — `58 passed`.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
@@ -546,9 +552,9 @@ Recent reusable-code and manifest commits:
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; manifest-bound CAD-agent reference selection and historical CAD-output reference-binding audit; agent-CAD-to-Content-Agents Mesh bundle adapter with manifest-derived references; Dockerless static Content Agents bundle/config/input-USD preflight; Content Agents single-use paid-attempt authority; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; manifest-bound CAD-agent reference selection and historical CAD-output reference-binding audit; agent-CAD-to-Content-Agents Mesh bundle adapter with manifest-derived references; Dockerless static and no-paid Docker/network-disabled Content Agents bundle/config/input-USD preflight; Content Agents single-use paid-attempt authority; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
-| Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes (all four bundles are locally ready but blocked on config preflight plus fresh paid authority), replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
+| Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes (all four bundles passed local/static preflight but remain blocked on paid model access plus fresh paid authority), replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
 
 ## Remaining ambiguity and single next action
