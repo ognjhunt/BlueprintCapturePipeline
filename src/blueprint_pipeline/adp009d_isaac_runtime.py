@@ -994,24 +994,43 @@ def _probe_finger_collision_envelope() -> dict[str, Any]:
             if not (prim and prim.IsValid()):
                 result["fingers"][body_name] = {"prim_exists": False}
                 continue
-            aligned = cache.ComputeLocalBound(prim).ComputeAlignedRange()
+            # World space, not local: the first run of this probe reported a
+            # 586 mm reach and 285 mm half-width for a Robotiq 2F-85 finger
+            # whose whole gripper is ~160 mm, because ComputeLocalBound's frame
+            # semantics do not mean "extent from this body's origin".  World
+            # bound minus the body's own world origin is unambiguous, and the
+            # body quaternion is retained so the analysis can rotate into the
+            # tool frame without this probe assuming an axis convention.
+            aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
             minimum = [float(value) for value in aligned.GetMin()]
             maximum = [float(value) for value in aligned.GetMax()]
+            transform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
+                Usd.TimeCode.Default()
+            )
+            origin = transform.ExtractTranslation()
+            body_origin = [float(origin[index]) for index in range(3)]
+            rotation = transform.ExtractRotationQuat()
+            imaginary = rotation.GetImaginary()
+            extent = [maximum[index] - minimum[index] for index in range(3)]
             result["fingers"][body_name] = {
                 "prim_exists": True,
                 "prim_path": path,
-                "local_bound_min_m": minimum,
-                "local_bound_max_m": maximum,
-                # Local +Z is the direction the tool offset advances toward the
-                # object, so this is how far the geometry reaches past the body
-                # origin compared with the 46 mm frame the planner uses.
-                "reach_along_tool_axis_m": maximum[2],
-                "reach_beyond_tool_frame_m": (
-                    maximum[2] - FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M
-                ),
-                "half_width_across_tool_axis_m": max(
-                    abs(minimum[0]), abs(maximum[0]), abs(minimum[1]), abs(maximum[1])
-                ),
+                "world_bound_min_m": minimum,
+                "world_bound_max_m": maximum,
+                "body_origin_world_m": body_origin,
+                "body_orientation_world_xyzw": [
+                    float(imaginary[0]),
+                    float(imaginary[1]),
+                    float(imaginary[2]),
+                    float(rotation.GetReal()),
+                ],
+                # Raw geometry facts only.  A finger whose largest extent is far
+                # bigger than the gripper is evidence the bound covers more than
+                # the finger, so the numbers stay interpretable when wrong.
+                "bound_extent_m": extent,
+                "largest_extent_m": max(extent),
+                "reach_below_body_origin_m": body_origin[2] - minimum[2],
+                "reach_above_body_origin_m": maximum[2] - body_origin[2],
             }
         if any(row.get("prim_exists") for row in result["fingers"].values()):
             result["status"] = "measured"
