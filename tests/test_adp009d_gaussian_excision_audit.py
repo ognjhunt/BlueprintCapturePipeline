@@ -650,8 +650,9 @@ def test_paid_attempt_authority_consumption_is_single_use(
     }
 
 
+@pytest.mark.parametrize("current_watchdog_handoff", [False, True])
 def test_attempt_and_recovery_receipts_join_files_without_upgrading_claims(
-    tmp_path: Path,
+    tmp_path: Path, current_watchdog_handoff: bool
 ) -> None:
     bundle = {
         "provider_bundle_kind": excision_vast.PROVIDER_BUNDLE_KIND,
@@ -683,14 +684,17 @@ def test_attempt_and_recovery_receipts_join_files_without_upgrading_claims(
         "vast_instance_ids": [7],
         "continuing_spend_from_this_run": False,
     }
-    watchdog = {
+    watchdog: dict[str, object] = {
         "status": "provider_terminal",
         "provider_absence_confirmed": True,
-        "recorded_vast_instance_teardown": {
+    }
+    if current_watchdog_handoff:
+        watchdog["instance_ids"] = [7]
+    else:
+        watchdog["recorded_vast_instance_teardown"] = {
             "instance_id": "7",
             "provider_absence_confirmed": True,
-        },
-    }
+        }
     payloads = {
         "bundle.json": bundle,
         "run.json": run,

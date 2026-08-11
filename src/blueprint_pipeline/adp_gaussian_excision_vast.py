@@ -611,9 +611,20 @@ def materialize_gaussian_excision_attempt_receipt(
     teardown = payloads["teardown_manifest"]
     watchdog = payloads["watchdog_evidence"]
     instance_ids = teardown.get("vast_instance_ids")
-    watchdog_instance = (watchdog.get("recorded_vast_instance_teardown") or {}).get(
-        "instance_id"
-    )
+    watchdog_instance_ids = watchdog.get("instance_ids")
+    if not isinstance(watchdog_instance_ids, list) or not watchdog_instance_ids:
+        # ``vast_independent_watchdog_handoff.v1`` originally embedded its
+        # terminal instance below this compatibility record.  Current handoffs
+        # bind the provider IDs directly at top level.  Accept either exact
+        # representation, but never a missing or plural/mismatched set.
+        legacy_watchdog_instance = (
+            watchdog.get("recorded_vast_instance_teardown") or {}
+        ).get("instance_id")
+        watchdog_instance_ids = (
+            [legacy_watchdog_instance]
+            if legacy_watchdog_instance is not None
+            else None
+        )
     attempt_authority_digest = run.get("attempt_authority_digest")
     paid_attempt_ordinal = run.get("paid_attempt_ordinal")
     authorization_consumption = run.get("authorization_consumption")
@@ -627,13 +638,18 @@ def materialize_gaussian_excision_attempt_receipt(
         or teardown.get("continuing_spend_from_this_run") is not False
         or not isinstance(instance_ids, list)
         or len(instance_ids) != 1
-        or str(instance_ids[0]) != str(watchdog_instance)
+        or not isinstance(watchdog_instance_ids, list)
+        or len(watchdog_instance_ids) != 1
+        or str(instance_ids[0]) != str(watchdog_instance_ids[0])
         or watchdog.get("status") != "provider_terminal"
         or watchdog.get("provider_absence_confirmed") is not True
-        or (watchdog.get("recorded_vast_instance_teardown") or {}).get(
-            "provider_absence_confirmed"
+        or (
+            "recorded_vast_instance_teardown" in watchdog
+            and (watchdog.get("recorded_vast_instance_teardown") or {}).get(
+                "provider_absence_confirmed"
+            )
+            is not True
         )
-        is not True
         or run.get("retry_cap") != 0
         or (
             attempt_binding_present
