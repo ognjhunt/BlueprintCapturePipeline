@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v10"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v11"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -75,11 +75,14 @@ PHASE_ORIENTATION_TOLERANCE_DEG = 2.0
 # single environment step let the loaded position actuator settle 119 mm above
 # the grasp.  Production v9 raised the waypoint to 30 mm and reached the same
 # height while oscillating laterally, falsifying waypoint magnitude as the
-# remedy.  Keep the safer 10 mm local request and hold each resulting absolute
-# joint target for four environment steps so the native actuator can track it
-# before the differential IK solver observes and recomputes the next target.
+# remedy.  Production v10 then proved that a four-step hold must not be applied
+# to the direct-global pregrasp phase: it caused that phase to drift past its
+# feedback-corrected solution.  Keep per-step feedback for the direct target,
+# while holding only bounded-local phase targets long enough for the native
+# actuator to track them before differential IK recomputes the next waypoint.
 MAX_TASK_SPACE_TRANSLATION_STEP_M = 0.01
-IK_ACTION_HOLD_STEPS = 4
+DIRECT_TARGET_ACTION_HOLD_STEPS = 1
+BOUNDED_LOCAL_ACTION_HOLD_STEPS = 4
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
     "orientation_first_bounded_local_increment"
@@ -324,11 +327,16 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
             phase["max_task_space_translation_step_m"] = (
                 MAX_TASK_SPACE_TRANSLATION_STEP_M
             )
-            phase["action_hold_steps"] = IK_ACTION_HOLD_STEPS
             phase["task_space_translation_strategy"] = (
                 DIRECT_GLOBAL_POSE_TARGET
                 if phase["phase_id"] == "pregrasp"
                 else ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT
+            )
+            phase["action_hold_steps"] = (
+                DIRECT_TARGET_ACTION_HOLD_STEPS
+                if phase["task_space_translation_strategy"]
+                == DIRECT_GLOBAL_POSE_TARGET
+                else BOUNDED_LOCAL_ACTION_HOLD_STEPS
             )
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
 
@@ -875,7 +883,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v10.json", plan)
+    _write_json(output / "adp009d_control_plan.v11.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(

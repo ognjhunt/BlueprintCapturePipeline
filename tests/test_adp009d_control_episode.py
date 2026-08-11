@@ -340,6 +340,7 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
     assert grasp["task_space_translation_strategy"] == (
         "orientation_first_bounded_local_increment"
     )
+    assert pregrasp["action_hold_steps"] == 1
     assert pregrasp["task_space_translation_strategy"] == (
         "direct_global_pose_target"
     )
@@ -442,7 +443,12 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
     ]
     assert [row["action_hold_index"] for row in positive_actions[:5]] == [0, 1, 2, 3, 0]
     assert len({tuple(row["isaac_action"]) for row in positive_actions[:4]}) == 1
-    assert (tmp_path / "adp009d_control_plan.v10.json").is_file()
+    pregrasp_actions = [
+        row for row in positive["action_trace"] if row["phase_id"] == "pregrasp"
+    ]
+    assert all(row["action_recomputed"] for row in pregrasp_actions)
+    assert {row["action_hold_index"] for row in pregrasp_actions} == {0}
+    assert (tmp_path / "adp009d_control_plan.v11.json").is_file()
     assert negative["action_trace"][0]["isaac_action"][:7] == negative[
         "action_trace"
     ][0]["observed_joint_position_before_rad"]
