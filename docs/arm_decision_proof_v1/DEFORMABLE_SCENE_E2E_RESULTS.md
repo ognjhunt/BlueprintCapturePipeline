@@ -437,9 +437,36 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   a registered wrapper or that restricted token evidence. Arbitrary raw tokens,
   missing call-chain entries, and wrapper-present validation failures remain
   rejected.
-- Deformable Vast/GPU spend retained so far: `$0.709030`.
-- Deformable Vast/GPU attempts with allocation: `16`; prelaunch-blocked attempts:
-  `3`; local dry-run command-shape nulls: `3`; uploads: `13`; automatic retries:
+- Deformable native canary v31 launched concurrently with the explicitly
+  authorized sibling `47467985`. It created only its owned Vast instance
+  `47468550` on an `RTX 6000 Ada` at `$0.6711111111111112/hr`, reached CUDA
+  sanity, headless Isaac Sim, runtime-source provisioning, and the native
+  worker, then stopped at
+  `native_deformable_stage_native_schema_readback_invalid` during physics
+  material schema readback. Exact terminal evidence is
+  `native_deformable_asset_preparation_worker_terminal.v1.json`; the traceback
+  identifies the material-schema validation call. Estimated cost was
+  `$0.025123` for `134.76615091600252` seconds. No cook array, scene insertion,
+  control, camera, or learned-policy episode ran. The adapter destroyed only
+  `47468550` with HTTP `200`; final validation passed and
+  `continuing_spend_from_this_run=false`. Global provider-zero is not claimed
+  because the unrelated allowlisted sibling remained outside this lane. This
+  result corrected a reusable contract: pinned Isaac Lab's material spawner
+  authors `OmniPhysicsDeformableMaterialAPI` plus
+  `PhysxDeformableMaterialAPI`, not the obsolete
+  `PhysxDeformableBodyMaterialAPI`. The v32 input is therefore a newly frozen
+  v2 plan/package, not a retry of v31 bytes.
+- The v32-native-cook contract uses a clean generated `TetMesh` at
+  `/Deformable/sim_mesh`; it accepts the pinned authoring helper's generated
+  cooked visual boundary only when it exactly equals that tetrahedral surface.
+  It preserves source geometry identities separately, derives mass from actual
+  cooked simulation volume, and labels visual alignment
+  `pending_render_alignment` until a later hybrid-render gate. This is a
+  native-cook preparation change, not a claim that the cooked towel visually
+  matches the source capture or real cloth material.
+- Deformable Vast/GPU spend retained so far: `$0.734153`.
+- Deformable Vast/GPU attempts with allocation: `17`; prelaunch-blocked attempts:
+  `3`; local dry-run command-shape nulls: `3`; uploads: `14`; automatic retries:
   `0`.
 
 ## Claim table
@@ -448,7 +475,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, v25 exposed a stale body/cooking configuration mismatch before native asset qualification, v26 exposed the missing `pytetwild`/pre-tetrahedralized-TetMesh admission requirement before native asset qualification, v27 exposed an incorrect visual-mesh physics material/schema readback contract before native qualification, v28 exposed stale embedded preparation-plan admission, v29 exposed a missing runtime Python wrapper for the otherwise authored OmniPhysics deformable schema token, and v30 exposed the equivalent wrapper gap for additional exact PhysX body/material schemas |
+| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, v25 exposed a stale body/cooking configuration mismatch before native asset qualification, v26 exposed the missing `pytetwild`/pre-tetrahedralized-TetMesh admission requirement before native asset qualification, v27 exposed an incorrect visual-mesh physics material/schema readback contract before native qualification, v28 exposed stale embedded preparation-plan admission, v29 exposed a missing runtime Python wrapper for the otherwise authored OmniPhysics deformable schema token, v30 exposed the equivalent wrapper gap for additional exact PhysX body/material schemas, and v31 exposed the obsolete material-schema identity plus a stale source-visual-equality assumption that the v32 cooked-TetMesh contract now removes |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -486,6 +513,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `b2f3ba6f4` | Gate moduleless Omni deformable schema proof |
 | `95dd1d6b3` | Bind native deformable sibling GPU admission |
 | `b48ed63c5` | Gate moduleless PhysX schema evidence |
+| `405755540` | Align the clean native cook contract with pinned material schemas and cooked TetMesh readback |
 
 Each listed commit was pushed to
 `origin/codex/adp-deformable-scene-e2e-20260810`.
@@ -500,8 +528,12 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to use source-package v6 and commit `b48ed63c5` to
-materialize a digest-new v31 provider bundle, then execute exactly one native
+The single next action is to use the v2 source package rooted at
+`native_deformable_asset_preparation_v7_native_cook_contract`, plan digest
+`sha256:3ea88777b3ca5ca7c091a1d8c719845a1697dbe0f7b205f44d32ce5b6f46fa19`,
+and package receipt digest
+`sha256:a9024d28604aa024783b48e8888f078072bac7acb17a0edbb52613a8e5e897ec`,
+and commit `405755540` to materialize a digest-new v32 provider bundle, then execute exactly one native
 canary only after a fresh provider-zero inventory (or an exact, authorized
 sibling binding). If the canary qualifies cook/load/reset/contact/cameras, the
 run continues to zero-action and scripted controls before any learned policy. If
