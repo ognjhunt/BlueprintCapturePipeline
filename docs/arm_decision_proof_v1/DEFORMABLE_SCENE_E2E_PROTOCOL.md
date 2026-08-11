@@ -1,6 +1,6 @@
 # Deformable Scene End-to-End Protocol
 
-Status: outcome-blind freeze; terminal completion path B on external upload rights
+Status: outcome-blind freeze; owner-authorized private Vast canary pending
 
 Program: `arm-decision-proof-v1`
 
@@ -52,22 +52,26 @@ The published implementation head before the terminal evidence seal is
 worktrees remain untouched; only exact reviewed files from this isolated
 worktree may be staged.
 
-## Terminal prelaunch outcome
+## Prelaunch rights correction
 
-All locally decidable reusable construction gaps were exhausted through static
-asset intake, clean pinned-PhysX preparation, native stage/readback contracts,
-entity-keyed controls/cameras/policy sampling, trusted canary packaging, and
-portable evidence indexing. The supplied Lightwheel job output may be inspected
-locally, but no exact output license or service terms authorize copying it to
-Vast. The frozen terminal blocker is
-`lightwheel_simreadygen_job_output_rights_receipt_missing`.
+The initial audit incorrectly treated the absence of an embedded generated-job
+license as evidence against the commissioning user's ownership. The official
+CC-BY-NC terms found at `lightwheel.ai/protocol` expressly govern free assets
+from Lightwheel's asset page and GitHub repository; they are not the contract
+for this paid SimReadyGen job output.
 
-No paid launch, provider upload, native control, or learned-policy episode is
-permitted under this freeze. This is completion path B at an external-input
-boundary, not a native capability result and not a policy failure. A later
-rights resolution starts a new admission: fresh provider-zero, a single
-zero-retry blank-stage canary, and backend re-freeze only after cook/contact,
-reset, cameras, and both policy adapters pass.
+The user directly represents that they commissioned, paid for, and own or
+control the supplied asset, and authorizes its private processing on Vast for
+this development-only canary. That authority is retained in
+[`840873_towel_79_owner_processing_authority.v1.json`](deformable_scene/840873_towel_79_owner_processing_authority.v1.json).
+The historical abstention remains immutable but is superseded for private Vast
+processing by
+[`840873_task_evaluation_prelaunch_abstention_supersession.v1.json`](deformable_scene/840873_task_evaluation_prelaunch_abstention_supersession.v1.json).
+
+This correction does not authorize public redistribution and does not qualify
+the towel. The next gate is a fresh provider inventory and canonical paid
+admission for one zero-retry blank-stage native canary. Backend re-freeze still
+requires cook/contact, reset, cameras, and both policy adapters to pass.
 
 ## Outcome-blind scene selection
 

@@ -1,6 +1,6 @@
 # Deformable Scene End-to-End Results
 
-Status: **terminal completion path B — typed, evidence-backed prelaunch abstention**
+Status: **historical rights abstention superseded; private native canary pending**
 
 Run: `adp-deformable-scene-e2e-v1`
 
@@ -12,23 +12,27 @@ This is a development-only public-dataset simulator rehearsal. It does not
 qualify partner capture, physical towel fidelity, real Franka performance,
 deployment readiness, or customer value.
 
-## Terminal gate
+## Current gate
 
-The run did not reach a policy evaluation. Exact static intake of the
+The run has not yet reached a policy evaluation. Exact static intake of the
 user-supplied Lightwheel-derived rolled-towel USD, a clean metric-scaled
 pinned-PhysX preparation package, hardened native stage adapter, worker
 contract, camera/control/policy seams, and fail-closed canary package are
-complete and published. The terminal receipt is
+complete and published. The historical prelaunch receipt is
 [`840873_task_evaluation_prelaunch_abstention.v1.json`](deformable_scene/840873_task_evaluation_prelaunch_abstention.v1.json),
 digest `sha256:0b5e9013bf5aed09086da4a09dde0d55be275a2c3a710efed0dcc6ed405fa889`.
 
-The smallest genuinely missing external input is
-`lightwheel_simreadygen_job_output_rights_receipt_missing`. The supplied job
-archive contains no output license, and no official SimReadyGen service terms
-were found that authorize third-party Vast copying, internal/commercial
-simulation, derived-evidence redistribution, or define retention/training use.
-Vast requires the uploader to possess all necessary permissions. Therefore no
-towel byte was uploaded and no deformable GPU attempt was launched.
+That receipt's rights conclusion was too conservative. The user has now
+directly stated that they commissioned, paid for, and own this exact asset and
+authorizes private Vast processing. The public Lightwheel CC-BY-NC page applies
+to free library/GitHub assets, not this paid generated job. The correction is
+bound by
+[`840873_towel_79_owner_processing_authority.v1.json`](deformable_scene/840873_towel_79_owner_processing_authority.v1.json)
+and the historical abstention is superseded by
+[`840873_task_evaluation_prelaunch_abstention_supersession.v1.json`](deformable_scene/840873_task_evaluation_prelaunch_abstention_supersession.v1.json),
+digest `sha256:b9b6dd8b96e3021b6e6a8106821e60665a1745a95e903bc48dd2cbaff7bb5f11`.
+Private upload is admitted; public redistribution remains outside scope. No
+deformable GPU attempt had been launched at the time of this correction.
 
 The frozen Isaac Lab/Arena backend can load and read volumetric deformable
 state, but its currently implemented evaluation seam does not yet expose
@@ -121,23 +125,21 @@ there is no runtime resampling or outcome-conditioned repositioning.
 | InteriorGS labels | same | 198,732 | `30007f1d...` | Never upload raw bytes |
 | InteriorGS structure | same | 35,839 | `a55eabf1...` | Never upload raw bytes |
 | SAGE collision | `3ba75cc7887b62bf84211d5db08adfa64d691597` | 20,030,048 | `a3a2fb401...` | CC-BY-NC-4.0; attribution and noncommercial boundary |
-| User-supplied Lightwheel-derived towel ZIP | generated-job revision not embedded | 6,466,445 | `3f12482c7964e6c45692bd0907ed8d15d8ec04f895c96e15e06465e676612fe0` | Local inspection admitted; generated-output license and external-upload rights unresolved |
+| User-owned, paid Lightwheel-derived towel ZIP | generated-job revision not embedded | 6,466,445 | `3f12482c7964e6c45692bd0907ed8d15d8ec04f895c96e15e06465e676612fe0` | Owner-authorized private Vast processing; no public redistribution claim |
 
 The sealed evidence package must carry the complete digests, exact paths,
 license-document digests, provider terms, derived-upload disclosures, and output
 rights. The abbreviated values above are human-readable summaries only.
 
-The current rights audit is retained in
+The original rights audit is retained in
 [`840873_towel_79_lightwheel_rights_receipt.v1.json`](deformable_scene/840873_towel_79_lightwheel_rights_receipt.v1.json).
 Lightwheel's public CC-BY-NC terms apply to assets distributed through its asset
-page and GitHub repository; no release identity joins this generated job output
-to that library. The supplied archive contains no license or notice, and no
-official SimReadyGen generated-output ownership, cloud-copying, redistribution,
-retention, deletion, or training terms were discoverable. Vast requires the
-uploader to possess all necessary rights. Consequently the exact typed blocker
-is `lightwheel_simreadygen_job_output_rights_receipt_missing`, and no towel bytes
-may be uploaded until a job-specific terms receipt or written authorization
-closes it.
+page and GitHub repository; no release identity joins this paid generated job
+output to that library. The archive's missing license does not override the
+commissioning owner's direct representation. The owner-authority and
+supersession receipts therefore close the private-processing blocker while
+leaving public redistribution, native qualification, and physical equivalence
+false.
 
 ## Reusable harness progress
 
@@ -208,7 +210,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Terminal prelaunch abstention on exact generated-output/cloud-copying rights; native cook/contact/reset/camera/adapter gates were correctly not attempted |
+| Blocked/abstained | Historical rights abstention superseded. Current possible blocker is native cook/contact qualification, which has not yet been tested on Vast |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication

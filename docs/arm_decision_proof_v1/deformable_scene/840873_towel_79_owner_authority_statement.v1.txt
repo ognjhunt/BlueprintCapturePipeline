@@ -1,0 +1,7 @@
+Authority source: direct user statements in the Arm Decision Proof task on 2026-08-10.
+
+The user stated: "THIS IS MY ASSET. i paid to generate it"
+
+Earlier in the same task, the user authorized private, scene-derived uploads wherever source license and provider terms permit them, required Vast for GPU execution, and supplied the exact local rolled-up-towel archive for use as the SimReady candidate.
+
+Bound interpretation: the user represents that they commissioned and paid for the supplied asset, own or control the rights needed to process it, and authorize private upload of these exact asset bytes to Vast for this development-only simulator canary. This statement does not grant public redistribution rights and does not establish native simulator qualification or physical towel fidelity.
