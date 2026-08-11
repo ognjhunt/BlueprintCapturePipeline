@@ -24,7 +24,8 @@ learned policies were therefore not admitted. This is not a policy result.
   Those are pushed on `codex/adp-third-scene-dual-task-20260810`.
   Latest agent-CAD/Content Agents follow-up commits are
   `f53dc2775` (manifest-derived agent-CAD references required) and
-  `a1a73e0db` (portable agent-CAD evidence indexed), pushed on
+  `a1a73e0db` (portable agent-CAD evidence indexed), followed by
+  `c5d3d0d92` (reusable agent-CAD supporting-evidence row builder), pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
@@ -449,6 +450,9 @@ Recent reusable-code and manifest commits:
   `50 passed`.
 - Focused evidence-index plus Content Agents regressions before `a1a73e0db` —
   `59 passed`.
+- Focused reusable agent-CAD supporting-evidence regressions before
+  `c5d3d0d92` — `61 passed`; the helper also reproduced the current real Task A
+  and Task B inventory digests exactly.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
