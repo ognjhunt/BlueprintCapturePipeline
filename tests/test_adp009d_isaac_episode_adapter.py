@@ -13,6 +13,8 @@ from blueprint_pipeline.adp009d_droid_observation import (
 from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     CAMERA_VIEW_BINDING,
     FINGER_BODIES,
+    FINGER_TOOL_FRAME_LOCAL_OFFSET_M,
+    FINGER_TOOL_FRAME_SOURCE,
     GRIPPER_PHYSICAL_FULL_OPENING_M,
     IsaacEpisodeAdapter,
     IsaacEpisodeAdapterError,
@@ -20,8 +22,51 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     describe_adapter,
     rgb_from_camera_output,
     rotation_row_major_from_quaternion_xyzw,
+    semantic_finger_tool_midpoint_world_m,
     validate_adapter_bindings,
 )
+
+
+def test_semantic_finger_midpoint_applies_pinned_local_tool_offsets() -> None:
+    midpoint = semantic_finger_tool_midpoint_world_m(
+        left_finger_pose_world_xyzw=[
+            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        right_finger_pose_world_xyzw=[
+            0.06, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+    )
+
+    assert midpoint == pytest.approx([0.03, 0.0, 1.046])
+
+
+def test_semantic_finger_midpoint_rotates_each_local_tool_offset() -> None:
+    midpoint = semantic_finger_tool_midpoint_world_m(
+        left_finger_pose_world_xyzw=[
+            0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+        ],
+        right_finger_pose_world_xyzw=[
+            0.06, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+        ],
+    )
+
+    # A 180 degree rotation about X maps each +local-Z tool offset to world -Z.
+    assert midpoint == pytest.approx([0.03, 0.0, 0.954])
+
+
+def test_semantic_finger_midpoint_refuses_nonrigid_body_orientations() -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_finger_tool_frame_pose_invalid",
+    ):
+        semantic_finger_tool_midpoint_world_m(
+            left_finger_pose_world_xyzw=[
+                0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0,
+            ],
+            right_finger_pose_world_xyzw=[
+                0.06, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        )
 
 
 def test_grasp_frame_target_retains_the_measured_full_tool_offset() -> None:
@@ -108,6 +153,8 @@ def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -
     assert "scripted_control_task_orientation_missing" in callback
     assert "target_body_quaternion_world_xyzw=(" in callback
     assert "target_quaternion_world_xyzw" in callback
+    assert "semantic_finger_tool_midpoint_world_m(" in callback
+    assert '"raw_finger_body_midpoint_world_m"' in callback
     assert 'runtime / "adp009d_control_plan.v4.json"' in callback
 
 
@@ -145,8 +192,12 @@ class _Robot:
         # Fingers 0.06 m apart in x, so separation is exactly 0.06.
         poses = np.zeros((1, len(bodies), 7), dtype=float)
         poses[0, bodies.index("base_link"), :7] = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
-        poses[0, bodies.index("left_inner_finger"), :3] = [0.0, 0.0, 1.0]
-        poses[0, bodies.index("right_inner_finger"), :3] = [0.06, 0.0, 1.0]
+        poses[0, bodies.index("left_inner_finger"), :7] = [
+            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ]
+        poses[0, bodies.index("right_inner_finger"), :7] = [
+            0.06, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ]
         self.data = _Data(
             body_names=bodies,
             joint_pos=np.linspace(0.0, 0.6, 13).reshape(1, 13),
@@ -292,10 +343,20 @@ def test_gripper_width_is_probe_calibrated_physical_opening() -> None:
     assert sample["gripper_body_separation_m"] == pytest.approx(0.06, abs=1e-9)
     assert sample["gripper_width_open_fraction_unclamped"] == pytest.approx(1.0)
     assert sample["gripper_width_calibration_clamped"] is False
-    # The grasp frame is the midpoint between the fingers.
-    assert sample["grasp_frame_position_world_m"] == pytest.approx(
+    assert sample["gripper_body_midpoint_world_m"] == pytest.approx(
         [0.03, 0.0, 1.0], abs=1e-9
     )
+    # The grasp frame is the midpoint between the semantic finger tools, not
+    # the raw inner-finger body origins.
+    assert sample["grasp_frame_position_world_m"] == pytest.approx(
+        [0.03, 0.0, 1.046], abs=1e-9
+    )
+    assert sample["grasp_frame_calibration"] == {
+        "frame_id": "probe_calibrated_finger_midpoint",
+        "finger_tool_frame_local_offset_m": [0.0, 0.0, 0.046],
+        "source": FINGER_TOOL_FRAME_SOURCE,
+        "raw_body_midpoint_retained": True,
+    }
     assert sample["controlled_body_name"] == "base_link"
     assert sample["controlled_body_pose_world"] == pytest.approx(
         [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
@@ -549,6 +610,10 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert validate_adapter_bindings(bindings) == []
     assert bindings["camera_view_binding"] == dict(CAMERA_VIEW_BINDING)
     assert bindings["finger_bodies"] == list(FINGER_BODIES)
+    assert bindings["finger_tool_frame_local_offset_m"] == list(
+        FINGER_TOOL_FRAME_LOCAL_OFFSET_M
+    )
+    assert bindings["finger_tool_frame_source"] == FINGER_TOOL_FRAME_SOURCE
     assert bindings["gripper_physical_full_opening_m"] == pytest.approx(0.085)
     assert bindings["raw_gripper_body_separation_retained"] is True
     assert bindings["isaaclab_pose_quaternion_order"] == "xyzw"
@@ -573,6 +638,12 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted = dict(bindings)
     drifted["scripted_control_target_frame"] = "panda_hand_origin"
     assert "isaac_episode_adapter_scripted_control_target_frame_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["finger_tool_frame_local_offset_m"] = [0.0, 0.0, 0.0]
+    assert "isaac_episode_adapter_finger_tool_frame_offset_drifted" in (
         validate_adapter_bindings(drifted)
     )
 

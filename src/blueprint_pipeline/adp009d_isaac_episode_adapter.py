@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v7"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v8"
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -58,6 +58,16 @@ EVALUATION_CAMERA_BINDING = {
 # The two bodies whose separation is the gripper width, matching the
 # convention probe so both read the same physical quantity.
 FINGER_BODIES = ("left_inner_finger", "right_inner_finger")
+# The pinned Arena DROID embodiment does not define its tool frames at the
+# inner-finger body origins.  Each semantic fingertip frame is translated by
+# +46 mm along that finger body's local Z axis.  Applying this as a world-Z
+# scalar would be wrong whenever a finger rotates, so the helper below composes
+# the offset through each live body quaternion before averaging the two tools.
+FINGER_TOOL_FRAME_LOCAL_OFFSET_M = (0.0, 0.0, 0.046)
+FINGER_TOOL_FRAME_SOURCE = (
+    "IsaacLab-Arena@8b4a3a47fc53de23e8205089d71109a2e2348acd:"
+    "isaaclab_arena/embodiments/droid/droid.py:tool_leftfinger,tool_rightfinger"
+)
 # Ordered to match the already-measured approach controller.  ``base_link`` is
 # the Robotiq tool body that carries the wrist camera in the live Arena asset.
 END_EFFECTOR_BODY_CANDIDATES = ("panda_hand", "base_link", "panda_link7")
@@ -74,6 +84,71 @@ class IsaacEpisodeAdapterError(RuntimeError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted({str(e) for e in errors if str(e)}))
         super().__init__(";".join(self.errors))
+
+
+def _rotate_vector_by_quaternion_xyzw(
+    quaternion_xyzw: Sequence[float], vector: Sequence[float]
+) -> list[float]:
+    x, y, z, w = quaternion_xyzw
+    vx, vy, vz = vector
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return [
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    ]
+
+
+def semantic_finger_tool_midpoint_world_m(
+    *,
+    left_finger_pose_world_xyzw: Sequence[float],
+    right_finger_pose_world_xyzw: Sequence[float],
+) -> list[float]:
+    """Return the midpoint of Arena's two calibrated Robotiq tool frames.
+
+    Each input is a seven-value world pose ``[x, y, z, qx, qy, qz, qw]`` for
+    an inner-finger body.  The fixed local tool offset comes from the exact
+    pinned Arena revision used by the immutable runtime bundle.
+    """
+
+    try:
+        poses = [
+            [float(value) for value in left_finger_pose_world_xyzw],
+            [float(value) for value in right_finger_pose_world_xyzw],
+        ]
+    except (TypeError, ValueError) as exc:
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_finger_tool_frame_pose_invalid"]
+        ) from exc
+    if any(len(pose) != 7 for pose in poses) or not all(
+        math.isfinite(value) for pose in poses for value in pose
+    ):
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_finger_tool_frame_pose_invalid"]
+        )
+
+    tool_positions: list[list[float]] = []
+    for pose in poses:
+        quaternion = pose[3:7]
+        if (
+            abs(math.sqrt(sum(value * value for value in quaternion)) - 1.0)
+            > 1.0e-5
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_finger_tool_frame_pose_invalid"]
+            )
+        offset_world = _rotate_vector_by_quaternion_xyzw(
+            quaternion, FINGER_TOOL_FRAME_LOCAL_OFFSET_M
+        )
+        tool_positions.append(
+            [pose[axis] + offset_world[axis] for axis in range(3)]
+        )
+    return [
+        (tool_positions[0][axis] + tool_positions[1][axis]) / 2.0
+        for axis in range(3)
+    ]
 
 
 def controlled_body_pose_for_grasp_frame_target(
@@ -125,24 +200,12 @@ def controlled_body_pose_for_grasp_frame_target(
         raise IsaacEpisodeAdapterError(
             ["isaac_episode_grasp_frame_transform_invalid"]
         )
-    def _rotate(q: Sequence[float], vector: Sequence[float]) -> list[float]:
-        x, y, z, w = q
-        vx, vy, vz = vector
-        tx = 2.0 * (y * vz - z * vy)
-        ty = 2.0 * (z * vx - x * vz)
-        tz = 2.0 * (x * vy - y * vx)
-        return [
-            vx + w * tx + (y * tz - z * ty),
-            vy + w * ty + (z * tx - x * tz),
-            vz + w * tz + (x * ty - y * tx),
-        ]
-
     body_to_grasp_world = [grasp[index] - body[index] for index in range(3)]
-    body_to_grasp_local = _rotate(
+    body_to_grasp_local = _rotate_vector_by_quaternion_xyzw(
         [-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3]],
         body_to_grasp_world,
     )
-    target_body_to_grasp_world = _rotate(
+    target_body_to_grasp_world = _rotate_vector_by_quaternion_xyzw(
         target_quaternion,
         body_to_grasp_local,
     )
@@ -483,7 +546,8 @@ class IsaacEpisodeAdapter:
         controlled_body_pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._end_effector_index, :7
         ]
-        left, right = self._finger_positions()
+        left_pose, right_pose = self._finger_poses()
+        left, right = left_pose[:3], right_pose[:3]
         raw_separation = math.dist(left, right)
         width, unclamped_open_fraction, calibration_clamped = (
             self._calibrated_gripper_width(raw_separation)
@@ -499,18 +563,36 @@ class IsaacEpisodeAdapter:
                 float(value) for value in controlled_body_pose
             ],
         }
-        sample["grasp_frame_position_world_m"] = [
+        sample["gripper_body_midpoint_world_m"] = [
             (left[axis] + right[axis]) / 2.0 for axis in range(3)
         ]
+        sample["grasp_frame_position_world_m"] = (
+            semantic_finger_tool_midpoint_world_m(
+                left_finger_pose_world_xyzw=left_pose,
+                right_finger_pose_world_xyzw=right_pose,
+            )
+        )
+        sample["grasp_frame_calibration"] = {
+            "frame_id": "probe_calibrated_finger_midpoint",
+            "finger_tool_frame_local_offset_m": list(
+                FINGER_TOOL_FRAME_LOCAL_OFFSET_M
+            ),
+            "source": FINGER_TOOL_FRAME_SOURCE,
+            "raw_body_midpoint_retained": True,
+        }
         return sample
 
     # -- internals ----------------------------------------------------------
 
     def _finger_positions(self) -> tuple[list[float], list[float]]:
+        left_pose, right_pose = self._finger_poses()
+        return left_pose[:3], right_pose[:3]
+
+    def _finger_poses(self) -> tuple[list[float], list[float]]:
         poses = self._to_torch(self._robot.data.body_pose_w)[0]
         return (
-            [float(poses[self._finger_indices[0]][axis]) for axis in range(3)],
-            [float(poses[self._finger_indices[1]][axis]) for axis in range(3)],
+            [float(poses[self._finger_indices[0]][axis]) for axis in range(7)],
+            [float(poses[self._finger_indices[1]][axis]) for axis in range(7)],
         )
 
     def _raw_gripper_body_separation(self) -> float:
@@ -571,6 +653,8 @@ def describe_adapter() -> dict[str, Any]:
         "schema_version": ADAPTER_SCHEMA_VERSION,
         "camera_view_binding": dict(CAMERA_VIEW_BINDING),
         "finger_bodies": list(FINGER_BODIES),
+        "finger_tool_frame_local_offset_m": list(FINGER_TOOL_FRAME_LOCAL_OFFSET_M),
+        "finger_tool_frame_source": FINGER_TOOL_FRAME_SOURCE,
         "end_effector_body_candidates": list(END_EFFECTOR_BODY_CANDIDATES),
         "gripper_width_source": GRIPPER_WIDTH_SOURCE,
         "scripted_control_target_frame": "probe_calibrated_finger_midpoint",
@@ -601,6 +685,12 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_camera_binding_drifted")
     if list(bindings.get("finger_bodies") or []) != list(FINGER_BODIES):
         errors.append("isaac_episode_adapter_finger_bodies_drifted")
+    if list(bindings.get("finger_tool_frame_local_offset_m") or []) != list(
+        FINGER_TOOL_FRAME_LOCAL_OFFSET_M
+    ):
+        errors.append("isaac_episode_adapter_finger_tool_frame_offset_drifted")
+    if bindings.get("finger_tool_frame_source") != FINGER_TOOL_FRAME_SOURCE:
+        errors.append("isaac_episode_adapter_finger_tool_frame_source_drifted")
     if list(bindings.get("end_effector_body_candidates") or []) != list(
         END_EFFECTOR_BODY_CANDIDATES
     ):
@@ -644,6 +734,8 @@ __all__ = [
     "CAMERA_VIEW_BINDING",
     "END_EFFECTOR_BODY_CANDIDATES",
     "FINGER_BODIES",
+    "FINGER_TOOL_FRAME_LOCAL_OFFSET_M",
+    "FINGER_TOOL_FRAME_SOURCE",
     "GRIPPER_PHYSICAL_FULL_OPENING_M",
     "GRIPPER_WIDTH_SOURCE",
     "IsaacEpisodeAdapter",
@@ -652,5 +744,6 @@ __all__ = [
     "describe_adapter",
     "rgb_from_camera_output",
     "rotation_row_major_from_quaternion_xyzw",
+    "semantic_finger_tool_midpoint_world_m",
     "validate_adapter_bindings",
 ]
