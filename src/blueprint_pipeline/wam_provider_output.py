@@ -26,6 +26,9 @@ RUNTIME_RESULT_FILENAMES = (
     "adp_aura_author_smoke_result.json",
     "adp_aura_interiorgs_result.json",
     "adp_inpaint360_interiorgs_result.json",
+    "adp009d_native_microcheck.json",
+    "adp009d_ovrtx_live_camera_result.json",
+    "adp009d_aura_native_live_camera_result.json",
 )
 ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 

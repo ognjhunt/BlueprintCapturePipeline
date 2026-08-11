@@ -316,7 +316,10 @@ def test_bundle_passes_vast_preflight_and_has_fail_closed_launch_script(
         provider_bundle_kind=runtime.PROVIDER_BUNDLE_KIND,
     )
     assert "run_adp_inpaint360_interiorgs_provider_runtime.sh" in script
-    assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
+    assert (
+        "curl --http1.1 --retry 5 --retry-delay 3 --retry-all-errors "
+        '--connect-timeout 30 -fL "$blueprint_download_src"'
+    ) in script
     assert "adp_inpaint360_provider_runtime_output.zip" in script
     assert "provider_output_zip_exclusions.json" in script
     assert "BLUEPRINT_ADP_INPAINT360_RUNTIME_PROGRESS" in (

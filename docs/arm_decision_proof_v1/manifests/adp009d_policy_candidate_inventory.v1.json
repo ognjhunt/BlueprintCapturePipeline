@@ -1,0 +1,753 @@
+{
+  "schema_version": "adp009d_policy_candidate_inventory.v1",
+  "program_id": "arm-decision-proof-v1",
+  "milestone": "ADP-009D_public_scene_franka_policy_rehearsal",
+  "audited_at": "2026-08-06T19:38:14Z",
+  "outcome_blind": true,
+  "learned_task_outcomes_observed": false,
+  "execution_attempted": false,
+  "implementation_base": {
+    "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
+    "commit": "39ec8091e182e325f0ff0eb494f4dc9434c3bb27",
+    "tree": "086d113022b1254612aeacc41eb962cb86a4942f",
+    "publication_status": "protected_main_squash_commit_from_merged_pr_374"
+  },
+  "candidate_selection": {
+    "required_count": 2,
+    "frozen": false,
+    "selected_candidate_ids": null,
+    "selection_receipt_digest": null,
+    "selection_rule": "prefer_pi05_and_groot_n17_if_both_runtime_admitted_else_use_groot_n16_fallback_or_cosmos_conditional_replacement_before_outcomes",
+    "no_third_scored_policy": true,
+    "cosmos_policy_boundary": "may_replace_one_candidate_only_after_exact_action_policy_admission_otherwise_auxiliary_only"
+  },
+  "official_retrievals": [
+    {
+      "service": "GitHub",
+      "method": "publisher_repository_commit_tree_and_raw_content_APIs_plus_clean_local_checkout",
+      "retrieved_at": "2026-08-06T19:38:14Z",
+      "primary_sources_only": true
+    },
+    {
+      "service": "Hugging Face",
+      "method": "publisher_model_API_with_blobs_true_and_revision_pinned_raw_files",
+      "retrieved_at": "2026-08-06T19:38:14Z",
+      "primary_sources_only": true
+    },
+    {
+      "service": "Google Cloud Storage",
+      "method": "public_bucket_JSON_API_generation_MD5_CRC32C_inventory",
+      "retrieved_at": "2026-08-06T19:38:14Z",
+      "primary_sources_only": true
+    }
+  ],
+  "candidates": [
+    {
+      "candidate_id": "pi05_droid",
+      "model_name": "pi0.5-DROID",
+      "family": "Physical Intelligence openpi",
+      "inventory_role": "preferred_primary",
+      "source": {
+        "repository": "https://github.com/Physical-Intelligence/openpi",
+        "revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+        "tree": "a7f18af2745255b5fa98c86d6031f858bf73d1be",
+        "retrieved_at": "2026-08-06T19:38:14Z",
+        "license": {
+          "id": "Apache-2.0",
+          "path": "LICENSE",
+          "sha256": "sha256:43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+        },
+        "submodules": [
+          {
+            "path": "third_party/aloha",
+            "revision": "d1dc83afd89ded4379851257fe5d85632d31d5ec"
+          },
+          {
+            "path": "third_party/libero",
+            "revision": "f78abd68ee283de9f9be3c8f7e2a9ad60246e95c"
+          }
+        ],
+        "path_identities": [
+          {
+            "path": "README.md",
+            "sha256": "sha256:567fc57766bd736664f50126cab8145af4071ca16cc5e238f2b11e369169c3b5"
+          },
+          {
+            "path": "examples/droid/README.md",
+            "sha256": "sha256:6f64c246a78a5c203b4b032db9b6b6daea33e98d91ecdac1a3da30a9863290d0"
+          },
+          {
+            "path": "src/openpi/policies/droid_policy.py",
+            "sha256": "sha256:99ebf8b252bde5e33dba7af10552137c421589ec88887bb0ee6507366d24da68"
+          },
+          {
+            "path": "src/openpi/training/config.py",
+            "sha256": "sha256:c34231f888dba5dc981d808765b3d98775ab845b04313bf53fcecd567c520b0d"
+          }
+        ],
+        "source_modifications": []
+      },
+      "checkpoint": {
+        "repository": "gs://openpi-assets/checkpoints/pi05_droid",
+        "revision": "gcs-generation-inventory:4d35968545b296130d4e13e9cc41d0cfba11e69ac1ec99a0ca151122ca81cf12",
+        "retrieval_method": "openpi_maybe_download_or_generation_pinned_GCS_copy_then_local_sha256_tree",
+        "public": true,
+        "gated": false,
+        "file_count": 20,
+        "total_bytes": 12429488598,
+        "snapshot_inventory_digest": "sha256:4d35968545b296130d4e13e9cc41d0cfba11e69ac1ec99a0ca151122ca81cf12",
+        "publisher_inventory_file_sha256": "sha256:ce3a1d28b9b42d11a38b0d62dd93f102f2165662370812bee5971a6741d74d2a",
+        "publisher_object_hashes": "MD5_and_CRC32C_with_generation_not_SHA256",
+        "weight_files": [],
+        "sha256_boundary": "object_level_SHA256_not_published_must_materialize_all_20_objects_and_compute_checkpoint_tree_SHA256_before_admission",
+        "license": {
+          "id": "checkpoint_specific_terms_unresolved",
+          "source_repository_license": "Apache-2.0",
+          "source_repository_license_applied_to_remote_checkpoint": false,
+          "terms_object_present_in_checkpoint_prefix": false,
+          "allowed_use": "not_admitted_until_checkpoint_specific_terms_are_bound",
+          "redistribution_boundary": "do_not_redistribute_checkpoint_bytes"
+        },
+        "materialized_for_adp009d": false
+      },
+      "observation_contract": {
+        "camera_keys": [
+          "observation/exterior_image_1_left",
+          "observation/wrist_image_left"
+        ],
+        "camera_count": 2,
+        "image_shape": [224, 224, 3],
+        "image_dtype": "uint8_HWC_RGB",
+        "history_rows": 1,
+        "state": {
+          "observation/joint_position": {
+            "shape": [7],
+            "units": "radian"
+          },
+          "observation/gripper_position": {
+            "shape": [1],
+            "units": "DROID_normalized_position"
+          }
+        },
+        "instruction": {
+          "key": "prompt",
+          "format": "free_form_string"
+        },
+        "normalization": "checkpoint_assets/droid/norm_stats.json",
+        "exact_resolved_camera_calibration_required": true,
+        "exact_live_renderer_required": true,
+        "lossless_policy_input_retention_required": true
+      },
+      "action_contract": {
+        "chunk_shape": [15, 8],
+        "semantics": [
+          "joint_velocity_7d",
+          "absolute_gripper_position_1d"
+        ],
+        "units": "DROID_RobotEnv_joint_velocity_command_units_publisher_does_not_state_physical_scale",
+        "frame": "DROID_Franka_arm_joint_order",
+        "frequency_hz": 15.0,
+        "execution_horizon": "must_be_frozen_no_greater_than_15",
+        "gripper_semantics": "threshold_above_0.5_to_1_else_0_then_RobotEnv_position_action",
+        "limits": "official_example_clips_all_8_values_to_minus1_plus1",
+        "safety_clamping": {
+          "publisher_clip": [-1.0, 1.0],
+          "simulator_joint_velocity_and_joint_limit_clamps": "must_be_native_probed_and_recorded"
+        },
+        "source_discrepancy": "current_config_and_prior_smoke_return_15x8_but_examples/droid/main.py_contains_stale_10x8_assertion",
+        "resolved_contract": "15x8_from_current_config_and_observed_identity_bound_smoke"
+      },
+      "embodiment_compatibility": {
+        "training_embodiment": "DROID Franka",
+        "target_embodiment": "Franka Panda with Robotiq 2F-85",
+        "status": "plausible_not_native_validated",
+        "required_probe": "joint_order_velocity_scale_gripper_position_direction_and_limits"
+      },
+      "runtime_requirements": {
+        "python": ">=3.11",
+        "jax": "0.5.3 CUDA 12",
+        "torch": "2.7.1",
+        "transformers": "4.53.2",
+        "os": "Linux for CUDA inference",
+        "publisher_recommended_gpu": "approximately RTX 4090",
+        "co_resident_isaac_compatibility": "must_measure_before_topology_split"
+      },
+      "immutable_smoke": {
+        "adp009d_smoke_status": "missing",
+        "required_input": "digest_bound_live_external_and_wrist_RGB_plus_exact_state_prompt_and_noise_seed",
+        "expected_output": "finite_float32_15x8_action_chunk_identity_bound_to_checkpoint_tree",
+        "prior_evidence": {
+          "status": "prior_provider_smoke_only",
+          "receipt_sha256": "sha256:3b8fb892a6b88bbaf2829abbe24754d21b4e702869d1b39722d72687ba1baf4c",
+          "native_action_sha256": "sha256:a74e349d05150c05bb4cadc4b35e5c5732873cf96a62a780ba43e7bad417fa71",
+          "observed_shape": [15, 8],
+          "checkpoint_object_metadata_verified": true,
+          "adp009d_runtime_admission": false
+        }
+      },
+      "current_admission": {
+        "status": "prior_smoke_only",
+        "adp009d_runtime_admitted": false,
+        "blockers": [
+          "pi05_droid_checkpoint_specific_terms_missing",
+          "pi05_droid_object_level_sha256_tree_missing",
+          "pi05_droid_adp009d_immutable_smoke_missing",
+          "pi05_droid_joint_velocity_physical_scale_not_published",
+          "pi05_droid_franka_robotiq_adapter_not_native_validated",
+          "sealed_aura_hybrid_policy_observation_renderer_missing"
+        ]
+      },
+      "selected_for_frozen_evaluation": false,
+      "owns_grading": false,
+      "claim_ceiling": "inventoried_preferred_candidate_with_prior_smoke_not_admitted_for_ADP009D",
+      "candidate_digest": "sha256:c61e85a366a223afa4646e5dce4452c8e7e3ec333b983d052df02740b7e79ec4"
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "model_name": "GR00T N1.7 DROID",
+      "family": "NVIDIA Isaac GR00T",
+      "inventory_role": "preferred_secondary",
+      "source": {
+        "repository": "https://github.com/NVIDIA/Isaac-GR00T",
+        "revision": "b9955401d50c92a29258732e3ad6ccd579f1bdc0",
+        "tree": "09c80a5529da315117ed962d5d6b794c981d5e72",
+        "retrieved_at": "2026-08-06T19:38:14Z",
+        "license": {
+          "id": "Apache-2.0",
+          "path": "LICENSE",
+          "sha256": "sha256:93363510f62ce25ad1a47605b0b06ab335edd82f1a444531c58dd30b6e5a5a0c"
+        },
+        "submodules": [
+          {
+            "path": "external_dependencies/LIBERO",
+            "revision": "8f1084e3132a39270c3a13ebe37270a43ece2a01"
+          },
+          {
+            "path": "external_dependencies/SimplerEnv",
+            "revision": "8a2d286c926c1371927caa7651a412b4cc331756"
+          },
+          {
+            "path": "external_dependencies/robocasa",
+            "revision": "d89d481ce9c76da7f179466981676e268aa842e5"
+          },
+          {
+            "path": "external_dependencies/robocasa-gr1-tabletop-tasks",
+            "revision": "4840e671596f93ca03651524b9f72ffb1aadfeff"
+          }
+        ],
+        "path_identities": [
+          {
+            "path": "examples/DROID/README.md",
+            "sha256": "sha256:e59c44bfb5a77c117abcf9ff83958589b730222b64796e42b0edce65f23fae16"
+          },
+          {
+            "path": "examples/RoboLab/README.md",
+            "sha256": "sha256:6451c001a9e94391591203ccf4a429030418a663cdc5d613c11b9107b3855adb"
+          },
+          {
+            "path": "gr00t/configs/data/embodiment_configs.py",
+            "sha256": "sha256:4c7626426cfd184034df772bca9f1ab5c2014c139c388f833012ca98ac6f948a"
+          },
+          {
+            "path": "gr00t/data/embodiment_tags.py",
+            "sha256": "sha256:eadc1a395175209cc0d57afa21541cc64be7d848300602209de81fe42713ca47"
+          }
+        ],
+        "source_modifications": []
+      },
+      "checkpoint": {
+        "repository": "https://huggingface.co/nvidia/GR00T-N1.7-DROID",
+        "revision": "05e7cc97e40dbd33b0890c35cc0214fcb0547ab5",
+        "retrieval_method": "huggingface_snapshot_download_revision_pinned_then_all_file_verification",
+        "public": true,
+        "gated": false,
+        "file_count": 17,
+        "total_bytes": 6914267987,
+        "snapshot_inventory_digest": "sha256:5d1d83ab34215da2dcaa049d70e93ccec18687591ad5760c5183fc1fd6e035fd",
+        "weight_files": [
+          {
+            "path": "model-00001-of-00002.safetensors",
+            "size_bytes": 4990519232,
+            "sha256": "sha256:68d885c9684bb7d4781389873e4b7d33202b5618e70a83f2e78187a5fb839202"
+          },
+          {
+            "path": "model-00002-of-00002.safetensors",
+            "size_bytes": 1919980184,
+            "sha256": "sha256:aa4c6e553ea8454500354352368bcbb7e4f0fb32a9816b20d5b25c231f13a8fd"
+          }
+        ],
+        "metadata_blob_identities": {
+          "README.md": "2c1ba4777ef56afe180480aa9cf16e36fc6303ce",
+          "config.json": "11a846e5af6e5da63366a9b9f94f7a8b2d8da06b",
+          "embodiment_id.json": "272b0d0d047ad5d21ccd953549ec03554a539444",
+          "model.safetensors.index.json": "4761851d9515098ac203474f61221a26cd3a98b6",
+          "processor_config.json": "55b4d74b3565274662ba33eefe9bdb0ca75df3e9",
+          "statistics.json": "03e76c7666bafe2e31fcc2320ee5ffcdddc6d675"
+        },
+        "license": {
+          "id": "NVIDIA-Open-Model-License",
+          "source": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+          "model_card_sha256": "sha256:33956fc189a30cde8b8abe7a5ca0e5b21e22d2da7882af4840eef20e799b2b2a",
+          "allowed_use": "model_card_claims_commercial_and_noncommercial_use",
+          "redistribution_boundary": "do_not_redistribute_checkpoint_in_Blueprint_artifacts_without_separate_terms_review"
+        },
+        "materialized_for_adp009d": false
+      },
+      "observation_contract": {
+        "embodiment_tag": "OXE_DROID_RELATIVE_EEF_RELATIVE_JOINT",
+        "camera_keys": [
+          "video.exterior_image_1_left",
+          "video.wrist_image_left"
+        ],
+        "camera_count": 2,
+        "transport_shape": [180, 320, 3],
+        "transport_dtype": "uint8_HWC_RGB",
+        "history_rows": 1,
+        "letterbox_allowed": false,
+        "model_target_shape": [256, 256],
+        "model_crop_shape": [230, 230],
+        "state": {
+          "state.eef_9d": {
+            "shape": [1, 1, 9],
+            "frame": "DROID_egocentric_TFG_with_publisher_rotation_correction"
+          },
+          "state.gripper_position": {
+            "shape": [1, 1, 1],
+            "units": "DROID_normalized_position"
+          },
+          "state.joint_position": {
+            "shape": [1, 1, 7],
+            "units": "radian"
+          }
+        },
+        "instruction": {
+          "key": "annotation.language.language_instruction",
+          "shape": [1],
+          "format": "string"
+        },
+        "normalization": "checkpoint_percentile_statistics",
+        "exact_resolved_camera_calibration_required": true,
+        "exact_live_renderer_required": true,
+        "lossless_policy_input_retention_required": true
+      },
+      "action_contract": {
+        "chunk_shape": [40, 17],
+        "components": {
+          "eef_9d": "relative_XYZ_meters_plus_rotation6D_in_DROID_TFG_frame",
+          "gripper_position": "absolute_DROID_normalized_position",
+          "joint_position": "relative_joint_position_radians"
+        },
+        "units": "meters_rotation6D_unitless_normalized_gripper_and_radians",
+        "frame": "DROID_egocentric_TFG_for_EEF_and_DROID_Franka_joint_order",
+        "frequency_hz": "DROID_or_sim_client_frequency_must_be_frozen",
+        "execution_horizon": 8,
+        "gripper_semantics": "absolute_position_after_checkpoint_denormalization",
+        "limits": "target_Franka_and_Robotiq_limits_must_be_applied_and_recorded_by_adapter",
+        "safety_clamping": {
+          "publisher_model_clamp": "checkpoint_processor_percentile_denormalization",
+          "simulator_limits": "must_be_native_probed_and_each_clip_recorded"
+        },
+        "policy_adapter_output": "official_RoboLab_path_executes_action.joint_position_and_action.gripper_position_first_8_rows",
+        "eef_output_retention": "retain_full_native_17D_chunk_even_when_joint_and_gripper_fields_drive_simulator"
+      },
+      "embodiment_compatibility": {
+        "training_embodiment": "DROID Franka",
+        "target_embodiment": "Franka Panda with Robotiq 2F-85",
+        "status": "official_RoboLab_DROID_sim_path_exists_not_ADP009D_native_validated",
+        "required_probe": "DROID_TFG_eef_joint_relative_action_and_Robotiq_gripper_mapping"
+      },
+      "runtime_requirements": {
+        "python": ">=3.12,<3.13",
+        "torch": "2.9.0 CUDA 12.8",
+        "torchvision": "0.24.0",
+        "transformers": "4.57.3",
+        "flash_attention": "2.8.3",
+        "os": "Linux",
+        "publisher_test_hardware": "A6000_and_H100_documented",
+        "co_resident_isaac_compatibility": "must_measure_before_topology_split"
+      },
+      "immutable_smoke": {
+        "adp009d_smoke_status": "missing",
+        "required_input": "digest_bound_live_two_camera_uint8_frames_17D_state_language_and_noise_seed",
+        "expected_output": "finite_40_row_native_action_fields_with_8_row_execution_prefix",
+        "prior_evidence": null
+      },
+      "current_admission": {
+        "status": "inventory_only",
+        "adp009d_runtime_admitted": false,
+        "blockers": [
+          "groot_n17_checkpoint_not_materialized_for_adp009d",
+          "groot_n17_adp009d_immutable_smoke_missing",
+          "groot_n17_droid_TFG_state_adapter_not_native_validated",
+          "groot_n17_franka_robotiq_action_adapter_not_native_validated",
+          "sealed_aura_hybrid_policy_observation_renderer_missing"
+        ]
+      },
+      "selected_for_frozen_evaluation": false,
+      "owns_grading": false,
+      "claim_ceiling": "inventoried_preferred_candidate_not_admitted_for_ADP009D",
+      "candidate_digest": "sha256:8afe25a4260509c38cff5d36cccfceb45852f9282ca2b07f69f36f52042becfb"
+    },
+    {
+      "candidate_id": "groot_n16_droid",
+      "model_name": "GR00T N1.6 DROID",
+      "family": "NVIDIA Isaac GR00T",
+      "inventory_role": "fallback_if_N1.7_incompatible",
+      "source": {
+        "repository": "https://github.com/NVIDIA/Isaac-GR00T",
+        "revision": "5dc80c4afd726b34faad1d8f7e007a13b34e4c88",
+        "tree": "e25e4776db8bf56b555c780fc4e4b4fcc77e2b04",
+        "retrieved_at": "2026-08-06T19:38:14Z",
+        "license": {
+          "id": "Apache-2.0",
+          "path": "LICENSE",
+          "sha256": "sha256:564046abbef821cefd5c169d34ee1e96b3dfb72cf0be81de41ef8f4a1323c5a3"
+        },
+        "submodules": [
+          {
+            "path": "external_dependencies/GR00T-WholeBodyControl",
+            "revision": "3966393ed7a37612af16c9b77e7aaed91231c407"
+          },
+          {
+            "path": "external_dependencies/LIBERO",
+            "revision": "8f1084e3132a39270c3a13ebe37270a43ece2a01"
+          },
+          {
+            "path": "external_dependencies/SimplerEnv",
+            "revision": "8a2d286c926c1371927caa7651a412b4cc331756"
+          },
+          {
+            "path": "external_dependencies/robocasa",
+            "revision": "d89d481ce9c76da7f179466981676e268aa842e5"
+          },
+          {
+            "path": "external_dependencies/robocasa-gr1-tabletop-tasks",
+            "revision": "4840e671596f93ca03651524b9f72ffb1aadfeff"
+          }
+        ],
+        "path_identities": [
+          {
+            "path": "README.md",
+            "sha256": "sha256:24d13a5e52a26a1a44897a51e5bc7136014eaf861c8154f55d159e22b229db3a"
+          },
+          {
+            "path": "pyproject.toml",
+            "sha256": "sha256:77472f5d7f65d33b97c51fdeaaafd573020d832c8e377e4b4ddfe8f795ee21b7"
+          },
+          {
+            "path": "gr00t/configs/data/embodiment_configs.py",
+            "sha256": "sha256:75ececc2baed9e6fe09e1266c5f4a8814f4240a951fe9fac3b8fb5d0aec6e29b"
+          }
+        ],
+        "source_modifications": []
+      },
+      "checkpoint": {
+        "repository": "https://huggingface.co/nvidia/GR00T-N1.6-DROID",
+        "revision": "ae3ebe8d288971ac53aa30c756ea5cba0f52611b",
+        "retrieval_method": "huggingface_snapshot_download_revision_pinned_then_all_file_verification",
+        "public": true,
+        "gated": false,
+        "file_count": 13,
+        "total_bytes": 6573569204,
+        "snapshot_inventory_digest": "sha256:a90b219623ae64d3f919f5f7c8ba2a7b3da20df75289fceea61da54e936a79fe",
+        "weight_files": [
+          {
+            "path": "model-00001-of-00002.safetensors",
+            "size_bytes": 4991094616,
+            "sha256": "sha256:0933dd66f5454611671bc5b7a83a0107e8024cfddc96948857be98281c43fceb"
+          },
+          {
+            "path": "model-00002-of-00002.safetensors",
+            "size_bytes": 1582283096,
+            "sha256": "sha256:102646302b58baa606ff4f912598b6d659242139e0e20d61b2cec21e754bae5a"
+          }
+        ],
+        "metadata_blob_identities": {
+          "LICENSE": "293c642500e9ea4f1035f43382b0e81875fd446c",
+          "README.md": "7f3093d98bde2cdf6305abc3a34fc7a337479e85",
+          "config.json": "5e7a305b71277fbe339f0c9826851d7c9ae5fd51",
+          "embodiment_id.json": "57e437c85b8d4c5642d5a69e83cee151d0d1fb9e",
+          "processor_config.json": "9aa697c2a2dedf98ba294c047d7b393d6c698100",
+          "statistics.json": "d18e2ae5a9e64344e5b6e4b4b0cb58de1b473e85"
+        },
+        "license": {
+          "id": "NVIDIA-One-Way-Noncommercial-License",
+          "license_file_sha256": "sha256:fdc54058d8b52bbb3b06c924326ff95a15687b08b15f92bc63adabc291638c89",
+          "allowed_use": "internal_noncommercial_research_only_pending_legal_scope_review",
+          "commercial_use_allowed": false,
+          "redistribution_boundary": "do_not_redistribute_checkpoint_bytes"
+        },
+        "materialized_for_adp009d": false
+      },
+      "observation_contract": {
+        "embodiment_tag": "OXE_DROID",
+        "camera_keys": [
+          "video.exterior_image_1_left",
+          "video.wrist_image_left"
+        ],
+        "camera_count": 2,
+        "image_dtype": "uint8_RGB",
+        "history_rows": 1,
+        "model_shortest_edge": 256,
+        "state": {
+          "state.joint_position": {
+            "shape": [1, 1, 7],
+            "units": "radian"
+          },
+          "state.gripper_position": {
+            "shape": [1, 1, 1],
+            "units": "DROID_normalized_position"
+          }
+        },
+        "instruction": {
+          "key": "annotation.language.language_instruction",
+          "format": "string"
+        },
+        "normalization": "checkpoint_mean_std_with_sincos_state_encoding",
+        "exact_resolved_camera_calibration_required": true,
+        "exact_live_renderer_required": true,
+        "lossless_policy_input_retention_required": true
+      },
+      "action_contract": {
+        "chunk_shape": [32, 8],
+        "components": {
+          "joint_position": "relative_joint_position_7d",
+          "gripper_position": "absolute_gripper_position_1d"
+        },
+        "units": "relative_joint_radians_and_DROID_normalized_gripper_position",
+        "frame": "DROID_Franka_joint_order",
+        "frequency_hz": "DROID_or_sim_client_frequency_must_be_frozen",
+        "execution_horizon": "must_be_frozen_no_greater_than_32",
+        "gripper_semantics": "absolute_position_after_checkpoint_denormalization",
+        "limits": "target_Franka_and_Robotiq_limits_must_be_applied_and_recorded_by_adapter",
+        "safety_clamping": {
+          "publisher_model_clamp": "checkpoint_processor_outlier_clip",
+          "simulator_limits": "must_be_native_probed_and_each_clip_recorded"
+        }
+      },
+      "embodiment_compatibility": {
+        "training_embodiment": "DROID Franka",
+        "target_embodiment": "Franka Panda with Robotiq 2F-85",
+        "status": "fallback_contract_exists_not_ADP009D_native_validated",
+        "required_probe": "relative_joint_and_Robotiq_gripper_mapping"
+      },
+      "runtime_requirements": {
+        "python": ">=3.10,<3.13",
+        "torch": "2.7.1 CUDA 12.8",
+        "transformers": "4.51.3",
+        "flash_attention": "2.7.4.post1",
+        "os": "Linux",
+        "co_resident_isaac_compatibility": "must_measure_before_topology_split"
+      },
+      "immutable_smoke": {
+        "adp009d_smoke_status": "missing",
+        "required_input": "digest_bound_live_two_camera_uint8_frames_8D_state_language_and_noise_seed",
+        "expected_output": "finite_32x8_relative_joint_plus_absolute_gripper_chunk",
+        "prior_evidence": null
+      },
+      "current_admission": {
+        "status": "inventory_only",
+        "adp009d_runtime_admitted": false,
+        "blockers": [
+          "groot_n16_fallback_only_unless_n17_incompatible",
+          "groot_n16_checkpoint_noncommercial_terms_limit",
+          "groot_n16_checkpoint_not_materialized_for_adp009d",
+          "groot_n16_adp009d_immutable_smoke_missing",
+          "groot_n16_franka_robotiq_action_adapter_not_native_validated",
+          "sealed_aura_hybrid_policy_observation_renderer_missing"
+        ]
+      },
+      "selected_for_frozen_evaluation": false,
+      "owns_grading": false,
+      "claim_ceiling": "inventoried_N1.6_DROID_fallback_not_admitted_for_ADP009D",
+      "candidate_digest": "sha256:7b5447dadfeb757e817289aaa368e4ce7f2388d41a9893f18c8690d2fc8260d0"
+    },
+    {
+      "candidate_id": "cosmos3_edge_policy_droid",
+      "model_name": "Cosmos3-Edge-Policy-DROID",
+      "family": "NVIDIA Cosmos 3",
+      "inventory_role": "conditional_replacement_or_auxiliary",
+      "source": {
+        "repository": "https://github.com/NVIDIA/cosmos-framework",
+        "revision": "5e02e643c458ce06c7232244271f567dce1dec7a",
+        "tree": "aea30b8215e897c35d0201e51d0323d18da13740",
+        "retrieved_at": "2026-08-06T19:38:14Z",
+        "license": {
+          "id": "OpenMDW-1.1",
+          "path": "LICENSE",
+          "sha256": "sha256:6bd3fdb9356edb6e4c1f00ad9cd6639a1cf06ca0a415a5071fd70d68799209e6"
+        },
+        "submodules": [],
+        "upstream_project": {
+          "repository": "https://github.com/NVIDIA/cosmos",
+          "revision": "9f18ce1e5859052ffd43156bf00cea56c13069e1",
+          "tree": "0c8931bb1a553eb3af3843a1f54f90889a3027bd"
+        },
+        "path_identities": [
+          {
+            "path": "cosmos_framework/scripts/action_policy_server_robolab.py",
+            "sha256": "sha256:0ea7c258e5e3250ffa9e259151fc856ab767164d94a05040518409e4a7e31423"
+          },
+          {
+            "path": "cosmos_framework/scripts/action_policy_server_utils.py",
+            "sha256": "sha256:079dcbef37f2c4b2e9f8b374aa4e89c63ba29b80fc9895caddab8effa7a3bab9"
+          },
+          {
+            "path": "pyproject.toml",
+            "sha256": "sha256:b18789791b2e3b215247bcc4c06685c27f2982fe18e856231efa355f3c91fb39"
+          }
+        ],
+        "source_modifications": []
+      },
+      "checkpoint": {
+        "repository": "https://huggingface.co/nvidia/Cosmos3-Edge-Policy-DROID",
+        "revision": "3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+        "retrieval_method": "huggingface_snapshot_download_revision_pinned_then_all_file_verification",
+        "public": true,
+        "gated": false,
+        "file_count": 34,
+        "total_bytes": 9171983421,
+        "snapshot_inventory_digest": "sha256:f1da4f2c70e31b7c80c0069abdebf5d46d9a45a2e588b3aa84984a862f18568f",
+        "weight_files": [
+          {
+            "path": "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+            "size_bytes": 5000041944,
+            "sha256": "sha256:99b0ff1f9dbdcb497fac16cbc0ebe33dee19653b4c182fa0d474433dcc845206"
+          },
+          {
+            "path": "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+            "size_bytes": 1748779008,
+            "sha256": "sha256:1842fefdacd0dcbb8ab543b59848a0b696e0c9634676bc76db9e0c971fe328d5"
+          },
+          {
+            "path": "vae/diffusion_pytorch_model.safetensors",
+            "size_bytes": 1409400600,
+            "sha256": "sha256:230496cb59ff85bc9c040487737c4062480cb61c71e697b197b4c30142f2a0da"
+          },
+          {
+            "path": "vision_encoder/model.safetensors",
+            "size_bytes": 978739880,
+            "sha256": "sha256:2180ad739ecc96b5c1e9386892d3c5c08bfa42b9cdab9aabc53b028671db89b3"
+          }
+        ],
+        "metadata_blob_identities": {
+          "README.md": "c7a76b5cfd25201c995dfa2727992b9550cdf50c",
+          "checkpoint.json": "b2aa986627b41670ab6a4659b7bb0810f5d992bf",
+          "config.json": "54a1b969d895172aa870656fac2c12155f73b42c",
+          "processor_config.json": "752751ce9a73dea4cad36c14e6e231af073af73c",
+          "transformer/config.json": "9e228e26e8819d353afa877e95f769cd1a5a0578"
+        },
+        "license": {
+          "id": "OpenMDW-1.1",
+          "source": "https://openmdw.ai/license/1-1/",
+          "license_file_sha256": "sha256:6bd3fdb9356edb6e4c1f00ad9cd6639a1cf06ca0a415a5071fd70d68799209e6",
+          "allowed_use": "deal_in_model_materials_subject_to_license_and_third_party_rights",
+          "redistribution_boundary": "retain_license_and_origin_notices_and_do_not_bundle_checkpoint_without_review"
+        },
+        "materialized_for_adp009d": false
+      },
+      "observation_contract": {
+        "camera_keys": [
+          "observation/wrist_image_left",
+          "observation/exterior_image_1_left",
+          "observation/exterior_image_2_left"
+        ],
+        "camera_count": 3,
+        "server_alternative_key": "observation/image",
+        "composition": "wrist_top_plus_two_half_size_exterior_views_side_by_side_on_bottom",
+        "composite_shape": [540, 640, 3],
+        "image_dtype": "uint8_HWC_RGB",
+        "history_rows": 1,
+        "state": {
+          "observation/joint_position": {
+            "shape": [1, 7],
+            "units": "radian"
+          },
+          "observation/gripper_position": {
+            "shape": [1, 1],
+            "units": "DROID_normalized_position"
+          }
+        },
+        "instruction": {
+          "key": "prompt",
+          "format": "string_or_structured_JSON_when_explicitly_enabled"
+        },
+        "exact_resolved_camera_calibration_required": true,
+        "exact_live_renderer_required": true,
+        "lossless_policy_input_retention_required": true,
+        "policy_input_is_composite_not_generated_rollout_video": true
+      },
+      "action_contract": {
+        "chunk_shape": [16, 8],
+        "card_canonical": {
+          "shape": [16, 8],
+          "input_images": 1,
+          "num_generated_frames": 17,
+          "fps": 5
+        },
+        "official_server_default": {
+          "shape": [32, 8],
+          "conditioning_fps": 15,
+          "history_rows_trimmed": 1,
+          "denoising_steps": 4,
+          "guidance": 3.0
+        },
+        "components": {
+          "joint_position": "absolute_joint_position_7d",
+          "gripper_position": "absolute_gripper_position_1d"
+        },
+        "units": "joint_radians_and_DROID_normalized_gripper_position",
+        "frame": "DROID_Franka_joint_order",
+        "frequency_hz": "must_freeze_5_or_15_with_chunk_variant_before_outcomes",
+        "execution_horizon": "must_be_frozen_no_greater_than_selected_chunk_length",
+        "gripper_semantics": "server_inverts_DROID_gripper_position_on_input_and_output",
+        "limits": "target_Franka_and_Robotiq_limits_must_be_applied_and_recorded_by_adapter",
+        "safety_clamping": {
+          "publisher_model_clamp": "not_a_safety_controller",
+          "simulator_limits": "must_be_native_probed_and_each_clip_recorded"
+        },
+        "variant_boundary": "16x8_card_canonical_and_32x8_server_default_are_distinct_protocols_one_must_be_frozen"
+      },
+      "embodiment_compatibility": {
+        "training_embodiment": "DROID Franka",
+        "target_embodiment": "Franka Panda with Robotiq 2F-85",
+        "status": "official_RoboLab_DROID_path_exists_not_ADP009D_native_validated",
+        "required_probe": "absolute_joint_and_inverted_Robotiq_gripper_mapping"
+      },
+      "runtime_requirements": {
+        "python": ">=3.10",
+        "torch": "2.10.0 with CUDA 12.8 or 13.0 supported groups",
+        "transformers": ">=4.57.1,<5.0.0",
+        "precision": "BF16_only_tested",
+        "os": "Linux",
+        "documented_hardware": "B200_H100_H20_RTX_PRO_6000_DGX_and_Jetson_Thor",
+        "L40S_48GB_fit": "must_measure",
+        "co_resident_isaac_compatibility": "must_measure_before_topology_split"
+      },
+      "immutable_smoke": {
+        "adp009d_smoke_status": "missing",
+        "required_input": "digest_bound_live_composite_uint8_image_joint_state_gripper_prompt_chunk_variant_and_seed",
+        "expected_output": "finite_selected_16x8_or_32x8_absolute_joint_plus_gripper_chunk",
+        "prior_evidence": null
+      },
+      "current_admission": {
+        "status": "inventory_only",
+        "adp009d_runtime_admitted": false,
+        "blockers": [
+          "cosmos3_edge_checkpoint_not_materialized_for_adp009d",
+          "cosmos3_edge_adp009d_immutable_smoke_missing",
+          "cosmos3_edge_action_chunk_variant_not_frozen",
+          "cosmos3_edge_three_view_composite_camera_contract_not_frozen",
+          "cosmos3_edge_franka_robotiq_action_adapter_not_native_validated",
+          "cosmos3_edge_L40S_fit_not_measured",
+          "sealed_aura_hybrid_policy_observation_renderer_missing"
+        ]
+      },
+      "selected_for_frozen_evaluation": false,
+      "owns_grading": false,
+      "claim_ceiling": "inventoried_exact_Cosmos3_DROID_action_policy_conditional_replacement_or_auxiliary_not_admitted_for_ADP009D",
+      "candidate_digest": "sha256:8846c0239f84e702bb617b64878a94f3b55f680c735c98820dc4806af3cd7862"
+    }
+  ],
+  "inventory_digest": "sha256:3c6aead117c8f436b81d81d0d21de0658f5555cded1ac5963619665fac482102"
+}

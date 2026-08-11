@@ -1,0 +1,119 @@
+{
+  "schema_version": "adp009d_franka_runtime_bundle.v1",
+  "runtime_bundle_id": "adp009d-840313-franka-runtime-v1",
+  "program_id": "arm-decision-proof-v1",
+  "publisher_scene_id": "840313",
+  "status": "admitted_development_only",
+  "source_bundle": {
+    "bundle_id": "adp009d-840313-interiorgs-sage-v1",
+    "bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
+  },
+  "construction_lineage": {
+    "aura_result_sha256": "sha256:d2ebae435738bc51fd973738bbbc5e7a0f24c6254b6ce34963bfff78a32ca2a5",
+    "aura_output_sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+    "aura_repository": "https://github.com/kkennethwu/AuraFusion360_official",
+    "aura_revision": "f23b26c44ba84608306ba952510533ebf4c7877d",
+    "aura_tree": "cc8447c66448b29bb4d39fec29c031df63d4b179",
+    "provider_import_receipt_digest": "sha256:2476eae9ba019ba000ddd4064dd1c51960e089ea370f4051955a2999d09e22da",
+    "task_volume_exclusion_receipt_digest": "sha256:b180fc74ddd3db5f7add24423c986d1447771cc66166119346ca6610f49cf61a",
+    "task_volume_exclusion_output_sha256": "sha256:512c90ffa42ed4fcd67f3ea4a4d0ef578d32da903c3015d427f9550f4bdb14ae",
+    "nurec_appearance_sha256": "sha256:4b73dd13e6044b00b59da7737989d79d891ccac157b33411b30ef59542f3e6a2",
+    "nurec_authoring_parameters": {
+      "schema_version": "aura_nurec_volume.v1",
+      "gaussian_count": 414322,
+      "precision": 16,
+      "recentred": true,
+      "exposure_scale": 0.689,
+      "render_settings": "shipped_interiorgs_verbatim"
+    },
+    "legacy_receipt_limit": "The retained NuRec receipt identifies the exact output and authoring parameters but predates source-digest binding; this manifest binds the retained exclusion input and NuRec output bytes without claiming deterministic re-authoring.",
+    "claim_ceiling": "development_only"
+  },
+  "materialized_artifacts": [
+    {
+      "role": "aura_construction_result",
+      "production_path": "/var/lib/blueprint/task-evaluation-inputs/adp009d-840313-franka-runtime-v1/adp_aura_interiorgs_result.json",
+      "sha256": "sha256:d2ebae435738bc51fd973738bbbc5e7a0f24c6254b6ce34963bfff78a32ca2a5",
+      "size_bytes": 8754
+    },
+    {
+      "role": "aura_final_surfels",
+      "production_path": "/var/lib/blueprint/task-evaluation-inputs/adp009d-840313-franka-runtime-v1/aurafusion360_840313_ins160_final.ply",
+      "sha256": "sha256:cbb05fc8e6da6ecdb72464f3b115f63e8747e2b67e97c309b4e40952b33000bd",
+      "size_bytes": 106309429
+    },
+    {
+      "role": "task_volume_exclusion_receipt",
+      "production_path": "/var/lib/blueprint/task-evaluation-inputs/adp009d-840313-franka-runtime-v1/adp009d_aura_task_volume_exclusion_receipt.v1.json",
+      "sha256": "sha256:c9723d0523f3176c254b7be2d89927cd8ba82fd32bfc1de984b73426379dff62",
+      "size_bytes": 1416
+    },
+    {
+      "role": "task_volume_excluded_surfels",
+      "production_path": "/var/lib/blueprint/task-evaluation-inputs/adp009d-840313-franka-runtime-v1/aurafusion360_840313_ins160_task_volume_excluded.ply",
+      "sha256": "sha256:512c90ffa42ed4fcd67f3ea4a4d0ef578d32da903c3015d427f9550f4bdb14ae",
+      "size_bytes": 106068021
+    },
+    {
+      "role": "nurec_authoring_receipt",
+      "production_path": "/var/lib/blueprint/task-evaluation-inputs/adp009d-840313-franka-runtime-v1/aura_nurec_authoring_receipt.json",
+      "sha256": "sha256:d9217cacb63cf2028c0fe8f46457ba59375985b98c201b63b8fd1d40e0e51a44",
+      "size_bytes": 1595
+    },
+    {
+      "role": "aura_nurec_appearance",
+      "production_path": "/var/lib/blueprint/task-evaluation-inputs/adp009d-840313-franka-runtime-v1/aura_ghost_removed_appearance.usdz",
+      "sha256": "sha256:4b73dd13e6044b00b59da7737989d79d891ccac157b33411b30ef59542f3e6a2",
+      "size_bytes": 42542096,
+      "visual_only": true,
+      "collision_authority": false
+    }
+  ],
+  "repository_inputs": [
+    {
+      "role": "approved_simready_can",
+      "path": "docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda",
+      "sha256": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+      "size_bytes": 20705128
+    },
+    {
+      "role": "franka_evaluation_harness",
+      "path": "docs/arm_decision_proof_v1/manifests/adp009d_franka_eval_harness_manifest.v1.json",
+      "sha256": "sha256:4df93534dc9aaaa105b9d72bf2a6ccd323b1471a23119d1627ce47dc57e32b48",
+      "size_bytes": 32279
+    },
+    {
+      "role": "canonical_scenario_instance",
+      "path": "docs/arm_decision_proof_v1/manifests/adp009d_canonical_scenario_instance.v1.json",
+      "sha256": "sha256:6e66e7227e574af5ba82bfc7760f548088d874975dd26213e6e089528d8fad2f",
+      "size_bytes": 2228
+    },
+    {
+      "role": "task_destination",
+      "path": "docs/arm_decision_proof_v1/adp009d_task_destination.v1.json",
+      "sha256": "sha256:be83e628da452ff821911f7145e45a807df8be57ae6adf20b82f5c335753b098",
+      "size_bytes": 1032
+    }
+  ],
+  "source_bundle_inputs": [
+    {
+      "role": "static_collision_geometry",
+      "filename": "840313_collision.usd",
+      "sha256": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+      "size_bytes": 42418216
+    }
+  ],
+  "execution_bindings": {
+    "appearance_role": "aura_nurec_appearance",
+    "collision_role": "static_collision_geometry",
+    "task_object_role": "approved_simready_can",
+    "harness_role": "franka_evaluation_harness",
+    "scenario_role": "canonical_scenario_instance",
+    "canonical_allocator": "python -m blueprint_pipeline.paid_resource_allocator",
+    "provider": "vast",
+    "retry_cap": 0
+  },
+  "claim_ceiling": "development_only",
+  "physical_evidence": false,
+  "runtime_bundle_digest": "sha256:82bfef56d8d3941998e3f0b868df6a9494517076f5a86c117f6530db221aa120"
+}

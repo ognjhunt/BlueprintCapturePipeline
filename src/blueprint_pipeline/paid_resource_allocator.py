@@ -123,6 +123,13 @@ from .adp_isaac_lab_arena_vast import (
     build_arena_native_control_bundle,
     run_arena_native_control_vast,
 )
+from .adp009d_franka_vast import run_adp009d_native_microcheck_vast
+from .adp009d_gated_backbone import probe_gated_backbone_access
+from .adp009d_native_microcheck_bundle import (
+    PROBE_KIND as ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
+    build_native_microcheck_bundle_isolated as build_native_microcheck_bundle,
+)
+from .model_access_env import model_access_secret_status, normalize_model_access_env
 from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as ADP_SIMREADY_ISAAC_IMAGE
 from .public_scene_simready_isaac_vast import (
     PROBE_KIND as ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1000,6 +1007,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
             ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
+            ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
             ADP_CONTENT_AGENTS_PROBE_KIND,
             ADP_AURA_SMOKE_PROBE_KIND,
@@ -1073,6 +1081,56 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-authority-id")
     gpu.add_argument("--adp-public-reference-manifest")
     gpu.add_argument("--adp-arena-approval")
+    gpu.add_argument("--adp009d-approved-can")
+    gpu.add_argument("--adp009d-sage-collision")
+    gpu.add_argument("--adp009d-harness-manifest")
+    gpu.add_argument(
+        "--adp009d-aura-particlefield",
+        default=None,
+        help=(
+            "Aura ParticleField USD to render inside the Isaac scene.  Omit for "
+            "a micro-check with no appearance layer."
+        ),
+    )
+    gpu.add_argument(
+        "--adp009d-aura-particlefield-sha256",
+        default=None,
+        help="Expected SHA-256 for the exact Aura/NuRec appearance byte.",
+    )
+    gpu.add_argument(
+        "--adp009d-policy-candidate",
+        default=None,
+        help=(
+            "Frozen candidate whose checkpoint and policy environment the worker "
+            "should provision.  Omit for a micro-check with no policy."
+        ),
+    )
+    gpu.add_argument(
+        "--adp009d-controls",
+        action="store_true",
+        help=(
+            "Run the zero-action and deterministic scripted-positive controls "
+            "before admitting policy execution."
+        ),
+    )
+    gpu.add_argument(
+        "--adp009d-diagnostic-only",
+        action="store_true",
+        help=(
+            "Explicitly admit a camera/physics diagnostic with neither controls "
+            "nor a learned-policy candidate. Paid ADP-009D requests must select "
+            "this mode, controls, or at least one candidate."
+        ),
+    )
+    gpu.add_argument("--adp009d-scenario-instance", default=None)
+    gpu.add_argument(
+        "--adp009d-authorize-gated-backbone",
+        action="store_true",
+        help=(
+            "Explicitly authorize forwarding the canonical Hugging Face credential "
+            "only to materialize GR00T N1.7's pinned Cosmos-Reason2 backbone."
+        ),
+    )
     gpu.add_argument("--adp-simready-isaac-bundle-receipt")
     gpu.add_argument("--adp-job-dir")
     gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
@@ -2136,6 +2194,207 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == ADP009D_NATIVE_MICROCHECK_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "adp009d_approved_can",
+                    "adp009d_sage_collision",
+                    "adp009d_harness_manifest",
+                    "adp_job_dir",
+                )
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            blockers = [*missing, *control_blockers]
+            if args.adp009d_controls and not args.adp009d_scenario_instance:
+                blockers.append("adp009d_control_scenario_instance_missing")
+            selected_candidates = {
+                item.strip()
+                for item in str(args.adp009d_policy_candidate or "").split(",")
+                if item.strip()
+            }
+            execution_modes = sum(
+                (
+                    bool(selected_candidates),
+                    bool(args.adp009d_controls),
+                    bool(args.adp009d_diagnostic_only),
+                )
+            )
+            if execution_modes == 0:
+                blockers.append("adp009d_execution_mode_missing")
+            elif args.adp009d_diagnostic_only and execution_modes != 1:
+                blockers.append("adp009d_execution_modes_conflict")
+            gated_backbone_selected = "groot_n17_droid" in selected_candidates
+            gated_backbone_access: dict[str, Any] | None = None
+            if gated_backbone_selected and not args.adp009d_authorize_gated_backbone:
+                blockers.append("adp009d_gated_backbone_authority_missing")
+            if args.adp009d_authorize_gated_backbone:
+                if not gated_backbone_selected:
+                    blockers.append("adp009d_gated_backbone_authority_without_candidate")
+                else:
+                    normalize_model_access_env()
+                    secret_status = model_access_secret_status()
+                    if secret_status["huggingface"]["auth_ready"] is not True:
+                        blockers.append("adp009d_gated_backbone_token_missing")
+                    else:
+                        gated_backbone_access = probe_gated_backbone_access()
+                        blockers.extend(gated_backbone_access.get("blockers") or [])
+            if args.provider != "vast":
+                blockers.append("adp009d_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("adp009d_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 14_400:
+                blockers.append("adp009d_hard_ttl_invalid")
+            if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
+                blockers.append("adp009d_allowed_active_vast_instance_id_invalid")
+            if bool(args.adp009d_aura_particlefield) != bool(
+                args.adp009d_aura_particlefield_sha256
+            ):
+                blockers.append("adp009d_aura_appearance_path_digest_pair_required")
+            avoidlist_digest = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                if not avoidlist_path.is_file():
+                    blockers.append("adp009d_machine_avoidlist_missing")
+                else:
+                    avoidlist_digest = (
+                        "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                    )
+            prepared_bundle = None
+            if not blockers:
+                try:
+                    prepared_bundle = build_native_microcheck_bundle(
+                        job_dir=Path(args.adp_job_dir) / "bundle",
+                        approved_can_path=args.adp009d_approved_can,
+                        sage_collision_path=args.adp009d_sage_collision,
+                        harness_manifest_path=args.adp009d_harness_manifest,
+                        implementation_commit=control_identity["orchestrator_source_commit"],
+                        policy_candidate_id=args.adp009d_policy_candidate,
+                        run_controls=args.adp009d_controls,
+                        scenario_instance_path=args.adp009d_scenario_instance,
+                        aura_particlefield_path=args.adp009d_aura_particlefield,
+                        expected_aura_particlefield_sha256=(
+                            args.adp009d_aura_particlefield_sha256
+                        ),
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
+                ),
+                "input_digest": (
+                    prepared_bundle.get("input_digest") if prepared_bundle else None
+                ),
+                "candidate_policy_queried": False,
+                "controls_requested": bool(args.adp009d_controls),
+                "diagnostic_only_requested": bool(args.adp009d_diagnostic_only),
+                "scenario_instance_digest": (
+                    prepared_bundle.get("scenario_instance_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "control_plan_digest": (
+                    prepared_bundle.get("control_plan_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "retry_cap": 0,
+                "machine_avoidlist_digest": avoidlist_digest,
+                "gated_backbone_authorized": bool(
+                    args.adp009d_authorize_gated_backbone
+                ),
+                "gated_backbone_access_receipt_digest": (
+                    gated_backbone_access.get("receipt_digest")
+                    if gated_backbone_access
+                    else None
+                ),
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=blockers
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": "user_authorized_bounded_gpu_compute_in_goal_scope",
+                    "private_data_uploaded": False,
+                    "candidate_policy_queried": False,
+                    "physical_outcome_values_uploaded": False,
+                    "explicit_concurrent_gpu_authority_bound": bool(
+                        args.adp_allowed_active_vast_instance_id
+                    ),
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                    "gated_backbone_access": gated_backbone_access,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if prepared_bundle is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_adp009d_native_microcheck_vast(
+                    job_dir=args.adp_job_dir,
+                    prepared_bundle=prepared_bundle,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    machine_avoidlist_path=args.adp_machine_avoidlist,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    authorize_gated_backbone=args.adp009d_authorize_gated_backbone,
+                    allowed_active_instance_ids=(
+                        args.adp_allowed_active_vast_instance_id
+                    ),
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

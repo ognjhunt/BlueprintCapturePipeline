@@ -12,6 +12,7 @@ import argparse
 import base64
 import fcntl
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -274,11 +275,16 @@ def _string(value: Any) -> str:
 def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
     """Return whether a bundle must use the Isaac image/runtime safety path."""
 
-    return provider_bundle_kind in {"isaac", "adp_simready_isaac", "adp_arena"}
+    return provider_bundle_kind in {
+        "isaac",
+        "adp_simready_isaac",
+        "adp_arena",
+        "adp009d_isaac",
+    }
 
 
 def _provider_expected_video_count(provider_bundle_kind: str) -> int:
-    if provider_bundle_kind == "adp_simready_isaac":
+    if provider_bundle_kind in {"adp_simready_isaac", "adp009d_isaac"}:
         return 0
     if _is_isaac_provider_bundle(provider_bundle_kind):
         return DEFAULT_VIDEO_SMOKE_CAMERA_COUNT
@@ -1094,6 +1100,7 @@ def _provider_plan(
     provider_output_put_url: str | None = None,
     provider_bundle_inline_transport: Mapping[str, Any] | None = None,
     require_known_supported_isaac_driver: bool = False,
+    minimum_driver_version: str = "",
 ) -> dict[str, Any]:
     inline_transport = _mapping(provider_bundle_inline_transport)
     plan = {
@@ -1163,6 +1170,7 @@ def _provider_plan(
                 inline_transport.get("inline_provider_bundle_sha256_present") is True
             ),
             "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
+            "minimum_driver_version": minimum_driver_version or None,
         },
         "truth_boundaries": _truth_boundaries(),
         "raw_secret_values_recorded": False,
@@ -1426,6 +1434,23 @@ def _machine_id_set(values: Iterable[Any]) -> set[int]:
     return result
 
 
+def _version_tuple(value: Any) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", _string(value)))
+
+
+def _version_at_least(value: Any, minimum: str) -> bool:
+    if not minimum:
+        return True
+    observed = _version_tuple(value)
+    required = _version_tuple(minimum)
+    if not observed or not required:
+        return False
+    width = max(len(observed), len(required))
+    return observed + (0,) * (width - len(observed)) >= required + (0,) * (
+        width - len(required)
+    )
+
+
 def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {
@@ -1506,6 +1531,43 @@ def _record_machine_avoidlist_entry(
     return payload
 
 
+def _provider_instance_exit_blockers(
+    *,
+    instance_exited: bool,
+    provider_completed_or_blocked: bool,
+) -> list[str]:
+    """Classify a paid host that disappears before the bundle seals output.
+
+    A completed or typed-blocked bundle owns its result. An instance that exits
+    after the entrypoint starts but before either terminal marker is a provider
+    host failure, not a simulator or control result. v95 otherwise collapsed
+    that fact into generic missing-output blockers and left the machine eligible.
+    """
+
+    if instance_exited and not provider_completed_or_blocked:
+        return ["provider_instance_exited_before_bundle_terminal_marker"]
+    return []
+
+
+def _machine_avoidlist_reason(blockers: Sequence[str]) -> str | None:
+    """Return the evidence-bounded machine exclusion reason, if any."""
+
+    observed = set(blockers)
+    if "provider_instance_exited_before_bundle_terminal_marker" in observed:
+        return "vast_provider_bundle_instance_exited_before_terminal_marker"
+    startup_blockers = {
+        "vast_heartbeat_blocked",
+        "vast_heartbeat_instance_exited",
+        "vast_heartbeat_no_log_progress_timeout",
+        "vast_heartbeat_container_missing",
+        "vast_heartbeat_output_missing_success_marker",
+        "vast_probe_interrupted_before_completion",
+    }
+    if observed & startup_blockers or any("No such container" in item for item in blockers):
+        return "vast_startup_control_plane_did_not_reach_onstart_heartbeat"
+    return None
+
+
 def _attempt_preservation_slug(generated_at: str) -> str:
     """Compatibility wrapper for the decomposed preservation helper."""
 
@@ -1542,6 +1604,7 @@ def _select_offer(
     allowed_machine_ids: Iterable[Any] = (),
     require_avx: bool = False,
     require_known_supported_isaac_driver: bool = False,
+    minimum_driver_version: str = "",
     min_reliability: float = 0.0,
     require_direct_port: bool = False,
     preferred_gpu_keywords: Sequence[str] = (),
@@ -1574,6 +1637,7 @@ def _select_offer(
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and (not require_avx or item.get("has_avx") is True)
+        and _version_at_least(item.get("driver_version"), minimum_driver_version)
     ]
     if require_known_supported_isaac_driver:
         candidates = [
@@ -1612,8 +1676,15 @@ def _vast_stale_offer_create_retry_attempts() -> int:
         return 2
 
 
-def _is_stale_offer_create_http_error(exc: urllib.error.HTTPError) -> bool:
-    return int(getattr(exc, "code", 0) or 0) in {404, 409, 410}
+def _is_stale_offer_create_http_error(
+    exc: urllib.error.HTTPError,
+    error_text: str = "",
+) -> bool:
+    code = int(getattr(exc, "code", 0) or 0)
+    if code in {404, 409, 410}:
+        return True
+    normalized = error_text.lower()
+    return code == 400 and "no_such_ask" in normalized
 
 
 def _offer_selection_manifest(
@@ -1632,6 +1703,7 @@ def _offer_selection_manifest(
     machine_avoidlist_path: Path,
     avoidlist_status: str | None,
     blockers: Sequence[str],
+    minimum_driver_version: str = "",
     min_reliability: float = 0.0,
     require_direct_port: bool = False,
     preferred_gpu_keywords: Sequence[str] = (),
@@ -1652,6 +1724,11 @@ def _offer_selection_manifest(
         1
         for item in summaries
         if item.get("isaac_driver_support_status") == "known_unsupported_omniverse_rtx_driver_range"
+    )
+    minimum_driver_offer_count = sum(
+        1
+        for item in summaries
+        if _version_at_least(item.get("driver_version"), minimum_driver_version)
     )
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
@@ -1681,6 +1758,7 @@ def _offer_selection_manifest(
         and gpu_allowed_by_policy(item, policy)
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
+        and _version_at_least(item.get("driver_version"), minimum_driver_version)
     )
     return {
         "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -1697,6 +1775,7 @@ def _offer_selection_manifest(
             summaries, max_compute_cap
         ),
         "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
+        "minimum_driver_version": minimum_driver_version or None,
         "min_reliability": min_reliability,
         "require_direct_port": require_direct_port,
         "preferred_gpu_keywords": list(preferred_gpu_keywords),
@@ -1706,6 +1785,7 @@ def _offer_selection_manifest(
         "quality_filtered_offer_count": quality_filtered_offer_count,
         "known_supported_driver_offer_count": known_supported_offer_count,
         "known_unsupported_driver_offer_count": known_unsupported_driver_offer_count,
+        "minimum_driver_offer_count": minimum_driver_offer_count,
         "selected_offer": _offer_artifact_summary(selected_offer),
         "selected_offer_isaac_rt_candidate": bool(
             selected_offer and selected_offer.get("isaac_rt_candidate")
@@ -1929,6 +2009,30 @@ def _blueprint_bundle_preflight(
         "provider_runtime/founder_sim_approval_receipt.json",
         "provider_runtime/arena_worker_request.json",
     }
+    adp009d_isaac_required_entries = {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/adp_arena_provider_runner.py",
+        "provider_runtime/adp_arena_provider_manifest.json",
+        "provider_runtime/adp009d_isaac_runtime.py",
+        "provider_runtime/adp009d_franka_eval_harness_manifest.v1.json",
+        "provider_runtime/assets/approved_can.usda",
+        "provider_runtime/assets/sage_collision.usd",
+        "provider_runtime/assets/sage_collision_overlay.usda",
+    }
+    adp009d_ovrtx_required_entries = {
+        "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh",
+        "provider_runtime/adp009d_ovrtx_provider_runner.py",
+        "provider_runtime/adp009d_ovrtx_provider_manifest.json",
+        "provider_runtime/run_ovrtx_preflight_worker.py",
+        "provider_runtime/assets/aura_gaussian_surflets.usdc",
+    }
+    adp009d_aura_native_required_entries = {
+        "provider_runtime/run_adp009d_aura_native_provider_runtime.sh",
+        "provider_runtime/adp009d_aura_native_provider_runner.py",
+        "provider_runtime/adp009d_aura_native_provider_manifest.json",
+        "provider_runtime/aurafusion360_source.zip",
+        "provider_runtime/aura_sealed.ply",
+    }
     adp_content_agents_required_entries = {
         "provider_runtime/run_adp_content_agents_provider_runtime.sh",
         "provider_runtime/adp_content_agents_provider_runner.py",
@@ -1984,6 +2088,23 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "adp009d_isaac":
+        required_entries = adp009d_isaac_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_arena_provider_runner.py"
+        readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "adp009d_ovrtx":
+        required_entries = adp009d_ovrtx_required_entries
+        entrypoint_member = "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh"
+        runner_member = "provider_runtime/adp009d_ovrtx_provider_runner.py"
+        readiness_name = "adp009d_ovrtx_provider_manifest.json"
+    elif provider_bundle_kind == "adp009d_aura_native":
+        required_entries = adp009d_aura_native_required_entries
+        entrypoint_member = (
+            "provider_runtime/run_adp009d_aura_native_provider_runtime.sh"
+        )
+        runner_member = "provider_runtime/adp009d_aura_native_provider_runner.py"
+        readiness_name = "adp009d_aura_native_provider_manifest.json"
     elif provider_bundle_kind == "adp_content_agents":
         required_entries = adp_content_agents_required_entries
         entrypoint_member = "provider_runtime/run_adp_content_agents_provider_runtime.sh"
@@ -2045,6 +2166,9 @@ def _blueprint_bundle_preflight(
             "unitree_groot_n17_sonic",
             "adp_simpler",
             "adp_arena",
+            "adp009d_isaac",
+            "adp009d_ovrtx",
+            "adp009d_aura_native",
             "adp_content_agents",
             "adp_aura_smoke",
             "adp_aura_interiorgs",
@@ -2095,6 +2219,92 @@ def _blueprint_bundle_preflight(
                         )
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
+                    if provider_bundle_kind == "adp009d_ovrtx":
+                        manifest_member = (
+                            "provider_runtime/adp009d_ovrtx_provider_manifest.json"
+                        )
+                        try:
+                            manifest_payload = json.loads(
+                                archive.read(manifest_member).decode("utf-8")
+                            )
+                            camera_rows = manifest_payload.get("camera_configs")
+                            camera_ids = [
+                                str(row.get("camera_id") or "")
+                                for row in camera_rows
+                                if isinstance(row, Mapping)
+                            ] if isinstance(camera_rows, list) else []
+                            valid_camera_ids = (
+                                2 <= len(camera_ids) <= 8
+                                and len(camera_ids) == len(set(camera_ids))
+                                and all(
+                                    re.fullmatch(r"[a-z][a-z0-9_]{0,63}", camera_id)
+                                    for camera_id in camera_ids
+                                )
+                            )
+                            if not valid_camera_ids:
+                                blockers.append(
+                                    "adp009d_ovrtx_camera_manifest_invalid"
+                                )
+                            else:
+                                required_entries.update(
+                                    {
+                                        "provider_runtime/configs/"
+                                        f"{camera_id}.ovrtx.json"
+                                        for camera_id in camera_ids
+                                    }
+                                )
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            blockers.append("adp009d_ovrtx_camera_manifest_invalid")
+                    if provider_bundle_kind == "adp009d_aura_native":
+                        manifest_member = (
+                            "provider_runtime/"
+                            "adp009d_aura_native_provider_manifest.json"
+                        )
+                        try:
+                            manifest_payload = json.loads(
+                                archive.read(manifest_member).decode("utf-8")
+                            )
+                            camera_rows = manifest_payload.get("camera_configs")
+                            camera_ids = (
+                                [
+                                    str(row.get("camera_id") or "")
+                                    for row in camera_rows
+                                    if isinstance(row, Mapping)
+                                ]
+                                if isinstance(camera_rows, list)
+                                else []
+                            )
+                            valid_camera_ids = (
+                                2 <= len(camera_ids) <= 8
+                                and len(camera_ids) == len(set(camera_ids))
+                                and all(
+                                    re.fullmatch(
+                                        r"[a-z][a-z0-9_]{0,63}", camera_id
+                                    )
+                                    for camera_id in camera_ids
+                                )
+                            )
+                            if not valid_camera_ids:
+                                blockers.append(
+                                    "adp009d_aura_native_camera_manifest_invalid"
+                                )
+                            else:
+                                required_entries.update(
+                                    {
+                                        "provider_runtime/camera_configs/"
+                                        f"{camera_id}.json"
+                                        for camera_id in camera_ids
+                                    }
+                                )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            json.JSONDecodeError,
+                        ):
+                            blockers.append(
+                                "adp009d_aura_native_camera_manifest_invalid"
+                            )
                     if (
                         provider_bundle_kind in {"isaac", "adp_simready_isaac"}
                         and "provider_runtime/isaac_provider_eval_manifest.json" in zip_entries
@@ -2586,6 +2796,9 @@ def _resolve_launch_mode(
             "unitree_unifolm",
             "adp_simpler",
             "adp_arena",
+            "adp009d_isaac",
+            "adp009d_ovrtx",
+            "adp009d_aura_native",
             "adp_content_agents",
             "adp_aura_smoke",
             "adp_aura_interiorgs",
@@ -2635,7 +2848,7 @@ def _probe_env(
         "BLUEPRINT_VAST_PROBE": "true",
         "BLUEPRINT_VAST_PROBE_JOB_DIR_BASENAME": job_dir.name,
     }
-    if enable_isaac_smoke or provider_bundle_kind == "adp_arena":
+    if enable_isaac_smoke or provider_bundle_kind in {"adp_arena", "adp009d_isaac"}:
         env.update(
             {
                 "ACCEPT_EULA": "Y",
@@ -2646,6 +2859,8 @@ def _probe_env(
     elif provider_bundle_kind in {
         "adp_simpler",
         "adp_content_agents",
+        "adp009d_ovrtx",
+        "adp009d_aura_native",
         "adp_aura_smoke",
         "adp_aura_interiorgs",
         "adp_inpaint360_interiorgs",
@@ -2684,6 +2899,7 @@ def _probe_env(
         "BLUEPRINT_OSCAR_WAM_ENABLE_HF_TRANSFER",
         "BLUEPRINT_WAM_PROVIDER_DISABLE_VENV",
         "BLUEPRINT_WAM_PROVIDER_ALLOW_BREAK_SYSTEM_PACKAGES",
+        "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED",
         "BLUEPRINT_OSCAR_WAM_HF_REPO",
         "BLUEPRINT_OSCAR_WAM_SOURCE_URL",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND",
@@ -2886,16 +3102,18 @@ def _probe_shell_script(
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     quoted_url = shlex.quote(heartbeat_url)
+    # Unconditional, and retried.  This began as an allowlist of the four kinds
+    # observed to fail, but an HTTP/2 stream reset is a property of the
+    # transport and the object size, not of what is inside the zip: a bundle
+    # kind absent from the list died with `curl: (92) HTTP/2 stream 1 was not
+    # closed cleanly` after transferring zero bytes, which is precisely what
+    # --http1.1 exists here to prevent.  --retry-all-errors is what makes curl
+    # retry a transport error like 92 at all; plain --retry covers only
+    # transient HTTP status codes and timeouts, so it would not have retried
+    # this failure.
     curl_download_protocol = (
-        "--http1.1 "
-        if provider_bundle_kind
-        in {
-            "adp_aura_smoke",
-            "adp_aura_interiorgs",
-            "adp_inpaint360_interiorgs",
-            "adp_simready_isaac",
-        }
-        else ""
+        "--http1.1 --retry 5 --retry-delay 3 --retry-all-errors "
+        "--connect-timeout 30 "
     )
     script = (
         "set +e; WORK_DIR=/workspace; "
@@ -2959,8 +3177,10 @@ def _probe_shell_script(
         "PY\n"
         "return $?; "
         "fi; "
-        f'if command -v curl >/dev/null 2>&1; then curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst"; return $?; fi; '
-        'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src"; return $?; fi; '
+        f'if command -v curl >/dev/null 2>&1; then curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
+        'echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; fi; '
+        'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src" && return 0; '
+        'echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:wget; fi; '
         'blueprint_download_py="${PY_NET:-${RUNTIME_PY:-}}"; '
         'if [ -n "$blueprint_download_py" ]; then '
         'BLUEPRINT_DOWNLOAD_URL="$blueprint_download_src" BLUEPRINT_DOWNLOAD_PATH="$blueprint_download_dst" "$blueprint_download_py" - <<\'PY\'\n'
@@ -3160,7 +3380,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
                 "fi; fi; fi; fi; "
             )
-        elif provider_bundle_kind == "adp_arena":
+        elif provider_bundle_kind in {"adp_arena", "adp009d_isaac"}:
             script += (
                 common_start + "RUNTIME_PY=/isaac-sim/python.sh; "
                 'if [ ! -x "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
@@ -3200,6 +3420,104 @@ def _probe_shell_script(
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_arena_provider_runtime_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "adp009d_ovrtx":
+            script += (
+                common_start + "RUNTIME_PY=''; "
+                "if command -v apt-get >/dev/null 2>&1; then "
+                "apt-get update >/tmp/blueprint_adp009d_ovrtx_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip libgl1 libglib2.0-0 libopengl0 libvulkan1 vulkan-tools xserver-xorg-core xvfb >/tmp/blueprint_adp009d_ovrtx_apt_install.log 2>&1; "
+                "fi; "
+                "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
+                "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/adp009d_ovrtx_provider_bundle" "$WORK_DIR/adp009d_ovrtx_provider_runtime_bundle.zip" "$WORK_DIR/adp009d_ovrtx_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp009d_ovrtx_provider_runtime_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp009d_ovrtx_provider_runtime_bundle.zip" "$WORK_DIR/adp009d_ovrtx_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/adp009d_ovrtx_provider_bundle/provider_runtime/run_adp009d_ovrtx_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_ADP009D_OVRTX_OUTPUT_DIR="$WORK_DIR/adp009d_ovrtx_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_ADP009D_OVRTX_OUTPUT_DIR"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$WORK_DIR/adp009d_ovrtx_provider_bundle/provider_runtime/run_adp009d_ovrtx_provider_runtime.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_ADP009D_OVRTX_OUTPUT_DIR', '/workspace/adp009d_ovrtx_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'adp009d_ovrtx_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file() and path.stat().st_size <= 300_000_000:\n"
+                "                archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp009d_ovrtx_provider_runtime_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "adp009d_aura_native":
+            script += (
+                common_start + "RUNTIME_PY=''; "
+                "if command -v apt-get >/dev/null 2>&1; then "
+                "apt-get update >/tmp/blueprint_adp009d_aura_native_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl unzip git build-essential >/tmp/blueprint_adp009d_aura_native_apt_install.log 2>&1; "
+                "fi; "
+                "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
+                "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/adp009d_aura_native_provider_bundle" "$WORK_DIR/adp009d_aura_native_provider_runtime_bundle.zip" "$WORK_DIR/adp009d_aura_native_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp009d_aura_native_provider_runtime_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp009d_aura_native_provider_runtime_bundle.zip" "$WORK_DIR/adp009d_aura_native_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/adp009d_aura_native_provider_bundle/provider_runtime/run_adp009d_aura_native_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_ADP009D_AURA_NATIVE_OUTPUT_DIR="$WORK_DIR/adp009d_aura_native_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_ADP009D_AURA_NATIVE_OUTPUT_DIR"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$WORK_DIR/adp009d_aura_native_provider_bundle/provider_runtime/run_adp009d_aura_native_provider_runtime.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_ADP009D_AURA_NATIVE_OUTPUT_DIR', '/workspace/adp009d_aura_native_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'adp009d_aura_native_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file() and path.stat().st_size <= 300_000_000:\n"
+                "                archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp009d_aura_native_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3715,6 +4033,50 @@ def _instance_status(instance_payload: Mapping[str, Any]) -> str:
     )
 
 
+def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
+    """Ask the provider whether the container is still alive.
+
+    The log poller could not tell a dead container from a slow one: a process
+    that exits stops writing, so the log simply freezes, which is byte-identical
+    to a boot that is merely slow.  A live run sat on a container that had
+    exited mid-Isaac-startup and kept polling it for twenty-six minutes while
+    the API reported ``actual_status: exited`` the whole time.  Worse, once a
+    worker has emitted phase markers only a new marker counts as progress, and
+    a dead container emits markers never -- so the no-progress watchdog was the
+    only backstop, at thirty minutes, and would have blamed "no progress"
+    rather than naming the exit.
+
+    A probe error is not evidence of death: only a positive reading counts, so
+    a network blip cannot kill a healthy run.
+    """
+
+    try:
+        _status_code, payload = _api_json(
+            method="GET", path="/instances/", api_key=api_key, timeout_seconds=30
+        )
+    except Exception as exc:  # pragma: no cover - live network dependent.
+        # Same shape on every path: a caller must never have to know that the
+        # error branch omits the key it is about to test.
+        return {
+            "probe_error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            "observed": False,
+            "status": "unknown",
+            "exited": False,
+        }
+    rows = _instance_list_rows(payload)
+    for row in rows:
+        if _number(row.get("id")) == float(int(instance_id)):
+            status = _instance_status(row).lower()
+            return {
+                "observed": True,
+                "status": status,
+                "exited": status in {"exited", "stopped_before_start"},
+                "probe_error": None,
+            }
+    # Absent from the listing entirely: destroyed out from under this run.
+    return {"observed": True, "status": "absent", "exited": True, "probe_error": None}
+
+
 def _instance_list_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     instances = payload.get("instances")
     if isinstance(instances, list):
@@ -3952,6 +4314,10 @@ def _request_logs_and_fetch(
     break_reason = ""
     attempt_index = 0
     container_missing_count = 0
+    # Two consecutive readings, so a single API glitch cannot kill a healthy
+    # run; still detects a dead container in about a minute rather than thirty.
+    instance_exited_count = 0
+    last_instance_liveness: dict[str, Any] = {}
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -3979,6 +4345,18 @@ def _request_logs_and_fetch(
             except Exception as exc:  # pragma: no cover - live network dependent.
                 fetch_error = f"{type(exc).__name__}: {str(exc)[:300]}"
         output_text = attempt_text
+        # Persist each redacted snapshot immediately.  If the allocator is interrupted
+        # or the outer TTL fires during a later poll, the last scientific worker phases
+        # must survive teardown instead of disappearing with the provider instance.
+        ensure_dir(output_log_path.parent)
+        output_log_path.write_text(
+            _redact_text(output_text, secret_values), encoding="utf-8"
+        )
+        last_instance_liveness = _instance_liveness(instance_id=instance_id, api_key=api_key)
+        if last_instance_liveness.get("exited"):
+            instance_exited_count += 1
+        elif last_instance_liveness.get("observed"):
+            instance_exited_count = 0
         marker_found = any(marker and marker in attempt_text for marker in success_markers)
         container_missing = "No such container" in attempt_text
         runtime_phase_count = attempt_text.count("BLUEPRINT_WAM_RUNTIME_PHASE:")
@@ -3992,8 +4370,16 @@ def _request_logs_and_fetch(
         container_or_daemon_error_only = container_missing or (
             "Error response from daemon" in attempt_text
         )
+        # Once a worker has emitted structured phase markers, only a new phase marker
+        # is scientific progress.  Benign container noise (for example, sshd session
+        # lines produced by a read-only diagnostic) must not keep a paid run alive.
+        structured_phase_tracking_active = bool(
+            runtime_phase_count or previous_runtime_phase_count
+        )
         progress_observed = bool(attempt_text.strip()) and (
-            runtime_phase_progress or (output_changed and not container_or_daemon_error_only)
+            runtime_phase_progress
+            if structured_phase_tracking_active
+            else (output_changed and not container_or_daemon_error_only)
         )
         if progress_observed:
             last_progress_monotonic = time.monotonic()
@@ -4016,6 +4402,7 @@ def _request_logs_and_fetch(
                 "output_changed": output_changed,
                 "runtime_phase_marker_count": runtime_phase_count,
                 "runtime_phase_progress_observed": runtime_phase_progress,
+                "structured_phase_tracking_active": structured_phase_tracking_active,
                 "progress_observed": progress_observed,
                 "no_progress_elapsed_seconds": round(no_progress_elapsed_seconds, 6),
                 "no_progress_timeout_reached": no_progress_timeout_reached,
@@ -4024,14 +4411,22 @@ def _request_logs_and_fetch(
                 "success_marker_found": marker_found,
                 "container_missing_marker_observed": container_missing,
                 "container_missing_observed_count": container_missing_count,
+                "instance_status": last_instance_liveness.get("status"),
+                "instance_exited_observed_count": instance_exited_count,
+                "instance_liveness_probe_error": last_instance_liveness.get("probe_error"),
             }
         )
         terminal_container_missing = container_missing and container_missing_count >= max(
             1, int(container_missing_retry_attempts)
         )
         deadline_reached = time.monotonic() >= deadline
+        instance_exited = instance_exited_count >= 2
         if marker_found:
             break_reason = "success_marker_found"
+        elif instance_exited:
+            # Ahead of the generic watchdogs so the reason names the exit rather
+            # than blaming absent log progress, which is only its symptom.
+            break_reason = "instance_exited"
         elif terminal_container_missing:
             break_reason = "terminal_container_missing"
         elif no_progress_timeout_reached:
@@ -4054,6 +4449,8 @@ def _request_logs_and_fetch(
         "log_poll_attempts": attempts,
         "no_progress_timeout_seconds": no_progress_limit_seconds,
         "no_progress_timeout_reached": no_progress_timeout_reached,
+        "instance_final_status": last_instance_liveness.get("status"),
+        "instance_exited_observed": instance_exited_count >= 2,
         "break_reason": break_reason,
     }
 
@@ -4074,6 +4471,9 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "evaluator",
             "adp_simpler",
             "adp_arena",
+            "adp009d_isaac",
+            "adp009d_ovrtx",
+            "adp009d_aura_native",
             "adp_content_agents",
             "adp_aura_smoke",
             "adp_aura_interiorgs",
@@ -4556,6 +4956,7 @@ def run_vast_provider_adapter(
     verify_staging_urls: bool = False,
     allow_staging_output_put_probe: bool = False,
     require_known_supported_isaac_driver: bool = False,
+    minimum_driver_version: str = "",
     min_reliability: float | None = None,
     require_direct_port: bool | None = None,
     preferred_gpu_keywords: Sequence[str] = (),
@@ -4634,6 +5035,11 @@ def run_vast_provider_adapter(
     resolved_preferred_gpu_keywords = [
         _string(item) for item in preferred_gpu_keywords if _string(item)
     ] or _env_csv(VAST_PREFERRED_GPU_KEYWORDS_ENV)
+    resolved_minimum_driver_version = _string(minimum_driver_version)
+    if resolved_minimum_driver_version and not _version_tuple(
+        resolved_minimum_driver_version
+    ):
+        raise ValueError("invalid_vast_minimum_driver_version")
     resolved_preferred_geolocation_regex = _string(
         preferred_geolocation_regex or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
     )
@@ -4738,6 +5144,9 @@ def run_vast_provider_adapter(
             "unitree_groot_n17_sonic",
             "adp_simpler",
             "adp_arena",
+            "adp009d_isaac",
+            "adp009d_ovrtx",
+            "adp009d_aura_native",
         }
         and _string(provider_bundle_url)
         and inline_bundle_transport.get("inline_provider_bundle_transport_used") is True
@@ -4804,6 +5213,7 @@ def run_vast_provider_adapter(
         provider_output_put_url=provider_output_put_url,
         provider_bundle_inline_transport=inline_bundle_transport,
         require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+        minimum_driver_version=resolved_minimum_driver_version,
     )
     _budget_ledger(
         job_dir=resolved_job_dir,
@@ -4836,6 +5246,7 @@ def run_vast_provider_adapter(
         "isaac_image": isaac_image,
         "selected_container_image": selected_container_image,
         "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
+        "minimum_driver_version": resolved_minimum_driver_version or None,
         "provider_bundle_inline_transport_used": (
             inline_bundle_transport.get("inline_provider_bundle_transport_used") is True
         ),
@@ -5699,6 +6110,7 @@ def run_vast_provider_adapter(
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+                minimum_driver_version=resolved_minimum_driver_version,
                 min_reliability=resolved_min_reliability,
                 require_direct_port=resolved_require_direct_port,
                 preferred_gpu_keywords=resolved_preferred_gpu_keywords,
@@ -5712,6 +6124,8 @@ def run_vast_provider_adapter(
                     offer_blockers.append("no_vast_offer_matching_allowed_machine_ids")
                 if resolved_min_compute_cap:
                     offer_blockers.append("no_vast_offer_meeting_min_compute_cap")
+                if resolved_minimum_driver_version:
+                    offer_blockers.append("no_vast_offer_meeting_minimum_driver_version")
                 if vcc.any_offer_exceeds_ceiling(offers, resolved_max_compute_cap):
                     offer_blockers.append("no_vast_offer_at_or_below_max_compute_cap")
                 offer_blockers.append(
@@ -5729,6 +6143,7 @@ def run_vast_provider_adapter(
                 min_compute_cap=resolved_min_compute_cap,
                 max_compute_cap=resolved_max_compute_cap,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+                minimum_driver_version=resolved_minimum_driver_version,
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
                 machine_avoidlist_path=resolved_machine_avoidlist_path,
@@ -5823,12 +6238,15 @@ def run_vast_provider_adapter(
                 )
                 break
             except urllib.error.HTTPError as exc:
+                error_text = exc.read().decode("utf-8", errors="replace")
+                # Preserve the response for the outer fail-closed HTTP error
+                # receipt when this is not the documented stale-offer race.
+                exc.fp = io.BytesIO(error_text.encode("utf-8"))
                 if (
-                    not _is_stale_offer_create_http_error(exc)
+                    not _is_stale_offer_create_http_error(exc, error_text)
                     or create_attempt_index >= max_stale_offer_retries
                 ):
                     raise
-                error_text = exc.read().decode("utf-8", errors="replace")
                 selected_machine_id = _number(selected_offer.get("machine_id"))
                 if selected_machine_id is not None:
                     excluded_machine_ids.add(int(selected_machine_id))
@@ -5864,6 +6282,7 @@ def run_vast_provider_adapter(
                     max_hourly_rate=max_hourly_rate,
                     min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                     require_known_supported_isaac_driver=require_known_supported_isaac_driver,
+                    minimum_driver_version=resolved_minimum_driver_version,
                     excluded_machine_ids=excluded_machine_ids,
                     allowed_machine_ids=resolved_allowed_machine_ids,
                     machine_avoidlist_path=resolved_machine_avoidlist_path,
@@ -6087,8 +6506,17 @@ def run_vast_provider_adapter(
             onstart_logs.get("no_progress_timeout_reached")
             or heartbeat_log_break_reason == "no_log_progress_timeout"
         )
+        heartbeat_instance_exited = bool(
+            onstart_logs.get("instance_exited_observed")
+            or heartbeat_log_break_reason == "instance_exited"
+        )
         heartbeat_blockers = []
         if not startup_probe_ok:
+            if heartbeat_instance_exited:
+                # Named ahead of the timeout: a frozen log is the symptom of a
+                # dead container, and reporting the symptom sent one run
+                # chasing a render bug that was really a host that died.
+                heartbeat_blockers.append("vast_heartbeat_instance_exited")
             if heartbeat_no_progress_timeout:
                 heartbeat_blockers.append("vast_heartbeat_no_log_progress_timeout")
             if _log_result_has_container_missing(onstart_logs):
@@ -6101,6 +6529,8 @@ def run_vast_provider_adapter(
             "status": "completed" if startup_probe_ok else "blocked",
             "instance_id": instance_id,
             "heartbeat_completed": heartbeat_ok,
+            "instance_final_status": onstart_logs.get("instance_final_status"),
+            "instance_exited_observed": heartbeat_instance_exited,
             "startup_probe_proven": startup_probe_ok,
             "startup_probe_proof_source": "heartbeat_url"
             if heartbeat_ok
@@ -6442,6 +6872,12 @@ def run_vast_provider_adapter(
                 completion_blockers.append("provider_entrypoint_start_marker_missing")
             if not provider_completed_or_blocked:
                 completion_blockers.append("provider_bundle_completion_marker_missing")
+            completion_blockers.extend(
+                _provider_instance_exit_blockers(
+                    instance_exited=heartbeat_instance_exited,
+                    provider_completed_or_blocked=provider_completed_or_blocked,
+                )
+            )
             if not provider_upload_ok:
                 completion_blockers.append("provider_output_upload_marker_missing")
             if not output_zip_received:
@@ -6611,6 +7047,8 @@ def run_vast_provider_adapter(
                 exception_blockers.append("no_vast_offer_matching_allowed_machine_ids")
             if resolved_min_compute_cap:
                 exception_blockers.append("no_vast_offer_meeting_min_compute_cap")
+            if resolved_minimum_driver_version:
+                exception_blockers.append("no_vast_offer_meeting_minimum_driver_version")
             exception_blockers.append(
                 "no_vast_offer_with_known_supported_isaac_driver_at_or_below_max_hourly_rate"
                 if require_known_supported_isaac_driver
@@ -6863,29 +7301,6 @@ def run_vast_provider_adapter(
             generated_at=utc_now_iso(),
         )
         launch_lock_handle = None
-        current_blockers = _string_list(base_result.get("blockers"))
-        startup_control_plane_blocked = any(
-            blocker
-            in {
-                "vast_heartbeat_blocked",
-                "vast_heartbeat_no_log_progress_timeout",
-                "vast_heartbeat_container_missing",
-                "vast_heartbeat_output_missing_success_marker",
-                "vast_probe_interrupted_before_completion",
-            }
-            or "No such container" in blocker
-            for blocker in current_blockers
-        )
-        if selected_offer and startup_control_plane_blocked:
-            avoidlist = _record_machine_avoidlist_entry(
-                path=resolved_machine_avoidlist_path,
-                generated_at=utc_now_iso(),
-                selected_offer=selected_offer,
-                instance_id=instance_ids[-1] if instance_ids else None,
-                blockers=current_blockers,
-                reason="vast_startup_control_plane_did_not_reach_onstart_heartbeat",
-            )
-            excluded_machine_ids = _machine_id_set(avoidlist.get("machine_ids") or [])
         _append_phase(
             resolved_job_dir,
             "vast_artifacts_exported",
@@ -6972,6 +7387,18 @@ def run_vast_provider_adapter(
                     "structured_policy_canary_passed": structured_policy_canary_passed,
                 }
             )
+        current_blockers = _string_list(base_result.get("blockers"))
+        avoidlist_reason = _machine_avoidlist_reason(current_blockers)
+        if selected_offer and avoidlist_reason:
+            avoidlist = _record_machine_avoidlist_entry(
+                path=resolved_machine_avoidlist_path,
+                generated_at=utc_now_iso(),
+                selected_offer=selected_offer,
+                instance_id=instance_ids[-1] if instance_ids else None,
+                blockers=current_blockers,
+                reason=avoidlist_reason,
+            )
+            excluded_machine_ids = _machine_id_set(avoidlist.get("machine_ids") or [])
         base_result.update(
             {
                 "vast_instance_ids": instance_ids,

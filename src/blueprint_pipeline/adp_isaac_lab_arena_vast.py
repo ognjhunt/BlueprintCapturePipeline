@@ -11,6 +11,7 @@ import stat
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Mapping
 
 from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
@@ -39,6 +40,9 @@ DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/arena-native-control"
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
+)
+_ADP009D_GATED_BACKBONE_AUTH_ENV = (
+    "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
 )
 
 
@@ -93,6 +97,24 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _stage_machine_avoidlist(job: Path, machine_avoidlist_path: str | Path | None) -> Path:
+    """Stage the machine avoidlist into the job directory, idempotently.
+
+    Callers reasonably keep the avoidlist inside the job directory, which is
+    exactly where it is staged to.  Copying a file onto itself raises
+    SameFileError and aborts the launch after the admission receipt is already
+    written, so an already-staged avoidlist is treated as satisfied.
+    """
+
+    local_avoidlist = job / "adp_arena_vast_machine_avoidlist.json"
+    if machine_avoidlist_path is None:
+        return local_avoidlist
+    source = Path(machine_avoidlist_path).expanduser().resolve()
+    if source != local_avoidlist.resolve():
+        shutil.copy2(source, local_avoidlist)
+    return local_avoidlist
+
+
 def _next_attempt_root(job: Path) -> tuple[int, Path]:
     """Return a fresh evidence root without ever reusing paid-run staging state."""
 
@@ -134,11 +156,16 @@ def _remaining_session_live_minutes(
 
 
 @contextmanager
-def _vast_authority_environment():
-    previous = {name: os.environ.get(name) for name in _VAST_MUTATION_ENV}
+def _vast_authority_environment(*, gated_backbone_authorized: bool = False):
+    managed = (*_VAST_MUTATION_ENV, _ADP009D_GATED_BACKBONE_AUTH_ENV)
+    previous = {name: os.environ.get(name) for name in managed}
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
+        if gated_backbone_authorized:
+            os.environ[_ADP009D_GATED_BACKBONE_AUTH_ENV] = "true"
+        else:
+            os.environ.pop(_ADP009D_GATED_BACKBONE_AUTH_ENV, None)
         yield
     finally:
         for name, value in previous.items():
@@ -218,10 +245,19 @@ def build_arena_native_control_bundle(
     return receipt
 
 
-def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
+def _extract_provider_output(
+    path: Path,
+    destination: Path,
+    *,
+    result_name: str = "adp_arena_native_canary.json",
+    blocker_prefix: str = "adp_arena",
+) -> dict[str, Any]:
     blockers: list[str] = []
     if not path.is_file():
-        return {"status": "blocked", "blockers": ["adp_arena_provider_output_zip_missing"]}
+        return {
+            "status": "blocked",
+            "blockers": [f"{blocker_prefix}_provider_output_zip_missing"],
+        }
     if destination.exists():
         shutil.rmtree(destination)
     ensure_dir(destination)
@@ -231,21 +267,39 @@ def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
             for member in archive.infolist():
                 target = (destination / member.filename).resolve()
                 if root not in target.parents and target != root:
-                    blockers.append("adp_arena_provider_output_zip_path_traversal")
+                    blockers.append(f"{blocker_prefix}_provider_output_zip_path_traversal")
             if not blockers:
                 archive.extractall(destination)
     except (OSError, zipfile.BadZipFile):
-        blockers.append("adp_arena_provider_output_zip_invalid")
-    result_path = destination / "adp_arena_native_canary.json"
+        blockers.append(f"{blocker_prefix}_provider_output_zip_invalid")
+    result_path = destination / result_name
     execution = _read_json(result_path)
     if not execution:
-        blockers.append("adp_arena_native_canary_result_missing")
+        blockers.append(f"{blocker_prefix}_runtime_result_missing")
     return {
         "status": "completed" if not blockers else "blocked",
         "result_path": str(result_path),
         "execution": execution,
         "blockers": sorted(set(blockers)),
     }
+
+
+def _candidate_policy_query_blocker(
+    execution: Mapping[str, Any],
+    *,
+    blocker_prefix: str,
+    query_expected: bool = False,
+) -> str | None:
+    """Match observed query evidence to the transport's declared run mode."""
+
+    queried = execution.get("candidate_policy_queried")
+    if queried is query_expected:
+        return None
+    if queried is True:
+        return f"{blocker_prefix}_candidate_policy_queried"
+    if queried is False:
+        return f"{blocker_prefix}_candidate_policy_query_required"
+    return f"{blocker_prefix}_candidate_policy_query_status_missing"
 
 
 def run_arena_native_control_vast(
@@ -259,6 +313,27 @@ def run_arena_native_control_vast(
     max_hourly_rate_usd: float = 1.00,
     hard_cap_usd: float = 4.00,
     hard_ttl_seconds: int = 14_400,
+    expected_output_filename: str = "adp_arena_native_canary.json",
+    container_image: str = DEFAULT_IMAGE,
+    provider_bundle_kind: str = "adp_arena",
+    result_schema_version: str = RESULT_SCHEMA_VERSION,
+    object_store_key_prefix: str = DEFAULT_KEY_PREFIX,
+    instance_label_prefix: str = "blueprint-adp-arena-",
+    blocker_prefix: str = "adp_arena",
+    min_gpu_ram_mb: int = 24_000,
+    min_compute_cap: int = 0,
+    minimum_driver_version: str = "",
+    require_known_supported_isaac_driver: bool = True,
+    enable_isaac_smoke: bool = True,
+    forward_hf_token: bool = False,
+    allowed_active_instance_ids: Sequence[int] = (),
+    candidate_policy_query_expected: bool = False,
+    preferred_gpu_keywords: tuple[str, ...] = (
+        "RTX 4090",
+        "RTX A6000",
+        "RTX A5000",
+        "RTX 3090",
+    ),
 ) -> dict[str, Any]:
     """Run one zero-retry Arena native-control acquisition on Vast."""
 
@@ -281,7 +356,7 @@ def run_arena_native_control_vast(
         raise ValueError("adp_arena_prepared_bundle_binding_invalid")
     if not execute:
         result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
+            "schema_version": result_schema_version,
             "generated_at": generated,
             "status": "dry_run_ready",
             "bundle": bundle,
@@ -304,7 +379,7 @@ def run_arena_native_control_vast(
     )
     if remaining_live_minutes < 30:
         result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
+            "schema_version": result_schema_version,
             "generated_at": generated,
             "status": "blocked",
             "attempt_number": attempt_number,
@@ -319,13 +394,13 @@ def run_arena_native_control_vast(
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
         bundle_path=str(bundle_path),
-        key_prefix=os.getenv("BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", DEFAULT_KEY_PREFIX),
+        key_prefix=os.getenv("BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", object_store_key_prefix),
         expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
         generated_at=generated,
     )
     if staging.get("status") != "completed":
         result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
+            "schema_version": result_schema_version,
             "generated_at": generated,
             "status": "blocked",
             "attempt_number": attempt_number,
@@ -341,12 +416,12 @@ def run_arena_native_control_vast(
     output_get_url = (staging_dir / "provider_output_get_url.txt").read_text().strip()
     provider_run = attempt_root / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
-    local_avoidlist = job / "adp_arena_vast_machine_avoidlist.json"
-    if machine_avoidlist_path is not None:
-        shutil.copy2(Path(machine_avoidlist_path).expanduser().resolve(), local_avoidlist)
+    local_avoidlist = _stage_machine_avoidlist(job, machine_avoidlist_path)
     adapter: dict[str, Any] = {}
     try:
-        with _vast_authority_environment():
+        with _vast_authority_environment(
+            gated_backbone_authorized=forward_hf_token
+        ):
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
                 mode="live-startup-probe",
@@ -357,49 +432,64 @@ def run_arena_native_control_vast(
                 hard_cap_usd=hard_cap_usd,
                 max_live_minutes=remaining_live_minutes,
                 session_max_live_minutes=hard_ttl_seconds // 60,
-                public_image=DEFAULT_IMAGE,
-                isaac_image=DEFAULT_IMAGE,
+                public_image=container_image,
+                isaac_image=container_image,
                 ngc_image_login_mode="always",
                 provider_bundle=str(bundle_path),
                 provider_bundle_url=bundle_url,
                 provider_output_put_url=output_put_url,
                 provider_output_get_url=output_get_url,
                 provider_runtime_output_zip=output_zip,
-                enable_isaac_smoke=True,
+                enable_isaac_smoke=enable_isaac_smoke,
                 enable_blueprint_bundle=True,
-                provider_bundle_kind="adp_arena",
+                provider_bundle_kind=provider_bundle_kind,
                 vast_launch_mode="ssh_direct",
                 allow_cold_isaac_image_pull=True,
                 min_cold_isaac_pull_live_minutes=30,
                 disk_gb=200,
-                min_gpu_ram_mb=24_000,
+                min_gpu_ram_mb=min_gpu_ram_mb,
+                min_compute_cap=min_compute_cap,
                 poll_interval_seconds=15,
                 startup_timeout_seconds=remaining_live_minutes * 60,
                 heartbeat_no_progress_seconds=1800,
                 session_budget_ledger_path=job / "adp_arena_vast_session_budget.json",
                 verify_staging_urls=True,
-                require_known_supported_isaac_driver=True,
-                preferred_gpu_keywords=("RTX 4090", "RTX A6000", "RTX A5000", "RTX 3090"),
+                require_known_supported_isaac_driver=(
+                    require_known_supported_isaac_driver
+                ),
+                minimum_driver_version=minimum_driver_version,
+                preferred_gpu_keywords=preferred_gpu_keywords,
                 prefer_isaac_rt=True,
                 machine_avoidlist_path=local_avoidlist,
-                instance_label_prefix="blueprint-adp-arena-",
-                forward_hf_token=False,
+                instance_label_prefix=instance_label_prefix,
+                forward_hf_token=forward_hf_token,
+                allowed_active_instance_ids=allowed_active_instance_ids,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
-    extracted = _extract_provider_output(output_zip, attempt_root / "immutable_execution")
+    extracted = _extract_provider_output(
+        output_zip,
+        attempt_root / "immutable_execution",
+        result_name=expected_output_filename,
+        blocker_prefix=blocker_prefix,
+    )
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
-        blockers.extend(execution.get("blockers") or ["adp_arena_native_control_not_completed"])
-    if execution.get("candidate_policy_queried") is not False:
-        blockers.append("adp_arena_native_control_candidate_policy_queried")
+        blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
+    policy_query_blocker = _candidate_policy_query_blocker(
+        execution,
+        blocker_prefix=blocker_prefix,
+        query_expected=candidate_policy_query_expected,
+    )
+    if policy_query_blocker:
+        blockers.append(policy_query_blocker)
     if teardown.get("continuing_spend_from_this_run") is not False:
-        blockers.append("adp_arena_vast_provider_zero_not_proven")
+        blockers.append(f"{blocker_prefix}_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
-        blockers.append("adp_arena_object_store_provider_zero_not_proven")
+        blockers.append(f"{blocker_prefix}_object_store_provider_zero_not_proven")
     artifact_manifest_path = attempt_root / "artifact_manifest.json"
     try:
         artifact_manifest = build_task_evaluation_artifact_manifest(
@@ -417,20 +507,21 @@ def run_arena_native_control_vast(
                 "teardown_manifest",
             ),
             binding={
-                "allocator_lane": PROBE_KIND,
+                "allocator_lane": provider_bundle_kind,
                 "attempt_number": attempt_number,
                 "bundle_sha256": bundle.get("bundle_sha256"),
                 "protocol_digest": bundle.get("protocol_digest"),
                 "provider": "vast",
+                "result_schema_version": result_schema_version,
                 "retry_cap": 0,
             },
             output_path=artifact_manifest_path,
         )
         blockers.extend(artifact_manifest.get("blockers") or [])
     except (OSError, TaskEvaluationArtifactManifestError) as exc:
-        blockers.append(f"adp_arena_artifact_manifest_failed:{type(exc).__name__}")
+        blockers.append(f"{blocker_prefix}_artifact_manifest_failed:{type(exc).__name__}")
     result = {
-        "schema_version": RESULT_SCHEMA_VERSION,
+        "schema_version": result_schema_version,
         "generated_at": generated,
         "status": "completed" if not blockers else "blocked",
         "attempt_number": attempt_number,
@@ -446,6 +537,7 @@ def run_arena_native_control_vast(
         "hard_ttl_seconds": hard_ttl_seconds,
         "attempt_max_live_minutes": remaining_live_minutes,
         "retry_cap": 0,
+        "candidate_policy_query_expected": bool(candidate_policy_query_expected),
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
         "blockers": sorted(set(str(item) for item in blockers if str(item))),

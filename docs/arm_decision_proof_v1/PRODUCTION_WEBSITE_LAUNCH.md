@@ -65,6 +65,42 @@ that endpoint from its canonical Pipeline forwarding URL. An inline
 `TASK_EVALUATION_LAUNCH_PROFILES_JSON` remains an optional emergency deployment
 override, not the normal production source.
 
+The dry profile is immutable and remains bound to the deployment commit that
+created it. Do not overwrite it to enable spend. After the protected-main
+controls canary passes, build a separate
+`adp009d-840313-franka-live-v1` profile. The live builder verifies all five
+InteriorGS/SAGE source bytes, the retained Aura construction and task-volume
+exclusion lineage, the exact NuRec appearance byte, the SimReady can, SAGE
+collision, harness/scenario inputs, the passing zero/positive control pair, the
+allocator-owned artifact manifest, teardown, and an API-confirmed provider-zero
+snapshot taken after teardown. It refuses to enable execution if any link is
+missing or drifted:
+
+```bash
+python scripts/build_adp009d_840313_live_profile.py \
+  --source-commit "$(git rev-parse HEAD)" \
+  --repo-root /opt/blueprint/BlueprintCapturePipeline \
+  --source-input-root /var/lib/blueprint/task-evaluation-inputs/adp009d-840313-interiorgs-sage-v1 \
+  --runtime-input-root /var/lib/blueprint/task-evaluation-inputs/adp009d-840313-franka-runtime-v1 \
+  --provider-guard-path /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json \
+  --release-evidence-path <controls-canary-release-evidence.json> \
+  --control-bundle-receipt-path <controls-canary-bundle-receipt.json> \
+  --allocator-result-path <controls-canary-allocator-result.json> \
+  --control-pair-path <controls-canary-adp009d_control_pair.v1.json> \
+  --artifact-manifest-path <controls-canary-artifact_manifest.json> \
+  --teardown-manifest-path <controls-canary-vast_teardown_manifest.json> \
+  --provider-zero-guard-path <post-canary-provider-zero.json> \
+  --readiness-uri s3://<immutable-artifact-store>/<receipt-digest>/readiness.json \
+  --output-dir /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/"$(git rev-parse HEAD)"/live
+```
+
+Upload the readiness byte to the exact immutable URI before publishing the
+profile. The profile contains no credential: it names the canonical secret
+profile and the allocator resolves Vast and gated-model credentials only from
+the production secret integration. The dispatcher, not the profile, appends
+`--execute` after validating a current signed spend envelope and the production
+execute gate.
+
 ## Required production configuration
 
 Pipeline host:

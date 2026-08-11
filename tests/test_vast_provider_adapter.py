@@ -1295,6 +1295,101 @@ def test_request_logs_dud_container_flicker_is_not_progress(
     assert all(a["progress_observed"] is False for a in result["log_poll_attempts"])
 
 
+def test_request_logs_ignores_unstructured_noise_after_worker_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read-only SSH diagnostics and other stdout noise cannot extend paid work."""
+
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    noise = iter(
+        [
+            "BLUEPRINT_WAM_RUNTIME_PHASE:worker:environment_build:started\n",
+            "BLUEPRINT_WAM_RUNTIME_PHASE:worker:environment_build:started\n"
+            "Accepted publickey for root\n",
+            "BLUEPRINT_WAM_RUNTIME_PHASE:worker:environment_build:started\n"
+            "Disconnected from user root\n",
+        ]
+        * 20
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(noise))
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=4,
+    )
+
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["no_progress_timeout_reached"] is True
+    attempts = result["log_poll_attempts"]
+    assert attempts[0]["progress_observed"] is True
+    assert all(item["structured_phase_tracking_active"] is True for item in attempts)
+    assert all(item["progress_observed"] is False for item in attempts[1:])
+
+
+def test_request_logs_persists_last_redacted_snapshot_before_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    snapshots = iter(
+        [
+            "BLUEPRINT_WAM_RUNTIME_PHASE:worker:static_sdf:completed\nsecret\n",
+            KeyboardInterrupt(),
+        ]
+    )
+
+    def fetch(*_args, **_kwargs):
+        value = next(snapshots)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(vpa, "_fetch_text", fetch)
+    output = tmp_path / "onstart.log"
+
+    with pytest.raises(KeyboardInterrupt):
+        vpa._request_logs_and_fetch(
+            instance_id=123,
+            api_key="secret",
+            output_log_path=output,
+            secret_values=["secret"],
+            wait_seconds=0,
+            retry_interval_seconds=1,
+            max_wait_seconds=999,
+            success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+            no_progress_seconds=999,
+        )
+
+    assert output.read_text(encoding="utf-8") == (
+        "BLUEPRINT_WAM_RUNTIME_PHASE:worker:static_sdf:completed\nREDACTED_SECRET\n"
+    )
+
+
 def test_vast_adapter_dry_run_writes_required_artifacts(tmp_path: Path) -> None:
     result = run_vast_provider_adapter(job_dir=tmp_path, mode="dry-run")
 
@@ -2102,10 +2197,13 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
             created_paths.append(path)
             raise urllib.error.HTTPError(
                 "https://vast.invalid/api/v0/asks/301/",
-                410,
-                "gone",
+                400,
+                "bad request",
                 {},
-                BytesIO(b"offer no longer available"),
+                BytesIO(
+                    b'{"success":false,"error":"invalid_args",'
+                    b'"msg":"error 404/3603: no_such_ask Instance type is not available"}'
+                ),
             )
         if method == "PUT" and path == "/asks/302/":
             created_paths.append(path)
@@ -2146,12 +2244,23 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
     assert result["excluded_machine_ids"] == [9301]
     offer = _read_json(tmp_path / "vast_offer_selection_manifest.json")
     assert offer["selected_offer"]["ask_contract_id"] == 302
-    assert offer["create_retry_attempts"][0]["http_status_code"] == 410
+    assert offer["create_retry_attempts"][0]["http_status_code"] == 400
     assert offer["create_retry_attempts"][0]["machine_id"] == 9301
-    assert "offer no longer available" in offer["create_retry_attempts"][0]["error_preview"]
+    assert "no_such_ask" in offer["create_retry_attempts"][0]["error_preview"]
     teardown = _read_json(tmp_path / "vast_teardown_manifest.json")
     assert teardown["status"] == "completed"
     assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_vast_adapter_does_not_retry_unrelated_create_http_400() -> None:
+    error = urllib.error.HTTPError(
+        "https://vast.invalid/api/v0/asks/301/",
+        400,
+        "bad request",
+        {},
+        BytesIO(b'{"error":"invalid_args","msg":"invalid image"}'),
+    )
+    assert vpa._is_stale_offer_create_http_error(error, "invalid image") is False
 
 
 def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
@@ -2310,6 +2419,32 @@ def test_vast_adapter_prefers_known_supported_driver_over_known_unsupported_driv
         selected["isaac_driver_support_status"]
         == "outside_known_unsupported_omniverse_rtx_driver_range"
     )
+
+
+def test_vast_adapter_enforces_backend_minimum_driver_version() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "L40",
+                "dph_total": 0.20,
+                "driver_version": "580.82.09",
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "RTX 6000 Ada Generation",
+                "dph_total": 0.31,
+                "driver_version": "580.119.02",
+            },
+        ],
+        max_hourly_rate=0.60,
+        minimum_driver_version="580.95.05",
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
 
 
 def test_vast_adapter_can_require_known_supported_driver_for_rendering() -> None:
@@ -4971,7 +5106,10 @@ def test_exact_simready_isaac_bundle_forces_http1_download() -> None:
         provider_bundle_kind="adp_simready_isaac",
     )
 
-    assert 'curl --http1.1 -fL "$blueprint_download_src"' in script
+    # Intent, not flag order: HTTP/1.1 with retries, however it is spelled.
+    # A literal pin here broke when retry flags were added between the two.
+    assert '--http1.1' in script and '--retry-all-errors' in script
+    assert '-fL "$blueprint_download_src"' in script
 
 
 def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs(

@@ -1,0 +1,32 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary SimReady_Metadata = {
+            string asset_name = "adp009d_840313_geometric_cousin"
+            string asset_type = "prop"
+            string source_file = "adp009a_840313_canned_beverage_match_v2.usda"
+            string usd_date_generated = "2026-08-06"
+        }
+        string "blueprint:asset_role" = "adp009d_geometric_cousin"
+        string "blueprint:base_asset_sha256" = "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec"
+        string "blueprint:claim_ceiling" = "development_only_simulator_stimulus"
+        string "blueprint:geometry_policy" = "bounded_nonuniform_scale_of_visual_and_collider"
+        string "blueprint:provenance" = "Blueprint-authored bounded geometric override over the sealed approved match-v2 can"
+        string "blueprint:rights" = "Blueprint-authored overlay; base asset rights and redistribution boundary remain controlling"
+    }
+    defaultPrim = "canned_beverage"
+    metersPerUnit = 1
+    subLayers = [
+        @./adp009a_840313_canned_beverage_match_v2.usda@
+    ]
+    upAxis = "Z"
+)
+
+over "canned_beverage"
+{
+    point3f physics:centerOfMass = (0, 0, 0.0897968347)
+    float3 physics:diagonalInertia = (0.0009869009, 0.0009869009, 0.00014817403)
+    float physics:mass = 0.33961076
+    double3 xformOp:scale = (0.95, 0.95, 1.06)
+    uniform token[] xformOpOrder = ["xformOp:scale"]
+}
