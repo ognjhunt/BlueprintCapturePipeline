@@ -161,6 +161,40 @@ def _with_identity(
     return row
 
 
+def _identity_for_inventory_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    role = str(artifact.get("role") or "")
+    if not role.startswith("agent_cad:"):
+        return {}
+    parts = role.split(":", 2)
+    if len(parts) != 3:
+        raise EpisodeEvidenceIndexError("supporting_evidence_agent_cad_role_invalid")
+    backend_id = str(artifact.get("cad_agent_backend_id") or "")
+    if (
+        not str(artifact.get("task_id") or "")
+        or not str(artifact.get("asset_id") or "")
+        or not backend_id
+        or "replacement_slot" not in artifact
+    ):
+        raise EpisodeEvidenceIndexError(
+            "supporting_evidence_agent_cad_identity_missing"
+        )
+    if backend_id != parts[1]:
+        raise EpisodeEvidenceIndexError(
+            "supporting_evidence_agent_cad_identity_mismatch"
+        )
+    try:
+        return _agent_cad_identity(
+            task_id=str(artifact.get("task_id") or ""),
+            replacement_slot=artifact.get("replacement_slot"),
+            asset_id=str(artifact.get("asset_id") or ""),
+            backend_id=backend_id,
+        )
+    except EpisodeEvidenceIndexError as exc:
+        raise EpisodeEvidenceIndexError(
+            "supporting_evidence_agent_cad_identity_missing"
+        ) from exc
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     """Replace one owned artifact without exposing partially written bytes."""
 
@@ -232,6 +266,7 @@ def materialize_supporting_evidence_inventory(
             raise EpisodeEvidenceIndexError(
                 f"supporting_evidence_artifact_size_mismatch:{role}"
             )
+        identity = _identity_for_inventory_artifact(artifact)
         rows.append(
             {
                 "role": role,
@@ -242,16 +277,7 @@ def materialize_supporting_evidence_inventory(
                 "portable_link_available": False,
                 "disclosure_class": disclosure_class,
             }
-            | {
-                key: artifact[key]
-                for key in (
-                    "task_id",
-                    "replacement_slot",
-                    "asset_id",
-                    "cad_agent_backend_id",
-                )
-                if key in artifact
-            }
+            | identity
         )
     if len({(row["role"], row["relative_path"]) for row in rows}) != len(rows):
         raise EpisodeEvidenceIndexError("supporting_evidence_artifact_duplicate")

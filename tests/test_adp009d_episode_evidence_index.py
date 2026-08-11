@@ -839,6 +839,64 @@ def test_agent_cad_content_agents_rows_materialize_task_inventory(
     } == {1}
 
 
+def test_supporting_inventory_rejects_agent_cad_rows_without_identity(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "external"
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    artifact = _artifact(external_root, "candidate.step", b"STEP")
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="supporting_evidence_agent_cad_identity_missing",
+    ):
+        materialize_supporting_evidence_inventory(
+            source_root=external_root,
+            output_root=package_root,
+            output_relative_path="supporting_evidence_inventory.v1.json",
+            source_root_id="fixture_rights_bounded_root",
+            artifacts=[
+                {
+                    "role": "agent_cad:earthtojake_text_to_cad:primary_step",
+                    **artifact,
+                }
+            ],
+            disclosure_class="digest_receipt_only",
+        )
+
+
+def test_supporting_inventory_rejects_agent_cad_backend_relabel(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "external"
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    artifact = _artifact(external_root, "candidate.step", b"STEP")
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="supporting_evidence_agent_cad_identity_mismatch",
+    ):
+        materialize_supporting_evidence_inventory(
+            source_root=external_root,
+            output_root=package_root,
+            output_relative_path="supporting_evidence_inventory.v1.json",
+            source_root_id="fixture_rights_bounded_root",
+            artifacts=[
+                {
+                    "role": "agent_cad:earthtojake_text_to_cad:primary_step",
+                    "task_id": "task_a_washer_door_open",
+                    "replacement_slot": 1,
+                    "asset_id": "840920_simready_washer_candidate",
+                    "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+                    **artifact,
+                }
+            ],
+            disclosure_class="digest_receipt_only",
+        )
+
+
 def test_agent_cad_content_agents_rows_filter_five_slots_with_explicit_identity(
     tmp_path: Path,
 ) -> None:
