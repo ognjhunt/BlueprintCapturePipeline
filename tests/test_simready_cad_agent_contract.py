@@ -24,6 +24,7 @@ from blueprint_pipeline.simready_cad_agent_contract import (
     validate_cad_agent_output,
     validate_cad_agent_reference_manifest,
     validate_cad_agent_request,
+    validate_step_inspection_receipt,
 )
 
 
@@ -184,6 +185,47 @@ def _output(tmp_path: Path, request: dict, suffix: str) -> dict:
             else 0.75
         ),
     )
+
+
+def test_step_inspection_retains_historical_inspector_source_identity(
+    tmp_path: Path,
+) -> None:
+    step = _write(tmp_path / "candidate.step", b"STEP")
+    inspector_module = _write(tmp_path / "inspector.py", "print('v1')\n")
+    receipt = {
+        "schema_version": INSPECTION_SCHEMA_VERSION,
+        "status": "passed",
+        "step": file_record(step),
+        "measured_envelope_mm": [1.0, 2.0, 3.0],
+        "measured_center_mm": [0.0, 0.0, 1.5],
+        "topology": {"face_count": 6, "edge_count": 12},
+        "inspector": {
+            "backend": "build123d_import_step",
+            "build123d_version": "fixture",
+            "ocp_version": "fixture",
+            "python_version": "fixture",
+            "module_source": file_record(inspector_module),
+        },
+        "claim_boundary": {
+            "step_bytes_reopened": True,
+            "metric_envelope_measured": True,
+            "visual_quality_qualified": False,
+            "simready_qualified": False,
+            "physical_equivalence": False,
+        },
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+    inspector_module.write_text("print('v2')\n", encoding="utf-8")
+
+    assert validate_step_inspection_receipt(receipt) == receipt
+
+    step.write_bytes(b"mutated")
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        validate_step_inspection_receipt(receipt)
+    assert "cad_agent_step_inspection_step_invalid" in excinfo.value.codes
 
 
 def test_earthtojake_and_multi_agent_requests_share_agent_only_contract(tmp_path: Path):

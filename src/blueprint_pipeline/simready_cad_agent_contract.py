@@ -1021,7 +1021,7 @@ def validate_step_inspection_receipt(
         or not str(inspector.get("build123d_version") or "")
         or not str(inspector.get("ocp_version") or "")
         or not _file_record_valid(
-            inspector.get("module_source"), verify_files=verify_files
+            inspector.get("module_source"), verify_files=False
         )
     ):
         errors.append("cad_agent_step_inspection_inspector_invalid")

@@ -618,6 +618,37 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
         },
     ]
 
+    def fake_run(command, **_kwargs):
+        command = list(command)
+        if command[-2:] == ["rev-parse", "HEAD"]:
+            stdout = "c" * 40 + "\n"
+        elif command[-2:] == ["rev-parse", "HEAD^{tree}"]:
+            stdout = "d" * 40 + "\n"
+        elif command[-2:] == ["status", "--porcelain"]:
+            stdout = ""
+        else:
+            raise AssertionError(command)
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(bundle_preflight.subprocess, "run", fake_run)
+    preflight = bundle_preflight.materialize_static_bundle_config_preflight(
+        bundle_receipt_path=Path(receipt["bundle_path"]).with_name(
+            "adp_content_agents_bundle_receipt.json"
+        ),
+        evidence_dir=tmp_path / "agent-cad-plural-static-preflight",
+        generated_at="fixed",
+    )
+    assert [
+        row["member"] for row in preflight["input_records"]["reference_images"]
+    ] == [
+        "provider_runtime/input/reference.png",
+        "provider_runtime/input/reference_0002.png",
+    ]
+    assert preflight["config_semantics"]["configs"]["material"]["reference_images"] == [
+        "../input/reference.png",
+        "../input/reference_0002.png",
+    ]
+
 
 def _single_agent_cad_content_bundle_matrix(
     *,

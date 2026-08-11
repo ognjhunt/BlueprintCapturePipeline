@@ -352,21 +352,35 @@ def _bundle_static_input_records(bundle_path: Path) -> dict[str, Any]:
                     "bundle_static_input_usd_ambiguous"
                 )
             source_zip_bytes = archive.read("provider_runtime/content_agents_source.zip")
+            reference_members = sorted(
+                name
+                for name in members
+                if name.startswith("provider_runtime/input/reference")
+                and name.endswith(".png")
+            )
+            if (
+                not reference_members
+                or reference_members[0] != "provider_runtime/input/reference.png"
+            ):
+                raise ContentAgentsBundlePreflightError(
+                    "bundle_static_reference_image_missing"
+                )
+            reference_records = [
+                {
+                    "member": member,
+                    "size_bytes": len(archive.read(member)),
+                    "sha256": _sha256_bytes(archive.read(member)),
+                }
+                for member in reference_members
+            ]
             return {
                 "source_archive": {
                     "member": "provider_runtime/content_agents_source.zip",
                     "size_bytes": len(source_zip_bytes),
                     "sha256": _sha256_bytes(source_zip_bytes),
                 },
-                "reference_image": {
-                    "member": "provider_runtime/input/reference.png",
-                    "size_bytes": len(
-                        archive.read("provider_runtime/input/reference.png")
-                    ),
-                    "sha256": _sha256_bytes(
-                        archive.read("provider_runtime/input/reference.png")
-                    ),
-                },
+                "reference_image": reference_records[0],
+                "reference_images": reference_records,
                 "input_usd": {
                     "member": "provider_runtime/input/source_asset.usda",
                     "size_bytes": len(
@@ -407,7 +421,16 @@ def _bundle_config_semantics(bundle_path: Path) -> dict[str, Any]:
                         f"bundle_static_config_usd_path_invalid:{name}"
                     )
                 references = input_section.get("reference_images", [])
-                if references and references != ["../input/reference.png"]:
+                if references and (
+                    not isinstance(references, list)
+                    or references[0] != "../input/reference.png"
+                    or any(
+                        not isinstance(reference, str)
+                        or not reference.startswith("../input/reference")
+                        or not reference.endswith(".png")
+                        for reference in references
+                    )
+                ):
                     raise ContentAgentsBundlePreflightError(
                         f"bundle_static_config_reference_invalid:{name}"
                     )
