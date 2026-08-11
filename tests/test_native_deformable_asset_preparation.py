@@ -80,11 +80,11 @@ def _physics() -> dict[str, Any]:
         },
         "material_properties": {
             "density": 220.0,
+            "static_friction": 2.2,
             "dynamic_friction": 2.2,
             "poissons_ratio": 0.42,
             "youngs_modulus": 180_000.0,
             "elasticity_damping": 0.005,
-            "damping_scale": 1.0,
         },
     }
 
@@ -388,11 +388,11 @@ def test_plan_bakes_metric_scale_and_rebuilds_only_allowlisted_content(
     assert PINNED_NATIVE_CALL_CONTRACT["configuration_sources"][DEFORMABLE_MATERIAL_CFG][
         "allowed_fields"
     ] == [
-        "damping_scale",
         "density",
         "dynamic_friction",
         "elasticity_damping",
         "poissons_ratio",
+        "static_friction",
         "youngs_modulus",
     ]
     assert plan["required_native_readback"]["body_api_schemas"] == sorted(DEFORMABLE_BODY_SCHEMAS)
@@ -696,12 +696,12 @@ def test_native_api_failure_releases_acquired_current_stage_context(tmp_path: Pa
     assert names[-1] == "release_current_stage"
 
 
-def test_unsupported_static_friction_cannot_enter_pinned_deformable_material_cfg(
+def test_unsupported_damping_scale_cannot_enter_pinned_deformable_material_cfg(
     tmp_path: Path,
 ) -> None:
     source, textures, receipt_path, receipt = _source_fixture(tmp_path)
     physics = _physics()
-    physics["material_properties"]["static_friction"] = 2.2
+    physics["material_properties"]["damping_scale"] = 1.0
 
     with pytest.raises(
         NativeDeformableAssetPreparationError,

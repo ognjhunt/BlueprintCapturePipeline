@@ -1005,14 +1005,37 @@ def _bounded_stage_prims(stage: Any) -> list[Any]:
     return result
 
 
+def _is_asset_path_like(value: Any) -> bool:
+    return any(hasattr(value, attr) for attr in ("authoredPath", "path")) and any(
+        hasattr(value, attr) for attr in ("resolvedPath", "resolved_path")
+    )
+
+
+def _asset_path_parts(value: Any) -> tuple[str, str]:
+    authored = getattr(value, "authoredPath", None)
+    if authored is None:
+        authored = getattr(value, "path", None)
+    resolved = getattr(value, "resolvedPath", None)
+    if resolved is None:
+        resolved = getattr(value, "resolved_path", None)
+    authored_text = str(authored or "")
+    resolved_text = str(resolved or "")
+    if not authored_text:
+        raise ExternalSimreadyDeformableAssetError(
+            ["external_simready_deformable_usd_dependency_path_invalid"]
+        )
+    return authored_text, resolved_text
+
+
 def _json_value(value: Any) -> Any:
     if value is None or isinstance(value, (bool, str, int)):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else str(value)
-    if hasattr(value, "authoredPath") and hasattr(value, "resolvedPath"):
+    if _is_asset_path_like(value):
+        authored_path, _resolved_path = _asset_path_parts(value)
         return {
-            "authored_path": str(value.authoredPath),
+            "authored_path": authored_path,
             "resolved_path_recorded": False,
         }
     if hasattr(value, "GetReal") and hasattr(value, "GetImaginary"):
@@ -1467,10 +1490,10 @@ def _inspect_stage_snapshot(
                             [value] if str(prop.GetTypeName()) == "asset" else list(value)
                         )
                         for asset_value in asset_values:
-                            authored = str(asset_value.authoredPath)
+                            authored, resolved_path = _asset_path_parts(asset_value)
                             relative = _resolve_snapshot_dependency(
                                 authored,
-                                str(asset_value.resolvedPath),
+                                resolved_path,
                                 temporary_root=temporary_root,
                                 snapshots=snapshots,
                                 preflight_dependencies=preflight["dependencies"],

@@ -151,11 +151,11 @@ _BODY_CFG_FIELDS = frozenset(
 _MATERIAL_CFG_FIELDS = frozenset(
     {
         "density",
+        "static_friction",
         "dynamic_friction",
         "youngs_modulus",
         "poissons_ratio",
         "elasticity_damping",
-        "damping_scale",
     }
 )
 PINNED_NATIVE_CALL_CONTRACT = {
@@ -952,11 +952,11 @@ def _normalize_physics_configuration(value: Any, *, errors: list[str]) -> dict[s
             errors.append(f"native_deformable_physics_material_{field}_range_invalid")
     if not {
         "density",
+        "static_friction",
         "dynamic_friction",
         "youngs_modulus",
         "poissons_ratio",
         "elasticity_damping",
-        "damping_scale",
     }.issubset(material):
         errors.append("native_deformable_physics_material_required_fields_missing")
     contact_offset = body.get("contact_offset")

@@ -660,6 +660,19 @@ def test_openusd_parses_snapshot_even_if_source_changes_after_snapshot(
     assert receipt["source_package"]["inspection_bound_to_snapshot_not_live_path"] is True
 
 
+def test_asset_path_without_authored_path_uses_path_field() -> None:
+    value = SimpleNamespace(path="textures/base.png", resolvedPath="/tmp/root/textures/base.png")
+
+    assert asset_module._asset_path_parts(value) == (
+        "textures/base.png",
+        "/tmp/root/textures/base.png",
+    )
+    assert asset_module._json_value(value) == {
+        "authored_path": "textures/base.png",
+        "resolved_path_recorded": False,
+    }
+
+
 def test_file_identity_drift_during_nofollow_read_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

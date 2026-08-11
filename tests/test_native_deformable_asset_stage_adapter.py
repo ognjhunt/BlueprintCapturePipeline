@@ -86,11 +86,11 @@ def _native_configuration() -> tuple[dict[str, object], dict[str, float]]:
     }
     material = {
         "density": 220.0,
+        "static_friction": 2.2,
         "dynamic_friction": 2.2,
         "youngs_modulus": 180000.0,
         "poissons_ratio": 0.42,
         "elasticity_damping": 0.18,
-        "damping_scale": 1.0,
     }
     return body_and_cooking, material
 
