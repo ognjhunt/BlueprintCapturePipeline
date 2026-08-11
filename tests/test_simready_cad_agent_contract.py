@@ -31,6 +31,10 @@ FREEZE_A = (
     REPO_ROOT
     / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
+FREEZE_B = (
+    REPO_ROOT
+    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json"
+)
 
 
 def _write(path: Path, payload: str | bytes) -> Path:
@@ -194,6 +198,30 @@ def test_earthtojake_and_multi_agent_requests_share_agent_only_contract(tmp_path
         for request in (earth, mac)
     )
     assert earth["inputs"]["reference_binding_source"] == "manifest_derived"
+    assert earth["inputs"]["reference_manifest"]["path"]
+    assert earth["inputs"]["reference_manifest_object_digest"].startswith("sha256:")
+
+
+def test_request_validator_rejects_unbound_reference_images(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path / "request")
+    request["inputs"].pop("reference_manifest")
+    request["inputs"].pop("reference_binding_source")
+    request["inputs"].pop("reference_manifest_object_digest")
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        validate_cad_agent_request(request)
+
+    assert "cad_agent_request_reference_manifest_invalid" in excinfo.value.codes
+    assert "cad_agent_request_reference_binding_invalid" in excinfo.value.codes
+    assert (
+        "cad_agent_request_reference_manifest_object_digest_invalid"
+        in excinfo.value.codes
+    )
 
 
 def test_request_sealer_rejects_manual_reference_images_without_manifest(
@@ -318,7 +346,7 @@ def test_reference_manifest_rejects_swapped_object_reference_binding(
                 "replacement_slot": 2,
                 "task_id": "task_b_notebook_relocation",
                 "asset_id": "840920_simready_notebook_candidate",
-                "task_freeze_path": FREEZE_A,
+                "task_freeze_path": FREEZE_B,
                 "reference_image_paths": [task_b_ref],
             },
         ],

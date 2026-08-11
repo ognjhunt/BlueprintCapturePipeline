@@ -46,6 +46,7 @@
       847.564026
     ],
     "primitive_graph_used_as_cad_candidate": false,
+    "reference_binding_source": "manifest_derived",
     "reference_images": [
       {
         "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/reconnaissance/target_candidates_v1/frames/washer_front_close.png",
@@ -63,6 +64,12 @@
         "size_bytes": 919146
       }
     ],
+    "reference_manifest": {
+      "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+      "sha256": "sha256:f8bfe3bd2df5650a768314ef634e5029ed3233602ebca2817bd2041ca24d9372",
+      "size_bytes": 3331
+    },
+    "reference_manifest_object_digest": "sha256:6de02c167b204de6850ae99e39fdcad1ba2d48be7b40a56846b68194eddb8a9c",
     "task_freeze": {
       "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json",
       "sha256": "sha256:20259ab89d449875eb6836dce864dc0f6604c4bcae19ec9e594bdd387b8fb20a",
@@ -70,7 +77,7 @@
     }
   },
   "replacement_slot": 1,
-  "request_digest": "sha256:c3352b3acb090169ab49ba94a0395d038b9cd0e46b4570d4433eb45dc5bc2f7c",
+  "request_digest": "sha256:ea8358971df0febe8159d18caa93c88d0d05b018d60c6711547b58e5859998ec",
   "request_id": "third_scene_840920_slot_1_pan_chera_multi_agent_cad_request_v1",
   "scene_id": "840920",
   "schema_version": "simready_cad_agent_request.v1",

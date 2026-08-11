@@ -634,40 +634,41 @@ def validate_cad_agent_request(
         ):
             errors.append("cad_agent_request_reference_images_invalid")
         manifest_record = inputs.get("reference_manifest")
-        if manifest_record is not None:
-            if not _file_record_valid(manifest_record, verify_files=verify_files):
-                errors.append("cad_agent_request_reference_manifest_invalid")
-            if inputs.get("reference_binding_source") != "manifest_derived":
-                errors.append("cad_agent_request_reference_binding_invalid")
-            if verify_files and _file_record_valid(
-                manifest_record, verify_files=True
-            ):
-                manifest = _read_json_record(
-                    manifest_record, "cad_agent_request_reference_manifest_invalid"
+        if not _file_record_valid(manifest_record, verify_files=verify_files):
+            errors.append("cad_agent_request_reference_manifest_invalid")
+        if inputs.get("reference_binding_source") != "manifest_derived":
+            errors.append("cad_agent_request_reference_binding_invalid")
+        if not _digest(inputs.get("reference_manifest_object_digest")):
+            errors.append("cad_agent_request_reference_manifest_object_digest_invalid")
+        if verify_files and _file_record_valid(manifest_record, verify_files=True):
+            manifest = _read_json_record(
+                manifest_record, "cad_agent_request_reference_manifest_invalid"
+            )
+            try:
+                selected = _select_reference_manifest_object(
+                    manifest=manifest,
+                    scene_id=str(request.get("scene_id") or ""),
+                    replacement_slot=(
+                        slot if isinstance(slot, int) and not isinstance(slot, bool) else -1
+                    ),
+                    task_id=str(request.get("task_id") or ""),
+                    asset_id=str(request.get("asset_id") or ""),
                 )
-                try:
-                    selected = _select_reference_manifest_object(
-                        manifest=manifest,
-                        scene_id=str(request.get("scene_id") or ""),
-                        replacement_slot=(
-                            slot
-                            if isinstance(slot, int) and not isinstance(slot, bool)
-                            else -1
-                        ),
-                        task_id=str(request.get("task_id") or ""),
-                        asset_id=str(request.get("asset_id") or ""),
-                    )
-                except SimReadyCadAgentContractError as exc:
-                    errors.extend(exc.codes)
-                else:
-                    if not _file_records_equivalent(
-                        selected.get("task_freeze"), inputs.get("task_freeze")
-                    ):
-                        errors.append("cad_agent_request_reference_manifest_join_invalid")
-                    if not _file_record_lists_equivalent(
-                        selected.get("reference_images"), references
-                    ):
-                        errors.append("cad_agent_request_reference_manifest_join_invalid")
+            except SimReadyCadAgentContractError as exc:
+                errors.extend(exc.codes)
+            else:
+                if not _file_records_equivalent(
+                    selected.get("task_freeze"), inputs.get("task_freeze")
+                ):
+                    errors.append("cad_agent_request_reference_manifest_join_invalid")
+                if not _file_record_lists_equivalent(
+                    selected.get("reference_images"), references
+                ):
+                    errors.append("cad_agent_request_reference_manifest_join_invalid")
+                if inputs.get("reference_manifest_object_digest") != canonical_digest(
+                    selected
+                ):
+                    errors.append("cad_agent_request_reference_manifest_join_invalid")
         if _vector3(inputs.get("metric_envelope_mm")) is None:
             errors.append("cad_agent_request_metric_envelope_invalid")
         tolerance = _finite(inputs.get("envelope_tolerance_mm"))
@@ -785,6 +786,9 @@ def seal_cad_agent_request(
             "task_freeze": task_freeze_record,
             "cad_brief": file_record(cad_brief_path),
             "reference_images": reference_records,
+            "reference_manifest": reference_manifest_record,
+            "reference_binding_source": "manifest_derived",
+            "reference_manifest_object_digest": canonical_digest(selected),
             "metric_envelope_mm": [float(item) for item in metric_envelope_mm],
             "envelope_tolerance_mm": float(envelope_tolerance_mm),
         },
@@ -799,9 +803,6 @@ def seal_cad_agent_request(
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
-    if reference_manifest_record is not None:
-        payload["inputs"]["reference_manifest"] = reference_manifest_record
-        payload["inputs"]["reference_binding_source"] = "manifest_derived"
     payload["request_digest"] = canonical_digest(
         payload, digest_field="request_digest"
     )
