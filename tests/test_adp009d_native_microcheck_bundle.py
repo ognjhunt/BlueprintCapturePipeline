@@ -1357,13 +1357,35 @@ def test_robot_contact_sensor_is_read_only_and_part_of_the_native_scene() -> Non
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
 
     assert "from isaaclab.sensors.contact_sensor import ContactSensorCfg" in source
-    assert 'prim_path="{ENV_REGEX_NS}/Robot/.*"' in source
     assert 'contact_sensor=env.unwrapped.scene["robot_contact"]' in source
     assert "set_joint" not in source[
         source.index("class ContactSensorAsset") : source.index(
             "_phase(\"embodiment_configuration\")"
         )
     ]
+
+
+def test_robot_contact_sensor_targets_the_nested_robotiq_finger_prims() -> None:
+    """The d898 paid canary proved a single-level Robot/.* wildcard resolves zero
+    finger bodies: Isaac Lab matches prim-path tokens one USD level at a time and
+    the pinned DROID embodiment nests the fingers at
+    Robot/Gripper/Robotiq_2F_85/<finger>, the exact paths its own
+    FrameTransformer uses."""
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import FINGER_BODIES
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+
+    assert 'prim_path="{ENV_REGEX_NS}/Robot/.*"' not in source
+    expression = (
+        '"{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"\n'
+        '                "(left_inner_finger|right_inner_finger)"'
+    )
+    assert expression in source
+    for body in FINGER_BODIES:
+        assert body in expression
 
 
 def test_the_appearance_is_visual_only_and_never_a_collider() -> None:
