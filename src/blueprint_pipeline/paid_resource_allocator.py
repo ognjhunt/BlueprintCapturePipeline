@@ -2193,9 +2193,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                             allowed_active_instance_ids=allowed_active_instance_ids,
                         )
                 except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-                    blockers.append(
-                        f"native_deformable_bundle_preparation_failed:{type(exc).__name__}"
-                    )
+                    typed_error = str(exc).strip()
+                    if typed_error.startswith("native_deformable_"):
+                        blockers.append(typed_error)
+                    else:
+                        blockers.append(
+                            f"native_deformable_bundle_preparation_failed:{type(exc).__name__}"
+                        )
             if prepared_bundle is not None and (
                 prepared_bundle.get("one_instance_at_a_time")
                 is not (not bool(allowed_active_instance_ids))

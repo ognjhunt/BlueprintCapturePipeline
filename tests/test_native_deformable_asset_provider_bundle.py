@@ -510,3 +510,60 @@ def test_canonical_allocator_routes_owner_authorized_deformable_bundle(
     assert admission["retry_cap"] == 0
     assert admission["explicit_concurrent_gpu_authority_bound"] is concurrent
     assert observed["allowed_active_instance_ids"] == ((47373597,) if concurrent else ())
+
+
+def test_canonical_allocator_reports_typed_deformable_rights_binding_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, runtime_path, runtime = _fixture(tmp_path)
+    bad_rights = {
+        "schema_version": "external_asset_owner_processing_authority.v1",
+        "receipt_digest": "sha256:" + "a" * 64,
+    }
+    rights_path = tmp_path / "bad-rights.json"
+    rights_path.write_text(canonical_json(bad_rights) + "\n")
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(allocator, "verify_native_task_runtime_source_packet", lambda _: runtime)
+
+    assert (
+        allocator.main(
+            [
+                "gpu-canary",
+                "--probe-kind",
+                "native-deformable-asset-preparation",
+                "--provider",
+                "vast",
+                "--provider-launch-request",
+                str(tmp_path / "unused-request.json"),
+                "--release-evidence",
+                str(tmp_path / "unused-release.json"),
+                "--model-cache-evidence",
+                str(tmp_path / "unused-model.json"),
+                "--preflight-bundle",
+                str(tmp_path / "unused-preflight.json"),
+                "--admission-out",
+                str(tmp_path / "admission.json"),
+                "--bound-request-out",
+                str(tmp_path / "bound.json"),
+                "--adapter-output",
+                str(tmp_path / "adapter.json"),
+                "--pod-name",
+                "native-deformable-asset",
+                "--native-deformable-source-package-receipt",
+                str(source),
+                "--native-task-arena-runtime-source-packet",
+                str(runtime_path),
+                "--native-deformable-rights-supersession",
+                str(rights_path),
+                "--adp-job-dir",
+                str(tmp_path / "job"),
+            ]
+        )
+        == 2
+    )
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["blockers"] == ["native_deformable_rights_binding_invalid"]
