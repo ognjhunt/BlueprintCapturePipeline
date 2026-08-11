@@ -1404,7 +1404,7 @@ def test_aura_is_rendered_by_isaac_not_composited_afterward() -> None:
     assert 'AURA_PARTICLEFIELD_FILENAME = "aura_ghost_removed_surflets.usd"' in source
     assert "aura_appearance" in source
     # Added to the rendered scene, not to a separate compositing step.
-    assert "assets=[sage, approved_can, robot_contact, light]" in source
+    assert "assets=[sage, approved_can, robot_contact, *partner_contacts, light]" in source
     assert "[aura_appearance] if aura_appearance is not None else []" in source
 
 
@@ -2813,3 +2813,32 @@ def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> No
     episode = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert "isinstance(response, dict)" in probe
     assert "isinstance(response, dict)" in episode
+
+
+def test_contact_partner_filter_uses_one_sensor_per_finger_and_the_rigid_body() -> None:
+    """PhysX filtered contact reporting is one-to-many only. The pinned IsaacLab
+    docstring names this exact shape (many sensor bodies against one partner) as
+    unsupported, so each finger needs its own filtered sensor, and the filter
+    must name the can's rigid body because `PhysicsRigidBodyAPI` lives at the
+    `canned_beverage` root rather than on `colliders/body_collider`."""
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import FINGER_BODIES
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+
+    assert runtime.CONTACT_PARTNER_FILTER_PRIM_PATH == "{ENV_REGEX_NS}/approved_can"
+    assert "colliders/body_collider" not in runtime.CONTACT_PARTNER_FILTER_PRIM_PATH
+    assert set(runtime.CONTACT_PARTNER_SENSOR_NAMES) == set(FINGER_BODIES)
+    assert len(set(runtime.CONTACT_PARTNER_SENSOR_NAMES.values())) == len(FINGER_BODIES)
+
+    # The unfiltered two-body sensor stays the primary net-force source and must
+    # not carry a filter, or PhysX reports unreliable filtered values for it.
+    primary = source[source.index('name="robot_contact"') : source.index("partner_contacts = [")]
+    assert "filter_prim_paths_expr" not in primary
+    assert "(left_inner_finger|right_inner_finger)" in primary
+
+    per_finger = source[source.index("partner_contacts = [") : source.index("light = SpawnerObject")]
+    assert "filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH]" in per_finger
+    assert "Robotiq_2F_85/{body_name}" in per_finger

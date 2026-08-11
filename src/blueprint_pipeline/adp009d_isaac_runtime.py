@@ -188,8 +188,21 @@ ROBOT_BASE_POSITION_M = (3.4681748, -2.8100837, 0.2766791)
 ROBOT_BASE_YAW_RAD = -math.pi / 2
 CAN_START_POSITION_M = (3.4681748, -3.3100837, 0.5264650138348479)
 # Read-only contact partner used to name what a stalled finger is touching.
+# The filter names the can's rigid body, not its collider mesh: PhysX resolves
+# filter patterns against rigid bodies, and `PhysicsRigidBodyAPI` is applied at
+# the `canned_beverage` root while `colliders/body_collider` only carries
+# `PhysicsCollisionAPI`.
 CONTACT_PARTNER_FILTER_LABEL = "approved_can"
-CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can/colliders/body_collider"
+CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can"
+# PhysX filtered contact reporting is strictly one-to-many: one sensor body may
+# be filtered against many partners, never many sensor bodies against one.  The
+# pinned IsaacLab docstring calls out this exact shape as unsupported, so each
+# finger needs its own filtered sensor.  The unfiltered two-body sensor stays
+# the primary net-force source and is unaffected.
+CONTACT_PARTNER_SENSOR_NAMES = {
+    "left_inner_finger": "robot_contact_can_left",
+    "right_inner_finger": "robot_contact_can_right",
+}
 # Semantics are authored as a runtime spawn-config override so the sealed can
 # and SAGE USD bytes are never mutated.  The exact override is emitted with the
 # result and digest-bound, so a downstream composition can prove which labelling
@@ -1186,9 +1199,21 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             update_period=0.0,
             history_length=1,
             debug_vis=False,
-            filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH],
         ),
     )
+    partner_contacts = [
+        ContactSensorAsset(
+            name=sensor_name,
+            sensor_cfg=ContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/Gripper/Robotiq_2F_85/{body_name}",
+                update_period=0.0,
+                history_length=1,
+                debug_vis=False,
+                filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH],
+            ),
+        )
+        for body_name, sensor_name in sorted(CONTACT_PARTNER_SENSOR_NAMES.items())
+    ]
     light = SpawnerObject(
         name="light",
         prim_path="/World/Light",
@@ -1198,7 +1223,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         ),
     )
     scene = Scene(
-        assets=[sage, approved_can, robot_contact, light]
+        assets=[sage, approved_can, robot_contact, *partner_contacts, light]
         + ([aura_appearance] if aura_appearance is not None else [])
     )
     _phase("sealed_scene_configuration", "completed")
@@ -2532,6 +2557,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     ),
                     contact_sensor=env.unwrapped.scene["robot_contact"],
                     contact_envelope=live_collider["contact_envelope"],
+                    partner_contact_sensors={
+                        sensor_name: env.unwrapped.scene[sensor_name]
+                        for sensor_name in CONTACT_PARTNER_SENSOR_NAMES.values()
+                    },
                 )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),
