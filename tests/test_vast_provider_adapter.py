@@ -1265,11 +1265,10 @@ def test_request_logs_names_confirmed_provider_exit_at_watchdog_boundary(
         if kwargs["method"] == "PUT":
             calls["logs"] += 1
             return 200, {"result_url": "https://example.invalid/log.txt"}
+        assert kwargs["path"] == "/instances/123/"
         calls["liveness"] += 1
         return 200, {
-            "instances": [
-                {"id": 123, "actual_status": "exited"},
-            ]
+            "instances": {"actual_status": "exited"},
         }
 
     monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)

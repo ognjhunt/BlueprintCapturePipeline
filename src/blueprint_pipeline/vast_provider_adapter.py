@@ -4048,7 +4048,10 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
 
     try:
         _status_code, payload = _api_json(
-            method="GET", path="/instances/", api_key=api_key, timeout_seconds=30
+            method="GET",
+            path=f"/instances/{int(instance_id)}/",
+            api_key=api_key,
+            timeout_seconds=30,
         )
     except Exception as exc:  # pragma: no cover - live network dependent.
         # Same shape on every path: a caller must never have to know that the
@@ -4061,7 +4064,16 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
         }
     rows = _instance_list_rows(payload)
     for row in rows:
-        if _number(row.get("id")) == float(int(instance_id)):
+        row_is_requested_instance = _number(row.get("id")) == float(int(instance_id))
+        # Vast's instance-detail endpoint commonly returns
+        # {"instances": {"actual_status": ...}} without repeating the id.
+        # Because this request is scoped to one immutable instance id, a sole
+        # status-bearing row is authoritative for that instance.
+        detail_row_without_id = len(rows) == 1 and any(
+            key in row
+            for key in ("actual_status", "cur_state", "status", "intended_status")
+        )
+        if row_is_requested_instance or detail_row_without_id:
             status = _instance_status(row).lower()
             return {
                 "observed": True,
@@ -4073,10 +4085,10 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
         key in payload
         for key in ("instances", "results", "data", "response")
     ):
-        # A well-formed provider listing that omits this id means the instance
-        # was destroyed out from under this run.  An unrelated or malformed
-        # payload is not evidence of death and must fail open to the existing
-        # bounded log watchdog.
+        # A well-formed response from the instance-detail endpoint with no
+        # target row means the instance was destroyed out from under this run.
+        # An unrelated or malformed payload is not evidence of death and must
+        # fail open to the existing bounded log watchdog.
         return {
             "observed": True,
             "status": "absent",
