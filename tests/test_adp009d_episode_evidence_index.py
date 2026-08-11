@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
@@ -10,10 +11,26 @@ from blueprint_pipeline.adp_episode_evidence_index import (
     EpisodeEvidenceIndexError,
     HTML_FILENAME,
     INDEX_FILENAME,
+    agent_cad_content_agents_supporting_artifacts,
     materialize_episode_evidence_index,
     materialize_supporting_evidence_inventory,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.simready_cad_agent_contract import (
+    INSPECTION_SCHEMA_VERSION,
+    file_record,
+    seal_cad_agent_execution_receipt,
+    seal_cad_agent_matrix,
+    seal_cad_agent_output,
+    seal_cad_agent_request,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TASK_A_FREEZE = (
+    ROOT
+    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -29,6 +46,225 @@ def _artifact(root: Path, relative_path: str, content: bytes) -> dict[str, objec
         "sha256": _sha256(path),
         "size_bytes": path.stat().st_size,
     }
+
+
+def _write_text_or_bytes(path: Path, payload: str | bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(payload, bytes):
+        path.write_bytes(payload)
+    else:
+        path.write_text(payload, encoding="utf-8")
+    return path
+
+
+def _cad_backend(root: Path, backend_id: str) -> dict[str, object]:
+    archive = root / f"source-{backend_id}.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as source:
+        source.comment = b"1" * 40
+        source.writestr("LICENSE", "MIT\n")
+    return {
+        "backend_id": backend_id,
+        "execution_mode": (
+            "codex_skill_step_first"
+            if backend_id == "earthtojake_text_to_cad"
+            else "codex_agent_direct_repo_route"
+        ),
+        "agent_authored_geometry": True,
+        "deterministic_geometry_generator_used": False,
+        "graph_geometry_used_for_cad_authoring": False,
+        "deterministic_format_conversion_only": True,
+        "repository_url": (
+            "https://github.com/earthtojake/text-to-cad"
+            if backend_id == "earthtojake_text_to_cad"
+            else "https://github.com/Pan-Chera/Multi-Agent-CAD"
+        ),
+        "commit": "1" * 40,
+        "tree": "2" * 40,
+        "source_archive": file_record(archive),
+        "license": "MIT",
+        "model_id": "codex_fixture",
+    }
+
+
+def _cad_output_fixture(
+    source_root: Path, *, backend_id: str, slot: int = 1
+) -> dict[str, object]:
+    candidate_root = source_root / "task_a" / backend_id
+    brief = _write_text_or_bytes(candidate_root / "brief.md", "CAD brief\n")
+    reference = _write_text_or_bytes(candidate_root / "reference.png", b"PNG")
+    request = seal_cad_agent_request(
+        request_id=f"request-{slot}-{backend_id}",
+        scene_id="fixture_scene",
+        task_id="task_a_washer_door_open",
+        asset_id="840920_simready_washer_candidate",
+        replacement_slot=slot,
+        backend=_cad_backend(source_root / "sources", backend_id),
+        task_freeze_path=TASK_A_FREEZE,
+        cad_brief_path=brief,
+        reference_image_paths=[reference],
+        metric_envelope_mm=[600.0, 604.0, 848.0],
+    )
+    generator = _write_text_or_bytes(candidate_root / "candidate.py", "pass\n")
+    step = _write_text_or_bytes(candidate_root / "candidate.step", b"STEP")
+    snapshot = _write_text_or_bytes(candidate_root / "snapshot.png", b"PNG")
+    inspection = candidate_root / "inspection.json"
+    inspection_payload = {
+        "schema_version": INSPECTION_SCHEMA_VERSION,
+        "status": "passed",
+        "step": file_record(step),
+        "measured_envelope_mm": [600.0, 604.0, 848.0],
+        "measured_center_mm": [0.0, 0.0, 424.0],
+        "topology": {"face_count": 6, "edge_count": 12},
+        "inspector": {
+            "backend": "build123d_import_step",
+            "build123d_version": "fixture",
+            "ocp_version": "fixture",
+            "python_version": "fixture",
+            "module_source": file_record(
+                ROOT / "src/blueprint_pipeline/simready_cad_agent_contract.py"
+            ),
+        },
+        "claim_boundary": {
+            "step_bytes_reopened": True,
+            "metric_envelope_measured": True,
+            "visual_quality_qualified": False,
+            "simready_qualified": False,
+            "physical_equivalence": False,
+        },
+        "receipt_digest": "",
+    }
+    inspection_payload["receipt_digest"] = canonical_digest(
+        inspection_payload, digest_field="receipt_digest"
+    )
+    inspection.write_text(json.dumps(inspection_payload), encoding="utf-8")
+    execution = candidate_root / "cad_agent_execution_receipt.v1.json"
+    execution_payload = seal_cad_agent_execution_receipt(
+        request=request,
+        generator_source_path=generator,
+        cad_brief_path=brief,
+        output_step_path=step,
+        event_rows=[{"event": "agent_authored", "status": "passed"}],
+    )
+    execution.write_text(json.dumps(execution_payload), encoding="utf-8")
+    output = seal_cad_agent_output(
+        request=request,
+        generator_source_path=generator,
+        step_path=step,
+        inspection_receipt_path=inspection,
+        snapshot_paths=[snapshot],
+        execution_receipt_path=execution,
+        measured_envelope_mm=[600.0, 604.0, 848.0],
+        actual_cost_usd=0.0,
+    )
+    projection_dir = candidate_root / "content_agents_input_v1"
+    usd = _write_text_or_bytes(projection_dir / "agent_input.usda", "#usda 1.0\n")
+    packet = projection_dir / "mesh_packet.v1.json"
+    packet_payload = {
+        "schema_version": "cad_agent_mesh_packet.v1",
+        "backend_id": backend_id,
+    }
+    packet_payload["packet_digest"] = canonical_digest(packet_payload)
+    packet.write_text(json.dumps(packet_payload), encoding="utf-8")
+    projection = {
+        "schema_version": "cad_agent_mesh_usd_projection.v1",
+        "status": "mesh_working_copy_authored",
+        "content_agents_input_eligible": True,
+        "canonical_simulator_asset": False,
+        "claim_boundary": {
+            "deterministic_format_conversion_only": True,
+            "cad_authored_by_projection": False,
+            "collision_authority": False,
+            "physics_authority": False,
+            "native_simulator_import_qualified": False,
+            "physical_equivalence": False,
+        },
+        "step": file_record(step),
+        "packet": file_record(packet),
+        "packet_digest": packet_payload["packet_digest"],
+        "output_usd": file_record(usd),
+        "mesh_count": 1,
+        "mesh_prim_paths": ["/Asset/links/body/geometry/panel"],
+        "default_material_path": "/Asset/materials/agent_input_neutral",
+        "point_count": 8,
+        "triangle_count": 12,
+        "receipt_digest": "",
+    }
+    projection["receipt_digest"] = canonical_digest(
+        projection, digest_field="receipt_digest"
+    )
+    (projection_dir / "projection_receipt.v1.json").write_text(
+        json.dumps(projection), encoding="utf-8"
+    )
+    bundle_dir = candidate_root / "content_agents_bundle"
+    bundle_zip = _write_text_or_bytes(bundle_dir / "bundle.zip", b"ZIP")
+    bundle_receipt = {
+        "schema_version": "adp_content_agents_provider_bundle.v1",
+        "status": "ready",
+        "bundle_sha256": file_record(bundle_zip)["sha256"],
+        "receipt_digest": "",
+    }
+    bundle_receipt["receipt_digest"] = canonical_digest(
+        bundle_receipt, digest_field="receipt_digest"
+    )
+    bundle_receipt_path = bundle_dir / "adp_content_agents_bundle_receipt.json"
+    bundle_receipt_path.write_text(json.dumps(bundle_receipt), encoding="utf-8")
+    return {
+        "output": output,
+        "projection": projection,
+        "bundle": file_record(bundle_zip),
+        "bundle_receipt": file_record(bundle_receipt_path),
+    }
+
+
+def _content_bundle_matrix(*, fixture_rows: list[dict[str, object]]) -> dict[str, object]:
+    items: list[dict[str, object]] = []
+    for fixture in fixture_rows:
+        output = fixture["output"]
+        request = output["request"]
+        backend_id = request["backend"]["backend_id"]
+        projection = fixture["projection"]
+        items.append(
+            {
+                "replacement_slot": request["replacement_slot"],
+                "task_id": request["task_id"],
+                "asset_id": request["asset_id"],
+                "cad_agent_backend_id": backend_id,
+                "cad_agent_output_receipt_digest": output["receipt_digest"],
+                "mesh_projection_receipt_digest": projection["receipt_digest"],
+                "mesh_packet_digest": projection["packet_digest"],
+                "candidate_step_sha256": output["artifacts"]["step"]["sha256"],
+                "bundle": fixture["bundle"],
+                "bundle_receipt": fixture["bundle_receipt"],
+                "blockers": [],
+                "exact_bundle_entrypoint_rehearsal_status": "passed",
+                "agent_output_is_simready_authority": False,
+                "canonical_simready_construction_unresolved": True,
+            }
+        )
+    matrix = {
+        "schema_version": "third_scene_agent_cad_content_agents_bundle_matrix.v1",
+        "status": "ready",
+        "input_variant": "agent_cad_v1",
+        "replacement_object_capacity": {
+            "minimum": 1,
+            "maximum": 5,
+            "sealed_slots": 1,
+        },
+        "candidate_count": len(items),
+        "items": items,
+        "claim_boundary": {
+            "content_agents_bundles_built": True,
+            "exact_entrypoint_rehearsed": True,
+            "content_agents_executed": False,
+            "simready_qualified": False,
+            "native_simulator_import_qualified": False,
+            "physical_equivalence": False,
+        },
+        "receipt_digest": "",
+    }
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+    return matrix
 
 
 def _receipt(
@@ -313,6 +549,105 @@ def test_supporting_inventory_rejects_tampered_external_artifact(
             source_root_id="rights_bounded_construction_root",
             artifacts=[{"role": "source_mask", **artifact}],
             disclosure_class="digest_receipt_only",
+        )
+
+
+def test_agent_cad_content_agents_rows_materialize_task_inventory(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "external"
+    output_root = tmp_path / "package"
+    output_root.mkdir()
+    shared = _artifact(
+        source_root,
+        "shared_scene/cad_agent_comparison_v1/all_four.png",
+        b"comparison",
+    )
+    earth = _cad_output_fixture(
+        source_root, backend_id="earthtojake_text_to_cad"
+    )
+    mac = _cad_output_fixture(
+        source_root, backend_id="pan_chera_multi_agent_cad"
+    )
+    cad_matrix = seal_cad_agent_matrix(
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "candidates": [earth["output"], mac["output"]],
+            }
+        ]
+    )
+    bundle_matrix = _content_bundle_matrix(fixture_rows=[earth, mac])
+
+    rows = agent_cad_content_agents_supporting_artifacts(
+        source_root=source_root,
+        cad_agent_matrix=cad_matrix,
+        content_agents_bundle_matrix=bundle_matrix,
+        task_id="task_a_washer_door_open",
+        shared_artifacts=[
+            {
+                "role": "agent_cad_comparison:all_four_front_best",
+                "relative_path": shared["relative_path"],
+            }
+        ],
+    )
+
+    roles = {row["role"] for row in rows}
+    assert "agent_cad_comparison:all_four_front_best" in roles
+    assert (
+        "agent_cad:earthtojake_text_to_cad:content_agents_bundle_receipt"
+        in roles
+    )
+    assert "agent_cad:pan_chera_multi_agent_cad:mesh_projection_receipt" in roles
+    inventory = materialize_supporting_evidence_inventory(
+        source_root=source_root,
+        output_root=output_root,
+        output_relative_path="supporting_evidence_inventory.v1.json",
+        source_root_id="fixture_rights_bounded_root",
+        artifacts=rows,
+        disclosure_class="digest_receipt_only",
+    )
+    assert inventory["artifact_count"] == len(rows)
+    assert inventory["artifact_bytes_embedded"] is False
+
+
+def test_agent_cad_content_agents_rows_reject_projection_join_mismatch(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "external"
+    earth = _cad_output_fixture(
+        source_root, backend_id="earthtojake_text_to_cad"
+    )
+    mac = _cad_output_fixture(
+        source_root, backend_id="pan_chera_multi_agent_cad"
+    )
+    cad_matrix = seal_cad_agent_matrix(
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "candidates": [earth["output"], mac["output"]],
+            }
+        ]
+    )
+    bundle_matrix = _content_bundle_matrix(fixture_rows=[earth, mac])
+    bundle_matrix["items"][0]["candidate_step_sha256"] = "sha256:" + "0" * 64
+    bundle_matrix["receipt_digest"] = canonical_digest(
+        bundle_matrix, digest_field="receipt_digest"
+    )
+
+    with pytest.raises(
+        EpisodeEvidenceIndexError,
+        match="agent_cad_supporting_projection_join_mismatch",
+    ):
+        agent_cad_content_agents_supporting_artifacts(
+            source_root=source_root,
+            cad_agent_matrix=cad_matrix,
+            content_agents_bundle_matrix=bundle_matrix,
+            task_id="task_a_washer_door_open",
         )
 
 

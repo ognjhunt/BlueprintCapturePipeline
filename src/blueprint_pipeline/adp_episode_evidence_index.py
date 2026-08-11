@@ -24,8 +24,16 @@ from urllib.parse import quote
 
 try:  # flat provider-bundle layout
     from decision_evidence_contracts import canonical_digest
+    from simready_cad_agent_contract import (
+        SimReadyCadAgentContractError,
+        validate_cad_agent_matrix,
+    )
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
+    from .simready_cad_agent_contract import (
+        SimReadyCadAgentContractError,
+        validate_cad_agent_matrix,
+    )
 
 INDEX_SCHEMA_VERSION = "adp_manipulation_episode_evidence_index.v1"
 INDEX_FILENAME = "episode_evidence_index.v1.json"
@@ -207,6 +215,299 @@ def materialize_supporting_evidence_inventory(
         json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return receipt
+
+
+def _external_file_record(source: Path, record: Mapping[str, Any], *, role: str) -> dict[str, Any]:
+    path_value = str(record.get("path") or "")
+    if not path_value:
+        raise EpisodeEvidenceIndexError(f"supporting_evidence_file_path_missing:{role}")
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = source / path
+    if path.is_symlink():
+        raise EpisodeEvidenceIndexError(f"episode_artifact_symlink_forbidden:{role}")
+    resolved = path.resolve()
+    try:
+        relative_path = resolved.relative_to(source).as_posix()
+    except ValueError as exc:
+        raise EpisodeEvidenceIndexError(
+            f"supporting_evidence_file_outside_source_root:{role}"
+        ) from exc
+    if resolved.is_symlink() or not resolved.is_file():
+        raise EpisodeEvidenceIndexError(f"supporting_evidence_artifact_missing:{role}")
+    expected_sha = str(record.get("sha256") or "")
+    expected_size = int(record.get("size_bytes", -1))
+    observed_sha = _prefixed_sha256(resolved)
+    if expected_sha != observed_sha:
+        raise EpisodeEvidenceIndexError(
+            f"supporting_evidence_artifact_digest_mismatch:{role}"
+        )
+    if expected_size != resolved.stat().st_size:
+        raise EpisodeEvidenceIndexError(
+            f"supporting_evidence_artifact_size_mismatch:{role}"
+        )
+    return {
+        "role": role,
+        "relative_path": relative_path,
+        "sha256": observed_sha,
+        "size_bytes": expected_size,
+    }
+
+
+def _verified_receipt(
+    path: Path, *, schema_version: str, digest_field: str, role: str
+) -> dict[str, Any]:
+    receipt = _load_json(path)
+    if receipt.get("schema_version") != schema_version:
+        raise EpisodeEvidenceIndexError(
+            f"supporting_evidence_receipt_schema_mismatch:{role}"
+        )
+    if receipt.get(digest_field) != canonical_digest(
+        receipt, digest_field=digest_field
+    ):
+        raise EpisodeEvidenceIndexError(
+            f"supporting_evidence_receipt_digest_mismatch:{role}"
+        )
+    return receipt
+
+
+def agent_cad_content_agents_supporting_artifacts(
+    *,
+    source_root: str | Path,
+    cad_agent_matrix: Mapping[str, Any],
+    content_agents_bundle_matrix: Mapping[str, Any],
+    task_id: str,
+    shared_artifacts: Sequence[Mapping[str, str]] = (),
+) -> list[dict[str, Any]]:
+    """Return digest-verified supporting rows for one task's CAD-agent evidence.
+
+    The caller can append these rows to ``materialize_supporting_evidence_inventory``.
+    This keeps the portable package digest-only while making the CAD-agent and
+    Content Agents evidence joins task-neutral and repeatable for 1..5
+    replacement-object scenes.
+    """
+
+    source = Path(source_root).expanduser().resolve()
+    if not source.is_dir():
+        raise EpisodeEvidenceIndexError("supporting_evidence_source_root_missing")
+    if not task_id:
+        raise EpisodeEvidenceIndexError("agent_cad_supporting_task_id_missing")
+    try:
+        cad_matrix = validate_cad_agent_matrix(cad_agent_matrix)
+    except SimReadyCadAgentContractError as exc:
+        raise EpisodeEvidenceIndexError(
+            "agent_cad_supporting_cad_matrix_invalid:" + ",".join(exc.codes)
+        ) from exc
+
+    bundle_matrix = dict(content_agents_bundle_matrix)
+    if (
+        bundle_matrix.get("schema_version")
+        != "third_scene_agent_cad_content_agents_bundle_matrix.v1"
+        or bundle_matrix.get("input_variant") != "agent_cad_v1"
+        or bundle_matrix.get("receipt_digest")
+        != canonical_digest(bundle_matrix, digest_field="receipt_digest")
+    ):
+        raise EpisodeEvidenceIndexError(
+            "agent_cad_supporting_content_agents_matrix_invalid"
+        )
+    if bundle_matrix.get("claim_boundary") != {
+        "content_agents_bundles_built": True,
+        "exact_entrypoint_rehearsed": True,
+        "content_agents_executed": False,
+        "simready_qualified": False,
+        "native_simulator_import_qualified": False,
+        "physical_equivalence": False,
+    }:
+        raise EpisodeEvidenceIndexError(
+            "agent_cad_supporting_content_agents_claim_boundary_invalid"
+        )
+    capacity = bundle_matrix.get("replacement_object_capacity")
+    if (
+        not isinstance(capacity, Mapping)
+        or capacity.get("minimum") != 1
+        or capacity.get("maximum") != 5
+        or not isinstance(capacity.get("sealed_slots"), int)
+        or not 1 <= capacity["sealed_slots"] <= 5
+    ):
+        raise EpisodeEvidenceIndexError(
+            "agent_cad_supporting_content_agents_capacity_invalid"
+        )
+    items = bundle_matrix.get("items")
+    if (
+        not isinstance(items, list)
+        or not items
+        or len(items) > 10
+        or bundle_matrix.get("candidate_count") != len(items)
+    ):
+        raise EpisodeEvidenceIndexError(
+            "agent_cad_supporting_content_agents_items_invalid"
+        )
+
+    cad_outputs: dict[tuple[int, str, str, str], dict[str, Any]] = {}
+    for obj in cad_matrix["objects"]:
+        for candidate in obj["candidates"]:
+            request = candidate["request"]
+            backend_id = request["backend"]["backend_id"]
+            key = (
+                request["replacement_slot"],
+                request["task_id"],
+                request["asset_id"],
+                backend_id,
+            )
+            cad_outputs[key] = candidate
+
+    rows: list[dict[str, Any]] = []
+    for shared in shared_artifacts:
+        role = str(shared.get("role") or "")
+        relative_path = str(shared.get("relative_path") or "")
+        if not role or not relative_path:
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_shared_artifact_invalid"
+            )
+        rows.append(
+            _external_file_record(
+                source,
+                {
+                    "path": str(source / relative_path),
+                    "sha256": _prefixed_sha256(_inside(source, relative_path, role=role)),
+                    "size_bytes": _inside(source, relative_path, role=role).stat().st_size,
+                },
+                role=role,
+            )
+        )
+
+    matched = 0
+    for item in items:
+        if not isinstance(item, Mapping) or item.get("task_id") != task_id:
+            continue
+        matched += 1
+        replacement_slot = item.get("replacement_slot")
+        asset_id = str(item.get("asset_id") or "")
+        backend_id = str(item.get("cad_agent_backend_id") or "")
+        key = (replacement_slot, task_id, asset_id, backend_id)
+        candidate = cad_outputs.get(key)
+        if candidate is None:
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_candidate_join_missing"
+            )
+        if candidate["receipt_digest"] != item.get("cad_agent_output_receipt_digest"):
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_candidate_digest_mismatch"
+            )
+        prefix = f"agent_cad:{backend_id}"
+        rows.append(
+            _external_file_record(
+                source,
+                candidate["execution"]["execution_receipt"],
+                role=f"{prefix}:execution_receipt",
+            )
+        )
+        rows.append(
+            _external_file_record(
+                source, candidate["artifacts"]["step"], role=f"{prefix}:primary_step"
+            )
+        )
+        snapshots = candidate["artifacts"].get("snapshots") or []
+        if snapshots:
+            rows.append(
+                _external_file_record(
+                    source, snapshots[0], role=f"{prefix}:review_snapshot"
+                )
+            )
+        if task_id.startswith("task_a") and len(snapshots) > 1:
+            rows.append(
+                _external_file_record(
+                    source,
+                    snapshots[1],
+                    role=f"{prefix}:review_snapshot_open_or_diagnostic",
+                )
+            )
+        execution_path = Path(candidate["execution"]["execution_receipt"]["path"]).resolve()
+        candidate_root = execution_path.parent
+        try:
+            candidate_relative = candidate_root.relative_to(source)
+        except ValueError as exc:
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_candidate_root_outside_source"
+            ) from exc
+        projection_path = (
+            source
+            / candidate_relative
+            / "content_agents_input_v1"
+            / "projection_receipt.v1.json"
+        )
+        projection = _verified_receipt(
+            projection_path,
+            schema_version="cad_agent_mesh_usd_projection.v1",
+            digest_field="receipt_digest",
+            role=f"{prefix}:mesh_projection_receipt",
+        )
+        if (
+            projection.get("status") != "mesh_working_copy_authored"
+            or projection.get("content_agents_input_eligible") is not True
+            or projection.get("canonical_simulator_asset") is not False
+            or projection.get("receipt_digest")
+            != item.get("mesh_projection_receipt_digest")
+            or projection.get("packet_digest") != item.get("mesh_packet_digest")
+            or (projection.get("step") or {}).get("sha256")
+            != item.get("candidate_step_sha256")
+        ):
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_projection_join_mismatch"
+            )
+        rows.append(
+            _external_file_record(
+                source,
+                {
+                    "path": str(projection_path),
+                    "sha256": _prefixed_sha256(projection_path),
+                    "size_bytes": projection_path.stat().st_size,
+                },
+                role=f"{prefix}:mesh_projection_receipt",
+            )
+        )
+        rows.append(
+            _external_file_record(
+                source, projection["packet"], role=f"{prefix}:mesh_packet"
+            )
+        )
+        rows.append(
+            _external_file_record(
+                source,
+                projection["output_usd"],
+                role=f"{prefix}:mesh_usd_agent_input",
+            )
+        )
+        bundle_receipt_row = _external_file_record(
+            source,
+            item["bundle_receipt"],
+            role=f"{prefix}:content_agents_bundle_receipt",
+        )
+        bundle_receipt = _load_json(source / bundle_receipt_row["relative_path"])
+        if (
+            bundle_receipt.get("schema_version")
+            != "adp_content_agents_provider_bundle.v1"
+            or bundle_receipt.get("status") != "ready"
+            or bundle_receipt.get("bundle_sha256")
+            != (item.get("bundle") or {}).get("sha256")
+        ):
+            raise EpisodeEvidenceIndexError(
+                "agent_cad_supporting_content_agents_bundle_receipt_invalid"
+            )
+        rows.append(bundle_receipt_row)
+        rows.append(
+            _external_file_record(
+                source,
+                item["bundle"],
+                role=f"{prefix}:content_agents_bundle_zip",
+            )
+        )
+
+    if matched == 0:
+        raise EpisodeEvidenceIndexError("agent_cad_supporting_task_missing")
+    if len({(row["role"], row["relative_path"]) for row in rows}) != len(rows):
+        raise EpisodeEvidenceIndexError("agent_cad_supporting_artifact_duplicate")
+    return sorted(rows, key=lambda row: (row["role"], row["relative_path"]))
 
 
 _SUPPORTING_RECEIPT_DIGEST_FIELDS = {
@@ -554,6 +855,7 @@ __all__ = [
     "HTML_FILENAME",
     "INDEX_FILENAME",
     "INDEX_SCHEMA_VERSION",
+    "agent_cad_content_agents_supporting_artifacts",
     "materialize_episode_evidence_index",
     "materialize_supporting_evidence_inventory",
 ]
