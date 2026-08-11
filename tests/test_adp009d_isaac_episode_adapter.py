@@ -978,3 +978,21 @@ def test_resolved_filter_shape_count_is_reported_with_partner_forces() -> None:
     adapter._partner_contact_sensors = {"s": _Sensor("left_inner_finger", unmatched)}
     assert adapter._body_contact_partner_forces_n() is None
     assert adapter._partner_filter_shapes == {}
+
+    # The SAGE collision filter is a separate category.  It must retain its own
+    # resolved-shape count so a zero can filter cannot be misread as evidence
+    # about the static collision scene.
+    adapter._sage_collision_filter_shapes = {}
+    adapter._sage_collision_contact_sensors = {
+        "sage": _Sensor("left_inner_finger", resolved)
+    }
+    sage_forces = adapter._body_contact_sage_collision_forces_n()
+    assert sage_forces == {"left_inner_finger": [0.0, 0.0, 0.0]}
+    assert adapter._sage_collision_filter_shapes == {"left_inner_finger": 1}
+
+    adapter._sage_collision_filter_shapes = {}
+    adapter._sage_collision_contact_sensors = {
+        "sage": _Sensor("left_inner_finger", unmatched)
+    }
+    assert adapter._body_contact_sage_collision_forces_n() is None
+    assert adapter._sage_collision_filter_shapes == {}

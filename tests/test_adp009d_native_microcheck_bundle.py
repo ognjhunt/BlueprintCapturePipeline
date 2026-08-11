@@ -1463,7 +1463,7 @@ def test_aura_is_rendered_by_isaac_not_composited_afterward() -> None:
     assert 'AURA_PARTICLEFIELD_FILENAME = "aura_ghost_removed_surflets.usd"' in source
     assert "aura_appearance" in source
     # Added to the rendered scene, not to a separate compositing step.
-    assert "assets=[sage, approved_can, robot_contact, *partner_contacts, light]" in source
+    assert "*sage_collision_contacts" in source
     assert "[aura_appearance] if aura_appearance is not None else []" in source
 
 
@@ -2891,6 +2891,11 @@ def test_contact_partner_filter_uses_one_sensor_per_finger_and_the_rigid_body() 
     assert "colliders/body_collider" not in runtime.CONTACT_PARTNER_FILTER_PRIM_PATH
     assert set(runtime.CONTACT_PARTNER_SENSOR_NAMES) == set(FINGER_BODIES)
     assert len(set(runtime.CONTACT_PARTNER_SENSOR_NAMES.values())) == len(FINGER_BODIES)
+    assert runtime.CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH == "{ENV_REGEX_NS}/sage_collision"
+    assert set(runtime.CONTACT_SAGE_COLLISION_SENSOR_NAMES) == set(FINGER_BODIES)
+    assert len(set(runtime.CONTACT_SAGE_COLLISION_SENSOR_NAMES.values())) == len(
+        FINGER_BODIES
+    )
 
     # The unfiltered two-body sensor stays the primary net-force source and must
     # not carry a filter, or PhysX reports unreliable filtered values for it.
@@ -2900,6 +2905,7 @@ def test_contact_partner_filter_uses_one_sensor_per_finger_and_the_rigid_body() 
 
     per_finger = source[source.index("partner_contacts = [") : source.index("light = SpawnerObject")]
     assert "filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH]" in per_finger
+    assert "filter_prim_paths_expr=[CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH]" in per_finger
     assert "Robotiq_2F_85/{body_name}" in per_finger
 
 
