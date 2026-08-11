@@ -267,15 +267,19 @@ forks:
 - Current follow-up: scene-neutral replacement-depth v2 contracts now bind the
   complete joint-state or rigid-pose range, render-authorized USD purpose,
   calibrated SE(3) cameras, explicit scoring-frame transforms, primitive
-  geometry, and reset-aware OpenUSD joint frames while retaining the 840796 v1
-  adapter. A shared construction dispatcher now separates articulated and
-  rigid phase/gate contracts, preserves locked articulations, binds exact
-  contact/support bodies, and verifies scoring-frame readback. A shared control
-  dispatcher admits rigid tasks only from a qualified construction receipt and
-  replays the same action, reset, camera, readback, and deterministic-scoring
-  seams used by later policies. No 840920 depth, construction, or control
-  qualification is claimed because its evaluation cameras, source removals,
-  native asset imports, and construction packets remain unavailable.
+  geometry, fully opaque appearance geometry, explicit-triangle mesh topology,
+  and reset-aware OpenUSD joint frames while retaining the 840796 v1 adapter.
+  A shared construction dispatcher now separates articulated-graph and rigid
+  phase/gate contracts, retains every graph phase sample, enforces position and
+  orientation arrival, monitors every locked rigid-articulation joint, and
+  binds support, all-subject-body collision, and forbidden robot-task contact
+  readbacks. Rigid scoring requires measured support contact throughout settle;
+  missing support or safety channels abstain. A shared control dispatcher admits
+  tasks only from their qualified construction receipt and uses the same action,
+  reset, camera, readback, and deterministic-scoring seams used by later
+  policies. No 840920 depth, construction, or control qualification is claimed
+  because its evaluation cameras, source removals, native asset imports, and
+  construction packets remain unavailable.
 
 Hermetic regressions preserve the 840313 rigid fixture, 840796 articulated
 fixture, and dual-task shared-asset fixture. Scene-specific values remain in
@@ -327,21 +331,23 @@ rights-bounded dataset-derived bytes.
 Before the final reusable-code commit:
 
 - `PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode or nurec or aura"`
-  — `1151 passed, 9851 deselected`.
+  — `1153 passed, 9878 deselected` in `218.17 s`.
 - `.venv/bin/ruff check src/ tests/` — passed.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
-  regressions for the current follow-up — `157 passed` across the focused run
-  and one isolated rerun. The aggregate invocation's only failure was host
-  `ENOSPC` while Git wrote a temporary fixture index; the exact affected test
-  passed when rerun after deleting this lane's disposable pytest directory.
+  regressions for the current follow-up — `120 passed` in the direct combined
+  graph/rigid/depth set, plus `273` passing tests in the broader runtime,
+  packet, bundle, episode, scoring, and compatibility set. Earlier in this
+  development lane, one aggregate invocation was interrupted by host `ENOSPC`
+  while Git wrote a disposable fixture index; its exact affected test passed
+  after this lane's temporary pytest directory was removed.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring; complete collision-pair normalization; static authored-structure qualification; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts; task-neutral articulated/rigid construction and controls dispatch; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring; complete collision-pair normalization; static authored-structure qualification; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Two exact Gaussian removals, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
@@ -350,8 +356,9 @@ Before the final reusable-code commit:
 
 Independent metric/handedness qualification, Gaussian ownership/removal,
 replacement depth coverage, native reach/contact, asset dynamics/appearance,
-the Task A graph-articulation interaction-affordance/control compiler, and all
-episode evidence remain unknown.
+the Task A graph-articulation native import/state/contact binding, and all
+episode evidence remain unknown. The graph phase compiler is implemented and
+hermetically exercised; that is not native task qualification.
 
 **Single next action:** grant fresh explicit one-attempt, zero-retry authority for
 the two independently sealed repaired contribution bundles. If either attempt

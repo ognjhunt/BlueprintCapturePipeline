@@ -142,21 +142,33 @@ def _rigid_matrix(value: Any, code: str) -> np.ndarray:
     return matrix
 
 
-def _triangulate(counts: np.ndarray, indices: np.ndarray) -> np.ndarray:
-    triangles: list[tuple[int, int, int]] = []
-    offset = 0
-    for count in counts.tolist():
-        if count < 3:
-            raise ArticulatedUsdDepthSweepError(["articulated_depth_face_invalid"])
-        face = indices[offset : offset + count]
-        triangles.extend(
-            (int(face[0]), int(face[i]), int(face[i + 1]))
-            for i in range(1, count - 1)
+def _triangulate(
+    counts: np.ndarray, indices: np.ndarray, *, point_count: int
+) -> np.ndarray:
+    if (
+        counts.ndim != 1
+        or indices.ndim != 1
+        or not len(counts)
+        or np.any(counts != 3)
+    ):
+        # Fan triangulation can cover pixels outside a concave polygon.  Mesh
+        # topology must already be explicit triangles before it can support a
+        # deletion-safety claim.
+        raise ArticulatedUsdDepthSweepError(
+            ["articulated_depth_mesh_topology_not_explicit_triangles"]
         )
-        offset += count
-    if offset != len(indices) or not triangles:
+    if int(np.sum(counts)) != len(indices) or len(indices) % 3 != 0:
         raise ArticulatedUsdDepthSweepError(["articulated_depth_face_indices_invalid"])
-    return np.asarray(triangles, dtype=np.int64)
+    triangles = np.asarray(indices, dtype=np.int64).reshape((-1, 3))
+    if (
+        np.any(triangles < 0)
+        or np.any(triangles >= int(point_count))
+        or any(len(set(int(value) for value in row)) != 3 for row in triangles)
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["articulated_depth_face_indices_invalid"]
+        )
+    return triangles
 
 
 def _primitive_points_and_faces(prim: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -173,7 +185,7 @@ def _primitive_points_and_faces(prim: Any) -> tuple[np.ndarray, np.ndarray]:
             raise ArticulatedUsdDepthSweepError(
                 ["articulated_depth_mesh_points_invalid"]
             )
-        return points, _triangulate(counts, indices)
+        return points, _triangulate(counts, indices, point_count=len(points))
     if prim.IsA(UsdGeom.Cube):
         size = float(UsdGeom.Cube(prim).GetSizeAttr().Get())
         half = size / 2.0
@@ -254,15 +266,45 @@ def _transform_points(points: np.ndarray, transform: np.ndarray) -> np.ndarray:
 
 
 def _render_authorized_gprim(prim: Any) -> bool:
-    """Admit only computed-visible default/render-purpose appearance geometry."""
+    """Admit only visible, render-purpose geometry proven fully opaque."""
 
-    from pxr import UsdGeom
+    from pxr import UsdGeom, UsdShade
 
     imageable = UsdGeom.Imageable(prim)
-    return (
-        str(imageable.ComputeVisibility()).lower() != "invisible"
-        and str(imageable.ComputePurpose()).lower() in {"default", "render"}
-    )
+    if (
+        str(imageable.ComputeVisibility()).lower() == "invisible"
+        or str(imageable.ComputePurpose()).lower() not in {"default", "render"}
+    ):
+        return False
+    display_opacity = UsdGeom.Gprim(prim).GetDisplayOpacityAttr().Get()
+    if display_opacity and any(
+        not math.isfinite(float(value))
+        or not math.isclose(float(value), 1.0, abs_tol=1.0e-9, rel_tol=0.0)
+        for value in display_opacity
+    ):
+        return False
+    material, _relationship = UsdShade.MaterialBindingAPI(
+        prim
+    ).ComputeBoundMaterial()
+    if not material or not material.GetPrim().IsValid():
+        return True
+    try:
+        source, _source_name, _source_type = material.ComputeSurfaceSource()
+        shader = UsdShade.Shader(source.GetPrim())
+        shader_id = str(shader.GetIdAttr().Get() or "")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+    if shader_id != "UsdPreviewSurface":
+        return False
+    opacity = shader.GetInput("opacity")
+    if opacity and opacity.HasConnectedSource():
+        return False
+    opacity_value = opacity.Get() if opacity else None
+    if opacity_value is not None and not math.isclose(
+        float(opacity_value), 1.0, abs_tol=1.0e-9, rel_tol=0.0
+    ):
+        return False
+    return True
 
 
 def load_articulated_usd_triangles(
@@ -493,6 +535,8 @@ def seal_replacement_usd_depth_sweep_request(
         "geometry_visibility_policy": {
             "computed_visibility": "visible_only",
             "admitted_purposes": ["default", "render"],
+            "opacity": "fully_opaque_only",
+            "mesh_topology": "explicit_triangles_only",
         },
         "resolution_scale": float(resolution_scale),
         "request_digest": "",
@@ -577,6 +621,8 @@ def validate_replacement_usd_depth_sweep_request(
     if payload.get("geometry_visibility_policy") != {
         "computed_visibility": "visible_only",
         "admitted_purposes": ["default", "render"],
+        "opacity": "fully_opaque_only",
+        "mesh_topology": "explicit_triangles_only",
     }:
         errors.append("replacement_depth_geometry_visibility_policy_invalid")
     if not _is_sha256_digest(payload.get("camera_contract_digest")):

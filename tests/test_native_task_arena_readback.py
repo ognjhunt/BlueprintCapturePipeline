@@ -184,6 +184,7 @@ def test_multiple_native_sensor_instances_aggregate_into_one_logical_channel() -
 def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
     built = _built()
     built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_sample_binding"] = {"joint_ids": []}
     built.plan["task_spec"] = {
         "task_kind": "rigid_pick_place",
         "interaction_affordance": {
@@ -213,9 +214,71 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
     )
 
 
+def test_rigid_articulation_readback_monitors_every_locked_joint_during_motion() -> None:
+    built = _built()
+    built.plan["task_kind"] = "rigid_pick_place"
+    graph_joints = [
+        {
+            "joint_id": "upper_lock",
+            "role": "locked",
+            "reset_position": 0.0,
+            "reset_tolerance": 0.001,
+        },
+        {
+            "joint_id": "lower_lock",
+            "role": "locked",
+            "reset_position": 0.0,
+            "reset_tolerance": 0.001,
+        },
+    ]
+    built.plan["task_spec"] = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "rigid_pick_place",
+        "collision_failure_minimum_force_n": 1.0,
+        "articulation_graph": {"joints": graph_joints},
+        "interaction_affordance": {
+            "asset_root_from_scoring_frame": {
+                "position_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+        },
+    }
+    built.plan["task_sample_binding"] = {
+        "joint_ids": ["upper_lock", "lower_lock"],
+        "native_joint_names": {
+            "upper_lock": "upper_door_hinge",
+            "lower_lock": "lower_door_hinge",
+        },
+        "joint_roles": {"upper_lock": "locked", "lower_lock": "locked"},
+    }
+    built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
+    built.plan["articulation"]["forbidden_robot_contact_body_paths"] = [
+        "{ENV_REGEX_NS}/Robot/panda_link7"
+    ]
+    built.contact_sensor_names.update(
+        {
+            "task_support_contact": ("task_scene_contact",),
+            "robot_task_forbidden_collision": ("robot_scene_contact",),
+        }
+    )
+    del built.contact_sensor_names["task_scene_contact"]
+
+    sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+
+    assert sample["joint_positions"] == {
+        "lower_lock": 0.0,
+        "upper_lock": pytest.approx(0.872664626),
+    }
+    assert sample["locked_joint_containment_violation"] is True
+    built.env.unwrapped.scene["task_object"].data.joint_pos = [[0.0, 0.0]]
+    sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+    assert sample["locked_joint_containment_violation"] is False
+
+
 def test_rigid_readback_never_invents_missing_scoring_frame() -> None:
     built = _built()
     built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_sample_binding"] = {"joint_ids": []}
     built.plan["task_spec"] = {"task_kind": "rigid_pick_place"}
     built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
     built.contact_sensor_names["task_support_contact"] = (

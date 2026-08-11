@@ -14,6 +14,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .articulation_graph_contract import (
+    ArticulationGraphContractError,
+    validate_articulation_graph,
+)
 from .native_articulated_construction_plan import (
     materialize_articulated_construction_phase_plan,
 )
@@ -23,6 +27,12 @@ SCHEMA_VERSION = "native_task_construction_phase_plan.v1"
 RIGID_SCHEMA_VERSION = "native_rigid_construction_phase_plan.v1"
 SUPPORTED_TASK_KINDS = frozenset({"articulated_open_close", "rigid_pick_place"})
 RIGID_AFFORDANCE_SCHEMA_VERSION = "native_rigid_interaction_affordance.v1"
+GRAPH_ARTICULATED_SCHEMA_VERSION = (
+    "native_articulated_graph_construction_phase_plan.v1"
+)
+GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION = (
+    "native_articulated_graph_interaction_affordance.v1"
+)
 
 
 class NativeTaskConstructionPlanError(ValueError):
@@ -59,6 +69,15 @@ def _unit(value: Any, *, error: str) -> list[float]:
     if abs(norm - 1.0) > 1.0e-6:
         raise NativeTaskConstructionPlanError([error])
     return result
+
+
+def _digest(value: Any) -> bool:
+    text = str(value or "")
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
+    )
 
 
 def _quaternion(value: Any, *, error: str) -> list[float]:
@@ -198,6 +217,10 @@ def _affordance(task_spec: Mapping[str, Any], *, subject_asset_id: str) -> dict[
         value.get("pregrasp_clearance_m"),
         error="native_rigid_construction_pregrasp_clearance_invalid",
     )
+    value["arrival_orientation_tolerance_rad"] = _positive(
+        value.get("arrival_orientation_tolerance_rad"),
+        error="native_rigid_construction_arrival_orientation_tolerance_invalid",
+    )
     for field, error in (
         ("allowed_contact_prim_paths", "native_rigid_construction_contact_region_invalid"),
         ("intended_support_prim_paths", "native_rigid_construction_support_region_invalid"),
@@ -276,6 +299,7 @@ def _phase(
     gripper_state: str,
     gate_ids: Sequence[str],
     orientation_world_xyzw: Sequence[float],
+    arrival_orientation_tolerance_rad: float | None = None,
     expected_scoring_position_world_m: Sequence[float] | None = None,
     expected_scoring_orientation_world_xyzw: Sequence[float] | None = None,
 ) -> dict[str, Any]:
@@ -294,6 +318,776 @@ def _phase(
         result["expected_scoring_orientation_world_xyzw"] = [
             float(value) for value in expected_scoring_orientation_world_xyzw
         ]
+    if arrival_orientation_tolerance_rad is not None:
+        result["arrival_orientation_tolerance_rad"] = float(
+            arrival_orientation_tolerance_rad
+        )
+    return result
+
+
+def _graph_articulated_subject(plan: Mapping[str, Any]) -> dict[str, Any]:
+    rows = [
+        dict(row)
+        for row in plan.get("objects") or []
+        if isinstance(row, Mapping) and row.get("task_subject") is True
+    ]
+    if len(rows) != 1 or rows[0].get("object_type") != "ARTICULATION":
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_task_subject_invalid"]
+        )
+    return rows[0]
+
+
+def _graph_articulated_affordance(
+    *,
+    task_spec: Mapping[str, Any],
+    graph: Mapping[str, Any],
+    source_graph_digest: str,
+    subject_asset_id: str,
+    movement_epsilon: float,
+) -> dict[str, Any]:
+    raw = task_spec.get("interaction_affordance")
+    if not isinstance(raw, Mapping):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_construction_general_interaction_affordance_missing"]
+        )
+    try:
+        value = json.loads(json.dumps(dict(raw), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_interaction_affordance_invalid"]
+        ) from exc
+    if (
+        value.get("schema_version")
+        != GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION
+        or value.get("affordance_digest")
+        != canonical_digest(value, digest_field="affordance_digest")
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_interaction_affordance_invalid"]
+        )
+    if (
+        value.get("subject_asset_id") != subject_asset_id
+        or value.get("articulation_graph_digest") != source_graph_digest
+        or task_spec.get("articulation_graph_digest") != source_graph_digest
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_affordance_binding_mismatch"]
+        )
+    if not _digest(value.get("kinematic_path_receipt_digest")):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_kinematic_receipt_invalid"]
+        )
+
+    links = {str(row["link_id"]): dict(row) for row in graph["links"]}
+    joints = {str(row["joint_id"]): dict(row) for row in graph["joints"]}
+    child_joint = {str(row["child_link_id"]): dict(row) for row in graph["joints"]}
+    contact_link_id = str(value.get("contact_link_id") or "")
+    if contact_link_id not in links:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_contact_link_invalid"]
+        )
+    cursor = contact_link_id
+    driven_by_target = False
+    while cursor in child_joint:
+        joint = child_joint[cursor]
+        driven_by_target = driven_by_target or joint["role"] == "target"
+        cursor = str(joint["parent_link_id"])
+    if not driven_by_target:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_contact_link_not_target_driven"]
+        )
+
+    paths = value.get("contact_body_prim_paths")
+    if (
+        not isinstance(paths, list)
+        or not paths
+        or len(set(paths)) != len(paths)
+        or any(
+            not isinstance(path, str)
+            or not path.startswith("/")
+            or ".." in path.split("/")
+            for path in paths
+        )
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_contact_region_invalid"]
+        )
+    value["contact_body_prim_paths"] = list(paths)
+    value["contact_point_link_m"] = _finite_vector(
+        value.get("contact_point_link_m"),
+        length=3,
+        error="native_articulated_graph_construction_contact_point_invalid",
+    )
+    value["approach_unit_asset_root"] = _unit(
+        value.get("approach_unit_asset_root"),
+        error="native_articulated_graph_construction_approach_direction_invalid",
+    )
+    value["retreat_unit_asset_root"] = _unit(
+        value.get("retreat_unit_asset_root"),
+        error="native_articulated_graph_construction_retreat_direction_invalid",
+    )
+    value["gripper_orientation_contact_xyzw"] = _quaternion(
+        value.get("gripper_orientation_contact_xyzw"),
+        error="native_articulated_graph_construction_gripper_orientation_invalid",
+    )
+    for field in (
+        "precontact_clearance_m",
+        "sweep_clearance_m",
+        "retreat_clearance_m",
+        "arrival_tolerance_m",
+        "arrival_orientation_tolerance_rad",
+        "max_joint_delta_rad",
+        "max_joint_setpoint_lead_rad",
+    ):
+        value[field] = _positive(
+            value.get(field),
+            error=f"native_articulated_graph_construction_{field}_invalid",
+        )
+    for field in (
+        "motion_minimum_steps",
+        "motion_maximum_steps",
+        "gripper_dwell_minimum_steps",
+        "gripper_dwell_maximum_steps",
+        "arrival_stability_steps",
+    ):
+        raw_integer = value.get(field)
+        if (
+            isinstance(raw_integer, bool)
+            or not isinstance(raw_integer, int)
+            or raw_integer <= 0
+        ):
+            raise NativeTaskConstructionPlanError(
+                [f"native_articulated_graph_construction_{field}_invalid"]
+            )
+    if (
+        value["motion_minimum_steps"] > value["motion_maximum_steps"]
+        or value["gripper_dwell_minimum_steps"]
+        > value["gripper_dwell_maximum_steps"]
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_control_step_range_invalid"]
+        )
+
+    raw_waypoints = value.get("joint_contact_path")
+    if not isinstance(raw_waypoints, list) or len(raw_waypoints) < 2:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_joint_contact_path_invalid"]
+        )
+    joint_ids = set(joints)
+    target_ids = sorted(
+        joint_id for joint_id, joint in joints.items() if joint["role"] == "target"
+    )
+    normalized_waypoints: list[dict[str, Any]] = []
+    waypoint_ids: list[str] = []
+    for index, raw_waypoint in enumerate(raw_waypoints):
+        if not isinstance(raw_waypoint, Mapping):
+            raise NativeTaskConstructionPlanError(
+                ["native_articulated_graph_construction_joint_contact_path_invalid"]
+            )
+        waypoint_id = str(raw_waypoint.get("waypoint_id") or "")
+        waypoint_ids.append(waypoint_id)
+        raw_positions = raw_waypoint.get("joint_positions")
+        if not isinstance(raw_positions, Mapping) or set(raw_positions) != joint_ids:
+            raise NativeTaskConstructionPlanError(
+                [
+                    "native_articulated_graph_construction_joint_path_set_invalid:"
+                    f"{waypoint_id or index}"
+                ]
+            )
+        positions: dict[str, float] = {}
+        for joint_id in sorted(joint_ids):
+            try:
+                position = float(raw_positions[joint_id])
+            except (TypeError, ValueError) as exc:
+                raise NativeTaskConstructionPlanError(
+                    [
+                        "native_articulated_graph_construction_joint_path_value_invalid:"
+                        f"{waypoint_id or index}:{joint_id}"
+                    ]
+                ) from exc
+            lower, upper = joints[joint_id]["limits"]
+            if not math.isfinite(position) or not float(lower) <= position <= float(upper):
+                raise NativeTaskConstructionPlanError(
+                    [
+                        "native_articulated_graph_construction_joint_path_value_invalid:"
+                        f"{waypoint_id or index}:{joint_id}"
+                    ]
+                )
+            positions[joint_id] = position
+        for joint_id, joint in joints.items():
+            if joint["role"] == "locked" and abs(
+                positions[joint_id] - float(joint["reset_position"])
+            ) > float(joint["reset_tolerance"]):
+                raise NativeTaskConstructionPlanError(
+                    [
+                        "native_articulated_graph_construction_locked_joint_path_invalid:"
+                        f"{waypoint_id or index}:{joint_id}"
+                    ]
+                )
+            dependency = joint.get("dependency")
+            if joint["role"] == "dependent" and isinstance(dependency, Mapping):
+                expected = (
+                    positions[str(dependency["driver_joint_id"])]
+                    * float(dependency["multiplier"])
+                    + float(dependency["offset"])
+                )
+                if abs(positions[joint_id] - expected) > float(
+                    dependency["tolerance"]
+                ):
+                    raise NativeTaskConstructionPlanError(
+                        [
+                            "native_articulated_graph_construction_dependent_joint_path_invalid:"
+                            f"{waypoint_id or index}:{joint_id}"
+                        ]
+                    )
+        contact_pose = raw_waypoint.get("contact_pose_asset_root")
+        if not isinstance(contact_pose, Mapping):
+            raise NativeTaskConstructionPlanError(
+                [
+                    "native_articulated_graph_construction_contact_pose_invalid:"
+                    f"{waypoint_id or index}"
+                ]
+            )
+        normalized_waypoints.append(
+            {
+                "waypoint_id": waypoint_id,
+                "joint_positions": positions,
+                "contact_pose_asset_root": {
+                    "position_m": _finite_vector(
+                        contact_pose.get("position_m"),
+                        length=3,
+                        error=(
+                            "native_articulated_graph_construction_contact_pose_invalid:"
+                            f"{waypoint_id or index}"
+                        ),
+                    ),
+                    "orientation_xyzw": _quaternion(
+                        contact_pose.get("orientation_xyzw"),
+                        error=(
+                            "native_articulated_graph_construction_contact_pose_invalid:"
+                            f"{waypoint_id or index}"
+                        ),
+                    ),
+                },
+                "clearance_unit_asset_root": _unit(
+                    raw_waypoint.get("clearance_unit_asset_root"),
+                    error=(
+                        "native_articulated_graph_construction_clearance_direction_invalid:"
+                        f"{waypoint_id or index}"
+                    ),
+                ),
+            }
+        )
+    if any(not waypoint_id for waypoint_id in waypoint_ids) or len(
+        set(waypoint_ids)
+    ) != len(waypoint_ids):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_waypoint_ids_invalid"]
+        )
+
+    first_positions = normalized_waypoints[0]["joint_positions"]
+    if any(
+        abs(first_positions[joint_id] - float(joint["reset_position"]))
+        > float(joint["reset_tolerance"])
+        for joint_id, joint in joints.items()
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_path_reset_mismatch"]
+        )
+    final_positions = normalized_waypoints[-1]["joint_positions"]
+    intervals = graph["success_predicate"]["joint_intervals"]
+    if any(
+        not float(intervals[joint_id][0])
+        <= final_positions[joint_id]
+        <= float(intervals[joint_id][1])
+        for joint_id in target_ids
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_path_target_mismatch"]
+        )
+    if any(
+        max(
+            abs(row["joint_positions"][joint_id] - first_positions[joint_id])
+            for row in normalized_waypoints
+        )
+        <= movement_epsilon
+        for joint_id in target_ids
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_target_path_static"]
+        )
+    value["joint_contact_path"] = normalized_waypoints
+    return value
+
+
+def materialize_graph_articulated_construction_phase_plan(
+    scene_plan: Mapping[str, Any],
+    *,
+    arrival_tolerance_m: float = 0.02,
+    stable_samples: int = 2,
+    maximum_steps_per_phase: int = 64,
+) -> dict[str, Any]:
+    """Compile a complete graph-articulated clearance and contact program."""
+
+    try:
+        plan = json.loads(json.dumps(dict(scene_plan), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_scene_plan_invalid"]
+        ) from exc
+    if plan.get("task_kind") != "articulated_open_close":
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_task_kind_invalid"]
+        )
+    task_spec = plan.get("task_spec")
+    if not isinstance(task_spec, Mapping):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_task_spec_invalid"]
+        )
+    source_graph = task_spec.get("articulation_graph")
+    if not isinstance(source_graph, Mapping):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_task_spec_invalid"]
+        )
+    source_graph_digest = canonical_digest(dict(source_graph))
+    try:
+        graph = validate_articulation_graph(source_graph)
+    except ArticulationGraphContractError as exc:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_task_spec_invalid", *exc.errors]
+        ) from exc
+    movement_epsilon = _positive(
+        task_spec.get("movement_epsilon"),
+        error="native_articulated_graph_construction_movement_epsilon_invalid",
+    )
+    joints = list(graph["joints"])
+    normalized_spec = {
+        "joint_reset_positions": {
+            str(row["joint_id"]): float(row["reset_position"]) for row in joints
+        },
+        "joint_reset_tolerances": {
+            str(row["joint_id"]): float(row["reset_tolerance"]) for row in joints
+        },
+        "joint_roles": {
+            str(row["joint_id"]): str(row["role"]) for row in joints
+        },
+        "target_success_intervals": {
+            str(joint_id): list(interval)
+            for joint_id, interval in graph["success_predicate"][
+                "joint_intervals"
+            ].items()
+        },
+    }
+    subject = _graph_articulated_subject(plan)
+    affordance = _graph_articulated_affordance(
+        task_spec=task_spec,
+        graph=graph,
+        source_graph_digest=source_graph_digest,
+        subject_asset_id=str(subject.get("asset_id") or ""),
+        movement_epsilon=movement_epsilon,
+    )
+    reset_pose = (subject.get("reset_state") or {}).get("root_pose_world") or subject.get(
+        "pose_world"
+    )
+    if not isinstance(reset_pose, Mapping):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_asset_root_pose_invalid"]
+        )
+    root_position = _finite_vector(
+        reset_pose.get("position_world_m"),
+        length=3,
+        error="native_articulated_graph_construction_asset_root_pose_invalid",
+    )
+    root_orientation = _quaternion(
+        reset_pose.get("orientation_xyzw"),
+        error="native_articulated_graph_construction_asset_root_pose_invalid",
+    )
+    subject_resets = (subject.get("reset_state") or {}).get("joint_positions")
+    graph_resets = normalized_spec["joint_reset_positions"]
+    if not isinstance(subject_resets, Mapping) or set(subject_resets) != set(
+        graph_resets
+    ) or any(
+        abs(float(subject_resets[joint_id]) - float(reset))
+        > float(normalized_spec["joint_reset_tolerances"][joint_id])
+        for joint_id, reset in graph_resets.items()
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_subject_reset_mismatch"]
+        )
+    arrival_tolerance = _positive(
+        arrival_tolerance_m,
+        error="native_articulated_graph_construction_arrival_tolerance_invalid",
+    )
+    if (
+        isinstance(stable_samples, bool)
+        or not isinstance(stable_samples, int)
+        or stable_samples <= 0
+        or isinstance(maximum_steps_per_phase, bool)
+        or not isinstance(maximum_steps_per_phase, int)
+        or maximum_steps_per_phase <= 0
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_execution_parameters_invalid"]
+        )
+
+    world_rows: list[dict[str, Any]] = []
+    for row in affordance["joint_contact_path"]:
+        pose = row["contact_pose_asset_root"]
+        world_pose = _compose_pose(
+            root_position,
+            root_orientation,
+            pose["position_m"],
+            pose["orientation_xyzw"],
+        )
+        world_rows.append(
+            {
+                **row,
+                "contact_position_world_m": world_pose[:3],
+                "contact_orientation_world_xyzw": world_pose[3:],
+                "gripper_orientation_world_xyzw": _quaternion_product_xyzw(
+                    world_pose[3:],
+                    affordance["gripper_orientation_contact_xyzw"],
+                ),
+                "clearance_unit_world": _quaternion_rotate_xyzw(
+                    root_orientation, row["clearance_unit_asset_root"]
+                ),
+            }
+        )
+    approach_unit_world = _quaternion_rotate_xyzw(
+        root_orientation, affordance["approach_unit_asset_root"]
+    )
+    retreat_unit_world = _quaternion_rotate_xyzw(
+        root_orientation, affordance["retreat_unit_asset_root"]
+    )
+    first = world_rows[0]
+    last = world_rows[-1]
+    orientation_tolerance = float(
+        affordance["arrival_orientation_tolerance_rad"]
+    )
+    approach_position = [
+        first["contact_position_world_m"][axis]
+        + approach_unit_world[axis] * float(affordance["precontact_clearance_m"])
+        for axis in range(3)
+    ]
+    retreat_position = [
+        last["contact_position_world_m"][axis]
+        + retreat_unit_world[axis] * float(affordance["retreat_clearance_m"])
+        for axis in range(3)
+    ]
+    phases = [
+        _phase(
+            "approach",
+            approach_position,
+            gripper_state="open",
+            gate_ids=("precontact_reachability", "base_collision_clearance"),
+            orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
+            arrival_orientation_tolerance_rad=orientation_tolerance,
+        )
+    ]
+    for index, row in enumerate(world_rows):
+        phases.append(
+            _phase(
+                f"contact_sweep_clearance_{index:02d}",
+                [
+                    row["contact_position_world_m"][axis]
+                    + row["clearance_unit_world"][axis]
+                    * float(affordance["sweep_clearance_m"])
+                    for axis in range(3)
+                ],
+                gripper_state="open",
+                gate_ids=("sweep_workspace_clearance", "joint_limit_clearance"),
+                orientation_world_xyzw=row["gripper_orientation_world_xyzw"],
+                arrival_orientation_tolerance_rad=orientation_tolerance,
+            )
+        )
+    phases.extend(
+        [
+            _phase(
+                "release_clearance",
+                [
+                    last["contact_position_world_m"][axis]
+                    + last["clearance_unit_world"][axis]
+                    * float(affordance["sweep_clearance_m"])
+                    for axis in range(3)
+                ],
+                gripper_state="open",
+                gate_ids=("release_clearance",),
+                orientation_world_xyzw=last["gripper_orientation_world_xyzw"],
+                arrival_orientation_tolerance_rad=orientation_tolerance,
+            ),
+            _phase(
+                "retreat",
+                retreat_position,
+                gripper_state="open",
+                gate_ids=("retreat",),
+                orientation_world_xyzw=last["gripper_orientation_world_xyzw"],
+                arrival_orientation_tolerance_rad=orientation_tolerance,
+            ),
+            _phase(
+                "recovery",
+                approach_position,
+                gripper_state="open",
+                gate_ids=("recovery", "reset_readback"),
+                orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
+                arrival_orientation_tolerance_rad=orientation_tolerance,
+            ),
+        ]
+    )
+    exact_contact_phases = [
+        _phase(
+            "approach",
+            approach_position,
+            gripper_state="open",
+            gate_ids=("precontact_reachability",),
+            orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
+            arrival_orientation_tolerance_rad=orientation_tolerance,
+        ),
+        _phase(
+            "contact_open",
+            first["contact_position_world_m"],
+            gripper_state="open",
+            gate_ids=("exact_contact_region",),
+            orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
+            arrival_orientation_tolerance_rad=orientation_tolerance,
+        ),
+        _phase(
+            "contact_close",
+            first["contact_position_world_m"],
+            gripper_state="closed",
+            gate_ids=("task_robot_contact",),
+            orientation_world_xyzw=first["gripper_orientation_world_xyzw"],
+            arrival_orientation_tolerance_rad=orientation_tolerance,
+        ),
+    ]
+    for index, row in enumerate(world_rows[1:], start=1):
+        exact_contact_phases.append(
+            {
+                **_phase(
+                    f"joint_path_{index:02d}",
+                    row["contact_position_world_m"],
+                    gripper_state="closed",
+                    gate_ids=(
+                        "task_robot_contact",
+                        "target_joint_path",
+                        "dependent_joint_path",
+                        "locked_joint_containment",
+                        "collision_clearance",
+                    ),
+                    orientation_world_xyzw=row["gripper_orientation_world_xyzw"],
+                    arrival_orientation_tolerance_rad=orientation_tolerance,
+                ),
+                "expected_joint_positions": row["joint_positions"],
+                "source_waypoint_id": row["waypoint_id"],
+            }
+        )
+    exact_contact_phases.extend(
+        [
+            {
+                **_phase(
+                    "release",
+                    last["contact_position_world_m"],
+                    gripper_state="open",
+                    gate_ids=("release", "target_joint_settle"),
+                    orientation_world_xyzw=last["gripper_orientation_world_xyzw"],
+                    arrival_orientation_tolerance_rad=orientation_tolerance,
+                ),
+                "expected_joint_positions": last["joint_positions"],
+            },
+            _phase(
+                "retreat",
+                retreat_position,
+                gripper_state="open",
+                gate_ids=("retreat", "target_joint_settle"),
+                orientation_world_xyzw=last["gripper_orientation_world_xyzw"],
+                arrival_orientation_tolerance_rad=orientation_tolerance,
+            ),
+        ]
+    )
+    joint_roles = normalized_spec["joint_roles"]
+    gate_contract = {
+        "precontact_reachability": "native_end_effector_pose_readback",
+        "base_collision_clearance": "native_robot_scene_contact_readback",
+        "sweep_workspace_clearance": "native_end_effector_pose_and_contact_readback",
+        "joint_limit_clearance": "digest_bound_complete_joint_path",
+        "release_clearance": "native_end_effector_pose_and_contact_readback",
+        "retreat": "native_end_effector_pose_readback",
+        "recovery": "native_end_effector_pose_readback",
+        "reset_readback": "native_robot_and_complete_joint_graph_reset_replay",
+    }
+    result: dict[str, Any] = {
+        "schema_version": GRAPH_ARTICULATED_SCHEMA_VERSION,
+        "task_kind": "articulated_open_close",
+        "scene_plan_digest": plan.get("plan_digest"),
+        "subject_asset_id": subject.get("asset_id"),
+        "articulation_graph": graph,
+        "articulation_graph_digest": source_graph_digest,
+        "normalized_articulation_graph_digest": canonical_digest(graph),
+        "interaction_affordance": affordance,
+        "asset_root_reset_pose_world": [*root_position, *root_orientation],
+        "joint_ids_by_role": {
+            role: sorted(
+                joint_id
+                for joint_id, observed_role in joint_roles.items()
+                if observed_role == role
+            )
+            for role in ("target", "dependent", "passive", "locked")
+        },
+        "target_success_intervals": normalized_spec["target_success_intervals"],
+        "joint_reset_positions": normalized_spec["joint_reset_positions"],
+        "joint_reset_tolerances": normalized_spec["joint_reset_tolerances"],
+        "joint_contact_path": world_rows,
+        "phases": phases,
+        "phase_count": len(phases),
+        "exact_contact_phases": exact_contact_phases,
+        "execution_parameters": {
+            "arrival_tolerance_m": arrival_tolerance,
+            "arrival_orientation_tolerance_rad": affordance[
+                "arrival_orientation_tolerance_rad"
+            ],
+            "stable_samples": stable_samples,
+            "maximum_steps_per_phase": maximum_steps_per_phase,
+        },
+        "gate_contract": gate_contract,
+        "required_gate_ids": sorted(gate_contract),
+        "claim_boundary": {
+            "clearance_phases_are_native_ik_targets": True,
+            "exact_contact_phases_require_qualified_clearance_receipt": True,
+            "kinematic_path_correctness_requires_bound_asset_qualification": True,
+            "plan_is_not_construction_policy_or_physical_evidence": True,
+        },
+        "plan_digest": "",
+    }
+    result["plan_digest"] = canonical_digest(result, digest_field="plan_digest")
+    return result
+
+
+def evaluate_graph_articulated_construction_gates(
+    *,
+    phase_plan: Mapping[str, Any],
+    phase_results: Sequence[Mapping[str, Any]],
+    reset_replay: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Qualify every clearance phase from retained native state samples."""
+
+    if (
+        phase_plan.get("schema_version") != GRAPH_ARTICULATED_SCHEMA_VERSION
+        or phase_plan.get("plan_digest")
+        != canonical_digest(dict(phase_plan), digest_field="plan_digest")
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_phase_plan_invalid"]
+        )
+    expected_ids = [str(row["phase_id"]) for row in phase_plan["phases"]]
+    if (
+        not isinstance(phase_results, Sequence)
+        or isinstance(phase_results, (str, bytes))
+        or len(phase_results) != len(expected_ids)
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_phase_results_invalid"]
+        )
+    observed = [dict(row) for row in phase_results if isinstance(row, Mapping)]
+    if len(observed) != len(expected_ids) or [
+        str(row.get("phase_id") or "") for row in observed
+    ] != expected_ids:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_phase_results_invalid"]
+        )
+    all_samples: list[dict[str, Any]] = []
+    for row in observed:
+        samples = row.get("task_samples")
+        if not isinstance(samples, list) or not samples or any(
+            not isinstance(sample, Mapping) for sample in samples
+        ):
+            raise NativeTaskConstructionPlanError(
+                [
+                    "native_articulated_graph_construction_path_readback_missing:"
+                    f"{row['phase_id']}"
+                ]
+            )
+        all_samples.extend(dict(sample) for sample in samples)
+    graph = phase_plan["articulation_graph"]
+    reset_positions = phase_plan["joint_reset_positions"]
+    reset_tolerances = phase_plan["joint_reset_tolerances"]
+    roles = {
+        str(joint["joint_id"]): str(joint["role"]) for joint in graph["joints"]
+    }
+    expected_joint_ids = set(reset_positions)
+    path_state_valid = True
+    for sample in all_samples:
+        positions = sample.get("joint_positions")
+        if positions is None:
+            positions = sample.get("joint_positions_rad")
+        if not isinstance(positions, Mapping) or set(positions) != expected_joint_ids:
+            raise NativeTaskConstructionPlanError(
+                ["native_articulated_graph_construction_joint_readback_invalid"]
+            )
+        for joint_id in sorted(expected_joint_ids):
+            try:
+                position = float(positions[joint_id])
+            except (TypeError, ValueError) as exc:
+                raise NativeTaskConstructionPlanError(
+                    ["native_articulated_graph_construction_joint_readback_invalid"]
+                ) from exc
+            if not math.isfinite(position):
+                raise NativeTaskConstructionPlanError(
+                    ["native_articulated_graph_construction_joint_readback_invalid"]
+                )
+            if roles[joint_id] != "passive" and abs(
+                position - float(reset_positions[joint_id])
+            ) > float(reset_tolerances[joint_id]):
+                path_state_valid = False
+    clearance_contact_free = all(
+        sample.get("task_contact_active") is False for sample in all_samples
+    )
+    collision_clear = all(
+        sample.get("robot_collision_failure") is False
+        and sample.get("scene_collision_failure") is False
+        and sample.get("containment_violation") is False
+        and sample.get("joint_limit_violation") is False
+        for sample in all_samples
+    )
+    reachability = all(row.get("target_reached") is True for row in observed)
+    reset_passed = reset_replay.get("passed") is True
+    gate_values = {
+        "precontact_reachability": reachability,
+        "base_collision_clearance": collision_clear,
+        "sweep_workspace_clearance": (
+            reachability and collision_clear and clearance_contact_free
+        ),
+        "joint_limit_clearance": path_state_valid,
+        "release_clearance": collision_clear and clearance_contact_free,
+        "retreat": reachability and collision_clear,
+        "recovery": reachability and collision_clear,
+        "reset_readback": reset_passed,
+    }
+    rows = [
+        {
+            "gate_id": gate_id,
+            "measurement_authority": phase_plan["gate_contract"][gate_id],
+            "passed": bool(gate_values[gate_id]),
+        }
+        for gate_id in phase_plan["required_gate_ids"]
+    ]
+    blockers = [
+        f"native_articulated_graph_construction_gate_failed:{row['gate_id']}"
+        for row in rows
+        if not row["passed"]
+    ]
+    result = {
+        "schema_version": "native_articulated_graph_construction_gate_evaluation.v1",
+        "phase_plan_digest": phase_plan["plan_digest"],
+        "all_phase_targets_reached": reachability,
+        "all_phase_samples_retained": True,
+        "gates": rows,
+        "passed": not blockers,
+        "blockers": sorted(blockers),
+        "evaluation_digest": "",
+    }
+    result["evaluation_digest"] = canonical_digest(
+        result, digest_field="evaluation_digest"
+    )
     return result
 
 
@@ -670,6 +1464,9 @@ def materialize_rigid_construction_phase_plan(
         "settle_window_samples": settle_samples,
         "execution_parameters": {
             "arrival_tolerance_m": arrival_tolerance,
+            "arrival_orientation_tolerance_rad": affordance[
+                "arrival_orientation_tolerance_rad"
+            ],
             "stable_samples": stable_samples,
             "maximum_steps_per_phase": maximum_steps_per_phase,
             "relocation_waypoint_count": waypoint_count,
@@ -774,9 +1571,15 @@ def evaluate_rigid_construction_gates(
     collision_clear = all(
         max(
             float(sample.get("robot_scene_contact_peak_force_n", float("inf"))),
+            float(
+                sample.get(
+                    "robot_task_forbidden_collision_peak_force_n", float("inf")
+                )
+            ),
             float(sample.get("task_scene_collision_peak_force_n", float("inf"))),
         )
         < collision_threshold
+        and sample.get("locked_joint_containment_violation") is False
         for sample in all_samples
     )
     grasp_rows = samples("grasp_contact")
@@ -871,12 +1674,13 @@ def evaluate_rigid_construction_gates(
         for row in settle_poses
     )
     support_contact = (
-        support[0] <= final_position[2] <= support[1]
-        and max(
+        len(settle_rows) >= settle_count
+        and all(support[0] <= row[2] <= support[1] for row in settle_poses)
+        and all(
             float(row.get("task_support_contact_peak_force_n", 0.0))
+            >= contact_threshold
             for row in settle_rows
         )
-        >= contact_threshold
     )
     support_stability = len(settle_rows) >= settle_count and all(
         math.dist(final_position, observed_position) <= settle_tolerance
@@ -964,7 +1768,7 @@ def materialize_native_task_construction_phase_plan(
     task_kind = str(scene_plan.get("task_kind") or "")
     if task_kind == "articulated_open_close":
         task_spec = scene_plan.get("task_spec") or {}
-        if task_spec.get("schema_version") != "adp_task_spec.v1":
+        if task_spec.get("schema_version") == "adp_task_spec.v2":
             if not isinstance(task_spec.get("interaction_affordance"), Mapping):
                 raise NativeTaskConstructionPlanError(
                     [
@@ -972,8 +1776,15 @@ def materialize_native_task_construction_phase_plan(
                         "affordance_missing"
                     ]
                 )
+            return materialize_graph_articulated_construction_phase_plan(
+                scene_plan,
+                arrival_tolerance_m=arrival_tolerance_m,
+                stable_samples=stable_samples,
+                maximum_steps_per_phase=maximum_steps_per_phase,
+            )
+        if task_spec.get("schema_version") != "adp_task_spec.v1":
             raise NativeTaskConstructionPlanError(
-                ["native_articulated_construction_general_graph_compiler_missing"]
+                ["native_articulated_graph_construction_task_spec_invalid"]
             )
         if (
             isinstance(stable_samples, bool)
@@ -1018,11 +1829,15 @@ def materialize_native_task_construction_phase_plan(
 
 
 __all__ = [
+    "GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION",
+    "GRAPH_ARTICULATED_SCHEMA_VERSION",
     "NativeTaskConstructionPlanError",
     "RIGID_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "SUPPORTED_TASK_KINDS",
+    "evaluate_graph_articulated_construction_gates",
+    "evaluate_rigid_construction_gates",
+    "materialize_graph_articulated_construction_phase_plan",
     "materialize_native_task_construction_phase_plan",
     "materialize_rigid_construction_phase_plan",
-    "evaluate_rigid_construction_gates",
 ]

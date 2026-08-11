@@ -66,6 +66,17 @@ def test_suite_rejects_outcome_leakage_or_initial_matrix_expansion() -> None:
     assert "dual_task_scenario_initial_scope_expanded" in excinfo.value.errors
 
 
+def test_suite_rejects_digest_shaped_nonhex_identity() -> None:
+    suite = _manifests()[0]
+    suite["shared_scene_freeze_digest"] = "sha256:" + "z" * 64
+    suite["suite_digest"] = canonical_digest(suite, digest_field="suite_digest")
+
+    with pytest.raises(DualTaskScenarioSuiteError) as excinfo:
+        validate_dual_task_scenario_suite(suite)
+
+    assert "dual_task_scenario_suite_scene_binding_invalid" in excinfo.value.errors
+
+
 def test_suite_rejects_index_only_or_runtime_unsupported_cousin() -> None:
     suite = _manifests()[0]
     cousin = next(

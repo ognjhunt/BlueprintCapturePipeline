@@ -174,14 +174,28 @@ class _RigidScoringEnvironment:
         try:
             pose = [float(value) for value in native["task_scoring_pose_world"]]
             task_force = float(native["task_robot_contact_peak_force_n"])
+            support_force = float(native["task_support_contact_peak_force_n"])
             scene_force = float(native["task_scene_collision_peak_force_n"])
             robot_force = float(native["robot_scene_contact_peak_force_n"])
+            forbidden_robot_force = float(
+                native["robot_task_forbidden_collision_peak_force_n"]
+            )
+            locked_joint_violation = native[
+                "locked_joint_containment_violation"
+            ]
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("native_task_controls_rigid_sample_invalid") from exc
         if len(pose) != 7 or not all(
             math.isfinite(value)
-            for value in [*pose, task_force, scene_force, robot_force]
-        ):
+            for value in [
+                *pose,
+                task_force,
+                support_force,
+                scene_force,
+                robot_force,
+                forbidden_robot_force,
+            ]
+        ) or not isinstance(locked_joint_violation, bool):
             raise RuntimeError("native_task_controls_rigid_sample_invalid")
         sample = dict(base)
         sample.update(native)
@@ -189,8 +203,13 @@ class _RigidScoringEnvironment:
             {
                 "task_object_pose_world": pose,
                 "task_contact_active": task_force >= self._contact_threshold,
-                "robot_collision_failure": robot_force
+                "support_contact_active": support_force >= self._contact_threshold,
+                "robot_collision_failure": max(robot_force, forbidden_robot_force)
                 >= self._collision_threshold,
+                "forbidden_robot_task_collision_failure": (
+                    forbidden_robot_force >= self._collision_threshold
+                ),
+                "locked_joint_containment_violation": locked_joint_violation,
                 "scene_collision_failure": scene_force
                 >= self._collision_threshold,
                 "containment_violation": any(

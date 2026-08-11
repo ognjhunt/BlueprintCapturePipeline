@@ -12,6 +12,7 @@ contracts remain hermetically testable on a CPU host.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -37,6 +38,42 @@ class NativeFrankaPoseServoError(RuntimeError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(error) for error in errors if str(error))))
         super().__init__(";".join(self.errors))
+
+
+def native_wxyz_to_contract_xyzw(value: Sequence[float]) -> list[float]:
+    """Convert an Isaac native quaternion to the harness XYZW contract."""
+
+    try:
+        qw, qx, qy, qz = (float(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_quaternion_invalid"]
+        ) from exc
+    quaternion = [qx, qy, qz, qw]
+    norm = math.sqrt(sum(item * item for item in quaternion))
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_quaternion_invalid"]
+        )
+    return [item / norm for item in quaternion]
+
+
+def contract_xyzw_to_native_wxyz(value: Sequence[float]) -> list[float]:
+    """Convert a harness XYZW quaternion to Isaac's native WXYZ order."""
+
+    try:
+        qx, qy, qz, qw = (float(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_quaternion_invalid"]
+        ) from exc
+    quaternion = [qw, qx, qy, qz]
+    norm = math.sqrt(sum(item * item for item in quaternion))
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise NativeFrankaPoseServoError(
+            ["native_franka_pose_servo_quaternion_invalid"]
+        )
+    return [item / norm for item in quaternion]
 
 
 def resolve_native_franka_pose_binding(
@@ -108,7 +145,10 @@ class NativeFrankaDifferentialIkServo:
             device=env.unwrapped.device,
         )
         base_pose = self._to_torch(robot.data.root_pose_w)[0, :7]
-        self._base_pose = [float(value) for value in base_pose]
+        self._base_pose = [
+            *[float(value) for value in base_pose[:3]],
+            *native_wxyz_to_contract_xyzw(base_pose[3:7]),
+        ]
         rotation = world_to_base_rotation_row_major_xyzw(self._base_pose[3:7])
         self._world_to_root = torch.tensor(
             [rotation], device=env.unwrapped.device, dtype=torch.float32
@@ -123,7 +163,10 @@ class NativeFrankaDifferentialIkServo:
         pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self.binding["controlled_body_index"], :7
         ]
-        return [float(value) for value in pose]
+        return [
+            *[float(value) for value in pose[:3]],
+            *native_wxyz_to_contract_xyzw(pose[3:7]),
+        ]
 
     def current_grasp_frame_position_world(self) -> list[float]:
         poses = self._to_torch(self._robot.data.body_pose_w)[
@@ -174,8 +217,9 @@ class NativeFrankaDifferentialIkServo:
             base_position_world=self._base_pose[:3],
             base_quaternion_world_xyzw=self._base_pose[3:7],
         )
+        quaternion_root_native = contract_xyzw_to_native_wxyz(quaternion_root)
         command = self._torch.tensor(
-            [position_root + quaternion_root],
+            [position_root + quaternion_root_native],
             device=self._env.unwrapped.device,
             dtype=self._torch.float32,
         )
@@ -220,6 +264,8 @@ class NativeFrankaDifferentialIkServo:
             "current_grasp_frame_position_world_m": grasp,
             "target_controlled_body_position_world_m": target_body_position,
             "current_controlled_body_position_world_m": body_pose[:3],
+            "target_controlled_body_quaternion_world_xyzw": target_body_quaternion,
+            "controller_target_quaternion_root_wxyz": quaternion_root_native,
             "jacobian_world_frobenius_norm": float(
                 self._torch.linalg.vector_norm(jacobian_world[0])
             ),
@@ -243,5 +289,7 @@ __all__ = [
     "NativeFrankaDifferentialIkServo",
     "NativeFrankaPoseServoError",
     "SCHEMA_VERSION",
+    "contract_xyzw_to_native_wxyz",
+    "native_wxyz_to_contract_xyzw",
     "resolve_native_franka_pose_binding",
 ]

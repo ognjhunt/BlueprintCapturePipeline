@@ -653,6 +653,7 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         "settle_position_tolerance_m",
         "settle_orientation_tolerance_rad",
         "release_gripper_width_min_m",
+        "task_contact_minimum_force_n",
     )
     numbers: dict[str, float] = {}
     for field in numeric_fields:
@@ -726,9 +727,16 @@ def score_rigid_task_episode(
                 "pose": pose,
                 "gripper_width_m": _finite(sample.get("gripper_width_m")),
                 "task_contact_active": sample.get("task_contact_active"),
+                "support_contact_active": sample.get("support_contact_active"),
                 "robot_collision_failure": sample.get("robot_collision_failure"),
                 "scene_collision_failure": sample.get("scene_collision_failure"),
                 "containment_violation": sample.get("containment_violation"),
+                "forbidden_robot_task_collision_failure": sample.get(
+                    "forbidden_robot_task_collision_failure"
+                ),
+                "locked_joint_containment_violation": sample.get(
+                    "locked_joint_containment_violation"
+                ),
             }
         )
 
@@ -767,6 +775,12 @@ def score_rigid_task_episode(
         <= spec["support_height_interval_m"][1]
         for row in settle
     )
+    support_contact_complete = settle_available and all(
+        isinstance(row["support_contact_active"], bool) for row in settle
+    )
+    support_contact_ok = support_contact_complete and all(
+        row["support_contact_active"] is True for row in settle
+    )
     anchor = settle[-1]["pose"] if settle else start
     settled = settle_available and all(
         math.dist(row["pose"][:3], anchor[:3])
@@ -785,6 +799,8 @@ def score_rigid_task_episode(
         "robot_collision_failure",
         "scene_collision_failure",
         "containment_violation",
+        "forbidden_robot_task_collision_failure",
+        "locked_joint_containment_violation",
     )
     safety_complete = all(
         isinstance(row[field], bool) for row in normalized for field in safety_fields
@@ -813,15 +829,20 @@ def score_rigid_task_episode(
         destination_inside
         and orientation_ok
         and support_ok
+        and support_contact_ok
         and settled
         and released
         and safety_ok
         and translated
         and lifted
     )
-    if not safety_complete:
+    if not safety_complete or not support_contact_complete:
         status = "undetermined"
-        outcome = "native_safety_readback_missing"
+        outcome = (
+            "native_safety_readback_missing"
+            if not safety_complete
+            else "native_support_contact_readback_missing"
+        )
     elif not safety_ok:
         status = "scored"
         outcome = "collision_or_containment_failure"
@@ -854,6 +875,8 @@ def score_rigid_task_episode(
             "settle_destination_inside": destination_inside,
             "settle_orientation_ok": orientation_ok,
             "settle_support_height_ok": support_ok,
+            "settle_support_contact_readback_complete": support_contact_complete,
+            "settle_support_contact_ok": support_contact_ok,
             "settled": settled,
             "released": released,
             "native_safety_readback_complete": safety_complete,

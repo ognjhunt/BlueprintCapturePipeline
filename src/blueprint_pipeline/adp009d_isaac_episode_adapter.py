@@ -614,10 +614,19 @@ class IsaacEpisodeAdapter:
             "controlled_body_pose_world": [
                 float(value) for value in controlled_body_pose
             ],
+            "controlled_body_orientation_world_xyzw": [
+                float(controlled_body_pose[4]),
+                float(controlled_body_pose[5]),
+                float(controlled_body_pose[6]),
+                float(controlled_body_pose[3]),
+            ],
         }
         sample["grasp_frame_position_world_m"] = [
             (left[axis] + right[axis]) / 2.0 for axis in range(3)
         ]
+        sample["grasp_frame_orientation_world_xyzw"] = list(
+            sample["controlled_body_orientation_world_xyzw"]
+        )
         return sample
 
     def read_task_sample(self) -> dict[str, Any]:
@@ -637,7 +646,20 @@ class IsaacEpisodeAdapter:
             raise IsaacEpisodeAdapterError(
                 ["isaac_episode_task_sample_callback_invalid"]
             )
-        return dict(sample)
+        controlled_body_pose = self._to_torch(self._robot.data.body_pose_w)[
+            0, self._end_effector_index, :7
+        ]
+        result = dict(sample)
+        result["controlled_body_orientation_world_xyzw"] = [
+            float(controlled_body_pose[4]),
+            float(controlled_body_pose[5]),
+            float(controlled_body_pose[6]),
+            float(controlled_body_pose[3]),
+        ]
+        result["grasp_frame_orientation_world_xyzw"] = list(
+            result["controlled_body_orientation_world_xyzw"]
+        )
+        return result
 
     # -- internals ----------------------------------------------------------
 

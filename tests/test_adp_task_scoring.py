@@ -338,6 +338,7 @@ def _rigid_v2_spec() -> dict:
         "settle_orientation_tolerance_rad": 0.01,
         "release_required": True,
         "release_gripper_width_min_m": 0.07,
+        "task_contact_minimum_force_n": 0.5,
     }
 
 
@@ -347,12 +348,15 @@ def _rigid_v2_sample(step: int, position: list[float], *, safety: bool = True) -
         "task_object_pose_world": [*position, 0.0, 0.0, 0.0, 1.0],
         "gripper_width_m": 0.08 if step >= 3 else 0.04,
         "task_contact_active": False if step >= 3 else True,
+        "support_contact_active": step >= 3,
     }
     if safety:
         sample.update(
             robot_collision_failure=False,
             scene_collision_failure=False,
             containment_violation=False,
+            forbidden_robot_task_collision_failure=False,
+            locked_joint_containment_violation=False,
         )
     return sample
 
@@ -412,4 +416,66 @@ def test_scene_neutral_rigid_task_abstains_without_native_safety_readback() -> N
 
     assert report["status"] == "undetermined"
     assert report["outcome"] == "native_safety_readback_missing"
+    assert report["task_succeeded"] is False
+
+
+def test_scene_neutral_rigid_task_cannot_pass_without_support_contact() -> None:
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+        _rigid_v2_sample(2, [1.15, 2.0, 0.83]),
+        _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+    ]
+    for sample in samples[-3:]:
+        sample["support_contact_active"] = False
+
+    report = score_task_episode_from_spec(
+        task_spec=_rigid_v2_spec(), samples=samples
+    )
+
+    assert report["status"] == "scored"
+    assert report["task_succeeded"] is False
+    assert report["measurements"]["settle_support_contact_ok"] is False
+
+
+def test_scene_neutral_rigid_task_cannot_pass_when_locked_joint_moves() -> None:
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+        _rigid_v2_sample(2, [1.15, 2.0, 0.83]),
+        _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+    ]
+    samples[2]["locked_joint_containment_violation"] = True
+
+    report = score_task_episode_from_spec(
+        task_spec=_rigid_v2_spec(), samples=samples
+    )
+
+    assert report["status"] == "scored"
+    assert report["outcome"] == "collision_or_containment_failure"
+    assert report["task_succeeded"] is False
+
+
+def test_scene_neutral_rigid_task_abstains_without_support_contact_readback() -> None:
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+        _rigid_v2_sample(2, [1.15, 2.0, 0.83]),
+        _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+    ]
+    for sample in samples[-3:]:
+        del sample["support_contact_active"]
+
+    report = score_task_episode_from_spec(
+        task_spec=_rigid_v2_spec(), samples=samples
+    )
+
+    assert report["status"] == "undetermined"
+    assert report["outcome"] == "native_support_contact_readback_missing"
     assert report["task_succeeded"] is False

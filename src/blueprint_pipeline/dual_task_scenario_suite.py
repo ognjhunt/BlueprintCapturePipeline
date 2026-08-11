@@ -38,7 +38,11 @@ class DualTaskScenarioSuiteError(ValueError):
 
 def _digest(value: Any) -> bool:
     text = str(value or "")
-    return len(text) == 71 and text.startswith("sha256:")
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
+    )
 
 
 def validate_dual_task_scenario_suite(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -136,8 +140,15 @@ def validate_dual_task_scenario_suite(value: Mapping[str, Any]) -> dict[str, Any
                     or not isinstance(asset.get("size_bytes"), int)
                     or asset.get("size_bytes", 0) <= 0
                     or not _digest(asset.get("rights_receipt_digest"))
+                    or not _digest(asset.get("resolver_catalog_digest"))
+                    or asset.get("runtime_asset_role") != "task_subject_cousin"
                     or not factor
                     or factor.get("runtime_target") != COUSIN_RUNTIME_TARGET
+                    or not str(factor.get("parameter_id") or "")
+                    or factor.get("unit") != "asset_id"
+                    or factor.get("resolved_value") != asset.get("asset_id")
+                    or cell.get("resolved_parameters")
+                    != {factor.get("parameter_id"): asset.get("asset_id")}
                     or COUSIN_RUNTIME_TARGET not in SUPPORTED_SCENARIO_RUNTIME_TARGETS
                 ):
                     errors.append("dual_task_scenario_cousin_asset_invalid")

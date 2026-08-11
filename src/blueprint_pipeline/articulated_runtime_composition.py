@@ -25,6 +25,11 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from .articulation_graph_contract import (
+    ArticulationGraphContractError,
+    validate_articulation_graph,
+)
+
 
 RUNTIME_COMPOSITION_SCHEMA_VERSION = "articulated_runtime_composition.v1"
 TASK_KIND_ARTICULATED = "articulated_open_close"
@@ -81,6 +86,27 @@ def plan_articulated_runtime_composition(
         errors.append("articulated_runtime_composition_articulated_spawn_required")
     reset_positions = task_spec.get("joint_reset_positions_rad")
     scorer_joint_ids: set[str] = set()
+    scorer_joint_roles: dict[str, str] = {}
+    if task_spec.get("schema_version") == "adp_task_spec.v2":
+        graph = task_spec.get("articulation_graph")
+        if not isinstance(graph, Mapping):
+            errors.append("articulated_runtime_composition_graph_missing")
+        else:
+            try:
+                normalized_graph = validate_articulation_graph(
+                    graph,
+                    require_target_joint=task_kind != "rigid_pick_place",
+                )
+            except ArticulationGraphContractError as exc:
+                errors.extend(exc.errors)
+            else:
+                scorer_joint_ids = {
+                    str(row["joint_id"]) for row in normalized_graph["joints"]
+                }
+                scorer_joint_roles = {
+                    str(row["joint_id"]): str(row["role"])
+                    for row in normalized_graph["joints"]
+                }
     if reset_positions is not None:
         if not isinstance(reset_positions, Mapping):
             errors.append("articulated_runtime_composition_scorer_joints_invalid")
@@ -151,7 +177,11 @@ def plan_articulated_runtime_composition(
                 "joint_id": joint_id,
                 "joint_prim_path": prim_path,
                 "native_joint_name": native_joint_name,
-                "role": str(row.get("role") or "unspecified"),
+                "role": str(
+                    row.get("role")
+                    or scorer_joint_roles.get(joint_id)
+                    or "unspecified"
+                ),
             }
         )
 
@@ -168,6 +198,17 @@ def plan_articulated_runtime_composition(
         errors.append(
             f"articulated_runtime_composition_joint_binding_unexpected:{joint_id}"
         )
+    for row in joints:
+        expected_role = scorer_joint_roles.get(row["joint_id"])
+        if expected_role is not None and row["role"] != expected_role:
+            errors.append(
+                "articulated_runtime_composition_joint_role_mismatch:"
+                + row["joint_id"]
+            )
+    if task_kind == "rigid_pick_place" and any(
+        role != "locked" for role in scorer_joint_roles.values()
+    ):
+        errors.append("articulated_runtime_composition_rigid_joint_not_locked")
     if errors:
         raise ArticulatedRuntimeCompositionError(errors)
 

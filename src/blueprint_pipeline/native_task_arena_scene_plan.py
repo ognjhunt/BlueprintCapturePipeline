@@ -426,12 +426,22 @@ def _articulation_plan(
         source_contact_paths = [
             str(path) for path in affordance["allowed_contact_prim_paths"]
         ]
+        source_task_body_paths = sorted(
+            str(prim.GetPath())
+            for prim in task_stage.Traverse()
+            if prim.IsActive()
+            and prim.IsLoaded()
+            and prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        )
+        if not source_task_body_paths:
+            raise NativeTaskArenaScenePlanError(
+                ["native_task_arena_rigid_body_topology_missing"]
+            )
         # Isaac Lab contact sensors attach to rigid-body prims.  Accepting a
         # collision-only child would silently broaden the measured contact to
         # an inferred ancestor or fail during native construction.
         if any(
-            not task_stage.GetPrimAtPath(path).IsValid()
-            or not task_stage.GetPrimAtPath(path).HasAPI(UsdPhysics.RigidBodyAPI)
+            path not in source_task_body_paths
             for path in source_contact_paths
         ):
             raise NativeTaskArenaScenePlanError(
@@ -449,6 +459,14 @@ def _articulation_plan(
             raise NativeTaskArenaScenePlanError(
                 ["native_task_arena_rigid_contact_body_paths_invalid"]
             )
+        all_task_body_paths = [
+            _source_to_spawned_prim(
+                path,
+                role="task_object",
+                source_root_prim_path=source_root,
+            )
+            for path in source_task_body_paths
+        ]
         support_stage = Usd.Stage.Open(str(scene_collision_asset_path))
         support_root = (
             support_stage.GetDefaultPrim() if support_stage is not None else None
@@ -475,23 +493,42 @@ def _articulation_plan(
         non_support_scene_body_paths = sorted(
             set(scene_contact_body_paths) - set(support_body_paths)
         )
+        forbidden_robot_body_paths = sorted(
+            set(robot_contact_topology["protected_collision_body_paths"])
+            - set(robot_contact_topology["task_contact_body_paths"])
+        )
+        if not forbidden_robot_body_paths:
+            raise NativeTaskArenaScenePlanError(
+                ["native_task_arena_forbidden_robot_contact_topology_missing"]
+            )
         contact_sensors = []
         for index, task_body_path in enumerate(contact_body_paths):
+            contact_sensors.append(
+                {
+                    "sensor_instance_id": f"task_robot_contact__rigid_{index:02d}",
+                    "logical_sensor_id": "task_robot_contact",
+                    "prim_path": task_body_path,
+                    "filter_prim_paths_expr": robot_contact_topology[
+                        "task_contact_body_paths"
+                    ],
+                }
+            )
+        for index, task_body_path in enumerate(all_task_body_paths):
             contact_sensors.extend(
                 [
-                    {
-                        "sensor_instance_id": f"task_robot_contact__rigid_{index:02d}",
-                        "logical_sensor_id": "task_robot_contact",
-                        "prim_path": task_body_path,
-                        "filter_prim_paths_expr": robot_contact_topology[
-                            "task_contact_body_paths"
-                        ],
-                    },
                     {
                         "sensor_instance_id": f"task_support_contact__rigid_{index:02d}",
                         "logical_sensor_id": "task_support_contact",
                         "prim_path": task_body_path,
                         "filter_prim_paths_expr": support_body_paths,
+                    },
+                    {
+                        "sensor_instance_id": (
+                            f"robot_task_forbidden_collision__rigid_{index:02d}"
+                        ),
+                        "logical_sensor_id": "robot_task_forbidden_collision",
+                        "prim_path": task_body_path,
+                        "filter_prim_paths_expr": forbidden_robot_body_paths,
                     },
                 ]
             )
@@ -517,16 +554,45 @@ def _articulation_plan(
                 robot_contact_topology["protected_collision_body_paths"]
             )
         )
+        sample_binding = contract.get("task_sample_binding") or {}
+        bound_joint_ids = list(sample_binding.get("joint_ids") or [])
+        task_joint_prim_paths: dict[str, str] = {}
+        task_joint_roles: dict[str, str] = {}
+        if subject.get("object_type") == "ARTICULATION":
+            native_names = dict(sample_binding.get("native_joint_names") or {})
+            source_joint_paths = dict(sample_binding.get("joint_prim_paths") or {})
+            task_joint_roles = dict(sample_binding.get("joint_roles") or {})
+            if (
+                not bound_joint_ids
+                or set(bound_joint_ids) != set(native_names)
+                or set(bound_joint_ids) != set(source_joint_paths)
+                or set(bound_joint_ids) != set(task_joint_roles)
+                or set(task_joint_roles.values()) != {"locked"}
+                or set(rigid_joint_resets) != set(native_names.values())
+            ):
+                raise NativeTaskArenaScenePlanError(
+                    ["native_task_arena_rigid_joint_binding_invalid"]
+                )
+            task_joint_prim_paths = {
+                joint_id: _source_to_spawned_prim(
+                    source_joint_paths[joint_id],
+                    role="task_object",
+                    source_root_prim_path=source_root,
+                )
+                for joint_id in bound_joint_ids
+            }
         return {
             "task_joint_reset_positions_rad": rigid_joint_resets,
-            "task_joint_prim_paths": {},
-            "task_joint_roles": {},
+            "task_joint_prim_paths": task_joint_prim_paths,
+            "task_joint_roles": task_joint_roles,
             "contact_sensors": contact_sensors,
             "robot_contact_topology": robot_contact_topology,
             "scene_contact_body_paths": scene_contact_body_paths,
             "support_contact_body_paths": support_body_paths,
             "non_support_scene_contact_body_paths": non_support_scene_body_paths,
             "task_contact_body_paths": contact_body_paths,
+            "task_all_body_paths": all_task_body_paths,
+            "forbidden_robot_contact_body_paths": forbidden_robot_body_paths,
             "state_thresholds": {
                 field: float(task_spec[field]) for field in required_thresholds
             },

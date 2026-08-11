@@ -358,6 +358,11 @@ def test_general_depth_excludes_hidden_proxy_and_guide_geometry(tmp_path: Path) 
     guide = UsdGeom.Cube.Define(stage, "/Asset/links/root/geometry/guide")
     guide.CreateSizeAttr(100.0)
     guide.CreatePurposeAttr(UsdGeom.Tokens.guide)
+    transparent = UsdGeom.Cube.Define(
+        stage, "/Asset/links/root/geometry/transparent"
+    )
+    transparent.CreateSizeAttr(100.0)
+    transparent.CreateDisplayOpacityAttr([0.25])
     stage.GetRootLayer().Save()
 
     _triangles, _rest, type_counts = load_usd_link_triangles(
@@ -370,6 +375,58 @@ def test_general_depth_excludes_hidden_proxy_and_guide_geometry(tmp_path: Path) 
     )
 
     assert type_counts == {"Cube": 2, "Cylinder": 1}
+
+
+def test_mesh_depth_rejects_ngons_instead_of_unsafe_fan_coverage(
+    tmp_path: Path,
+) -> None:
+    stage = Usd.Stage.CreateNew(str(tmp_path / "concave.usda"))
+    mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+    mesh.CreatePointsAttr(
+        [
+            Gf.Vec3f(0.0, 0.0, 0.0),
+            Gf.Vec3f(2.0, 0.0, 0.0),
+            Gf.Vec3f(1.0, 0.5, 0.0),
+            Gf.Vec3f(2.0, 2.0, 0.0),
+            Gf.Vec3f(0.0, 2.0, 0.0),
+        ]
+    )
+    mesh.CreateFaceVertexCountsAttr([5])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3, 4])
+
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="articulated_depth_mesh_topology_not_explicit_triangles",
+    ):
+        _primitive_points_and_faces(mesh.GetPrim())
+
+
+def test_mesh_depth_rejects_out_of_range_or_degenerate_triangle_indices(
+    tmp_path: Path,
+) -> None:
+    stage = Usd.Stage.CreateNew(str(tmp_path / "invalid_indices.usda"))
+    mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+    mesh.CreatePointsAttr(
+        [
+            Gf.Vec3f(0.0, 0.0, 0.0),
+            Gf.Vec3f(1.0, 0.0, 0.0),
+            Gf.Vec3f(0.0, 1.0, 0.0),
+        ]
+    )
+    mesh.CreateFaceVertexCountsAttr([3])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 7])
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="articulated_depth_face_indices_invalid",
+    ):
+        _primitive_points_and_faces(mesh.GetPrim())
+
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 1])
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="articulated_depth_face_indices_invalid",
+    ):
+        _primitive_points_and_faces(mesh.GetPrim())
 
 
 @pytest.mark.parametrize("axis", ["X", "Y", "Z"])

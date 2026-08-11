@@ -109,6 +109,8 @@ class _ExactRigidReadback:
             "task_support_contact_peak_force_n": 4.0,
             "task_scene_collision_peak_force_n": 0.2,
             "robot_scene_contact_peak_force_n": 0.1,
+            "robot_task_forbidden_collision_peak_force_n": 0.0,
+            "locked_joint_containment_violation": False,
         }
 
 
@@ -144,8 +146,11 @@ def test_rigid_controls_environment_uses_scoring_frame_and_exact_contacts() -> N
     assert sample["asset_root_pose_world"] != sample["task_object_pose_world"]
     assert sample["gripper_width_m"] == pytest.approx(0.071)
     assert sample["task_contact_active"] is True
+    assert sample["support_contact_active"] is True
     assert sample["robot_collision_failure"] is False
     assert sample["scene_collision_failure"] is False
+    assert sample["forbidden_robot_task_collision_failure"] is False
+    assert sample["locked_joint_containment_violation"] is False
     assert sample["containment_violation"] is False
     environment.reset()
 

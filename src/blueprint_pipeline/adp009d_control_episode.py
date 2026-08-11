@@ -149,6 +149,29 @@ class ControlEnvironment(Protocol):
     ) -> Sequence[float]: ...
 
 
+def _quaternion_angle_xyzw(a: Sequence[float], b: Sequence[float]) -> float:
+    try:
+        qa = [float(value) for value in a]
+        qb = [float(value) for value in b]
+    except (TypeError, ValueError) as exc:
+        raise ControlEpisodeError(
+            ["task_control_grasp_frame_orientation_invalid"]
+        ) from exc
+    if len(qa) != 4 or len(qb) != 4:
+        raise ControlEpisodeError(
+            ["task_control_grasp_frame_orientation_invalid"]
+        )
+    norm_a = math.sqrt(sum(value * value for value in qa))
+    norm_b = math.sqrt(sum(value * value for value in qb))
+    if not all(math.isfinite(value) for value in (*qa, *qb)) or min(
+        norm_a, norm_b
+    ) <= 0.0:
+        raise ControlEpisodeError(
+            ["task_control_grasp_frame_orientation_invalid"]
+        )
+    dot = abs(sum(x * y for x, y in zip(qa, qb, strict=True)) / (norm_a * norm_b))
+    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
 def _finite(value: Any) -> float:
     try:
         number = float(value)
@@ -853,6 +876,14 @@ def validate_task_control_plan(
                 maximum_steps = int(raw["maximum_steps"])
                 arrival_tolerance_m = float(raw["arrival_tolerance_m"])
                 arrival_stability_steps = int(raw["arrival_stability_steps"])
+                orientation_tolerance_raw = raw.get(
+                    "arrival_orientation_tolerance_rad"
+                )
+                arrival_orientation_tolerance_rad = (
+                    None
+                    if orientation_tolerance_raw is None
+                    else float(orientation_tolerance_raw)
+                )
                 max_joint_delta_rad = float(raw["max_joint_delta_rad"])
                 max_joint_setpoint_lead_rad = float(
                     raw["max_joint_setpoint_lead_rad"]
@@ -864,6 +895,7 @@ def validate_task_control_plan(
                 maximum_steps = 0
                 arrival_tolerance_m = 0.0
                 arrival_stability_steps = 0
+                arrival_orientation_tolerance_rad = None
                 max_joint_delta_rad = 0.0
                 max_joint_setpoint_lead_rad = 0.0
             gripper_state = str(raw.get("gripper_state") or "")
@@ -888,6 +920,18 @@ def validate_task_control_plan(
                 or arrival_tolerance_m <= 0.0
                 or not math.isfinite(arrival_tolerance_m)
                 or arrival_stability_steps < 1
+                or (
+                    quaternion is not None
+                    and task.get("schema_version") == "adp_task_spec.v2"
+                    and arrival_orientation_tolerance_rad is None
+                )
+                or (
+                    arrival_orientation_tolerance_rad is not None
+                    and (
+                        arrival_orientation_tolerance_rad <= 0.0
+                        or not math.isfinite(arrival_orientation_tolerance_rad)
+                    )
+                )
                 or max_joint_delta_rad <= 0.0
                 or not math.isfinite(max_joint_delta_rad)
                 or max_joint_setpoint_lead_rad < max_joint_delta_rad
@@ -906,6 +950,9 @@ def validate_task_control_plan(
                         "maximum_steps": maximum_steps,
                         "arrival_tolerance_m": arrival_tolerance_m,
                         "arrival_stability_steps": arrival_stability_steps,
+                        "arrival_orientation_tolerance_rad": (
+                            arrival_orientation_tolerance_rad
+                        ),
                         "max_joint_delta_rad": max_joint_delta_rad,
                         "max_joint_setpoint_lead_rad": max_joint_setpoint_lead_rad,
                     }
@@ -1126,10 +1173,30 @@ def _run_task_control_episode(
                     raise ControlEpisodeError(
                         ["task_control_grasp_frame_readback_invalid"]
                     ) from exc
+                orientation_error = None
+                orientation_tolerance = row.get(
+                    "arrival_orientation_tolerance_rad"
+                )
+                if orientation_tolerance is not None:
+                    measured_orientation = samples[-1].get(
+                        "grasp_frame_orientation_world_xyzw"
+                    )
+                    if not isinstance(measured_orientation, Sequence) or isinstance(
+                        measured_orientation, (str, bytes)
+                    ):
+                        raise ControlEpisodeError(
+                            ["task_control_grasp_frame_orientation_missing"]
+                        )
+                    orientation_error = _quaternion_angle_xyzw(
+                        measured_orientation,
+                        row["target_quaternion_world_xyzw"],
+                    )
+                arrived = error <= float(row["arrival_tolerance_m"]) and (
+                    orientation_error is None
+                    or orientation_error <= float(orientation_tolerance)
+                )
                 stable_steps = (
-                    stable_steps + 1
-                    if error <= float(row["arrival_tolerance_m"])
-                    else 0
+                    stable_steps + 1 if arrived else 0
                 )
                 if (
                     phase_steps_executed >= int(row["minimum_steps"])
@@ -1142,6 +1209,18 @@ def _run_task_control_episode(
             terminal_error = math.dist(
                 [float(value) for value in measured], row["target_position_world_m"]
             )
+            orientation_tolerance = row.get("arrival_orientation_tolerance_rad")
+            measured_orientation = samples[-1].get(
+                "grasp_frame_orientation_world_xyzw"
+            )
+            terminal_orientation_error = (
+                None
+                if orientation_tolerance is None
+                else _quaternion_angle_xyzw(
+                    measured_orientation,
+                    row["target_quaternion_world_xyzw"],
+                )
+            )
             arrival = {
                 "phase_id": str(row["phase_id"]),
                 "start_position_world_m": start_sample.get(
@@ -1151,6 +1230,12 @@ def _run_task_control_episode(
                 "terminal_position_world_m": measured,
                 "terminal_position_error_m": terminal_error,
                 "arrival_tolerance_m": float(row["arrival_tolerance_m"]),
+                "target_orientation_world_xyzw": row[
+                    "target_quaternion_world_xyzw"
+                ],
+                "terminal_orientation_world_xyzw": measured_orientation,
+                "terminal_orientation_error_rad": terminal_orientation_error,
+                "arrival_orientation_tolerance_rad": orientation_tolerance,
                 "arrival_stability_steps_required": int(
                     row["arrival_stability_steps"]
                 ),
@@ -1162,7 +1247,8 @@ def _run_task_control_episode(
             if not arrival["target_reached"]:
                 phase_execution_blocker = (
                     f"{BLOCKER_PHASE_NOT_REACHED}:{row['phase_id']}:"
-                    f"error_m={terminal_error:.6f}:stability_steps="
+                    f"error_m={terminal_error:.6f}:orientation_error_rad="
+                    f"{terminal_orientation_error}:stability_steps="
                     f"{stable_steps}/{row['arrival_stability_steps']}"
                 )
                 break

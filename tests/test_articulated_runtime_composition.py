@@ -39,6 +39,74 @@ def _joint_bindings() -> list[dict]:
     ]
 
 
+def _graph_task_spec() -> dict:
+    graph = {
+        "schema_version": "adp_articulation_graph.v1",
+        "links": [
+            {"link_id": "root", "is_root": True, "semantic_role": "root"},
+            {"link_id": "panel", "is_root": False, "semantic_role": "target"},
+            {"link_id": "latch", "is_root": False, "semantic_role": "dependent"},
+        ],
+        "joints": [
+            {
+                "joint_id": "panel_hinge",
+                "parent_link_id": "root",
+                "child_link_id": "panel",
+                "joint_type": "revolute",
+                "role": "target",
+                "axis": [0.0, 0.0, 1.0],
+                "limits": [0.0, 1.2],
+                "reset_position": 0.0,
+                "reset_tolerance": 0.001,
+                "drive": {
+                    "drive_type": "force",
+                    "stiffness": 0.0,
+                    "damping": 1.0,
+                    "maximum_force": 50.0,
+                },
+                "dependency": None,
+            },
+            {
+                "joint_id": "latch_coupler",
+                "parent_link_id": "panel",
+                "child_link_id": "latch",
+                "joint_type": "revolute",
+                "role": "dependent",
+                "axis": [0.0, 0.0, 1.0],
+                "limits": [-0.2, 0.2],
+                "reset_position": 0.0,
+                "reset_tolerance": 0.001,
+                "drive": {
+                    "drive_type": "force",
+                    "stiffness": 4.0,
+                    "damping": 1.0,
+                    "maximum_force": 20.0,
+                },
+                "dependency": {
+                    "driver_joint_id": "panel_hinge",
+                    "multiplier": 0.1,
+                    "offset": 0.0,
+                    "tolerance": 0.001,
+                },
+            },
+        ],
+        "collision_pairs": [
+            {"link_a": "root", "link_b": "panel", "collision_enabled": True},
+            {"link_a": "root", "link_b": "latch", "collision_enabled": True},
+            {"link_a": "panel", "link_b": "latch", "collision_enabled": False},
+        ],
+        "success_predicate": {
+            "combination": "all",
+            "joint_intervals": {"panel_hinge": [0.7, 1.0]},
+        },
+    }
+    return {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "articulated_open_close",
+        "articulation_graph": graph,
+    }
+
+
 def _plan(**overrides):
     arguments = {
         "task_spec": _task_spec(),
@@ -97,6 +165,56 @@ def test_the_sample_binding_names_every_joint_the_scorer_demands() -> None:
     )
 
 
+def test_graph_task_derives_joint_set_and_roles_without_legacy_reset_fields() -> None:
+    plan = _plan(
+        task_spec=_graph_task_spec(),
+        task_joint_bindings=[
+            {
+                "joint_id": "panel_hinge",
+                "joint_prim_path": "/Asset/joints/panel_hinge",
+                "native_joint_name": "panel_hinge",
+                "role": "target",
+            },
+            {
+                "joint_id": "latch_coupler",
+                "joint_prim_path": "/Asset/joints/latch_coupler",
+                "native_joint_name": "latch_coupler",
+                "role": "dependent",
+            },
+        ],
+    )
+
+    binding = plan["task_sample_binding"]
+    assert binding["joint_ids"] == ["latch_coupler", "panel_hinge"]
+    assert binding["joint_roles"] == {
+        "latch_coupler": "dependent",
+        "panel_hinge": "target",
+    }
+
+
+def test_graph_task_rejects_runtime_role_drift() -> None:
+    bindings = [
+        {
+            "joint_id": "panel_hinge",
+            "joint_prim_path": "/Asset/joints/panel_hinge",
+            "native_joint_name": "panel_hinge",
+            "role": "locked",
+        },
+        {
+            "joint_id": "latch_coupler",
+            "joint_prim_path": "/Asset/joints/latch_coupler",
+            "native_joint_name": "latch_coupler",
+            "role": "dependent",
+        },
+    ]
+    with pytest.raises(ArticulatedRuntimeCompositionError) as excinfo:
+        _plan(task_spec=_graph_task_spec(), task_joint_bindings=bindings)
+
+    assert excinfo.value.errors == (
+        "articulated_runtime_composition_joint_role_mismatch:panel_hinge",
+    )
+
+
 def test_a_rigid_task_never_produces_an_articulation() -> None:
     plan = _plan(
         task_spec={"task_kind": "rigid_pick_place"}, task_joint_bindings=[]
@@ -116,6 +234,61 @@ def test_rigid_task_may_bind_an_explicit_locked_articulated_asset() -> None:
     twin = next(row for row in plan["objects"] if row["semantic_role"] == "task_object")
     assert twin["object_type"] == "ARTICULATION"
     assert plan["task_sample_binding"]["joint_ids"] == []
+
+
+def test_rigid_articulation_preserves_complete_locked_joint_binding() -> None:
+    graph_spec = _graph_task_spec()
+    graph_spec["task_kind"] = "rigid_pick_place"
+    for joint in graph_spec["articulation_graph"]["joints"]:
+        joint["role"] = "locked"
+        joint["dependency"] = None
+    graph_spec["articulation_graph"]["success_predicate"] = {
+        "combination": "all",
+        "joint_intervals": {},
+    }
+    bindings = [
+        {
+            "joint_id": joint["joint_id"],
+            "joint_prim_path": f"/Asset/joints/{joint['joint_id']}",
+            "native_joint_name": joint["joint_id"],
+            "role": "locked",
+        }
+        for joint in graph_spec["articulation_graph"]["joints"]
+    ]
+
+    plan = _plan(
+        task_spec=graph_spec,
+        task_joint_bindings=bindings,
+        twin_object_type="ARTICULATION",
+    )
+
+    assert plan["task_sample_binding"]["joint_ids"] == sorted(
+        joint["joint_id"] for joint in graph_spec["articulation_graph"]["joints"]
+    )
+    assert set(plan["task_sample_binding"]["joint_roles"].values()) == {"locked"}
+
+
+def test_rigid_articulation_rejects_any_moving_joint_role() -> None:
+    graph_spec = _graph_task_spec()
+    graph_spec["task_kind"] = "rigid_pick_place"
+    bindings = [
+        {
+            "joint_id": joint["joint_id"],
+            "joint_prim_path": f"/Asset/joints/{joint['joint_id']}",
+            "native_joint_name": joint["joint_id"],
+            "role": joint["role"],
+        }
+        for joint in graph_spec["articulation_graph"]["joints"]
+    ]
+
+    with pytest.raises(ArticulatedRuntimeCompositionError) as excinfo:
+        _plan(
+            task_spec=graph_spec,
+            task_joint_bindings=bindings,
+            twin_object_type="ARTICULATION",
+        )
+
+    assert "articulation_graph_rigid_subject_joint_not_locked" in excinfo.value.errors
 
 
 def test_articulated_task_rejects_rigid_spawn_override() -> None:

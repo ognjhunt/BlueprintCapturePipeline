@@ -13,8 +13,20 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
+try:  # flat provider-bundle layout
+    from articulation_graph_contract import (
+        ArticulationGraphContractError,
+        validate_articulation_graph,
+    )
+except ModuleNotFoundError:  # repository package
+    from .articulation_graph_contract import (
+        ArticulationGraphContractError,
+        validate_articulation_graph,
+    )
+
 
 SCHEMA_VERSION = "native_articulated_task_state.v1"
+TASK_SPEC_GRAPH_SCHEMA_VERSION = "adp_task_spec.v2"
 
 
 class NativeArticulatedTaskStateError(ValueError):
@@ -70,6 +82,50 @@ def _quaternion_angle(a: Sequence[float], b: Sequence[float]) -> float:
     return 2.0 * math.acos(min(1.0, max(-1.0, dot)))
 
 
+def _joint_contract(task_spec: Mapping[str, Any]) -> tuple[dict[str, float], dict[str, list[float]]]:
+    if task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:
+        graph = task_spec.get("articulation_graph")
+        if not isinstance(graph, Mapping):
+            raise NativeArticulatedTaskStateError(
+                ["native_articulated_task_graph_missing"]
+            )
+        try:
+            normalized = validate_articulation_graph(graph)
+        except ArticulationGraphContractError as exc:
+            raise NativeArticulatedTaskStateError(exc.errors) from exc
+        return (
+            {
+                str(row["joint_id"]): float(row["reset_position"])
+                for row in normalized["joints"]
+            },
+            {
+                str(row["joint_id"]): [float(value) for value in row["limits"]]
+                for row in normalized["joints"]
+            },
+        )
+    resets = task_spec.get("joint_reset_positions_rad")
+    limits = task_spec.get("joint_hard_limits_rad")
+    if not isinstance(resets, Mapping) or not isinstance(limits, Mapping):
+        raise NativeArticulatedTaskStateError(
+            ["native_articulated_task_joint_contract_invalid"]
+        )
+    try:
+        normalized_resets = {str(key): float(value) for key, value in resets.items()}
+        normalized_limits = {
+            str(key): [float(value[0]), float(value[1])]
+            for key, value in limits.items()
+        }
+    except (IndexError, TypeError, ValueError) as exc:
+        raise NativeArticulatedTaskStateError(
+            ["native_articulated_task_joint_contract_invalid"]
+        ) from exc
+    if set(normalized_resets) != set(normalized_limits):
+        raise NativeArticulatedTaskStateError(
+            ["native_articulated_task_joint_contract_invalid"]
+        )
+    return normalized_resets, normalized_limits
+
+
 def compile_native_articulated_task_sample(
     *,
     task_spec: Mapping[str, Any],
@@ -92,6 +148,7 @@ def compile_native_articulated_task_sample(
         raise NativeArticulatedTaskStateError(
             ["native_articulated_task_kind_invalid"]
         )
+    reset_positions, hard_limits = _joint_contract(task_spec)
     names = [str(name) for name in native_joint_names]
     positions = _vector(
         native_joint_positions_rad,
@@ -120,7 +177,7 @@ def compile_native_articulated_task_sample(
             continue
         joint_positions[str(joint_id)] = positions[index[native_name]]
         joint_velocities[str(joint_id)] = velocities[index[native_name]]
-    reset_ids = set((task_spec.get("joint_reset_positions_rad") or {}).keys())
+    reset_ids = set(reset_positions)
     if set(joint_positions) != reset_ids:
         errors.append("native_articulated_task_joint_set_mismatch")
     if errors:
@@ -161,7 +218,6 @@ def compile_native_articulated_task_sample(
         > float(task_state_binding["root_orientation_tolerance_rad"])
     )
 
-    hard_limits = task_spec.get("joint_hard_limits_rad") or {}
     joint_limit_violation = any(
         joint_positions[joint_id] < float(hard_limits[joint_id][0]) - 1.0e-6
         or joint_positions[joint_id] > float(hard_limits[joint_id][1]) + 1.0e-6
@@ -184,7 +240,7 @@ def compile_native_articulated_task_sample(
         >= float(task_state_binding["retreat_minimum_separation_m"])
     )
 
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "joint_positions_rad": joint_positions,
         "joint_velocities_rad_s": joint_velocities,
@@ -211,6 +267,13 @@ def compile_native_articulated_task_sample(
             "caller_asserted_booleans_used": False,
         },
     }
+    if task_spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION:
+        # Graph task joints may mix revolute, prismatic, fixed, and continuous
+        # coordinates, so the scorer consumes unit-neutral field names. Keep
+        # the legacy rad-suffixed readback for receipt compatibility only.
+        result["joint_positions"] = dict(joint_positions)
+        result["joint_velocities_per_s"] = dict(joint_velocities)
+    return result
 
 
 __all__ = [

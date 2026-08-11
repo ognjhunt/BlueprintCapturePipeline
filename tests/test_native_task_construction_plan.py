@@ -52,6 +52,7 @@ def _rigid_fixture(*, asset_id: str, scene_id: str = "840313") -> dict:
         "lift_unit_world": [0.0, 0.0, 1.0],
         "gripper_orientation_scoring_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
         "pregrasp_clearance_m": 0.12,
+        "arrival_orientation_tolerance_rad": 0.05,
         "allowed_contact_prim_paths": ["/Asset/body"],
         "intended_support_prim_paths": ["/Scene/support"],
         "affordance_digest": "",
@@ -274,6 +275,8 @@ def test_rigid_gate_evaluator_requires_native_object_motion_contact_and_release(
             ),
             "task_scene_collision_peak_force_n": 0.0,
             "robot_scene_contact_peak_force_n": 0.0,
+            "robot_task_forbidden_collision_peak_force_n": 0.0,
+            "locked_joint_containment_violation": False,
             "finger_separation_m": 0.01 if closed else 0.08,
         }
         task_samples = [sample]
@@ -297,6 +300,19 @@ def test_rigid_gate_evaluator_requires_native_object_motion_contact_and_release(
 
     assert result["passed"] is True
     assert result["blockers"] == []
+
+    lift = next(row for row in phase_results if row["phase_id"] == "lift_clearance")
+    lift["task_samples"][0]["locked_joint_containment_violation"] = True
+    result = evaluate_rigid_construction_gates(
+        phase_plan=plan,
+        phase_results=phase_results,
+        reset_replay={"passed": True},
+    )
+    assert result["passed"] is False
+    assert "native_rigid_construction_gate_failed:base_collision_clearance" in result[
+        "blockers"
+    ]
+    lift["task_samples"][0]["locked_joint_containment_violation"] = False
 
     relocate = next(
         row for row in phase_results if row["phase_id"].startswith("relocate_")

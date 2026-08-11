@@ -415,7 +415,9 @@ def test_articulated_fixture_reads_native_task_state_without_a_canned_object() -
         task_sample_callback=lambda: observed,
     )
 
-    assert adapter.read_task_sample() == observed
+    sample = adapter.read_task_sample()
+    assert {key: sample[key] for key in observed} == observed
+    assert sample["grasp_frame_orientation_world_xyzw"] == [0.0, 0.0, 1.0, 0.0]
     with pytest.raises(
         IsaacEpisodeAdapterError, match="isaac_episode_rigid_task_object_missing"
     ):
@@ -468,6 +470,9 @@ def test_gripper_width_is_probe_calibrated_physical_opening() -> None:
     assert sample["controlled_body_name"] == "base_link"
     assert sample["controlled_body_pose_world"] == pytest.approx(
         [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+    )
+    assert sample["grasp_frame_orientation_world_xyzw"] == pytest.approx(
+        [0.0, 0.0, 1.0, 0.0]
     )
 
 

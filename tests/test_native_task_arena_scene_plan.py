@@ -339,6 +339,12 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
     UsdPhysics.RigidBodyAPI.Apply(body)
     collision = UsdGeom.Cube.Define(task_stage, "/Asset/body/collider").GetPrim()
     UsdPhysics.CollisionAPI.Apply(collision)
+    secondary = UsdGeom.Xform.Define(task_stage, "/Asset/secondary_body").GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(secondary)
+    secondary_collision = UsdGeom.Cube.Define(
+        task_stage, "/Asset/secondary_body/collider"
+    ).GetPrim()
+    UsdPhysics.CollisionAPI.Apply(secondary_collision)
     task_stage.GetRootLayer().Save()
 
     scene_path = tmp_path / "scene_collision.usda"
@@ -347,6 +353,8 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
     scene_stage.SetDefaultPrim(scene_root.GetPrim())
     floor = UsdGeom.Cube.Define(scene_stage, "/Scene/floor").GetPrim()
     UsdPhysics.CollisionAPI.Apply(floor)
+    wall = UsdGeom.Cube.Define(scene_stage, "/Scene/wall").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(wall)
     scene_stage.GetRootLayer().Save()
 
     affordance = {
@@ -385,17 +393,29 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
     assert topology["task_contact_body_paths"] == [
         "{ENV_REGEX_NS}/task_object/body"
     ]
+    assert topology["task_all_body_paths"] == [
+        "{ENV_REGEX_NS}/task_object/body",
+        "{ENV_REGEX_NS}/task_object/secondary_body",
+    ]
     assert Counter(
         row["logical_sensor_id"] for row in topology["contact_sensors"]
     ) == {
         "task_robot_contact": 1,
-        "task_support_contact": 1,
+        "task_support_contact": 2,
+        "task_scene_collision": 2,
+        "robot_task_forbidden_collision": 2,
         "robot_scene_contact": 18,
     }
 
     contract["objects"][0]["object_type"] = "ARTICULATION"
     contract["objects"][0]["reset_state"] = {
         "joint_positions": {"display_hinge": 0.0}
+    }
+    contract["task_sample_binding"] = {
+        "joint_ids": ["display_hinge"],
+        "joint_prim_paths": {"display_hinge": "/Asset/display_hinge"},
+        "native_joint_names": {"display_hinge": "display_hinge"},
+        "joint_roles": {"display_hinge": "locked"},
     }
     topology = _articulation_plan(
         contract,
@@ -405,6 +425,7 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
     assert topology["task_joint_reset_positions_rad"] == {
         "display_hinge": 0.0
     }
+    assert topology["task_joint_roles"] == {"display_hinge": "locked"}
 
     affordance["allowed_contact_prim_paths"] = ["/Asset/body/collider"]
     affordance["affordance_digest"] = canonical_digest(

@@ -120,6 +120,88 @@ def _canonical_digest(value: Mapping[str, Any], *, field: str) -> str:
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _quaternion_angle_xyzw(a: Sequence[float], b: Sequence[float]) -> float:
+    if len(a) != 4 or len(b) != 4:
+        raise RuntimeError("native_task_construction_quaternion_invalid")
+    qa = [float(value) for value in a]
+    qb = [float(value) for value in b]
+    if not all(math.isfinite(value) for value in [*qa, *qb]):
+        raise RuntimeError("native_task_construction_quaternion_invalid")
+    norm_a = math.sqrt(sum(value * value for value in qa))
+    norm_b = math.sqrt(sum(value * value for value in qb))
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        raise RuntimeError("native_task_construction_quaternion_invalid")
+    dot = abs(
+        sum(left * right for left, right in zip(qa, qb, strict=True))
+        / (norm_a * norm_b)
+    )
+    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
+
+def _pose_arrival_readback(
+    *,
+    position_world_m: Sequence[float],
+    target_position_world_m: Sequence[float],
+    orientation_world_xyzw: Sequence[float],
+    target_orientation_world_xyzw: Sequence[float],
+    position_tolerance_m: float,
+    orientation_tolerance_rad: float | None,
+) -> dict[str, Any]:
+    position_error = math.dist(position_world_m, target_position_world_m)
+    orientation_error = _quaternion_angle_xyzw(
+        orientation_world_xyzw, target_orientation_world_xyzw
+    )
+    reached = position_error <= float(position_tolerance_m) and (
+        orientation_tolerance_rad is None
+        or orientation_error <= float(orientation_tolerance_rad)
+    )
+    return {
+        "position_error_m": position_error,
+        "orientation_error_rad": orientation_error,
+        "reached": reached,
+    }
+
+
+def _retain_task_path_samples(*, task_kind: str, task_spec: Mapping[str, Any]) -> bool:
+    return task_kind == "rigid_pick_place" or (
+        task_kind == "articulated_open_close"
+        and task_spec.get("schema_version") == "adp_task_spec.v2"
+    )
+
+
+def _evaluate_task_construction_gates(
+    *,
+    phase_plan: Mapping[str, Any],
+    phase_results: Sequence[Mapping[str, Any]],
+    reset_replay: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    from blueprint_pipeline.native_task_construction_plan import (
+        evaluate_graph_articulated_construction_gates,
+        evaluate_rigid_construction_gates,
+    )
+
+    schema = phase_plan.get("schema_version")
+    if schema == "native_rigid_construction_phase_plan.v1":
+        return (
+            "rigid_construction_gates",
+            evaluate_rigid_construction_gates(
+                phase_plan=phase_plan,
+                phase_results=phase_results,
+                reset_replay=reset_replay,
+            ),
+        )
+    if schema == "native_articulated_graph_construction_phase_plan.v1":
+        return (
+            "articulated_graph_construction_gates",
+            evaluate_graph_articulated_construction_gates(
+                phase_plan=phase_plan,
+                phase_results=phase_results,
+                reset_replay=reset_replay,
+            ),
+        )
+    return None
+
+
 def _jsonable(value: Any) -> Any:
     if hasattr(value, "detach"):
         value = value.detach().cpu()
@@ -298,6 +380,10 @@ def _initial_contact_blocked(
         float(sample["task_robot_contact_peak_force_n"]),
         float(sample["robot_scene_contact_peak_force_n"]),
     ]
+    if task_kind == "rigid_pick_place":
+        channels.append(
+            float(sample["robot_task_forbidden_collision_peak_force_n"])
+        )
     channels.append(
         float(
             sample[
@@ -450,7 +536,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["scene_plan_digest"] = plan["plan_digest"]
         result["scenario"] = plan["scenario"]
         from blueprint_pipeline.native_task_construction_plan import (
-            evaluate_rigid_construction_gates,
             materialize_native_task_construction_phase_plan,
         )
 
@@ -620,6 +705,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_total_steps = int(plan["cadence"]["maximum_action_steps"])
         execution_parameters = phase_plan["execution_parameters"]
         arrival_tolerance = float(execution_parameters["arrival_tolerance_m"])
+        default_orientation_tolerance = execution_parameters.get(
+            "arrival_orientation_tolerance_rad"
+        )
         stable_samples = int(execution_parameters["stable_samples"])
         maximum_steps_per_phase = int(
             execution_parameters["maximum_steps_per_phase"]
@@ -630,6 +718,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             stable = 0
             diagnostics = []
             start_position = servo.current_grasp_frame_position_world()
+            start_body_pose = servo.current_body_pose_world()
+            target_orientation = phase.get(
+                "orientation_world_xyzw", reset_body_pose[3:7]
+            )
+            orientation_tolerance = phase.get(
+                "arrival_orientation_tolerance_rad",
+                default_orientation_tolerance,
+            )
             gripper_command = float(
                 gripper[
                     "closed_command"
@@ -659,11 +755,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 total_steps += 1
                 achieved = servo.current_grasp_frame_position_world()
                 error = math.dist(achieved, phase["position_world_m"])
-                stable = stable + 1 if error <= arrival_tolerance else 0
+                achieved_body_pose = servo.current_body_pose_world()
+                arrival = _pose_arrival_readback(
+                    position_world_m=achieved,
+                    target_position_world_m=phase["position_world_m"],
+                    orientation_world_xyzw=achieved_body_pose[3:7],
+                    target_orientation_world_xyzw=target_orientation,
+                    position_tolerance_m=arrival_tolerance,
+                    orientation_tolerance_rad=(
+                        None
+                        if orientation_tolerance is None
+                        else float(orientation_tolerance)
+                    ),
+                )
+                orientation_error = arrival["orientation_error_rad"]
+                stable = stable + 1 if arrival["reached"] else 0
                 diagnostic["step_index"] = total_steps
                 diagnostic["position_error_m"] = error
+                diagnostic["orientation_error_rad"] = orientation_error
                 diagnostics.append(diagnostic)
-                if task_kind == "rigid_pick_place":
+                if _retain_task_path_samples(
+                    task_kind=task_kind, task_spec=plan["task_spec"]
+                ):
                     task_samples.append(readback.read_task_sample())
                 required_stable = (
                     int(phase_plan["settle_window_samples"])
@@ -673,17 +786,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if stable >= required_stable:
                     break
             terminal = servo.current_grasp_frame_position_world()
+            terminal_body_pose = servo.current_body_pose_world()
             terminal_error = math.dist(terminal, phase["position_world_m"])
+            terminal_arrival = _pose_arrival_readback(
+                position_world_m=terminal,
+                target_position_world_m=phase["position_world_m"],
+                orientation_world_xyzw=terminal_body_pose[3:7],
+                target_orientation_world_xyzw=target_orientation,
+                position_tolerance_m=arrival_tolerance,
+                orientation_tolerance_rad=(
+                    None
+                    if orientation_tolerance is None
+                    else float(orientation_tolerance)
+                ),
+            )
+            terminal_orientation_error = terminal_arrival["orientation_error_rad"]
             sample = readback.read_task_sample()
             row = {
                 "phase_id": phase["phase_id"],
                 "target_position_world_m": phase["position_world_m"],
                 "start_position_world_m": start_position,
+                "start_body_orientation_world_xyzw": start_body_pose[3:7],
                 "terminal_position_world_m": terminal,
                 "terminal_position_error_m": terminal_error,
+                "target_orientation_world_xyzw": target_orientation,
+                "terminal_body_orientation_world_xyzw": terminal_body_pose[3:7],
+                "terminal_orientation_error_rad": terminal_orientation_error,
+                "arrival_orientation_tolerance_rad": orientation_tolerance,
                 "arrival_tolerance_m": arrival_tolerance,
                 "target_reached": (
-                    terminal_error <= arrival_tolerance and stable >= required_stable
+                    terminal_arrival["reached"]
+                    and stable >= required_stable
                 ),
                 "gripper_state": phase.get("gripper_state", "open"),
                 "gripper_command": gripper_command,
@@ -752,20 +885,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             for actual, expected in zip(reset_arm, requested_reset, strict=True)
         ]
         task_joint_resets = dict(
-            plan["task_spec"].get("joint_reset_positions_rad", {})
+            phase_plan.get("joint_reset_positions")
+            if phase_plan.get("schema_version")
+            == "native_articulated_graph_construction_phase_plan.v1"
+            else plan["task_spec"].get("joint_reset_positions_rad", {})
         )
+        reset_joint_positions = reset_sample.get("joint_positions")
+        if reset_joint_positions is None:
+            reset_joint_positions = reset_sample.get("joint_positions_rad", {})
         task_reset_errors = {
             joint_id: abs(
-                float(reset_sample["joint_positions_rad"][joint_id])
+                float(reset_joint_positions[joint_id])
                 - float(expected)
             )
             for joint_id, expected in task_joint_resets.items()
         }
         object_reset_readback = read_native_task_arena_object_reset_state(built)
-        task_joint_reset_passed = _task_joint_reset_passed(
-            absolute_errors_rad=task_reset_errors,
-            task_spec=plan["task_spec"],
-        )
+        if phase_plan.get("schema_version") == (
+            "native_articulated_graph_construction_phase_plan.v1"
+        ):
+            task_joint_reset_passed = all(
+                error
+                <= float(phase_plan["joint_reset_tolerances"][joint_id])
+                for joint_id, error in task_reset_errors.items()
+            )
+        else:
+            task_joint_reset_passed = _task_joint_reset_passed(
+                absolute_errors_rad=task_reset_errors,
+                task_spec=plan["task_spec"],
+            )
         reset_passed = (
             max(reset_errors, default=0.0) <= 1.0e-4
             and task_joint_reset_passed
@@ -784,14 +932,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["blockers"].append(
                 "native_task_object_reset_replay_mismatch"
             )
-        if task_kind == "rigid_pick_place":
-            rigid_gates = evaluate_rigid_construction_gates(
-                phase_plan=phase_plan,
-                phase_results=phase_results,
-                reset_replay=result["reset_replay"],
-            )
-            result["rigid_construction_gates"] = rigid_gates
-            result["blockers"].extend(rigid_gates["blockers"])
+        task_gate_evaluation = _evaluate_task_construction_gates(
+            phase_plan=phase_plan,
+            phase_results=phase_results,
+            reset_replay=result["reset_replay"],
+        )
+        if task_gate_evaluation is not None:
+            gate_key, gate_result = task_gate_evaluation
+            result[gate_key] = gate_result
+            result["blockers"].extend(gate_result["blockers"])
         _announce("reset_replay", "completed" if reset_passed else "blocked")
 
         result["blockers"] = sorted(set(result["blockers"]))

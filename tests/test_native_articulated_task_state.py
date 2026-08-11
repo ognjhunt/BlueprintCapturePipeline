@@ -19,6 +19,13 @@ TASK = json.loads(
         / "second_scene_840796_scene_task_freeze.v1.json"
     ).read_text(encoding="utf-8")
 )["task_spec"]
+THIRD_SCENE_GRAPH = json.loads(
+    (
+        ROOT
+        / "docs/arm_decision_proof_v1/manifests"
+        / "third_scene_840920_task_a_freeze.v1.json"
+    ).read_text(encoding="utf-8")
+)["articulation_graph"]
 BINDING = {
     "joint_ids": [
         "refrigerator_lower_door_hinge",
@@ -135,3 +142,39 @@ def test_retreat_requires_both_release_and_measured_separation() -> None:
 
     assert sample["task_contact_active"] is False
     assert sample["retreat_completed"] is False
+
+
+def test_general_graph_sample_derives_exact_joint_set_and_unit_neutral_aliases() -> None:
+    task_spec = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "articulated_open_close",
+        "articulation_graph": THIRD_SCENE_GRAPH,
+        "settle_window_samples": 3,
+        "maximum_settled_target_speed": 0.05,
+        "locked_joint_motion_tolerance": 0.001,
+        "movement_epsilon": 0.0001,
+    }
+    joint_ids = [row["joint_id"] for row in THIRD_SCENE_GRAPH["joints"]]
+    positions = {
+        "door_hinge": 0.8,
+        "latch_coupler": 0.04,
+        "drum_bearing": 0.0,
+        "selector_axis": 0.0,
+        "drawer_slide": 0.0,
+    }
+    sample = _sample(
+        task_spec=task_spec,
+        task_sample_binding={
+            "joint_ids": joint_ids,
+            "native_joint_names": {joint_id: joint_id for joint_id in joint_ids},
+        },
+        native_joint_names=joint_ids,
+        native_joint_positions_rad=[positions[joint_id] for joint_id in joint_ids],
+        native_joint_velocities_rad_s=[0.0 for _joint_id in joint_ids],
+    )
+
+    assert sample["joint_positions"] == positions
+    assert sample["joint_velocities_per_s"] == {
+        joint_id: 0.0 for joint_id in joint_ids
+    }
+    assert sample["joint_limit_violation"] is False

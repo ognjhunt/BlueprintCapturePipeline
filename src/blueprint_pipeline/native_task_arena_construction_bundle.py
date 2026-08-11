@@ -31,6 +31,7 @@ RESULT_SCHEMA_VERSION = "native_task_arena_construction_result.v1"
 # explicit and hermetically import-tested: provider startup may not discover
 # missing internal modules one at a time.
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
+    "articulation_graph_contract.py",
     "articulated_control_planner.py",
     "decision_evidence_contracts.py",
     "native_articulated_construction_plan.py",

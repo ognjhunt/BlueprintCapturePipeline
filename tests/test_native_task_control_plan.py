@@ -98,6 +98,7 @@ def _rigid_scene(
         "lift_unit_world": [0.0, 0.0, 1.0],
         "gripper_orientation_scoring_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
         "pregrasp_clearance_m": 0.12,
+        "arrival_orientation_tolerance_rad": 0.05,
         "allowed_contact_prim_paths": ["/Asset/links/base"],
         "intended_support_prim_paths": ["/Scene/support"],
         "affordance_digest": "",
@@ -185,6 +186,8 @@ def _rigid_construction(scene: dict) -> dict:
             ),
             "task_scene_collision_peak_force_n": 0.0,
             "robot_scene_contact_peak_force_n": 0.0,
+            "robot_task_forbidden_collision_peak_force_n": 0.0,
+            "locked_joint_containment_violation": False,
             "finger_separation_m": 0.01 if closed else 0.08,
         }
         count = (
@@ -262,7 +265,12 @@ def test_840313_rigid_fixture_replays_only_qualified_construction_phases() -> No
         row["orientation_world_xyzw"] for row in phases
     ]
     assert plan["zero_action_steps"] == scene["task_spec"]["settle_window_samples"]
-    assert plan["positive_trajectory_is_exact_qualified_construction_replay"] is True
+    assert (
+        plan[
+            "positive_trajectory_reexecutes_exact_qualified_phase_targets_and_budgets"
+        ]
+        is True
+    )
     assert plan["plan_digest"] == canonical_digest(
         plan, digest_field="plan_digest"
     )
@@ -369,8 +377,11 @@ def test_legacy_rigid_task_without_exact_affordance_fails_closed() -> None:
 
 
 class _RigidControlEnvironment:
-    def __init__(self, *, scene: dict, construction: dict):
+    def __init__(
+        self, *, scene: dict, construction: dict, force_wrong_orientation: bool = False
+    ):
         self._scene = scene
+        self._force_wrong_orientation = force_wrong_orientation
         self._phase_by_target = {
             tuple(phase["position_world_m"]): phase
             for phase in construction["construction_phase_plan"]["phases"]
@@ -384,8 +395,10 @@ class _RigidControlEnvironment:
         self.gripper = 0.0
         self.pose = list(self._scene["task_spec"]["start_pose_world"])
         self.grasp = [0.0, 0.0, 0.0]
+        self.grasp_orientation = [0.0, 0.0, 0.0, 1.0]
         self._has_grasped = False
         self._pending_target = None
+        self._pending_orientation = None
 
     def read_arm_joint_positions(self) -> list[float]:
         return list(self.joints)
@@ -408,6 +421,9 @@ class _RigidControlEnvironment:
         assert max_joint_delta_rad == pytest.approx(0.03)
         assert max_joint_setpoint_lead_rad == pytest.approx(0.20)
         self._pending_target = [float(value) for value in target_position_world_m]
+        self._pending_orientation = [
+            float(value) for value in target_quaternion_world_xyzw
+        ]
         self._pending_gripper = float(gripper_command)
         return [*self.joints, self._pending_gripper]
 
@@ -416,6 +432,11 @@ class _RigidControlEnvironment:
         if self._pending_target is None:
             return
         self.grasp = list(self._pending_target)
+        self.grasp_orientation = (
+            [1.0, 0.0, 0.0, 0.0]
+            if self._force_wrong_orientation
+            else list(self._pending_orientation)
+        )
         phase = self._phase_by_target[tuple(self._pending_target)]
         if self.gripper > 0.5:
             self._has_grasped = True
@@ -430,10 +451,14 @@ class _RigidControlEnvironment:
             "task_object_pose_world": list(self.pose),
             "gripper_width_m": 0.01 if closed else 0.08,
             "task_contact_active": closed and self._has_grasped,
+            "support_contact_active": (not closed) and self._has_grasped,
             "robot_collision_failure": False,
             "scene_collision_failure": False,
             "containment_violation": False,
+            "forbidden_robot_task_collision_failure": False,
+            "locked_joint_containment_violation": False,
             "grasp_frame_position_world_m": list(self.grasp),
+            "grasp_frame_orientation_world_xyzw": list(self.grasp_orientation),
         }
 
 
@@ -489,3 +514,60 @@ def test_generic_rigid_plan_runs_zero_then_positive_through_shared_scorer(
     ]
     assert [row["control_passed"] for row in pair["controls"]] == [True, True]
     assert pair["cell_admitted_for_policy_execution"] is True
+
+
+def test_generic_rigid_control_rejects_correct_position_with_wrong_orientation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import adp009d_control_episode as controls_module
+
+    scene = _rigid_scene(scene_id="generic", asset_id="rigid_subject")
+    construction = _rigid_construction(scene)
+    plan = materialize_native_task_control_plan(
+        scene_plan=scene, construction_result=construction
+    )
+    counter = {"value": 0}
+
+    def fake_observation(*_args, **kwargs):
+        row = {
+            "observation_index": counter["value"],
+            "kind": kwargs["kind"],
+            "views": {},
+        }
+        counter["value"] += 1
+        return row
+
+    monkeypatch.setattr(controls_module, "_persist_observation", fake_observation)
+    monkeypatch.setattr(
+        controls_module,
+        "finalize_manipulation_evaluation_visual_evidence",
+        lambda **_kwargs: (
+            {
+                "status": "complete",
+                "required_camera_ids": ["external", "wrist", "overview"],
+                "review_only_camera_ids": ["overview"],
+            },
+            [],
+        ),
+    )
+
+    pair = run_task_neutral_controls(
+        environment=_RigidControlEnvironment(
+            scene=scene,
+            construction=construction,
+            force_wrong_orientation=True,
+        ),
+        task_spec=scene["task_spec"],
+        control_plan=plan,
+        gripper_open_command=0.0,
+        gripper_closed_command=1.0,
+        output_dir=tmp_path,
+    )
+
+    positive = next(
+        row
+        for row in pair["controls"]
+        if row["control_id"] == "deterministic_scripted_positive"
+    )
+    assert positive["control_passed"] is False
+    assert pair["cell_admitted_for_policy_execution"] is False

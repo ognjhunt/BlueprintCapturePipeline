@@ -188,6 +188,101 @@ def _quaternion_angle_xyzw(a: Sequence[float], b: Sequence[float]) -> float:
     return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
 
 
+def _read_bound_locked_joint_state(
+    *, asset: Any, sample_binding: Any, task_spec: Any
+) -> dict[str, Any]:
+    if not isinstance(sample_binding, dict):
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_rigid_joint_binding_invalid"]
+        )
+    joint_ids = list(sample_binding.get("joint_ids") or [])
+    if not joint_ids:
+        return {
+            "joint_positions": {},
+            "joint_velocities_per_s": {},
+            "locked_joint_absolute_errors": {},
+            "locked_joint_containment_violation": False,
+        }
+    native_by_id = sample_binding.get("native_joint_names")
+    roles = sample_binding.get("joint_roles")
+    graph = task_spec.get("articulation_graph") if isinstance(task_spec, dict) else None
+    graph_joints = graph.get("joints") if isinstance(graph, dict) else None
+    if (
+        not isinstance(native_by_id, dict)
+        or not isinstance(roles, dict)
+        or set(joint_ids) != set(native_by_id)
+        or set(joint_ids) != set(roles)
+        or set(roles.values()) != {"locked"}
+        or not isinstance(graph_joints, list)
+    ):
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_rigid_joint_binding_invalid"]
+        )
+    graph_by_id = {
+        str(row.get("joint_id") or ""): row
+        for row in graph_joints
+        if isinstance(row, dict)
+    }
+    if set(joint_ids) != set(graph_by_id):
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_rigid_joint_graph_mismatch"]
+        )
+    data = getattr(asset, "data", None)
+    native_names = _names(
+        getattr(asset, "joint_names", None) or getattr(data, "joint_names", None),
+        error="native_task_arena_rigid_joint_names_missing",
+    )
+    native_positions = _first_environment(
+        getattr(data, "joint_pos", None),
+        error="native_task_arena_rigid_joint_positions_missing",
+    )
+    native_velocities = _first_environment(
+        getattr(data, "joint_vel", None),
+        error="native_task_arena_rigid_joint_velocities_missing",
+    )
+    if (
+        len(native_positions) != len(native_names)
+        or len(native_velocities) != len(native_names)
+        or set(native_names) != set(native_by_id.values())
+    ):
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_rigid_joint_state_invalid"]
+        )
+    position_by_native = dict(zip(native_names, native_positions, strict=True))
+    velocity_by_native = dict(zip(native_names, native_velocities, strict=True))
+    positions: dict[str, float] = {}
+    velocities: dict[str, float] = {}
+    errors: dict[str, float] = {}
+    violation = False
+    for joint_id in sorted(joint_ids):
+        row = graph_by_id[joint_id]
+        try:
+            position = float(position_by_native[native_by_id[joint_id]])
+            velocity = float(velocity_by_native[native_by_id[joint_id]])
+            reset = float(row["reset_position"])
+            tolerance = float(row["reset_tolerance"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_rigid_joint_state_invalid"]
+            ) from exc
+        if not all(
+            math.isfinite(value) for value in (position, velocity, reset, tolerance)
+        ) or tolerance < 0.0:
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_rigid_joint_state_invalid"]
+            )
+        positions[joint_id] = position
+        velocities[joint_id] = velocity
+        errors[joint_id] = abs(position - reset)
+        violation = violation or errors[joint_id] > tolerance
+    return {
+        "joint_positions": positions,
+        "joint_velocities_per_s": velocities,
+        "locked_joint_absolute_errors": errors,
+        "locked_joint_containment_violation": violation,
+    }
+
+
 def read_native_task_arena_object_reset_state(
     built: NativeTaskArenaEnvironment,
     *,
@@ -577,6 +672,7 @@ class NativeRigidTaskArenaReadback:
             "task_robot_contact",
             "task_support_contact",
             "task_scene_collision",
+            "robot_task_forbidden_collision",
             "robot_scene_contact",
         ):
             scene_names = self._built.contact_sensor_names.get(logical_sensor_id)
@@ -586,6 +682,17 @@ class NativeRigidTaskArenaReadback:
                 and not self._built.plan["articulation"].get(
                     "non_support_scene_contact_body_paths"
                 )
+            ):
+                contact_peaks[logical_sensor_id] = 0.0
+                continue
+            if (
+                logical_sensor_id == "robot_task_forbidden_collision"
+                and not scene_names
+                and not self._built.plan["articulation"].get(
+                    "forbidden_robot_contact_body_paths"
+                )
+                and "collision_failure_minimum_force_n"
+                not in (self._built.plan.get("task_spec") or {})
             ):
                 contact_peaks[logical_sensor_id] = 0.0
                 continue
@@ -653,6 +760,11 @@ class NativeRigidTaskArenaReadback:
                 ],
             ],
         )
+        joint_state = _read_bound_locked_joint_state(
+            asset=task_object,
+            sample_binding=self._built.plan.get("task_sample_binding") or {},
+            task_spec=self._built.plan.get("task_spec") or {},
+        )
         return {
             "asset_root_pose_world": asset_root_pose,
             "task_scoring_pose_world": scoring_pose,
@@ -673,6 +785,10 @@ class NativeRigidTaskArenaReadback:
                 "task_scene_collision"
             ],
             "robot_scene_contact_peak_force_n": contact_peaks["robot_scene_contact"],
+            "robot_task_forbidden_collision_peak_force_n": contact_peaks[
+                "robot_task_forbidden_collision"
+            ],
+            **joint_state,
             "measurement_authority": "native_rigid_root_pose_and_filtered_contact_sensors",
         }
 
