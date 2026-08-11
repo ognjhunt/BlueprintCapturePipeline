@@ -1,6 +1,6 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 54,
+  "artifact_count": 56,
   "artifacts": [
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
@@ -257,10 +257,28 @@
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "shared_scene/cad_agent_comparison_v1/all_four_cad_candidates_side_by_side_front_best.png",
-      "role": "agent_cad_comparison:all_four_front_best",
-      "sha256": "sha256:2bfc91ee625ba8ed8b71219ac29a72d7b5ad606ada278118c779d73b7d629544",
-      "size_bytes": 365224,
+      "relative_path": "shared_scene/cad_agent_visual_comparison_v1/OPEN_ME_cad_agent_visual_comparison.html",
+      "role": "agent_cad_comparison:finder_review_html",
+      "sha256": "sha256:046a97f073983da94c971d9a6c8b09878c0a0dd9b99b4859cce8dda78483f006",
+      "size_bytes": 2121,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json",
+      "role": "agent_cad_comparison:manifest_driven_receipt",
+      "sha256": "sha256:6b31b50b232c12762073c2941e27be52698deac6c2a12aca23fa2bc0578947bd",
+      "size_bytes": 9837,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png",
+      "role": "agent_cad_comparison:observed_reference_and_candidates_contact_sheet",
+      "sha256": "sha256:bb98193cb89ccb605198e4a40503244aa75e43917fe2c91de175db6c363a876d",
+      "size_bytes": 440035,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
@@ -490,7 +508,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:106163a6d7d09d195dd02fec9392cdf8c0693b861b9e007bdbc9eafceb242ac6",
+  "inventory_digest": "sha256:19b8812a7d19390d83d1e3bc88023fa355f380b1cd931e5bbc1343f62a95b815",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,

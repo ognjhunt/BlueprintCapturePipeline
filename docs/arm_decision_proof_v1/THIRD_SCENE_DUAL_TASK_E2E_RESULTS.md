@@ -262,6 +262,25 @@ one-to-five object capacity:
 | Task B notebook | Earth-to-Jake | `codex_skill_step_first` | `sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c` | `sha256:abe0feb7f0e805838312ad0f1902aa4e43cff7b6ba111b764937ed47d9bdc707` | `$0.00` |
 | Task B notebook | Pan-Chera Multi-Agent-CAD | `codex_agent_direct_repo_route` | `sha256:fb72f8e3f23a1260a54bd0620bf994ba09bd58d37cbcfec93134c9213e33863b` | `sha256:406d1e35a38555952792412b29962229cf62331e781ca9b03edfd389d9127829` | `$0.00` |
 
+A reusable manifest-driven CAD review-media gate now materializes one
+side-by-side contact sheet for `1..5` replacement objects and the admitted CAD
+backends. It verifies the CAD matrix, exact source-frame records, candidate
+snapshots, STEP records, and per-object reference-image digest consistency
+before writing review media. The private evidence-root receipt is
+`/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`
+with digest
+`sha256:71733e7aa3f7367864fd336d77403962913bf6f7f31af6e4992b6d17f54a2441`;
+the contact sheet is
+`/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`
+with digest
+`sha256:bb98193cb89ccb605198e4a40503244aa75e43917fe2c91de175db6c363a876d`.
+The checked-in binding manifest is
+`docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`
+with binding digest
+`sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe`.
+This is human-review media only; it does not select a CAD winner or qualify
+SimReady/native/appearance/physics behavior.
+
 For NVIDIA Content Agents, each STEP was deterministically projected into a
 Mesh-only USD working copy. These are agent-input artifacts only; they are not
 canonical simulator assets, collision assets, physics authority, native imports,
@@ -505,8 +524,11 @@ independent STEP inspection receipts, and STEP candidates for the task, both
 Content Agents Mesh projection receipts, static and local no-paid Content Agents
 preflight receipts, and both Content Agents autoref bundle receipts/ZIPs without
 embedding rights-bounded dataset-derived bytes. Current inventory digests: Task
-A `sha256:106163a6d7d09d195dd02fec9392cdf8c0693b861b9e007bdbc9eafceb242ac6`;
-Task B `sha256:5021cfac8efd951c08512ec11ed709f0b88c65450c14eb8b349b8c68db7b8113`.
+A `sha256:19b8812a7d19390d83d1e3bc88023fa355f380b1cd931e5bbc1343f62a95b815`;
+Task B `sha256:1e24dbbad9ef78efaba3d47d8a7a1d820f1a1223ccb5cb72d11971053a2eff4a`.
+Current episode-index digests: Task A
+`sha256:84973d5557079dce28fd2caf91fdff4c98916f2d3715b78903cae885c90a4914`;
+Task B `sha256:7e61fe901025bf5cb0878b580b885c3f5580bde8be80b6a33504697ae1fcb368`.
 
 ## Verification
 

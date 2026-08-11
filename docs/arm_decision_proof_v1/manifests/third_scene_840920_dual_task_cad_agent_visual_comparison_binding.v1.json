@@ -1,0 +1,40 @@
+{
+  "backend_ids": [
+    "earthtojake_text_to_cad",
+    "pan_chera_multi_agent_cad"
+  ],
+  "binding_digest": "sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe",
+  "cad_matrix_digest": "sha256:5c156afb6837e6e796dc0092e4a7a2f9060962b29f820b8fe5738ee25049dfbb",
+  "claim_boundary": {
+    "agent_authored_cad_candidate": true,
+    "appearance_qualified": false,
+    "human_review_media_only": true,
+    "native_simulator_import_qualified": false,
+    "physical_equivalence": false,
+    "physics_qualified": false,
+    "simready_qualified": false
+  },
+  "comparison_receipt": {
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json",
+    "sha256": "sha256:6b31b50b232c12762073c2941e27be52698deac6c2a12aca23fa2bc0578947bd",
+    "size_bytes": 9837
+  },
+  "contact_sheet": {
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png",
+    "sha256": "sha256:bb98193cb89ccb605198e4a40503244aa75e43917fe2c91de175db6c363a876d",
+    "size_bytes": 440035
+  },
+  "html": {
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/OPEN_ME_cad_agent_visual_comparison.html",
+    "sha256": "sha256:046a97f073983da94c971d9a6c8b09878c0a0dd9b99b4859cce8dda78483f006",
+    "size_bytes": 2121
+  },
+  "maximum_replacement_objects": 5,
+  "object_count": 2,
+  "program_id": "arm-decision-proof-v1",
+  "raw_dataset_bytes_embedded": false,
+  "scene_id": "840920",
+  "schema_version": "third_scene_cad_agent_visual_comparison_binding.v1",
+  "source_frame_pixels_committed_to_repo": false,
+  "status": "digest_bound_private_review_media_available"
+}

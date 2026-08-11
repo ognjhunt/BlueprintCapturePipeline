@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:6e7a9dff7fe10cf55d371a47ae8f63b7692c3ca483427d6c946f5abe79688482",
+  "index_digest": "sha256:84973d5557079dce28fd2caf91fdff4c98916f2d3715b78903cae885c90a4914",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -35,11 +35,11 @@
     },
     {
       "portable_link_available": true,
-      "receipt_digest": "sha256:106163a6d7d09d195dd02fec9392cdf8c0693b861b9e007bdbc9eafceb242ac6",
+      "receipt_digest": "sha256:19b8812a7d19390d83d1e3bc88023fa355f380b1cd931e5bbc1343f62a95b815",
       "relative_path": "supporting_evidence_inventory.v2.json",
       "schema_version": "adp_supporting_evidence_inventory.v1",
-      "sha256": "sha256:34c3f2d1d5d3048702525fa5e667652201b95363e3bd1fffe4385fe806f054e9",
-      "size_bytes": 27138
+      "sha256": "sha256:de509f0de03318bbb56ffcbd5094fa22504ac240136cbeab1b8c68a7358c1a9c",
+      "size_bytes": 28139
     }
   ],
   "typed_abstention": {
