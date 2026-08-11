@@ -5,7 +5,7 @@
   "publisher_scene_id": "840313",
   "status": "admitted_development_only",
   "physics_backend": "physx",
-  "physics_backend_profile_digest": "sha256:0374c938150d7c433b4ef40f28e0075ddd342c98f93f47558ec2101bf9a7eda9",
+  "physics_backend_profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c",
   "source_bundle": {
     "bundle_id": "adp009d-840313-interiorgs-sage-v1",
     "bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
@@ -119,5 +119,5 @@
   },
   "claim_ceiling": "development_only",
   "physical_evidence": false,
-  "runtime_bundle_digest": "sha256:fddc49ca9a74f96e7ca251bde4dfee78cd4c4fa0d5db9268bec7c2eaaadb520e"
+  "runtime_bundle_digest": "sha256:9e09be2082dbc8990032ace5cc84773a32a6b07e8b393da4d1e4f0192ea16c00"
 }

@@ -22,6 +22,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     build_comparison_receipt,
     build_newton_canary_admission,
     build_newton_canary_terminal_receipt,
+    build_newton_robot_inertial_overlay_contract,
     normalize_physics_backend,
     validate_backend_probe,
     validate_backend_profile,
@@ -245,6 +246,7 @@ def test_newton_terminal_receipt_cli_compiles_retained_evidence(
 
 
 def _probe(profile: dict) -> dict:
+    overlay = profile["asset_conversion"].get("robot_inertial_overlay") or {}
     value = {
         "schema_version": PROBE_SCHEMA_VERSION,
         "status": "passed",
@@ -269,6 +271,25 @@ def _probe(profile: dict) -> dict:
             "silently_ignored_settings": [],
             "physx_sdf_overlay_loaded": False,
             "physx_only_fields_observed": [],
+            "robot_source_asset_digest": profile["source_bindings"].get(
+                "droid_franka_robotiq_usd_digest"
+            ),
+            "robot_inertial_overlay_contract_digest": overlay.get(
+                "overlay_digest"
+            ),
+            "robot_inertial_overlay_status": (
+                "applied_and_verified"
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
+            "robot_inertial_overlay_receipt_digest": (
+                "sha256:" + "b" * 64
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
+            "robot_source_mutated": (
+                False if profile["physics_backend"] == "newton" else None
+            ),
         },
         "contact_buffer": {"nconmax": 1024, "overflow_observed": False},
         "policy_query_count": 0,
@@ -401,6 +422,43 @@ def test_backend_contract_is_strict_and_physx_remains_default_profile() -> None:
         normalize_physics_backend("PhysX")
     with pytest.raises(PhysicsBackendContractError):
         normalize_physics_backend(None)
+
+
+def test_newton_robot_inertial_overlay_is_exact_mass_only_and_digest_bound() -> None:
+    overlay = build_newton_robot_inertial_overlay_contract()
+
+    assert overlay == build_backend_profile("newton")["asset_conversion"][
+        "robot_inertial_overlay"
+    ]
+    assert overlay["expected_source_body_count"] == 9
+    assert len(overlay["body_masses_kg"]) == 9
+    assert all(value > 0.0 for value in overlay["body_masses_kg"].values())
+    for side in ("left", "right"):
+        assert overlay["body_masses_kg"][f"{side}_inner_knuckle"] > 0.0
+        assert overlay["body_masses_kg"][f"{side}_outer_knuckle"] > 0.0
+    assert overlay["authored_center_of_mass_allowed"] is False
+    assert overlay["authored_diagonal_inertia_allowed"] is False
+    assert overlay["authored_principal_axes_allowed"] is False
+    assert overlay["arbitrary_minimum_mass_or_inertia_clamp_allowed"] is False
+    assert overlay["usd_float32_mass_roundtrip_tolerance_kg"] == 2.0e-8
+    admission = overlay["physx_property_admission"]
+    assert admission["unmapped_authored_property_policy"] == (
+        "block_value_before_newton_model_import"
+    )
+    assert admission["physx_contact_report_api_activation"] is False
+    assert admission["arena_solver_iteration_overrides_authored"] is False
+    assert (
+        admission["arena_max_depenetration_velocity_override_authored"] is False
+    )
+    assert not any(
+        "solverPositionIterationCount" in name
+        or "solverVelocityIterationCount" in name
+        for name in admission["mapped_property_names"]
+    )
+    assert overlay["source_robot_asset"]["source_mutated"] is False
+    assert overlay["overlay_digest"] == canonical_digest(
+        overlay, digest_field="overlay_digest"
+    )
 
 
 def test_committed_design_is_canonical_and_provider_free() -> None:

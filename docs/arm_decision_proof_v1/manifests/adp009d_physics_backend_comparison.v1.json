@@ -2,8 +2,8 @@
   "backend_contact_configurations": {
     "newton": {
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "backend_profile_digest": "sha256:7dab528752ba53fee17a93f99fac6ef18dd17d5194c951873162c6be12d3f95f",
-      "configuration_digest": "sha256:4718d9414616334eb8ea1eede7e35b63438655f3e1137db7099fde1d7478005b",
+      "backend_profile_digest": "sha256:c63b438e8e3cbe6b694638979f0f963c762dbfe8ec433c039900d50d0b572f46",
+      "configuration_digest": "sha256:f3bcab4e299afcb06e508133fd33f43ed3e7a73c598c3b6b53456acd61fba881",
       "contact_model": {
         "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
         "contact_buffer_limit": {
@@ -23,8 +23,8 @@
     },
     "physx": {
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "backend_profile_digest": "sha256:0374c938150d7c433b4ef40f28e0075ddd342c98f93f47558ec2101bf9a7eda9",
-      "configuration_digest": "sha256:5fa7582a0f72fd79f237e380a5528cf0a06b01303cd16bbf541a28987cada01b",
+      "backend_profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c",
+      "configuration_digest": "sha256:b1b66e9b5f5ebc995d09a5f82bdcdc9434be6d1becb737b7ac57e7c5841b3484",
       "contact_model": {
         "approximation": "sdf",
         "configuration_schema": "adp009d_physx_sdf_contact_model.v1",
@@ -49,6 +49,74 @@
         "adapter": "approved_can_newton_generic_adapter.usda",
         "franka_robotiq_conversion_probe_required": true,
         "mode": "generic_usd_overlay_then_newton_model_builder",
+        "robot_inertial_overlay": {
+          "arbitrary_minimum_mass_or_inertia_clamp_allowed": false,
+          "authored_center_of_mass_allowed": false,
+          "authored_diagonal_inertia_allowed": false,
+          "authored_principal_axes_allowed": false,
+          "body_masses_kg": {
+            "base_link": 0.30915,
+            "left_inner_finger": 0.00724255346165745,
+            "left_inner_knuckle": 0.0110930853895903,
+            "left_outer_finger": 0.0273093985570947,
+            "left_outer_knuckle": 0.00684838849434396,
+            "right_inner_finger": 0.00724255346165744,
+            "right_inner_knuckle": 0.0110930853895903,
+            "right_outer_finger": 0.0273093985570947,
+            "right_outer_knuckle": 0.00684838849401352
+          },
+          "center_of_mass_resolution": "newton_usd_compute_mass_properties_from_target_collision_geometry",
+          "expected_source_body_count": 9,
+          "expected_source_mass_api_applied": false,
+          "inertia_resolution": "newton_target_collision_geometry_uniform_density_scaled_to_authored_mass",
+          "mass_source": {
+            "digest": "sha256:ac7ac559cfbf89033ed00d370a3375aae45eee31c7b4b28c361ad31198d1832b",
+            "license": "BSD",
+            "link_name_mapping": {
+              "base_link": "robotiq_85_base_link"
+            },
+            "path": "robots/robotiq_arg85_description.URDF",
+            "repository": "https://github.com/a-price/robotiq_arg85_description.git",
+            "revision": "a65190bdbb0666609fe7e8c3bb17341e09e81625"
+          },
+          "minimum_collision_shapes_per_body": 1,
+          "mode": "mass_only_session_layer_before_newton_model_finalize",
+          "newton_importer_revision": "2684d75bfa4bb8b058a93b81c458a74b7701c997",
+          "overlay_digest": "sha256:4df9d771ae3c32b36d70298abf4e8f287716a12a2dbc12ab51c920eae017412e",
+          "physics_backend": "newton",
+          "physx_property_admission": {
+            "arena_max_depenetration_velocity_override_authored": false,
+            "arena_solver_iteration_overrides_authored": false,
+            "mapped_property_names": [
+              "physxArticulation:enabledSelfCollisions",
+              "physxCollision:contactOffset",
+              "physxCollision:restOffset",
+              "physxConvexHullCollision:hullVertexLimit",
+              "physxJoint:armature",
+              "physxJoint:maxJointVelocity",
+              "physxMaterial:compliantContactDamping",
+              "physxMaterial:compliantContactStiffness",
+              "physxRigidBody:angularDamping",
+              "physxRigidBody:disableGravity",
+              "physxRigidBody:linearDamping"
+            ],
+            "mapped_property_prefixes": [
+              "physxLimit:",
+              "physxMimicJoint:"
+            ],
+            "physx_contact_report_api_activation": false,
+            "runtime_receipt_required": true,
+            "unmapped_authored_property_policy": "block_value_before_newton_model_import"
+          },
+          "runtime_receipt_required": true,
+          "schema_version": "adp009d_newton_robotiq_inertial_overlay.v1",
+          "source_robot_asset": {
+            "digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25",
+            "source_mutated": false,
+            "uri": "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/IsaacLab/Arena/assets/robot_library/droid/franka_robotiq_2f_85_flattened.usd"
+          },
+          "usd_float32_mass_roundtrip_tolerance_kg": 2e-08
+        },
         "runtime_conversion_receipt_required": true,
         "source_approximation_semantics_assumed": false,
         "source_approximation_token": "sdf",
@@ -87,7 +155,7 @@
       "mid_run_backend_switch_allowed": false,
       "physics_backend": "newton",
       "policy_query_allowed": false,
-      "profile_digest": "sha256:7dab528752ba53fee17a93f99fac6ef18dd17d5194c951873162c6be12d3f95f",
+      "profile_digest": "sha256:c63b438e8e3cbe6b694638979f0f963c762dbfe8ec433c039900d50d0b572f46",
       "profile_id": "adp009d-840313-newton-controls-v1",
       "program_id": "arm-decision-proof-v1",
       "required_capabilities": {
@@ -133,6 +201,7 @@
       },
       "source_bindings": {
         "approved_can_digest": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+        "droid_franka_robotiq_usd_digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25",
         "sage_collision_digest": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
         "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
         "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
@@ -168,7 +237,7 @@
       "mid_run_backend_switch_allowed": false,
       "physics_backend": "physx",
       "policy_query_allowed": false,
-      "profile_digest": "sha256:0374c938150d7c433b4ef40f28e0075ddd342c98f93f47558ec2101bf9a7eda9",
+      "profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c",
       "profile_id": "adp009d-840313-physx-controls-v1",
       "program_id": "arm-decision-proof-v1",
       "required_capabilities": {
@@ -206,6 +275,7 @@
       },
       "source_bindings": {
         "approved_can_digest": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+        "droid_franka_robotiq_usd_digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25",
         "sage_collision_digest": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
         "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
         "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
@@ -236,7 +306,7 @@
   "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
   "contract_kind": "provider_free_design",
   "default_physics_backend": "physx",
-  "design_digest": "sha256:2f722c4c83a6718ec94417862907b8e2363a869e598c0714ff72282affb5b41b",
+  "design_digest": "sha256:6c182a222ce7002aaa37f6eb89c0f7a2407a3361a7f9cc9462d3ccae0f5fdc94",
   "mid_run_backend_switch_allowed": false,
   "newton_canary_admission": {
     "artifact_storage_required": true,

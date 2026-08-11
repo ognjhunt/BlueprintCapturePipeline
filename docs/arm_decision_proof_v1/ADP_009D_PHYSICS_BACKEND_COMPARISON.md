@@ -133,6 +133,36 @@ finalized model's bounded body/shape label diagnostics, so another label is not
 guessed blindly. A new native canary must still prove both partner force
 matrices before controls begin.
 
+A fifth controls-only canary at implementation commit
+`22ef94a7ee15466404ea9899a86b2cd12917da7c` reached the pinned Newton/MuJoCo
+model conversion before the new shape filter was evaluated. Conversion failed
+closed because all nine moving Robotiq bodies in Arena's flattened DROID USD
+lacked positive mass and inertia; the first named body was
+`left_outer_knuckle`. Terminal receipt
+`sha256:c2e7de0cc4a6fc6b8077a5a2971093e5a4c5510ccd13c784143cdc67719cdc73`
+records zero controls and policy queries, a typed pre-controls media gap, 20
+retained artifacts totaling 280,242 bytes, a settled `$0.148` charge,
+successful teardown, and fresh API-confirmed provider-zero.
+
+The admitted repair is Newton-only and digest-bound. It verifies the exact
+Arena DROID USD bytes, requires the exact nine massless Robotiq rigid bodies and
+at least one collider per body, then authors only their physically sourced
+masses in the live session layer before Newton finalizes its model. Center of
+mass and inertia are derived from the target USD's own collision geometry and
+scaled to each mass by the
+[pinned Newton importer](https://github.com/newton-physics/newton/tree/2684d75bfa4bb8b058a93b81c458a74b7701c997);
+URDF frame-dependent COM or inertia is not copied. The mass source is the
+BSD-licensed Robotiq 2F-85 URDF at revision
+`a65190bdbb0666609fe7e8c3bb17341e09e81625`, and both source digests, all nine
+masses, collider coverage, applied properties, and the unmodified source flag
+are retained in an immutable runtime receipt. Asset drift, pre-existing mass
+authoring, missing colliders, extra/missing bodies, arbitrary minimum-inertia
+clamps, or receipt drift block the run. The same pre-import receipt retains the
+exact PhysX-authored properties that Newton's pinned resolver maps and blocks
+every other authored PhysX value before model import; Arena's PhysX solver
+iteration/depenetration overrides and `PhysxContactReportAPI` activation are
+disabled for Newton. PhysX does not use this overlay.
+
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.
 Even then, the receipt only makes a promotion review eligible; it never promotes

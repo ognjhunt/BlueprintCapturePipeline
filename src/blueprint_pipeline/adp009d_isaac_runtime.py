@@ -84,16 +84,28 @@ except ModuleNotFoundError:  # imported as part of the repository package
     )
 try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_physics_backend_comparison import (
+        DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+        DROID_FRANKA_ROBOTIQ_USD_URI,
+        NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
+        NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
+        ROBOTIQ_BODY_MASSES_KG,
         build_backend_contact_configuration,
         build_backend_profile,
+        build_newton_robot_inertial_overlay_contract,
         normalize_physics_backend,
         validate_backend_probe,
         validate_backend_profile,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_physics_backend_comparison import (
+        DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+        DROID_FRANKA_ROBOTIQ_USD_URI,
+        NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
+        NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
+        ROBOTIQ_BODY_MASSES_KG,
         build_backend_contact_configuration,
         build_backend_profile,
+        build_newton_robot_inertial_overlay_contract,
         normalize_physics_backend,
         validate_backend_probe,
         validate_backend_profile,
@@ -108,6 +120,9 @@ APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
 APPROVED_CAN_NEWTON_ADAPTER_FILENAME = "approved_can_newton_generic_adapter.usda"
 TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usda"
 TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
+NEWTON_ROBOT_INERTIAL_OVERLAY_RECEIPT_FILENAME = (
+    "newton_robot_inertial_overlay_receipt.json"
+)
 OVERVIEW_TASK_CAMERA_DISTANCE_M = 1.25
 MIN_OVERVIEW_TASK_OBJECT_PIXELS = 80
 # Aura authored as an Omniverse ParticleField of Gaussian surfels.  Rendered
@@ -532,6 +547,411 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _newton_robot_inertial_target_blockers(
+    observed: dict[str, dict[str, Any]], *, post_apply: bool
+) -> list[str]:
+    """Validate the exact Robotiq mass-overlay targets without importing Isaac.
+
+    This pure seam keeps source-drift and unsupported-body behavior hermetic.
+    The live collector below supplies USD observations before and after the
+    session-layer overlay.
+    """
+
+    blockers: list[str] = []
+    expected_names = set(ROBOTIQ_BODY_MASSES_KG)
+    mass_tolerance_kg = float(
+        build_newton_robot_inertial_overlay_contract()[
+            "usd_float32_mass_roundtrip_tolerance_kg"
+        ]
+    )
+    if set(observed) != expected_names:
+        blockers.append("adp009d_newton_robot_inertial_body_set_invalid")
+    for body_name in sorted(expected_names.intersection(observed)):
+        row = observed[body_name]
+        if row.get("rigid_body_api_applied") is not True:
+            blockers.append(
+                f"adp009d_newton_robot_inertial_rigid_body_missing:{body_name}"
+            )
+        collision_count = row.get("collision_shape_count")
+        if (
+            isinstance(collision_count, bool)
+            or not isinstance(collision_count, int)
+            or collision_count < 1
+        ):
+            blockers.append(
+                f"adp009d_newton_robot_inertial_collision_missing:{body_name}"
+            )
+        authored_non_mass = any(
+            row.get(field) is True
+            for field in (
+                "diagonal_inertia_authored",
+                "center_of_mass_authored",
+                "principal_axes_authored",
+            )
+        )
+        if authored_non_mass:
+            blockers.append(
+                f"adp009d_newton_robot_inertial_unexpected_authored_frame_data:{body_name}"
+            )
+        if post_apply:
+            mass = row.get("mass_kg")
+            if (
+                row.get("mass_api_applied") is not True
+                or row.get("mass_authored") is not True
+                or isinstance(mass, bool)
+                or not isinstance(mass, (int, float))
+                or not math.isclose(
+                    float(mass),
+                    float(ROBOTIQ_BODY_MASSES_KG[body_name]),
+                    rel_tol=0.0,
+                    abs_tol=mass_tolerance_kg,
+                )
+            ):
+                blockers.append(
+                    f"adp009d_newton_robot_inertial_mass_overlay_invalid:{body_name}"
+                )
+        elif row.get("mass_api_applied") is not False or row.get(
+            "mass_authored"
+        ) is not False:
+            blockers.append(
+                f"adp009d_newton_robot_inertial_source_mass_drifted:{body_name}"
+            )
+    return sorted(set(blockers))
+
+
+def _inspect_newton_robot_inertial_targets(
+    stage: Any, robot_root_prim_path: str
+) -> dict[str, dict[str, Any]]:
+    """Read the nine exact flattened-USD bodies and their collider coverage."""
+
+    from pxr import Usd, UsdPhysics
+
+    gripper_root = f"{robot_root_prim_path}/Gripper/Robotiq_2F_85"
+    observed: dict[str, dict[str, Any]] = {}
+    for body_name in sorted(ROBOTIQ_BODY_MASSES_KG):
+        prim_path = f"{gripper_root}/{body_name}"
+        prim = stage.GetPrimAtPath(prim_path)
+        if not (prim and prim.IsValid()):
+            observed[body_name] = {
+                "prim_path": prim_path,
+                "rigid_body_api_applied": False,
+                "collision_shape_count": 0,
+                "mass_api_applied": False,
+                "mass_authored": False,
+                "diagonal_inertia_authored": False,
+                "center_of_mass_authored": False,
+                "principal_axes_authored": False,
+                "mass_kg": None,
+            }
+            continue
+        collision_count = 0
+        prim_range = Usd.PrimRange(prim)
+        for descendant in prim_range:
+            if descendant == prim:
+                continue
+            if descendant.HasAPI(UsdPhysics.RigidBodyAPI):
+                prim_range.PruneChildren()
+                continue
+            if descendant.HasAPI(UsdPhysics.CollisionAPI):
+                collision_count += 1
+        has_mass_api = prim.HasAPI(UsdPhysics.MassAPI)
+        mass_api = UsdPhysics.MassAPI(prim) if has_mass_api else None
+        mass_authored = bool(
+            mass_api and mass_api.GetMassAttr().HasAuthoredValue()
+        )
+        observed[body_name] = {
+            "prim_path": prim_path,
+            "rigid_body_api_applied": prim.HasAPI(UsdPhysics.RigidBodyAPI),
+            "collision_shape_count": collision_count,
+            "mass_api_applied": has_mass_api,
+            "mass_authored": mass_authored,
+            "diagonal_inertia_authored": bool(
+                mass_api and mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
+            ),
+            "center_of_mass_authored": bool(
+                mass_api and mass_api.GetCenterOfMassAttr().HasAuthoredValue()
+            ),
+            "principal_axes_authored": bool(
+                mass_api and mass_api.GetPrincipalAxesAttr().HasAuthoredValue()
+            ),
+            "mass_kg": (
+                float(mass_api.GetMassAttr().Get()) if mass_authored else None
+            ),
+        }
+    return observed
+
+
+def _newton_physx_property_is_mapped(property_name: str) -> bool:
+    """Whether the pinned Newton importer gives this PhysX property semantics."""
+
+    return property_name in NEWTON_MAPPED_PHYSX_PROPERTY_NAMES or any(
+        property_name.startswith(prefix)
+        for prefix in NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES
+    )
+
+
+def _block_newton_unmapped_physx_properties(
+    stage: Any, robot_root_prim_path: str
+) -> dict[str, Any]:
+    """Prevent every unrecognized PhysX value from reaching Newton silently."""
+
+    from pxr import Usd
+
+    robot_prim = stage.GetPrimAtPath(robot_root_prim_path)
+    if not (robot_prim and robot_prim.IsValid()):
+        raise RuntimeError("adp009d_newton_robot_root_missing")
+    mapped: list[dict[str, str]] = []
+    blocked: list[dict[str, str]] = []
+    for prim in Usd.PrimRange(robot_prim):
+        for attribute in prim.GetAttributes():
+            property_name = str(attribute.GetName())
+            if (
+                not property_name.lower().startswith("physx")
+                or not attribute.HasAuthoredValue()
+            ):
+                continue
+            row = {
+                "prim_path": str(prim.GetPath()),
+                "property_name": property_name,
+            }
+            if _newton_physx_property_is_mapped(property_name):
+                mapped.append(row)
+            else:
+                attribute.Block()
+                blocked.append(row)
+    remaining_unmapped: list[dict[str, str]] = []
+    for prim in Usd.PrimRange(robot_prim):
+        for attribute in prim.GetAttributes():
+            property_name = str(attribute.GetName())
+            if (
+                property_name.lower().startswith("physx")
+                and attribute.HasAuthoredValue()
+                and not _newton_physx_property_is_mapped(property_name)
+            ):
+                remaining_unmapped.append(
+                    {
+                        "prim_path": str(prim.GetPath()),
+                        "property_name": property_name,
+                    }
+                )
+    if remaining_unmapped:
+        raise RuntimeError("adp009d_newton_unmapped_physx_property_remained")
+    return {
+        "schema_version": "adp009d_newton_physx_property_admission_receipt.v1",
+        "policy": "block_value_before_newton_model_import",
+        "mapped_properties_retained": sorted(
+            mapped, key=lambda row: (row["prim_path"], row["property_name"])
+        ),
+        "unmapped_properties_blocked": sorted(
+            blocked, key=lambda row: (row["prim_path"], row["property_name"])
+        ),
+        "remaining_unmapped_authored_properties": [],
+    }
+
+
+def _apply_newton_robot_inertial_overlay(
+    *, stage: Any, robot_root_prim_path: str, source_asset_digest: str
+) -> dict[str, Any]:
+    """Apply and verify the admitted Newton-only mass session layer."""
+
+    from pxr import UsdPhysics
+
+    contract = build_newton_robot_inertial_overlay_contract()
+    if source_asset_digest != DROID_FRANKA_ROBOTIQ_USD_DIGEST:
+        raise RuntimeError("adp009d_newton_robot_source_asset_digest_invalid")
+    before = _inspect_newton_robot_inertial_targets(stage, robot_root_prim_path)
+    blockers = _newton_robot_inertial_target_blockers(before, post_apply=False)
+    if blockers:
+        raise RuntimeError(
+            "adp009d_newton_robot_inertial_source_invalid:" + ",".join(blockers)
+        )
+    physx_property_admission = _block_newton_unmapped_physx_properties(
+        stage, robot_root_prim_path
+    )
+    for body_name, mass_kg in sorted(ROBOTIQ_BODY_MASSES_KG.items()):
+        prim = stage.GetPrimAtPath(
+            f"{robot_root_prim_path}/Gripper/Robotiq_2F_85/{body_name}"
+        )
+        mass_api = UsdPhysics.MassAPI.Apply(prim)
+        mass_api.CreateMassAttr().Set(float(mass_kg))
+    after = _inspect_newton_robot_inertial_targets(stage, robot_root_prim_path)
+    blockers = _newton_robot_inertial_target_blockers(after, post_apply=True)
+    if blockers:
+        raise RuntimeError(
+            "adp009d_newton_robot_inertial_overlay_invalid:" + ",".join(blockers)
+        )
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009d_newton_robotiq_inertial_overlay_receipt.v1",
+        "status": "applied_and_verified",
+        "physics_backend": "newton",
+        "source_robot_asset_uri": DROID_FRANKA_ROBOTIQ_USD_URI,
+        "source_robot_asset_digest": source_asset_digest,
+        "overlay_contract_digest": contract["overlay_digest"],
+        "robot_root_prim_path": robot_root_prim_path,
+        "body_count": len(after),
+        "body_observations": after,
+        "physx_property_admission": physx_property_admission,
+        "authored_properties": ["physics:mass"],
+        "source_usd_mutated": False,
+        "center_of_mass_and_inertia_deferred_to_pinned_newton_importer": True,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = _canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
+def _validate_newton_robot_inertial_overlay_receipt(
+    value: dict[str, Any], *, backend_profile: dict[str, Any]
+) -> list[str]:
+    """Validate the retained overlay before it can satisfy Newton admission."""
+
+    blockers: list[str] = []
+    overlay_contract = dict(
+        (backend_profile.get("asset_conversion") or {}).get(
+            "robot_inertial_overlay"
+        )
+        or {}
+    )
+    body_observations = value.get("body_observations")
+    property_receipt = value.get("physx_property_admission")
+    if (
+        backend_profile.get("physics_backend") != "newton"
+        or overlay_contract != build_newton_robot_inertial_overlay_contract()
+        or value.get("schema_version")
+        != "adp009d_newton_robotiq_inertial_overlay_receipt.v1"
+        or value.get("status") != "applied_and_verified"
+        or value.get("physics_backend") != "newton"
+        or value.get("source_robot_asset_uri") != DROID_FRANKA_ROBOTIQ_USD_URI
+        or value.get("source_robot_asset_digest")
+        != DROID_FRANKA_ROBOTIQ_USD_DIGEST
+        or value.get("overlay_contract_digest")
+        != overlay_contract.get("overlay_digest")
+        or value.get("body_count") != len(ROBOTIQ_BODY_MASSES_KG)
+        or value.get("authored_properties") != ["physics:mass"]
+        or value.get("source_usd_mutated") is not False
+        or value.get(
+            "center_of_mass_and_inertia_deferred_to_pinned_newton_importer"
+        )
+        is not True
+        or value.get("receipt_digest")
+        != _canonical_digest(value, digest_field="receipt_digest")
+    ):
+        blockers.append("adp009d_newton_robot_inertial_overlay_receipt_invalid")
+    if not isinstance(body_observations, dict):
+        blockers.append("adp009d_newton_robot_inertial_overlay_receipt_invalid")
+    else:
+        blockers.extend(
+            _newton_robot_inertial_target_blockers(
+                body_observations, post_apply=True
+            )
+        )
+    if not isinstance(property_receipt, dict):
+        blockers.append("adp009d_newton_physx_property_admission_receipt_invalid")
+    else:
+        mapped = property_receipt.get("mapped_properties_retained")
+        blocked = property_receipt.get("unmapped_properties_blocked")
+        if (
+            property_receipt.get("schema_version")
+            != "adp009d_newton_physx_property_admission_receipt.v1"
+            or property_receipt.get("policy")
+            != "block_value_before_newton_model_import"
+            or not isinstance(mapped, list)
+            or not mapped
+            or not isinstance(blocked, list)
+            or not blocked
+            or property_receipt.get("remaining_unmapped_authored_properties")
+            != []
+            or any(
+                not isinstance(row, dict)
+                or not _newton_physx_property_is_mapped(
+                    str(row.get("property_name") or "")
+                )
+                for row in mapped
+            )
+            or any(
+                not isinstance(row, dict)
+                or _newton_physx_property_is_mapped(
+                    str(row.get("property_name") or "")
+                )
+                for row in blocked
+            )
+        ):
+            blockers.append(
+                "adp009d_newton_physx_property_admission_receipt_invalid"
+            )
+    return sorted(set(blockers))
+
+
+def _configure_newton_robot_inertial_overlay(
+    embodiment: Any, *, output_dir: Path
+) -> None:
+    """Replace only Newton's DROID spawner with a digest-verifying wrapper."""
+
+    from isaaclab.sim.utils import clone as clone_spawner
+    from isaaclab.utils.assets import retrieve_file_path
+
+    spawn_cfg = embodiment.scene_config.robot.spawn
+    if spawn_cfg.usd_path != DROID_FRANKA_ROBOTIQ_USD_URI:
+        raise RuntimeError("adp009d_newton_robot_source_asset_uri_invalid")
+    if spawn_cfg.articulation_props is None or spawn_cfg.rigid_props is None:
+        raise RuntimeError("adp009d_newton_robot_spawn_properties_missing")
+    spawn_cfg.articulation_props = spawn_cfg.articulation_props.replace(
+        solver_position_iteration_count=None,
+        solver_velocity_iteration_count=None,
+    )
+    spawn_cfg.rigid_props = spawn_cfg.rigid_props.replace(
+        max_depenetration_velocity=None,
+        solver_position_iteration_count=None,
+        solver_velocity_iteration_count=None,
+    )
+    # Newton's native sensor does not consume PhysxContactReportAPI.  Leaving
+    # this Arena default enabled would add a PhysX-only API after the property
+    # admission scan, outside the immutable Newton sensor configuration.
+    spawn_cfg.activate_contact_sensors = False
+    original_spawn = spawn_cfg.func
+    underlying_spawn = getattr(original_spawn, "__wrapped__", None)
+    if not callable(underlying_spawn):
+        raise RuntimeError("adp009d_newton_robot_spawn_wrapper_unsupported")
+
+    def spawn_with_inertial_overlay(
+        prim_path: str,
+        cfg: Any,
+        translation: tuple[float, float, float] | None = None,
+        orientation: tuple[float, float, float, float] | None = None,
+        **kwargs: Any,
+    ):
+        if cfg.usd_path != DROID_FRANKA_ROBOTIQ_USD_URI:
+            raise RuntimeError("adp009d_newton_robot_source_asset_uri_invalid")
+        local_path = Path(retrieve_file_path(cfg.usd_path, force_download=False))
+        source_digest = _sha256(local_path)
+        if source_digest != DROID_FRANKA_ROBOTIQ_USD_DIGEST:
+            raise RuntimeError("adp009d_newton_robot_source_asset_digest_invalid")
+        local_cfg = cfg.copy()
+        local_cfg.usd_path = str(local_path)
+        prim = underlying_spawn(
+            prim_path,
+            local_cfg,
+            translation=translation,
+            orientation=orientation,
+            **kwargs,
+        )
+        receipt = _apply_newton_robot_inertial_overlay(
+            stage=prim.GetStage(),
+            robot_root_prim_path=str(prim.GetPath()),
+            source_asset_digest=source_digest,
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / NEWTON_ROBOT_INERTIAL_OVERLAY_RECEIPT_FILENAME).write_text(
+            json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return prim
+
+    spawn_cfg.func = clone_spawner(spawn_with_inertial_overlay)
 
 
 def _to_torch(value: Any) -> Any:
@@ -1322,6 +1742,11 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     # gripper names overlap right_outer.* / left_inner.* / right_inner.* and
     # Isaac Lab correctly rejects such an ambiguous mapping.
     _bind_canonical_joint_positions(embodiment)
+    if args.physics_backend == "newton":
+        _configure_newton_robot_inertial_overlay(
+            embodiment,
+            output_dir=Path(args.output_dir).resolve(),
+        )
     render_width, render_height = _camera_resolution()
     print(f"BLUEPRINT_ADP009D_CAMERA_RESOLUTION:{render_width}x{render_height}", flush=True)
     for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
@@ -1815,6 +2240,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
     timings_seconds: dict[str, float] = {}
     external_task_camera_plan: dict[str, Any] | None = None
     backend_probe: dict[str, Any] | None = None
+    newton_robot_inertial_overlay_receipt: dict[str, Any] | None = None
     try:
         def fail_on_backend_collision_logs() -> None:
             if backend == "physx":
@@ -1858,6 +2284,18 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             if backend == "newton":
                 existing = getattr(exc, "diagnostics", None)
                 diagnostics = dict(existing) if isinstance(existing, dict) else {}
+                overlay_receipt_path = (
+                    output / NEWTON_ROBOT_INERTIAL_OVERLAY_RECEIPT_FILENAME
+                )
+                if overlay_receipt_path.is_file():
+                    try:
+                        diagnostics["newton_robot_inertial_overlay"] = json.loads(
+                            overlay_receipt_path.read_text(encoding="utf-8")
+                        )
+                    except Exception as receipt_exc:  # noqa: BLE001
+                        diagnostics["newton_robot_inertial_overlay_read_error"] = (
+                            f"{type(receipt_exc).__name__}: {receipt_exc}"
+                        )
                 diagnostics["newton_contact_labels"] = (
                     _newton_contact_label_diagnostics()
                 )
@@ -1869,6 +2307,26 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     raise wrapped from exc
             raise
         timings_seconds["environment_build"] = round(time.monotonic() - phase_started, 6)
+        if backend == "newton":
+            overlay_receipt_path = (
+                output / NEWTON_ROBOT_INERTIAL_OVERLAY_RECEIPT_FILENAME
+            )
+            if not overlay_receipt_path.is_file():
+                raise RuntimeError(
+                    "adp009d_newton_robot_inertial_overlay_receipt_missing"
+                )
+            newton_robot_inertial_overlay_receipt = json.loads(
+                overlay_receipt_path.read_text(encoding="utf-8")
+            )
+            overlay_blockers = _validate_newton_robot_inertial_overlay_receipt(
+                newton_robot_inertial_overlay_receipt,
+                backend_profile=backend_profile,
+            )
+            if overlay_blockers:
+                raise RuntimeError(
+                    "adp009d_newton_robot_inertial_overlay_receipt_invalid:"
+                    + ",".join(overlay_blockers)
+                )
         log.flush()
         _phase("environment_build", "completed")
         fail_on_backend_collision_logs()
@@ -1944,6 +2402,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "converted_model_path": converted_model_path.name,
                 "converted_model_digest": _sha256(converted_model_path),
                 "backend_contact_configuration": backend_contact_configuration,
+                "robot_inertial_overlay": newton_robot_inertial_overlay_receipt,
             }
         live_sage_collision = _inspect_sage_static_triangle_colliders(
             live_stage,
@@ -3144,6 +3603,35 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         "silently_ignored_settings": [],
                         "physx_sdf_overlay_loaded": backend == "physx",
                         "physx_only_fields_observed": [],
+                        "robot_source_asset_digest": (
+                            DROID_FRANKA_ROBOTIQ_USD_DIGEST
+                            if backend == "newton"
+                            else None
+                        ),
+                        "robot_inertial_overlay_contract_digest": (
+                            backend_profile["asset_conversion"][
+                                "robot_inertial_overlay"
+                            ]["overlay_digest"]
+                            if backend == "newton"
+                            else None
+                        ),
+                        "robot_inertial_overlay_status": (
+                            newton_robot_inertial_overlay_receipt["status"]
+                            if backend == "newton"
+                            and newton_robot_inertial_overlay_receipt is not None
+                            else None
+                        ),
+                        "robot_inertial_overlay_receipt_digest": (
+                            newton_robot_inertial_overlay_receipt[
+                                "receipt_digest"
+                            ]
+                            if backend == "newton"
+                            and newton_robot_inertial_overlay_receipt is not None
+                            else None
+                        ),
+                        "robot_source_mutated": (
+                            False if backend == "newton" else None
+                        ),
                     },
                     "contact_buffer": {
                         "nconmax": 1024 if backend == "newton" else None,
@@ -3416,6 +3904,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "contact_envelope": live_collider.get("contact_envelope"),
                 "static_collider_validation": static_collider,
                 "live_collider_validation": live_collider,
+                "newton_robot_inertial_overlay": (
+                    newton_robot_inertial_overlay_receipt
+                ),
                 "static_sage_collision_validation": static_sage_collision,
                 "live_sage_collision_validation": live_sage_collision,
                 "sage_task_collision_derivative": task_collision_manifest,

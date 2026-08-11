@@ -34,6 +34,13 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     build_native_microcheck_bundle,
     build_native_microcheck_bundle_isolated,
 )
+from blueprint_pipeline.adp009d_physics_backend_comparison import (
+    DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+    DROID_FRANKA_ROBOTIQ_USD_URI,
+    ROBOTIQ_BODY_MASSES_KG,
+    build_backend_profile,
+    build_newton_robot_inertial_overlay_contract,
+)
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.vast_provider_adapter import (
@@ -3294,3 +3301,163 @@ def test_finger_collision_envelope_probe_measures_reach_and_cannot_break_a_run()
     assert source.index("finger_collision_envelope = _probe_finger_collision_envelope()") < (
         source.index('_phase("gripper_convention_probe")')
     )
+
+
+def _newton_robot_inertial_observations(*, post_apply: bool) -> dict[str, dict]:
+    return {
+        name: {
+            "prim_path": f"/World/envs/env_0/Robot/Gripper/Robotiq_2F_85/{name}",
+            "rigid_body_api_applied": True,
+            "collision_shape_count": 1,
+            "mass_api_applied": post_apply,
+            "mass_authored": post_apply,
+            "diagonal_inertia_authored": False,
+            "center_of_mass_authored": False,
+            "principal_axes_authored": False,
+            "mass_kg": mass if post_apply else None,
+        }
+        for name, mass in ROBOTIQ_BODY_MASSES_KG.items()
+    }
+
+
+def test_newton_robot_inertial_targets_fail_closed_on_asset_schema_drift() -> None:
+    before = _newton_robot_inertial_observations(post_apply=False)
+    after = _newton_robot_inertial_observations(post_apply=True)
+
+    assert isaac_runtime._newton_robot_inertial_target_blockers(
+        before, post_apply=False
+    ) == []
+    assert isaac_runtime._newton_robot_inertial_target_blockers(
+        after, post_apply=True
+    ) == []
+
+    missing = dict(before)
+    missing.pop("left_outer_knuckle")
+    assert "adp009d_newton_robot_inertial_body_set_invalid" in (
+        isaac_runtime._newton_robot_inertial_target_blockers(
+            missing, post_apply=False
+        )
+    )
+
+    no_collider = json.loads(json.dumps(before))
+    no_collider["right_inner_finger"]["collision_shape_count"] = 0
+    assert any(
+        blocker.endswith(":right_inner_finger")
+        for blocker in isaac_runtime._newton_robot_inertial_target_blockers(
+            no_collider, post_apply=False
+        )
+    )
+
+    preauthored = json.loads(json.dumps(before))
+    preauthored["left_inner_knuckle"]["mass_api_applied"] = True
+    preauthored["left_inner_knuckle"]["mass_authored"] = True
+    assert any(
+        "source_mass_drifted:left_inner_knuckle" in blocker
+        for blocker in isaac_runtime._newton_robot_inertial_target_blockers(
+            preauthored, post_apply=False
+        )
+    )
+
+    wrong_mass = json.loads(json.dumps(after))
+    wrong_mass["right_outer_knuckle"]["mass_kg"] = 1.0
+    assert any(
+        "mass_overlay_invalid:right_outer_knuckle" in blocker
+        for blocker in isaac_runtime._newton_robot_inertial_target_blockers(
+            wrong_mass, post_apply=True
+        )
+    )
+
+
+def test_newton_robot_inertial_receipt_binds_source_and_overlay_digest() -> None:
+    overlay = build_newton_robot_inertial_overlay_contract()
+    receipt = {
+        "schema_version": "adp009d_newton_robotiq_inertial_overlay_receipt.v1",
+        "status": "applied_and_verified",
+        "physics_backend": "newton",
+        "source_robot_asset_uri": DROID_FRANKA_ROBOTIQ_USD_URI,
+        "source_robot_asset_digest": DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+        "overlay_contract_digest": overlay["overlay_digest"],
+        "robot_root_prim_path": "/World/envs/env_0/Robot",
+        "body_count": len(ROBOTIQ_BODY_MASSES_KG),
+        "body_observations": _newton_robot_inertial_observations(
+            post_apply=True
+        ),
+        "physx_property_admission": {
+            "schema_version": (
+                "adp009d_newton_physx_property_admission_receipt.v1"
+            ),
+            "policy": "block_value_before_newton_model_import",
+            "mapped_properties_retained": [
+                {
+                    "prim_path": "/World/envs/env_0/Robot/panda_joint1",
+                    "property_name": "physxJoint:maxJointVelocity",
+                }
+            ],
+            "unmapped_properties_blocked": [
+                {
+                    "prim_path": "/World/envs/env_0/Robot",
+                    "property_name": (
+                        "physxArticulation:solverPositionIterationCount"
+                    ),
+                }
+            ],
+            "remaining_unmapped_authored_properties": [],
+        },
+        "authored_properties": ["physics:mass"],
+        "source_usd_mutated": False,
+        "center_of_mass_and_inertia_deferred_to_pinned_newton_importer": True,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = isaac_runtime._canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+    assert (
+        isaac_runtime._validate_newton_robot_inertial_overlay_receipt(
+            receipt, backend_profile=build_backend_profile("newton")
+        )
+        == []
+    )
+
+    receipt["source_robot_asset_digest"] = "sha256:" + "0" * 64
+    receipt["receipt_digest"] = isaac_runtime._canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert "adp009d_newton_robot_inertial_overlay_receipt_invalid" in (
+        isaac_runtime._validate_newton_robot_inertial_overlay_receipt(
+            receipt, backend_profile=build_backend_profile("newton")
+        )
+    )
+
+
+def test_newton_robot_mass_overlay_is_backend_scoped_before_environment_build() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+    configuration = source[
+        source.index("_bind_canonical_joint_positions(embodiment)") : source.index(
+            "render_width, render_height"
+        )
+    ]
+
+    assert 'if args.physics_backend == "newton":' in configuration
+    assert "_configure_newton_robot_inertial_overlay(" in configuration
+    assert isaac_runtime._newton_physx_property_is_mapped(
+        "physxJoint:maxJointVelocity"
+    )
+    assert isaac_runtime._newton_physx_property_is_mapped(
+        "physxMimicJoint:rotX:gearing"
+    )
+    assert not isaac_runtime._newton_physx_property_is_mapped(
+        "physxArticulation:solverPositionIterationCount"
+    )
+    assert not isaac_runtime._newton_physx_property_is_mapped(
+        "physxRigidBody:enableCCD"
+    )
+    wrapper = source[
+        source.index("def _configure_newton_robot_inertial_overlay") : source.index(
+            "def _jsonable"
+        )
+    ]
+    assert "spawn_cfg.activate_contact_sensors = False" in wrapper
+    assert "solver_position_iteration_count=None" in wrapper
+    assert "solver_velocity_iteration_count=None" in wrapper
+    assert "max_depenetration_velocity=None" in wrapper

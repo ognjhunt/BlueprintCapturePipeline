@@ -49,6 +49,50 @@ APPROVED_CAN_DIGEST = (
 SAGE_COLLISION_DIGEST = (
     "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41"
 )
+DROID_FRANKA_ROBOTIQ_USD_URI = (
+    "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/"
+    "6.0/Isaac/IsaacLab/Arena/assets/robot_library/droid/"
+    "franka_robotiq_2f_85_flattened.usd"
+)
+DROID_FRANKA_ROBOTIQ_USD_DIGEST = (
+    "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25"
+)
+ROBOTIQ_INERTIAL_SOURCE_REPOSITORY = (
+    "https://github.com/a-price/robotiq_arg85_description.git"
+)
+ROBOTIQ_INERTIAL_SOURCE_REVISION = "a65190bdbb0666609fe7e8c3bb17341e09e81625"
+ROBOTIQ_INERTIAL_SOURCE_PATH = "robots/robotiq_arg85_description.URDF"
+ROBOTIQ_INERTIAL_SOURCE_DIGEST = (
+    "sha256:ac7ac559cfbf89033ed00d370a3375aae45eee31c7b4b28c361ad31198d1832b"
+)
+ROBOTIQ_BODY_MASSES_KG = {
+    "base_link": 0.30915,
+    "left_inner_finger": 0.00724255346165745,
+    "left_inner_knuckle": 0.0110930853895903,
+    "left_outer_finger": 0.0273093985570947,
+    "left_outer_knuckle": 0.00684838849434396,
+    "right_inner_finger": 0.00724255346165744,
+    "right_inner_knuckle": 0.0110930853895903,
+    "right_outer_finger": 0.0273093985570947,
+    "right_outer_knuckle": 0.00684838849401352,
+}
+NEWTON_MAPPED_PHYSX_PROPERTY_NAMES = (
+    "physxArticulation:enabledSelfCollisions",
+    "physxCollision:contactOffset",
+    "physxCollision:restOffset",
+    "physxConvexHullCollision:hullVertexLimit",
+    "physxJoint:armature",
+    "physxJoint:maxJointVelocity",
+    "physxMaterial:compliantContactDamping",
+    "physxMaterial:compliantContactStiffness",
+    "physxRigidBody:angularDamping",
+    "physxRigidBody:disableGravity",
+    "physxRigidBody:linearDamping",
+)
+NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES = (
+    "physxLimit:",
+    "physxMimicJoint:",
+)
 
 PHYSX_ONLY_FIELD_NAMES = frozenset(
     {
@@ -120,6 +164,72 @@ def _runtime_identity() -> dict[str, Any]:
     }
 
 
+def build_newton_robot_inertial_overlay_contract() -> dict[str, Any]:
+    """Bind the only admitted mass repair for the pinned DROID robot asset.
+
+    The Arena USD omits ``PhysicsMassAPI`` from all nine Robotiq rigid bodies.
+    Only mass is overlaid.  The pinned Newton USD importer then derives center
+    of mass and inertia from the exact target collision geometry in its native
+    body frames and scales those properties to the authored mass.  Copying COM
+    or inertia from the source URDF would be unsafe because its body frames are
+    not assumed to match the flattened Arena USD.
+    """
+
+    contract: dict[str, Any] = {
+        "schema_version": "adp009d_newton_robotiq_inertial_overlay.v1",
+        "mode": "mass_only_session_layer_before_newton_model_finalize",
+        "physics_backend": "newton",
+        "source_robot_asset": {
+            "uri": DROID_FRANKA_ROBOTIQ_USD_URI,
+            "digest": DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+            "source_mutated": False,
+        },
+        "mass_source": {
+            "repository": ROBOTIQ_INERTIAL_SOURCE_REPOSITORY,
+            "revision": ROBOTIQ_INERTIAL_SOURCE_REVISION,
+            "path": ROBOTIQ_INERTIAL_SOURCE_PATH,
+            "digest": ROBOTIQ_INERTIAL_SOURCE_DIGEST,
+            "license": "BSD",
+            "link_name_mapping": {"base_link": "robotiq_85_base_link"},
+        },
+        "body_masses_kg": dict(ROBOTIQ_BODY_MASSES_KG),
+        "expected_source_body_count": 9,
+        "expected_source_mass_api_applied": False,
+        "minimum_collision_shapes_per_body": 1,
+        "center_of_mass_resolution": (
+            "newton_usd_compute_mass_properties_from_target_collision_geometry"
+        ),
+        "inertia_resolution": (
+            "newton_target_collision_geometry_uniform_density_scaled_to_authored_mass"
+        ),
+        "authored_center_of_mass_allowed": False,
+        "authored_diagonal_inertia_allowed": False,
+        "authored_principal_axes_allowed": False,
+        "arbitrary_minimum_mass_or_inertia_clamp_allowed": False,
+        "usd_float32_mass_roundtrip_tolerance_kg": 2.0e-8,
+        "physx_property_admission": {
+            "mapped_property_names": list(NEWTON_MAPPED_PHYSX_PROPERTY_NAMES),
+            "mapped_property_prefixes": list(
+                NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES
+            ),
+            "unmapped_authored_property_policy": (
+                "block_value_before_newton_model_import"
+            ),
+            "physx_contact_report_api_activation": False,
+            "arena_solver_iteration_overrides_authored": False,
+            "arena_max_depenetration_velocity_override_authored": False,
+            "runtime_receipt_required": True,
+        },
+        "newton_importer_revision": NEWTON_REVISION,
+        "runtime_receipt_required": True,
+        "overlay_digest": "",
+    }
+    contract["overlay_digest"] = canonical_digest(
+        contract, digest_field="overlay_digest"
+    )
+    return contract
+
+
 def build_backend_profile(physics_backend: str) -> dict[str, Any]:
     """Build the immutable provider-free profile for one backend."""
 
@@ -140,6 +250,7 @@ def build_backend_profile(physics_backend: str) -> dict[str, Any]:
             "scenario_instance_digest": SCENARIO_INSTANCE_DIGEST,
             "approved_can_digest": APPROVED_CAN_DIGEST,
             "sage_collision_digest": SAGE_COLLISION_DIGEST,
+            "droid_franka_robotiq_usd_digest": DROID_FRANKA_ROBOTIQ_USD_DIGEST,
         },
         "required_capabilities": {
             "franka_import": True,
@@ -240,6 +351,9 @@ def build_backend_profile(physics_backend: str) -> dict[str, Any]:
                     "source_approximation_semantics_assumed": False,
                     "runtime_conversion_receipt_required": True,
                     "franka_robotiq_conversion_probe_required": True,
+                    "robot_inertial_overlay": (
+                        build_newton_robot_inertial_overlay_contract()
+                    ),
                 },
             }
         )
@@ -405,9 +519,26 @@ def validate_backend_probe(
     ):
         blockers.append("adp009d_backend_probe_asset_conversion_invalid")
     if backend == "newton":
+        robot_overlay = dict(
+            (profile.get("asset_conversion") or {}).get("robot_inertial_overlay")
+            or {}
+        )
         if (
             conversion_row.get("physx_sdf_overlay_loaded") is not False
             or conversion_row.get("physx_only_fields_observed") != []
+            or conversion_row.get("robot_source_asset_digest")
+            != DROID_FRANKA_ROBOTIQ_USD_DIGEST
+            or conversion_row.get("robot_inertial_overlay_contract_digest")
+            != robot_overlay.get("overlay_digest")
+            or conversion_row.get("robot_inertial_overlay_status")
+            != "applied_and_verified"
+            or conversion_row.get("robot_source_mutated") is not False
+            or not isinstance(
+                conversion_row.get("robot_inertial_overlay_receipt_digest"), str
+            )
+            or not str(
+                conversion_row.get("robot_inertial_overlay_receipt_digest")
+            ).startswith("sha256:")
             or value.get("contact_buffer", {}).get("nconmax") != 1024
             or value.get("contact_buffer", {}).get("overflow_observed") is not False
         ):
@@ -1299,13 +1430,23 @@ __all__ = [
     "COMPARISON_SCHEMA_VERSION",
     "CONTROL_RUN_SCHEMA_VERSION",
     "DEFAULT_PHYSICS_BACKEND",
+    "DROID_FRANKA_ROBOTIQ_USD_DIGEST",
+    "DROID_FRANKA_ROBOTIQ_USD_URI",
     "MEASUREMENT_FIELDS",
+    "NEWTON_MAPPED_PHYSX_PROPERTY_NAMES",
+    "NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES",
     "PHYSX_ONLY_FIELD_NAMES",
     "PROBE_SCHEMA_VERSION",
+    "ROBOTIQ_BODY_MASSES_KG",
+    "ROBOTIQ_INERTIAL_SOURCE_DIGEST",
+    "ROBOTIQ_INERTIAL_SOURCE_PATH",
+    "ROBOTIQ_INERTIAL_SOURCE_REPOSITORY",
+    "ROBOTIQ_INERTIAL_SOURCE_REVISION",
     "PhysicsBackendContractError",
     "build_backend_contact_configuration",
     "build_backend_control_run_receipt",
     "build_backend_profile",
+    "build_newton_robot_inertial_overlay_contract",
     "build_comparison_design_contract",
     "build_comparison_receipt",
     "normalize_physics_backend",
