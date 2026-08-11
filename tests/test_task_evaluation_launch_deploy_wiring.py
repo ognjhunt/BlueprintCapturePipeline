@@ -28,6 +28,8 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "task_evaluation_launch_dispatcher" in dispatcher
     assert "--execute" in dispatcher
     assert "blueprint-gpu-spend-guard.service" in dispatcher
+    assert "GIT_CONFIG_KEY_0=safe.directory" in dispatcher
+    assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_PIPELINE_REPO}"' in dispatcher
     assert "PathExistsGlob=" in path_unit
     assert "task-evaluation-launches/pending/*.json" in path_unit
 
