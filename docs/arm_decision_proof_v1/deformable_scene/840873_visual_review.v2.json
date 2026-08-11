@@ -1,0 +1,92 @@
+{
+  "claim_boundary": {
+    "collision_cavity_establishes_hidden_appearance": false,
+    "engineered_twin_hidden_geometry_is_source_truth": false,
+    "physical_material_equivalence_proven": false,
+    "review_is_evaluation_policy_media": false,
+    "virtual_closeup_recovers_missing_source_observations": false
+  },
+  "collision_topology_receipt_digest": "sha256:4917a2c81d09f5014b1a32afeb4d4bca230c7bac3db731e4792c2a78fb55f791",
+  "composition_required": true,
+  "learned_policy_outcomes_inspected": false,
+  "reconnaissance_only": true,
+  "render_manifest_digest": "sha256:911de7e0386757e0a89d4b8d36b38f3610bf012ecd81d6f0ca9997832ee5e376",
+  "review_digest": "sha256:33619245a8462767c97051d9dff01f6372eb7f68638328de0e710beb1c2fce53",
+  "reviewed_at": "2026-08-10T18:38:54Z",
+  "reviewer_id": "codex_primary_visual_review_20260810_v2",
+  "scene_id": "840873",
+  "schema_version": "adp_deformable_scene_visual_review.v2",
+  "selected_destination_design_basis_instance_id": "87",
+  "selected_movable_instance_id": "79",
+  "source_destination_complete_interior_appearance_observed": false,
+  "source_destination_is_occupied": true,
+  "targets": [
+    {
+      "cited_frames": [
+        {
+          "camera_id": "basket_87_e00_a00",
+          "sha256": "sha256:362a5580ddf73c589e95dc8fa3ae38707997899bcaed7a84e4c9ad08cf50cad3",
+          "size_bytes": 921243
+        },
+        {
+          "camera_id": "basket_87_e01_a00",
+          "sha256": "sha256:4eece7707996e8dfe05af26de37880b5e817646cd76ad1f5cdd8158ed9073ea5",
+          "size_bytes": 733332
+        }
+      ],
+      "collision_component_identity_passed": true,
+      "complete_interior_appearance_observed": false,
+      "engineered_twin_design_basis_admitted": true,
+      "interior_occupied": true,
+      "material_class": "not_applicable",
+      "material_class_supported_by_observation": false,
+      "open_collision_cavity_passed": false,
+      "open_rim_observed": true,
+      "publisher_instance_id": "87",
+      "rest_state": "not_applicable",
+      "review_notes": "Useful views show an open shallow rack or basket with a visible rim and exterior, occupied by three bottles or jars. Contents obscure most floor and wall-thickness appearance. Current collision replay also records internal obstruction triangles and small source enclosure apertures. The source is not the scored destination; these observations and registered outer bounds support only a separately authored empty twin whose interior is not claimed as source truth.",
+      "rigid_exterior_observed": true,
+      "selection_role": "engineered_twin_design_basis",
+      "source_destination_admitted": false,
+      "support_relation": "observed_container_contents",
+      "target_id": "basket_87",
+      "target_kind": "destination_receptacle"
+    },
+    {
+      "cited_frames": [
+        {
+          "camera_id": "towel_79_e00_a00",
+          "sha256": "sha256:a477b2e7dfd6d13b3000ae104cbb7bbf578f859a674bf12254f733cf013f5d0e",
+          "size_bytes": 902017
+        },
+        {
+          "camera_id": "towel_79_e00_a01",
+          "sha256": "sha256:88a37b989042cfdd32b5d5b8501cbd4806b6c78244e61809e97db25098946091",
+          "size_bytes": 892392
+        },
+        {
+          "camera_id": "towel_79_e01_a00",
+          "sha256": "sha256:e9ef71687e766b61fdc3cd055108d4a76c0e39343f5d7c1a407dbb5d8e01f602",
+          "size_bytes": 896015
+        }
+      ],
+      "collision_component_identity_passed": true,
+      "complete_interior_appearance_observed": false,
+      "engineered_twin_design_basis_admitted": false,
+      "interior_occupied": false,
+      "material_class": "towel_or_cloth",
+      "material_class_supported_by_observation": true,
+      "open_collision_cavity_passed": false,
+      "open_rim_observed": false,
+      "publisher_instance_id": "79",
+      "rest_state": "rolled",
+      "review_notes": "Useful views show one rolled white towel in a two-over-three towel stack. The selected roll rests on observed lower towels rather than directly on the rigid counter. Several other planned closeups are blurred, occluded, or unrenderable. Fiber composition, stiffness, thickness under load, and physical material parameters are not observed.",
+      "rigid_exterior_observed": false,
+      "selection_role": "selected_movable_design_basis",
+      "source_destination_admitted": false,
+      "support_relation": "observed_deformable_stack",
+      "target_id": "towel_79",
+      "target_kind": "movable_deformable"
+    }
+  ]
+}

@@ -365,6 +365,28 @@ def test_receptacle_cannot_truthify_an_unobserved_engineered_interior() -> None:
         materialize_task_entity_asset_candidate(source)
 
 
+def test_receptacle_accepts_explicitly_authored_nonfactual_interior() -> None:
+    source = _receptacle()
+    source["source_observation"]["coverage"]["interior_collision_observed"] = False
+
+    result = materialize_task_entity_asset_candidate(source)
+
+    assert result["source_observation"]["coverage"]["interior_collision_observed"] is False
+    assert result["source_observation"]["coverage"]["engineered_interior_not_factual"] is True
+    assert result["receptacle_configuration"]["geometry"]["engineered_interior"] is True
+
+
+def test_unobserved_interior_requires_generated_engineered_geometry() -> None:
+    source = _receptacle()
+    source["source_observation"]["coverage"]["interior_collision_observed"] = False
+    source["authoring"]["generated_geometry_used"] = False
+
+    with pytest.raises(TaskEntityAssetCandidateError) as caught:
+        materialize_task_entity_asset_candidate(source)
+
+    assert "task_entity_asset_receptacle_unobserved_interior_not_engineered" in caught.value.errors
+
+
 def test_caller_cannot_upgrade_candidate_with_boolean_claims() -> None:
     source = _deformable()
     source["native_simulator_qualified"] = True

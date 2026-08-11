@@ -329,6 +329,8 @@ readable. They are not active roadmap authority and do not authorize new work.
 ## Program Files
 
 - [`north_star_contract.json`](north_star_contract.json) — machine-validated focus lock
+- [`DEFORMABLE_SCENE_E2E_PROTOCOL.md`](DEFORMABLE_SCENE_E2E_PROTOCOL.md) — explicitly authorized, development-only one-scene deformable rehearsal protocol
+- [`DEFORMABLE_SCENE_E2E_RESULTS.md`](DEFORMABLE_SCENE_E2E_RESULTS.md) — current claim table, costs, blockers, controls, candidates, and evidence status for that bounded rehearsal
 - [`PARTNER_SELECTION_PACKET.md`](PARTNER_SELECTION_PACKET.md) — partner qualification and intake
 - [`IMPLEMENTATION_BACKLOG.md`](IMPLEMENTATION_BACKLOG.md) — sole active backlog
 - [`PUBLIC_EVIDENCE_LADDER.md`](PUBLIC_EVIDENCE_LADDER.md) — active datasets, released-code stack, and step-by-step tests

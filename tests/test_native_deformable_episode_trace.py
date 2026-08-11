@@ -2453,12 +2453,14 @@ def test_artifact_fifo_leaf_fails_closed_without_blocking(tmp_path: Path) -> Non
     script = """
 import json
 import sys
+import time
 from pathlib import Path
 from blueprint_pipeline.native_deformable_episode_trace import (
     NativeDeformableEpisodeTraceError,
     _artifact_bytes,
 )
 
+started = time.monotonic()
 try:
     _artifact_bytes(
         evidence_root=Path(sys.argv[1]),
@@ -2467,7 +2469,10 @@ try:
         error="fixture_fifo_file_invalid",
     )
 except NativeDeformableEpisodeTraceError as exc:
-    print(json.dumps(exc.errors))
+    print(json.dumps({
+        "errors": exc.errors,
+        "elapsed_seconds": time.monotonic() - started,
+    }))
 else:
     raise SystemExit(2)
 """
@@ -2477,11 +2482,17 @@ else:
         check=False,
         capture_output=True,
         text=True,
-        timeout=2.0,
+        # Interpreter/module startup can exceed two seconds under the bounded
+        # repository lane.  Measure the evidence read itself in the child so
+        # this remains a fail-fast FIFO regression instead of a load-sensitive
+        # process-startup assertion.
+        timeout=10.0,
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == ["fixture_fifo_file_invalid"]
+    result = json.loads(completed.stdout)
+    assert result["errors"] == ["fixture_fifo_file_invalid"]
+    assert result["elapsed_seconds"] < 1.0
 
 
 def test_identical_cell_controls_are_required_at_evaluation_aggregator(

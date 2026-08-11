@@ -7,6 +7,8 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.deformable_scene_visual_review import (
     DeformableSceneVisualReviewError,
+    RECEIPT_SCHEMA_VERSION,
+    REQUEST_SCHEMA_VERSION,
     materialize_deformable_scene_visual_review,
 )
 
@@ -74,7 +76,7 @@ def _topology() -> dict:
 
 def _request(render: dict, topology: dict) -> dict:
     return {
-        "schema_version": "adp_deformable_scene_visual_review_request.v1",
+        "schema_version": REQUEST_SCHEMA_VERSION,
         "scene_id": "fixture",
         "reviewer_id": "fixture-reviewer",
         "reviewed_at": "2026-08-10T00:00:00Z",
@@ -95,9 +97,7 @@ def _request(render: dict, topology: dict) -> dict:
                 "open_rim_observed": False,
                 "interior_occupied": False,
                 "complete_interior_appearance_observed": False,
-                "cited_frames": [
-                    {"camera_id": "cloth_a", "size_bytes": 100, "sha256": _sha("a")}
-                ],
+                "cited_frames": [{"camera_id": "cloth_a", "size_bytes": 100, "sha256": _sha("a")}],
                 "review_notes": "Observed rolled towel in a stack.",
             },
             {
@@ -130,9 +130,7 @@ def _request(render: dict, topology: dict) -> dict:
                 "open_rim_observed": True,
                 "interior_occupied": True,
                 "complete_interior_appearance_observed": False,
-                "cited_frames": [
-                    {"camera_id": "basket_b", "size_bytes": 300, "sha256": _sha("c")}
-                ],
+                "cited_frames": [{"camera_id": "basket_b", "size_bytes": 300, "sha256": _sha("c")}],
                 "review_notes": "Filled alternative without qualified collision identity.",
             },
         ],
@@ -155,6 +153,7 @@ def test_review_derives_engineered_twin_basis_without_promoting_hidden_truth() -
     assert by_id["basket_87"]["source_destination_admitted"] is False
     assert by_id["basket_108"]["selection_role"] == "rejected_destination_candidate"
     assert result["composition_required"] is True
+    assert result["schema_version"] == RECEIPT_SCHEMA_VERSION
     assert result["claim_boundary"]["engineered_twin_hidden_geometry_is_source_truth"] is False
     assert result["review_digest"].startswith("sha256:")
 
@@ -206,7 +205,7 @@ def test_caller_cannot_assert_admission_or_policy_outcomes() -> None:
     assert "visual_review_policy_outcome_leakage" in caught.value.errors
 
 
-def test_twin_basis_requires_collision_identity_and_open_cavity() -> None:
+def test_engineered_twin_basis_does_not_truthify_source_cavity() -> None:
     render = _render()
     topology = _topology()
     tampered = deepcopy(topology)
@@ -214,9 +213,29 @@ def test_twin_basis_requires_collision_identity_and_open_cavity() -> None:
     tampered["receipt_digest"] = canonical_digest(tampered, digest_field="receipt_digest")
     request = _request(render, tampered)
 
+    result = materialize_deformable_scene_visual_review(
+        request, render_manifest=render, collision_topology=tampered
+    )
+
+    basket = next(row for row in result["targets"] if row["target_id"] == "basket_87")
+    assert basket["open_collision_cavity_passed"] is False
+    assert basket["source_destination_admitted"] is False
+    assert basket["engineered_twin_design_basis_admitted"] is True
+    assert basket["selection_role"] == "engineered_twin_design_basis"
+
+
+def test_engineered_twin_basis_still_requires_registered_outer_identity() -> None:
+    render = _render()
+    topology = _topology()
+    tampered = deepcopy(topology)
+    tampered["targets"][1]["component_collision_identity_passed"] = False
+    tampered["receipt_digest"] = canonical_digest(tampered, digest_field="receipt_digest")
+
     with pytest.raises(DeformableSceneVisualReviewError) as caught:
         materialize_deformable_scene_visual_review(
-            request, render_manifest=render, collision_topology=tampered
+            _request(render, tampered),
+            render_manifest=render,
+            collision_topology=tampered,
         )
 
     assert "visual_review_destination_basis_not_exactly_one" in caught.value.errors

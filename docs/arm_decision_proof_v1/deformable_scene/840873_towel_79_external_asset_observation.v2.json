@@ -1,0 +1,16 @@
+{
+  "schema_version": "external_simready_deformable_observation.v2",
+  "entity_id": "840873_inserted_towel_twin",
+  "source_topology_receipt_relative_path": "840873_sage_component_topology.v2.json",
+  "source_topology_receipt_file_sha256": "sha256:6db3eed570a28c8094c3d8313b03a89ce74c4537ca4a5a8f7fff0309144c9473",
+  "source_topology_receipt_digest": "sha256:4917a2c81d09f5014b1a32afeb4d4bca230c7bac3db731e4792c2a78fb55f791",
+  "source_instance_id": "79",
+  "source_component_geometry_digest": "sha256:d4d2af2d5837d39a87584b1e74b442f31a8af8cc431b09fb51c016038151ac5b",
+  "source_semantic_label": "towel",
+  "units": "m",
+  "dimensions_m": [
+    0.370025854,
+    0.119487516,
+    0.11305281
+  ]
+}

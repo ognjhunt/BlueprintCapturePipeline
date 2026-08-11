@@ -585,14 +585,22 @@ def _validate_entity_candidate_join(
 def _operation_for(*, entity: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
     if candidate["asset_class"] == "deformable_volume":
         configuration = candidate["deformable_configuration"]
+        topology = configuration["rest_topology"]
+        topology_stage = topology.get("topology_stage", "explicit_tetrahedral_mesh")
         return {
-            "operation_kind": "compose_closed_volumetric_fem_candidate",
+            "operation_kind": (
+                "cook_closed_surface_to_volumetric_fem_candidate"
+                if topology_stage == "surface_mesh_pending_native_cook"
+                else "compose_closed_volumetric_fem_candidate"
+            ),
             "authoring_api": DEFORMABLE_AUTHORING_API,
             "cooking_api": DEFORMABLE_COOKING_API,
             "runtime_class": DEFORMABLE_RUNTIME_CLASS,
             "expected_prim_type": DEFORMABLE_EXPECTED_PRIM_TYPE,
             "required_schemas": sorted(DEFORMABLE_REQUIRED_SCHEMAS),
             "configuration": configuration,
+            "topology_stage": topology_stage,
+            "native_topology_readback_required": True,
             "candidate_authored_transform": candidate["transform"],
             "initial_pose_world": entity["initial_state"]["pose_world"],
             "native_schema_and_parameter_readback_required": True,

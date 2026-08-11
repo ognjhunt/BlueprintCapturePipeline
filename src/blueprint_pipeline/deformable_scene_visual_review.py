@@ -16,8 +16,16 @@ from typing import Any, Mapping, Sequence
 from .decision_evidence_contracts import canonical_digest
 
 
-REQUEST_SCHEMA_VERSION = "adp_deformable_scene_visual_review_request.v1"
-RECEIPT_SCHEMA_VERSION = "adp_deformable_scene_visual_review.v1"
+REQUEST_SCHEMA_VERSION = "adp_deformable_scene_visual_review_request.v2"
+RECEIPT_SCHEMA_VERSION = "adp_deformable_scene_visual_review.v2"
+SUPPORTED_REQUEST_SCHEMA_VERSIONS = {
+    "adp_deformable_scene_visual_review_request.v1",
+    REQUEST_SCHEMA_VERSION,
+}
+SUPPORTED_TOPOLOGY_SCHEMA_VERSIONS = {
+    "interiorgs_sage_collision_component_topology.v1",
+    "interiorgs_sage_collision_component_topology.v2",
+}
 
 TARGET_KINDS = {"movable_deformable", "destination_receptacle"}
 MATERIAL_CLASSES = {"towel_or_cloth", "sponge", "cable_or_hose", "not_applicable"}
@@ -69,40 +77,28 @@ def _camera_index(render_manifest: Mapping[str, Any]) -> dict[str, Mapping[str, 
     result: dict[str, Mapping[str, Any]] = {}
     for row in rows:
         if not isinstance(row, Mapping):
-            raise DeformableSceneVisualReviewError(
-                ["visual_review_render_cameras_invalid"]
-            )
+            raise DeformableSceneVisualReviewError(["visual_review_render_cameras_invalid"])
         camera_id = _string(row.get("id"))
         if not camera_id or camera_id in result:
-            raise DeformableSceneVisualReviewError(
-                ["visual_review_render_camera_identity_invalid"]
-            )
+            raise DeformableSceneVisualReviewError(["visual_review_render_camera_identity_invalid"])
         result[camera_id] = row
     return result
 
 
-def _topology_index(
-    collision_topology: Mapping[str, Any]
-) -> dict[str, Mapping[str, Any]]:
-    if (
-        collision_topology.get("schema_version")
-        != "interiorgs_sage_collision_component_topology.v1"
-        or collision_topology.get("receipt_digest")
-        != canonical_digest(collision_topology, digest_field="receipt_digest")
-    ):
-        raise DeformableSceneVisualReviewError(
-            ["visual_review_collision_topology_invalid"]
-        )
+def _topology_index(collision_topology: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    if collision_topology.get(
+        "schema_version"
+    ) not in SUPPORTED_TOPOLOGY_SCHEMA_VERSIONS or collision_topology.get(
+        "receipt_digest"
+    ) != canonical_digest(collision_topology, digest_field="receipt_digest"):
+        raise DeformableSceneVisualReviewError(["visual_review_collision_topology_invalid"])
     rows = collision_topology.get("targets")
     if not isinstance(rows, list):
-        raise DeformableSceneVisualReviewError(
-            ["visual_review_collision_topology_invalid"]
-        )
+        raise DeformableSceneVisualReviewError(["visual_review_collision_topology_invalid"])
     return {
         _string(row.get("interiorgs_instance_id")): row
         for row in rows
-        if isinstance(row, Mapping)
-        and _string(row.get("interiorgs_instance_id"))
+        if isinstance(row, Mapping) and _string(row.get("interiorgs_instance_id"))
     }
 
 
@@ -115,13 +111,11 @@ def materialize_deformable_scene_visual_review(
     """Validate cited frames and derive bounded selection roles."""
 
     payload = _clone(request, error="visual_review_request_not_json")
-    forbidden = {"status", "admitted", "qualified", "review_digest"}.intersection(
-        payload
-    )
+    forbidden = {"status", "admitted", "qualified", "review_digest"}.intersection(payload)
     errors: list[str] = []
     if forbidden:
         errors.append("visual_review_caller_asserted_outcome_forbidden")
-    if payload.get("schema_version") != REQUEST_SCHEMA_VERSION:
+    if payload.get("schema_version") not in SUPPORTED_REQUEST_SCHEMA_VERSIONS:
         errors.append("visual_review_request_schema_invalid")
     scene_id = _string(payload.get("scene_id"))
     if not scene_id:
@@ -137,16 +131,13 @@ def materialize_deformable_scene_visual_review(
     render_digest = _string(render_manifest.get("render_manifest_digest"))
     if (
         not render_digest
-        or render_digest
-        != canonical_digest(render_manifest, digest_field="render_manifest_digest")
+        or render_digest != canonical_digest(render_manifest, digest_field="render_manifest_digest")
         or payload.get("render_manifest_digest") != render_digest
     ):
         errors.append("visual_review_render_manifest_invalid")
     cameras = _camera_index(render_manifest)
     topology = _topology_index(collision_topology)
-    if payload.get("collision_topology_receipt_digest") != collision_topology.get(
-        "receipt_digest"
-    ):
+    if payload.get("collision_topology_receipt_digest") != collision_topology.get("receipt_digest"):
         errors.append("visual_review_collision_topology_join_invalid")
 
     raw_targets = payload.get("targets")
@@ -212,12 +203,8 @@ def materialize_deformable_scene_visual_review(
         rigid_exterior = _required_bool(
             raw, "rigid_exterior_observed", target_id=target_id, errors=errors
         )
-        open_rim = _required_bool(
-            raw, "open_rim_observed", target_id=target_id, errors=errors
-        )
-        occupied = _required_bool(
-            raw, "interior_occupied", target_id=target_id, errors=errors
-        )
+        open_rim = _required_bool(raw, "open_rim_observed", target_id=target_id, errors=errors)
+        occupied = _required_bool(raw, "interior_occupied", target_id=target_id, errors=errors)
         complete_interior = _required_bool(
             raw,
             "complete_interior_appearance_observed",
@@ -226,8 +213,7 @@ def materialize_deformable_scene_visual_review(
         )
         topology_row = topology.get(instance_id)
         collision_identity = bool(
-            topology_row
-            and topology_row.get("component_collision_identity_passed") is True
+            topology_row and topology_row.get("component_collision_identity_passed") is True
         )
         opening_probe = topology_row.get("opening_probe") if topology_row else None
         open_collision_cavity = bool(
@@ -253,7 +239,7 @@ def materialize_deformable_scene_visual_review(
                 and open_collision_cavity
             )
             engineered_twin_basis_admitted = bool(
-                rigid_exterior and open_rim and collision_identity and open_collision_cavity
+                rigid_exterior and open_rim and collision_identity
             )
             selection_role = (
                 "source_destination"
@@ -280,9 +266,7 @@ def materialize_deformable_scene_visual_review(
                 "source_destination_admitted": source_destination_admitted,
                 "engineered_twin_design_basis_admitted": engineered_twin_basis_admitted,
                 "selection_role": selection_role,
-                "cited_frames": sorted(
-                    normalized_frames, key=lambda row: row["camera_id"]
-                ),
+                "cited_frames": sorted(normalized_frames, key=lambda row: row["camera_id"]),
                 "review_notes": _string(raw.get("review_notes")),
             }
         )
@@ -295,8 +279,7 @@ def materialize_deformable_scene_visual_review(
     destination_bases = [
         row
         for row in normalized_targets
-        if row["selection_role"]
-        in {"source_destination", "engineered_twin_design_basis"}
+        if row["selection_role"] in {"source_destination", "engineered_twin_design_basis"}
     ]
     if len(selected_movable) != 1:
         errors.append("visual_review_selected_movable_not_exactly_one")
@@ -321,12 +304,10 @@ def materialize_deformable_scene_visual_review(
             "publisher_instance_id"
         ],
         "source_destination_is_occupied": destination_bases[0]["interior_occupied"],
-        "source_destination_complete_interior_appearance_observed": destination_bases[
-            0
-        ]["complete_interior_appearance_observed"],
-        "composition_required": not destination_bases[0][
-            "source_destination_admitted"
+        "source_destination_complete_interior_appearance_observed": destination_bases[0][
+            "complete_interior_appearance_observed"
         ],
+        "composition_required": not destination_bases[0]["source_destination_admitted"],
         "claim_boundary": {
             "virtual_closeup_recovers_missing_source_observations": False,
             "collision_cavity_establishes_hidden_appearance": False,
@@ -353,9 +334,7 @@ def _read_json(path: Path, *, error: str) -> dict[str, Any]:
 def _resolved_under(path: str | Path, roots: Sequence[str | Path]) -> Path:
     resolved = Path(path).expanduser().resolve()
     approved = [Path(root).expanduser().resolve() for root in roots]
-    if not approved or not any(
-        resolved == root or root in resolved.parents for root in approved
-    ):
+    if not approved or not any(resolved == root or root in resolved.parents for root in approved):
         raise DeformableSceneVisualReviewError(
             [f"visual_review_path_outside_approved_roots:{resolved}"]
         )
@@ -376,17 +355,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_path = _resolved_under(args.out, args.approved_root)
     result = materialize_deformable_scene_visual_review(
         _read_json(request_path, error="visual_review_request_invalid"),
-        render_manifest=_read_json(
-            render_path, error="visual_review_render_manifest_invalid"
-        ),
+        render_manifest=_read_json(render_path, error="visual_review_render_manifest_invalid"),
         collision_topology=_read_json(
             topology_path, error="visual_review_collision_topology_invalid"
         ),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    output_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
         json.dumps(
             {

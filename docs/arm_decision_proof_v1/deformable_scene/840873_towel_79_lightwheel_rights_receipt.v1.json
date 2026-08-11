@@ -1,0 +1,87 @@
+{
+  "schema_version": "deformable_external_asset_rights_receipt.v1",
+  "asset_id": "840873_inserted_towel_twin",
+  "source_asset": {
+    "provider": "Lightwheel SimReadyGen",
+    "delivery_kind": "generated_service_job_output",
+    "archive_size_bytes": 6466445,
+    "archive_sha256": "sha256:3f12482c7964e6c45692bd0907ed8d15d8ec04f895c96e15e06465e676612fe0",
+    "usd_size_bytes": 359684,
+    "usd_sha256": "sha256:5c08de54062fbe5eb823ced1ab666c5409fc24006cc27aecc861f69447c6e7de",
+    "delivery_url_sha256": "sha256:ec000b410e74b0c92fd002ae689b9c9c0e34dae7ad506687cabede6a70e9e1e0",
+    "archive_contains_license_or_notice": false,
+    "usd_contains_license_or_owner_identity": false,
+    "public_library_release_identity_joined": false
+  },
+  "official_sources": [
+    {
+      "role": "lightwheel_open_source_terms",
+      "url": "https://lightwheel.ai/protocol",
+      "retrieved_at_utc": "2026-08-11T02:29:37Z",
+      "response_sha256": "sha256:8b4bf1b90fdc26d3f3707e68f70c6daec0e704ae7a7c60f6ab730eda153cd35e",
+      "scope": "assets_page_and_github_public_assets_only",
+      "license": "CC-BY-NC-4.0",
+      "generated_job_output_covered": false
+    },
+    {
+      "role": "simreadygen_announcement",
+      "url": "https://lightwheel.ai/media/simreadygen",
+      "retrieved_at_utc": "2026-08-11T02:29:39Z",
+      "response_sha256": "sha256:b05d0366d011b31a728f5a0df2a6ac0e77f15bbbc3e662c235530cc045384a5d",
+      "output_ownership_terms_present": false,
+      "retention_or_training_terms_present": false
+    },
+    {
+      "role": "simreadygen_app_shell",
+      "url": "https://gen-asset.lightwheel.ai/",
+      "retrieved_at_utc": "2026-08-11T02:29:40Z",
+      "response_sha256": "sha256:252f294f62ef96a1cfd5c6dc7aede210acb294de36612c72f31432c84f15df47",
+      "legal_link_or_output_rights_clause_present": false
+    },
+    {
+      "role": "vast_terms",
+      "url": "https://vast.ai/terms",
+      "version_date": "2025-11-10",
+      "retrieved_at_utc": "2026-08-11T02:32:01Z",
+      "response_sha256": "sha256:1bcca7994ff16d0c0caff62ee628f7933dcca64ca011b8fc1b0ddf54d57bbf42",
+      "requires_uploader_to_hold_all_necessary_rights": true
+    },
+    {
+      "role": "vast_privacy",
+      "url": "https://vast.ai/privacy",
+      "retrieved_at_utc": "2026-08-11T02:32:03Z",
+      "response_sha256": "sha256:d4cc704de806abb1262f37e7e78f6649c88332a23cac2f3fbef69c4c2d913fef"
+    },
+    {
+      "role": "vast_data_processing_agreement",
+      "url": "https://vast.ai/data-processing-agreement",
+      "retrieved_at_utc": "2026-08-11T02:32:05Z",
+      "response_sha256": "sha256:8cc7cd27da950d66f907a518f6ccfc9f784d94b2c0ec16736f999328bb1dc62d"
+    }
+  ],
+  "missing_rights": [
+    "generated_output_ownership_or_license",
+    "internal_or_commercial_simulation_permission",
+    "third_party_cloud_copy_permission",
+    "derived_artifact_and_evidence_redistribution_permission",
+    "input_output_retention_and_deletion_terms",
+    "model_training_use_terms"
+  ],
+  "admission": {
+    "local_static_inspection_permitted_for_this_development_run": true,
+    "private_upload_to_vast_permitted": false,
+    "redistribution_permitted": false,
+    "commercial_or_business_research_permission_proven": false,
+    "raw_interiorgs_bytes_in_scope": false
+  },
+  "status": "blocked_missing_generated_output_rights",
+  "typed_blocker": "lightwheel_simreadygen_job_output_rights_receipt_missing",
+  "smallest_external_resolution": "Immutable job-specific SimReadyGen terms receipt or written Lightwheel authorization covering internal or commercial simulation, third-party cloud copying, derived evidence redistribution, attribution, retention, deletion, and model-training use.",
+  "claim_boundary": {
+    "provider_origin_identified": true,
+    "public_asset_library_license_applied_to_job_output": false,
+    "upload_authorized": false,
+    "physical_material_equivalence": false
+  },
+  "receipt_digest": "sha256:7cf443a1e41cd792efdc4c78186b7d75ed94e177a099b5f6f6436c0d77ab94b2"
+}

@@ -57,18 +57,14 @@ def _load_openusd_stage_from_verified_snapshot(
 
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
-        raise SageCollisionComponentTopologyError(
-            ["sage_collision_no_follow_unavailable"]
-        )
+        raise SageCollisionComponentTopologyError(["sage_collision_no_follow_unavailable"])
     descriptor: int | None = None
     snapshot_path: Path | None = None
     try:
         descriptor = os.open(path, os.O_RDONLY | no_follow)
         before = os.fstat(descriptor)
         if before.st_size <= 0:
-            raise SageCollisionComponentTopologyError(
-                ["sage_collision_usd_missing"]
-            )
+            raise SageCollisionComponentTopologyError(["sage_collision_usd_missing"])
         digest = hashlib.sha256()
         with tempfile.NamedTemporaryFile(
             prefix="sage-collision-snapshot-",
@@ -101,18 +97,12 @@ def _load_openusd_stage_from_verified_snapshot(
             raise SageCollisionComponentTopologyError(
                 ["sage_collision_source_changed_while_reading"]
             )
-        stage = usd_module.Stage.Open(
-            str(snapshot_path), load=usd_module.Stage.LoadAll
-        )
+        stage = usd_module.Stage.Open(str(snapshot_path), load=usd_module.Stage.LoadAll)
         if stage is None:
-            raise SageCollisionComponentTopologyError(
-                ["sage_collision_usd_open_failed"]
-            )
+            raise SageCollisionComponentTopologyError(["sage_collision_usd_open_failed"])
         return stage, copied, "sha256:" + digest.hexdigest()
     except OSError as exc:
-        raise SageCollisionComponentTopologyError(
-            ["sage_collision_usd_missing"]
-        ) from exc
+        raise SageCollisionComponentTopologyError(["sage_collision_usd_missing"]) from exc
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -130,18 +120,14 @@ def _load_interiorgs_labels_from_verified_snapshot(
 
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
-        raise SageCollisionComponentTopologyError(
-            ["interiorgs_labels_no_follow_unavailable"]
-        )
+        raise SageCollisionComponentTopologyError(["interiorgs_labels_no_follow_unavailable"])
     descriptor: int | None = None
     snapshot_path: Path | None = None
     try:
         descriptor = os.open(path, os.O_RDONLY | no_follow)
         before = os.fstat(descriptor)
         if before.st_size <= 0:
-            raise SageCollisionComponentTopologyError(
-                ["interiorgs_labels_missing"]
-            )
+            raise SageCollisionComponentTopologyError(["interiorgs_labels_missing"])
         digest = hashlib.sha256()
         with tempfile.NamedTemporaryFile(
             prefix="interiorgs-labels-snapshot-",
@@ -171,20 +157,14 @@ def _load_interiorgs_labels_from_verified_snapshot(
             after.st_mtime_ns,
         )
         if before_identity != after_identity or copied != before.st_size:
-            raise SageCollisionComponentTopologyError(
-                ["interiorgs_labels_changed_while_reading"]
-            )
+            raise SageCollisionComponentTopologyError(["interiorgs_labels_changed_while_reading"])
         try:
             rows = load_interiorgs_labels(snapshot_path)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-            raise SageCollisionComponentTopologyError(
-                ["interiorgs_labels_invalid"]
-            ) from exc
+            raise SageCollisionComponentTopologyError(["interiorgs_labels_invalid"]) from exc
         return rows, copied, "sha256:" + digest.hexdigest()
     except OSError as exc:
-        raise SageCollisionComponentTopologyError(
-            ["interiorgs_labels_missing"]
-        ) from exc
+        raise SageCollisionComponentTopologyError(["interiorgs_labels_missing"]) from exc
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -1377,8 +1357,8 @@ def inspect_sage_collision_component_topology(
         sage_collision_usd_path,
         missing_error="sage_collision_usd_missing",
     )
-    label_rows, labels_size_bytes, labels_sha256 = (
-        _load_interiorgs_labels_from_verified_snapshot(labels)
+    label_rows, labels_size_bytes, labels_sha256 = _load_interiorgs_labels_from_verified_snapshot(
+        labels
     )
     targets = _target_map(label_rows, target_instance_ids)
     opening_targets = {str(value) for value in opening_probe_instance_ids}
@@ -1387,8 +1367,8 @@ def inspect_sage_collision_component_topology(
     if not 0.0 < minimum_component_iou <= 1.0:
         raise SageCollisionComponentTopologyError(["minimum_component_iou_invalid"])
 
-    stage, collision_size_bytes, collision_sha256 = (
-        _load_openusd_stage_from_verified_snapshot(collision, usd_module=Usd)
+    stage, collision_size_bytes, collision_sha256 = _load_openusd_stage_from_verified_snapshot(
+        collision, usd_module=Usd
     )
     if UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z:
         raise SageCollisionComponentTopologyError(["sage_collision_stage_not_z_up"])

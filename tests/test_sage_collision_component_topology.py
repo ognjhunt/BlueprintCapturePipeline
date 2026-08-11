@@ -213,15 +213,11 @@ def test_labels_are_parsed_and_identified_from_one_immutable_snapshot(
     )
 
     assert swapped is True
-    assert result["source_files"]["interiorgs_labels"]["size_bytes"] == len(
-        original_bytes
-    )
+    assert result["source_files"]["interiorgs_labels"]["size_bytes"] == len(original_bytes)
     assert result["source_files"]["interiorgs_labels"]["sha256"] == (
         "sha256:" + hashlib.sha256(original_bytes).hexdigest()
     )
-    assert result["targets"][0]["label_world_aabb_min_m"] == pytest.approx(
-        [10.0, 0.0, 0.0]
-    )
+    assert result["targets"][0]["label_world_aabb_min_m"] == pytest.approx([10.0, 0.0, 0.0])
 
 
 def test_closed_cap_fails_open_cavity_probe(tmp_path: Path) -> None:

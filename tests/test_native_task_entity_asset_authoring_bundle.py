@@ -544,6 +544,8 @@ def test_bundle_is_deterministic_entity_keyed_and_pre_canary(tmp_path: Path) -> 
             "compose_closed_volumetric_fem_candidate"
         )
         assert plans["cloth"]["operation"]["cooking_api"] == (DEFORMABLE_COOKING_API)
+        assert plans["cloth"]["operation"]["topology_stage"] == ("explicit_tetrahedral_mesh")
+        assert plans["cloth"]["operation"]["native_topology_readback_required"] is True
         assert plans["cloth"]["operation"]["thin_shell_cloth_claimed"] is False
         assert plans["basket"]["operation"]["operation_kind"] == (
             "compose_open_rigid_receptacle_candidate"

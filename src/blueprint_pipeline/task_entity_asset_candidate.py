@@ -293,7 +293,11 @@ def _normalise_observation(value: Any, *, asset_class: str, errors: list[str]) -
         field="source_coverage_engineered_interior",
         errors=errors,
     )
-    if asset_class == "rigid_receptacle" and not interior_collision_observed:
+    if (
+        asset_class == "rigid_receptacle"
+        and not interior_collision_observed
+        and not engineered_interior_not_factual
+    ):
         errors.append("task_entity_asset_receptacle_interior_collision_unobserved")
     if (
         asset_class == "rigid_receptacle"
@@ -1028,6 +1032,12 @@ def materialize_task_entity_asset_candidate(value: Mapping[str, Any]) -> dict[st
             interior = receptacle["geometry"]["interior_dimensions_m"]
             wall_clearances = receptacle["geometry"]["wall_clearances_m"]
             floor = receptacle["geometry"]["floor_thickness_m"]
+            if not observation["coverage"]["interior_collision_observed"] and (
+                receptacle["geometry"]["engineered_interior"] is not True
+                or observation["coverage"]["engineered_interior_not_factual"] is not True
+                or authoring["generated_geometry_used"] is not True
+            ):
+                errors.append("task_entity_asset_receptacle_unobserved_interior_not_engineered")
             if (
                 len(outer) == 3
                 and len(interior) == 3
