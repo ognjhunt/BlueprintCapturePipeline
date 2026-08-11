@@ -1764,6 +1764,29 @@ def build_json_report(
         for result in inventory_results
         for blocker in result.get("blockers") or []
     ]
+    required_inventory_rows = [
+        dict(result)
+        for result in inventory_results
+        if isinstance(result, Mapping) and result.get("required") is True
+    ]
+    provider_zero_blockers: list[str] = []
+    if not required_inventory_rows:
+        provider_zero_blockers.append("provider_zero_required_inventory_scope_missing")
+    for result in required_inventory_rows:
+        provider = str(result.get("provider") or "unknown")
+        if result.get("status") != "succeeded":
+            provider_zero_blockers.append(
+                f"provider_zero_inventory_unverified:{provider}"
+            )
+        elif result.get("row_count") != 0:
+            provider_zero_blockers.append(
+                f"provider_zero_live_resources_observed:{provider}"
+            )
+    if live:
+        provider_zero_blockers.append("provider_zero_live_instances_observed")
+    if total_burn_per_hour(instances) != 0.0:
+        provider_zero_blockers.append("provider_zero_nonzero_burn_observed")
+    provider_zero_verified = not provider_zero_blockers
     billing_blockers = (
         [str(item) for item in billing_reconciliation.get("blockers") or []]
         if isinstance(billing_reconciliation, Mapping)
@@ -1797,6 +1820,26 @@ def build_json_report(
         "spend_admission_lock": admission,
         "live_instance_count": len(live),
         "total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
+        # ``status`` describes whether the fleet guard itself encountered a
+        # blocker.  It is deliberately not a synonym for provider-zero: a
+        # healthy, within-budget live allocation must remain visible as not
+        # provider-zero rather than looking like a clean teardown receipt.
+        "provider_zero_verified": provider_zero_verified,
+        "provider_zero": {
+            "status": "verified" if provider_zero_verified else "unverified",
+            "required_provider_ids": sorted(
+                str(result.get("provider") or "unknown")
+                for result in required_inventory_rows
+            ),
+            "global_live_instance_count": len(live),
+            "global_total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
+            "blockers": provider_zero_blockers,
+            "claim_boundary": (
+                "Provider-zero is verified only when every required provider "
+                "inventory query succeeds with zero returned resources and the "
+                "global reported live inventory and burn are zero."
+            ),
+        },
         "max_boot_seconds": int(max_boot_seconds),
         "max_booted_orphan_seconds": int(max_booted_orphan_seconds),
         "fleet_budget": dict(fleet_budget)

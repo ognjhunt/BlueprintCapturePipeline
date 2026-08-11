@@ -130,6 +130,8 @@ def build_supervisor_snapshot(
                 blockers.append(f"gpu_inventory_not_confirmed:{provider}")
         if guard.get("live_instance_count") not in (0, None):
             blockers.append("gpu_fleet_not_zero_before_launch")
+        if guard.get("provider_zero_verified") is False:
+            blockers.append("gpu_provider_zero_not_verified")
         if spend_admission.get("admission_allowed") is not True:
             blockers.append("paid_spend_admission_not_open")
         blockers.extend(guard_blockers)
@@ -206,6 +208,10 @@ def build_supervisor_snapshot(
             "generated_at": guard.get("generated_at"),
             "live_instance_count": guard.get("live_instance_count"),
             "total_burn_per_hour_usd": guard.get("total_burn_per_hour_usd"),
+            "provider_zero_verified": guard.get("provider_zero_verified"),
+            "provider_zero_blockers": (guard.get("provider_zero") or {}).get("blockers")
+            if isinstance(guard.get("provider_zero"), Mapping)
+            else [],
             "spend_admission_allowed": spend_admission.get("admission_allowed") is True,
             "blockers": guard_blockers,
         },
