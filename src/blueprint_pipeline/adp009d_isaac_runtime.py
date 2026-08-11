@@ -1141,10 +1141,18 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             ),
         },
     )
+    # Isaac Lab prim-path tokens match one USD level each, and the Robotiq
+    # fingers sit at Robot/Gripper/Robotiq_2F_85/<finger> in the pinned DROID
+    # embodiment (the same paths its own FrameTransformer binds), so a
+    # single-level Robot/.* wildcard can never resolve them.  Arm-link
+    # constraint evidence still comes from the per-link incoming joint wrench.
     robot_contact = ContactSensorAsset(
         name="robot_contact",
         sensor_cfg=ContactSensorCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/.*",
+            prim_path=(
+                "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
+                "(left_inner_finger|right_inner_finger)"
+            ),
             update_period=0.0,
             history_length=1,
             debug_vis=False,
