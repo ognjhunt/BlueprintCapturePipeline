@@ -1801,6 +1801,64 @@ def test_prelaunch_inventory_guard_allows_only_exact_authorized_active_instances
     assert passed["unexpected_active_instance_count"] == 0
 
 
+def test_prelaunch_inventory_treats_missing_status_as_active_ambiguous() -> None:
+    rows = vpa._active_instance_rows_from_payload(
+        {
+            "instances": [
+                {"id": 123, "gpu_name": "L40S"},
+                {"id": 124, "actual_status": "exited"},
+            ]
+        }
+    )
+
+    assert [row["id"] for row in rows] == [123]
+    assert rows[0]["raw_status_normalized"] == "unknown"
+
+
+def test_vast_adapter_rejects_active_instance_not_bound_to_opaque_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_live_gates(tmp_path, monkeypatch)
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append((kwargs["method"], kwargs["path"]))
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {
+                "instances": [
+                    {
+                        "id": 123,
+                        "actual_status": "running",
+                        "gpu_name": "L40S",
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected Vast API call: {kwargs}")
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    job_dir = tmp_path / "grant-mismatch"
+    result = run_vast_provider_adapter(
+        job_dir=job_dir,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        max_live_minutes=1,
+        session_max_live_minutes=None,
+        allowed_active_instance_ids=(123,),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "shared_paid_resource_admission_blocked"
+    assert result["vast_side_effects_may_have_occurred"] is False
+    assert "paid_resource_admission_grant_active_instances_mismatch" in result["blockers"]
+    assert calls == [("GET", "/instances/")]
+    assert _read_json(job_dir / "vast_launch_lock_manifest.json")["status"] == ("released")
+    teardown = _read_json(job_dir / "vast_teardown_manifest.json")
+    assert teardown["continuing_spend_from_this_run"] is False
+
+
 def test_vast_adapter_blocks_blueprint_bundle_missing_staging_before_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5183,7 +5241,7 @@ def test_exact_simready_isaac_bundle_forces_http1_download() -> None:
 
     # Intent, not flag order: HTTP/1.1 with retries, however it is spelled.
     # A literal pin here broke when retry flags were added between the two.
-    assert '--http1.1' in script and '--retry-all-errors' in script
+    assert "--http1.1" in script and "--retry-all-errors" in script
     assert '-fL "$blueprint_download_src"' in script
 
 

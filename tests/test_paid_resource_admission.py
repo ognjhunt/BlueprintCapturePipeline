@@ -1,5 +1,6 @@
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     PaidResourceAdmissionBlocked,
@@ -119,3 +120,95 @@ def test_opaque_grant_rejects_missing_forged_and_cross_class_capabilities() -> N
                 invalid,
                 resource_class=resource_class,
             )
+
+
+def test_vast_grant_binds_exact_allowed_active_instance_inventory() -> None:
+    binding = {
+        "allowed_active_vast_instance_ids": [47373597],
+    }
+    admission = build_paid_lane_admission(
+        resource_class="vast_provider_adapter",
+        blockers=[],
+    )
+    admission.update(
+        {
+            "allocation_binding": binding,
+            "allocation_binding_digest": canonical_digest(binding),
+        }
+    )
+
+    grant = require_paid_resource_admission(
+        admission,
+        resource_class="vast_provider_adapter",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+
+    assert grant.allowed_active_instance_ids == (47373597,)
+    require_paid_resource_admission_grant(
+        grant,
+        resource_class="vast_provider_adapter",
+        allowed_active_instance_ids=(47373597,),
+    )
+    with pytest.raises(PaidResourceAdmissionBlocked) as mismatch:
+        require_paid_resource_admission_grant(
+            grant,
+            resource_class="vast_provider_adapter",
+            allowed_active_instance_ids=(47373598,),
+        )
+    assert "paid_resource_admission_grant_active_instances_mismatch" in mismatch.value.blockers
+
+
+@pytest.mark.parametrize(
+    ("allowed_ids", "expected_blocker"),
+    [
+        ([47373597, 47373597], "paid_resource_allowed_active_instance_ids_not_unique"),
+        ([True], "paid_resource_allowed_active_instance_ids_invalid"),
+    ],
+)
+def test_vast_grant_rejects_invalid_allowed_active_instance_inventory(
+    allowed_ids: list[object], expected_blocker: str
+) -> None:
+    admission = build_paid_lane_admission(
+        resource_class="vast_provider_adapter",
+        blockers=[],
+    )
+    binding = {
+        "allowed_active_vast_instance_ids": allowed_ids,
+    }
+    admission["allocation_binding"] = binding
+    admission["allocation_binding_digest"] = canonical_digest(binding)
+
+    with pytest.raises(PaidResourceAdmissionBlocked) as raised:
+        require_paid_resource_admission(
+            admission,
+            resource_class="vast_provider_adapter",
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        )
+    assert expected_blocker in raised.value.blockers
+
+
+def test_vast_grant_recomputes_allocation_binding_digest_before_issue() -> None:
+    binding = {
+        "allowed_active_vast_instance_ids": [47373597],
+        "hard_cap_usd": 2.0,
+    }
+    admission = build_paid_lane_admission(
+        resource_class="vast_provider_adapter",
+        blockers=[],
+    )
+    admission.update(
+        {
+            "allocation_binding": binding,
+            "allocation_binding_digest": canonical_digest(binding),
+        }
+    )
+    admission["allocation_binding"]["hard_cap_usd"] = 20.0
+
+    with pytest.raises(PaidResourceAdmissionBlocked) as raised:
+        require_paid_resource_admission(
+            admission,
+            resource_class="vast_provider_adapter",
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        )
+
+    assert "paid_resource_allocation_binding_digest_mismatch" in raised.value.blockers
