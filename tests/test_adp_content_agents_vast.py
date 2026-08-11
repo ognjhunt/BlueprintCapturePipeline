@@ -759,6 +759,62 @@ def test_content_agents_execution_readiness_accepts_static_no_docker_preflight(
     ]
 
 
+def test_content_agents_execution_readiness_retains_static_and_local_preflights(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    bundle_receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-bundle",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
+        "adp_content_agents_bundle_receipt.json"
+    )
+    static_preflight = _passing_static_config_preflight(
+        tmp_path / "static-preflight",
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+    )
+    local_preflight = _passing_local_config_preflight(
+        tmp_path / "local-preflight",
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+    )
+    key = "task_a_washer_door_open|1|earthtojake_text_to_cad"
+
+    readiness = content_agents.materialize_content_agents_execution_readiness(
+        content_agents_bundle_matrix=_single_agent_cad_content_bundle_matrix(
+            bundle_receipt_path=bundle_receipt_path,
+            bundle_receipt=bundle_receipt,
+            cad_output_path=output_path,
+            projection_path=projection_path,
+        ),
+        output_path=tmp_path / "readiness.json",
+        config_preflight_receipts={key: [static_preflight, local_preflight]},
+        generated_at="fixed",
+    )
+
+    row = readiness["items"][0]
+    assert row["config_preflight"] is None
+    assert row["static_config_preflight"]["receipt_digest"] == json.loads(
+        static_preflight.read_text(encoding="utf-8")
+    )["receipt_digest"]
+    assert row["local_config_preflight"]["receipt_digest"] == json.loads(
+        local_preflight.read_text(encoding="utf-8")
+    )["receipt_digest"]
+    assert row["blockers"] == [
+        "content_agents_paid_attempt_authority_missing",
+        "content_agents_paid_model_access_preflight_missing",
+    ]
+
+
 def test_content_agents_execution_readiness_accepts_five_replacement_objects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

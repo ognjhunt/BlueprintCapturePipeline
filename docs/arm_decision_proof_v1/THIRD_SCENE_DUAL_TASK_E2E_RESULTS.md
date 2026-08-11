@@ -319,7 +319,7 @@ with digest
 The no-provider execution-readiness receipt is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`
 with digest
-`sha256:c12d976afab87186f27e702abf023b2424907a4c10f870b7bc0e597f0b99b7d9`.
+`sha256:1e6c2e85ffecb85a14fc6106803b457173645b606b82f0910932a151c6a2deff`.
 It validates all four prepared bundle bytes, exact-entrypoint rehearsals,
 Dockerless static bundle/config/input-USD preflight receipts, and no-paid
 Docker/network-disabled local bundle/config dry-run receipts. The current
@@ -536,7 +536,7 @@ Recent reusable-code and manifest commits:
 - Focused local/paid Content Agents preflight split regressions for the current
   follow-up — `54 passed`.
 - Focused Dockerless static plus no-paid Docker Content Agents preflight
-  regressions for the current follow-up — `58 passed`.
+  regressions for the current follow-up — `59 passed`.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring

@@ -130,7 +130,9 @@ def materialize_content_agents_execution_readiness(
     *,
     content_agents_bundle_matrix: Mapping[str, Any],
     output_path: str | Path,
-    config_preflight_receipts: Mapping[str, str | Path] | None = None,
+    config_preflight_receipts: (
+        Mapping[str, str | Path | Sequence[str | Path]] | None
+    ) = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Record exact local readiness and the next missing paid-execution inputs.
@@ -269,71 +271,83 @@ def materialize_content_agents_execution_readiness(
             blockers.append("content_agents_local_docker_config_preflight_missing")
             blockers.append("content_agents_paid_model_access_preflight_missing")
         else:
-            preflight_path = Path(preflight_path_value).expanduser().resolve()
-            preflight = _read_json(preflight_path)
-            base_preflight_valid = (
-                preflight_path.is_file()
-                and preflight.get("bundle_receipt_sha256") == _sha256(receipt_path)
-                and preflight.get("bundle_sha256") == bundle_record.get("sha256")
-                and preflight.get("receipt_digest")
-                == canonical_digest(preflight, digest_field="receipt_digest")
-            )
-            schema = preflight.get("schema_version")
-            if (
-                base_preflight_valid
-                and schema == "adp_content_agents_bundle_config_preflight.v2"
-                and preflight.get("status") == "passed"
-            ):
-                preflight_record = {
-                    "path": str(preflight_path),
-                    "sha256": _sha256(preflight_path),
-                    "size_bytes": preflight_path.stat().st_size,
-                    "receipt_digest": preflight["receipt_digest"],
-                }
-            elif (
-                base_preflight_valid
-                and schema == "adp_content_agents_local_bundle_config_preflight.v1"
-                and preflight.get("status")
-                == "local_passed_paid_model_access_not_checked"
-                and preflight.get("docker_network_disabled") is True
-                and preflight.get("paid_model_access_required") is False
-                and preflight.get("provider_mutations_performed") == 0
-                and preflight.get("paid_resource_allocated") is False
-                and preflight.get("blockers")
-                == ["content_agents_paid_model_access_preflight_missing"]
-            ):
-                local_preflight_record = {
-                    "path": str(preflight_path),
-                    "sha256": _sha256(preflight_path),
-                    "size_bytes": preflight_path.stat().st_size,
-                    "receipt_digest": preflight["receipt_digest"],
-                }
-                blockers.append("content_agents_paid_model_access_preflight_missing")
-            elif (
-                base_preflight_valid
-                and schema == "adp_content_agents_static_bundle_config_preflight.v1"
-                and preflight.get("status")
-                == "static_passed_docker_and_paid_model_access_not_checked"
-                and preflight.get("docker_executed") is False
-                and preflight.get("paid_model_access_required") is False
-                and preflight.get("provider_mutations_performed") == 0
-                and preflight.get("paid_resource_allocated") is False
-                and preflight.get("blockers")
-                == [
-                    "content_agents_local_docker_config_preflight_missing",
-                    "content_agents_paid_model_access_preflight_missing",
-                ]
-            ):
-                static_preflight_record = {
-                    "path": str(preflight_path),
-                    "sha256": _sha256(preflight_path),
-                    "size_bytes": preflight_path.stat().st_size,
-                    "receipt_digest": preflight["receipt_digest"],
-                }
-                blockers.append("content_agents_local_docker_config_preflight_missing")
-                blockers.append("content_agents_paid_model_access_preflight_missing")
+            if isinstance(preflight_path_value, (str, Path)):
+                preflight_path_values = [preflight_path_value]
+            elif isinstance(preflight_path_value, Sequence):
+                preflight_path_values = list(preflight_path_value)
             else:
+                preflight_path_values = []
+            if not preflight_path_values:
                 blockers.append("content_agents_config_preflight_invalid")
+            for candidate_path_value in preflight_path_values:
+                if not isinstance(candidate_path_value, (str, Path)):
+                    blockers.append("content_agents_config_preflight_invalid")
+                    continue
+                preflight_path = Path(candidate_path_value).expanduser().resolve()
+                preflight = _read_json(preflight_path)
+                base_preflight_valid = (
+                    preflight_path.is_file()
+                    and preflight.get("bundle_receipt_sha256") == _sha256(receipt_path)
+                    and preflight.get("bundle_sha256") == bundle_record.get("sha256")
+                    and preflight.get("receipt_digest")
+                    == canonical_digest(preflight, digest_field="receipt_digest")
+                )
+                schema = preflight.get("schema_version")
+                record = {
+                    "path": str(preflight_path),
+                    "sha256": _sha256(preflight_path),
+                    "size_bytes": preflight_path.stat().st_size
+                    if preflight_path.is_file()
+                    else 0,
+                    "receipt_digest": preflight.get("receipt_digest"),
+                }
+                if (
+                    base_preflight_valid
+                    and schema == "adp_content_agents_bundle_config_preflight.v2"
+                    and preflight.get("status") == "passed"
+                ):
+                    preflight_record = record
+                elif (
+                    base_preflight_valid
+                    and schema == "adp_content_agents_local_bundle_config_preflight.v1"
+                    and preflight.get("status")
+                    == "local_passed_paid_model_access_not_checked"
+                    and preflight.get("docker_network_disabled") is True
+                    and preflight.get("paid_model_access_required") is False
+                    and preflight.get("provider_mutations_performed") == 0
+                    and preflight.get("paid_resource_allocated") is False
+                    and preflight.get("blockers")
+                    == ["content_agents_paid_model_access_preflight_missing"]
+                ):
+                    local_preflight_record = record
+                elif (
+                    base_preflight_valid
+                    and schema == "adp_content_agents_static_bundle_config_preflight.v1"
+                    and preflight.get("status")
+                    == "static_passed_docker_and_paid_model_access_not_checked"
+                    and preflight.get("docker_executed") is False
+                    and preflight.get("paid_model_access_required") is False
+                    and preflight.get("provider_mutations_performed") == 0
+                    and preflight.get("paid_resource_allocated") is False
+                    and preflight.get("blockers")
+                    == [
+                        "content_agents_local_docker_config_preflight_missing",
+                        "content_agents_paid_model_access_preflight_missing",
+                    ]
+                ):
+                    static_preflight_record = record
+                else:
+                    blockers.append("content_agents_config_preflight_invalid")
+            if preflight_record is None:
+                blockers.append("content_agents_paid_model_access_preflight_missing")
+            if preflight_record is None and local_preflight_record is None:
+                blockers.append("content_agents_local_docker_config_preflight_missing")
+            if (
+                preflight_record is None
+                and local_preflight_record is None
+                and static_preflight_record is None
+            ):
+                blockers.append("content_agents_static_config_preflight_missing")
         rows.append(
             {
                 "task_id": item.get("task_id"),
