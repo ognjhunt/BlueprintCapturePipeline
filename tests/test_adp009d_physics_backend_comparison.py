@@ -93,7 +93,11 @@ def _admission(profile: dict, now: datetime) -> dict:
         "watchdog_required": True,
         "artifact_storage_required": True,
         "teardown_required": True,
+        "provider_inventory_precheck_mode": "provider_zero",
+        "allowed_active_vast_instance_ids": [],
         "provider_zero_precheck_passed": True,
+        "exact_concurrency_precheck_passed": False,
+        "unapproved_live_instance_count": 0,
         "provider_zero_precheck_digest": "sha256:" + "0" * 64,
         "retry_cap": 0,
         "max_spend_usd": 2.0,
@@ -369,6 +373,7 @@ def test_newton_admission_builder_binds_authority_spend_and_provider_zero() -> N
         "live_instance_count": 0,
         "blockers": [],
         "inventory_results": inventory,
+        "instances": [],
     }
 
     admission = build_newton_canary_admission(
@@ -388,6 +393,81 @@ def test_newton_admission_builder_binds_authority_spend_and_provider_zero() -> N
     )
     assert admission["canonical_spend_admission_digest"].startswith("sha256:")
     assert admission["provider_zero_precheck_digest"].startswith("sha256:")
+
+
+def test_newton_admission_builder_binds_exact_allowed_concurrency() -> None:
+    now = datetime(2026, 8, 11, 17, 30, tzinfo=timezone.utc)
+    allowed_id = 47_482_504
+    inventory = [
+        {
+            "provider": provider,
+            "status": "succeeded",
+            "required": True,
+            "credential_present": True,
+            "row_count": 1 if provider == "vast" else 0,
+            "blockers": [],
+        }
+        for provider in ("runpod", "vast", "digitalocean")
+    ]
+    spend_lock = build_spend_admission_lock(
+        fleet_budget={"status": "passed", "total_spend_usd": 0.0, "blockers": []},
+        billing_reconciliation={
+            "status": "reconciled",
+            "required": True,
+            "billing_export_schema_version": "blueprint.provider_billing_export.v1",
+            "billing_export_sha256": "sha256:" + "a" * 64,
+            "billing_export_mode_octal": "0600",
+            "generated_at": now.isoformat(),
+            "currency": "USD",
+            "scope": "blueprint_beta_100_user_cohort",
+            "provider_totals_usd": {
+                "runpod": 98.0,
+                "vast": 253.0,
+                "digitalocean": 142.0,
+            },
+            "blockers": [],
+        },
+        instances=[],
+        reap_results=[],
+        inventory_results=inventory,
+        override_path=None,
+        now=now,
+    )
+    provider_inventory = {
+        "schema_version": "gpu_spend_guard.v1",
+        "generated_at": now.isoformat(),
+        "live_instance_count": 1,
+        "blockers": [],
+        "inventory_results": inventory,
+        "instances": [
+            {
+                "provider": "vast",
+                "id": str(allowed_id),
+                "live": True,
+            }
+        ],
+    }
+
+    admission = build_newton_canary_admission(
+        authorization_evidence_ref="codex-thread:user-authorized-second-newton-gpu",
+        spend_admission_lock=spend_lock,
+        provider_zero_precheck=provider_inventory,
+        max_spend_usd=2.0,
+        hard_ttl_seconds=7200,
+        allowed_active_vast_instance_ids=[allowed_id],
+        issued_at=now,
+    )
+
+    assert validate_newton_canary_admission(
+        admission, profile=build_backend_profile("newton"), now=now
+    ) == []
+    assert admission["provider_inventory_precheck_mode"] == (
+        "exact_allowed_concurrency"
+    )
+    assert admission["allowed_active_vast_instance_ids"] == [allowed_id]
+    assert admission["provider_zero_precheck_passed"] is False
+    assert admission["exact_concurrency_precheck_passed"] is True
+    assert admission["unapproved_live_instance_count"] == 0
 
 
 def test_comparison_receipt_requires_exact_common_bindings() -> None:

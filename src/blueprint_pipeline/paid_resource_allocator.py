@@ -2330,6 +2330,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 blockers.append(
                                     "adp009d_newton_canary_admission_budget_binding_invalid"
                                 )
+                            if newton_admission.get(
+                                "allowed_active_vast_instance_ids"
+                            ) != sorted(
+                                set(args.adp_allowed_active_vast_instance_id)
+                            ):
+                                blockers.append(
+                                    "adp009d_newton_canary_admission_concurrency_binding_invalid"
+                                )
                         except (OSError, ValueError, TypeError):
                             blockers.append(
                                 "adp009d_newton_canary_admission_unreadable"

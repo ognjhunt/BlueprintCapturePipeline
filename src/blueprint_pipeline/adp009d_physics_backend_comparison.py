@@ -447,6 +447,18 @@ def validate_newton_canary_admission(
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     expires = _parse_time(value.get("expires_at"))
     issued = _parse_time(value.get("issued_at"))
+    allowed_active_ids = value.get("allowed_active_vast_instance_ids")
+    allowed_ids_valid = bool(
+        isinstance(allowed_active_ids, list)
+        and all(
+            not isinstance(item, bool) and isinstance(item, int) and item > 0
+            for item in allowed_active_ids
+        )
+        and allowed_active_ids == sorted(set(allowed_active_ids))
+    )
+    expected_mode = (
+        "exact_allowed_concurrency" if allowed_active_ids else "provider_zero"
+    )
     if (
         value.get("schema_version") != CANARY_ADMISSION_SCHEMA_VERSION
         or value.get("status") != "passed"
@@ -461,7 +473,13 @@ def validate_newton_canary_admission(
         or value.get("watchdog_required") is not True
         or value.get("artifact_storage_required") is not True
         or value.get("teardown_required") is not True
-        or value.get("provider_zero_precheck_passed") is not True
+        or not allowed_ids_valid
+        or value.get("provider_inventory_precheck_mode") != expected_mode
+        or value.get("provider_zero_precheck_passed") is not (not allowed_active_ids)
+        or value.get("exact_concurrency_precheck_passed") is not bool(
+            allowed_active_ids
+        )
+        or value.get("unapproved_live_instance_count") != 0
         or value.get("retry_cap") != 0
         or isinstance(value.get("max_spend_usd"), bool)
         or not isinstance(value.get("max_spend_usd"), (int, float))
@@ -499,6 +517,7 @@ def build_newton_canary_admission(
     provider_zero_precheck: Mapping[str, Any],
     max_spend_usd: float,
     hard_ttl_seconds: int,
+    allowed_active_vast_instance_ids: Sequence[int] = (),
     issued_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Compile the current explicit authority and read-only gates into one receipt."""
@@ -514,25 +533,62 @@ def build_newton_canary_admission(
 
     if validate_spend_admission_lock(spend_admission_lock, now=current):
         raise PhysicsBackendContractError("adp009d_newton_spend_admission_invalid")
+    if any(
+        isinstance(item, bool) or not isinstance(item, int) or item <= 0
+        for item in allowed_active_vast_instance_ids
+    ):
+        raise PhysicsBackendContractError(
+            "adp009d_newton_allowed_active_vast_instance_invalid"
+        )
+    allowed_active_ids = sorted(set(allowed_active_vast_instance_ids))
     inventory_rows = provider_zero_precheck.get("inventory_results")
-    vast_rows = [
-        dict(row)
+    required_rows = {
+        str(row.get("provider")): dict(row)
         for row in inventory_rows or []
-        if isinstance(row, Mapping) and row.get("provider") == "vast"
+        if isinstance(row, Mapping) and row.get("required") is True
+    }
+    expected_row_counts = {
+        "runpod": 0,
+        "vast": len(allowed_active_ids),
+        "digitalocean": 0,
+    }
+    observed_instances = [
+        dict(row)
+        for row in provider_zero_precheck.get("instances") or []
+        if isinstance(row, Mapping) and row.get("live") is True
     ]
+    observed_allowed_ids: list[int] = []
+    invalid_live_instance = False
+    for row in observed_instances:
+        try:
+            instance_id = int(str(row.get("id") or ""))
+        except ValueError:
+            invalid_live_instance = True
+            continue
+        if row.get("provider") != "vast":
+            invalid_live_instance = True
+        observed_allowed_ids.append(instance_id)
     generated_at = _parse_time(provider_zero_precheck.get("generated_at"))
     if (
         provider_zero_precheck.get("schema_version") != "gpu_spend_guard.v1"
-        or provider_zero_precheck.get("live_instance_count") != 0
+        or provider_zero_precheck.get("live_instance_count")
+        != len(allowed_active_ids)
         or provider_zero_precheck.get("blockers") != []
-        or len(vast_rows) != 1
-        or vast_rows[0].get("status") != "succeeded"
-        or vast_rows[0].get("row_count") != 0
-        or vast_rows[0].get("blockers") != []
+        or set(required_rows) != set(expected_row_counts)
+        or any(
+            required_rows[provider].get("status") != "succeeded"
+            or required_rows[provider].get("row_count") != expected_count
+            or required_rows[provider].get("blockers") != []
+            for provider, expected_count in expected_row_counts.items()
+        )
+        or invalid_live_instance
+        or sorted(observed_allowed_ids) != allowed_active_ids
         or generated_at is None
         or abs((current - generated_at).total_seconds()) > 300
     ):
-        raise PhysicsBackendContractError("adp009d_newton_provider_zero_precheck_invalid")
+        raise PhysicsBackendContractError(
+            "adp009d_newton_provider_inventory_precheck_invalid"
+        )
     profile = build_backend_profile("newton")
     receipt: dict[str, Any] = {
         "schema_version": CANARY_ADMISSION_SCHEMA_VERSION,
@@ -555,7 +611,15 @@ def build_newton_canary_admission(
         "watchdog_required": True,
         "artifact_storage_required": True,
         "teardown_required": True,
-        "provider_zero_precheck_passed": True,
+        "provider_inventory_precheck_mode": (
+            "exact_allowed_concurrency"
+            if allowed_active_ids
+            else "provider_zero"
+        ),
+        "allowed_active_vast_instance_ids": allowed_active_ids,
+        "provider_zero_precheck_passed": not allowed_active_ids,
+        "exact_concurrency_precheck_passed": bool(allowed_active_ids),
+        "unapproved_live_instance_count": 0,
         "provider_zero_precheck_digest": canonical_digest(
             provider_zero_precheck, digest_field="receipt_digest"
         ),
@@ -933,7 +997,9 @@ def build_comparison_design_contract() -> dict[str, Any]:
             "watchdog_required": True,
             "artifact_storage_required": True,
             "teardown_required": True,
-            "provider_zero_precheck_required": True,
+            "provider_zero_or_exact_allowed_concurrency_precheck_required": True,
+            "unapproved_live_instance_count_required": 0,
+            "concurrent_instance_ids_must_be_explicitly_authorized": True,
             "retry_cap": 0,
         },
         "comparison_acceptance": {

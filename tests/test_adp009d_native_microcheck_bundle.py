@@ -1236,6 +1236,59 @@ def test_allocator_blocks_newton_mutation_before_specific_admission(
     assert "adp009d_newton_canary_admission_missing" in result["blockers"]
 
 
+def test_allocator_binds_newton_admission_to_exact_concurrent_instance_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_newton_canary_admission",
+        lambda *_args, **_kwargs: [],
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    admission_path = tmp_path / "newton-admission.json"
+    admission_path.write_text(
+        json.dumps(
+            {
+                "max_spend_usd": 4.0,
+                "hard_ttl_seconds": 14_400,
+                "allowed_active_vast_instance_ids": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _allocator_args(tmp_path, execute=True) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-newton-canary-admission",
+        str(admission_path),
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+        "--adp-allowed-active-vast-instance-id",
+        "47482504",
+    ]
+
+    assert allocator.main(args) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert (
+        "adp009d_newton_canary_admission_concurrency_binding_invalid"
+        in result["blockers"]
+    )
+
+
 def test_paid_host_exit_before_control_receipt_is_avoidlisted_not_scored() -> None:
     """v95 exited during install before a terminal bundle marker or receipt."""
 
