@@ -33,9 +33,10 @@ def test_runtime_summary_preserves_only_explicit_boolean_task_success() -> None:
         "task_success": True,
         "raw_secret_values_recorded": False,
     }
-    assert summarize_runtime_result(
-        {"status": "completed", "task_success": "true"}
-    )["task_success"] is None
+    assert (
+        summarize_runtime_result({"status": "completed", "task_success": "true"})["task_success"]
+        is None
+    )
 
 
 def test_provider_output_inspection_is_provider_neutral(tmp_path: Path) -> None:
@@ -73,6 +74,35 @@ def test_provider_output_recognizes_adp009d_ovrtx_result(tmp_path: Path) -> None
     assert result["runtime_result_present"] is True
     assert result["runtime_result_status"] == "blocked"
     assert result["runtime_result"]["blockers"] == ["render_failed"]
+
+
+def test_provider_output_recognizes_native_deformable_asset_result(
+    tmp_path: Path,
+) -> None:
+    output_zip = tmp_path / "native-deformable-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "native_deformable_asset_vast_execution.v1.json",
+            json.dumps(
+                {
+                    "schema_version": "native_deformable_asset_vast_execution.v1",
+                    "status": "blocked",
+                    "blockers": [
+                        "native_deformable_worker_symbol_signature_invalid:"
+                        "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
+                    ],
+                }
+            ),
+        )
+
+    result = inspect_provider_runtime_output_zip(output_zip)
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == "blocked"
+    assert result["runtime_result"]["blockers"] == [
+        "native_deformable_worker_symbol_signature_invalid:"
+        "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
+    ]
 
 
 def test_runtime_summary_adds_evaluator_fields_only_for_attributable_result() -> None:

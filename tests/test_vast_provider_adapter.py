@@ -1072,6 +1072,43 @@ def test_unitree_groot_n17_sonic_provider_output_zip_accepts_policy_output(
     assert result["video_smoke_proven"] is False
 
 
+def test_provider_output_zip_accepts_native_deformable_asset_result(
+    tmp_path: Path,
+) -> None:
+    output_zip = tmp_path / "native-deformable-asset-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "native_deformable_asset_vast_execution.v1.json",
+            json.dumps(
+                {
+                    "schema_version": "native_deformable_asset_vast_execution.v1",
+                    "status": "blocked",
+                    "blockers": [
+                        "native_deformable_worker_symbol_signature_invalid:"
+                        "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
+                    ],
+                    "claim_boundary": {
+                        "native_cook_qualified": False,
+                        "physical_towel_equivalence": False,
+                    },
+                }
+            ),
+        )
+
+    result = vpa._inspect_provider_runtime_output_zip(
+        output_zip,
+        expected_video_count=0,
+    )
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == "blocked"
+    assert result["runtime_result_blockers"] == [
+        "native_deformable_worker_symbol_signature_invalid:"
+        "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
+    ]
+    assert result["video_smoke_proven"] is False
+
+
 def test_request_logs_breaks_on_missing_container_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

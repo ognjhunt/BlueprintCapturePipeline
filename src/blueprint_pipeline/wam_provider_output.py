@@ -33,6 +33,7 @@ RUNTIME_RESULT_FILENAMES = (
     "adp009b_gaussian_excision_result.json",
     "native_task_arena_construction_result.v1.json",
     "native_task_arena_control_result.v1.json",
+    "native_deformable_asset_vast_execution.v1.json",
 )
 ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 
@@ -128,9 +129,7 @@ def probe_mp4_video(path: Path) -> dict[str, Any]:
     stream = streams[0] if streams and isinstance(streams[0], Mapping) else {}
     fmt = _mapping(payload.get("format"))
     duration = _number(stream.get("duration")) or _number(fmt.get("duration"))
-    frame_count = _number(stream.get("nb_read_frames")) or _number(
-        stream.get("nb_frames")
-    )
+    frame_count = _number(stream.get("nb_read_frames")) or _number(stream.get("nb_frames"))
     if completed.returncode != 0:
         blockers.append(f"ffprobe_returncode:{completed.returncode}")
     if parse_error:
@@ -172,19 +171,13 @@ def summarize_runtime_result(
             runtime_result.get("action_conditioned_video_rollout_generated")
         ),
         "generated_rollout_video_present": bool(generated_path),
-        "generated_rollout_video_filename": (
-            Path(generated_path).name if generated_path else None
-        ),
+        "generated_rollout_video_filename": (Path(generated_path).name if generated_path else None),
         "repeated_policy_calls_count": runtime_result.get("repeated_policy_calls_count"),
-        "generated_next_observation_count": runtime_result.get(
-            "generated_next_observation_count"
-        ),
+        "generated_next_observation_count": runtime_result.get("generated_next_observation_count"),
         "live_wam_generation_success_count": runtime_result.get(
             "live_wam_generation_success_count"
         ),
-        "learned_wam_model_success_count": runtime_result.get(
-            "learned_wam_model_success_count"
-        ),
+        "learned_wam_model_success_count": runtime_result.get("learned_wam_model_success_count"),
         "policy_observes_wam_generated_next_observation": runtime_result.get(
             "policy_observes_wam_generated_next_observation"
         ),
@@ -194,14 +187,10 @@ def summarize_runtime_result(
         "checkpoint_status": _string(checkpoint_detail.get("status")) or None,
         "cuda_probe_status": _string(cuda_probe.get("status")) or None,
         "torch_cuda_available": (
-            _mapping(cuda_probe.get("payload")).get("torch_cuda_available")
-            if cuda_probe
-            else None
+            _mapping(cuda_probe.get("payload")).get("torch_cuda_available") if cuda_probe else None
         ),
         "cuda_device_count": (
-            _mapping(cuda_probe.get("payload")).get("cuda_device_count")
-            if cuda_probe
-            else None
+            _mapping(cuda_probe.get("payload")).get("cuda_device_count") if cuda_probe else None
         ),
         "subprocess_status": _string(subprocess_result.get("status")) or None,
         "task_success": task_success if isinstance(task_success, bool) else None,
@@ -263,9 +252,7 @@ def inspect_provider_runtime_output_zip(
                             runtime_result = dict(parsed)
                         break
                     except Exception as exc:
-                        json_parse_errors.append(
-                            f"{candidate}:{type(exc).__name__}"
-                        )
+                        json_parse_errors.append(f"{candidate}:{type(exc).__name__}")
             for candidate in names:
                 if candidate.endswith(ENTRYPOINT_DIAGNOSTIC_FILENAME):
                     try:
@@ -319,9 +306,7 @@ def inspect_provider_runtime_output_zip(
             runtime_result_summary.get("status") if runtime_result_summary else None
         ),
         "runtime_result_blockers": (
-            _string_list(runtime_result_summary.get("blockers"))
-            if runtime_result_summary
-            else []
+            _string_list(runtime_result_summary.get("blockers")) if runtime_result_summary else []
         ),
         "entrypoint_diagnostic_present": entrypoint_diagnostic is not None,
         "entrypoint_diagnostic": entrypoint_diagnostic,
@@ -338,9 +323,7 @@ def inspect_provider_runtime_output_zip(
             "expected_video_count": expected_count or None,
             "mp4_count": len(mp4s),
             "validated_mp4_count": sum(
-                1
-                for row in mp4_validation_rows
-                if row.get("status") == "completed"
+                1 for row in mp4_validation_rows if row.get("status") == "completed"
             ),
             "blockers": validation_blockers,
             "files": mp4_validation_rows,
