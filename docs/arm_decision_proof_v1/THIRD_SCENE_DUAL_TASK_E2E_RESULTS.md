@@ -327,10 +327,10 @@ The audit explicitly records `historical_requests_rewritten=true`,
 
 | Task | Backend | Meshes | Reference digest | Bundle digest | Rehearsal |
 |---|---:|---:|---|---|---|
-| Task A washer | Earth-to-Jake | 15 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:75b11c5b3515e88f6604d8fb567e7d254e6566475890912d370f96ebea98ddc0` | passed |
-| Task A washer | Pan-Chera Multi-Agent-CAD | 40 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:6419191ebd0dcc9e8d34bd1fd4614459d9fc4d3ec8f4ec8128f2b9acd635bf4b` | passed |
-| Task B notebook | Earth-to-Jake | 79 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:4b72121743246bff05e1d189da56cdab4e3cc9741ae394c7a25fe8138a09a823` | passed |
-| Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:c27bbd11e5352f73157decf5ba1b566dd7238c67ccbd6c5e5ab14eee790ffba3` | passed |
+| Task A washer | Earth-to-Jake | 15 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:b044299c9ce006267af0daa728b3782fe3da02c99c396ff3c6c70102c4ece568` | passed |
+| Task A washer | Pan-Chera Multi-Agent-CAD | 40 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:67a5aeace70e5ea87f011cd1fe16fe10730191bb56069095c592846299488199` | passed |
+| Task B notebook | Earth-to-Jake | 79 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:20a36478e8a71108d97d43737a8b214dd248710cde3259b7379a0b2d7139beb3` | passed |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:2bff37fc6dc58c5c19090fbe785a550f85661dce17f9af2a61052137dfa1c8d6` | passed |
 
 These bundle receipts authorize only a future advisory Material/Texture/Physics
 Agent run through the paid-resource allocator. They are not executed Content
@@ -338,21 +338,21 @@ Agents results and still do not qualify appearance, physics, native simulator
 import, or physical equivalence. The checked-in bundle matrix manifest is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`
 with digest
-`sha256:a716b923e7a65d9ea204eeee8e01080db164c7d5f38aa482a4a821ea1ce19494`.
+`sha256:7bc576c50b5814efe108c6ba6fc737e23e8aae099feac99c90bb3b04b9b9243f`.
 The no-provider execution-readiness receipt is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`
 with digest
-`sha256:1114f9c1ee78df53f07c904f0a794fbd5d833aaceaeaf21db8a7f38c1e4e853a`.
+`sha256:65ac4595a7311c359f24346eaf8dad33133d86b1beea36685bd0dedda5adcf80`.
 It validates all four prepared bundle bytes, exact-entrypoint rehearsals,
-Dockerless static bundle/config/input-USD preflight receipts, and no-paid
-Docker/network-disabled local bundle/config dry-run receipts. The current
-blockers for every candidate are now only
+and Dockerless static bundle/config/input-USD preflight receipts. The current
+blockers for every candidate are
+`content_agents_local_docker_config_preflight_missing`,
 `content_agents_paid_model_access_preflight_missing` and
-`content_agents_paid_attempt_authority_missing`. The local Docker preflight ran
-material, texture, and physics agent dry-runs, material input validation, and
-default-purpose USD bbox probes against the exact upload bundles with Docker
-networking disabled, no paid model probe, no OpenAI call, no Vast allocation, no
-object-store mutation, and `provider_mutations_performed: 0`.
+`content_agents_paid_attempt_authority_missing`. Docker was unavailable during
+the v4 refresh, so the no-paid Docker/network-disabled local bundle/config
+dry-run was not rerun and remains a local blocker. No paid model probe, OpenAI
+call, Vast allocation, object-store mutation, or provider mutation was performed;
+`provider_mutations_performed: 0`.
 
 Static Content Agents bundle/config/input-USD preflight receipts:
 

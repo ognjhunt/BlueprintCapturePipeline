@@ -2,7 +2,7 @@
   "blocker_summary": "Both replacement candidates and both independent collider deletions are authored. The current smallest blocker is fresh paid authority for qualified FlashSplat contribution/ownership output from each separately frozen, repaired bundle. Both historical zero-retry attempts and both repaired-but-unexecuted bundle receipts are retained. This package contains no fake media or episode links.",
   "cad_summary": "Agent-authored CAD comparison evidence has been added for both replacement objects using both admitted CAD backends. The manifest-driven visual comparison binding, CAD matrix, reference manifest, reference-binding audit, Content Agents bundle matrix, and Content Agents execution-readiness receipt are all linked below. Paid model access and paid attempt authority remain missing, so Content Agents were not executed and no SimReady/native/physics/appearance/physical-equivalence claim is made.",
   "overview_review_only": true,
-  "package_index_digest": "sha256:7bda017c776db8bfe6ce1ddd30ac1754d740fc01fc4149066e33de9a2b4c6cb2",
+  "package_index_digest": "sha256:5e0ec73a601b6f0dc10b15d6bc1395b6300e3aaac91125b64c3672f4b68420da",
   "schema_version": "adp_dual_task_evidence_package_index.v1",
   "shared_manifest_count": 6,
   "shared_manifests": [
@@ -50,21 +50,21 @@
       "digest_field": "receipt_digest",
       "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json",
       "label": "Four-candidate Content Agents bundle matrix manifest",
-      "receipt_digest": "sha256:a716b923e7a65d9ea204eeee8e01080db164c7d5f38aa482a4a821ea1ce19494",
+      "receipt_digest": "sha256:7bc576c50b5814efe108c6ba6fc737e23e8aae099feac99c90bb3b04b9b9243f",
       "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json",
       "schema_version": "third_scene_agent_cad_content_agents_bundle_matrix.v1",
-      "sha256": "sha256:ee747a7ed402a0bd889103c76ded7b570ce3e42822b7e92972d376b766b25be6",
-      "size_bytes": 9117
+      "sha256": "sha256:528988858497d5ea790509e3680cd9594fad07de7b0e4b672aed9b8e2d3c73aa",
+      "size_bytes": 9140
     },
     {
       "digest_field": "receipt_digest",
       "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
       "label": "Four-candidate Content Agents execution-readiness receipt",
-      "receipt_digest": "sha256:1114f9c1ee78df53f07c904f0a794fbd5d833aaceaeaf21db8a7f38c1e4e853a",
+      "receipt_digest": "sha256:65ac4595a7311c359f24346eaf8dad33133d86b1beea36685bd0dedda5adcf80",
       "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
       "schema_version": "adp_content_agents_execution_readiness.v1",
-      "sha256": "sha256:e52eca9b4dcade9a42c1acbeab6a250a04c1786904a2674c3e1a95855baf2cbf",
-      "size_bytes": 11264
+      "sha256": "sha256:746a44053c63cead80aff61605ca9f829b78dca35bec77087bd9df4301485142",
+      "size_bytes": 9487
     }
   ],
   "simulator_artifacts_are_not_physical_truth": true,
