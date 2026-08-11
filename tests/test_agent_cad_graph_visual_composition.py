@@ -6,7 +6,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
-from pxr import Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.agent_cad_graph_visual_composition import (
     AgentCadGraphVisualCompositionError,
@@ -24,6 +24,7 @@ from blueprint_pipeline.simready_cad_agent_contract import (
     INSPECTION_SCHEMA_VERSION,
     file_record,
     seal_cad_agent_execution_receipt,
+    seal_cad_agent_matrix,
     seal_cad_agent_output,
     seal_cad_agent_reference_manifest,
     seal_cad_agent_request,
@@ -56,24 +57,38 @@ def _record(path: Path) -> dict:
     }
 
 
-def _backend(tmp_path: Path) -> dict:
-    archive = tmp_path / "earthtojake.zip"
+def _backend(
+    tmp_path: Path, backend_id: str = "earthtojake_text_to_cad"
+) -> dict:
+    archive = tmp_path / f"{backend_id}.zip"
     with ZipFile(archive, "w", compression=ZIP_DEFLATED) as source:
         source.comment = b"1" * 40
         source.writestr("LICENSE", "MIT\n")
     return {
-        "backend_id": "earthtojake_text_to_cad",
-        "execution_mode": "codex_skill_step_first",
+        "backend_id": backend_id,
+        "execution_mode": (
+            "codex_skill_step_first"
+            if backend_id == "earthtojake_text_to_cad"
+            else "codex_agent_direct_repo_route"
+        ),
         "agent_authored_geometry": True,
         "deterministic_geometry_generator_used": False,
         "graph_geometry_used_for_cad_authoring": False,
         "deterministic_format_conversion_only": True,
-        "repository_url": "https://github.com/earthtojake/text-to-cad",
+        "repository_url": (
+            "https://github.com/earthtojake/text-to-cad"
+            if backend_id == "earthtojake_text_to_cad"
+            else "https://github.com/Pan-Chera/Multi-Agent-CAD"
+        ),
         "commit": "1" * 40,
         "tree": "2" * 40,
         "source_archive": _record(archive),
         "license": "MIT",
-        "model_id": "codex_gpt_5_6_luna",
+        "model_id": (
+            "codex_gpt_5_6_luna"
+            if backend_id == "earthtojake_text_to_cad"
+            else "gpt-5.6"
+        ),
     }
 
 
@@ -127,7 +142,12 @@ def _mesh_projection(tmp_path: Path) -> tuple[Path, Path]:
     return step, receipt_path
 
 
-def _cad_output(tmp_path: Path, *, step: Path) -> Path:
+def _cad_output(
+    tmp_path: Path,
+    *,
+    step: Path,
+    backend_id: str = "earthtojake_text_to_cad",
+) -> Path:
     brief = _write(tmp_path / "brief.md", "Exact observed dimensions only")
     image = _write(tmp_path / "reference.png", b"reference")
     reference = seal_cad_agent_reference_manifest(
@@ -149,7 +169,7 @@ def _cad_output(tmp_path: Path, *, step: Path) -> Path:
         task_id=TASK_ID,
         asset_id=ASSET_ID,
         replacement_slot=1,
-        backend=_backend(tmp_path),
+        backend=_backend(tmp_path, backend_id),
         task_freeze_path=FREEZE_A,
         cad_brief_path=brief,
         metric_envelope_mm=[600.112, 604.104004, 847.564026],
@@ -202,7 +222,7 @@ def _cad_output(tmp_path: Path, *, step: Path) -> Path:
         snapshot_paths=[snapshot],
         execution_receipt_path=execution_path,
         measured_envelope_mm=[600.112, 604.104004, 847.564026],
-        actual_cost_usd=0.0,
+        actual_cost_usd=0.0 if backend_id == "earthtojake_text_to_cad" else 0.75,
     )
     return _write(tmp_path / "cad_output.json", json.dumps(output))
 
@@ -212,6 +232,7 @@ def _graph_authoring_receipt(
     *,
     collision_isolated: bool = True,
     extra_renderable: bool = False,
+    door_translation: tuple[float, float, float] | None = None,
 ) -> Path:
     graph_usd = tmp_path / "graph.usda"
     stage = Usd.Stage.CreateNew(str(graph_usd))
@@ -221,7 +242,10 @@ def _graph_authoring_receipt(
     root.GetPrim().SetCustomDataByKey("blueprint:assetId", ASSET_ID)
     stage.SetDefaultPrim(root.GetPrim())
     body = UsdGeom.Xform.Define(stage, "/Asset/links/body")
-    UsdGeom.Xform.Define(stage, "/Asset/links/door")
+    door = UsdGeom.Xform.Define(stage, "/Asset/links/door")
+    if door_translation is not None:
+        door.AddTranslateOp().Set(Gf.Vec3d(*door_translation))
+        door.AddOrientOp().Set(Gf.Quatf(1.0, Gf.Vec3f(0.0, 0.0, 0.0)))
     proxy = UsdGeom.Cube.Define(stage, "/Asset/links/body/geometry/proxy")
     UsdPhysics.CollisionAPI.Apply(proxy.GetPrim())
     proxy.GetPrim().SetCustomDataByKey("blueprint:collisionGeometryOnly", True)
@@ -270,11 +294,13 @@ def _prepared(tmp_path: Path) -> tuple[Path, Path]:
             {
                 "agent_link_id": "body",
                 "graph_link_id": "body",
+                "transform_mode": "explicit_rigid_transform",
                 "T_graph_link_from_agent_asset": _identity(),
             },
             {
                 "agent_link_id": "door",
                 "graph_link_id": "door",
+                "transform_mode": "explicit_rigid_transform",
                 "T_graph_link_from_agent_asset": _identity(),
             },
         ],
@@ -323,11 +349,13 @@ def test_binding_rejects_nonrigid_agent_to_graph_transform(tmp_path: Path) -> No
                 {
                     "agent_link_id": "body",
                     "graph_link_id": "body",
+                    "transform_mode": "explicit_rigid_transform",
                     "T_graph_link_from_agent_asset": scaled,
                 },
                 {
                     "agent_link_id": "door",
                     "graph_link_id": "door",
+                    "transform_mode": "explicit_rigid_transform",
                     "T_graph_link_from_agent_asset": _identity(),
                 },
             ],
@@ -335,6 +363,102 @@ def test_binding_rejects_nonrigid_agent_to_graph_transform(tmp_path: Path) -> No
             output_path=tmp_path / "binding.json",
         )
     assert "agent_cad_visual_link_bindings_invalid" in caught.value.codes
+
+
+def test_binding_can_derive_link_local_transform_from_graph_reset_pose(
+    tmp_path: Path,
+) -> None:
+    step, projection = _mesh_projection(tmp_path / "projection")
+    cad_output = _cad_output(tmp_path / "cad", step=step)
+    graph = _graph_authoring_receipt(
+        tmp_path / "graph", door_translation=(0.0, 0.2, 0.3)
+    )
+    binding_path = tmp_path / "binding.json"
+    binding = seal_agent_cad_visual_binding(
+        graph_authoring_receipt_path=graph,
+        cad_agent_output_receipt_path=cad_output,
+        mesh_projection_receipt_path=projection,
+        link_bindings=[
+            {
+                "agent_link_id": "body",
+                "graph_link_id": "body",
+                "transform_mode": "explicit_rigid_transform",
+                "T_graph_link_from_agent_asset": _identity(),
+            },
+            {
+                "agent_link_id": "door",
+                "graph_link_id": "door",
+                "transform_mode": "graph_link_reset_inverse",
+            },
+        ],
+        unmapped_graph_link_reasons={},
+        output_path=binding_path,
+    )
+    door_binding = next(
+        row for row in binding["link_bindings"] if row["agent_link_id"] == "door"
+    )
+    assert door_binding["T_graph_link_from_agent_asset"] == [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, -0.2],
+        [0.0, 0.0, 1.0, -0.3],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    destination = tmp_path / "composed.usda"
+    materialize_agent_cad_visual_composition(
+        binding_path=binding_path, destination_usd_path=destination
+    )
+    stage = Usd.Stage.Open(str(destination))
+    visual = UsdGeom.Mesh(stage.GetPrimAtPath("/Asset/links/door/visuals/door__rim"))
+    assert list(visual.GetPointsAttr().Get())[0] == pytest.approx((0.0, -0.2, -0.29))
+
+
+def test_binding_selects_one_exact_candidate_from_a_verified_cad_matrix(
+    tmp_path: Path,
+) -> None:
+    step, projection = _mesh_projection(tmp_path / "projection")
+    earth_path = _cad_output(tmp_path / "earth", step=step)
+    multi_path = _cad_output(
+        tmp_path / "multi", step=step, backend_id="pan_chera_multi_agent_cad"
+    )
+    earth = json.loads(earth_path.read_text(encoding="utf-8"))
+    multi = json.loads(multi_path.read_text(encoding="utf-8"))
+    matrix = seal_cad_agent_matrix(
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": TASK_ID,
+                "asset_id": ASSET_ID,
+                "candidates": [earth, multi],
+            }
+        ]
+    )
+    matrix_path = _write(tmp_path / "matrix.json", json.dumps(matrix))
+    graph = _graph_authoring_receipt(tmp_path / "graph")
+    binding = seal_agent_cad_visual_binding(
+        graph_authoring_receipt_path=graph,
+        cad_agent_matrix_path=matrix_path,
+        cad_agent_backend_id="earthtojake_text_to_cad",
+        mesh_projection_receipt_path=projection,
+        link_bindings=[
+            {
+                "agent_link_id": "body",
+                "graph_link_id": "body",
+                "transform_mode": "explicit_rigid_transform",
+                "T_graph_link_from_agent_asset": _identity(),
+            },
+            {
+                "agent_link_id": "door",
+                "graph_link_id": "door",
+                "transform_mode": "explicit_rigid_transform",
+                "T_graph_link_from_agent_asset": _identity(),
+            },
+        ],
+        unmapped_graph_link_reasons={},
+        output_path=tmp_path / "binding.json",
+    )
+    assert binding["cad_agent_matrix"]["sha256"] == _record(matrix_path)["sha256"]
+    assert binding["cad_agent_backend_id"] == "earthtojake_text_to_cad"
+    assert binding["cad_agent_output_receipt_digest"] == earth["receipt_digest"]
 
 
 def test_binding_rejects_render_visible_graph_collision(tmp_path: Path) -> None:
@@ -350,11 +474,13 @@ def test_binding_rejects_render_visible_graph_collision(tmp_path: Path) -> None:
                 {
                     "agent_link_id": "body",
                     "graph_link_id": "body",
+                    "transform_mode": "explicit_rigid_transform",
                     "T_graph_link_from_agent_asset": _identity(),
                 },
                 {
                     "agent_link_id": "door",
                     "graph_link_id": "door",
+                    "transform_mode": "explicit_rigid_transform",
                     "T_graph_link_from_agent_asset": _identity(),
                 },
             ],
@@ -377,11 +503,13 @@ def test_binding_rejects_renderable_noncollision_graph_geometry(tmp_path: Path) 
                 {
                     "agent_link_id": "body",
                     "graph_link_id": "body",
+                    "transform_mode": "explicit_rigid_transform",
                     "T_graph_link_from_agent_asset": _identity(),
                 },
                 {
                     "agent_link_id": "door",
                     "graph_link_id": "door",
+                    "transform_mode": "explicit_rigid_transform",
                     "T_graph_link_from_agent_asset": _identity(),
                 },
             ],
