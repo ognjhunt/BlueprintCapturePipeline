@@ -17,9 +17,15 @@ from scripts.publish_task_evaluation_launch_profiles import publish_profiles
 COMMIT = "a" * 40
 
 
-def _guard(path: Path, *, status: str = "passed", live: int = 0) -> Path:
+def _guard(
+    path: Path, *, status: str = "passed", instances: list | None = None
+) -> Path:
+    rows = instances or []
     path.write_text(
-        json.dumps({"status": status, "live_instance_count": live}), encoding="utf-8"
+        json.dumps(
+            {"status": status, "live_instance_count": len(rows), "instances": rows}
+        ),
+        encoding="utf-8",
     )
     return path
 
@@ -120,8 +126,11 @@ def test_controls_profile_requires_provider_zero_and_present_inputs(
     """Its admission is its own, so each element of that admission must be real."""
     env = _release(tmp_path, monkeypatch)
 
-    _guard(env["guard"], status="passed", live=1)
-    with pytest.raises(builder.ProductionProfileBuildError, match="provider_not_zero"):
+    _guard(
+        env["guard"],
+        instances=[{"id": 1, "name": f"{builder.LANE_INSTANCE_PREFIX}1786"}],
+    )
+    with pytest.raises(builder.ProductionProfileBuildError, match="lane_instance_live"):
         builder.build_controls_profile_release(
             source_commit=COMMIT,
             repo_root=env["repo"],
@@ -131,7 +140,7 @@ def test_controls_profile_requires_provider_zero_and_present_inputs(
             output_dir=env["out"],
         )
 
-    _guard(env["guard"], status="blocked", live=0)
+    _guard(env["guard"], status="blocked")
     with pytest.raises(builder.ProductionProfileBuildError, match="provider_guard_not_passed"):
         builder.build_controls_profile_release(
             source_commit=COMMIT,
@@ -141,6 +150,21 @@ def test_controls_profile_requires_provider_zero_and_present_inputs(
             provider_guard_path=env["guard"],
             output_dir=env["out"],
         )
+
+    # A concurrent operator's unrelated instance must NOT block this lane.
+    _guard(
+        env["guard"],
+        instances=[{"id": 2, "name": "blueprint-native-deformable-asset-1786"}],
+    )
+    receipt = builder.build_controls_profile_release(
+        source_commit=COMMIT,
+        repo_root=env["repo"],
+        production_input_root=env["inputs"],
+        runtime_input_root=env["runtime_inputs"],
+        provider_guard_path=env["guard"],
+        output_dir=env["out"] / "concurrent",
+    )
+    assert receipt["status"] == "built"
 
     _guard(env["guard"])
     (env["runtime_inputs"] / builder.AURA_APPEARANCE_NAME).unlink()

@@ -79,6 +79,8 @@ HARNESS_MANIFEST_RELATIVE = MANIFEST_RELATIVE_ROOT / "adp009d_franka_eval_harnes
 SCENARIO_INSTANCE_RELATIVE = MANIFEST_RELATIVE_ROOT / "adp009d_canonical_scenario_instance.v1.json"
 SAGE_COLLISION_NAME = "840313_collision.usd"
 AURA_APPEARANCE_NAME = "aura_ghost_removed_appearance.usdz"
+# Instances this lane creates, used to scope the pre-freeze liveness check.
+LANE_INSTANCE_PREFIX = "blueprint-adp009d-"
 
 
 def profile_id_for_source_commit(source_commit: str) -> str:
@@ -114,8 +116,21 @@ def build_controls_profile_release(
     guard_report = _read(guard)
     if guard_report.get("status") != "passed":
         raise ProductionProfileBuildError("controls_profile_provider_guard_not_passed")
-    if guard_report.get("live_instance_count") != 0:
-        raise ProductionProfileBuildError("controls_profile_provider_not_zero")
+    # Scope the freeze to this lane rather than the whole fleet.  A concurrent
+    # operator's unrelated instance says nothing about whether this profile's
+    # inputs are sound, and demanding fleet-wide zero here would deadlock two
+    # engineers sharing one provider account.  Fleet-wide zero remains the gate
+    # for *claiming* provider zero after a run, which is a different claim.
+    lane_instances = [
+        row
+        for row in (guard_report.get("instances") or [])
+        if str((row or {}).get("name") or "").startswith(LANE_INSTANCE_PREFIX)
+    ]
+    if lane_instances:
+        raise ProductionProfileBuildError(
+            "controls_profile_lane_instance_live:"
+            + ",".join(sorted(str(row.get("id")) for row in lane_instances))
+        )
 
     approved_can = repo / APPROVED_CAN_RELATIVE
     harness_manifest = repo / HARNESS_MANIFEST_RELATIVE
