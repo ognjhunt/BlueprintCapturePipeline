@@ -539,6 +539,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     offset = _types.SimpleNamespace(convention="opengl")
                     camera_cfg.offset = offset
                 offset.pos = tuple(overview_plan["position_world_m"])
+                # wxyz per the camera source (opengl->opengl is a no-op and
+                # the tensor feeds create_prim directly). rt60's frame shows
+                # position right, aim off; the achieved-pose echo below turns
+                # that residual into recorded data instead of a convention
+                # guess - the xyzw reorder was eyeball-tested and REFUTED.
                 offset.rot = tuple(overview_plan["rotation_wxyz_opengl"])
                 offset.convention = "opengl"
                 camera_cfg.width = OVERVIEW_CAMERA_WIDTH
@@ -557,6 +562,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 camera_cfg.height = CAMERA_HEIGHT
         result["camera_resolution"] = [CAMERA_WIDTH, CAMERA_HEIGHT]
         _phase(result, "cameras_configured")
+
+        def _echo_achieved_camera_poses() -> None:
+            # The consumed pose, from Isaac itself. Intended-vs-achieved as
+            # recorded data ends the convention guessing: the overview aim
+            # correction becomes arithmetic on this echo.
+            echo = {}
+            for name in ("overview_camera", "external_camera", "wrist_camera"):
+                try:
+                    sensor = scene[name]
+                except Exception:  # noqa: BLE001 - echo is advisory
+                    continue
+                try:
+                    echo[name] = {
+                        "pos_w": [float(v) for v in _to_torch(sensor.data.pos_w)[0]],
+                        "quat_w_world": [
+                            float(v) for v in _to_torch(sensor.data.quat_w_world)[0]
+                        ],
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    echo[name] = {"unavailable": f"{type(exc).__name__}:{exc}"[:120]}
+            result["achieved_camera_poses"] = echo
+
+        adapter_holder["echo_camera_poses"] = _echo_achieved_camera_poses
 
         _phase(result, "embodiment_configured")
 
@@ -995,6 +1023,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         result["reset_diagnostic"] = reset_diagnostic
         _phase(result, "adapter_wired")
+        echo_cameras = adapter_holder.get("echo_camera_poses")
+        if callable(echo_cameras):
+            echo_cameras()
 
         # The one check rt51-rt53 lacked: is the twin standing where the join
         # receipt sealed it? Measured AFTER reset, because Arena's

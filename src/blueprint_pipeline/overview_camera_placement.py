@@ -189,6 +189,12 @@ def plan_overview_camera(
         "schema_version": OVERVIEW_CAMERA_PLACEMENT_SCHEMA_VERSION,
         "position_world_m": position,
         "rotation_wxyz_opengl": rotation_wxyz,
+        # rt60 ground truth: a pose emitted as documented (w,x,y,z) rendered
+        # the floor, and Arena's own external camera renders consistent with
+        # an (x,y,z,w) reading of its offset. Whatever the docs say, the
+        # running stack consumes xyzw here; both orderings are returned and
+        # the caller feeds the empirically-correct one.
+        "rotation_xyzw_opengl": rotation_wxyz[1:] + rotation_wxyz[:1],
         "receipt": {
             "scene_point_count": len(points),
             "bounding_centre_world_m": centre,
