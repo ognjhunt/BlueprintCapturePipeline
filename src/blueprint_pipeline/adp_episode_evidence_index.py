@@ -123,6 +123,44 @@ def _file_records_same_identity(left: Any, right: Any) -> bool:
     )
 
 
+def _agent_cad_identity(
+    *,
+    task_id: str,
+    replacement_slot: Any,
+    asset_id: str,
+    backend_id: str,
+) -> dict[str, Any]:
+    if (
+        not task_id
+        or not asset_id
+        or not backend_id
+        or not isinstance(replacement_slot, int)
+        or isinstance(replacement_slot, bool)
+        or not 1 <= replacement_slot <= 5
+    ):
+        raise EpisodeEvidenceIndexError("agent_cad_supporting_identity_invalid")
+    return {
+        "task_id": task_id,
+        "replacement_slot": replacement_slot,
+        "asset_id": asset_id,
+        "cad_agent_backend_id": backend_id,
+    }
+
+
+def _with_identity(
+    row: dict[str, Any], identity: Mapping[str, Any]
+) -> dict[str, Any]:
+    row.update(
+        {
+            "task_id": identity["task_id"],
+            "replacement_slot": identity["replacement_slot"],
+            "asset_id": identity["asset_id"],
+            "cad_agent_backend_id": identity["cad_agent_backend_id"],
+        }
+    )
+    return row
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     """Replace one owned artifact without exposing partially written bytes."""
 
@@ -203,6 +241,16 @@ def materialize_supporting_evidence_inventory(
                 "size_bytes": path.stat().st_size,
                 "portable_link_available": False,
                 "disclosure_class": disclosure_class,
+            }
+            | {
+                key: artifact[key]
+                for key in (
+                    "task_id",
+                    "replacement_slot",
+                    "asset_id",
+                    "cad_agent_backend_id",
+                )
+                if key in artifact
             }
         )
     if len({(row["role"], row["relative_path"]) for row in rows}) != len(rows):
@@ -442,6 +490,12 @@ def agent_cad_content_agents_supporting_artifacts(
         replacement_slot = item.get("replacement_slot")
         asset_id = str(item.get("asset_id") or "")
         backend_id = str(item.get("cad_agent_backend_id") or "")
+        identity = _agent_cad_identity(
+            task_id=task_id,
+            replacement_slot=replacement_slot,
+            asset_id=asset_id,
+            backend_id=backend_id,
+        )
         key = (replacement_slot, task_id, asset_id, backend_id)
         candidate = cad_outputs.get(key)
         if candidate is None:
@@ -454,51 +508,79 @@ def agent_cad_content_agents_supporting_artifacts(
             )
         prefix = f"agent_cad:{backend_id}"
         rows.append(
-            _external_file_record(
-                source,
-                candidate["artifacts"]["generator_source"],
-                role=f"{prefix}:generator_source",
+            _with_identity(
+                _external_file_record(
+                    source,
+                    candidate["artifacts"]["generator_source"],
+                    role=f"{prefix}:generator_source",
+                ),
+                identity,
             )
         )
         rows.append(
-            _external_file_record(
-                source,
-                candidate["request"]["inputs"]["cad_brief"],
-                role=f"{prefix}:cad_brief",
+            _with_identity(
+                _external_file_record(
+                    source,
+                    candidate["request"]["inputs"]["cad_brief"],
+                    role=f"{prefix}:cad_brief",
+                ),
+                identity,
             )
         )
         rows.append(
-            _external_file_record(
-                source,
-                candidate["execution"]["execution_receipt"],
-                role=f"{prefix}:execution_receipt",
+            _with_identity(
+                _external_file_record(
+                    source,
+                    candidate["execution"]["execution_receipt"],
+                    role=f"{prefix}:execution_receipt",
+                ),
+                identity,
             )
         )
         rows.append(
-            _external_file_record(
-                source,
-                candidate["artifacts"]["inspection_receipt"],
-                role=f"{prefix}:step_inspection_receipt",
+            _with_identity(
+                _external_file_record(
+                    source,
+                    candidate["artifacts"]["inspection_receipt"],
+                    role=f"{prefix}:step_inspection_receipt",
+                ),
+                identity,
             )
         )
         rows.append(
-            _external_file_record(
-                source, candidate["artifacts"]["step"], role=f"{prefix}:primary_step"
+            _with_identity(
+                _external_file_record(
+                    source,
+                    candidate["artifacts"]["step"],
+                    role=f"{prefix}:primary_step",
+                ),
+                identity,
             )
         )
         snapshots = candidate["artifacts"].get("snapshots") or []
         if snapshots:
             rows.append(
-                _external_file_record(
-                    source, snapshots[0], role=f"{prefix}:review_snapshot"
+                _with_identity(
+                    _external_file_record(
+                        source, snapshots[0], role=f"{prefix}:review_snapshot"
+                    ),
+                    identity,
                 )
             )
-        if task_id.startswith("task_a") and len(snapshots) > 1:
+        for snapshot_index, snapshot in enumerate(snapshots[1:], start=1):
+            suffix = (
+                "review_snapshot_open_or_diagnostic"
+                if snapshot_index == 1
+                else f"review_snapshot_extra_{snapshot_index:02d}"
+            )
             rows.append(
-                _external_file_record(
-                    source,
-                    snapshots[1],
-                    role=f"{prefix}:review_snapshot_open_or_diagnostic",
+                _with_identity(
+                    _external_file_record(
+                        source,
+                        snapshot,
+                        role=f"{prefix}:{suffix}",
+                    ),
+                    identity,
                 )
             )
         execution_path = Path(candidate["execution"]["execution_receipt"]["path"]).resolve()
@@ -535,32 +617,44 @@ def agent_cad_content_agents_supporting_artifacts(
                 "agent_cad_supporting_projection_join_mismatch"
             )
         rows.append(
-            _external_file_record(
-                source,
-                {
-                    "path": str(projection_path),
-                    "sha256": _prefixed_sha256(projection_path),
-                    "size_bytes": projection_path.stat().st_size,
-                },
-                role=f"{prefix}:mesh_projection_receipt",
+            _with_identity(
+                _external_file_record(
+                    source,
+                    {
+                        "path": str(projection_path),
+                        "sha256": _prefixed_sha256(projection_path),
+                        "size_bytes": projection_path.stat().st_size,
+                    },
+                    role=f"{prefix}:mesh_projection_receipt",
+                ),
+                identity,
             )
         )
         rows.append(
-            _external_file_record(
-                source, projection["packet"], role=f"{prefix}:mesh_packet"
+            _with_identity(
+                _external_file_record(
+                    source, projection["packet"], role=f"{prefix}:mesh_packet"
+                ),
+                identity,
             )
         )
         rows.append(
-            _external_file_record(
-                source,
-                projection["output_usd"],
-                role=f"{prefix}:mesh_usd_agent_input",
+            _with_identity(
+                _external_file_record(
+                    source,
+                    projection["output_usd"],
+                    role=f"{prefix}:mesh_usd_agent_input",
+                ),
+                identity,
             )
         )
-        bundle_receipt_row = _external_file_record(
-            source,
-            item["bundle_receipt"],
-            role=f"{prefix}:content_agents_bundle_receipt",
+        bundle_receipt_row = _with_identity(
+            _external_file_record(
+                source,
+                item["bundle_receipt"],
+                role=f"{prefix}:content_agents_bundle_receipt",
+            ),
+            identity,
         )
         bundle_receipt = _load_json(source / bundle_receipt_row["relative_path"])
         if (
@@ -575,10 +669,13 @@ def agent_cad_content_agents_supporting_artifacts(
             )
         rows.append(bundle_receipt_row)
         rows.append(
-            _external_file_record(
-                source,
-                item["bundle"],
-                role=f"{prefix}:content_agents_bundle_zip",
+            _with_identity(
+                _external_file_record(
+                    source,
+                    item["bundle"],
+                    role=f"{prefix}:content_agents_bundle_zip",
+                ),
+                identity,
             )
         )
         readiness_row = readiness_by_key.get(key)
@@ -624,7 +721,12 @@ def agent_cad_content_agents_supporting_artifacts(
                         "agent_cad_supporting_content_agents_readiness_join_mismatch"
                     )
                 rows.append(
-                    _external_file_record(source, record, role=f"{prefix}:{role_suffix}")
+                    _with_identity(
+                        _external_file_record(
+                            source, record, role=f"{prefix}:{role_suffix}"
+                        ),
+                        identity,
+                    )
                 )
 
     if matched == 0:

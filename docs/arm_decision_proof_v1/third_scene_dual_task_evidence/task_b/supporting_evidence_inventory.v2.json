@@ -1,222 +1,370 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 52,
+  "artifact_count": 56,
   "artifacts": [
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/notebook.md",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:cad_brief",
       "sha256": "sha256:cfc9ffc1d06536ef379267c383bb0b4c9f988f4940e5fc5c92d706c5ecaa4dc4",
       "size_bytes": 1971,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_receipt",
       "sha256": "sha256:820f70c30ee4933e10d0d8da4dd9ed20820d99c8f077e31b3c5138affbb6da95",
       "size_bytes": 15381,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_zip",
       "sha256": "sha256:20a36478e8a71108d97d43737a8b214dd248710cde3259b7379a0b2d7139beb3",
       "size_bytes": 48714222,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_static_preflight",
       "sha256": "sha256:4a19a331eb41ff27e48c64913ce030742d5c7d99bdae697da913ea8fab3578bf",
       "size_bytes": 8082,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/cad_agent_execution_receipt_manifest_bound.v1.json",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:execution_receipt",
       "sha256": "sha256:75cbf1fb6ec1efb6da2763e212fb802b4eddaf10c2437a4f1dc5c9c66bbc2741",
       "size_bytes": 2144,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/notebook.py",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:generator_source",
       "sha256": "sha256:b60721e11697918dae1a5bd5ac4f92383b1c495e08da2cc405886d2ecc977e3f",
       "size_bytes": 7158,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/content_agents_input_v1/mesh_packet.v1.json",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:mesh_packet",
       "sha256": "sha256:6bfff1f05a20dac615f7603e239afca66da8abda3c5afa2aee9ca823c53f71af",
       "size_bytes": 128818,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/content_agents_input_v1/projection_receipt.v1.json",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:mesh_projection_receipt",
       "sha256": "sha256:55289898152fda5008d3973eb315a8cfeb56411cddf31eebfacca356f55bf1be",
       "size_bytes": 5384,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/content_agents_input_v1/agent_input.usda",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:mesh_usd_agent_input",
       "sha256": "sha256:52ceda6a9b51dc79dcd9636f81c1468d24e2652ea1b73767d7a571cd46ffe1a7",
       "size_bytes": 195102,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/notebook.step",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:primary_step",
       "sha256": "sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c",
       "size_bytes": 1363752,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/snapshots/notebook_front_20260811T032706Z.png",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:review_snapshot",
       "sha256": "sha256:a256830781ec53eac8a84b49b48cb21214a0b9df9a803f925269ed332d6dfe78",
       "size_bytes": 53874,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/snapshots/notebook_top_20260811T032706Z.png",
+      "replacement_slot": 2,
+      "role": "agent_cad:earthtojake_text_to_cad:review_snapshot_extra_02",
+      "sha256": "sha256:ad588c145429033329d9a7b40d996850fc9eba57a657dcfb906795fce09544e2",
+      "size_bytes": 58418,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/snapshots/notebook_iso_20260811T032706Z.png",
+      "replacement_slot": 2,
+      "role": "agent_cad:earthtojake_text_to_cad:review_snapshot_open_or_diagnostic",
+      "sha256": "sha256:986772833fc48fbddc20817ec4fa2cc357b45cea59d3a48a351e6508f398712d",
+      "size_bytes": 335959,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/earthtojake_cad_v1/inspection_receipt_manifest_bound.v1.json",
+      "replacement_slot": 2,
       "role": "agent_cad:earthtojake_text_to_cad:step_inspection_receipt",
       "sha256": "sha256:e3432c614c758910c0f7a097e17ab82540ace6798fe6c38631a105cbc3c09287",
       "size_bytes": 1353,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/CADBrief.json",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:cad_brief",
       "sha256": "sha256:d138ffe5d9f627dcf833f2841b72a1c34eca2459537746ea9893223871b2986e",
       "size_bytes": 4281,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_receipt",
       "sha256": "sha256:3e02c9e0423d067d06ff6134ba3a2d8697bbd1b695baf400e8d32a8cdc90117e",
       "size_bytes": 19038,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_zip",
       "sha256": "sha256:2bff37fc6dc58c5c19090fbe785a550f85661dce17f9af2a61052137dfa1c8d6",
       "size_bytes": 48939101,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_static_preflight",
       "sha256": "sha256:5c896e31d10b84fc0329baad77f3cadb9c37cc526af06a9937a117fd5b1ae909",
       "size_bytes": 11727,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/cad_agent_execution_receipt_manifest_bound.v1.json",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:execution_receipt",
       "sha256": "sha256:085b40a26c8811fd6c19e2901b5654bd03856c38bb05bb696f17bcb2de1fc752",
       "size_bytes": 2311,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/notebook_mac_codex.py",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:generator_source",
       "sha256": "sha256:ed7d6b39f5a7682947dc724dc18d676ab7734c8be04163e1d549fba9c68767a5",
       "size_bytes": 18798,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_input_v1/mesh_packet.v1.json",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:mesh_packet",
       "sha256": "sha256:168e13a3c8b03520f5f5db6f9f408b1a485b723536f652a2237ccdc3dddf4da2",
       "size_bytes": 4272004,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_input_v1/projection_receipt.v1.json",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:mesh_projection_receipt",
       "sha256": "sha256:d8a080b87bf1063d9380c4ff7d5827021ee47d4ee4542aca06ef93531796d0d4",
       "size_bytes": 8932,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_input_v1/agent_input.usda",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:mesh_usd_agent_input",
       "sha256": "sha256:a0afcce7930ef8b0abbd526dcb85164c54cdc1ad9c6d42373e316bc16a1685f5",
       "size_bytes": 3678405,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/notebook_mac_codex.step",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:primary_step",
       "sha256": "sha256:fb72f8e3f23a1260a54bd0620bf994ba09bd58d37cbcfec93134c9213e33863b",
       "size_bytes": 4611779,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/snapshots/notebook_mac_codex_front_20260811T042241Z.png",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:review_snapshot",
       "sha256": "sha256:1a8256da6d7800228ebf52064e1294784efe880801e57c020b9c36f1a3aaa707",
       "size_bytes": 73052,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/snapshots/notebook_mac_codex_top_20260811T042241Z.png",
+      "replacement_slot": 2,
+      "role": "agent_cad:pan_chera_multi_agent_cad:review_snapshot_extra_02",
+      "sha256": "sha256:a042246d66cbbc3f7d8a6229297eaf8d88d777eae25e079e2c8f084f09c046df",
+      "size_bytes": 89407,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/snapshots/notebook_mac_codex_iso_20260811T042241Z.png",
+      "replacement_slot": 2,
+      "role": "agent_cad:pan_chera_multi_agent_cad:review_snapshot_open_or_diagnostic",
+      "sha256": "sha256:7b8c3aedab856a51e03bb92a0b2f8892ed02ba4d678b818c784268688061c5d7",
+      "size_bytes": 434093,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_b/multi_agent_cad_codex_v1/inspection_receipt_manifest_bound.v1.json",
+      "replacement_slot": 2,
       "role": "agent_cad:pan_chera_multi_agent_cad:step_inspection_receipt",
       "sha256": "sha256:8980923958f07b5ea36ca4f3c53b46833dd37f50c1f73159747b6bc1d5020fd7",
       "size_bytes": 1369,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
     },
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
@@ -472,7 +620,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:cc0c63e89bb84de51807b0040b0d0950a3a053a6aba6d64de7518f895f2467ea",
+  "inventory_digest": "sha256:15a98a0244d329f25724499887190f38fb5a950da6da2d98151ca674c30e0646",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,

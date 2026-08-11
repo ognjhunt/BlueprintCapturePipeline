@@ -1,240 +1,370 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 54,
+  "artifact_count": 56,
   "artifacts": [
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/washer.md",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:cad_brief",
       "sha256": "sha256:436c45fdece4b529fbcf3b40c92f0fc507a60897b903d5e8ae53f82417e0fe4e",
       "size_bytes": 2037,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_receipt",
       "sha256": "sha256:d63aec7817acefe3fe7db4ce4764fd72ab87a6c196213f56b3ff7d61af592bf9",
       "size_bytes": 12372,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_zip",
       "sha256": "sha256:b044299c9ce006267af0daa728b3782fe3da02c99c396ff3c6c70102c4ece568",
       "size_bytes": 48755267,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_static_preflight",
       "sha256": "sha256:596e5e5a1d4a60d9ab811c369ca6b00c786f30bce6749354949189aead065e51",
       "size_bytes": 5078,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/cad_agent_execution_receipt_manifest_bound.v1.json",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:execution_receipt",
       "sha256": "sha256:2bd35adabdef157f05656c006f15d3242056ea1a905fb13bdfa47be7195244d4",
       "size_bytes": 2137,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/washer.py",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:generator_source",
       "sha256": "sha256:b5c9726c74113714130e7ba75dbe846fa7f23a1f5e1cfe7a362b1fc7121de443",
       "size_bytes": 5994,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/content_agents_input_v1/mesh_packet.v1.json",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:mesh_packet",
       "sha256": "sha256:b93f963ebfa6f06af1daf91a84f52ecdabc286a5bc11b98ece26251d1c7a8189",
       "size_bytes": 351001,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/content_agents_input_v1/projection_receipt.v1.json",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:mesh_projection_receipt",
       "sha256": "sha256:549a19976d536c4db2b325562c96fc07a8ba163ba3cf40ac40767d53ae2b4fed",
       "size_bytes": 2505,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/content_agents_input_v1/agent_input.usda",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:mesh_usd_agent_input",
       "sha256": "sha256:a302bfdea80d0c5ce096a7b273945cca050499639a612c45d0c7406795430157",
       "size_bytes": 295583,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/washer.step",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:primary_step",
       "sha256": "sha256:d1db5a6d354923899894b45753a8b9ce8a6c41acccd053c42fcd199cf91a950a",
       "size_bytes": 189042,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/snapshots/washer_front_20260811T032703Z.png",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:review_snapshot",
       "sha256": "sha256:e87fde520f057b7a4422cfb9de43d2ab72494cdca695c9ca58121d329a5dccc5",
       "size_bytes": 103037,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_a/earthtojake_cad_v1/snapshots/washer_side_20260811T032703Z.png",
+      "replacement_slot": 1,
+      "role": "agent_cad:earthtojake_text_to_cad:review_snapshot_extra_02",
+      "sha256": "sha256:8687fc93ee6b221689c604d34056c25bbb9129b9bf5b12ab1f3b5a636cd0f1c3",
+      "size_bytes": 53865,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
+    },
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/snapshots/washer_iso_20260811T032703Z.png",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:review_snapshot_open_or_diagnostic",
       "sha256": "sha256:b99cd497013c5d8600c291bce374097194dd542ce6229c0601bfc45ec14e9f7d",
       "size_bytes": 228757,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/earthtojake_cad_v1/inspection_receipt_manifest_bound.v1.json",
+      "replacement_slot": 1,
       "role": "agent_cad:earthtojake_text_to_cad:step_inspection_receipt",
       "sha256": "sha256:74e96065a718a6d4ecd8563f2e1f6c5f6273175ab3f614dba6bf3a2936eecf71",
       "size_bytes": 1333,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/cad_brief.json",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:cad_brief",
       "sha256": "sha256:c22331092b3ef08bd06233171bde385d9629d0bdc784f99cc6749f06eda6c68b",
       "size_bytes": 4429,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_receipt",
       "sha256": "sha256:417a8efd0b26b4b68991ede1dca2fc62b21ff244f7e4bd19c6af02385c813238",
       "size_bytes": 14228,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_zip",
       "sha256": "sha256:67a5aeace70e5ea87f011cd1fe16fe10730191bb56069095c592846299488199",
       "size_bytes": 48792475,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_static_preflight",
       "sha256": "sha256:2d29ab06583dfae767627d562a0d60a1c5ed52fbb5a080e3debd741fef917f06",
       "size_bytes": 6917,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/cad_agent_execution_receipt_manifest_bound.v1.json",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:execution_receipt",
       "sha256": "sha256:cbb29e53790f91d3fb2350d9edd5c8bb0485948a7ad99044846f33a3adb64315",
       "size_bytes": 2313,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/washer_mac_codex.py",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:generator_source",
       "sha256": "sha256:df466aac89cc8665ecfc76d3406eae2bd2d69c5dacbb3e0d9516b25c42595080",
       "size_bytes": 15377,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_input_v1/mesh_packet.v1.json",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:mesh_packet",
       "sha256": "sha256:9ef84f045f7311bfe47a529d3950f3c11927585fb4016772a983b2129fb541ba",
       "size_bytes": 768230,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_input_v1/projection_receipt.v1.json",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:mesh_projection_receipt",
       "sha256": "sha256:54cc98a49699bcd78aecbbdf1db68d977e662e0322643a7db1a694b012fab894",
       "size_bytes": 4319,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_input_v1/agent_input.usda",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:mesh_usd_agent_input",
       "sha256": "sha256:18711b7d6f6075b7f309c532b81572236049043c309955dff658a9432430ee7e",
       "size_bytes": 667737,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/washer_mac_codex_closed.step",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:primary_step",
       "sha256": "sha256:509af5523b4fa4c66c0a7304b0c33ab5fa862a7174436e6495c22974913efa74",
       "size_bytes": 518861,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/snapshots/washer_mac_codex_front.png",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:review_snapshot",
       "sha256": "sha256:5b41cdf7e3253ffc8a483dd7dc10b1585651f53666f4bd7ed3a715c5706f18c0",
       "size_bytes": 196369,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_a/multi_agent_cad_codex_v1/snapshots/washer_mac_codex_side.png",
+      "replacement_slot": 1,
+      "role": "agent_cad:pan_chera_multi_agent_cad:review_snapshot_extra_02",
+      "sha256": "sha256:2b9f1f568d3f27ec95b6d653b1f002f2ce573b0748bb2281cdbddfe57985825e",
+      "size_bytes": 79356,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
+    },
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/snapshots/washer_mac_codex_open_55deg_front.png",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:review_snapshot_open_or_diagnostic",
       "sha256": "sha256:d1fa31f1e41cd1dfbb01d2fa628091a8a13507bc9fb5afc7f5383558535d0bbf",
       "size_bytes": 145524,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
       "relative_path": "task_a/multi_agent_cad_codex_v1/inspection_receipt_manifest_bound.v1.json",
+      "replacement_slot": 1,
       "role": "agent_cad:pan_chera_multi_agent_cad:step_inspection_receipt",
       "sha256": "sha256:c9033f75c0d9bac4e5c482075647b02099755d71fe4455dc7d93713969318b5a",
       "size_bytes": 1350,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
     },
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
@@ -490,7 +620,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:18101da6d9ed10eb95f6772b0e812ad0da951a06df15b883c0ce3d3fa17bb9a4",
+  "inventory_digest": "sha256:62103ce321a55fb21e006e93b94eae37521867a7c56c8b63f82da597edb450ed",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,

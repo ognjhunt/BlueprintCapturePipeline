@@ -58,6 +58,19 @@ def _write_text_or_bytes(path: Path, payload: str | bytes) -> Path:
     return path
 
 
+def _task_freeze_fixture(root: Path, *, task_id: str, asset_id: str) -> Path:
+    freeze = json.loads(TASK_A_FREEZE.read_text(encoding="utf-8"))
+    freeze["task_id"] = task_id
+    freeze["removal_plan"]["replacement_asset_id"] = asset_id
+    freeze["task_freeze_digest"] = canonical_digest(
+        freeze, digest_field="task_freeze_digest"
+    )
+    path = root / f"{task_id}_freeze.v1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(freeze, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
 def _cad_backend(root: Path, backend_id: str) -> dict[str, object]:
     archive = root / f"source-{backend_id}.zip"
     archive.parent.mkdir(parents=True, exist_ok=True)
@@ -89,9 +102,16 @@ def _cad_backend(root: Path, backend_id: str) -> dict[str, object]:
 
 
 def _cad_output_fixture(
-    source_root: Path, *, backend_id: str, slot: int = 1
+    source_root: Path,
+    *,
+    backend_id: str,
+    slot: int = 1,
+    task_id: str = "task_a_washer_door_open",
+    asset_id: str = "840920_simready_washer_candidate",
+    task_freeze_path: Path = TASK_A_FREEZE,
+    snapshot_count: int = 1,
 ) -> dict[str, object]:
-    candidate_root = source_root / "task_a" / backend_id
+    candidate_root = source_root / task_id / f"slot_{slot}" / backend_id
     brief = _write_text_or_bytes(candidate_root / "brief.md", "CAD brief\n")
     reference = _write_text_or_bytes(candidate_root / "reference.png", b"PNG")
     reference_manifest = seal_cad_agent_reference_manifest(
@@ -99,9 +119,9 @@ def _cad_output_fixture(
         objects=[
             {
                 "replacement_slot": slot,
-                "task_id": "task_a_washer_door_open",
-                "asset_id": "840920_simready_washer_candidate",
-                "task_freeze_path": TASK_A_FREEZE,
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "task_freeze_path": task_freeze_path,
                 "reference_image_paths": [reference],
             }
         ],
@@ -114,18 +134,21 @@ def _cad_output_fixture(
     request = seal_cad_agent_request(
         request_id=f"request-{slot}-{backend_id}",
         scene_id="fixture_scene",
-        task_id="task_a_washer_door_open",
-        asset_id="840920_simready_washer_candidate",
+        task_id=task_id,
+        asset_id=asset_id,
         replacement_slot=slot,
         backend=_cad_backend(source_root / "sources", backend_id),
-        task_freeze_path=TASK_A_FREEZE,
+        task_freeze_path=task_freeze_path,
         cad_brief_path=brief,
         metric_envelope_mm=[600.0, 604.0, 848.0],
         reference_manifest_path=reference_manifest_path,
     )
     generator = _write_text_or_bytes(candidate_root / "candidate.py", "pass\n")
     step = _write_text_or_bytes(candidate_root / "candidate.step", b"STEP")
-    snapshot = _write_text_or_bytes(candidate_root / "snapshot.png", b"PNG")
+    snapshots = [
+        _write_text_or_bytes(candidate_root / f"snapshot_{index:02d}.png", b"PNG")
+        for index in range(snapshot_count)
+    ]
     inspection = candidate_root / "inspection.json"
     inspection_payload = {
         "schema_version": INSPECTION_SCHEMA_VERSION,
@@ -170,7 +193,7 @@ def _cad_output_fixture(
         generator_source_path=generator,
         step_path=step,
         inspection_receipt_path=inspection,
-        snapshot_paths=[snapshot],
+        snapshot_paths=snapshots,
         execution_receipt_path=execution,
         measured_envelope_mm=[600.0, 604.0, 848.0],
         actual_cost_usd=0.0,
@@ -267,7 +290,12 @@ def _content_bundle_matrix(*, fixture_rows: list[dict[str, object]]) -> dict[str
         "replacement_object_capacity": {
             "minimum": 1,
             "maximum": 5,
-            "sealed_slots": 1,
+            "sealed_slots": len(
+                {
+                    fixture["output"]["request"]["replacement_slot"]
+                    for fixture in fixture_rows
+                }
+            ),
         },
         "candidate_count": len(items),
         "items": items,
@@ -294,12 +322,9 @@ def _preflight_receipt(
     relative_name: str,
 ) -> dict[str, object]:
     output = fixture["output"]
-    request = output["request"]
-    backend_id = request["backend"]["backend_id"]
+    candidate_root = Path(output["execution"]["execution_receipt"]["path"]).parent
     path = (
-        source_root
-        / "task_a"
-        / backend_id
+        candidate_root
         / "content_agents_bundle"
         / relative_name
     )
@@ -774,6 +799,29 @@ def test_agent_cad_content_agents_rows_materialize_task_inventory(
         in roles
     )
     assert "agent_cad:pan_chera_multi_agent_cad:mesh_projection_receipt" in roles
+    agent_rows = [row for row in rows if row["role"].startswith("agent_cad:")]
+    assert {
+        (
+            row["task_id"],
+            row["replacement_slot"],
+            row["asset_id"],
+            row["cad_agent_backend_id"],
+        )
+        for row in agent_rows
+    } == {
+        (
+            "task_a_washer_door_open",
+            1,
+            "840920_simready_washer_candidate",
+            "earthtojake_text_to_cad",
+        ),
+        (
+            "task_a_washer_door_open",
+            1,
+            "840920_simready_washer_candidate",
+            "pan_chera_multi_agent_cad",
+        ),
+    }
     inventory = materialize_supporting_evidence_inventory(
         source_root=source_root,
         output_root=output_root,
@@ -784,6 +832,116 @@ def test_agent_cad_content_agents_rows_materialize_task_inventory(
     )
     assert inventory["artifact_count"] == len(rows)
     assert inventory["artifact_bytes_embedded"] is False
+    assert {
+        row["replacement_slot"]
+        for row in inventory["artifacts"]
+        if row["role"].startswith("agent_cad:")
+    } == {1}
+
+
+def test_agent_cad_content_agents_rows_filter_five_slots_with_explicit_identity(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "external"
+    output_root = tmp_path / "package"
+    output_root.mkdir()
+    fixture_rows = []
+    objects = []
+    for slot in range(1, 6):
+        task_id = f"task_{slot}_replacement"
+        asset_id = f"asset_{slot}"
+        task_freeze_path = _task_freeze_fixture(
+            tmp_path / "freezes", task_id=task_id, asset_id=asset_id
+        )
+        candidates = []
+        for backend_id in (
+            "earthtojake_text_to_cad",
+            "pan_chera_multi_agent_cad",
+        ):
+            fixture = _cad_output_fixture(
+                source_root,
+                backend_id=backend_id,
+                slot=slot,
+                task_id=task_id,
+                asset_id=asset_id,
+                task_freeze_path=task_freeze_path,
+                snapshot_count=2,
+            )
+            fixture_rows.append(fixture)
+            candidates.append(fixture["output"])
+        objects.append(
+            {
+                "replacement_slot": slot,
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "candidates": candidates,
+            }
+        )
+    cad_matrix = seal_cad_agent_matrix(objects=objects)
+    bundle_matrix = _content_bundle_matrix(fixture_rows=fixture_rows)
+    readiness = _content_execution_readiness(
+        bundle_matrix=bundle_matrix,
+        fixture_rows=fixture_rows,
+        source_root=source_root,
+    )
+
+    rows = agent_cad_content_agents_supporting_artifacts(
+        source_root=source_root,
+        cad_agent_matrix=cad_matrix,
+        content_agents_bundle_matrix=bundle_matrix,
+        content_agents_execution_readiness=readiness,
+        task_id="task_3_replacement",
+    )
+
+    agent_rows = [row for row in rows if row["role"].startswith("agent_cad:")]
+    assert agent_rows
+    assert {row["task_id"] for row in agent_rows} == {"task_3_replacement"}
+    assert {row["replacement_slot"] for row in agent_rows} == {3}
+    assert {row["asset_id"] for row in agent_rows} == {"asset_3"}
+    assert {
+        row["cad_agent_backend_id"] for row in agent_rows
+    } == {"earthtojake_text_to_cad", "pan_chera_multi_agent_cad"}
+    assert not any("/slot_1/" in row["relative_path"] for row in rows)
+    assert not any("/slot_5/" in row["relative_path"] for row in rows)
+    assert {
+        row["role"]
+        for row in rows
+        if row["role"].endswith(":review_snapshot_open_or_diagnostic")
+    } == {
+        "agent_cad:earthtojake_text_to_cad:review_snapshot_open_or_diagnostic",
+        "agent_cad:pan_chera_multi_agent_cad:review_snapshot_open_or_diagnostic",
+    }
+
+    inventory = materialize_supporting_evidence_inventory(
+        source_root=source_root,
+        output_root=output_root,
+        output_relative_path="supporting_evidence_inventory.v1.json",
+        source_root_id="fixture_rights_bounded_root",
+        artifacts=rows,
+        disclosure_class="digest_receipt_only",
+    )
+    assert {
+        (
+            row["task_id"],
+            row["replacement_slot"],
+            row["asset_id"],
+            row["cad_agent_backend_id"],
+        )
+        for row in inventory["artifacts"]
+    } == {
+        (
+            "task_3_replacement",
+            3,
+            "asset_3",
+            "earthtojake_text_to_cad",
+        ),
+        (
+            "task_3_replacement",
+            3,
+            "asset_3",
+            "pan_chera_multi_agent_cad",
+        ),
+    }
 
 
 def test_agent_cad_content_agents_rows_omit_missing_local_docker_preflight(
