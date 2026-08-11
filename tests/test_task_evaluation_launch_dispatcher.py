@@ -17,7 +17,9 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     dispatch_launch_request,
     load_public_launch_profile_catalog,
     process_launch_queue,
+    public_launch_profile_descriptor,
     stage_launch_request,
+    validate_launch_request_against_public_catalog,
     validate_launch_profile,
     validate_launch_request,
     validate_public_launch_profile_descriptor,
@@ -291,6 +293,50 @@ def test_stage_replay_cannot_requeue_a_terminal_launch(tmp_path: Path) -> None:
     assert replay["status"] == "completed"
     assert replay["queue_path"] == str(completed_path)
     assert not list((queue_root / "pending").glob("*.json"))
+
+
+def test_dispatch_rejects_a_profile_absent_from_the_published_catalog(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [])
+    calls: list[list[str]] = []
+
+    assert validate_launch_request_against_public_catalog(
+        request, catalog_path=catalog_path
+    ) == ["launch_profile_not_published"]
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        public_catalog_path=catalog_path,
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert "launch_profile_not_published" in receipt["blockers"]
+    assert receipt["provider_mutation_attempted"] is False
+    assert calls == []
+
+
+def test_public_catalog_binds_request_fields_to_the_published_descriptor(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [public_launch_profile_descriptor(profile)])
+    request["source_bundle"] = {
+        **request["source_bundle"],
+        "uri": "gs://blueprint-runs/tampered-source.json",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+
+    assert validate_launch_request_against_public_catalog(
+        request, catalog_path=catalog_path
+    ) == ["launch_profile_public_catalog_source_bundle_mismatch"]
 
 
 def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(

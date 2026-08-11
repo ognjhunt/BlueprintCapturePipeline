@@ -9,6 +9,9 @@ canonical paid-resource allocator used by the maintained CLI path.
 
 1. The WebApp records an admin/ops rights, spend, and execution authority
    envelope and sends one digest-bound `task_evaluation_launch_request.v1`.
+   Both the signed intake and dispatcher independently require that request to
+   match the publisher-generated profile catalog; immutable historical profile
+   files are retained for evidence but cannot be newly queued or executed.
 2. `task_evaluation_launch_dispatcher` owns the durable pending -> processing ->
    completed/blocked state machine. Terminal or processing replays never invoke
    paid work again; the paid retry cap is zero.
