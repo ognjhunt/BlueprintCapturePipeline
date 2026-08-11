@@ -167,6 +167,96 @@ def validate_simready_replacement_native_import_receipt(
     return payload
 
 
+def _verify_native_import_receipt_evidence(
+    *,
+    native_import_path: Path,
+    native_import: Mapping[str, Any],
+    expected_scene_freeze_digest: str,
+    expected_task_freeze_digest: str,
+    expected_static_qualification_digest: str,
+    expected_asset_sha256: str,
+) -> None:
+    evidence = native_import.get("evidence_receipts")
+    errors: list[str] = []
+    if not isinstance(evidence, Mapping):
+        raise SimReadyReplacementNativeQualificationError(
+            ["simready_replacement_native_import_evidence_missing"]
+        )
+    required = {
+        "scene_freeze": ("dual_task_scene_freeze.v1", expected_scene_freeze_digest),
+        "task_freeze": ("dual_task_task_freeze.v1", expected_task_freeze_digest),
+        "static_qualification": (
+            STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+            expected_static_qualification_digest,
+        ),
+    }
+    for receipt_id, (schema_version, expected_digest) in required.items():
+        record = evidence.get(receipt_id)
+        if not (
+            isinstance(record, Mapping)
+            and isinstance(record.get("path"), str)
+            and bool(str(record.get("path") or "").strip())
+            and isinstance(record.get("size_bytes"), int)
+            and not isinstance(record.get("size_bytes"), bool)
+            and int(record.get("size_bytes")) > 0
+            and _digest(record.get("sha256"))
+            and record.get("schema_version") == schema_version
+            and record.get("canonical_digest") == expected_digest
+        ):
+            errors.append(f"simready_replacement_native_import_evidence_invalid:{receipt_id}")
+    execution_record = evidence.get("native_import_execution")
+    if not (
+        isinstance(execution_record, Mapping)
+        and isinstance(execution_record.get("path"), str)
+        and bool(str(execution_record.get("path") or "").strip())
+        and isinstance(execution_record.get("size_bytes"), int)
+        and not isinstance(execution_record.get("size_bytes"), bool)
+        and int(execution_record.get("size_bytes")) > 0
+        and _digest(execution_record.get("sha256"))
+        and execution_record.get("schema_version")
+        == NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION
+        and execution_record.get("canonical_digest")
+        == native_import.get("execution_digest")
+    ):
+        errors.append(
+            "simready_replacement_native_import_evidence_invalid:"
+            "native_import_execution"
+        )
+    if not errors:
+        execution_path = Path(str(execution_record["path"])).expanduser().resolve()
+        if execution_path == native_import_path:
+            errors.append(
+                "simready_replacement_native_import_evidence_invalid:"
+                "native_import_execution"
+            )
+        else:
+            try:
+                execution = json.loads(execution_path.read_text(encoding="utf-8"))
+                validate_simready_replacement_native_import_execution(execution)
+            except (
+                OSError,
+                json.JSONDecodeError,
+                SimReadyReplacementNativeQualificationError,
+            ):
+                errors.append(
+                    "simready_replacement_native_import_evidence_invalid:"
+                    "native_import_execution"
+                )
+            else:
+                if (
+                    execution.get("execution_digest")
+                    != native_import.get("execution_digest")
+                    or execution.get("replacement_asset_sha256") != expected_asset_sha256
+                    or execution.get("asset_id") != native_import.get("asset_id")
+                ):
+                    errors.append(
+                        "simready_replacement_native_import_evidence_mismatch:"
+                        "native_import_execution"
+                    )
+    if errors:
+        raise SimReadyReplacementNativeQualificationError(errors)
+
+
 def validate_simready_replacement_native_import_execution(
     value: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -397,6 +487,14 @@ def materialize_simready_replacement_native_qualification(
         errors.append("simready_replacement_native_asset_digest_mismatch")
     if native.get("native_simulator_import_qualified") is not True:
         errors.append("simready_replacement_native_import_not_qualified")
+    _verify_native_import_receipt_evidence(
+        native_import_path=native_path,
+        native_import=native,
+        expected_scene_freeze_digest=str(scene["scene_freeze_digest"]),
+        expected_task_freeze_digest=str(task["task_freeze_digest"]),
+        expected_static_qualification_digest=str(static["receipt_digest"]),
+        expected_asset_sha256=str(static_asset),
+    )
     if errors:
         raise SimReadyReplacementNativeQualificationError(errors)
 

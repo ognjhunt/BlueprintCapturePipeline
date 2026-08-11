@@ -22,6 +22,8 @@ from blueprint_pipeline.simready_graph_asset_static_qualification import (
 )
 from blueprint_pipeline.simready_replacement_native_qualification import (
     NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+    NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+    SimReadyReplacementNativeQualificationError,
     materialize_simready_replacement_native_import_receipt,
     materialize_simready_replacement_native_qualification,
 )
@@ -535,6 +537,61 @@ def test_path_backed_materializer_rejects_replacement_without_native_evidence(
     assert any(
         "replacement_qualification:0_native_evidence_missing" in error
         for error in excinfo.value.errors
+    )
+
+
+def test_replacement_qualification_rejects_hand_authored_native_import_receipt(
+    tmp_path: Path,
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path, object_count=1)
+    task_path = Path(lanes[0]["task_freeze_receipt_path"])
+    task = json.loads(task_path.read_text(encoding="utf-8"))
+    removal = task["removal_plan"]
+    source = task["source_object"]
+    static = json.loads(
+        (tmp_path / "lane_0" / "static_qualification.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    hand_authored_native_import = _write_receipt(
+        tmp_path / "lane_0" / "hand_authored_native_import.json",
+        {
+            "schema_version": NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+            "status": "native_import_qualified",
+            "scene_id": "840920",
+            "scene_freeze_digest": json.loads(scene_path.read_text(encoding="utf-8"))[
+                "scene_freeze_digest"
+            ],
+            "task_id": task["task_id"],
+            "task_freeze_digest": task["task_freeze_digest"],
+            "source_object_instance_id": source["instance_id"],
+            "asset_id": removal["replacement_asset_id"],
+            "replacement_qualification_id": removal["replacement_qualification_id"],
+            "replacement_asset_sha256": static["replacement_usd"]["sha256"],
+            "native_isaac_executed": True,
+            "native_simulator_import_qualified": True,
+            "physical_equivalence_claimed": False,
+            "execution_digest": _num_sha(99),
+            "static_qualification_receipt_digest": static["receipt_digest"],
+            "simulator_import_identity": {"runtime": "hand_authored_fixture"},
+            "native_readback": {"asset_imported": True},
+            "receipt_digest": "",
+        },
+    )
+
+    with pytest.raises(SimReadyReplacementNativeQualificationError) as excinfo:
+        materialize_simready_replacement_native_qualification(
+            scene_freeze_receipt_path=scene_path,
+            task_freeze_receipt_path=task_path,
+            static_qualification_receipt_path=tmp_path
+            / "lane_0"
+            / "static_qualification.json",
+            native_import_receipt_path=hand_authored_native_import,
+            output_path=tmp_path / "blocked_replacement.json",
+        )
+
+    assert "simready_replacement_native_import_evidence_missing" in (
+        excinfo.value.codes
     )
 
 
