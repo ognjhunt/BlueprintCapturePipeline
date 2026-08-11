@@ -181,6 +181,62 @@ def test_embedded_runtime_result_writer_is_valid_python(tmp_path: Path) -> None:
     assert '+ "\\n")' in embedded_python
 
 
+def test_embedded_runtime_result_writer_retains_worker_failure_logs(
+    tmp_path: Path,
+) -> None:
+    source, runtime_path, runtime = _fixture(tmp_path)
+    receipt = build_native_deformable_asset_provider_bundle(
+        job_dir=tmp_path / "bundle",
+        source_package_receipt_path=source,
+        runtime_source_packet_receipt_path=runtime_path,
+        implementation_commit="a" * 40,
+        package_source_root=Path(__file__).parents[1] / "src" / "blueprint_pipeline",
+        container_image="registry.example/isaac@sha256:" + "b" * 64,
+        runtime_source_packet_verifier=lambda _: runtime,
+    )
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        entrypoint = archive.read(
+            "provider_runtime/run_native_deformable_asset_provider_runtime.sh"
+        ).decode()
+
+    embedded_python = entrypoint.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    out = tmp_path / "runtime_output"
+    out.mkdir()
+    (out / "native_deformable_asset_preparation_worker_stdout.log").write_text(
+        "worker stdout before crash\n"
+    )
+    (out / "native_deformable_asset_preparation_worker_stderr.log").write_text(
+        "Traceback: fixture native failure\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-", str(out), "0", "1"],
+        input=embedded_python,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    terminal = json.loads(
+        (out / "native_deformable_asset_preparation_worker_terminal.v1.json").read_text()
+    )
+    assert terminal["status"] == "blocked"
+    assert terminal["errors"] == [
+        "native_deformable_asset_worker_failed_without_terminal_receipt"
+    ]
+    assert terminal["worker_logs"]["stderr"]["present"] is True
+    assert "fixture native failure" in terminal["worker_logs"]["stderr"]["tail"]
+    result = json.loads(
+        (out / "native_deformable_asset_vast_execution.v1.json").read_text()
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "native_deformable_asset_worker_failed_without_terminal_receipt"
+    ]
+    assert result["worker_returncode"] == 1
+    assert result["worker_logs"]["stdout"]["sha256"].startswith("sha256:")
+
+
 def test_source_package_tamper_fails_before_bundle_materialization(tmp_path: Path) -> None:
     source, runtime_path, runtime = _fixture(tmp_path)
     (source.parent / "source" / "asset.usd").write_bytes(b"tampered")

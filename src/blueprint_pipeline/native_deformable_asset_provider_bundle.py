@@ -228,12 +228,15 @@ if [ $provision_rc -eq 0 ]; then
     --package-root "$RUNTIME_DIR/input_package" \
     --output-root "$OUT_DIR/prepared_asset" \
     --isaaclab-source-root "$RUNTIME_DIR/provisioned_runtime_sources/runtime_sources/isaaclab" \
-    --terminal-output "$OUT_DIR/native_deformable_asset_preparation_worker_terminal.v1.json"
+    --terminal-output "$OUT_DIR/native_deformable_asset_preparation_worker_terminal.v1.json" \
+    > "$OUT_DIR/native_deformable_asset_preparation_worker_stdout.log" \
+    2> "$OUT_DIR/native_deformable_asset_preparation_worker_stderr.log"
   worker_rc=$?
 else
   worker_rc=2
 fi
 /isaac-sim/python.sh - "$OUT_DIR" "$provision_rc" "$worker_rc" <<'PY'
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -241,7 +244,43 @@ out = Path(sys.argv[1])
 provision_rc = int(sys.argv[2])
 worker_rc = int(sys.argv[3])
 terminal_path = out / "native_deformable_asset_preparation_worker_terminal.v1.json"
-terminal = json.loads(terminal_path.read_text()) if terminal_path.is_file() else {{}}
+def _log_receipt(name):
+    path = out / name
+    if not path.is_file():
+        return {{"present": False, "path": str(path)}}
+    data = path.read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    return {{
+        "present": True,
+        "path": str(path),
+        "size_bytes": len(data),
+        "sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+        "tail": text[-4000:],
+    }}
+worker_logs = {{
+    "stdout": _log_receipt("native_deformable_asset_preparation_worker_stdout.log"),
+    "stderr": _log_receipt("native_deformable_asset_preparation_worker_stderr.log"),
+}}
+if terminal_path.is_file():
+    terminal = json.loads(terminal_path.read_text())
+else:
+    terminal = {{
+        "schema_version": "native_deformable_asset_preparation_worker_terminal.v1",
+        "status": "blocked",
+        "expected_plan_digest": {digest},
+        "worker_result_digest": None,
+        "errors": ["native_deformable_asset_worker_failed_without_terminal_receipt"],
+        "worker_returncode": worker_rc,
+        "worker_logs": worker_logs,
+        "claim_boundary": {{
+            "worker_payload_only": True,
+            "trusted_execution_authority": False,
+            "native_cook_qualified": False,
+            "simulator_qualified": False,
+            "physical_material_equivalence": False,
+        }},
+    }}
+    terminal_path.write_text(json.dumps(terminal, sort_keys=True, indent=2) + "\\n")
 ok = provision_rc == 0 and worker_rc == 0 and str(terminal.get("status", "")).startswith("worker_payload_materialized")
 result = {{
     "schema_version": "native_deformable_asset_vast_execution.v1",
@@ -252,6 +291,8 @@ result = {{
     "native_isaac_executed": bool(provision_rc == 0),
     "worker_terminal_status": terminal.get("status"),
     "worker_result_digest": terminal.get("worker_result_digest"),
+    "worker_returncode": worker_rc,
+    "worker_logs": worker_logs,
     "provider_zero_required_after_return": True,
     "native_qualification_requires_trusted_return_verification": True,
 }}
