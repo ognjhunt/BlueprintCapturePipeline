@@ -45,3 +45,30 @@ def test_the_cause_is_bounded_so_blockers_stay_loggable():
     blocker = blocker_with_cause("prefix", ValueError("x" * 5000))
 
     assert len(blocker) <= 400
+
+
+def test_terminal_interrupt_hardening_ignores_sigint_and_sighup():
+    """rt58b and rt58c both died to stray terminal signals mid-probe -
+    $0.05 of aborted instances for signals no human sent. A paid probe in
+    flight must not be interruptible by the session plumbing around it;
+    deliberate stops use SIGTERM, which stays honored."""
+
+    import signal
+
+    from blueprint_pipeline.paid_resource_allocator import (
+        harden_against_terminal_interrupts,
+    )
+
+    before_int = signal.getsignal(signal.SIGINT)
+    before_hup = signal.getsignal(signal.SIGHUP)
+    before_term = signal.getsignal(signal.SIGTERM)
+    try:
+        ignored = harden_against_terminal_interrupts()
+
+        assert set(ignored) == {"SIGINT", "SIGHUP"}
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGTERM) is before_term
+    finally:
+        signal.signal(signal.SIGINT, before_int)
+        signal.signal(signal.SIGHUP, before_hup)

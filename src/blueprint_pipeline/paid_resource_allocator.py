@@ -427,6 +427,25 @@ def _source_checkout_blockers(
 BLOCKER_CAUSE_MAXIMUM_CHARACTERS = 400
 
 
+def harden_against_terminal_interrupts() -> list[str]:
+    """Ignore SIGINT and SIGHUP for the rest of this process.
+
+    rt58b and rt58c each aborted a paid probe mid-flight to stray terminal
+    signals no human sent - the session plumbing around a launch (task
+    wrappers, pty cleanup) can deliver INT or HUP minutes after the launch
+    call returned. A probe holding a live instance must not be killable by
+    its own scaffolding: teardown discipline depends on the allocator
+    finishing its own protocol. SIGTERM stays honored as the deliberate
+    stop channel.
+    """
+
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    return ["SIGHUP", "SIGINT"]
+
+
 def blocker_with_cause(prefix: str, exc: BaseException) -> str:
     """A blocker that carries the exception's own explanation.
 
