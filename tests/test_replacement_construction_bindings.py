@@ -21,9 +21,10 @@ from blueprint_pipeline.simready_graph_asset_static_qualification import (
     SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
 )
 from blueprint_pipeline.simready_replacement_native_qualification import (
-    NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+    NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION,
     NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
     SimReadyReplacementNativeQualificationError,
+    materialize_simready_replacement_native_import_execution,
     materialize_simready_replacement_native_import_receipt,
     materialize_simready_replacement_native_qualification,
 )
@@ -179,8 +180,8 @@ def _write_receipt(path: Path, payload: dict) -> Path:
     return path
 
 
-def _write_execution(path: Path, payload: dict) -> Path:
-    payload["execution_digest"] = canonical_digest(payload, digest_field="execution_digest")
+def _write_result(path: Path, payload: dict) -> Path:
+    payload["result_digest"] = canonical_digest(payload, digest_field="result_digest")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     return path
@@ -326,29 +327,41 @@ def _path_backed_packet(
                 "receipt_digest": "",
             },
         )
-        native_execution = _write_execution(
-            lane_root / "native_import_execution.json",
+        native_probe = _write_result(
+            lane_root / "native_import_probe_result.json",
             {
-                "schema_version": NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+                "schema_version": NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION,
                 "status": "completed",
                 "asset_id": removal["replacement_asset_id"],
                 "replacement_asset_sha256": asset_sha256,
                 "native_isaac_executed": True,
                 "native_simulator_import_qualified": True,
                 "physical_equivalence_claimed": False,
+                "candidate_policy_queried": False,
+                "blockers": [],
                 "simulator_import_identity": {
                     "runtime": "fixture_native_import",
                     "imported_prim_path": f"/World/{removal['replacement_asset_id']}",
                 },
-                "native_readback": {"asset_imported": True},
-                "execution_digest": "",
+                "native_readback": {
+                    "asset_imported": True,
+                    "imported_prim_path": f"/World/{removal['replacement_asset_id']}",
+                },
+                "result_digest": "",
             },
         )
+        native_execution = materialize_simready_replacement_native_import_execution(
+            static_qualification_receipt_path=static,
+            native_import_probe_result_path=native_probe,
+            output_path=lane_root / "native_import_execution.json",
+        )
+        native_execution_path = lane_root / "native_import_execution.json"
+        assert native_execution["asset_id"] == removal["replacement_asset_id"]
         native_import = materialize_simready_replacement_native_import_receipt(
             scene_freeze_receipt_path=scene_path,
             task_freeze_receipt_path=task_path,
             static_qualification_receipt_path=static,
-            native_import_execution_receipt_path=native_execution,
+            native_import_execution_receipt_path=native_execution_path,
             output_path=lane_root / "native_import.json",
         )
         native_import_path = lane_root / "native_import.json"
@@ -592,6 +605,44 @@ def test_replacement_qualification_rejects_hand_authored_native_import_receipt(
 
     assert "simready_replacement_native_import_evidence_missing" in (
         excinfo.value.codes
+    )
+
+
+def test_native_import_execution_rejects_blocked_probe_result(tmp_path: Path) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path, object_count=1)
+    del scene_path, lanes
+    static_path = tmp_path / "lane_0" / "static_qualification.json"
+    static = json.loads(static_path.read_text(encoding="utf-8"))
+    blocked_probe = _write_result(
+        tmp_path / "lane_0" / "blocked_probe.json",
+        {
+            "schema_version": NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "asset_id": static["asset_id"],
+            "replacement_asset_sha256": static["replacement_usd"]["sha256"],
+            "native_isaac_executed": False,
+            "native_simulator_import_qualified": False,
+            "physical_equivalence_claimed": False,
+            "candidate_policy_queried": False,
+            "blockers": ["native_import_probe_runtime_failed"],
+            "simulator_import_identity": {"runtime": "fixture_native_import"},
+            "native_readback": {"asset_imported": False},
+            "result_digest": "",
+        },
+    )
+
+    with pytest.raises(SimReadyReplacementNativeQualificationError) as excinfo:
+        materialize_simready_replacement_native_import_execution(
+            static_qualification_receipt_path=static_path,
+            native_import_probe_result_path=blocked_probe,
+            output_path=tmp_path / "blocked_execution.json",
+        )
+
+    assert any(
+        code.startswith(
+            "simready_replacement_native_import_execution_input_invalid:"
+        )
+        for code in excinfo.value.codes
     )
 
 

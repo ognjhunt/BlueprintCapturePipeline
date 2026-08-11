@@ -20,7 +20,8 @@ from blueprint_pipeline.simready_graph_asset_static_qualification import (
     SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
 )
 from blueprint_pipeline.simready_replacement_native_qualification import (
-    NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+    NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION,
+    materialize_simready_replacement_native_import_execution,
     materialize_simready_replacement_native_import_receipt,
     materialize_simready_replacement_native_qualification,
 )
@@ -42,6 +43,10 @@ def _write(path: Path, payload: dict, *, field: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(sealed, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _write_result(path: Path, payload: dict) -> Path:
+    return _write(path, payload, field="result_digest")
 
 
 def _scene_freeze(tmp_path: Path) -> Path:
@@ -354,24 +359,34 @@ def test_derived_source_removal_receipt_feeds_construction_bindings(
         },
         field="receipt_digest",
     )
-    native_execution_path = _write(
-        tmp_path / "native_import_execution.json",
+    native_probe_path = _write_result(
+        tmp_path / "native_import_probe_result.json",
         {
-            "schema_version": NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+            "schema_version": NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION,
             "status": "completed",
             "asset_id": removal["replacement_asset_id"],
             "replacement_asset_sha256": asset_sha256,
             "native_isaac_executed": True,
             "native_simulator_import_qualified": True,
             "physical_equivalence_claimed": False,
+            "candidate_policy_queried": False,
+            "blockers": [],
             "simulator_import_identity": {
                 "runtime": "fixture_native_import",
                 "imported_prim_path": "/World/replacement_fixture",
             },
-            "native_readback": {"asset_imported": True},
-            "execution_digest": "",
+            "native_readback": {
+                "asset_imported": True,
+                "imported_prim_path": "/World/replacement_fixture",
+            },
+            "result_digest": "",
         },
-        field="execution_digest",
+    )
+    native_execution_path = tmp_path / "native_import_execution.json"
+    materialize_simready_replacement_native_import_execution(
+        static_qualification_receipt_path=static_path,
+        native_import_probe_result_path=native_probe_path,
+        output_path=native_execution_path,
     )
     native_import_path = tmp_path / "native_import.json"
     materialize_simready_replacement_native_import_receipt(

@@ -36,6 +36,9 @@ NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION = "simready_replacement_native_import_recei
 NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION = (
     "simready_replacement_native_import_execution.v1"
 )
+NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION = (
+    "simready_replacement_native_import_probe_result.v1"
+)
 
 
 class SimReadyReplacementNativeQualificationError(ValueError):
@@ -303,6 +306,155 @@ def validate_simready_replacement_native_import_execution(
     return payload
 
 
+def validate_simready_replacement_native_import_probe_result(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a retained native import probe result before qualification."""
+
+    try:
+        payload = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise SimReadyReplacementNativeQualificationError(
+            ["simready_replacement_native_import_probe_result_invalid"]
+        ) from exc
+    errors: list[str] = []
+    if not _canonical_receipt_valid(
+        payload,
+        schema_version=NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION,
+        status="completed",
+        digest_field="result_digest",
+    ):
+        errors.append("simready_replacement_native_import_probe_result_invalid")
+    if payload.get("native_isaac_executed") is not True:
+        errors.append("simready_replacement_native_import_probe_execution_missing")
+    if payload.get("native_simulator_import_qualified") is not True:
+        errors.append("simready_replacement_native_import_probe_not_qualified")
+    if payload.get("physical_equivalence_claimed") is not False:
+        errors.append("simready_replacement_native_import_probe_physical_claim_invalid")
+    if payload.get("candidate_policy_queried") is not False:
+        errors.append("simready_replacement_native_import_probe_policy_queried")
+    if not _digest(payload.get("replacement_asset_sha256")):
+        errors.append("simready_replacement_native_import_probe_asset_digest_invalid")
+    if not str(payload.get("asset_id") or ""):
+        errors.append("simready_replacement_native_import_probe_asset_id_missing")
+    import_identity = payload.get("simulator_import_identity")
+    if not isinstance(import_identity, Mapping) or not str(
+        import_identity.get("runtime") or ""
+    ):
+        errors.append("simready_replacement_native_import_probe_identity_unbound")
+    readback = payload.get("native_readback")
+    if (
+        not isinstance(readback, Mapping)
+        or readback.get("asset_imported") is not True
+        or not str(readback.get("imported_prim_path") or "")
+    ):
+        errors.append("simready_replacement_native_import_probe_readback_missing")
+    if payload.get("blockers") not in ([], ()):
+        errors.append("simready_replacement_native_import_probe_blockers_present")
+    if errors:
+        raise SimReadyReplacementNativeQualificationError(errors)
+    return payload
+
+
+def materialize_simready_replacement_native_import_execution(
+    *,
+    static_qualification_receipt_path: str | Path,
+    native_import_probe_result_path: str | Path,
+    output_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Derive an import execution receipt from a retained native probe result."""
+
+    static_path, static = _read_json(
+        static_qualification_receipt_path,
+        role="static_qualification",
+    )
+    probe_path, raw_probe = _read_json(
+        native_import_probe_result_path,
+        role="native_import_probe_result",
+    )
+    try:
+        probe = validate_simready_replacement_native_import_probe_result(raw_probe)
+    except SimReadyReplacementNativeQualificationError as exc:
+        raise SimReadyReplacementNativeQualificationError(
+            [
+                "simready_replacement_native_import_execution_input_invalid:"
+                f"{code}"
+                for code in exc.codes
+            ]
+        ) from exc
+    errors: list[str] = []
+    if not _canonical_receipt_valid(
+        static,
+        schema_version=STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+        status="authored_structure_statically_qualified",
+    ):
+        errors.append(
+            "simready_replacement_native_import_execution_static_qualification_invalid"
+        )
+    static_asset = (static.get("replacement_usd") or {}).get("sha256")
+    if not _digest(static_asset):
+        errors.append(
+            "simready_replacement_native_import_execution_static_asset_digest_invalid"
+        )
+    if probe.get("replacement_asset_sha256") != static_asset:
+        errors.append(
+            "simready_replacement_native_import_execution_asset_digest_mismatch"
+        )
+    if probe.get("asset_id") != static.get("asset_id"):
+        errors.append("simready_replacement_native_import_execution_asset_id_mismatch")
+    if errors:
+        raise SimReadyReplacementNativeQualificationError(errors)
+    result: dict[str, Any] = {
+        "schema_version": NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+        "status": "completed",
+        "asset_id": str(probe["asset_id"]),
+        "replacement_asset_sha256": str(probe["replacement_asset_sha256"]),
+        "native_isaac_executed": True,
+        "native_simulator_import_qualified": True,
+        "physical_equivalence_claimed": False,
+        "simulator_import_identity": json.loads(
+            json.dumps(probe["simulator_import_identity"], sort_keys=True)
+        ),
+        "native_readback": json.loads(
+            json.dumps(probe["native_readback"], sort_keys=True)
+        ),
+        "evidence_receipts": {
+            "static_qualification": _file_record(
+                static_path, static, digest_field="receipt_digest"
+            ),
+            "native_import_probe_result": _file_record(
+                probe_path, probe, digest_field="result_digest"
+            ),
+        },
+        "claim_boundary": {
+            "native_simulator_import_qualified": True,
+            "simulator_execution_is_not_physical_truth": True,
+            "appearance_materially_qualified": False,
+            "joint_physics_behavior_qualified": bool(
+                probe.get("joint_physics_behavior_qualified", False)
+            ),
+            "contact_or_support_qualified": bool(
+                probe.get("contact_or_support_qualified", False)
+            ),
+            "physical_equivalence_proven": False,
+        },
+        "execution_digest": "",
+    }
+    result["execution_digest"] = canonical_digest(
+        result,
+        digest_field="execution_digest",
+    )
+    if output_path is not None:
+        destination = Path(output_path).expanduser().resolve()
+        if destination.exists() or destination.is_symlink():
+            raise SimReadyReplacementNativeQualificationError(
+                ["simready_replacement_native_import_execution_output_exists"]
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(canonical_json(result) + "\n", encoding="utf-8")
+    return result
+
+
 def materialize_simready_replacement_native_import_receipt(
     *,
     scene_freeze_receipt_path: str | Path,
@@ -551,11 +703,14 @@ def materialize_simready_replacement_native_qualification(
 
 __all__ = [
     "NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION",
+    "NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION",
     "NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "SimReadyReplacementNativeQualificationError",
+    "materialize_simready_replacement_native_import_execution",
     "materialize_simready_replacement_native_import_receipt",
     "materialize_simready_replacement_native_qualification",
     "validate_simready_replacement_native_import_execution",
+    "validate_simready_replacement_native_import_probe_result",
     "validate_simready_replacement_native_import_receipt",
 ]
