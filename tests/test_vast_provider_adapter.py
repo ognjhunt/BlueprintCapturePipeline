@@ -1812,6 +1812,10 @@ def test_vast_adapter_blocks_paid_launch_when_existing_instance_active(
     lock_manifest = _read_json(job_dir / "vast_launch_lock_manifest.json")
     assert lock_manifest["status"] == "released"
     assert lock_manifest["lock_released"] is True
+    assert lock_manifest["lock_release_record_written"] is True
+    lock_record = json.loads(vpa._vast_launch_lock_path().read_text(encoding="utf-8"))
+    assert lock_record["purpose"] == "vast_paid_instance_launch_single_flight_guard_release"
+    assert "job_dir" not in lock_record
     teardown = _read_json(job_dir / "vast_teardown_manifest.json")
     assert teardown["status"] == "not_required_prelaunch_inventory_guard_blocked"
     assert teardown["continuing_spend_from_this_run"] is False

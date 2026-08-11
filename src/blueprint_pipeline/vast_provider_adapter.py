@@ -5302,16 +5302,36 @@ def _release_vast_launch_lock(
     if handle is None:
         return None
     lock_path = Path(handle.name).expanduser()
+    timestamp = generated_at or utc_now_iso()
+    release_record = {
+        "released_at": timestamp,
+        "pid": os.getpid(),
+        "purpose": "vast_paid_instance_launch_single_flight_guard_release",
+    }
+    release_record_written = False
+    release_record_error: str | None = None
     try:
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(json.dumps(release_record, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            release_record_written = True
+        except OSError as exc:
+            release_record_error = type(exc).__name__
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     finally:
         handle.close()
     manifest = {
         "schema_version": "vast_launch_lock_manifest.v1",
-        "generated_at": generated_at or utc_now_iso(),
+        "generated_at": timestamp,
         "status": "released",
         "lock_path": str(lock_path),
         "lock_released": True,
+        "lock_release_record_written": release_record_written,
+        "lock_release_record": release_record,
+        "lock_release_record_error": release_record_error,
         "raw_secret_values_recorded": False,
     }
     if job_dir is not None:
