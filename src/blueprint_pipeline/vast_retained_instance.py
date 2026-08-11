@@ -194,11 +194,17 @@ def bind_all_in_cost(
     instance_id: int,
     disk_gb: int,
     max_live_minutes: int,
+    max_hourly_rate: float,
     hard_cap_usd: float,
 ) -> dict[str, Any]:
     compute_rate = float(selected_offer["hourly_rate_usd"])
-    all_in_rate = _number(instance_payload.get("dph_total"))
-    storage_rate = _number(instance_payload.get("storage_total_cost"))
+    # The single-instance endpoint wraps the live row in ``instances``.  Offer
+    # search reports the compute ask, while the created row's ``dph_total`` is
+    # the authoritative post-allocation rate including the requested disk.  A
+    # top-level-only read silently discarded that storage surcharge.
+    instance_row = _mapping(instance_payload.get("instances")) or instance_payload
+    all_in_rate = _number(instance_row.get("dph_total"))
+    storage_rate = _number(instance_row.get("storage_total_cost"))
     if all_in_rate is not None and all_in_rate > 0:
         selected_offer.update(
             compute_hourly_rate_usd=compute_rate,
@@ -214,6 +220,8 @@ def bind_all_in_cost(
         "compute_hourly_rate_usd": compute_rate,
         "storage_hourly_rate_usd": storage_rate,
         "all_in_hourly_rate_usd": selected_offer["hourly_rate_usd"],
+        "max_hourly_rate_usd": max_hourly_rate,
+        "all_in_hourly_rate_under_max": selected_offer["hourly_rate_usd"] <= max_hourly_rate,
         "max_live_minutes": max_live_minutes,
         "projected_all_in_cost_usd": projected_cost,
         "hard_cap_usd": hard_cap_usd,

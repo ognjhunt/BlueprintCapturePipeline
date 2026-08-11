@@ -3,7 +3,10 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -18,6 +21,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     build_comparison_design_contract,
     build_comparison_receipt,
     build_newton_canary_admission,
+    build_newton_canary_terminal_receipt,
     normalize_physics_backend,
     validate_backend_probe,
     validate_backend_profile,
@@ -36,6 +40,180 @@ COMMITTED_DESIGN = (
     / "docs/arm_decision_proof_v1/manifests/"
     "adp009d_physics_backend_comparison.v1.json"
 )
+
+
+def _newton_terminal_inputs() -> dict[str, dict]:
+    profile = build_backend_profile("newton")
+    return {
+        "admission": {
+            "schema_version": CANARY_ADMISSION_SCHEMA_VERSION,
+            "status": "passed",
+            "backend_profile_digest": profile["profile_digest"],
+            "controls_only": True,
+            "policy_query_allowed": False,
+            "retry_cap": 0,
+            "max_spend_usd": 2.0,
+            "admission_digest": "sha256:admission",
+        },
+        "bundle_receipt": {
+            "status": "ready",
+            "physics_backend": "newton",
+            "physics_backend_profile_digest": profile["profile_digest"],
+            "controls_requested": True,
+            "policy_candidate_id": None,
+            "candidate_policy_queried": False,
+            "candidate_outcomes_accessed": False,
+            "retry_cap": 0,
+            "implementation_commit": "a" * 40,
+            "bundle_sha256": "sha256:bundle",
+            "input_digest": "sha256:input",
+            "scenario_instance_digest": "sha256:scenario",
+            "control_plan_digest": "sha256:plan",
+            "control_plan_semantic_digest": "sha256:semantic",
+        },
+        "allocator_result": {
+            "status": "blocked",
+            "blockers": ["adp009d_backend_runtime_version_mismatch"],
+            "retry_cap": 0,
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+        },
+        "native_result": {
+            "schema_version": "adp009d_native_microcheck.v1",
+            "status": "blocked",
+            "blockers": ["adp009d_backend_runtime_version_mismatch"],
+            "candidate_policy_queried": False,
+            "candidate_outcomes_accessed": False,
+        },
+        "artifact_manifest": {
+            "status": "completed",
+            "blockers": [],
+            "file_count": 20,
+            "total_size_bytes": 234318,
+            "manifest_digest": "sha256:artifacts",
+            "required_roles": ["provider_runtime_evidence", "teardown_manifest"],
+            "observed_roles": ["provider_runtime_evidence", "teardown_manifest"],
+        },
+        "teardown_manifest": {
+            "status": "completed",
+            "vast_instance_ids": [123],
+            "runner_gpu_teardown_completed": True,
+            "continuing_spend_from_this_run": False,
+            "teardown_actions_performed": [
+                {
+                    "instance_id": 123,
+                    "action": "destroy_instance",
+                    "status": "completed",
+                }
+            ],
+        },
+        "provider_inventory": {
+            "schema_version": "gpu_spend_guard.v1",
+            "generated_at": "2026-08-11T17:59:10+00:00",
+            "live_instance_count": 0,
+            "instances": [],
+            "blockers": [],
+            "inventory_results": [
+                {
+                    "provider": provider,
+                    "required": True,
+                    "status": "succeeded",
+                    "row_count": 0,
+                    "blockers": [],
+                }
+                for provider in ("runpod", "vast", "digitalocean")
+            ],
+        },
+        "vast_charge": {
+            "type": "instance",
+            "source": "instance-123",
+            "amount": 0.321,
+            "items": [
+                {"type": "gpu", "description": "gpu", "amount": 0.25},
+                {"type": "disk", "description": "disk", "amount": 0.058},
+                {"type": "bwd", "description": "network", "amount": 0.013},
+            ],
+        },
+    }
+
+
+def test_newton_blocked_canary_retains_terminal_comparison_evidence() -> None:
+    receipt = build_newton_canary_terminal_receipt(**_newton_terminal_inputs())
+
+    assert receipt["status"] == "blocked"
+    assert receipt["scientific_phase"] == "pre_controls_blocked"
+    assert receipt["media_gap"]["status"] == "typed_gap"
+    assert receipt["spend"]["actual_provider_charge_usd"] == 0.321
+    assert receipt["provider_zero"]["api_confirmed"] is True
+    assert receipt["provider_zero"]["live_instance_count"] == 0
+    assert receipt["policy_verdict"] is None
+    assert receipt["engine_promotion_performed"] is False
+    assert receipt["claim_ceiling"] == "controls_comparison_evidence_only"
+    assert receipt["terminal_receipt_digest"] == canonical_digest(
+        receipt, digest_field="terminal_receipt_digest"
+    )
+
+
+def test_newton_terminal_receipt_rejects_nonzero_provider_inventory() -> None:
+    inputs = _newton_terminal_inputs()
+    inputs["provider_inventory"]["live_instance_count"] = 1
+
+    with pytest.raises(
+        PhysicsBackendContractError,
+        match="adp009d_newton_terminal_provider_zero_invalid",
+    ):
+        build_newton_canary_terminal_receipt(**inputs)
+
+
+def test_newton_terminal_receipt_cli_compiles_retained_evidence(
+    tmp_path: Path,
+) -> None:
+    inputs = _newton_terminal_inputs()
+    vast_charge = inputs.pop("vast_charge")
+    paths: dict[str, Path] = {}
+    for name, value in inputs.items():
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        paths[name] = path
+    billing_path = tmp_path / "vast_billing_response.json"
+    billing_path.write_text(
+        json.dumps({"results": [vast_charge]}), encoding="utf-8"
+    )
+    output_path = tmp_path / "terminal_receipt.json"
+    script = (
+        ROOT / "scripts/build_adp009d_newton_canary_terminal_receipt.py"
+    )
+    command = [sys.executable, str(script)]
+    for name, path in paths.items():
+        command.extend((f"--{name.replace('_', '-')}", str(path)))
+    command.extend(
+        (
+            "--vast-billing-response",
+            str(billing_path),
+            "--output",
+            str(output_path),
+        )
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    receipt = json.loads(output_path.read_text(encoding="utf-8"))
+    assert receipt["status"] == "blocked"
+    assert receipt["scientific_phase"] == "pre_controls_blocked"
+    assert receipt["spend"]["actual_provider_charge_usd"] == 0.321
+    assert receipt["terminal_receipt_digest"] == canonical_digest(
+        receipt, digest_field="terminal_receipt_digest"
+    )
 
 
 def _probe(profile: dict) -> dict:

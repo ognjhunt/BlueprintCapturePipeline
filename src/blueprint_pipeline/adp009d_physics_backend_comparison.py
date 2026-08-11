@@ -22,6 +22,7 @@ DEFAULT_PHYSICS_BACKEND = "physx"
 BACKEND_PROFILE_SCHEMA_VERSION = "adp009d_physics_backend_profile.v1"
 PROBE_SCHEMA_VERSION = "adp009d_physics_backend_probe.v1"
 CANARY_ADMISSION_SCHEMA_VERSION = "adp009d_newton_canary_admission.v1"
+CANARY_TERMINAL_SCHEMA_VERSION = "adp009d_newton_canary_terminal.v1"
 CONTROL_RUN_SCHEMA_VERSION = "adp009d_physics_backend_control_run.v1"
 COMPARISON_SCHEMA_VERSION = "adp009d_physics_backend_comparison.v1"
 
@@ -640,6 +641,214 @@ def build_newton_canary_admission(
     return receipt
 
 
+def build_newton_canary_terminal_receipt(
+    *,
+    admission: Mapping[str, Any],
+    bundle_receipt: Mapping[str, Any],
+    allocator_result: Mapping[str, Any],
+    native_result: Mapping[str, Any],
+    artifact_manifest: Mapping[str, Any],
+    teardown_manifest: Mapping[str, Any],
+    provider_inventory: Mapping[str, Any],
+    vast_charge: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal a paid Newton canary's terminal evidence without a verdict."""
+
+    profile = build_backend_profile("newton")
+    if (
+        admission.get("schema_version") != CANARY_ADMISSION_SCHEMA_VERSION
+        or admission.get("status") != "passed"
+        or admission.get("backend_profile_digest") != profile["profile_digest"]
+        or admission.get("controls_only") is not True
+        or admission.get("policy_query_allowed") is not False
+        or admission.get("retry_cap") != 0
+    ):
+        raise PhysicsBackendContractError("adp009d_newton_terminal_admission_invalid")
+    if (
+        bundle_receipt.get("status") != "ready"
+        or bundle_receipt.get("physics_backend") != "newton"
+        or bundle_receipt.get("physics_backend_profile_digest")
+        != profile["profile_digest"]
+        or bundle_receipt.get("controls_requested") is not True
+        or bundle_receipt.get("policy_candidate_id") not in {None, ""}
+        or bundle_receipt.get("candidate_policy_queried") is not False
+        or bundle_receipt.get("candidate_outcomes_accessed") is not False
+        or bundle_receipt.get("retry_cap") != 0
+    ):
+        raise PhysicsBackendContractError("adp009d_newton_terminal_bundle_invalid")
+    native_status = native_result.get("status")
+    native_blockers = sorted(
+        {str(item) for item in native_result.get("blockers") or [] if str(item)}
+    )
+    if (
+        native_result.get("schema_version") != "adp009d_native_microcheck.v1"
+        or native_status not in {"completed", "blocked"}
+        or (native_status == "blocked") is not bool(native_blockers)
+        or native_result.get("candidate_policy_queried") is not False
+        or native_result.get("candidate_outcomes_accessed") is not False
+        or allocator_result.get("status") != native_status
+        or sorted(allocator_result.get("blockers") or []) != native_blockers
+        or allocator_result.get("retry_cap") != 0
+        or allocator_result.get("continuing_spend_from_this_run") is not False
+        or allocator_result.get("all_staged_objects_absent") is not True
+    ):
+        raise PhysicsBackendContractError("adp009d_newton_terminal_runtime_invalid")
+    instance_ids = teardown_manifest.get("vast_instance_ids")
+    actions = teardown_manifest.get("teardown_actions_performed")
+    if (
+        teardown_manifest.get("status") != "completed"
+        or not isinstance(instance_ids, list)
+        or len(instance_ids) != 1
+        or isinstance(instance_ids[0], bool)
+        or not isinstance(instance_ids[0], int)
+        or teardown_manifest.get("runner_gpu_teardown_completed") is not True
+        or teardown_manifest.get("continuing_spend_from_this_run") is not False
+        or not isinstance(actions, list)
+        or len(actions) != 1
+        or actions[0].get("instance_id") != instance_ids[0]
+        or actions[0].get("action") != "destroy_instance"
+        or actions[0].get("status") != "completed"
+    ):
+        raise PhysicsBackendContractError("adp009d_newton_terminal_teardown_invalid")
+    required_inventory = {
+        str(row.get("provider")): dict(row)
+        for row in provider_inventory.get("inventory_results") or []
+        if isinstance(row, Mapping) and row.get("required") is True
+    }
+    if (
+        provider_inventory.get("schema_version") != "gpu_spend_guard.v1"
+        or provider_inventory.get("live_instance_count") != 0
+        or provider_inventory.get("instances") != []
+        or provider_inventory.get("blockers") != []
+        or set(required_inventory) != {"runpod", "vast", "digitalocean"}
+        or any(
+            row.get("status") != "succeeded"
+            or row.get("row_count") != 0
+            or row.get("blockers") != []
+            for row in required_inventory.values()
+        )
+    ):
+        raise PhysicsBackendContractError(
+            "adp009d_newton_terminal_provider_zero_invalid"
+        )
+    instance_id = instance_ids[0]
+    charge_amount = vast_charge.get("amount")
+    charge_items = vast_charge.get("items")
+    if (
+        vast_charge.get("type") != "instance"
+        or vast_charge.get("source") != f"instance-{instance_id}"
+        or isinstance(charge_amount, bool)
+        or not isinstance(charge_amount, (int, float))
+        or not math.isfinite(float(charge_amount))
+        or float(charge_amount) < 0.0
+        or not isinstance(charge_items, list)
+        or not charge_items
+        or any(
+            not isinstance(item, Mapping)
+            or isinstance(item.get("amount"), bool)
+            or not isinstance(item.get("amount"), (int, float))
+            or not math.isfinite(float(item["amount"]))
+            or float(item["amount"]) < 0.0
+            for item in charge_items
+        )
+        or not math.isclose(
+            sum(float(item["amount"]) for item in charge_items),
+            float(charge_amount),
+            rel_tol=0.0,
+            abs_tol=0.001,
+        )
+    ):
+        raise PhysicsBackendContractError("adp009d_newton_terminal_charge_invalid")
+    if (
+        artifact_manifest.get("status") != "completed"
+        or artifact_manifest.get("blockers") != []
+        or not isinstance(artifact_manifest.get("file_count"), int)
+        or int(artifact_manifest.get("file_count", 0)) <= 0
+        or not isinstance(artifact_manifest.get("manifest_digest"), str)
+        or not str(artifact_manifest.get("manifest_digest")).startswith("sha256:")
+        or set(artifact_manifest.get("required_roles") or [])
+        - set(artifact_manifest.get("observed_roles") or [])
+    ):
+        raise PhysicsBackendContractError("adp009d_newton_terminal_artifacts_invalid")
+
+    receipt: dict[str, Any] = {
+        "schema_version": CANARY_TERMINAL_SCHEMA_VERSION,
+        "status": native_status,
+        "evidence_type": "physics_backend_comparison_evidence_only",
+        "physics_backend": "newton",
+        "backend_profile_digest": profile["profile_digest"],
+        "implementation_commit": bundle_receipt.get("implementation_commit"),
+        "bundle_sha256": bundle_receipt.get("bundle_sha256"),
+        "input_digest": bundle_receipt.get("input_digest"),
+        "scenario_instance_digest": bundle_receipt.get("scenario_instance_digest"),
+        "control_plan_digest": bundle_receipt.get("control_plan_digest"),
+        "semantic_control_plan_digest": bundle_receipt.get(
+            "control_plan_semantic_digest"
+        ),
+        "admission_digest": admission.get("admission_digest"),
+        "provider_instance_id": instance_id,
+        "scientific_phase": (
+            "controls_completed"
+            if native_status == "completed"
+            else "pre_controls_blocked"
+        ),
+        "scientific_blockers": native_blockers,
+        "controls_evidence_observed": native_status == "completed",
+        "media_gap": None
+        if native_status == "completed"
+        else {
+            "status": "typed_gap",
+            "reason": native_blockers[0],
+            "lossless_policy_input_equivalent_frames_observed": False,
+            "review_media_observed": False,
+        },
+        "policy_query_count": 0,
+        "candidate_outcomes_accessed": False,
+        "policy_verdict": None,
+        "task_success_verdict": None,
+        "physical_verdict": None,
+        "artifact_manifest": {
+            "digest": artifact_manifest["manifest_digest"],
+            "file_count": artifact_manifest["file_count"],
+            "total_size_bytes": artifact_manifest.get("total_size_bytes"),
+        },
+        "spend": {
+            "currency": "USD",
+            "actual_provider_charge_usd": float(charge_amount),
+            "provider_charge_source": vast_charge.get("source"),
+            "provider_charge_items": [
+                {
+                    "type": item.get("type"),
+                    "description": item.get("description"),
+                    "amount_usd": float(item["amount"]),
+                }
+                for item in charge_items
+            ],
+            "hard_cap_usd": float(admission["max_spend_usd"]),
+            "under_hard_cap": float(charge_amount)
+            <= float(admission["max_spend_usd"]),
+        },
+        "teardown": {
+            "completed": True,
+            "continuing_spend": False,
+            "destroyed_instance_ids": instance_ids,
+        },
+        "provider_zero": {
+            "api_confirmed": True,
+            "generated_at": provider_inventory.get("generated_at"),
+            "live_instance_count": 0,
+            "required_providers": sorted(required_inventory),
+        },
+        "retry_count": 0,
+        "engine_promotion_performed": False,
+        "claim_ceiling": "controls_comparison_evidence_only",
+    }
+    receipt["terminal_receipt_digest"] = canonical_digest(
+        receipt, digest_field="terminal_receipt_digest"
+    )
+    return receipt
+
+
 def _validate_control_run(
     value: Mapping[str, Any], *, profile: Mapping[str, Any]
 ) -> list[str]:
@@ -1002,6 +1211,17 @@ def build_comparison_design_contract() -> dict[str, Any]:
             "concurrent_instance_ids_must_be_explicitly_authorized": True,
             "retry_cap": 0,
         },
+        "newton_canary_terminal_receipt": {
+            "schema_version": CANARY_TERMINAL_SCHEMA_VERSION,
+            "actual_provider_charge_required": True,
+            "artifact_manifest_required": True,
+            "teardown_required": True,
+            "api_confirmed_provider_zero_required": True,
+            "pre_controls_failure_requires_typed_media_gap": True,
+            "claim_ceiling": "controls_comparison_evidence_only",
+            "policy_verdict_allowed": False,
+            "engine_promotion_allowed": False,
+        },
         "comparison_acceptance": {
             "evidence_parity_required": True,
             "independently_meaningful_fidelity_result_required": True,
@@ -1032,6 +1252,7 @@ __all__ = [
     "ALLOWED_PHYSICS_BACKENDS",
     "BACKEND_PROFILE_SCHEMA_VERSION",
     "CANARY_ADMISSION_SCHEMA_VERSION",
+    "CANARY_TERMINAL_SCHEMA_VERSION",
     "COMPARISON_SCHEMA_VERSION",
     "CONTROL_RUN_SCHEMA_VERSION",
     "DEFAULT_PHYSICS_BACKEND",
@@ -1046,6 +1267,7 @@ __all__ = [
     "build_comparison_receipt",
     "normalize_physics_backend",
     "build_newton_canary_admission",
+    "build_newton_canary_terminal_receipt",
     "validate_backend_contact_configuration",
     "validate_backend_probe",
     "validate_backend_profile",

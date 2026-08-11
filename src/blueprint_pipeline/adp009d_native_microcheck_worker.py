@@ -34,7 +34,12 @@ ISAAC_LAB_INSTALL_TARGETS = (
 )
 ISAAC_LAB_NEWTON_INSTALL_TARGETS = (
     "assets",
-    "newton",
+    # The pinned Isaac Lab extension keeps its Newton/MuJoCo/MuJoCo-Warp
+    # versions in the ``all`` extra.  Selecting the bare extension installs no
+    # solver dependencies; its auto-selected visualizer then resolves the
+    # unbounded latest PyPI packages instead.  The first admitted canary caught
+    # exactly that drift before environment construction.
+    "newton[all]",
     "ov",
     "rl[rsl-rl]",
     "tasks",

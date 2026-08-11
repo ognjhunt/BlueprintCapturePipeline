@@ -66,6 +66,24 @@ object staging or compute allocation, and it validates the current canonical
 paid-spend lock before even arming that watchdog. Any mismatch blocks storage
 and compute. The contract itself does not authorize or launch a paid canary.
 
+### Observed Newton canary: 2026-08-11
+
+One explicitly authorized controls-only canary at implementation commit
+`c615284b41d151a1885dd38f2608c0ca8e0f4c71` failed closed before environment
+construction with `adp009d_backend_runtime_version_mismatch`. The bare
+`newton` Isaac Lab installer selector omitted the extension's pinned `all`
+extra, allowing its visualizer dependency to resolve newer Newton, MuJoCo, and
+MuJoCo-Warp packages. The worker now selects `newton[all]`, which binds the
+versions declared by the sealed Isaac Lab source tree.
+
+The terminal receipt is `adp009d_newton_canary_terminal.v1`, digest
+`sha256:c93335e4a4a6b352e0b1c0790265ac505744aba725b7481c44b712d6c5f12a3a`.
+It records a typed pre-controls media gap, zero policy queries, no verdict,
+actual provider charge of `$0.321`, successful artifact retention and teardown,
+zero retries, and a fresh API inventory of zero RunPod, Vast, and DigitalOcean
+resources. This is comparison evidence only; it is not controls parity,
+fidelity evidence, or engine-promotion evidence.
+
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.
 Even then, the receipt only makes a promotion review eligible; it never promotes

@@ -929,9 +929,10 @@ def test_worker_newton_install_is_exact_and_does_not_select_physx(
     flattened = "\n".join(" ".join(command) for command in commands)
 
     assert (
-        "isaaclab.sh -i assets,newton,ov,rl[rsl-rl],tasks,teleop"
+        "isaaclab.sh -i assets,newton[all],ov,rl[rsl-rl],tasks,teleop"
         in flattened
     )
+    assert "assets,newton,ov" not in flattened
     assert "isaaclab_physx" not in flattened
     assert "isaaclab_newton" in flattened
     worker._validate_install_commands(commands, physics_backend="newton")

@@ -236,7 +236,7 @@
   "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
   "contract_kind": "provider_free_design",
   "default_physics_backend": "physx",
-  "design_digest": "sha256:a5cd27243478bf33d4fc216b72fa6148cdd7ef28fb218e7550c8388750a98ff8",
+  "design_digest": "sha256:67605564483940aa390f0dddfd8c186d50f72d8e2b704a4b0246a3ef6e0718b1",
   "mid_run_backend_switch_allowed": false,
   "newton_canary_admission": {
     "artifact_storage_required": true,
@@ -249,6 +249,17 @@
     "teardown_required": true,
     "unapproved_live_instance_count_required": 0,
     "watchdog_required": true
+  },
+  "newton_canary_terminal_receipt": {
+    "actual_provider_charge_required": true,
+    "api_confirmed_provider_zero_required": true,
+    "artifact_manifest_required": true,
+    "claim_ceiling": "controls_comparison_evidence_only",
+    "engine_promotion_allowed": false,
+    "policy_verdict_allowed": false,
+    "pre_controls_failure_requires_typed_media_gap": true,
+    "schema_version": "adp009d_newton_canary_terminal.v1",
+    "teardown_required": true
   },
   "one_backend_per_run": true,
   "program_id": "arm-decision-proof-v1",
