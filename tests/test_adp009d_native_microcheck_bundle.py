@@ -2871,9 +2871,17 @@ def test_finger_collision_envelope_probe_measures_reach_and_cannot_break_a_run()
         source.index("def _probe_finger_collision_envelope")
         : source.index("def _build_environment")
     ]
-    assert "ComputeLocalBound" in body
-    assert "reach_beyond_tool_frame_m" in body
-    assert "half_width_across_tool_axis_m" in body
+    # World space, not local: the first paid run of this probe reported a
+    # 586 mm reach for a finger on a ~160 mm gripper because ComputeLocalBound
+    # does not mean "extent from this body's origin".
+    assert "cache.ComputeWorldBound(" in body
+    assert "cache.ComputeLocalBound(" not in body
+    assert "body_origin_world_m" in body
+    assert "body_orientation_world_xyzw" in body
+    # Raw measurements only, so an implausible bound stays visibly implausible
+    # instead of being laundered into a derived reach the planner would trust.
+    assert "largest_extent_m" in body
+    assert "reach_beyond_tool_frame_m" not in body
     # Read-only: the probe may not command, spawn, or mutate anything.
     for forbidden in ("set_joint", "write", "step(", "spawn", "DeletePrim"):
         assert forbidden not in body
