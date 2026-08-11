@@ -1084,6 +1084,31 @@ def test_content_agents_execution_readiness_rejects_stale_selected_reference_ima
         )
 
 
+def test_content_agents_execution_readiness_rejects_stale_nonselected_reference_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
+    first_receipt_path, _first_receipt = _bundle_receipt_from_item(matrix["items"][0])
+    first_receipt = json.loads(first_receipt_path.read_text(encoding="utf-8"))
+    reference_records = first_receipt["input_variant_bindings"][
+        "cad_agent_reference_images"
+    ]
+    nonselected_reference = Path(reference_records[1]["path"])
+    nonselected_reference.write_bytes(nonselected_reference.read_bytes() + b"changed")
+
+    with pytest.raises(
+        ValueError,
+        match="adp_content_agents_readiness_reference_image_bindings_invalid",
+    ):
+        content_agents.materialize_content_agents_execution_readiness(
+            content_agents_bundle_matrix=matrix,
+            output_path=tmp_path / "readiness.json",
+            generated_at="fixed",
+        )
+
+
 def test_content_agents_execution_readiness_rejects_tampered_bundle_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

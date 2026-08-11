@@ -317,6 +317,35 @@ def materialize_content_agents_execution_readiness(
             raise ValueError(
                 "adp_content_agents_readiness_bundle_binding_file_mismatch"
             )
+        reference_image_records = bindings.get("cad_agent_reference_images")
+        reference_image_sha256s = receipt.get("reference_image_sha256s")
+        runtime_reference_bindings = receipt.get("runtime_reference_image_bindings")
+        if (
+            not isinstance(reference_image_records, list)
+            or not reference_image_records
+            or not isinstance(reference_image_sha256s, list)
+            or not isinstance(runtime_reference_bindings, list)
+            or len(reference_image_records) != len(reference_image_sha256s)
+            or len(reference_image_records) != len(runtime_reference_bindings)
+            or any(
+                not _file_record_matches_current_bytes(record)
+                for record in reference_image_records
+            )
+            or [record.get("sha256") for record in reference_image_records]
+            != reference_image_sha256s
+            or [record.get("sha256") for record in reference_image_records]
+            != [row.get("sha256") for row in runtime_reference_bindings]
+            or any(
+                not isinstance(row, Mapping)
+                or not str(row.get("relative_path") or "").startswith(
+                    "input/reference"
+                )
+                for row in runtime_reference_bindings
+            )
+        ):
+            raise ValueError(
+                "adp_content_agents_readiness_reference_image_bindings_invalid"
+            )
         projection_receipt_path = Path(
             str((bindings.get("mesh_projection_receipt") or {}).get("path") or "")
         ).expanduser().resolve()
