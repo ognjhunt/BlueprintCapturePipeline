@@ -20,6 +20,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp009d_isaac",
     "adp009d_articulated_native",
     "native_task_arena",
+    "native_deformable_asset",
     "adp009d_ovrtx",
     "adp009d_aura_native",
     "adp_content_agents",
@@ -46,7 +47,11 @@ def wam_registered_alternative_inputs_present(
     )
     reference_inputs_present = all(
         f"provider_runtime/cosmos3_droid_reference/{name}" in entries
-        for name in ("canary_manifest.json", "initial_observation.png", "action_streams.json")
+        for name in (
+            "canary_manifest.json",
+            "initial_observation.png",
+            "action_streams.json",
+        )
     )
     powered_root = "provider_runtime/cosmos3_powered_droid/"
     powered_packet_name = powered_root + "packet.json"
@@ -168,8 +173,7 @@ def provider_runtime_contract_blockers(
         runner_blocker = "provider_runner_missing_adp009d_isaac_runtime_contract"
     elif provider_bundle_kind == "adp009d_articulated_native":
         entrypoint_valid = (
-            "articulated_native_runner_failed_without_runtime_result"
-            in entrypoint_text
+            "articulated_native_runner_failed_without_runtime_result" in entrypoint_text
             and "adp009d_native_microcheck.json" in entrypoint_text
             and "write_articulated_native_missing_result" in entrypoint_text
         )
@@ -184,13 +188,10 @@ def provider_runtime_contract_blockers(
                 "reset_readback_degrees",
             )
         )
-        runner_blocker = (
-            "provider_runner_missing_adp009d_articulated_native_runtime_contract"
-        )
+        runner_blocker = "provider_runner_missing_adp009d_articulated_native_runtime_contract"
     elif provider_bundle_kind == "native_task_arena":
         entrypoint_valid = (
-            "native_task_arena_worker_failed_without_runtime_result"
-            in entrypoint_text
+            "native_task_arena_worker_failed_without_runtime_result" in entrypoint_text
             and "native_task_arena_construction_result.v1.json" in entrypoint_text
             and "native_task_arena_process_exited_without_result" in entrypoint_text
         )
@@ -206,6 +207,26 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
+    elif provider_bundle_kind == "native_deformable_asset":
+        entrypoint_valid = all(
+            token in entrypoint_text
+            for token in (
+                "native_deformable_asset_worker_failed_without_runtime_result",
+                "native_deformable_asset_vast_execution.v1.json",
+                "native_deformable_asset_process_exited_without_result",
+                "native_task_runtime_source_provision",
+            )
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "SimulationApp",
+                "run_native_deformable_asset_preparation_worker",
+                "native_deformable_asset_preparation_worker_terminal.v1",
+                "claim_boundary",
+            )
+        )
+        runner_blocker = "provider_runner_missing_native_deformable_asset_runtime_contract"
     elif provider_bundle_kind == "adp009d_ovrtx":
         entrypoint_valid = (
             "adp009d_ovrtx_runner_failed_without_runtime_result" in entrypoint_text
@@ -271,7 +292,7 @@ def provider_runtime_contract_blockers(
             and "blocked_adp_joint_agent_process_exited_without_result" in entrypoint_text
             and "apps/ovrtx_rendering_api" in entrypoint_text
             and "gpu_initialized" in entrypoint_text
-            and 'export WU_SO_PACKAGE_DIR=' in entrypoint_text
+            and "export WU_SO_PACKAGE_DIR=" in entrypoint_text
             and "joint_agent_scene_optimizer_core_missing" in entrypoint_text
             and "ovrtx_daemon_probe.log" in entrypoint_text
             and "joint_agent_ovrtx_daemon_probe_failed" in entrypoint_text
@@ -354,10 +375,8 @@ def provider_runtime_contract_blockers(
         runner_blocker = "provider_runner_missing_adp_inpaint360_runtime_contract"
     elif provider_bundle_kind == "adp_gaussian_excision":
         entrypoint_valid = (
-            "gaussian_excision_runner_failed_without_runtime_result"
-            in entrypoint_text
-            and "blocked_gaussian_excision_process_exited_without_result"
-            in entrypoint_text
+            "gaussian_excision_runner_failed_without_runtime_result" in entrypoint_text
+            and "blocked_gaussian_excision_process_exited_without_result" in entrypoint_text
             and "torch==2.5.1" in entrypoint_text
             and "--no-build-isolation" in entrypoint_text
             and "provider_archive.py" in entrypoint_text

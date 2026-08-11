@@ -284,6 +284,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_deformable_asset",
     }
 
 
@@ -293,6 +294,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_deformable_asset",
     }:
         return 0
     if _is_isaac_provider_bundle(provider_bundle_kind):
@@ -2138,6 +2140,22 @@ def _blueprint_bundle_preflight(
         "provider_runtime/blueprint_pipeline/native_task_arena_runtime.py",
         "provider_runtime/blueprint_pipeline/native_task_camera_observability.py",
     }
+    native_deformable_asset_required_entries = {
+        "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "provider_runtime/run_native_deformable_asset_provider_runtime.sh",
+        "provider_runtime/native_deformable_asset_provider_manifest.json",
+        "provider_runtime/blueprint_pipeline/__init__.py",
+        "provider_runtime/blueprint_pipeline/decision_evidence_contracts.py",
+        "provider_runtime/blueprint_pipeline/external_simready_deformable_asset.py",
+        "provider_runtime/blueprint_pipeline/native_deformable_asset_preparation.py",
+        "provider_runtime/blueprint_pipeline/native_deformable_asset_preparation_worker.py",
+        "provider_runtime/blueprint_pipeline/native_deformable_asset_stage_adapter.py",
+        "provider_runtime/input_package/native_deformable_asset_source_package.v1.json",
+        "provider_runtime/input_package/native_deformable_asset_preparation_plan.v1.json",
+        "provider_runtime/input_package/source/asset.usd",
+        "provider_runtime/native_task_runtime_sources/native_task_runtime_source_packet.v1.json",
+        "provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip",
+    }
     adp009d_ovrtx_required_entries = {
         "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh",
         "provider_runtime/adp009d_ovrtx_provider_runner.py",
@@ -2245,6 +2263,13 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "native_deformable_asset":
+        required_entries = native_deformable_asset_required_entries
+        entrypoint_member = "provider_runtime/run_native_deformable_asset_provider_runtime.sh"
+        runner_member = (
+            "provider_runtime/blueprint_pipeline/native_deformable_asset_preparation_worker.py"
+        )
+        readiness_name = "native_deformable_asset_provider_manifest.json"
     elif provider_bundle_kind == "adp009d_ovrtx":
         required_entries = adp009d_ovrtx_required_entries
         entrypoint_member = "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh"
@@ -2329,6 +2354,7 @@ def _blueprint_bundle_preflight(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_deformable_asset",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -3007,6 +3033,7 @@ def _resolve_launch_mode(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_deformable_asset",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -3064,6 +3091,7 @@ def _probe_env(
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_deformable_asset",
     }:
         env.update(
             {
@@ -3601,6 +3629,7 @@ def _probe_shell_script(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_deformable_asset",
         }:
             script += (
                 common_start + "RUNTIME_PY=/isaac-sim/python.sh; "
@@ -4830,6 +4859,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_deformable_asset",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -5508,6 +5538,7 @@ def run_vast_provider_adapter(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_deformable_asset",
             "adp009d_ovrtx",
             "adp009d_aura_native",
         }

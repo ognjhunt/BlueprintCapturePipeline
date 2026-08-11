@@ -109,6 +109,7 @@ from .reconstruction_paid_transport import prepare_reconstruction_paid_transport
 from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
 from .gpu_render_providers import get_render_provider
+from .decision_evidence_contracts import canonical_digest
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
     run_single_episode,
@@ -144,6 +145,12 @@ from .native_task_arena_vast import (
     run_native_task_arena_controls_vast,
     run_native_task_arena_vast,
 )
+from .native_deformable_asset_provider_bundle import (
+    PROBE_KIND as NATIVE_DEFORMABLE_ASSET_PROBE_KIND,
+    build_native_deformable_asset_provider_bundle,
+    load_verified_native_deformable_asset_provider_bundle,
+)
+from .native_deformable_asset_vast import run_native_deformable_asset_vast
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -166,7 +173,9 @@ from .adp009d_aura_native_vast import (
     build_aura_native_live_camera_bundle,
     run_aura_native_live_camera_vast,
 )
-from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE as ADP_SIMREADY_ISAAC_IMAGE
+from .public_scene_simready_isaac_bundle import (
+    DEFAULT_IMAGE as ADP_SIMREADY_ISAAC_IMAGE,
+)
 from .public_scene_simready_isaac_vast import (
     PROBE_KIND as ADP_SIMREADY_ISAAC_PROBE_KIND,
     run_simready_isaac_vast,
@@ -1060,6 +1069,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
+            NATIVE_DEFORMABLE_ASSET_PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1161,6 +1171,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Qualified native construction result used to compile the frozen "
             "zero-action and scripted-positive control plan."
         ),
+    )
+    gpu.add_argument(
+        "--native-deformable-source-package-receipt",
+        help="Exact inspected deformable source-package receipt for the native canary.",
+    )
+    gpu.add_argument(
+        "--native-deformable-bundle-receipt",
+        help="Previously dry-run immutable deformable provider-bundle receipt.",
+    )
+    gpu.add_argument(
+        "--native-deformable-rights-supersession",
+        help="Owner-authority supersession admitting the exact asset for private Vast processing.",
     )
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
@@ -1514,22 +1536,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             machine_avoidlist_path: Path | None = None
             machine_avoidlist_sha256: str | None = None
             if args.adp_machine_avoidlist:
-                machine_avoidlist_path = Path(
-                    args.adp_machine_avoidlist
-                ).expanduser().resolve()
+                machine_avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
                 if not machine_avoidlist_path.is_file():
                     blockers.append("gaussian_excision_machine_avoidlist_missing")
                 else:
                     machine_avoidlist_sha256 = (
-                        "sha256:"
-                        + hashlib.sha256(machine_avoidlist_path.read_bytes()).hexdigest()
+                        "sha256:" + hashlib.sha256(machine_avoidlist_path.read_bytes()).hexdigest()
                     )
             prepared_bundle: dict[str, Any] | None = None
             receipt_path: Path | None = None
             if args.adp_gaussian_excision_bundle_receipt:
-                receipt_path = Path(
-                    args.adp_gaussian_excision_bundle_receipt
-                ).expanduser().resolve()
+                receipt_path = (
+                    Path(args.adp_gaussian_excision_bundle_receipt).expanduser().resolve()
+                )
                 if not receipt_path.is_file():
                     blockers.append("gaussian_excision_bundle_receipt_missing")
                 else:
@@ -1539,9 +1558,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         blockers.append("gaussian_excision_bundle_receipt_invalid")
             bundle_path: Path | None = None
             if prepared_bundle is not None:
-                bundle_path = Path(
-                    str(prepared_bundle.get("bundle_path") or "")
-                ).expanduser().resolve()
+                bundle_path = (
+                    Path(str(prepared_bundle.get("bundle_path") or "")).expanduser().resolve()
+                )
                 observed_bundle_sha256 = (
                     "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
                     if bundle_path.is_file()
@@ -1552,10 +1571,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prepared_bundle.get("status") != "ready"
                     or prepared_bundle.get("provider_bundle_kind")
                     != ADP_GAUSSIAN_EXCISION_PROVIDER_BUNDLE_KIND
-                    or prepared_bundle.get("container_image")
-                    != ADP_GAUSSIAN_EXCISION_IMAGE
-                    or prepared_bundle.get("blueprint_commit")
-                    != expected_source_commit
+                    or prepared_bundle.get("container_image") != ADP_GAUSSIAN_EXCISION_IMAGE
+                    or prepared_bundle.get("blueprint_commit") != expected_source_commit
                     or released.get("tree") != ADP_GAUSSIAN_EXCISION_SOURCE_TREE
                     or released.get("source_modified") is not False
                     or prepared_bundle.get("hard_cap_usd") != 1.50
@@ -1563,16 +1580,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("maximum_paid_attempts") != 1
                     or prepared_bundle.get("automatic_paid_retry_allowed") is not False
                     or prepared_bundle.get("provider_zero_required_after_return") is not True
-                    or prepared_bundle.get("raw_interiorgs_downloaded_bytes_included")
-                    is not False
-                    or prepared_bundle.get(
-                        "private_scene_derived_standard_splat_included"
-                    )
+                    or prepared_bundle.get("raw_interiorgs_downloaded_bytes_included") is not False
+                    or prepared_bundle.get("private_scene_derived_standard_splat_included")
                     is not True
                     or prepared_bundle.get("blockers") not in ([], None)
                     or not bundle_path.is_file()
-                    or observed_bundle_sha256
-                    != prepared_bundle.get("bundle_sha256")
+                    or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
                     blockers.append("gaussian_excision_bundle_binding_invalid")
             receipt_sha256 = (
@@ -1583,25 +1596,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_GAUSSIAN_EXCISION_PROBE_KIND,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
-                    prepared_bundle.get("bundle_sha256")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
                 ),
                 "freeze_digest": (
-                    prepared_bundle.get("freeze_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("freeze_digest") if prepared_bundle else None
                 ),
                 "execution_authority_digest": (
-                    prepared_bundle.get("execution_authority_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("execution_authority_digest") if prepared_bundle else None
                 ),
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
@@ -1615,9 +1620,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding_digest = (
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        allocation_binding, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
             )
             paid_admission = build_paid_lane_admission(
@@ -1701,9 +1706,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp_joint_agent_hard_ttl_invalid")
             if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
                 blockers.append("adp_joint_agent_allowed_active_vast_instance_id_invalid")
-            allowed_active_instance_ids = sorted(
-                set(args.adp_allowed_active_vast_instance_id)
-            )
+            allowed_active_instance_ids = sorted(set(args.adp_allowed_active_vast_instance_id))
             prepared_bundle: dict[str, Any] | None = None
             receipt_path: Path | None = None
             if args.adp_joint_agent_bundle_receipt:
@@ -1717,18 +1720,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                         blockers.append("adp_joint_agent_bundle_receipt_invalid")
             bundle_path: Path | None = None
             if prepared_bundle is not None:
-                bundle_path = Path(
-                    str(prepared_bundle.get("bundle_path") or "")
-                ).expanduser().resolve()
+                bundle_path = (
+                    Path(str(prepared_bundle.get("bundle_path") or "")).expanduser().resolve()
+                )
                 observed_bundle_sha256 = (
                     "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
                     if bundle_path.is_file()
                     else ""
                 )
                 blueprint_source = prepared_bundle.get("blueprint_source") or {}
-                scope_digest = str(
-                    prepared_bundle.get("scope_amendment_digest") or ""
-                )
+                scope_digest = str(prepared_bundle.get("scope_amendment_digest") or "")
                 model_preflight_digest = str(
                     prepared_bundle.get("model_preflight_receipt_digest")
                     or prepared_bundle.get("nim_preflight_receipt_digest")
@@ -1739,18 +1740,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 capability = model.get("capability_preflight") or {}
                 capability_verified = capability.get("verified_capabilities")
                 capability_preflight_valid = (
-                    capability.get("schema_version")
-                    == HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION
+                    capability.get("schema_version") == HOSTED_MODEL_PREFLIGHT_SCHEMA_VERSION
                     and capability.get("probe_profile") == HOSTED_MODEL_PROBE_PROFILE
                     and isinstance(capability_verified, list)
-                    and set(HOSTED_MODEL_REQUIRED_CAPABILITIES).issubset(
-                        set(capability_verified)
-                    )
+                    and set(HOSTED_MODEL_REQUIRED_CAPABILITIES).issubset(set(capability_verified))
                     and capability.get("receipt_digest") == model_preflight_digest
                 )
-                legacy_nim_bundle = not prepared_bundle.get(
-                    "model_preflight_receipt_digest"
-                )
+                legacy_nim_bundle = not prepared_bundle.get("model_preflight_receipt_digest")
                 if (
                     prepared_bundle.get("status") != "ready"
                     or prepared_bundle.get("provider_bundle_kind")
@@ -1793,17 +1789,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             joint_avoidlist_path: Path | None = None
             joint_avoidlist_sha256: str | None = None
             if args.adp_machine_avoidlist:
-                joint_avoidlist_path = (
-                    Path(args.adp_machine_avoidlist).expanduser().resolve()
-                )
+                joint_avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
                 try:
                     joint_avoidlist = _load(joint_avoidlist_path)
                 except (OSError, ValueError, json.JSONDecodeError):
                     blockers.append("adp_joint_agent_machine_avoidlist_invalid")
                 else:
                     if (
-                        joint_avoidlist.get("schema_version")
-                        != "vast_machine_avoidlist.v1"
+                        joint_avoidlist.get("schema_version") != "vast_machine_avoidlist.v1"
                         or not isinstance(joint_avoidlist.get("machine_ids"), list)
                         or any(
                             not isinstance(machine_id, int) or machine_id <= 0
@@ -1812,8 +1805,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ):
                         blockers.append("adp_joint_agent_machine_avoidlist_invalid")
                     joint_avoidlist_sha256 = (
-                        "sha256:"
-                        + hashlib.sha256(joint_avoidlist_path.read_bytes()).hexdigest()
+                        "sha256:" + hashlib.sha256(joint_avoidlist_path.read_bytes()).hexdigest()
                     )
             receipt_sha256 = (
                 "sha256:" + hashlib.sha256(receipt_path.read_bytes()).hexdigest()
@@ -1823,18 +1815,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_JOINT_AGENT_PROBE_KIND,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
                 ),
                 "scope_amendment_digest": (
-                    prepared_bundle.get("scope_amendment_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("scope_amendment_digest") if prepared_bundle else None
                 ),
                 "model_preflight_receipt_digest": (
                     prepared_bundle.get("model_preflight_receipt_digest")
@@ -1853,9 +1841,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding_digest = (
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        allocation_binding, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
             )
             paid_admission = build_paid_lane_admission(
@@ -1954,9 +1942,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         blockers.append("adp_inpaint360_bundle_receipt_invalid")
             bundle_path: Path | None = None
             if prepared_bundle is not None:
-                bundle_path = Path(
-                    str(prepared_bundle.get("bundle_path") or "")
-                ).expanduser().resolve()
+                bundle_path = (
+                    Path(str(prepared_bundle.get("bundle_path") or "")).expanduser().resolve()
+                )
                 observed_bundle_sha256 = (
                     "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
                     if bundle_path.is_file()
@@ -1968,8 +1956,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("source_tree") != ADP_INPAINT360_SOURCE_TREE
                     or prepared_bundle.get("lama_source_commit")
                     != ADP_INPAINT360_LAMA_SOURCE_COMMIT
-                    or prepared_bundle.get("lama_source_tree")
-                    != ADP_INPAINT360_LAMA_SOURCE_TREE
+                    or prepared_bundle.get("lama_source_tree") != ADP_INPAINT360_LAMA_SOURCE_TREE
                     or prepared_bundle.get("prerequisite_receipt_digest")
                     != ADP_INPAINT360_PREREQUISITE_RECEIPT_DIGEST
                     or prepared_bundle.get("container_image") != ADP_INPAINT360_INTERIORGS_IMAGE
@@ -1977,8 +1964,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("blockers") not in ([], None)
                     or not prepared_bundle.get("adapter_receipt_digest")
                     or prepared_bundle.get("blueprint_repository_tracked_state") != "clean"
-                    or prepared_bundle.get("blueprint_repository_commit")
-                    != expected_source_commit
+                    or prepared_bundle.get("blueprint_repository_commit") != expected_source_commit
                     or not bundle_path.is_file()
                     or observed_bundle_sha256 != prepared_bundle.get("bundle_sha256")
                 ):
@@ -2012,9 +1998,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_INPAINT360_INTERIORGS_PROBE_KIND,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
@@ -2044,9 +2028,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding_digest = (
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        allocation_binding, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
             )
             paid_admission = build_paid_lane_admission(
@@ -2116,6 +2100,186 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
+        if args.probe_kind == NATIVE_DEFORMABLE_ASSET_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "native_deformable_source_package_receipt",
+                    "native_task_arena_runtime_source_packet",
+                    "native_deformable_rights_supersession",
+                    "adp_job_dir",
+                )
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            blockers = [*missing, *control_blockers]
+            if args.execute and not args.native_deformable_bundle_receipt:
+                blockers.append("native_deformable_execute_requires_dry_run_bundle_receipt")
+            if args.provider != "vast":
+                blockers.append("native_deformable_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("native_deformable_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 7200:
+                blockers.append("native_deformable_hard_ttl_invalid")
+            source_receipt: dict[str, Any] = {}
+            runtime_source: dict[str, Any] = {}
+            rights: dict[str, Any] = {}
+            prepared_bundle = None
+            if not blockers:
+                try:
+                    source_receipt = json.loads(
+                        Path(args.native_deformable_source_package_receipt).read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    runtime_source = verify_native_task_runtime_source_packet(
+                        args.native_task_arena_runtime_source_packet
+                    )
+                    rights = json.loads(
+                        Path(args.native_deformable_rights_supersession).read_text(encoding="utf-8")
+                    )
+                    package_root = Path(str(source_receipt.get("package_root") or "")).resolve()
+                    plan = json.loads(
+                        (
+                            package_root / "native_deformable_asset_preparation_plan.v1.json"
+                        ).read_text(encoding="utf-8")
+                    )
+                    if (
+                        rights.get("schema_version")
+                        != "task_evaluation_prelaunch_abstention_supersession.v1"
+                        or rights.get("receipt_digest")
+                        != canonical_digest(rights, digest_field="receipt_digest")
+                        or rights.get("private_upload_to_vast_permitted") is not True
+                        or rights.get("public_redistribution_permitted") is not False
+                        or rights.get("rights_gate_passed_for_private_vast_canary") is not True
+                        or rights.get("asset_archive_sha256")
+                        != (plan.get("source_asset") or {}).get("source_archive_sha256")
+                    ):
+                        raise ValueError("native_deformable_rights_binding_invalid")
+                    if args.native_deformable_bundle_receipt:
+                        prepared_bundle = load_verified_native_deformable_asset_provider_bundle(
+                            args.native_deformable_bundle_receipt,
+                            expected_implementation_commit=control_identity[
+                                "orchestrator_source_commit"
+                            ],
+                            expected_source_package_receipt_digest=source_receipt["receipt_digest"],
+                            expected_runtime_source_packet_receipt_digest=runtime_source[
+                                "receipt_digest"
+                            ],
+                        )
+                    else:
+                        prepared_bundle = build_native_deformable_asset_provider_bundle(
+                            job_dir=Path(args.adp_job_dir) / "bundle",
+                            source_package_receipt_path=(
+                                args.native_deformable_source_package_receipt
+                            ),
+                            runtime_source_packet_receipt_path=(
+                                args.native_task_arena_runtime_source_packet
+                            ),
+                            implementation_commit=control_identity["orchestrator_source_commit"],
+                            package_source_root=Path(__file__).resolve().parent,
+                        )
+                except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                    blockers.append(
+                        f"native_deformable_bundle_preparation_failed:{type(exc).__name__}"
+                    )
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": NATIVE_DEFORMABLE_ASSET_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
+                ),
+                "input_digest": (prepared_bundle.get("input_digest") if prepared_bundle else None),
+                "source_package_receipt_digest": source_receipt.get("receipt_digest"),
+                "plan_digest": source_receipt.get("plan_digest"),
+                "runtime_source_packet_receipt_digest": runtime_source.get("receipt_digest"),
+                "rights_supersession_receipt_digest": rights.get("receipt_digest"),
+                "execution_mode": "asset_preparation_canary",
+                "candidate_policy_queried": False,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "retry_cap": 0,
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
+            }
+            allocation_binding_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+            )
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=blockers
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": NATIVE_DEFORMABLE_ASSET_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": "direct_asset_owner_private_vast_processing_authority",
+                    "private_data_uploaded": True,
+                    "raw_dataset_bytes_uploaded": False,
+                    "candidate_policy_queried": False,
+                    "physical_outcome_values_uploaded": False,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            write_json(
+                Path(args.bound_request_out),
+                {
+                    "schema_version": "native_deformable_asset_bound_request.v1",
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                },
+            )
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if prepared_bundle is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_native_deformable_asset_vast(
+                    job_dir=args.adp_job_dir,
+                    prepared_bundle=prepared_bundle,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    machine_avoidlist_path=args.adp_machine_avoidlist,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    allowed_active_instance_ids=(args.adp_allowed_active_vast_instance_id),
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind in {
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,
@@ -2170,9 +2334,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         blockers.append("adp_aura_bundle_receipt_invalid")
             bundle_path: Path | None = None
             if prepared_bundle is not None:
-                bundle_path = Path(
-                    str(prepared_bundle.get("bundle_path") or "")
-                ).expanduser().resolve()
+                bundle_path = (
+                    Path(str(prepared_bundle.get("bundle_path") or "")).expanduser().resolve()
+                )
                 observed_bundle_sha256 = (
                     "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
                     if bundle_path.is_file()
@@ -2205,9 +2369,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             execution_authority_path: Path | None = None
             execution_authority_sha256: str | None = None
             if aura_interiorgs and args.adp_aura_attempt_authority:
-                execution_authority_path = Path(
-                    args.adp_aura_attempt_authority
-                ).expanduser().resolve()
+                execution_authority_path = (
+                    Path(args.adp_aura_attempt_authority).expanduser().resolve()
+                )
                 if not execution_authority_path.is_file():
                     blockers.append("adp_aura_attempt_authority_missing")
                 elif prepared_bundle is None:
@@ -2263,9 +2427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": args.probe_kind,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
@@ -2275,9 +2437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "aura_source_tree": ADP_AURA_SOURCE_TREE,
                 "prerequisite_receipt_digest": ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
                 "runtime_prerequisite_receipt_digest": (
-                    ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST
-                    if aura_interiorgs
-                    else None
+                    ADP_AURA_RUNTIME_PREREQUISITE_RECEIPT_DIGEST if aura_interiorgs else None
                 ),
                 "adapter_receipt_digest": (
                     prepared_bundle.get("adapter_receipt_digest")
@@ -2285,9 +2445,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else None
                 ),
                 "execution_authority_digest": (
-                    execution_authority.get("authorization_digest")
-                    if execution_authority
-                    else None
+                    execution_authority.get("authorization_digest") if execution_authority else None
                 ),
                 "execution_authority_file_sha256": execution_authority_sha256,
                 "attempt_ordinal": (
@@ -2308,9 +2466,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding_digest = (
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        allocation_binding, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
             )
             paid_admission = build_paid_lane_admission(
@@ -2408,9 +2566,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle: dict[str, Any] | None = None
             receipt_path: Path | None = None
             if args.adp_content_agents_bundle_receipt:
-                receipt_path = (
-                    Path(args.adp_content_agents_bundle_receipt).expanduser().resolve()
-                )
+                receipt_path = Path(args.adp_content_agents_bundle_receipt).expanduser().resolve()
                 if not receipt_path.is_file():
                     blockers.append("adp_content_agents_bundle_receipt_missing")
                 else:
@@ -2430,8 +2586,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if (
                     prepared_bundle.get("status") != "ready"
-                    or prepared_bundle.get("source_commit")
-                    != ADP_CONTENT_AGENTS_SOURCE_COMMIT
+                    or prepared_bundle.get("source_commit") != ADP_CONTENT_AGENTS_SOURCE_COMMIT
                     or prepared_bundle.get("source_tree") != ADP_CONTENT_AGENTS_SOURCE_TREE
                     or prepared_bundle.get("container_image") != ADP_CONTENT_AGENTS_IMAGE
                     or prepared_bundle.get("retry_cap") != 0
@@ -2448,9 +2603,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_preflight: dict[str, Any] | None = None
             config_preflight_path: Path | None = None
             if args.adp_content_agents_config_preflight_receipt:
-                config_preflight_path = Path(
-                    args.adp_content_agents_config_preflight_receipt
-                ).expanduser().resolve()
+                config_preflight_path = (
+                    Path(args.adp_content_agents_config_preflight_receipt).expanduser().resolve()
+                )
                 if not config_preflight_path.is_file():
                     blockers.append("adp_content_agents_config_preflight_receipt_missing")
                 else:
@@ -2470,21 +2625,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
                 if config_preflight.get("bundle_receipt_sha256") != receipt_sha256:
-                    blockers.append(
-                        "adp_content_agents_config_preflight_bundle_receipt_mismatch"
-                    )
+                    blockers.append("adp_content_agents_config_preflight_bundle_receipt_mismatch")
             config_preflight_receipt_sha256 = (
-                "sha256:"
-                + hashlib.sha256(config_preflight_path.read_bytes()).hexdigest()
+                "sha256:" + hashlib.sha256(config_preflight_path.read_bytes()).hexdigest()
                 if config_preflight_path and config_preflight_path.is_file()
                 else None
             )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_CONTENT_AGENTS_PROBE_KIND,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "bundle_receipt_sha256": receipt_sha256,
                 "config_preflight_receipt_sha256": config_preflight_receipt_sha256,
                 "config_preflight_receipt_digest": (
@@ -2504,9 +2654,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding_digest = (
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        allocation_binding, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
             )
             paid_admission = build_paid_lane_admission(
@@ -2514,9 +2664,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             public_sage_collision_uploaded = bool(
                 prepared_bundle
-                and (prepared_bundle.get("native_probe") or {}).get(
-                    "sage_collision_sha256"
-                )
+                and (prepared_bundle.get("native_probe") or {}).get("sage_collision_sha256")
             )
             paid_admission.update(
                 {
@@ -2530,9 +2678,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "authority": (
                         "user_authorized_all_in_scope_goal_resources_including_gpu_usage"
                     ),
-                    "private_or_licensed_dataset_bytes_uploaded": (
-                        public_sage_collision_uploaded
-                    ),
+                    "private_or_licensed_dataset_bytes_uploaded": (public_sage_collision_uploaded),
                     "private_or_gated_dataset_bytes_uploaded": False,
                     "public_licensed_sage_collision_bytes_uploaded": (
                         public_sage_collision_uploaded
@@ -2614,18 +2760,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             prepared_bundle: dict[str, Any] | None = None
             receipt_path: Path | None = None
             if args.adp_simready_isaac_bundle_receipt:
-                receipt_path = Path(
-                    args.adp_simready_isaac_bundle_receipt
-                ).expanduser().resolve()
+                receipt_path = Path(args.adp_simready_isaac_bundle_receipt).expanduser().resolve()
                 try:
                     prepared_bundle = _load(receipt_path)
                 except (OSError, ValueError, json.JSONDecodeError):
                     blockers.append("simready_isaac_bundle_receipt_invalid")
             bundle_path: Path | None = None
             if prepared_bundle is not None:
-                bundle_path = Path(
-                    str(prepared_bundle.get("bundle_path") or "")
-                ).expanduser().resolve()
+                bundle_path = (
+                    Path(str(prepared_bundle.get("bundle_path") or "")).expanduser().resolve()
+                )
                 observed_bundle_sha256 = (
                     "sha256:" + hashlib.sha256(bundle_path.read_bytes()).hexdigest()
                     if bundle_path.is_file()
@@ -2659,9 +2803,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_SIMREADY_ISAAC_PROBE_KIND,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "expected_source_commit": expected_source_commit or None,
                 "bundle_receipt_sha256": receipt_sha256,
                 "bundle_sha256": (
@@ -2680,9 +2822,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding_digest = (
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        allocation_binding, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
             )
             paid_admission = build_paid_lane_admission(
@@ -2775,21 +2917,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                         implementation_commit=control_identity["orchestrator_source_commit"],
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    blockers.append(
-                        f"adp009d_ovrtx_bundle_preparation_failed:{type(exc).__name__}"
-                    )
+                    blockers.append(f"adp009d_ovrtx_bundle_preparation_failed:{type(exc).__name__}")
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
                 ),
-                "input_digest": (
-                    prepared_bundle.get("input_digest") if prepared_bundle else None
-                ),
+                "input_digest": (prepared_bundle.get("input_digest") if prepared_bundle else None),
                 "candidate_policy_queried": False,
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
@@ -2800,9 +2936,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding_digest = (
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        allocation_binding, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
             )
             paid_admission = build_paid_lane_admission(
@@ -2898,27 +3034,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                         job_dir=Path(args.adp_job_dir) / "bundle",
                         probe_manifest_path=args.adp009d_aura_native_probe_manifest,
                         aura_root=args.adp009d_aura_source_root,
-                        implementation_commit=control_identity[
-                            "orchestrator_source_commit"
-                        ],
+                        implementation_commit=control_identity["orchestrator_source_commit"],
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(
-                        "adp009d_aura_native_bundle_preparation_failed:"
-                        f"{type(exc).__name__}"
+                        f"adp009d_aura_native_bundle_preparation_failed:{type(exc).__name__}"
                     )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
                 ),
-                "input_digest": (
-                    prepared_bundle.get("input_digest") if prepared_bundle else None
-                ),
+                "input_digest": (prepared_bundle.get("input_digest") if prepared_bundle else None),
                 "aura_source_commit": (
                     prepared_bundle.get("source_commit") if prepared_bundle else None
                 ),
@@ -2938,9 +3067,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation_binding_digest = (
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        allocation_binding, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
+                    json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
                 ).hexdigest()
             )
             paid_admission = build_paid_lane_admission(
@@ -3006,9 +3135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
         }:
-            controls_requested = (
-                args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
-            )
+            controls_requested = args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
             missing = [
                 name
                 for name in (
@@ -3023,9 +3150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
             if args.execute and not args.native_task_arena_bundle_receipt:
-                blockers.append(
-                    "native_task_arena_execute_requires_dry_run_bundle_receipt"
-                )
+                blockers.append("native_task_arena_execute_requires_dry_run_bundle_receipt")
             if args.provider != "vast":
                 blockers.append("native_task_arena_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
@@ -3041,8 +3166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     blockers.append("native_task_arena_machine_avoidlist_missing")
                 else:
                     avoidlist_digest = (
-                        "sha256:"
-                        + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                        "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
                     )
             prepared_bundle = None
             if not blockers:
@@ -3055,9 +3179,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             Path(args.native_task_arena_packet).expanduser().resolve()
                             / "native_task_arena_packet_receipt.v1.json"
                         )
-                        packet_receipt = json.loads(
-                            packet_receipt_path.read_text(encoding="utf-8")
-                        )
+                        packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
                         bundle_loader = (
                             load_verified_native_task_arena_controls_bundle
                             if controls_requested
@@ -3068,9 +3190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             expected_implementation_commit=control_identity[
                                 "orchestrator_source_commit"
                             ],
-                            expected_packet_receipt_digest=packet_receipt.get(
-                                "receipt_digest"
-                            ),
+                            expected_packet_receipt_digest=packet_receipt.get("receipt_digest"),
                             expected_runtime_source_packet_digest=source_packet.get(
                                 "receipt_digest"
                             ),
@@ -3082,9 +3202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "runtime_source_packet_receipt": (
                                 args.native_task_arena_runtime_source_packet
                             ),
-                            "implementation_commit": control_identity[
-                                "orchestrator_source_commit"
-                            ],
+                            "implementation_commit": control_identity["orchestrator_source_commit"],
                         }
                         prepared_bundle = (
                             build_native_task_arena_controls_bundle(
@@ -3094,68 +3212,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 ),
                             )
                             if controls_requested
-                            else build_native_task_arena_construction_bundle(
-                                **bundle_kwargs
-                            )
+                            else build_native_task_arena_construction_bundle(**bundle_kwargs)
                         )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(
-                        "native_task_arena_bundle_preparation_failed:"
-                        f"{type(exc).__name__}"
+                        f"native_task_arena_bundle_preparation_failed:{type(exc).__name__}"
                     )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": args.probe_kind,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
                 "bundle_sha256": (
-                    prepared_bundle.get("bundle_sha256")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
                 ),
-                "input_digest": (
-                    prepared_bundle.get("input_digest")
-                    if prepared_bundle
-                    else None
-                ),
+                "input_digest": (prepared_bundle.get("input_digest") if prepared_bundle else None),
                 "packet_receipt_digest": (
-                    prepared_bundle.get("packet_receipt_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("packet_receipt_digest") if prepared_bundle else None
                 ),
                 "runtime_source_packet_receipt_digest": (
-                    (prepared_bundle.get("runtime_source_packet") or {}).get(
-                        "receipt_digest"
-                    )
+                    (prepared_bundle.get("runtime_source_packet") or {}).get("receipt_digest")
                     if prepared_bundle
                     else None
                 ),
                 "runtime_source_packet_sha256": (
-                    (prepared_bundle.get("runtime_source_packet") or {}).get(
-                        "packet_sha256"
-                    )
+                    (prepared_bundle.get("runtime_source_packet") or {}).get("packet_sha256")
                     if prepared_bundle
                     else None
                 ),
                 "arena_scene_plan_digest": (
-                    prepared_bundle.get("arena_scene_plan_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("arena_scene_plan_digest") if prepared_bundle else None
                 ),
                 "runtime_contract_digest": (
-                    prepared_bundle.get("runtime_contract_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("runtime_contract_digest") if prepared_bundle else None
                 ),
                 "scenario_instance_digest": (
-                    prepared_bundle.get("scenario_instance_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("scenario_instance_digest") if prepared_bundle else None
                 ),
-                "execution_mode": (
-                    "controls" if controls_requested else "construction_canary"
-                ),
+                "execution_mode": ("controls" if controls_requested else "construction_canary"),
                 "candidate_policy_queried": False,
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
@@ -3241,9 +3334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
-                    allowed_active_instance_ids=(
-                        args.adp_allowed_active_vast_instance_id
-                    ),
+                    allowed_active_instance_ids=(args.adp_allowed_active_vast_instance_id),
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
@@ -3301,15 +3392,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.adp009d_diagnostic_only and execution_modes != 1:
                 blockers.append("adp009d_execution_modes_conflict")
             if articulated_native_requested and not args.adp009d_diagnostic_only:
-                blockers.append(
-                    "adp009d_articulated_native_requires_diagnostic_only"
-                )
-            if articulated_native_requested and (
-                selected_candidates or args.adp009d_controls
-            ):
-                blockers.append(
-                    "adp009d_articulated_native_policy_or_controls_forbidden"
-                )
+                blockers.append("adp009d_articulated_native_requires_diagnostic_only")
+            if articulated_native_requested and (selected_candidates or args.adp009d_controls):
+                blockers.append("adp009d_articulated_native_policy_or_controls_forbidden")
             gated_backbone_selected = "groot_n17_droid" in selected_candidates
             gated_backbone_access: dict[str, Any] | None = None
             if gated_backbone_selected and not args.adp009d_authorize_gated_backbone:
@@ -3351,9 +3436,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             asset_path=args.adp009d_articulated_diagnostic_asset,
                             request_path=args.adp009d_articulated_diagnostic_request,
                             harness_manifest_path=args.adp009d_harness_manifest,
-                            implementation_commit=control_identity[
-                                "orchestrator_source_commit"
-                            ],
+                            implementation_commit=control_identity["orchestrator_source_commit"],
                         )
                     else:
                         prepared_bundle = build_native_microcheck_bundle(
@@ -3361,9 +3444,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             approved_can_path=args.adp009d_approved_can,
                             sage_collision_path=args.adp009d_sage_collision,
                             harness_manifest_path=args.adp009d_harness_manifest,
-                            implementation_commit=control_identity[
-                                "orchestrator_source_commit"
-                            ],
+                            implementation_commit=control_identity["orchestrator_source_commit"],
                             policy_candidate_id=args.adp009d_policy_candidate,
                             run_controls=args.adp009d_controls,
                             scenario_instance_path=args.adp009d_scenario_instance,
@@ -3378,17 +3459,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "bundle_sha256": (
                     prepared_bundle.get("bundle_sha256") if prepared_bundle else None
                 ),
-                "input_digest": (
-                    prepared_bundle.get("input_digest") if prepared_bundle else None
-                ),
+                "input_digest": (prepared_bundle.get("input_digest") if prepared_bundle else None),
                 "candidate_policy_queried": False,
                 "controls_requested": bool(args.adp009d_controls),
                 "diagnostic_only_requested": bool(args.adp009d_diagnostic_only),
                 "articulated_native_diagnostic_requested": articulated_native_requested,
                 "diagnostic_kind": (
-                    prepared_bundle.get("diagnostic_kind")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("diagnostic_kind") if prepared_bundle else None
                 ),
                 "articulated_native_request_digest": (
                     prepared_bundle.get("request_digest")
@@ -3396,27 +3473,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else None
                 ),
                 "scenario_instance_digest": (
-                    prepared_bundle.get("scenario_instance_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("scenario_instance_digest") if prepared_bundle else None
                 ),
                 "control_plan_digest": (
-                    prepared_bundle.get("control_plan_digest")
-                    if prepared_bundle
-                    else None
+                    prepared_bundle.get("control_plan_digest") if prepared_bundle else None
                 ),
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "retry_cap": 0,
                 "machine_avoidlist_digest": avoidlist_digest,
-                "gated_backbone_authorized": bool(
-                    args.adp009d_authorize_gated_backbone
-                ),
+                "gated_backbone_authorized": bool(args.adp009d_authorize_gated_backbone),
                 "gated_backbone_access_receipt_digest": (
-                    gated_backbone_access.get("receipt_digest")
-                    if gated_backbone_access
-                    else None
+                    gated_backbone_access.get("receipt_digest") if gated_backbone_access else None
                 ),
                 "allowed_active_vast_instance_ids": sorted(
                     set(args.adp_allowed_active_vast_instance_id)
@@ -3489,9 +3558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     authorize_gated_backbone=args.adp009d_authorize_gated_backbone,
-                    allowed_active_instance_ids=(
-                        args.adp_allowed_active_vast_instance_id
-                    ),
+                    allowed_active_instance_ids=(args.adp_allowed_active_vast_instance_id),
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
