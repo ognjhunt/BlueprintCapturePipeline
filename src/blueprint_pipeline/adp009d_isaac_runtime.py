@@ -893,6 +893,7 @@ def _configure_newton_robot_inertial_overlay(
 
     from isaaclab.sim.utils import clone as clone_spawner
     from isaaclab.utils.assets import retrieve_file_path
+    from isaaclab.utils.string import string_to_callable
 
     spawn_cfg = embodiment.scene_config.robot.spawn
     if spawn_cfg.usd_path != DROID_FRANKA_ROBOTIQ_USD_URI:
@@ -912,10 +913,10 @@ def _configure_newton_robot_inertial_overlay(
     # this Arena default enabled would add a PhysX-only API after the property
     # admission scan, outside the immutable Newton sensor configuration.
     spawn_cfg.activate_contact_sensors = False
-    original_spawn = spawn_cfg.func
-    underlying_spawn = getattr(original_spawn, "__wrapped__", None)
-    if not callable(underlying_spawn):
-        raise RuntimeError("adp009d_newton_robot_spawn_wrapper_unsupported")
+    underlying_spawn = _resolve_newton_underlying_usd_spawn(
+        spawn_cfg.func,
+        string_to_callable=string_to_callable,
+    )
 
     def spawn_with_inertial_overlay(
         prim_path: str,
@@ -952,6 +953,39 @@ def _configure_newton_robot_inertial_overlay(
         return prim
 
     spawn_cfg.func = clone_spawner(spawn_with_inertial_overlay)
+
+
+def _resolve_newton_underlying_usd_spawn(
+    configured_spawn: Any, *, string_to_callable: Any
+) -> Any:
+    """Resolve Isaac Lab's lazy callable, then admit only its pinned USD spawner.
+
+    Isaac Lab 4.5.24 stores ``UsdFileCfg.func`` as a ``ResolvableString``.  That
+    class intentionally suppresses generic dunder probing, including
+    ``__wrapped__``, until its public string-to-callable resolver is used.
+    Resolve only the exact expected target, verify its identity, and unwrap the
+    official ``@clone`` decorator so our wrapper can apply the overlay before
+    cloning.
+    """
+
+    expected_module = "isaaclab.sim.spawners.from_files.from_files"
+    expected_name = "spawn_from_usd"
+    expected_reference = f"{expected_module}:{expected_name}"
+    resolved_spawn = configured_spawn
+    if isinstance(configured_spawn, str):
+        if str(configured_spawn) != expected_reference:
+            raise RuntimeError("adp009d_newton_robot_spawn_wrapper_unsupported")
+        resolved_spawn = string_to_callable(str(configured_spawn))
+    if (
+        not callable(resolved_spawn)
+        or getattr(resolved_spawn, "__module__", None) != expected_module
+        or getattr(resolved_spawn, "__name__", None) != expected_name
+    ):
+        raise RuntimeError("adp009d_newton_robot_spawn_wrapper_unsupported")
+    underlying_spawn = getattr(resolved_spawn, "__wrapped__", None)
+    if not callable(underlying_spawn):
+        raise RuntimeError("adp009d_newton_robot_spawn_wrapper_unsupported")
+    return underlying_spawn
 
 
 def _to_torch(value: Any) -> Any:

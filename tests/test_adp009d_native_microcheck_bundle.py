@@ -3461,3 +3461,60 @@ def test_newton_robot_mass_overlay_is_backend_scoped_before_environment_build() 
     assert "solver_position_iteration_count=None" in wrapper
     assert "solver_velocity_iteration_count=None" in wrapper
     assert "max_depenetration_velocity=None" in wrapper
+
+
+def test_newton_robot_spawn_wrapper_resolves_exact_isaaclab_lazy_callable() -> None:
+    def underlying_spawn(*_args, **_kwargs):
+        return None
+
+    def resolved_spawn(*_args, **_kwargs):
+        return None
+
+    resolved_spawn.__module__ = "isaaclab.sim.spawners.from_files.from_files"
+    resolved_spawn.__name__ = "spawn_from_usd"
+    resolved_spawn.__wrapped__ = underlying_spawn
+    references: list[str] = []
+
+    result = isaac_runtime._resolve_newton_underlying_usd_spawn(
+        (
+            "isaaclab.sim.spawners.from_files.from_files:"
+            "spawn_from_usd"
+        ),
+        string_to_callable=lambda reference: (
+            references.append(reference) or resolved_spawn
+        ),
+    )
+
+    assert result is underlying_spawn
+    assert references == [
+        "isaaclab.sim.spawners.from_files.from_files:spawn_from_usd"
+    ]
+
+
+@pytest.mark.parametrize(
+    "configured_spawn",
+    [
+        "isaaclab.sim.spawners.from_files.from_files:spawn_from_urdf",
+        "untrusted.module:spawn_from_usd",
+    ],
+)
+def test_newton_robot_spawn_wrapper_rejects_noncanonical_lazy_callable(
+    configured_spawn: str,
+) -> None:
+    resolver_called = False
+
+    def resolver(_reference: str):
+        nonlocal resolver_called
+        resolver_called = True
+        return lambda: None
+
+    with pytest.raises(
+        RuntimeError,
+        match="adp009d_newton_robot_spawn_wrapper_unsupported",
+    ):
+        isaac_runtime._resolve_newton_underlying_usd_spawn(
+            configured_spawn,
+            string_to_callable=resolver,
+        )
+
+    assert resolver_called is False

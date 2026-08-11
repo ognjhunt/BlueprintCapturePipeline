@@ -144,6 +144,21 @@ records zero controls and policy queries, a typed pre-controls media gap, 20
 retained artifacts totaling 280,242 bytes, a settled `$0.148` charge,
 successful teardown, and fresh API-confirmed provider-zero.
 
+A sixth controls-only canary at implementation commit
+`8acd5b55e0a037ca2744a21ede46bbc8269afdbc` proved the Newton-only inertial
+overlay is admitted and reached embodiment configuration in the exact pinned
+runtime. It then failed closed before robot spawn because Isaac Lab 4.5.24
+stores `UsdFileCfg.func` as a lazy `ResolvableString`; generic `__wrapped__`
+inspection intentionally does not resolve that reference. Terminal receipt
+`sha256:2da3ea2f428c0b28cfa3c38cf3be88f71797a9ff3bd97c79766b8a5c024dffa2`
+records zero controls and policy queries, a typed pre-controls media gap, 20
+retained artifacts totaling 238,891 bytes, the exact settled `$0.159` charge,
+successful teardown, and fresh API-confirmed provider-zero. The repair uses
+Isaac Lab's public `string_to_callable` resolver only after requiring the exact
+pinned `spawn_from_usd` reference, re-verifies the resolved function's module
+and name, and then requires the official `@clone` wrapper before unwrapping it.
+Any other reference or wrapper shape remains fail closed.
+
 The admitted repair is Newton-only and digest-bound. It verifies the exact
 Arena DROID USD bytes, requires the exact nine massless Robotiq rigid bodies and
 at least one collider per body, then authors only their physically sourced
