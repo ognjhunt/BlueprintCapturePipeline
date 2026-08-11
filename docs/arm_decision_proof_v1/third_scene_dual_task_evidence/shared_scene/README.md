@@ -54,6 +54,12 @@ Checked-in digest-bound manifests:
 - [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
 - [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:7d1b50d9d84f5083c7d70fc56cbc2da2703d5ad9dfb1cf68f60195affbc08885`
 
+Local human-review-only visual comparison receipt:
+
+- `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/third_scene_840920_agent_cad_visual_comparison_receipt.v1.json`, receipt digest `sha256:05febab49762d604f047df6a7f8975b25f50b6ac432493566feecb90e90f020c`
+- Four CAD candidates side by side: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/third_scene_840920_four_cad_candidates_side_by_side.png`, image digest `sha256:366b1bd3f5b3871413bbc9da13465bc8b30bafaaf792419d9a4470f32ffec9ae`
+- Original observed references plus CAD candidates: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/third_scene_840920_agent_cad_comparison.png`, image digest `sha256:b60dce63e40c2c618da9397bd32e6e4fec727142151459331adffd3d349be93b`
+
 The readiness receipt now includes Dockerless static bundle/config/input-USD
 preflight receipts for all four Content Agents bundles. The no-paid Docker dry
 run has not run in this environment because the Docker/Colima daemon was

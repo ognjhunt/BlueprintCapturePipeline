@@ -338,6 +338,13 @@ Static Content Agents bundle/config/input-USD preflight receipts:
 | Task B notebook | Earth-to-Jake | 79 | `sha256:95280e9fea76d5cfae35e7554f771971143baca8226d9bb5ec56771e0c63b584` |
 | Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:0fadc0b54657c78ce1ec32d6ad41a201f11d4fd64235dea764afe17042a729fe` |
 
+A local human-review-only visual comparison was materialized from the
+manifest-bound original reference frames and CAD snapshots. Receipt:
+`/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/third_scene_840920_agent_cad_visual_comparison_receipt.v1.json`,
+digest `sha256:05febab49762d604f047df6a7f8975b25f50b6ac432493566feecb90e90f020c`.
+This receipt is a review index only; it did not regenerate CAD, execute agents,
+qualify SimReady USD, or make physical-equivalence claims.
+
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
 | Task A canonical | Not run | Not run | Not admitted | Not admitted |
