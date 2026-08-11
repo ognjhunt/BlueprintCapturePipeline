@@ -37,7 +37,9 @@ learned policies were therefore not admitted. This is not a policy result.
   `07f80fce7` (1..5-object scalable Content Agents readiness matrix), and
   `12c46e6c3` (no-paid Docker/network-disabled Content Agents dry-run
   preflights), and `7bac16eee` (retaining both Dockerless static and no-paid
-  Docker preflight receipts per Content Agents candidate),
+  Docker preflight receipts per Content Agents candidate), `b121f3ea8`
+  (portable CAD receipt dependencies exposed in inventories), and `57d979edb`
+  (manifest-driven CAD review media),
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
@@ -372,8 +374,14 @@ No-paid Docker/network-disabled Content Agents local dry-run receipts:
 
 A local human-review-only visual comparison was materialized from the
 manifest-bound original reference frames and CAD snapshots. Receipt:
-`/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/third_scene_840920_agent_cad_visual_comparison_receipt.v1.json`,
-digest `sha256:05febab49762d604f047df6a7f8975b25f50b6ac432493566feecb90e90f020c`.
+`/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`,
+digest `sha256:71733e7aa3f7367864fd336d77403962913bf6f7f31af6e4992b6d17f54a2441`.
+The corresponding contact sheet is
+`/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`,
+digest `sha256:bb98193cb89ccb605198e4a40503244aa75e43917fe2c91de175db6c363a876d`.
+The checked-in binding manifest is
+`docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`,
+binding digest `sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe`.
 This receipt is a review index only; it did not regenerate CAD, execute agents,
 qualify SimReady USD, or make physical-equivalence claims.
 

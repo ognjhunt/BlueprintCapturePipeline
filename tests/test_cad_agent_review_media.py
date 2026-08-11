@@ -230,3 +230,16 @@ def test_visual_comparison_rejects_backend_reference_mismatch(tmp_path: Path) ->
             output_dir=tmp_path / "review",
         )
 
+
+def test_results_doc_points_to_manifest_driven_visual_comparison() -> None:
+    results = (
+        ROOT
+        / "docs/arm_decision_proof_v1/THIRD_SCENE_DUAL_TASK_E2E_RESULTS.md"
+    ).read_text(encoding="utf-8")
+
+    assert "cad_agent_visual_comparison.v1.json" in results
+    assert "third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json" in results
+    assert "sha256:71733e7aa3f7367864fd336d77403962913bf6f7f31af6e4992b6d17f54a2441" in results
+    assert "sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe" in results
+    assert "third_scene_840920_agent_cad_visual_comparison_receipt.v1.json" not in results
+    assert "sha256:05febab49762d604f047df6a7f8975b25f50b6ac432493566feecb90e90f020c" not in results
