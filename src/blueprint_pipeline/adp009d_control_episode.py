@@ -694,6 +694,7 @@ def _canonical_dynamics_observation(value: Mapping[str, Any]) -> dict[str, Any]:
     for field, width, allow_none in (
         ("body_contact_force_world_n", 3, True),
         ("body_contact_partner_force_world_n", 3, True),
+        ("body_contact_sage_collision_force_world_n", 3, True),
         ("body_incoming_joint_wrench_body", 6, False),
     ):
         body_values = result.get(field)
@@ -846,11 +847,36 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
             (_vector_norm(vector) for vector in (partner_forces or {}).values()),
             default=0.0,
         )
-        # Force the sensor's filtered partner does not account for.  A large
-        # unattributed residual means geometry outside the filter is holding the
-        # arm; it names where to look and never asserts which prim.
+        sage_collision_forces = dynamics.get(
+            "body_contact_sage_collision_force_world_n"
+        )
+        sage_collision_available = sage_collision_forces is not None
+        maximum_sage_collision_force = max(
+            (
+                _vector_norm(vector)
+                for vector in (sage_collision_forces or {}).values()
+            ),
+            default=0.0,
+        )
+        # These filters have separate, non-overlapping scopes.  Preserve the
+        # per-scope force as well as the total accounted force: one scope cannot
+        # make a zero in the other mean anything, and an unresolved filter is
+        # deliberately represented as unavailable rather than as zero.
+        accounted_force_by_body: dict[str, float] = {}
+        for filtered_forces in (partner_forces or {}, sage_collision_forces or {}):
+            for body_name, vector in filtered_forces.items():
+                accounted_force_by_body[str(body_name)] = (
+                    accounted_force_by_body.get(str(body_name), 0.0)
+                    + _vector_norm(vector)
+                )
+        maximum_accounted_filtered_force = max(
+            accounted_force_by_body.values(), default=0.0
+        )
+        # Force the explicit filters do not account for.  A large residual names
+        # a non-can/non-SAGE contact investigation; it never asserts which prim
+        # is responsible.
         unattributed_contact_force = max(
-            maximum_contact_force - maximum_partner_force, 0.0
+            maximum_contact_force - maximum_accounted_filtered_force, 0.0
         )
         phase = phases.setdefault(
             phase_id,
@@ -865,7 +891,10 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
                 "peak_contact_body": None,
                 "maximum_incoming_joint_force_n": 0.0,
                 "contact_partner_matrix_available": partner_available,
+                "contact_sage_collision_matrix_available": sage_collision_available,
                 "maximum_filtered_partner_contact_force_n": 0.0,
+                "maximum_sage_collision_contact_force_n": 0.0,
+                "maximum_accounted_filtered_contact_force_n": 0.0,
                 "maximum_unattributed_contact_force_n": 0.0,
                 "final": None,
             },
@@ -897,8 +926,20 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
         phase["contact_partner_matrix_available"] = (
             phase["contact_partner_matrix_available"] and partner_available
         )
+        phase["contact_sage_collision_matrix_available"] = (
+            phase["contact_sage_collision_matrix_available"]
+            and sage_collision_available
+        )
         phase["maximum_filtered_partner_contact_force_n"] = max(
             phase["maximum_filtered_partner_contact_force_n"], maximum_partner_force
+        )
+        phase["maximum_sage_collision_contact_force_n"] = max(
+            phase["maximum_sage_collision_contact_force_n"],
+            maximum_sage_collision_force,
+        )
+        phase["maximum_accounted_filtered_contact_force_n"] = max(
+            phase["maximum_accounted_filtered_contact_force_n"],
+            maximum_accounted_filtered_force,
         )
         phase["maximum_unattributed_contact_force_n"] = max(
             phase["maximum_unattributed_contact_force_n"], unattributed_contact_force
@@ -911,6 +952,8 @@ def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, A
             "maximum_body_contact_force_n": maximum_contact_force,
             "peak_contact_body": peak_contact_body,
             "filtered_partner_contact_force_n": maximum_partner_force,
+            "sage_collision_contact_force_n": maximum_sage_collision_force,
+            "accounted_filtered_contact_force_n": maximum_accounted_filtered_force,
             "unattributed_contact_force_n": unattributed_contact_force,
         }
     if not contact_observation_seen or contact_configuration is None:

@@ -36,11 +36,14 @@ LimitNOFILE=65536
 MemoryMax=8G
 CPUQuota=200%
 TimeoutStartSec=5m
-Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+# The billing export feeds provider-zero admission, so it follows the same
+# immutable Task Evaluation release identity as the guard.
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
 Environment=BLUEPRINT_GPU_BILLING_EXPORT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/provider_billing_export.json
 Environment=BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit
 Environment=BLUEPRINT_PROVIDER_BILLING_COHORT_START_AT=2026-01-01T00:00:00Z
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
-ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && ARGS=(-m blueprint_pipeline.provider_billing_reconciler --secrets-dir "$${BLUEPRINT_GPU_PROVIDER_SECRETS_DIR}" --billing-export "$${BLUEPRINT_GPU_BILLING_EXPORT}" --audit-root "$${BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT}" --cohort-start-at "$${BLUEPRINT_PROVIDER_BILLING_COHORT_START_AT}") && if [ -x .venv/bin/python ]; then exec .venv/bin/python "$${ARGS[@]}"; fi; exec env PYTHONPATH=src python3 "$${ARGS[@]}"'
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.provider_billing_reconciler --secrets-dir "$${BLUEPRINT_GPU_PROVIDER_SECRETS_DIR}" --billing-export "$${BLUEPRINT_GPU_BILLING_EXPORT}" --audit-root "$${BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT}" --cohort-start-at "$${BLUEPRINT_PROVIDER_BILLING_COHORT_START_AT}") && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'

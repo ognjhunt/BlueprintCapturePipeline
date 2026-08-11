@@ -523,6 +523,16 @@ def test_systemd_spend_guard_enforces_5000_admission_lock_and_page_path():
     assert "blueprint-provider-billing-reconciler.timer" in installer
     assert "systemctl enable --now blueprint-provider-billing-reconciler.timer" in installer
     assert "BLUEPRINT_PROVIDER_BILLING_COHORT_START_AT=2026-01-01T00:00:00Z" in env_example
+    for unit in (service, billing_service):
+        assert "BLUEPRINT_PIPELINE_REPO" not in unit
+        assert (
+            "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO="
+            "/opt/blueprint/task-evaluation-control-plane"
+        ) in unit
+        assert (
+            "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON="
+            "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
+        ) in unit
 
 
 def test_main_deploy_image_includes_ffmpeg_for_clip_and_keyframe_lanes():

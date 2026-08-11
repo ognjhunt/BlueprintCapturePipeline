@@ -76,6 +76,7 @@ def _inputs(tmp_path: Path) -> dict[str, Path]:
             ],
             "live_instance_count": 0,
             "total_burn_per_hour_usd": 0.0,
+            "provider_zero_verified": True,
         },
     )
     request_value = {
@@ -165,5 +166,20 @@ def test_preflight_requires_fresh_api_confirmed_provider_zero(tmp_path: Path) ->
     assert result["status"] == "blocked"
     assert result["provider_zero_verified"] is False
     assert "task_evaluation_preflight_provider_zero_unverified:vast" in result[
+        "blockers"
+    ]
+
+
+def test_preflight_requires_explicit_provider_zero_verification(tmp_path: Path) -> None:
+    paths = _inputs(tmp_path)
+    guard = json.loads(paths["guard"].read_text(encoding="utf-8"))
+    guard.pop("provider_zero_verified")
+    _write(paths["guard"], guard)
+
+    result = _run(paths)
+
+    assert result["status"] == "blocked"
+    assert result["provider_zero_verified"] is False
+    assert "task_evaluation_preflight_provider_zero_not_explicitly_verified" in result[
         "blockers"
     ]

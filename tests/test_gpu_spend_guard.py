@@ -1486,6 +1486,10 @@ def test_main_json_report_persists_snapshot_on_dry_run(patched_guard, capsys) ->
     assert ids["pod-healthy"]["reap_candidate"] is False
     assert ids["pod-owned"]["protected"] is True
     assert snapshot["total_burn_per_hour_usd"] > 0
+    assert snapshot["status"] == "passed"  # fleet health is not provider-zero
+    assert snapshot["provider_zero_verified"] is False
+    assert "provider_zero_live_instances_observed" in snapshot["provider_zero"]["blockers"]
+    assert "provider_zero_nonzero_burn_observed" in snapshot["provider_zero"]["blockers"]
     # File-based secrets never leak into the persisted snapshot.
     assert "rp-super-secret" not in report_path.read_text()
     assert "va-super-secret" not in out

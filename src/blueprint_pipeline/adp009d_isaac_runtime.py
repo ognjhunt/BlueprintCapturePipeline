@@ -241,6 +241,13 @@ APPROVED_CAN_HEIGHT_M = 0.1694279937744141
 # `PhysicsCollisionAPI`.
 CONTACT_PARTNER_FILTER_LABEL = "approved_can"
 CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can"
+# The retained paid controls receipt proved that the can filter resolved one
+# shape and carried zero force while the left finger carried 8.6 N net force.
+# That rules out the can, but not the sealed SAGE collision asset versus any
+# other unfiltered source.  This separate, read-only scope makes that next
+# distinction without changing collision, controller, or task geometry.
+CONTACT_SAGE_COLLISION_FILTER_LABEL = "sage_collision"
+CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/sage_collision"
 # PhysX filtered contact reporting is strictly one-to-many: one sensor body may
 # be filtered against many partners, never many sensor bodies against one.  The
 # pinned IsaacLab docstring calls out this exact shape as unsupported, so each
@@ -249,6 +256,10 @@ CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can"
 CONTACT_PARTNER_SENSOR_NAMES = {
     "left_inner_finger": "robot_contact_can_left",
     "right_inner_finger": "robot_contact_can_right",
+}
+CONTACT_SAGE_COLLISION_SENSOR_NAMES = {
+    "left_inner_finger": "robot_contact_sage_left",
+    "right_inner_finger": "robot_contact_sage_right",
 }
 # The worker imports the episode adapter under a flattened module name, so this
 # file cannot read the adapter's constant at module scope.  Mirrored here and
@@ -1321,10 +1332,11 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     # The a0cf16c9 canary measured an 8.6 N vertical contact on one finger while
     # the nearest scene triangle sat 70 mm from that finger's body origin and the
     # can lid 81 mm below it, so the net force alone cannot name the partner.
-    # Filtering on the can collider resolves it without touching the static SAGE
-    # mesh: a can-carried force means the jaw is landing on the object, while a
-    # zero can force under a nonzero net force means the scene geometry is the
-    # obstruction.  The filter is read-only and never changes contact behavior.
+    # Filtering on the can's rigid body already proved this contact is not the
+    # can.  A second, independent SAGE-root filter is therefore diagnostic only:
+    # a nonzero SAGE force attributes this configured collision scope, while an
+    # unresolved/zero result leaves the non-can source explicitly unresolved.
+    # Neither filter changes contact behavior.
     robot_contact = ContactSensorAsset(
         name="robot_contact",
         sensor_cfg=ContactSensorCfg(
@@ -1350,6 +1362,21 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         )
         for body_name, sensor_name in sorted(CONTACT_PARTNER_SENSOR_NAMES.items())
     ]
+    sage_collision_contacts = [
+        ContactSensorAsset(
+            name=sensor_name,
+            sensor_cfg=ContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/Gripper/Robotiq_2F_85/{body_name}",
+                update_period=0.0,
+                history_length=1,
+                debug_vis=False,
+                filter_prim_paths_expr=[CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH],
+            ),
+        )
+        for body_name, sensor_name in sorted(
+            CONTACT_SAGE_COLLISION_SENSOR_NAMES.items()
+        )
+    ]
     light = SpawnerObject(
         name="light",
         prim_path="/World/Light",
@@ -1359,7 +1386,14 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         ),
     )
     scene = Scene(
-        assets=[sage, approved_can, robot_contact, *partner_contacts, light]
+        assets=[
+            sage,
+            approved_can,
+            robot_contact,
+            *partner_contacts,
+            *sage_collision_contacts,
+            light,
+        ]
         + ([aura_appearance] if aura_appearance is not None else [])
     )
     _phase("sealed_scene_configuration", "completed")
@@ -2848,6 +2882,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     backend_contact_configuration=backend_contact_configuration,
                     task_object_radius_m=APPROVED_CAN_RADIUS_M,
                     task_object_height_m=APPROVED_CAN_HEIGHT_M,
+                    sage_collision_contact_sensors={
+                        sensor_name: env.unwrapped.scene[sensor_name]
+                        for sensor_name in CONTACT_SAGE_COLLISION_SENSOR_NAMES.values()
+                    },
                 )
                 probe_dynamics = adapter.read_arm_dynamics_observation()
                 partner_forces = probe_dynamics.get(

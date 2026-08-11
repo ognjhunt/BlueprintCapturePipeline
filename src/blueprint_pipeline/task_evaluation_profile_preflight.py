@@ -206,6 +206,10 @@ def run_task_evaluation_profile_preflight(
         or guard.get("total_burn_per_hour_usd") not in {0, 0.0}
     ):
         provider_zero_blockers.append("task_evaluation_preflight_provider_guard_invalid")
+    if guard.get("provider_zero_verified") is not True:
+        provider_zero_blockers.append(
+            "task_evaluation_preflight_provider_zero_not_explicitly_verified"
+        )
     blockers.extend(provider_zero_blockers)
 
     guard_blockers = guard.get("blockers")

@@ -1,5 +1,6 @@
-from pathlib import Path
 import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
@@ -136,6 +137,8 @@ def _snapshot(tmp_path: Path) -> tuple[dict, dict]:
             "generated_at": "2026-08-10T12:00:00+00:00",
             "live_instance_count": 0,
             "total_burn_per_hour_usd": 0,
+            "provider_zero_verified": True,
+            "provider_zero": {"blockers": []},
             "inventory_results": [{"provider": "vast", "status": "succeeded"}],
             "spend_admission_lock": {"admission_allowed": True},
             "blockers": [],
@@ -180,7 +183,34 @@ def test_passed_guard_with_no_blockers_stays_clean_in_snapshot(
     _, snapshot = _snapshot(tmp_path)
 
     assert snapshot["guard"]["blockers"] == []
+    assert snapshot["guard"]["provider_zero_verified"] is True
     assert snapshot["admissible_profile_ids"] == ["interiorgs-sage-franka-001"]
+
+
+def test_supervisor_blocks_a_guard_that_explicitly_reports_nonzero_provider_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile, _ = _snapshot(tmp_path)
+    guard_path = tmp_path / "guard.json"
+    guard = json.loads(guard_path.read_text(encoding="utf-8"))
+    guard["provider_zero_verified"] = False
+    guard["provider_zero"] = {"blockers": ["provider_zero_live_instances_observed"]}
+    _write(guard_path, guard)
+
+    snapshot = build_supervisor_snapshot(
+        profile_dir=tmp_path / "profiles",
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=guard_path,
+    )
+
+    assert snapshot["admissible_profile_ids"] == []
+    assert snapshot["guard"]["provider_zero_verified"] is False
+    assert snapshot["guard"]["provider_zero_blockers"] == [
+        "provider_zero_live_instances_observed"
+    ]
+    assert "gpu_provider_zero_not_verified" in snapshot["profiles"][0]["blockers"]
 
 
 def test_supervisor_snapshot_exposes_unmatched_webapp_receipt(
