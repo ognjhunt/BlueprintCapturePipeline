@@ -172,6 +172,41 @@ def test_agents_sdk_supervisor_has_no_tools_or_mutation_authority(
     assert invoker.spec.tool_bindings == ()
 
 
+def test_passed_guard_with_no_blockers_stays_clean_in_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+
+    _, snapshot = _snapshot(tmp_path)
+
+    assert snapshot["guard"]["blockers"] == []
+    assert snapshot["admissible_profile_ids"] == ["interiorgs-sage-franka-001"]
+
+
+def test_missing_guard_fails_closed_without_becoming_agent_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+
+    snapshot = build_supervisor_snapshot(
+        profile_dir=profile_dir,
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "missing-guard.json",
+    )
+
+    assert snapshot["admissible_profile_ids"] == []
+    assert snapshot["guard"]["blockers"] == [
+        "gpu_spend_guard_report_unavailable"
+    ]
+    assert "gpu_spend_guard_report_unavailable" in snapshot["profiles"][0][
+        "blockers"
+    ]
+
+
 def test_supervisor_rejects_non_admissible_profile_recommendation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
