@@ -174,7 +174,10 @@ def _file_sha256(path: Path) -> str:
 
 
 def _path_backed_packet(
-    tmp_path: Path, *, object_count: int = 2
+    tmp_path: Path,
+    *,
+    object_count: int = 2,
+    force_batch_collider_receipt: bool = False,
 ) -> tuple[Path, list[dict[str, str]]]:
     root = Path(__file__).resolve().parents[1]
     manifests = root / "docs/arm_decision_proof_v1/manifests"
@@ -338,7 +341,7 @@ def _path_backed_packet(
             "receipt_digest": "",
         },
     )
-    if object_count > 1:
+    if object_count > 1 or force_batch_collider_receipt:
         for lane in lanes:
             lane["source_collider_deletion_receipt_path"] = str(batch)
     return scene_path, lanes
@@ -401,6 +404,27 @@ def test_path_backed_materializer_supports_one_independent_object(
     )
 
     assert len(result["bindings"]) == 1
+
+
+def test_path_backed_materializer_supports_one_object_batch_collider_receipt(
+    tmp_path: Path,
+) -> None:
+    scene_path, lanes = _path_backed_packet(
+        tmp_path,
+        object_count=1,
+        force_batch_collider_receipt=True,
+    )
+
+    result = materialize_replacement_construction_bindings(
+        scene_freeze_receipt_path=scene_path,
+        evidence_lanes=lanes,
+    )
+
+    assert len(result["bindings"]) == 1
+    evidence = result["bindings"][0]["evidence_receipts"]["source_collider_deletion"]
+    task = json.loads(Path(lanes[0]["task_freeze_receipt_path"]).read_text())
+    assert evidence["batch"]["sha256"].startswith("sha256:")
+    assert evidence["selected_deletion_id"] == task["removal_plan"]["collider_deletion_id"]
 
 
 @pytest.mark.parametrize(

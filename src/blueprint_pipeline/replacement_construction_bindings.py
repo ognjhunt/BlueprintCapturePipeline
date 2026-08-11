@@ -216,7 +216,7 @@ def _resolve_source_collider_deletion(
         not isinstance(source_scene, Mapping)
         or source_scene.get("sha256") != sage_sha256
         or not isinstance(rows, list)
-        or not 2 <= len(rows) <= MAX_REPLACEMENT_OBJECTS
+        or not 1 <= len(rows) <= MAX_REPLACEMENT_OBJECTS
         or batch.get("target_count") != len(rows)
         or batch.get("source_bytes_unchanged") is not True
         or batch.get("unrelated_prim_inventory_unchanged") is not True
