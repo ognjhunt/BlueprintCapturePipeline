@@ -1345,8 +1345,25 @@ def test_aura_is_rendered_by_isaac_not_composited_afterward() -> None:
     assert 'AURA_PARTICLEFIELD_FILENAME = "aura_ghost_removed_surflets.usd"' in source
     assert "aura_appearance" in source
     # Added to the rendered scene, not to a separate compositing step.
-    assert "assets=[sage, approved_can, light]" in source
+    assert "assets=[sage, approved_can, robot_contact, light]" in source
     assert "[aura_appearance] if aura_appearance is not None else []" in source
+
+
+def test_robot_contact_sensor_is_read_only_and_part_of_the_native_scene() -> None:
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+
+    assert "from isaaclab.sensors.contact_sensor import ContactSensorCfg" in source
+    assert 'prim_path="{ENV_REGEX_NS}/Robot/.*"' in source
+    assert 'contact_sensor=env.unwrapped.scene["robot_contact"]' in source
+    assert "set_joint" not in source[
+        source.index("class ContactSensorAsset") : source.index(
+            "_phase(\"embodiment_configuration\")"
+        )
+    ]
 
 
 def test_the_appearance_is_visual_only_and_never_a_collider() -> None:

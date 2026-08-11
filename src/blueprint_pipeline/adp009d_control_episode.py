@@ -49,7 +49,7 @@ except ModuleNotFoundError:  # repository package
 
 
 CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v11"
-CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
+CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v3"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
 
@@ -104,6 +104,8 @@ ZERO_ACTION_STEPS = 80
 # boundaries.  Arena advances at roughly 30 Hz, so eight native steps yields a
 # human-review stream close to the platform's 4 fps portable-video contract.
 CONTROL_REVIEW_FRAME_STRIDE_STEPS = 8
+STALL_TRACKING_ERROR_THRESHOLD_RAD = 0.005
+STALL_JOINT_VELOCITY_THRESHOLD_RAD_S = 0.002
 
 BLOCKER_ZERO_COMPLETED_TASK = "zero_action_negative_completed_task"
 BLOCKER_POSITIVE_FAILED = "deterministic_scripted_positive_failed"
@@ -131,6 +133,8 @@ class ControlEnvironment(Protocol):
     def read_control_observation_metadata(self) -> Mapping[str, Any]: ...
 
     def read_arm_joint_positions(self) -> Sequence[float]: ...
+
+    def read_arm_dynamics_observation(self) -> Mapping[str, Any]: ...
 
     def read_object_sample(self) -> Mapping[str, Any]: ...
 
@@ -546,6 +550,8 @@ def _record_action(
     action: Sequence[float],
     observed_before: Sequence[float],
     observed_after: Sequence[float],
+    dynamics_before: Mapping[str, Any],
+    dynamics_after: Mapping[str, Any],
     action_recomputed: bool,
     action_hold_index: int,
 ) -> dict[str, Any]:
@@ -560,6 +566,171 @@ def _record_action(
         "action_hold_index": int(action_hold_index),
         "observed_joint_position_before_rad": [float(v) for v in observed_before],
         "observed_joint_position_after_rad": [float(v) for v in observed_after],
+        "arm_dynamics_before": _canonical_dynamics_observation(dynamics_before),
+        "arm_dynamics_after": _canonical_dynamics_observation(dynamics_after),
+    }
+
+
+def _canonical_dynamics_observation(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain finite simulator readback without accepting caller-authored gaps."""
+
+    if not isinstance(value, Mapping):
+        raise ControlEpisodeError(["control_episode_arm_dynamics_not_mapping"])
+    try:
+        result = json.loads(json.dumps(dict(value), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ControlEpisodeError(["control_episode_arm_dynamics_invalid"]) from exc
+    if result.get("schema_version") != "adp009d_arm_dynamics_observation.v1":
+        raise ControlEpisodeError(["control_episode_arm_dynamics_schema_invalid"])
+    required = {
+        "joint_position_rad",
+        "joint_velocity_rad_s",
+        "joint_position_target_rad",
+        "computed_torque_nm",
+        "applied_torque_nm",
+        "joint_effort_limit_nm",
+        "joint_effort_utilization",
+        "body_contact_force_world_n",
+        "body_incoming_joint_wrench_body",
+    }
+    if required - set(result):
+        raise ControlEpisodeError(["control_episode_arm_dynamics_field_missing"])
+    vector_fields = (
+        "joint_position_rad",
+        "joint_velocity_rad_s",
+        "joint_position_target_rad",
+        "computed_torque_nm",
+        "applied_torque_nm",
+        "joint_effort_limit_nm",
+        "joint_effort_utilization",
+    )
+    if any(
+        not isinstance(result.get(field), list) or len(result[field]) != 7
+        for field in vector_fields
+    ):
+        raise ControlEpisodeError(["control_episode_arm_dynamics_vector_invalid"])
+    for field, width, allow_none in (
+        ("body_contact_force_world_n", 3, True),
+        ("body_incoming_joint_wrench_body", 6, False),
+    ):
+        body_values = result.get(field)
+        if body_values is None and allow_none:
+            continue
+        if not isinstance(body_values, dict) or any(
+            not isinstance(vector, list) or len(vector) != width
+            for vector in body_values.values()
+        ):
+            raise ControlEpisodeError(["control_episode_arm_dynamics_body_vector_invalid"])
+    return result
+
+
+def _vector_norm(values: Sequence[Any]) -> float:
+    return math.sqrt(sum(float(value) ** 2 for value in values))
+
+
+def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize tracking, saturation, and contact without declaring a cause."""
+
+    phases: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        phase_id = str(action["phase_id"])
+        dynamics = dict(action["arm_dynamics_after"])
+        positions = dynamics["joint_position_rad"]
+        targets = dynamics["joint_position_target_rad"]
+        velocities = dynamics["joint_velocity_rad_s"]
+        tracking_error = max(
+            abs(float(target) - float(position))
+            for target, position in zip(targets, positions, strict=True)
+        )
+        maximum_velocity = max(abs(float(value)) for value in velocities)
+        maximum_effort_utilization = max(
+            abs(float(value)) for value in dynamics["joint_effort_utilization"]
+        )
+        maximum_clip_residual = max(
+            (
+                abs(float(value))
+                for value in dynamics.get("torque_clip_residual_nm", [])
+            ),
+            default=0.0,
+        )
+        contact_forces = dynamics.get("body_contact_force_world_n") or {}
+        contact_magnitudes = {
+            str(name): _vector_norm(vector)
+            for name, vector in contact_forces.items()
+        }
+        peak_contact_body = (
+            max(contact_magnitudes, key=contact_magnitudes.get)
+            if contact_magnitudes
+            else None
+        )
+        maximum_contact_force = (
+            contact_magnitudes[peak_contact_body]
+            if peak_contact_body is not None
+            else 0.0
+        )
+        incoming_wrenches = dynamics.get("body_incoming_joint_wrench_body") or {}
+        maximum_incoming_force = max(
+            (_vector_norm(wrench[:3]) for wrench in incoming_wrenches.values()),
+            default=0.0,
+        )
+        phase = phases.setdefault(
+            phase_id,
+            {
+                "step_count": 0,
+                "stalled_tracking_step_count": 0,
+                "maximum_joint_position_tracking_error_rad": 0.0,
+                "maximum_absolute_joint_velocity_rad_s": 0.0,
+                "maximum_joint_effort_utilization": 0.0,
+                "maximum_torque_clip_residual_nm": 0.0,
+                "maximum_body_contact_force_n": 0.0,
+                "peak_contact_body": None,
+                "maximum_incoming_joint_force_n": 0.0,
+                "final": None,
+            },
+        )
+        phase["step_count"] += 1
+        if (
+            tracking_error >= STALL_TRACKING_ERROR_THRESHOLD_RAD
+            and maximum_velocity <= STALL_JOINT_VELOCITY_THRESHOLD_RAD_S
+        ):
+            phase["stalled_tracking_step_count"] += 1
+        phase["maximum_joint_position_tracking_error_rad"] = max(
+            phase["maximum_joint_position_tracking_error_rad"], tracking_error
+        )
+        phase["maximum_absolute_joint_velocity_rad_s"] = max(
+            phase["maximum_absolute_joint_velocity_rad_s"], maximum_velocity
+        )
+        phase["maximum_joint_effort_utilization"] = max(
+            phase["maximum_joint_effort_utilization"], maximum_effort_utilization
+        )
+        phase["maximum_torque_clip_residual_nm"] = max(
+            phase["maximum_torque_clip_residual_nm"], maximum_clip_residual
+        )
+        if maximum_contact_force > phase["maximum_body_contact_force_n"]:
+            phase["maximum_body_contact_force_n"] = maximum_contact_force
+            phase["peak_contact_body"] = peak_contact_body
+        phase["maximum_incoming_joint_force_n"] = max(
+            phase["maximum_incoming_joint_force_n"], maximum_incoming_force
+        )
+        phase["final"] = {
+            "step_index": int(action["step_index"]),
+            "joint_position_tracking_error_rad": tracking_error,
+            "maximum_absolute_joint_velocity_rad_s": maximum_velocity,
+            "maximum_joint_effort_utilization": maximum_effort_utilization,
+            "maximum_body_contact_force_n": maximum_contact_force,
+            "peak_contact_body": peak_contact_body,
+        }
+    return {
+        "schema_version": "adp009d_arm_dynamics_summary.v1",
+        "stall_tracking_error_threshold_rad": STALL_TRACKING_ERROR_THRESHOLD_RAD,
+        "stall_joint_velocity_threshold_rad_s": (
+            STALL_JOINT_VELOCITY_THRESHOLD_RAD_S
+        ),
+        "phases": phases,
+        "claim_boundary": (
+            "Readback distinguishes tracking, saturation, and contact evidence; "
+            "it does not by itself assign root cause or task success."
+        ),
     }
 
 
@@ -634,6 +805,7 @@ def run_control_episode(
         held_action: Sequence[float] | None = None
         for phase_step_index in range(phase_step_limit):
             before = [float(v) for v in environment.read_arm_joint_positions()]
+            dynamics_before = environment.read_arm_dynamics_observation()
             if phase["mode"] == "hold_current_joint_positions":
                 action = environment.hold_action(gripper_command=gripper_command)
                 action_recomputed = True
@@ -666,6 +838,7 @@ def run_control_episode(
             step_index += 1
             phase_steps_executed += 1
             after = [float(v) for v in environment.read_arm_joint_positions()]
+            dynamics_after = environment.read_arm_dynamics_observation()
             actions.append(
                 _record_action(
                     step_index=step_index,
@@ -673,6 +846,8 @@ def run_control_episode(
                     action=action,
                     observed_before=before,
                     observed_after=after,
+                    dynamics_before=dynamics_before,
+                    dynamics_after=dynamics_after,
                     action_recomputed=action_recomputed,
                     action_hold_index=action_hold_index,
                 )
@@ -819,6 +994,7 @@ def run_control_episode(
         "state_trace_digest": canonical_digest({"samples": samples}),
         "action_trace": actions,
         "action_trace_digest": canonical_digest({"actions": actions}),
+        "arm_dynamics_summary": _summarize_arm_dynamics(actions),
         "phase_arrivals": phase_arrivals,
         "phase_execution_blocker": phase_execution_blocker,
         "contact_trace": [

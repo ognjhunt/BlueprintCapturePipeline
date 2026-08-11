@@ -925,6 +925,8 @@ def _approved_can_observability(camera: Any) -> dict[str, Any]:
 def _build_environment(runtime: Path, args: argparse.Namespace):
     import torch
     import isaaclab.sim as sim_utils
+    from isaaclab.sensors.contact_sensor import ContactSensorCfg
+    from isaaclab_arena.assets.asset import Asset
     from isaaclab_arena.assets.object import Object
     from isaaclab_arena.assets.object_base import ObjectType
     from isaaclab_arena.embodiments.droid.droid import DroidAbsoluteJointPositionEmbodiment
@@ -944,6 +946,19 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
                 prim_path=prim_path,
                 object_type=ObjectType.SPAWNER,
             )
+
+    class ContactSensorAsset(Asset):
+        """Compose one read-only Isaac sensor through Arena's asset seam."""
+
+        def __init__(self, *, name: str, sensor_cfg: Any):
+            super().__init__(name=name)
+            self.sensor_cfg = sensor_cfg
+
+        def get_object_cfg(self):
+            return self.name, self.sensor_cfg
+
+        def get_event_cfg(self):
+            return self.name, None
 
     _phase("embodiment_configuration")
     yaw_half = ROBOT_BASE_YAW_RAD / 2
@@ -1126,6 +1141,15 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             ),
         },
     )
+    robot_contact = ContactSensorAsset(
+        name="robot_contact",
+        sensor_cfg=ContactSensorCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/.*",
+            update_period=0.0,
+            history_length=1,
+            debug_vis=False,
+        ),
+    )
     light = SpawnerObject(
         name="light",
         prim_path="/World/Light",
@@ -1135,7 +1159,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         ),
     )
     scene = Scene(
-        assets=[sage, approved_can, light]
+        assets=[sage, approved_can, robot_contact, light]
         + ([aura_appearance] if aura_appearance is not None else [])
     )
     _phase("sealed_scene_configuration", "completed")
@@ -2464,6 +2488,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         if camera_name == "wrist_camera"
                         else None
                     ),
+                    contact_sensor=env.unwrapped.scene["robot_contact"],
                 )
                 convention = GripperConvention(
                     closed_command=float(gripper_probe["closed_command"]),

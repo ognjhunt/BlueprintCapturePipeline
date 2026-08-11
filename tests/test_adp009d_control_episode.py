@@ -160,6 +160,23 @@ class _ControlEnvironment:
     def read_arm_joint_positions(self):
         return list(self.joints)
 
+    def read_arm_dynamics_observation(self):
+        zeros = [0.0] * 7
+        limits = [87.0] * 4 + [12.0] * 3
+        return {
+            "schema_version": "adp009d_arm_dynamics_observation.v1",
+            "joint_position_rad": list(self.joints),
+            "joint_velocity_rad_s": zeros,
+            "joint_position_target_rad": list(self.joints),
+            "computed_torque_nm": zeros,
+            "applied_torque_nm": zeros,
+            "joint_effort_limit_nm": limits,
+            "joint_effort_utilization": zeros,
+            "torque_clip_residual_nm": zeros,
+            "body_contact_force_world_n": None,
+            "body_incoming_joint_wrench_body": {},
+        }
+
     def read_object_sample(self):
         return {
             "can_pose_world": [*self.can, 0.0, 0.0, 0.0, 1.0],
@@ -462,6 +479,12 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         assert receipt["visual_evidence"]["review_only_camera_ids"] == ["overview"]
         assert receipt["state_trace_digest"].startswith("sha256:")
         assert receipt["action_trace_digest"].startswith("sha256:")
+        assert receipt["arm_dynamics_summary"]["schema_version"] == (
+            "adp009d_arm_dynamics_summary.v1"
+        )
+        assert receipt["action_trace"][0]["arm_dynamics_before"][
+            "joint_effort_limit_nm"
+        ] == [87.0] * 4 + [12.0] * 3
 
 
 def test_failed_scripted_positive_blocks_cell_without_becoming_policy_failure(
