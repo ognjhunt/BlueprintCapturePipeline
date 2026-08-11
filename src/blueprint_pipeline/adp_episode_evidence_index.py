@@ -308,6 +308,84 @@ def materialize_supporting_evidence_inventory(
     return receipt
 
 
+def refresh_agent_cad_supporting_evidence_inventory(
+    *,
+    source_root: str | Path,
+    output_root: str | Path,
+    output_relative_path: str,
+    source_root_id: str,
+    disclosure_class: str,
+    cad_agent_matrix: Mapping[str, Any],
+    content_agents_bundle_matrix: Mapping[str, Any],
+    content_agents_execution_readiness: Mapping[str, Any] | None = None,
+    task_id: str,
+    shared_artifacts: Sequence[Mapping[str, str]] = (),
+    replace_existing: bool = False,
+) -> dict[str, Any]:
+    """Refresh one task inventory from current CAD-agent manifests.
+
+    Existing non-CAD supporting rows are preserved and reverified.  CAD-agent
+    rows are never copied forward from an older inventory because those rows
+    bind generated CAD, Content Agents bundles, and preflight receipts that can
+    be superseded independently of the rest of the construction evidence.
+    """
+
+    output = Path(output_root).expanduser().resolve()
+    destination = _inside(output, output_relative_path, role="supporting_inventory")
+    preserved_rows: list[dict[str, Any]] = []
+    if destination.exists():
+        existing = _load_json(destination)
+        if (
+            existing.get("schema_version") != SUPPORTING_INVENTORY_SCHEMA_VERSION
+            or existing.get("inventory_digest")
+            != canonical_digest(existing, digest_field="inventory_digest")
+            or existing.get("source_root_id") != source_root_id
+            or existing.get("disclosure_class") != disclosure_class
+        ):
+            raise EpisodeEvidenceIndexError(
+                "supporting_evidence_inventory_refresh_source_invalid"
+            )
+        artifacts = existing.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise EpisodeEvidenceIndexError(
+                "supporting_evidence_inventory_refresh_source_invalid"
+            )
+        for row in artifacts:
+            if not isinstance(row, Mapping):
+                raise EpisodeEvidenceIndexError(
+                    "supporting_evidence_inventory_refresh_source_invalid"
+                )
+            role = str(row.get("role") or "")
+            if role.startswith("agent_cad:"):
+                continue
+            preserved_rows.append(
+                {
+                    "role": role,
+                    "relative_path": str(row.get("relative_path") or ""),
+                    "sha256": str(row.get("sha256") or ""),
+                    "size_bytes": row.get("size_bytes"),
+                }
+            )
+
+    regenerated_rows = agent_cad_content_agents_supporting_artifacts(
+        source_root=source_root,
+        cad_agent_matrix=cad_agent_matrix,
+        content_agents_bundle_matrix=content_agents_bundle_matrix,
+        content_agents_execution_readiness=content_agents_execution_readiness,
+        task_id=task_id,
+        shared_artifacts=shared_artifacts,
+    )
+    return materialize_supporting_evidence_inventory(
+        source_root=source_root,
+        output_root=output,
+        output_relative_path=output_relative_path,
+        source_root_id=source_root_id,
+        artifacts=[*preserved_rows, *regenerated_rows],
+        disclosure_class=disclosure_class,
+        replace_existing=replace_existing,
+    )
+
+
 def _external_file_record(source: Path, record: Mapping[str, Any], *, role: str) -> dict[str, Any]:
     path_value = str(record.get("path") or "")
     if not path_value:
@@ -1109,5 +1187,6 @@ __all__ = [
     "INDEX_SCHEMA_VERSION",
     "agent_cad_content_agents_supporting_artifacts",
     "materialize_episode_evidence_index",
+    "refresh_agent_cad_supporting_evidence_inventory",
     "materialize_supporting_evidence_inventory",
 ]

@@ -544,11 +544,11 @@ independent STEP inspection receipts, and STEP candidates for the task, both
 Content Agents Mesh projection receipts, Dockerless static Content Agents
 preflight receipts, and both Content Agents autoref bundle receipts/ZIPs without
 embedding rights-bounded dataset-derived bytes. Current inventory digests: Task
-A `sha256:ffcce36f8375e73f3eebd1070fbc941babc89b135014b2662bb887de7c5aa762`;
-Task B `sha256:623c6d65453961da43cfaca7814be241515faf8195a542654a4df247e6303167`.
+A `sha256:4bd3924c9894964cc4cfbac87cc99cf5556bccd37f29ffa977717b855f629399`;
+Task B `sha256:3f13537888e94597f68009197f8c1d4b0ab8782999b10538eb776a62723d2c66`.
 Current episode-index digests: Task A
-`sha256:c0616e1d821abe9c935c1c78a7d8c0ea87c6de57d50eaa2b04ca7393f54826dd`;
-Task B `sha256:6d80826ac04f4c9dd1d42564a195cf624e77239e3c6cb89336a35a674a6060ef`.
+`sha256:80b81732f8d91c03eb4f25c075f6257be5bd196747a60f78056330e4dc276135`;
+Task B `sha256:51e907549569387fdc3031762a2aff1a5113f721f676e61c7b0da0227463cdc5`.
 
 ## Verification
 

@@ -2,7 +2,7 @@
   "blocker_summary": "Both replacement candidates and both independent collider deletions are authored. The current smallest blocker is fresh paid authority for qualified FlashSplat contribution/ownership output from each separately frozen, repaired bundle. Both historical zero-retry attempts and both repaired-but-unexecuted bundle receipts are retained. This package contains no fake media or episode links.",
   "cad_summary": "Agent-authored CAD comparison evidence has been added for both replacement objects using both admitted CAD backends. The manifest-driven visual comparison binding, CAD matrix, reference manifest, reference-binding audit, Content Agents bundle matrix, and Content Agents execution-readiness receipt are all linked below. Paid model access and paid attempt authority remain missing, so Content Agents were not executed and no SimReady/native/physics/appearance/physical-equivalence claim is made.",
   "overview_review_only": true,
-  "package_index_digest": "sha256:5340fb885672248fc663f7fea89831e0dfec8c7feed3ca4a7cade65647115ed1",
+  "package_index_digest": "sha256:8c6f1e1de620831aa9b8d2b57fe1583a3774edcdec78bb7e999e1b1437307358",
   "schema_version": "adp_dual_task_evidence_package_index.v1",
   "shared_manifest_count": 6,
   "shared_manifests": [
@@ -50,21 +50,21 @@
       "digest_field": "receipt_digest",
       "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json",
       "label": "Four-candidate Content Agents bundle matrix manifest",
-      "receipt_digest": "sha256:d9701f273d466098e1267ef5d4202a502e5eccb274a60680d1c814b5c14a2d40",
+      "receipt_digest": "sha256:a34bf92eec21b2219a5e99d061d8d45cc24fe294ae7723065fcf1bcb42308b26",
       "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json",
       "schema_version": "third_scene_agent_cad_content_agents_bundle_matrix.v1",
-      "sha256": "sha256:c9d9818ca625cfa18a9fe7cafb67183dfddcca2b34817d2e6f097d84a2f2cf0f",
-      "size_bytes": 9513
+      "sha256": "sha256:b85359c9269e5b963a4d027c0135f52eeceab8204d2988f5f8cf4f31bbef8fda",
+      "size_bytes": 8320
     },
     {
       "digest_field": "receipt_digest",
       "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
       "label": "Four-candidate Content Agents execution-readiness receipt",
-      "receipt_digest": "sha256:f0ac8196af2d884b4526b76268a0a279e0edb293243b724a35062e7a17f30f35",
+      "receipt_digest": "sha256:16321c35e29ec41818b94c1b6485f011101c36f157d4d6b01e972d43035f8e9d",
       "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
       "schema_version": "adp_content_agents_execution_readiness.v1",
-      "sha256": "sha256:fb7584ebf58230caf4677d7ea21c1facdff20eb517f92f609a76025cb6c691a9",
-      "size_bytes": 9535
+      "sha256": "sha256:a98d0618d6c5bec5f890192fbab9f49ffe1f5050c00fe8c1ae31ad3ae6d04557",
+      "size_bytes": 9507
     }
   ],
   "simulator_artifacts_are_not_physical_truth": true,
@@ -74,12 +74,12 @@
     {
       "episode_count": 0,
       "html_relative_path": "task_a/OPEN_ME_episode_evidence_index.html",
-      "html_sha256": "sha256:65d64a151b34034e0310a25d446d9aa7fdd38499f35d8ec0da4c332cf03e7e3a",
+      "html_sha256": "sha256:09d52b9823237f2ef88f3b78f4093f5574668de9f3b7a712f2be2e8e21435746",
       "html_size_bytes": 2233,
-      "index_digest": "sha256:c0616e1d821abe9c935c1c78a7d8c0ea87c6de57d50eaa2b04ca7393f54826dd",
+      "index_digest": "sha256:80b81732f8d91c03eb4f25c075f6257be5bd196747a60f78056330e4dc276135",
       "label": "Task A: washer-door evidence index",
       "relative_path": "task_a/episode_evidence_index.v1.json",
-      "sha256": "sha256:ed7866addecb61315613762490d486917f1a5f13f126e8e0a6883d3df3147545",
+      "sha256": "sha256:74033e4d84389b7398ce63c5dfed3703c42f0698d5ed69ccf1b93ab4c4339ea3",
       "size_bytes": 4411,
       "task_id": "task_a_washer_door_open",
       "typed_abstention_status": "typed_evidence_backed_abstention"
@@ -87,12 +87,12 @@
     {
       "episode_count": 0,
       "html_relative_path": "task_b/OPEN_ME_episode_evidence_index.html",
-      "html_sha256": "sha256:13cdc9b75a4acb3b9b76c54208751c35d040a8bdbc6b79e3dac496f3c6406100",
+      "html_sha256": "sha256:92c2f3f9488447df0da8f32c853a4eb7fcf12cbea8bd019552a555279b46008c",
       "html_size_bytes": 2236,
-      "index_digest": "sha256:6d80826ac04f4c9dd1d42564a195cf624e77239e3c6cb89336a35a674a6060ef",
+      "index_digest": "sha256:51e907549569387fdc3031762a2aff1a5113f721f676e61c7b0da0227463cdc5",
       "label": "Task B: notebook-relocation evidence index",
       "relative_path": "task_b/episode_evidence_index.v1.json",
-      "sha256": "sha256:bb4d489be46dd0d5461e61eb4858f0bb786cb32d8ddf96ba20b1f061e14d9e20",
+      "sha256": "sha256:7f1fe63ca63623267fa7ffbde9062b52d19717c4ece88f1902e27ba05207cf9f",
       "size_bytes": 4412,
       "task_id": "task_b_notebook_relocation",
       "typed_abstention_status": "typed_evidence_backed_abstention"

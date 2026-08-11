@@ -14,6 +14,7 @@ from blueprint_pipeline.adp_episode_evidence_index import (
     agent_cad_content_agents_supporting_artifacts,
     materialize_episode_evidence_index,
     materialize_supporting_evidence_inventory,
+    refresh_agent_cad_supporting_evidence_inventory,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.simready_cad_agent_contract import (
@@ -1048,6 +1049,84 @@ def test_agent_cad_content_agents_rows_omit_missing_local_docker_preflight(
         in roles
     )
     assert not any("content_agents_local_docker_preflight" in role for role in roles)
+
+
+def test_refresh_agent_cad_inventory_regenerates_stale_agent_rows(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "external"
+    output_root = tmp_path / "package"
+    output_root.mkdir()
+    preserved = _artifact(source_root, "task_a/collider_receipt.json", b"collider")
+    stale = _artifact(source_root, "task_a/old_content_agents_v1/bundle.zip", b"old")
+    materialize_supporting_evidence_inventory(
+        source_root=source_root,
+        output_root=output_root,
+        output_relative_path="supporting_evidence_inventory.v1.json",
+        source_root_id="fixture_rights_bounded_root",
+        artifacts=[
+            {"role": "source_collider_removed_stage", **preserved},
+            {
+                "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_zip",
+                "task_id": "task_a_washer_door_open",
+                "replacement_slot": 1,
+                "asset_id": "840920_simready_washer_candidate",
+                "cad_agent_backend_id": "earthtojake_text_to_cad",
+                **stale,
+            },
+        ],
+        disclosure_class="digest_receipt_only",
+    )
+    earth = _cad_output_fixture(
+        source_root, backend_id="earthtojake_text_to_cad"
+    )
+    mac = _cad_output_fixture(
+        source_root, backend_id="pan_chera_multi_agent_cad"
+    )
+    cad_matrix = seal_cad_agent_matrix(
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "candidates": [earth["output"], mac["output"]],
+            }
+        ]
+    )
+    bundle_matrix = _content_bundle_matrix(fixture_rows=[earth, mac])
+    readiness = _content_execution_readiness(
+        bundle_matrix=bundle_matrix,
+        fixture_rows=[earth, mac],
+        source_root=source_root,
+        include_local_preflight=False,
+    )
+
+    refreshed = refresh_agent_cad_supporting_evidence_inventory(
+        source_root=source_root,
+        output_root=output_root,
+        output_relative_path="supporting_evidence_inventory.v1.json",
+        source_root_id="fixture_rights_bounded_root",
+        disclosure_class="digest_receipt_only",
+        cad_agent_matrix=cad_matrix,
+        content_agents_bundle_matrix=bundle_matrix,
+        content_agents_execution_readiness=readiness,
+        task_id="task_a_washer_door_open",
+        replace_existing=True,
+    )
+
+    paths = {row["relative_path"] for row in refreshed["artifacts"]}
+    assert preserved["relative_path"] in paths
+    assert stale["relative_path"] not in paths
+    assert any(
+        row["role"] == "agent_cad:earthtojake_text_to_cad:content_agents_bundle_zip"
+        and row["relative_path"].endswith("content_agents_bundle/bundle.zip")
+        for row in refreshed["artifacts"]
+    )
+    assert {
+        row["cad_agent_backend_id"]
+        for row in refreshed["artifacts"]
+        if row["role"].startswith("agent_cad:")
+    } == {"earthtojake_text_to_cad", "pan_chera_multi_agent_cad"}
 
 
 def test_agent_cad_content_agents_rows_reject_projection_join_mismatch(
