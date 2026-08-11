@@ -11,6 +11,7 @@ from blueprint_pipeline.adp_task_evaluation_abstention import (
     TaskEvaluationAbstentionError,
     collect_vast_provider_zero_receipt,
     materialize_gaussian_contribution_authority_abstention,
+    materialize_gaussian_heldout_ownership_abstention,
     materialize_native_gate_task_evaluation_abstention,
     materialize_task_evaluation_abstention,
 )
@@ -110,6 +111,159 @@ def test_gaussian_authority_abstention_refuses_unready_or_live_attempt(
             task_freeze=task_freeze,
             removal_binding=removal_binding,
             scene_id="840920",
+        )
+
+
+def _gaussian_heldout_inputs() -> tuple[dict, dict, dict, dict, dict, dict]:
+    excision_freeze = {
+        "schema_version": "adp009b_gaussian_excision_audit_freeze.v1",
+        "status": "frozen_before_excision_execution",
+        "scene": {"publisher_scene_id": "fixture_scene", "task_id": "fixture_task"},
+        "learned_policy_outcomes_observed": False,
+        "freeze_digest": "",
+    }
+    excision_freeze["freeze_digest"] = canonical_digest(
+        excision_freeze, digest_field="freeze_digest"
+    )
+    task_freeze = {
+        "schema_version": "dual_task_task_freeze.v1",
+        "task_id": "fixture_task",
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "learned_policy_outcomes_accessed": False,
+        "task_freeze_digest": "",
+    }
+    task_freeze["task_freeze_digest"] = canonical_digest(
+        task_freeze, digest_field="task_freeze_digest"
+    )
+    attempt = {
+        "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
+        "status": "sealed_completed_attempt",
+        "execution_status": "completed",
+        "freeze_digest": excision_freeze["freeze_digest"],
+        "released_code_executed": True,
+        "heldout_cameras_accessed_for_classification": False,
+        "continuing_spend": False,
+        "provider_absence_confirmed": True,
+        "execution_blockers": [],
+        "proof_boundaries": {
+            "gaussian_contribution_evidence_completed": True,
+            "gaussian_ownership_qualified": False,
+            "source_removal_qualified": False,
+        },
+        "receipt_digest": "",
+    }
+    attempt["receipt_digest"] = canonical_digest(attempt, digest_field="receipt_digest")
+    ownership = {
+        "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
+        "freeze_digest": excision_freeze["freeze_digest"],
+        "heldout_cameras_accessed_for_classification": False,
+        "replacement_usd_inserted": False,
+        "ownership": {"exhaustive": True, "pairwise_disjoint": True},
+        "receipt_digest": "",
+    }
+    ownership["receipt_digest"] = canonical_digest(
+        ownership, digest_field="receipt_digest"
+    )
+    replay = {
+        "schema_version": "adp009b_gaussian_excision_ownership_replay.v1",
+        "freeze_digest": excision_freeze["freeze_digest"],
+        "ownership_receipt_digest": ownership["receipt_digest"],
+        "execution_count": 2,
+        "canonical_manifests_identical": True,
+        "receipt_files_byte_identical": True,
+        "output_digests_identical": True,
+        "index_sets_identical": True,
+        "protected_source_records_byte_identical": True,
+        "gate_passed": True,
+        "replay_digest": "",
+    }
+    replay["replay_digest"] = canonical_digest(replay, digest_field="replay_digest")
+    heldout = {
+        "schema_version": "adp009b_gaussian_excision_heldout_audit.v1",
+        "status": "abstained_calibrated_gaussian_ownership_separation_insufficient",
+        "freeze_digest": excision_freeze["freeze_digest"],
+        "ownership_receipt_digest": ownership["receipt_digest"],
+        "ownership_replay_digest": replay["replay_digest"],
+        "heldout_gate_passed": False,
+        "replacement_coverage_sweep_authorized": False,
+        "smallest_missing_capability": (
+            "calibrated_gaussian_ownership_separation_without_protected_scene_deletion"
+        ),
+        "receipt_digest": "",
+    }
+    heldout["receipt_digest"] = canonical_digest(heldout, digest_field="receipt_digest")
+    return attempt, excision_freeze, ownership, replay, heldout, task_freeze
+
+
+def test_gaussian_heldout_abstention_is_a_terminal_precontrol_receipt(
+    tmp_path: Path,
+) -> None:
+    attempt, excision, ownership, replay, heldout, task = _gaussian_heldout_inputs()
+
+    receipt = materialize_gaussian_heldout_ownership_abstention(
+        gaussian_excision_attempt=attempt,
+        excision_freeze=excision,
+        gaussian_ownership=ownership,
+        ownership_replay=replay,
+        heldout_audit=heldout,
+        task_freeze=task,
+        scene_id="fixture_scene",
+        output_path=tmp_path / "typed_abstention.json",
+        repo_root=tmp_path,
+    )
+
+    assert receipt["status"] == "typed_evidence_backed_abstention"
+    assert receipt["gaussian_contribution_evidence_completed"] is True
+    assert receipt["gaussian_ownership_materialized"] is True
+    assert receipt["heldout_ownership_gate_passed"] is False
+    assert receipt["replacement_coverage_sweep_authorized"] is False
+    assert receipt["source_removal_qualified"] is False
+    assert receipt["controls_executed"] is False
+    assert receipt["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert json.loads((tmp_path / "typed_abstention.json").read_text()) == receipt
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda attempt, excision, ownership, replay, heldout, task: heldout.update(
+            {"replacement_coverage_sweep_authorized": True}
+        ),
+        lambda attempt, excision, ownership, replay, heldout, task: attempt[
+            "proof_boundaries"
+        ].update({"source_removal_qualified": True}),
+        lambda attempt, excision, ownership, replay, heldout, task: task.update(
+            {"task_id": "other_task"}
+        ),
+    ],
+)
+def test_gaussian_heldout_abstention_rejects_nonterminal_or_mismatched_inputs(
+    mutation,
+) -> None:
+    attempt, excision, ownership, replay, heldout, task = _gaussian_heldout_inputs()
+    mutation(attempt, excision, ownership, replay, heldout, task)
+    for value, field in (
+        (attempt, "receipt_digest"),
+        (excision, "freeze_digest"),
+        (ownership, "receipt_digest"),
+        (replay, "replay_digest"),
+        (heldout, "receipt_digest"),
+        (task, "task_freeze_digest"),
+    ):
+        value[field] = canonical_digest(value, digest_field=field)
+
+    with pytest.raises(TaskEvaluationAbstentionError):
+        materialize_gaussian_heldout_ownership_abstention(
+            gaussian_excision_attempt=attempt,
+            excision_freeze=excision,
+            gaussian_ownership=ownership,
+            ownership_replay=replay,
+            heldout_audit=heldout,
+            task_freeze=task,
+            scene_id="fixture_scene",
         )
 
 

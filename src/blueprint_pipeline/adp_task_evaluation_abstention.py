@@ -21,8 +21,15 @@ PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
 GAUSSIAN_ATTEMPT_SCHEMA_VERSION = "adp_gaussian_excision_attempt_receipt.v1"
 GAUSSIAN_RECOVERY_SCHEMA_VERSION = "adp_gaussian_excision_recovery_readiness.v1"
 DUAL_TASK_FREEZE_SCHEMA_VERSION = "dual_task_task_freeze.v1"
+GAUSSIAN_EXCISION_FREEZE_SCHEMA_VERSION = "adp009b_gaussian_excision_audit_freeze.v1"
+GAUSSIAN_OWNERSHIP_SCHEMA_VERSION = "adp009b_gaussian_excision_ownership_receipt.v1"
+GAUSSIAN_OWNERSHIP_REPLAY_SCHEMA_VERSION = "adp009b_gaussian_excision_ownership_replay.v1"
+GAUSSIAN_HELDOUT_AUDIT_SCHEMA_VERSION = "adp009b_gaussian_excision_heldout_audit.v1"
 GAUSSIAN_AUTHORITY_BLOCKER = (
     "fresh_paid_authority_for_qualified_gaussian_contribution_missing"
+)
+GAUSSIAN_HELDOUT_OWNERSHIP_BLOCKER = (
+    "calibrated_gaussian_ownership_separation_without_protected_scene_deletion"
 )
 
 
@@ -442,6 +449,186 @@ def materialize_gaussian_contribution_authority_abstention(
     return receipt
 
 
+def materialize_gaussian_heldout_ownership_abstention(
+    *,
+    gaussian_excision_attempt: Mapping[str, Any],
+    excision_freeze: Mapping[str, Any],
+    gaussian_ownership: Mapping[str, Any],
+    ownership_replay: Mapping[str, Any],
+    heldout_audit: Mapping[str, Any],
+    task_freeze: Mapping[str, Any],
+    scene_id: str,
+    output_path: str | Path | None = None,
+    repo_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Seal the terminal gate when contribution succeeds but held-out ownership fails.
+
+    This is deliberately distinct from an infrastructure/authority abstention:
+    the released contribution method did run, its deterministic local ownership
+    materialization did run, and the independent held-out audit then rejected
+    removal.  A later replacement asset, render, or policy result cannot convert
+    that frozen ownership failure into source-removal qualification.
+    """
+
+    attempt = _clone(
+        gaussian_excision_attempt, code="gaussian_heldout_attempt_invalid"
+    )
+    excision = _clone(excision_freeze, code="gaussian_heldout_freeze_invalid")
+    ownership = _clone(
+        gaussian_ownership, code="gaussian_heldout_ownership_invalid"
+    )
+    replay = _clone(ownership_replay, code="gaussian_heldout_replay_invalid")
+    heldout = _clone(heldout_audit, code="gaussian_heldout_audit_invalid")
+    freeze = _clone(task_freeze, code="gaussian_heldout_task_freeze_invalid")
+    errors: list[str] = []
+
+    attempt_boundaries = attempt.get("proof_boundaries") or {}
+    if (
+        attempt.get("schema_version") != GAUSSIAN_ATTEMPT_SCHEMA_VERSION
+        or attempt.get("receipt_digest")
+        != canonical_digest(attempt, digest_field="receipt_digest")
+        or attempt.get("status") != "sealed_completed_attempt"
+        or attempt.get("execution_status") != "completed"
+        or attempt.get("released_code_executed") is not True
+        or attempt.get("heldout_cameras_accessed_for_classification") is not False
+        or attempt.get("continuing_spend") is not False
+        or attempt.get("provider_absence_confirmed") is not True
+        or attempt_boundaries.get("gaussian_contribution_evidence_completed") is not True
+        or attempt_boundaries.get("gaussian_ownership_qualified") is not False
+        or attempt_boundaries.get("source_removal_qualified") is not False
+    ):
+        errors.append("gaussian_heldout_attempt_invalid")
+
+    excision_scene = excision.get("scene") or {}
+    if (
+        excision.get("schema_version") != GAUSSIAN_EXCISION_FREEZE_SCHEMA_VERSION
+        or excision.get("freeze_digest")
+        != canonical_digest(excision, digest_field="freeze_digest")
+        or excision.get("status") != "frozen_before_excision_execution"
+        or excision.get("learned_policy_outcomes_observed") is not False
+        or not str(excision_scene.get("task_id") or "")
+        or not str(excision_scene.get("publisher_scene_id") or "")
+    ):
+        errors.append("gaussian_heldout_freeze_invalid")
+
+    ownership_counts = ownership.get("ownership") or {}
+    if (
+        ownership.get("schema_version") != GAUSSIAN_OWNERSHIP_SCHEMA_VERSION
+        or ownership.get("receipt_digest")
+        != canonical_digest(ownership, digest_field="receipt_digest")
+        or ownership.get("freeze_digest") != excision.get("freeze_digest")
+        or ownership.get("heldout_cameras_accessed_for_classification") is not False
+        or ownership.get("replacement_usd_inserted") is not False
+        or ownership_counts.get("exhaustive") is not True
+        or ownership_counts.get("pairwise_disjoint") is not True
+    ):
+        errors.append("gaussian_heldout_ownership_invalid")
+
+    if (
+        replay.get("schema_version") != GAUSSIAN_OWNERSHIP_REPLAY_SCHEMA_VERSION
+        or replay.get("replay_digest")
+        != canonical_digest(replay, digest_field="replay_digest")
+        or replay.get("freeze_digest") != excision.get("freeze_digest")
+        or replay.get("ownership_receipt_digest") != ownership.get("receipt_digest")
+        or replay.get("execution_count") != 2
+        or replay.get("canonical_manifests_identical") is not True
+        or replay.get("receipt_files_byte_identical") is not True
+        or replay.get("output_digests_identical") is not True
+        or replay.get("index_sets_identical") is not True
+        or replay.get("protected_source_records_byte_identical") is not True
+        or replay.get("gate_passed") is not True
+    ):
+        errors.append("gaussian_heldout_replay_invalid")
+
+    if (
+        heldout.get("schema_version") != GAUSSIAN_HELDOUT_AUDIT_SCHEMA_VERSION
+        or heldout.get("receipt_digest")
+        != canonical_digest(heldout, digest_field="receipt_digest")
+        or heldout.get("freeze_digest") != excision.get("freeze_digest")
+        or heldout.get("ownership_receipt_digest") != ownership.get("receipt_digest")
+        or heldout.get("ownership_replay_digest") != replay.get("replay_digest")
+        or heldout.get("status")
+        != "abstained_calibrated_gaussian_ownership_separation_insufficient"
+        or heldout.get("heldout_gate_passed") is not False
+        or heldout.get("replacement_coverage_sweep_authorized") is not False
+        or heldout.get("smallest_missing_capability")
+        != GAUSSIAN_HELDOUT_OWNERSHIP_BLOCKER
+    ):
+        errors.append("gaussian_heldout_audit_invalid")
+
+    if (
+        freeze.get("schema_version") != DUAL_TASK_FREEZE_SCHEMA_VERSION
+        or freeze.get("task_freeze_digest")
+        != canonical_digest(freeze, digest_field="task_freeze_digest")
+        or freeze.get("candidate_ids") != ["pi05_droid", "groot_n17_droid"]
+        or freeze.get("learned_policy_outcomes_accessed") is not False
+        or str(freeze.get("task_id") or "") != str(excision_scene.get("task_id") or "")
+        or not scene_id
+        or str(excision_scene.get("publisher_scene_id") or "") != scene_id
+        or attempt.get("freeze_digest") != excision.get("freeze_digest")
+    ):
+        errors.append("gaussian_heldout_task_freeze_invalid")
+    if errors:
+        raise TaskEvaluationAbstentionError(";".join(sorted(set(errors))))
+
+    receipt: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "terminal_gate_schema_version": "adp_gaussian_heldout_ownership_gate.v1",
+        "program_id": "arm-decision-proof-v1",
+        "status": "typed_evidence_backed_abstention",
+        "scene_id": scene_id,
+        "task_id": freeze["task_id"],
+        "task_freeze_digest": freeze["task_freeze_digest"],
+        "gaussian_excision_freeze_digest": excision["freeze_digest"],
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_capability": GAUSSIAN_HELDOUT_OWNERSHIP_BLOCKER,
+        "all_terminal_blockers": [GAUSSIAN_HELDOUT_OWNERSHIP_BLOCKER],
+        "historical_attempt_blockers": list(attempt.get("execution_blockers") or []),
+        "gaussian_excision_attempt_receipt_digest": attempt["receipt_digest"],
+        "gaussian_contribution_evidence_completed": True,
+        "gaussian_ownership_receipt_digest": ownership["receipt_digest"],
+        "ownership_replay_receipt_digest": replay["replay_digest"],
+        "heldout_audit_receipt_digest": heldout["receipt_digest"],
+        "gaussian_ownership_materialized": True,
+        "heldout_ownership_gate_passed": False,
+        "replacement_coverage_sweep_authorized": False,
+        "source_removal_qualified": False,
+        "inpainting_decision_qualified": False,
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "episode_media_exists": False,
+        "comparison_exists": False,
+        "automatic_paid_retry_executed": False,
+        "next_action": (
+            "preserve this frozen task as a held-out ownership abstention; "
+            "select a new independently preregistered source object or obtain a "
+            "new rights-admitted appearance/collision evidence packet before any "
+            "further Gaussian contribution launch"
+        ),
+        "claim_ceiling": (
+            "public_dataset_simulator_construction_rehearsal_only; no source "
+            "removal, inpainting, native simulator, physical, deployment, "
+            "customer_value, or learned_policy claim"
+        ),
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    if output_path is not None:
+        if repo_root is None:
+            raise TaskEvaluationAbstentionError("task_evaluation_repo_root_missing")
+        repo = Path(repo_root).expanduser().resolve()
+        output = Path(output_path).expanduser().resolve()
+        if not output.is_relative_to(repo) or output.is_symlink():
+            raise TaskEvaluationAbstentionError(
+                "task_evaluation_abstention_output_outside_repo"
+            )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def materialize_task_evaluation_abstention(
     *,
     construction_run: Mapping[str, Any],
@@ -554,6 +741,7 @@ __all__ = [
     "TaskEvaluationAbstentionError",
     "collect_vast_provider_zero_receipt",
     "materialize_gaussian_contribution_authority_abstention",
+    "materialize_gaussian_heldout_ownership_abstention",
     "materialize_task_evaluation_abstention",
     "materialize_native_gate_task_evaluation_abstention",
 ]
