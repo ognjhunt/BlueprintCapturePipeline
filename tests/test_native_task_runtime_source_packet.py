@@ -17,6 +17,7 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
 from blueprint_pipeline.native_task_runtime_source_provision import (
+    _wheel_tag_is_compatible,
     provision_native_task_runtime_sources,
 )
 
@@ -315,6 +316,19 @@ def test_isolated_probe_inserts_verified_dependency_closure_before_imports(
 
     assert result["status"] == "completed"
     assert result["dependencies_installed"] is True
+
+
+def test_runtime_wheel_compatibility_accepts_py3_platform_wheels_for_cp312() -> None:
+    assert _wheel_tag_is_compatible(
+        "py3-none-manylinux_2_28_x86_64",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=("manylinux_2_28_x86_64",),
+    )
+    assert not _wheel_tag_is_compatible(
+        "py3-none-manylinux_2_31_x86_64",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=("manylinux_2_28_x86_64",),
+    )
 
 
 def test_binary_runtime_dependency_rejects_wrong_python_or_platform_before_probe(

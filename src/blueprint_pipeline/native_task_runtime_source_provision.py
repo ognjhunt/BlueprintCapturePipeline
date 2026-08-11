@@ -72,6 +72,23 @@ TOP_LEVEL_PACKAGES = (
 )
 
 
+def _wheel_tag_is_compatible(
+    tag: str,
+    *,
+    runtime_python_tag: str,
+    runtime_platform_tags: Sequence[str],
+) -> bool:
+    parts = tag.split("-", 2)
+    if len(parts) != 3:
+        return False
+    interpreter, abi, platform_tag = parts
+    if interpreter not in {runtime_python_tag, "py3"}:
+        return False
+    if abi not in {runtime_python_tag, "abi3", "none"}:
+        return False
+    return platform_tag == "any" or platform_tag in set(runtime_platform_tags)
+
+
 def _extract_runtime_dependency_wheels(
     *,
     extraction_root: Path,
@@ -104,14 +121,21 @@ def _extract_runtime_dependency_wheels(
             pure_python = bool(row.get("pure_python"))
             expected_root = f"Root-Is-Purelib: {str(pure_python).lower()}"
             wheel_tag = str(row.get("wheel_tag") or "")
+            wheel_tags = [
+                line.split(":", 1)[1].strip()
+                for line in wheel_metadata.splitlines()
+                if line.startswith("Tag:")
+            ]
             if expected_root not in wheel_metadata or f"Tag: {wheel_tag}" not in wheel_metadata:
                 raise RuntimeError("native_task_runtime_dependency_wheel_platform_contract_invalid")
             if not pure_python:
-                interpreter, abi, platform_tag = wheel_tag.split("-", 2)
-                if (
-                    interpreter != runtime_python_tag
-                    or abi not in {runtime_python_tag, "abi3"}
-                    or platform_tag not in runtime_platform_tags
+                if not any(
+                    _wheel_tag_is_compatible(
+                        tag,
+                        runtime_python_tag=runtime_python_tag,
+                        runtime_platform_tags=runtime_platform_tags,
+                    )
+                    for tag in wheel_tags
                 ):
                     raise RuntimeError("native_task_runtime_dependency_binary_wheel_incompatible")
             for name in names:
