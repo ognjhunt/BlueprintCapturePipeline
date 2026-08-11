@@ -23,6 +23,7 @@ def _task_spec() -> dict:
     return {
         "schema_version": TASK_SPEC_SCHEMA_VERSION,
         "task_kind": TASK_KIND_DEFORMABLE_TRANSFER,
+        "prompt": "Transfer the deformable into the receptacle and retreat.",
         "deformable_entity_id": DEFORMABLE_ID,
         "destination_entity_id": DESTINATION_ID,
         "robot_entity_id": ROBOT_ID,
@@ -46,6 +47,8 @@ def _task_spec() -> dict:
         "maximum_receptacle_rotation_drift_rad": 0.03,
         "maximum_receptacle_linear_speed_mps": 0.01,
         "maximum_receptacle_angular_speed_radps": 0.03,
+        "control_frequency_hz": 15,
+        "maximum_action_steps": 20,
     }
 
 
@@ -71,9 +74,7 @@ def _sample(sample_index: int, *, contained: bool = True) -> dict:
         "entities": {
             DEFORMABLE_ID: {
                 "nodal_positions_world_m": positions,
-                "nodal_velocities_world_mps": [
-                    [0.0, 0.0, 0.0] for _ in positions
-                ],
+                "nodal_velocities_world_mps": [[0.0, 0.0, 0.0] for _ in positions],
                 "deformation_gradients": [
                     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -93,9 +94,7 @@ def _sample(sample_index: int, *, contained: bool = True) -> dict:
             ROBOT_ID: {
                 "gripper_clearance_points_world_m": [[2.0, 2.0, 2.0]],
                 "gripper_contact_pair_count_by_entity_id": {DEFORMABLE_ID: 0},
-                "gripper_contact_normal_force_n_by_entity_id": {
-                    DEFORMABLE_ID: 0.0
-                },
+                "gripper_contact_normal_force_n_by_entity_id": {DEFORMABLE_ID: 0.0},
             },
         },
     }
@@ -134,9 +133,7 @@ def test_deformable_scripted_positive_uses_the_common_result_contract() -> None:
     assert report["task_succeeded"] is True
     assert report["outcome"] == "succeeded"
     assert report["outcome_rank"] == 10
-    assert report["result_digest"] == canonical_digest(
-        report, digest_field="result_digest"
-    )
+    assert report["result_digest"] == canonical_digest(report, digest_field="result_digest")
 
 
 @pytest.mark.parametrize("native_failure", ["nan", "divergence"])

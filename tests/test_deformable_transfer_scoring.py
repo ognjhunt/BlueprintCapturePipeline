@@ -116,6 +116,8 @@ def test_positive_uses_raw_entity_state_and_reaches_terminal_ladder_rung() -> No
     assert result["measurements"]["particle_fraction_inside"] == 1.0
     assert result["measurements"]["centroid_inside"] is True
     assert result["measurements"]["maximum_grasp_contact_pair_count"] == 2
+    assert result["measurements"]["qualifying_grasp_contact_sample_count"] == 1
+    assert result["measurements"]["qualifying_grasp_contact_sample_indices"] == [0]
     assert result["predicates"]["grasp_contact_observed"] is True
     assert result["result_digest"].startswith("sha256:")
 
@@ -305,6 +307,26 @@ def test_success_requires_prior_qualified_gripper_contact() -> None:
     assert "qualified_gripper_deformable_contact_not_observed" in result[
         "failure_reasons"
     ]
+
+
+def test_grasp_pair_and_force_must_qualify_in_the_same_pre_settle_sample() -> None:
+    samples = _samples()
+    samples.append(_sample(4))
+    first_robot = samples[0]["entities"][ROBOT_ID]
+    first_robot["gripper_contact_normal_force_n_by_entity_id"][DEFORMABLE_ID] = 0.0
+    second_robot = samples[1]["entities"][ROBOT_ID]
+    second_robot["gripper_contact_pair_count_by_entity_id"][DEFORMABLE_ID] = 0
+    second_robot["gripper_contact_normal_force_n_by_entity_id"][DEFORMABLE_ID] = 0.2
+
+    result = _score(samples)
+
+    assert result["measurements"]["maximum_grasp_contact_pair_count"] == 2
+    assert result["measurements"]["maximum_grasp_contact_force_n"] == 0.2
+    assert result["measurements"]["qualifying_grasp_contact_sample_count"] == 0
+    assert result["measurements"]["qualifying_grasp_contact_sample_indices"] == []
+    assert result["predicates"]["grasp_contact_observed"] is False
+    assert result["deterministic_success"] is False
+    assert result["ladder_truncated_at"] == "grasp_contact_observed"
 
 
 def test_robot_retreat_is_computed_from_clearance_points_and_geometry() -> None:

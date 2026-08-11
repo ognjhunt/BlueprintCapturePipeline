@@ -766,6 +766,13 @@ def score_deformable_transfer(
         )
     else:
         maximum_grasp_contact_force_n = None
+    qualifying_grasp_contact_sample_indices = [
+        sample["sample_index"]
+        for sample in grasp_samples
+        if sample["contact_pairs"] > 0
+        and math.isfinite(sample["contact_force"])
+        and sample["contact_force"] >= spec["minimum_grasp_contact_force_n"]
+    ]
 
     maximum_principal_strain = _maximum_principal_strain(state_samples)
     minimum_robot_clearance_m = _minimum_robot_clearance(
@@ -823,12 +830,7 @@ def score_deformable_transfer(
     finite_without_divergence = bool(
         all_numeric_finite and native_values_valid and divergence_count == 0
     )
-    grasp_contact_observed = bool(
-        grasp_window_available
-        and maximum_grasp_contact_pair_count > 0
-        and maximum_grasp_contact_force_n is not None
-        and maximum_grasp_contact_force_n >= spec["minimum_grasp_contact_force_n"]
-    )
+    grasp_contact_observed = bool(qualifying_grasp_contact_sample_indices)
     contained = bool(
         particle_fraction_inside is not None
         and particle_fraction_inside >= spec["minimum_particle_fraction_inside"]
@@ -935,6 +937,12 @@ def score_deformable_transfer(
         "grasp_window_samples_used": len(grasp_samples),
         "maximum_grasp_contact_pair_count": maximum_grasp_contact_pair_count,
         "maximum_grasp_contact_force_n": maximum_grasp_contact_force_n,
+        "qualifying_grasp_contact_sample_count": len(
+            qualifying_grasp_contact_sample_indices
+        ),
+        "qualifying_grasp_contact_sample_indices": (
+            qualifying_grasp_contact_sample_indices
+        ),
         "particle_count": int(final_positions.shape[0]),
         "particle_fraction_inside": particle_fraction_inside,
         "centroid_world_m": centroid_world_m,

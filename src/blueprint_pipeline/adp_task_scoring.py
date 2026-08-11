@@ -31,6 +31,7 @@ _DEFORMABLE_TASK_SPEC_FIELDS = frozenset(
     {
         "schema_version",
         "task_kind",
+        "prompt",
         "deformable_entity_id",
         "destination_entity_id",
         "robot_entity_id",
@@ -47,6 +48,8 @@ _DEFORMABLE_TASK_SPEC_FIELDS = frozenset(
         "maximum_receptacle_rotation_drift_rad",
         "maximum_receptacle_linear_speed_mps",
         "maximum_receptacle_angular_speed_radps",
+        "control_frequency_hz",
+        "maximum_action_steps",
     }
 )
 
@@ -102,9 +105,7 @@ def _deformable_scoring_api() -> tuple[Any, Any, type[ValueError]]:
                 validate_deformable_transfer_task_spec,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            raise TaskNeutralScoringError(
-                ["deformable_scoring_module_missing"]
-            ) from exc
+            raise TaskNeutralScoringError(["deformable_scoring_module_missing"]) from exc
     return (
         score_deformable_transfer,
         validate_deformable_transfer_task_spec,
@@ -176,12 +177,8 @@ def _normalize_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
                 normalized_limits[str(joint_id)] = [float(raw[0]), float(raw[1])]
     fields = {
         "settle_window_samples": spec.get("settle_window_samples"),
-        "maximum_settled_target_speed_rad_s": spec.get(
-            "maximum_settled_target_speed_rad_s"
-        ),
-        "non_task_joint_motion_tolerance_rad": spec.get(
-            "non_task_joint_motion_tolerance_rad"
-        ),
+        "maximum_settled_target_speed_rad_s": spec.get("maximum_settled_target_speed_rad_s"),
+        "non_task_joint_motion_tolerance_rad": spec.get("non_task_joint_motion_tolerance_rad"),
         "movement_epsilon_rad": spec.get("movement_epsilon_rad"),
         "reset_tolerance_rad": spec.get("reset_tolerance_rad"),
     }
@@ -196,7 +193,10 @@ def _normalize_articulated_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             errors.append("articulated_settle_window_samples_invalid")
         else:
             normalized_fields[field] = int(raw) if field == "settle_window_samples" else value
-    if target in normalized_resets and normalized_interval[0] <= normalized_resets[target] <= normalized_interval[1]:
+    if (
+        target in normalized_resets
+        and normalized_interval[0] <= normalized_resets[target] <= normalized_interval[1]
+    ):
         errors.append("articulated_reset_inside_success_interval")
     if errors:
         raise TaskNeutralScoringError(errors)
@@ -234,6 +234,20 @@ def validate_deformable_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         errors.append("deformable_task_kind_invalid")
     if set(spec) != _DEFORMABLE_TASK_SPEC_FIELDS:
         errors.append("deformable_task_spec_fields_invalid")
+
+    prompt = spec.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        errors.append("deformable_task_prompt_invalid")
+    control_frequency = _finite(spec.get("control_frequency_hz"))
+    if control_frequency is None or control_frequency <= 0.0:
+        errors.append("deformable_task_control_frequency_invalid")
+    maximum_action_steps = spec.get("maximum_action_steps")
+    if (
+        isinstance(maximum_action_steps, bool)
+        or not isinstance(maximum_action_steps, int)
+        or maximum_action_steps < 1
+    ):
+        errors.append("deformable_task_maximum_action_steps_invalid")
 
     _, validate_task_local_spec, scoring_error = _deformable_scoring_api()
     normalized: dict[str, Any] | None = None
@@ -356,8 +370,7 @@ def score_articulated_task_episode(
     non_target = sorted(set(resets) - {target})
     non_target_max_delta = {
         joint_id: max(
-            abs(sample["joint_positions_rad"][joint_id] - resets[joint_id])
-            for sample in normalized
+            abs(sample["joint_positions_rad"][joint_id] - resets[joint_id]) for sample in normalized
         )
         for joint_id in non_target
     }
@@ -368,7 +381,11 @@ def score_articulated_task_episode(
     hard_limit_violation = any(
         sample["joint_limit_violation"]
         or any(
-            not (spec["joint_hard_limits_rad"][joint_id][0] <= position <= spec["joint_hard_limits_rad"][joint_id][1])
+            not (
+                spec["joint_hard_limits_rad"][joint_id][0]
+                <= position
+                <= spec["joint_hard_limits_rad"][joint_id][1]
+            )
             for joint_id, position in sample["joint_positions_rad"].items()
         )
         for sample in normalized
@@ -400,8 +417,8 @@ def score_articulated_task_episode(
         outcome = OUTCOME_COLLISION_FAILURE
     elif not non_task_locked:
         outcome = OUTCOME_NON_TASK_JOINT_MOVED
-    elif settle_in_interval and settle_speed_ok and (
-        not released_in_settle or not retreat_completed
+    elif (
+        settle_in_interval and settle_speed_ok and (not released_in_settle or not retreat_completed)
     ):
         # Reaching and stably holding the requested angle is materially farther
         # than a rebound, but the task contract still requires release and
@@ -453,12 +470,8 @@ def score_articulated_task_episode(
         },
         "thresholds": {
             "target_success_interval_rad": [lower, upper],
-            "maximum_settled_target_speed_rad_s": spec[
-                "maximum_settled_target_speed_rad_s"
-            ],
-            "non_task_joint_motion_tolerance_rad": spec[
-                "non_task_joint_motion_tolerance_rad"
-            ],
+            "maximum_settled_target_speed_rad_s": spec["maximum_settled_target_speed_rad_s"],
+            "non_task_joint_motion_tolerance_rad": spec["non_task_joint_motion_tolerance_rad"],
             "movement_epsilon_rad": spec["movement_epsilon_rad"],
             "reset_tolerance_rad": reset_tolerance,
             "settle_window_samples": window_count,
@@ -495,15 +508,11 @@ def score_deformable_task_episode(
     # settle window is evidence-insufficient; native NaN/divergence or an
     # integrity violation is instead a scored deterministic non-success.
     report["status"] = (
-        "scored"
-        if report["measurements"]["settle_window_available"]
-        else "undetermined"
+        "scored" if report["measurements"]["settle_window_available"] else "undetermined"
     )
     report["task_kind"] = TASK_KIND_DEFORMABLE_TRANSFER
     report["task_succeeded"] = bool(report["deterministic_success"])
-    report["result_digest"] = canonical_digest(
-        report, digest_field="result_digest"
-    )
+    report["result_digest"] = canonical_digest(report, digest_field="result_digest")
     return report
 
 
