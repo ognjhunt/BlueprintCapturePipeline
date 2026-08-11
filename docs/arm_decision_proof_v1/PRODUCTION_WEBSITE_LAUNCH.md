@@ -19,7 +19,9 @@ canonical paid-resource allocator used by the maintained CLI path.
    provider inventory, orphan recovery, teardown closeout, and provider-zero.
 5. The optional OpenAI Agents SDK supervisor has no tools. It can explain
    blockers, recommend only a deterministically admissible Pipeline profile, or
-   request one human decision. The run remains safe and operable when it is off.
+   request one human decision. Its receipt history is a bounded, digest-bound
+   observation window so historical launches cannot exhaust the fixed inference
+   ceiling. The run remains safe and operable when it is off or typed-blocked.
 
 ## Publish an immutable profile
 

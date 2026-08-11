@@ -10,7 +10,9 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     canonical_digest,
 )
 from blueprint_pipeline.task_evaluation_launch_supervisor import (
+    DEFAULT_SUPERVISOR_SNAPSHOT_MAX_BYTES,
     LaunchSupervisorRecommendation,
+    SUPERVISOR_SNAPSHOT_INPUT_CEILING_BLOCKER,
     build_supervisor_snapshot,
     run_launch_supervisor,
 )
@@ -256,6 +258,68 @@ def test_supervisor_snapshot_exposes_unmatched_webapp_receipt(
         "website_trigger_proven": False,
         "webapp_sync_blockers": ["webapp_launch_record_missing"],
     }]
+
+
+def test_supervisor_snapshot_bounds_old_terminal_history_before_live_inference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    _snapshot(tmp_path)
+    state_root = tmp_path / "state"
+    for index in range(30):
+        _write(
+            state_root / f"launch-{index:03d}" / "launch_receipt.json",
+            {
+                "launch_id": f"launch-{index:03d}",
+                "request_digest": "sha256:" + f"{index:064x}",
+                "status": "blocked",
+                "provider_mutation_attempted": False,
+                "blockers": [f"historical-{index}-" + "x" * 2_500],
+            },
+        )
+
+    snapshot = build_supervisor_snapshot(
+        profile_dir=tmp_path / "profiles",
+        queue_root=tmp_path / "queue",
+        state_root=state_root,
+        guard_report_path=tmp_path / "guard.json",
+    )
+
+    assert len(json.dumps(snapshot, sort_keys=True).encode("utf-8")) <= (
+        DEFAULT_SUPERVISOR_SNAPSHOT_MAX_BYTES
+    )
+    history = snapshot["terminal_history"]
+    assert history["selection"] == "lexicographically_latest_launch_receipts"
+    assert history["total_count"] == 30
+    assert history["included_count"] == len(snapshot["terminal_launches"])
+    assert history["omitted_count"] == 30 - len(snapshot["terminal_launches"])
+    assert history["input_byte_ceiling"] == DEFAULT_SUPERVISOR_SNAPSHOT_MAX_BYTES
+    assert history["status"] == "bounded"
+    assert history["omitted_count"] > 0
+    assert history["omitted_terminal_rows_digest"].startswith("sha256:")
+    assert snapshot["terminal_launches"][-1]["launch_id"] == "launch-029"
+    assert all(row["launch_id"] != "launch-000" for row in snapshot["terminal_launches"])
+
+
+def test_supervisor_refuses_an_uncompactable_snapshot_without_an_agent_call(
+    tmp_path: Path,
+) -> None:
+    invoker = _Invoker("interiorgs-sage-franka-001")
+    result = run_launch_supervisor(
+        snapshot={
+            "snapshot_digest": "sha256:" + "e" * 64,
+            "terminal_history": {"status": "input_ceiling_exceeded"},
+        },
+        output_dir=tmp_path / "supervision",
+        invoker=invoker,
+        enabled=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [SUPERVISOR_SNAPSHOT_INPUT_CEILING_BLOCKER]
+    assert result["tool_count"] == 0
+    assert result["provider_mutation_performed"] is False
+    assert invoker.spec is None
 
 
 def test_missing_guard_fails_closed_without_becoming_agent_authority(
