@@ -563,28 +563,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["camera_resolution"] = [CAMERA_WIDTH, CAMERA_HEIGHT]
         _phase(result, "cameras_configured")
 
-        def _echo_achieved_camera_poses() -> None:
-            # The consumed pose, from Isaac itself. Intended-vs-achieved as
-            # recorded data ends the convention guessing: the overview aim
-            # correction becomes arithmetic on this echo.
-            echo = {}
-            for name in ("overview_camera", "external_camera", "wrist_camera"):
-                try:
-                    sensor = scene[name]
-                except Exception:  # noqa: BLE001 - echo is advisory
-                    continue
-                try:
-                    echo[name] = {
-                        "pos_w": [float(v) for v in _to_torch(sensor.data.pos_w)[0]],
-                        "quat_w_world": [
-                            float(v) for v in _to_torch(sensor.data.quat_w_world)[0]
-                        ],
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    echo[name] = {"unavailable": f"{type(exc).__name__}:{exc}"[:120]}
-            result["achieved_camera_poses"] = echo
-
-        adapter_holder["echo_camera_poses"] = _echo_achieved_camera_poses
 
         _phase(result, "embodiment_configured")
 
@@ -1023,9 +1001,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         result["reset_diagnostic"] = reset_diagnostic
         _phase(result, "adapter_wired")
-        echo_cameras = adapter_holder.get("echo_camera_poses")
-        if callable(echo_cameras):
-            echo_cameras()
+        # The consumed camera poses, from Isaac itself. Intended-vs-achieved
+        # as recorded data ends the convention guessing: the overview aim
+        # correction becomes arithmetic on this echo. Advisory only.
+        camera_echo: dict[str, Any] = {}
+        for _camera_name in ("overview_camera", "external_camera", "wrist_camera"):
+            try:
+                _sensor = scene[_camera_name]
+                camera_echo[_camera_name] = {
+                    "pos_w": [float(v) for v in _to_torch(_sensor.data.pos_w)[0]],
+                    "quat_w_world": [
+                        float(v) for v in _to_torch(_sensor.data.quat_w_world)[0]
+                    ],
+                }
+            except Exception as exc:  # noqa: BLE001 - echo is advisory
+                camera_echo[_camera_name] = {
+                    "unavailable": f"{type(exc).__name__}:{exc}"[:120]
+                }
+        result["achieved_camera_poses"] = camera_echo
 
         # The one check rt51-rt53 lacked: is the twin standing where the join
         # receipt sealed it? Measured AFTER reset, because Arena's
