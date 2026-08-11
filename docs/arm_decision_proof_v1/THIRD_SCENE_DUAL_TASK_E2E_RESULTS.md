@@ -277,12 +277,33 @@ The shared collider stage is `61,346,958` bytes with SHA-256
 `36bc6e6800f59c92b4f655ca7900e1041a5714447b82d4b7b7102d45ed4fa883`.
 Source bytes and all unrelated composed prims are unchanged.
 
-Task A and Task B inpainting decisions are both **not evaluated because source
-removal was not authorized**. The protocol first requires a safe removal plus
-actual replacement-USD depth coverage across the articulated sweep or rigid pose
-range. Neither held-out audit authorizes that step. Neither task is labeled
-`inpainting_not_required`, neither has a generative fill, and no image edit was
-used as evidence.
+Neither task has a qualified deletion or an applied inpainting result: the
+independent ownership gate above remains the prerequisite for either. However,
+the selected exact replacement USDs have now been rasterized over every
+held-out camera and their frozen task-state ranges, so `inpainting_not_required`
+is no longer an untested assumption. Task A's Earth-to-Jake visual-composed USD
+was measured across eight cameras and four joint cells (closed, target minimum,
+midpoint, and maximum): depth receipt
+`sha256:3cba3df44050d83924de5e281c2d0c375549a925ff114f779a482e1e37dec101`.
+Its owned-source-layer diagnostic measured a nonzero worst uncovered alpha
+fraction of `0.0418192797` (`885` significant pixels; receipt
+`sha256:111219705a385a22a35b3cf46cf889945a91abf77efd91673e8919e8e705b66a`).
+Task B's Multi-Agent-CAD visual-composed USD was measured across eight cameras
+and five frozen rigid poses (source, path midpoint, and destination bounds):
+depth receipt
+`sha256:0fe814d12d3b456b545d53a2bf64c12837d263d606261b3c7315bf132252564f`.
+Its owned-source-layer diagnostic measured a nonzero worst uncovered alpha
+fraction of `0.9788944343` (`7,864` significant pixels; receipt
+`sha256:cf74743eed5c4829441b3fd4d6e428e2575c05aaf842b6955d28c2ff8aca239c`).
+The latter is expected when the notebook leaves its observed source support.
+
+These are measured, local geometry/visibility precursors, not a
+coverage-conditioned deletion qualification: each audit uses the current
+owned-only source layer while the independent held-out ownership separation is
+still abstained. They do prove that both tasks need a strict, mask-contained
+released-code seam-repair path if a future qualified cutout exposes the same
+regions. No image was edited, no Gaussian was deleted, and no inpainting output
+or background claim is admitted.
 
 Task A SimReady candidate: **authored and statically structure-qualified, not
 simulator-qualified**. Its general graph compiler emitted six links, five
@@ -367,9 +388,20 @@ reference-image digest. Each decision records visible matches, mismatches, and
 explicit generated-candidate content; a rejected candidate cannot enter visual
 composition. This is an image-grounded admission record, not an automatic
 appearance score or an appearance/native/physical-equivalence qualification.
-The historical review board above predates this stricter receipt and will be
-rematerialized only for the selected two construction candidates; it does not
-retroactively select either CAD backend.
+The historical review board above predates this stricter receipt and therefore
+does not retroactively select either CAD backend. The new digest-bound review
+is materialized at
+`shared_scene/cad_agent_visual_comparison_v2/cad_agent_visual_reference_review.v1.json`
+(digest `sha256:6f192fbf7d9e3052ba4b379d7203800fba2da26f488e8fff98c98718eacee89f`)
+and includes all three observed reference frames per object. It conditionally
+admits Task A/Earth-to-Jake, rejects Task A/Multi-Agent-CAD for visible panel
+and exterior-resolvability mismatches, and conditionally admits both Task B
+candidates. The construction selections are therefore Task A/Earth-to-Jake
+(15 composed visual meshes; receipt
+`sha256:d44670ec60760879edeb510a0ffd57100c816ffb24868b38068d0adb39b6c34a`)
+and Task B/Multi-Agent-CAD (135 composed visual meshes; receipt
+`sha256:0a3d30e2620ac2a6abebf61be3a5e045a2c1e2f4dc4be452dd17b7c5ace0338a`).
+They remain generated construction candidates, not appearance-qualified assets.
 
 For NVIDIA Content Agents, each STEP was deterministically projected into a
 Mesh-only USD working copy. These are agent-input artifacts only; they are not
@@ -877,7 +909,7 @@ Recent reusable-code and manifest commits:
 |---|---|
 | Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; a separate agent-CAD visual-composition seam that preserves exact STEP-projected visuals while isolating graph collision geometry; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, held-out ownership audit, and a separate zero-residue coverage-conditioned deletion route that preserves the ownership/visibility distinction; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; a receipt-only portable mirror that excludes all raw dataset bytes; two-backend agent-CAD comparison contracts with deterministic CAD rejected; a Codex-first 1..5-object Content Agents route plus four completed metadata-only `gpt-5.6-luna` host-OAuth reviews that use no API key or artifact bytes; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
-| Blocked/abstained | Both released-code contribution runs completed, but both exact source-removal lanes abstained at `calibrated_gaussian_ownership_separation_without_protected_scene_deletion`. No source Gaussian deletion, replacement-depth coverage, occlusion/inpainting decision, native placement/camera/control gate, or candidate matrix is admitted. Content Agents enrichment remains advisory and not a replacement for source-removal evidence. |
+| Blocked/abstained | Both released-code contribution runs completed, but both exact source-removal lanes abstained at `calibrated_gaussian_ownership_separation_without_protected_scene_deletion`. Actual selected-USD depth and owned-layer seam measurements now exist, but neither authorizes deletion, a replacement-coverage qualification, or an inpainting output. Native placement/camera/control and candidate episodes remain unexecuted. Content Agents enrichment remains advisory and not a replacement for source-removal evidence. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
 
 ## Remaining ambiguity and single next action
@@ -888,9 +920,9 @@ dynamics/appearance, and all episode evidence remain unknown. The graph phase
 and native state/contact compilers are implemented and hermetically exercised;
 local collision-schema qualification is not native task qualification.
 
-**Single next action:** select one of the agent-authored CAD candidates per
-object and seal its metric CAD-to-graph visual-registration binding, then
-materialize its new independently preregistered replacement-depth/source-layer
-packet. It may proceed only if the existing factual-ownership gate passes or
-the new coverage-conditioned path proves zero residual over the entire deleted
-source layer. Do not reinterpret or retry the frozen ownership attempts.
+**Single next action:** materialize a new, independently qualified ownership
+separation for each selected visual-composed asset, then bind the resulting
+complete deleted-source layer to the already measured camera/state sweeps. It
+may proceed only if the coverage-conditioned path proves zero residue, or else
+through the admitted released-code seam backend inside the exact measured mask.
+Do not reinterpret or retry the frozen ownership attempts.
