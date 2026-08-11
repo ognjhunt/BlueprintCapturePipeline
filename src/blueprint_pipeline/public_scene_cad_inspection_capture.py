@@ -13,6 +13,9 @@ from typing import Any, Sequence
 from .common import utc_now_iso
 
 
+EARTHTOJAKE_TEXT_TO_CAD_REPOSITORY = "https://github.com/earthtojake/text-to-cad"
+
+
 class PublicSceneCadInspectionCaptureError(ValueError):
     """The pinned CAD source or inspection result is not trustworthy."""
 
@@ -33,13 +36,26 @@ def _under(path: Path, root: Path, *, error: str) -> Path:
     return resolved
 
 
-def _git(skill_root: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(skill_root), *args], capture_output=True, text=True, check=False
-    )
+def _git(skill_root: Path, *args: str, timeout_seconds: int = 30) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(skill_root), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PublicSceneCadInspectionCaptureError("cad_skill_git_inspection_timeout") from exc
     if result.returncode:
         raise PublicSceneCadInspectionCaptureError("cad_skill_git_inspection_failed")
     return result.stdout.strip()
+
+
+def _normalized_repository(value: str) -> str:
+    """Normalize the two harmless spelling differences allowed for Git URLs."""
+
+    return value.strip().rstrip("/").removesuffix(".git")
 
 
 def capture_cad_inspection(
@@ -52,7 +68,15 @@ def capture_cad_inspection(
     expected_tree: str,
     step_path: str | Path,
     output_path: str | Path,
+    timeout_seconds: int = 120,
 ) -> dict[str, Any]:
+    if (
+        not isinstance(timeout_seconds, int)
+        or isinstance(timeout_seconds, bool)
+        or timeout_seconds < 1
+        or timeout_seconds > 900
+    ):
+        raise PublicSceneCadInspectionCaptureError("cad_inspection_timeout_invalid")
     repo = Path(repo_root).expanduser().resolve()
     evidence = Path(evidence_root).expanduser().resolve()
     skill = Path(cad_skill_root).expanduser().resolve()
@@ -63,12 +87,16 @@ def capture_cad_inspection(
     output = _under(Path(output_path), evidence, error="cad_inspection_outside_evidence_root")
     if not step.is_file() or not python.is_file():
         raise PublicSceneCadInspectionCaptureError("cad_step_or_interpreter_missing")
-    observed_commit = _git(skill, "rev-parse", "HEAD")
-    observed_tree = _git(skill, "rev-parse", "HEAD^{tree}")
+    git_timeout = min(30, timeout_seconds)
+    observed_commit = _git(skill, "rev-parse", "HEAD", timeout_seconds=git_timeout)
+    observed_tree = _git(skill, "rev-parse", "HEAD^{tree}", timeout_seconds=git_timeout)
     if observed_commit != expected_commit or observed_tree != expected_tree:
         raise PublicSceneCadInspectionCaptureError("cad_skill_revision_mismatch")
-    if _git(skill, "status", "--porcelain"):
+    if _git(skill, "status", "--porcelain", timeout_seconds=git_timeout):
         raise PublicSceneCadInspectionCaptureError("cad_skill_checkout_dirty")
+    observed_repository = _git(skill, "remote", "get-url", "origin", timeout_seconds=git_timeout)
+    if _normalized_repository(observed_repository) != EARTHTOJAKE_TEXT_TO_CAD_REPOSITORY:
+        raise PublicSceneCadInspectionCaptureError("cad_skill_repository_mismatch")
     launcher = skill / "skills" / "cad" / "scripts" / "inspect" / "__main__.py"
     if not launcher.is_file():
         raise PublicSceneCadInspectionCaptureError("cad_inspection_launcher_missing")
@@ -85,9 +113,17 @@ def capture_cad_inspection(
         "json",
         "--quiet",
     ]
-    result = subprocess.run(
-        command, cwd=repo, capture_output=True, text=True, check=False
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PublicSceneCadInspectionCaptureError("cad_inspection_timeout") from exc
     if result.returncode:
         raise PublicSceneCadInspectionCaptureError("cad_inspection_execution_failed")
     try:
@@ -103,7 +139,7 @@ def capture_cad_inspection(
         raise PublicSceneCadInspectionCaptureError("cad_inspection_step_digest_mismatch")
     payload["capture_provenance"] = {
         "generated_at": utc_now_iso(),
-        "cad_skill_repository": "https://github.com/earthtojake/text-to-cad",
+        "cad_skill_repository": EARTHTOJAKE_TEXT_TO_CAD_REPOSITORY,
         "cad_skill_commit": observed_commit,
         "cad_skill_tree": observed_tree,
         "command": command,

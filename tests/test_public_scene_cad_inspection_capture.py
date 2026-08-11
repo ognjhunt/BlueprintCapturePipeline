@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from blueprint_pipeline.public_scene_cad_inspection_capture import (
+    EARTHTOJAKE_TEXT_TO_CAD_REPOSITORY,
     PublicSceneCadInspectionCaptureError,
     capture_cad_inspection,
 )
@@ -55,6 +56,7 @@ print(json.dumps({
     _git(skill, "config", "user.name", "Test")
     _git(skill, "add", ".")
     _git(skill, "commit", "-qm", "fixture")
+    _git(skill, "remote", "add", "origin", EARTHTOJAKE_TEXT_TO_CAD_REPOSITORY)
     return {
         "repo": repo,
         "evidence": evidence,
@@ -97,4 +99,40 @@ def test_capture_rejects_unpinned_skill_revision(tmp_path: Path) -> None:
             expected_tree=str(paths["tree"]),
             step_path=paths["step"],
             output_path=paths["output"],
+        )
+
+
+def test_capture_rejects_a_checkout_without_the_approved_earthtojake_origin(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture(tmp_path)
+    _git(Path(paths["skill"]), "remote", "set-url", "origin", "https://example.test/not-earthtojake")
+
+    with pytest.raises(PublicSceneCadInspectionCaptureError, match="cad_skill_repository_mismatch"):
+        capture_cad_inspection(
+            repo_root=paths["repo"],
+            evidence_root=paths["evidence"],
+            cad_skill_root=paths["skill"],
+            cad_python=sys.executable,
+            expected_commit=str(paths["commit"]),
+            expected_tree=str(paths["tree"]),
+            step_path=paths["step"],
+            output_path=paths["output"],
+        )
+
+
+def test_capture_rejects_an_unbounded_timeout(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+
+    with pytest.raises(PublicSceneCadInspectionCaptureError, match="cad_inspection_timeout_invalid"):
+        capture_cad_inspection(
+            repo_root=paths["repo"],
+            evidence_root=paths["evidence"],
+            cad_skill_root=paths["skill"],
+            cad_python=sys.executable,
+            expected_commit=str(paths["commit"]),
+            expected_tree=str(paths["tree"]),
+            step_path=paths["step"],
+            output_path=paths["output"],
+            timeout_seconds=0,
         )

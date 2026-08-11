@@ -266,6 +266,12 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
                 blockers.append(f"launch_profile_immutable_input_digest_invalid:{name}")
         if not {"source_bundle_manifest", "evaluation_run_spec"}.issubset(input_names):
             blockers.append("launch_profile_immutable_input_roles_missing")
+    if "prelaunch_skill_plan" in profile:
+        # Keep legacy profiles independent of optional adapter dependencies.
+        # New profiles gain a profile-bound plan, never a caller-provided path.
+        from .task_evaluation_prelaunch_skills import validate_profile_prelaunch_skill_plan
+
+        blockers.extend(validate_profile_prelaunch_skill_plan(profile))
     allocator = _mapping(profile.get("allocator"))
     if allocator.get("entrypoint") != CANONICAL_ALLOCATOR_ENTRYPOINT:
         blockers.append("launch_profile_allocator_entrypoint_invalid")
@@ -788,6 +794,41 @@ def dispatch_launch_request(
     started["started_digest"] = canonical_digest(started, digest_field="started_digest")
     _write_immutable(run_root / "launch_started.json", started)
 
+    prelaunch_skill_execution: dict[str, Any] = {
+        "schema_version": "task_evaluation_prelaunch_skill_execution.v1",
+        "status": "not_configured" if "prelaunch_skill_plan" not in profile else "not_started",
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_authorized": False,
+        "agent_operator_used": False,
+        "steps": [],
+        "blockers": [],
+    }
+    if not blockers and profile and "prelaunch_skill_plan" in profile:
+        try:
+            from .task_evaluation_prelaunch_skills import execute_prelaunch_skill_plan
+
+            prelaunch_skill_execution = execute_prelaunch_skill_plan(
+                profile=profile,
+                run_root=run_root,
+            )
+            if prelaunch_skill_execution.get("status") != "passed":
+                blockers.append("prelaunch_skill_execution_blocked")
+                blockers.extend(prelaunch_skill_execution.get("blockers") or [])
+        except Exception:  # fail closed and retain a typed terminal launch receipt
+            prelaunch_skill_execution = {
+                "schema_version": "task_evaluation_prelaunch_skill_execution.v1",
+                "status": "blocked",
+                "provider_mutation_performed": False,
+                "allocator_invoked": False,
+                "automatic_retry_authorized": False,
+                "agent_operator_used": False,
+                "steps": [],
+                "blockers": ["prelaunch_skill_execution_internal_error"],
+            }
+            blockers.append("prelaunch_skill_execution_blocked")
+            blockers.append("prelaunch_skill_execution_internal_error")
+
     allocator_exit_code: int | None = None
     stdout_text = ""
     stderr_text = ""
@@ -882,6 +923,7 @@ def dispatch_launch_request(
         "allocator_exit_code": allocator_exit_code,
         "execute_requested": live_requested,
         "provider_mutation_attempted": bool(live_requested and allocator_exit_code is not None),
+        "prelaunch_skill_execution": prelaunch_skill_execution,
         "terminal_evidence": terminal,
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,

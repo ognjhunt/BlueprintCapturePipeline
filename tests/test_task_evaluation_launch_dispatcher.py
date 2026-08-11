@@ -796,3 +796,62 @@ def test_public_descriptor_requires_bounded_authorization_projection(
     assert "launch_profile_public_required_ttl_invalid" in (
         validate_public_launch_profile_descriptor(bool_ttl)
     )
+
+
+def test_prelaunch_skill_failure_blocks_before_canonical_allocator(tmp_path: Path) -> None:
+    """A profile-bound skill failure is retained and can never become a GPU launch."""
+
+    profile = _profile(tmp_path)
+    plan = {
+        "schema_version": "task_evaluation_prelaunch_skill_plan.v1",
+        "program_id": "arm-decision-proof-v1",
+        "plan_id": "prelaunch-skill-plan-001",
+        "source_bundle": {
+            "bundle_id": profile["source_bundle"]["bundle_id"],
+            "digest": profile["source_bundle"]["digest"],
+        },
+        "steps": [
+            {
+                "step_id": "room-survey",
+                "adapter": "interiorgs_room_survey",
+                "structure_input": "structure",
+                "labels_input": "labels",
+                "scene_id": "scene-001",
+                "target_ins_id": None,
+                "timeout_seconds": 60,
+            }
+        ],
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    plan_path = tmp_path / "prelaunch-plan.json"
+    _write(plan_path, plan)
+    plan_digest = _path_digest(plan_path)
+    profile["immutable_inputs"].append(
+        {"name": "prelaunch_skill_plan", "path": str(plan_path), "digest": plan_digest}
+    )
+    profile["prelaunch_skill_plan"] = {
+        "plan_id": plan["plan_id"],
+        "path": str(plan_path),
+        "digest": plan_digest,
+    }
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert receipt["status"] == "blocked"
+    assert calls == []
+    assert receipt["provider_mutation_attempted"] is False
+    assert receipt["prelaunch_skill_execution"]["status"] == "blocked"
+    assert "prelaunch_skill_execution_blocked" in receipt["blockers"]
+    assert (tmp_path / "state" / request["launch_id"] / "prelaunch_skills" / "execution.json").is_file()
