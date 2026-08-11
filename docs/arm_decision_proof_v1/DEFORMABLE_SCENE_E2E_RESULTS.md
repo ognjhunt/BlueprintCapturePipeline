@@ -270,10 +270,13 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   teardown completed, final validation passed, and provider-zero was confirmed.
   Cost: `$0.026464`; no policy query; no native scientific result. The reusable
   fix is to flatten live `/instances/{id}/` provider rows before all-in cost
-  binding so post-create `dph_total` can fail closed.
-- Current provider state is zero as of the latest live refresh after v22 teardown:
-  `vastai show instances --raw` returned `[]`. The deformable lane owns no live
-  provider instance.
+  binding so post-create `dph_total` can fail closed. That fix is commit
+  `75d49940f`, pushed to `origin/codex/adp-deformable-scene-e2e-20260810`.
+- Current provider state is not zero as of the latest live refresh: `vastai show
+  instances --raw` returned external ADP-009D instance `47453368`, label
+  `blueprint-adp009d-1786441017`, machine `117871`, rate `$0.684444/hr`. The
+  deformable lane owns no live provider instance. A v23 deformable launch remains
+  gated by the canonical single-flight/provider-zero rule.
 - Deformable Vast/GPU attempts with allocation: `9`; prelaunch-blocked attempts:
   `2`; local dry-run command-shape nulls: `2`; uploads: `7`; automatic retries:
   `0`.
@@ -284,7 +287,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Provider-zero is currently true after v22 teardown. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, and v22 exposed a live provider-rate cap readback gap before native execution |
+| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, and v22 exposed a live provider-rate cap readback gap before native execution. The deformable lane is currently waiting on provider-zero because external ADP-009D instance `47453368` is live |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -311,10 +314,12 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `4716f49ce` | Drop stale deformable cook symbol requirement |
 | `0fa6271a4` | Preserve Vast machine avoidlist updates |
 | `8f7268bfe` | Retain deformable worker exception diagnostics |
+| `75d49940f` | Verify live Vast hourly rate after launch |
 
 Each listed commit was pushed to
 `origin/codex/adp-deformable-scene-e2e-20260810`. Commit `4716f49ce` is the
-current published implementation head before the worker-diagnostic follow-up commit.
+current published implementation head before the worker-diagnostic and live
+Vast-rate follow-up commits.
 
 ## Completion and single next action
 
@@ -326,9 +331,9 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to commit the live Vast rate-readback guard, then run
-exactly one fresh no-retry Vast native canary from the current implementation and
-regenerated source package v2 in a new evidence root. If the canary qualifies
+The single next action is to wait for provider-zero, then run exactly one fresh
+no-retry Vast native canary from commit `75d49940f` and regenerated source
+package v2 in a new evidence root. If the canary qualifies
 cook/load/reset/contact/cameras, the run continues to zero-action and scripted
 controls before any learned policy. If the native backend cannot provide
 qualified rigid--deformable contact attribution, the run seals a typed native
