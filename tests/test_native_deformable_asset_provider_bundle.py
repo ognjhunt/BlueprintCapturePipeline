@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import native_deformable_asset_vast as deformable_vast
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.native_deformable_asset_preparation import (
     build_native_deformable_asset_source_package,
@@ -84,6 +85,10 @@ def test_builds_replayable_bundle_with_exact_native_runtime_contract(
     assert receipt["status"] == "ready"
     assert receipt["candidate_policy_queried"] is False
     assert receipt["native_cook_qualified"] is False
+    assert receipt["one_instance_at_a_time"] is True
+    assert receipt["maximum_concurrent_paid_instances"] == 1
+    assert receipt["allowed_active_vast_instance_ids"] == []
+    assert receipt["provider_zero_scope"] == "this_run_owned_instances"
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
         assert "provider_runtime/input_package/source/asset.usd" in names
@@ -148,6 +153,91 @@ def test_builds_replayable_bundle_with_exact_native_runtime_contract(
     )
     assert dry["status"] == "dry_run_ready"
     assert dry["provider_mutations_performed"] == 0
+
+
+def test_bundle_binds_one_exact_concurrent_sibling_before_paid_execution(
+    tmp_path: Path,
+) -> None:
+    source, runtime_path, runtime = _fixture(tmp_path)
+    receipt = build_native_deformable_asset_provider_bundle(
+        job_dir=tmp_path / "concurrent-bundle",
+        source_package_receipt_path=source,
+        runtime_source_packet_receipt_path=runtime_path,
+        implementation_commit="a" * 40,
+        package_source_root=Path(__file__).parents[1] / "src" / "blueprint_pipeline",
+        container_image="registry.example/isaac@sha256:" + "b" * 64,
+        allowed_active_instance_ids=(47373597,),
+        runtime_source_packet_verifier=lambda _: runtime,
+    )
+
+    assert receipt["one_instance_at_a_time"] is False
+    assert receipt["maximum_concurrent_paid_instances"] == 2
+    assert receipt["allowed_active_vast_instance_ids"] == [47373597]
+    replay = load_verified_native_deformable_asset_provider_bundle(
+        Path(receipt["bundle_path"]).parent
+        / "native_deformable_asset_provider_bundle_receipt.v1.json",
+        expected_implementation_commit="a" * 40,
+        expected_source_package_receipt_digest=receipt["source_package_receipt_digest"],
+        expected_runtime_source_packet_receipt_digest=runtime["receipt_digest"],
+        expected_allowed_active_instance_ids=(47373597,),
+    )
+    assert replay == receipt
+    with pytest.raises(
+        NativeDeformableAssetProviderBundleError,
+        match="native_deformable_provider_bundle_receipt_invalid",
+    ):
+        load_verified_native_deformable_asset_provider_bundle(
+            Path(receipt["bundle_path"]).parent
+            / "native_deformable_asset_provider_bundle_receipt.v1.json",
+            expected_implementation_commit="a" * 40,
+            expected_source_package_receipt_digest=receipt["source_package_receipt_digest"],
+            expected_runtime_source_packet_receipt_digest=runtime["receipt_digest"],
+        )
+
+
+def test_native_vast_transport_requires_the_frozen_sibling_to_still_be_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, runtime_path, runtime = _fixture(tmp_path)
+    receipt = build_native_deformable_asset_provider_bundle(
+        job_dir=tmp_path / "concurrent-bundle",
+        source_package_receipt_path=source,
+        runtime_source_packet_receipt_path=runtime_path,
+        implementation_commit="a" * 40,
+        package_source_root=Path(__file__).parents[1] / "src" / "blueprint_pipeline",
+        container_image="registry.example/isaac@sha256:" + "b" * 64,
+        allowed_active_instance_ids=(47373597,),
+        runtime_source_packet_verifier=lambda _: runtime,
+    )
+    observed: dict[str, object] = {}
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(deformable_vast, "run_arena_native_control_vast", fake_run)
+    assert (
+        run_native_deformable_asset_vast(
+            job_dir=tmp_path / "vast",
+            prepared_bundle=receipt,
+            paid_resource_admission_grant=None,
+            execute=False,
+            allowed_active_instance_ids=(47373597,),
+        )["status"]
+        == "dry_run_ready"
+    )
+    assert observed["allowed_active_instance_ids"] == (47373597,)
+    assert observed["required_active_instance_ids"] == (47373597,)
+    assert "vast_launch_lock_file" not in observed
+    with pytest.raises(
+        ValueError, match="native_deformable_asset_prepared_bundle_contract_invalid"
+    ):
+        run_native_deformable_asset_vast(
+            job_dir=tmp_path / "mismatch",
+            prepared_bundle=receipt,
+            paid_resource_admission_grant=None,
+            execute=False,
+        )
 
 
 def test_embedded_runtime_result_writer_is_valid_python(tmp_path: Path) -> None:
@@ -306,8 +396,9 @@ def test_rehashed_bundle_receipt_cannot_override_embedded_manifest(tmp_path: Pat
 
 
 @pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize("concurrent", [False, True])
 def test_canonical_allocator_routes_owner_authorized_deformable_bundle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool, concurrent: bool
 ) -> None:
     source, runtime_path, runtime = _fixture(tmp_path)
     plan = json.loads(
@@ -325,13 +416,17 @@ def test_canonical_allocator_routes_owner_authorized_deformable_bundle(
     rights_path = tmp_path / "rights.json"
     rights_path.write_text(canonical_json(rights) + "\n")
     prepared = {
-        "schema_version": "native_deformable_asset_provider_bundle.v1",
+        "schema_version": "native_deformable_asset_provider_bundle.v2",
         "status": "ready",
         "provider_bundle_kind": "native_deformable_asset",
         "execution_mode": "asset_preparation_canary",
         "expected_output_filename": "native_deformable_asset_vast_execution.v1.json",
         "candidate_policy_queried": False,
         "native_cook_qualified": False,
+        "one_instance_at_a_time": not concurrent,
+        "maximum_concurrent_paid_instances": 2 if concurrent else 1,
+        "allowed_active_vast_instance_ids": [47373597] if concurrent else [],
+        "provider_zero_scope": "this_run_owned_instances",
         "container_image": "registry.example/isaac@sha256:" + "b" * 64,
         "bundle_sha256": "sha256:" + "5" * 64,
         "input_digest": "sha256:" + "6" * 64,
@@ -400,6 +495,8 @@ def test_canonical_allocator_routes_owner_authorized_deformable_bundle(
         bundle_receipt = tmp_path / "bundle-receipt.json"
         bundle_receipt.write_text("{}\n")
         args.extend(["--native-deformable-bundle-receipt", str(bundle_receipt), "--execute"])
+    if concurrent:
+        args.extend(["--adp-allowed-active-vast-instance-id", "47373597"])
     assert allocator.main(args) == 0
     assert observed["execute"] is execute
     assert (
@@ -409,3 +506,5 @@ def test_canonical_allocator_routes_owner_authorized_deformable_bundle(
     assert admission["authority"] == ("direct_asset_owner_private_vast_processing_authority")
     assert admission["raw_dataset_bytes_uploaded"] is False
     assert admission["retry_cap"] == 0
+    assert admission["explicit_concurrent_gpu_authority_bound"] is concurrent
+    assert observed["allowed_active_instance_ids"] == ((47373597,) if concurrent else ())

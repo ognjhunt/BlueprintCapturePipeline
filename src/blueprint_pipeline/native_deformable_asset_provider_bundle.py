@@ -31,7 +31,7 @@ from .native_task_runtime_source_packet import verify_native_task_runtime_source
 
 PROBE_KIND = "native-deformable-asset-preparation"
 PROVIDER_BUNDLE_KIND = "native_deformable_asset"
-SCHEMA_VERSION = "native_deformable_asset_provider_bundle.v1"
+SCHEMA_VERSION = "native_deformable_asset_provider_bundle.v2"
 EXPECTED_OUTPUT_FILENAME = "native_deformable_asset_vast_execution.v1.json"
 RESULT_SCHEMA_VERSION = "native_deformable_asset_vast_execution.v1"
 _MAX_INPUT_FILE_BYTES = 512 * 1024 * 1024
@@ -59,6 +59,33 @@ class NativeDeformableAssetProviderBundleError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted(set(str(item) for item in errors if str(item))))
         super().__init__(";".join(self.errors))
+
+
+def _normalise_concurrent_active_instance_ids(values: Sequence[Any]) -> tuple[int, ...]:
+    """Accept the one explicitly admitted sibling allowed by this canary.
+
+    The native deformable canary has a deliberately narrow concurrency model:
+    either it is serial, or it runs beside one already-running, exact Vast
+    instance.  Treating this as a bundle input prevents a later paid execution
+    from silently widening a serial dry run into general parallel spend.
+    """
+
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise NativeDeformableAssetProviderBundleError(
+            ["native_deformable_provider_concurrent_active_instance_ids_invalid"]
+        )
+    normalized: list[int] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise NativeDeformableAssetProviderBundleError(
+                ["native_deformable_provider_concurrent_active_instance_ids_invalid"]
+            )
+        normalized.append(value)
+    if len(normalized) > 1 or len(set(normalized)) != len(normalized):
+        raise NativeDeformableAssetProviderBundleError(
+            ["native_deformable_provider_concurrent_active_instance_ids_invalid"]
+        )
+    return tuple(normalized)
 
 
 def _sha256_bytes(content: bytes) -> str:
@@ -351,12 +378,14 @@ def build_native_deformable_asset_provider_bundle(
     implementation_commit: str,
     package_source_root: str | Path,
     container_image: str = DEFAULT_IMAGE,
+    allowed_active_instance_ids: Sequence[int] = (),
     runtime_source_packet_verifier: Callable[..., Mapping[str, Any]] = (
         verify_native_task_runtime_source_packet
     ),
 ) -> dict[str, Any]:
     """Build the exact paid-free bundle consumed by the canonical Vast lane."""
 
+    allowed_ids = _normalise_concurrent_active_instance_ids(allowed_active_instance_ids)
     if (
         not isinstance(implementation_commit, str)
         or len(implementation_commit) != 40
@@ -462,6 +491,10 @@ def build_native_deformable_asset_provider_bundle(
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
         "native_cook_qualified": False,
+        "one_instance_at_a_time": not bool(allowed_ids),
+        "maximum_concurrent_paid_instances": 2 if allowed_ids else 1,
+        "allowed_active_vast_instance_ids": list(allowed_ids),
+        "provider_zero_scope": "this_run_owned_instances",
         "provider_mutations_performed": 0,
         "manifest_digest": "",
     }
@@ -481,6 +514,7 @@ def build_native_deformable_asset_provider_bundle(
                 "runtime_source_packet_receipt_digest": runtime_receipt["receipt_digest"],
                 "implementation_commit": implementation_commit,
                 "container_image": container_image,
+                "allowed_active_vast_instance_ids": list(allowed_ids),
             }
         ),
         "receipt_digest": "",
@@ -498,9 +532,13 @@ def load_verified_native_deformable_asset_provider_bundle(
     expected_implementation_commit: str,
     expected_source_package_receipt_digest: str,
     expected_runtime_source_packet_receipt_digest: str,
+    expected_allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Replay one dry-run bundle receipt before consuming paid authority."""
 
+    expected_allowed_ids = _normalise_concurrent_active_instance_ids(
+        expected_allowed_active_instance_ids
+    )
     receipt, _ = _json(
         Path(receipt_path).expanduser().resolve(),
         error="native_deformable_provider_bundle_receipt_invalid",
@@ -515,6 +553,10 @@ def load_verified_native_deformable_asset_provider_bundle(
         or receipt.get("candidate_policy_queried") is not False
         or receipt.get("candidate_outcomes_accessed") is not False
         or receipt.get("native_cook_qualified") is not False
+        or receipt.get("one_instance_at_a_time") is not (not bool(expected_allowed_ids))
+        or receipt.get("maximum_concurrent_paid_instances") != (2 if expected_allowed_ids else 1)
+        or receipt.get("allowed_active_vast_instance_ids") != list(expected_allowed_ids)
+        or receipt.get("provider_zero_scope") != "this_run_owned_instances"
         or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
     ):
         errors.append("native_deformable_provider_bundle_receipt_invalid")
@@ -571,6 +613,7 @@ def load_verified_native_deformable_asset_provider_bundle(
             "runtime_source_packet_receipt_digest": (expected_runtime_source_packet_receipt_digest),
             "implementation_commit": expected_implementation_commit,
             "container_image": receipt.get("container_image"),
+            "allowed_active_vast_instance_ids": list(expected_allowed_ids),
         }
     )
     if receipt.get("input_digest") != expected_input_digest:

@@ -1895,6 +1895,28 @@ def test_prelaunch_inventory_guard_allows_only_exact_authorized_active_instances
     assert passed["status"] == "passed"
     assert passed["continuing_spend_detected_before_new_launch"] is True
     assert passed["unexpected_active_instance_count"] == 0
+    assert passed["required_active_instance_ids"] == []
+
+    required = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "required",
+        generated_at="2026-08-05T00:00:00Z",
+        api_key="test-key",
+        allowed_active_instance_ids=(123, 124),
+        required_active_instance_ids=(123, 124),
+    )
+    assert required["status"] == "passed"
+    assert required["missing_required_active_instance_ids"] == []
+
+    missing = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "missing",
+        generated_at="2026-08-05T00:00:00Z",
+        api_key="test-key",
+        allowed_active_instance_ids=(123, 124, 125),
+        required_active_instance_ids=(125,),
+    )
+    assert missing["status"] == "blocked"
+    assert missing["missing_required_active_instance_ids"] == [125]
+    assert missing["blockers"] == ["vast_required_active_instances_missing_before_new_launch"]
 
 
 def test_prelaunch_inventory_treats_missing_status_as_active_ambiguous() -> None:
@@ -1953,6 +1975,29 @@ def test_vast_adapter_rejects_active_instance_not_bound_to_opaque_grant(
     assert _read_json(job_dir / "vast_launch_lock_manifest.json")["status"] == ("released")
     teardown = _read_json(job_dir / "vast_teardown_manifest.json")
     assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_vast_adapter_requires_a_declared_sibling_to_also_be_allowlisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_live_gates(tmp_path, monkeypatch)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "required-not-allowed",
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        max_live_minutes=1,
+        session_max_live_minutes=None,
+        allowed_active_instance_ids=(123,),
+        required_active_instance_ids=(124,),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "vast_api_gate_blocked"
+    assert result["api_call_performed"] is False
+    assert result["blockers"] == ["vast_required_active_instances_not_allowed"]
 
 
 def test_vast_adapter_blocks_blueprint_bundle_missing_staging_before_api(

@@ -36,6 +36,21 @@ def run_native_deformable_asset_vast(
 ) -> dict[str, Any]:
     """Run one zero-retry cook/readback canary through the shared Vast transport."""
 
+    if isinstance(allowed_active_instance_ids, (str, bytes)) or not isinstance(
+        allowed_active_instance_ids, Sequence
+    ):
+        raise ValueError("native_deformable_asset_allowed_active_instance_ids_invalid")
+    supplied_ids = tuple(allowed_active_instance_ids)
+    if (
+        len(supplied_ids) > 1
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in supplied_ids
+        )
+        or len(set(supplied_ids)) != len(supplied_ids)
+    ):
+        raise ValueError("native_deformable_asset_allowed_active_instance_ids_invalid")
+    allowed_ids = tuple(sorted(supplied_ids))
     if (
         prepared_bundle.get("schema_version") != SCHEMA_VERSION
         or prepared_bundle.get("execution_mode") != "asset_preparation_canary"
@@ -43,10 +58,13 @@ def run_native_deformable_asset_vast(
         or prepared_bundle.get("expected_output_filename") != EXPECTED_OUTPUT_FILENAME
         or prepared_bundle.get("candidate_policy_queried") is not False
         or prepared_bundle.get("native_cook_qualified") is not False
+        or prepared_bundle.get("one_instance_at_a_time") is not (not bool(allowed_ids))
+        or prepared_bundle.get("maximum_concurrent_paid_instances") != (2 if allowed_ids else 1)
+        or prepared_bundle.get("allowed_active_vast_instance_ids") != list(allowed_ids)
+        or prepared_bundle.get("provider_zero_scope") != "this_run_owned_instances"
     ):
         raise ValueError("native_deformable_asset_prepared_bundle_contract_invalid")
     job = Path(job_dir).expanduser().resolve()
-    allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
     return run_arena_native_control_vast(
         approval_path=".",
         job_dir=job,
@@ -66,9 +84,7 @@ def run_native_deformable_asset_vast(
         blocker_prefix="native_deformable_asset",
         min_gpu_ram_mb=24_000,
         allowed_active_instance_ids=allowed_ids,
-        vast_launch_lock_file=(
-            job / "native_deformable_asset_paid_launch.lock" if allowed_ids else None
-        ),
+        required_active_instance_ids=allowed_ids,
         candidate_policy_query_expected=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000", "L40"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,

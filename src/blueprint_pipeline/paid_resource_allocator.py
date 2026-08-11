@@ -2113,6 +2113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ]
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
+            allowed_active_instance_ids = tuple(args.adp_allowed_active_vast_instance_id)
             if args.execute and not args.native_deformable_bundle_receipt:
                 blockers.append("native_deformable_execute_requires_dry_run_bundle_receipt")
             if args.provider != "vast":
@@ -2121,6 +2122,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("native_deformable_budget_invalid")
             if not 1800 <= args.adp_hard_ttl_seconds <= 7200:
                 blockers.append("native_deformable_hard_ttl_invalid")
+            if (
+                len(allowed_active_instance_ids) > 1
+                or len(set(allowed_active_instance_ids)) != len(allowed_active_instance_ids)
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                    for value in allowed_active_instance_ids
+                )
+            ):
+                blockers.append("native_deformable_concurrent_authority_binding_invalid")
             source_receipt: dict[str, Any] = {}
             runtime_source: dict[str, Any] = {}
             rights: dict[str, Any] = {}
@@ -2166,6 +2176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             expected_runtime_source_packet_receipt_digest=runtime_source[
                                 "receipt_digest"
                             ],
+                            expected_allowed_active_instance_ids=allowed_active_instance_ids,
                         )
                     else:
                         prepared_bundle = build_native_deformable_asset_provider_bundle(
@@ -2178,11 +2189,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ),
                             implementation_commit=control_identity["orchestrator_source_commit"],
                             package_source_root=Path(__file__).resolve().parent,
+                            allowed_active_instance_ids=allowed_active_instance_ids,
                         )
                 except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                     blockers.append(
                         f"native_deformable_bundle_preparation_failed:{type(exc).__name__}"
                     )
+            if prepared_bundle is not None and (
+                prepared_bundle.get("one_instance_at_a_time")
+                is not (not bool(allowed_active_instance_ids))
+                or prepared_bundle.get("maximum_concurrent_paid_instances")
+                != (2 if allowed_active_instance_ids else 1)
+                or prepared_bundle.get("allowed_active_vast_instance_ids")
+                != list(allowed_active_instance_ids)
+                or prepared_bundle.get("provider_zero_scope") != "this_run_owned_instances"
+            ):
+                blockers.append("native_deformable_concurrent_authority_binding_invalid")
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": NATIVE_DEFORMABLE_ASSET_PROBE_KIND,
@@ -2201,9 +2223,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "retry_cap": 0,
-                "allowed_active_vast_instance_ids": sorted(
-                    set(args.adp_allowed_active_vast_instance_id)
-                ),
+                "allowed_active_vast_instance_ids": sorted(set(allowed_active_instance_ids)),
+                "maximum_concurrent_paid_instances": 2 if allowed_active_instance_ids else 1,
             }
             allocation_binding_digest = (
                 "sha256:"
@@ -2223,6 +2244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "hard_cap_usd": args.adp_max_spend_usd,
                     "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                     "retry_cap": 0,
+                    "explicit_concurrent_gpu_authority_bound": bool(allowed_active_instance_ids),
                     "authority": "direct_asset_owner_private_vast_processing_authority",
                     "private_data_uploaded": True,
                     "raw_dataset_bytes_uploaded": False,
@@ -2274,7 +2296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
-                    allowed_active_instance_ids=(args.adp_allowed_active_vast_instance_id),
+                    allowed_active_instance_ids=allowed_active_instance_ids,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
