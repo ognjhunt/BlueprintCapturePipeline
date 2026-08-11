@@ -159,7 +159,6 @@ def test_checked_in_package_index_exposes_cad_visual_comparison_binding() -> Non
     assert any(
         row["schema_version"] == "third_scene_cad_agent_visual_comparison_binding.v1"
         and row["receipt_digest"]
-        == "sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe"
+        == "sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3"
         for row in receipt["shared_manifests"]
     )
-

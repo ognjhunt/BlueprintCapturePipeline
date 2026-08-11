@@ -329,7 +329,7 @@ def test_results_doc_points_to_manifest_driven_visual_comparison() -> None:
 
     assert "cad_agent_visual_comparison.v1.json" in results
     assert "third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json" in results
-    assert "sha256:71733e7aa3f7367864fd336d77403962913bf6f7f31af6e4992b6d17f54a2441" in results
-    assert "sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe" in results
+    assert "sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad" in results
+    assert "sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3" in results
     assert "third_scene_840920_agent_cad_visual_comparison_receipt.v1.json" not in results
     assert "sha256:05febab49762d604f047df6a7f8975b25f50b6ac432493566feecb90e90f020c" not in results

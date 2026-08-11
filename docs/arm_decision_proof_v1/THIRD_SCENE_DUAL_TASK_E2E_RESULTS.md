@@ -277,15 +277,15 @@ snapshots, STEP records, and per-object reference-image digest consistency
 before writing review media. The private evidence-root receipt is
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`
 with digest
-`sha256:71733e7aa3f7367864fd336d77403962913bf6f7f31af6e4992b6d17f54a2441`;
+`sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad`;
 the contact sheet is
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`
 with digest
-`sha256:bb98193cb89ccb605198e4a40503244aa75e43917fe2c91de175db6c363a876d`.
+`sha256:6d21505f6f6e04f3f6d502f5dd6c25a6752208f085452caf0a7b316289758f94`.
 The checked-in binding manifest is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`
 with binding digest
-`sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe`.
+`sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3`.
 This is human-review media only; it does not select a CAD winner or qualify
 SimReady/native/appearance/physics behavior.
 
@@ -333,10 +333,10 @@ The audit explicitly records `historical_requests_rewritten=true`,
 
 | Task | Backend | Meshes | Reference digest | Bundle digest | Rehearsal |
 |---|---:|---:|---|---|---|
-| Task A washer | Earth-to-Jake | 15 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:b044299c9ce006267af0daa728b3782fe3da02c99c396ff3c6c70102c4ece568` | passed |
-| Task A washer | Pan-Chera Multi-Agent-CAD | 40 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:67a5aeace70e5ea87f011cd1fe16fe10730191bb56069095c592846299488199` | passed |
-| Task B notebook | Earth-to-Jake | 79 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:20a36478e8a71108d97d43737a8b214dd248710cde3259b7379a0b2d7139beb3` | passed |
-| Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:2bff37fc6dc58c5c19090fbe785a550f85661dce17f9af2a61052137dfa1c8d6` | passed |
+| Task A washer | Earth-to-Jake | 15 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:9e79209d365ef8ff4161f15947a824a1c4425d3745c60f66e4f01102624a7fca` | passed |
+| Task A washer | Pan-Chera Multi-Agent-CAD | 40 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:c05f774ed97e3331d332cec6fa3a931965301584fd29d90da539e2e0bbfd4a69` | passed |
+| Task B notebook | Earth-to-Jake | 79 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:474e993c2b4b7071088dbd00fe4856d93d16dbc31c02339db94eb1232a5d37c8` | passed |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6` | `sha256:2ccd77ea7f3be265d298a70c49a5cdcf9353a7e6ccb1332889a7398cc9145a40` | passed |
 
 These bundle receipts authorize only a future advisory Material/Texture/Physics
 Agent run through the paid-resource allocator. They are not executed Content
@@ -344,18 +344,18 @@ Agents results and still do not qualify appearance, physics, native simulator
 import, or physical equivalence. The checked-in bundle matrix manifest is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`
 with digest
-`sha256:7bc576c50b5814efe108c6ba6fc737e23e8aae099feac99c90bb3b04b9b9243f`.
+`sha256:94f8ffbacffb78bafb64a2f47378a77db3dfdf2b1d3c199c4b2b9dbe6e602c86`.
 The no-provider execution-readiness receipt is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`
 with digest
-`sha256:65ac4595a7311c359f24346eaf8dad33133d86b1beea36685bd0dedda5adcf80`.
+`sha256:6c89272a087632044e7b5eac435b69da3c12f8c063fe71834ada1970d614c143`.
 It validates all four prepared bundle bytes, exact-entrypoint rehearsals,
 and Dockerless static bundle/config/input-USD preflight receipts. The current
 blockers for every candidate are
 `content_agents_local_docker_config_preflight_missing`,
 `content_agents_paid_model_access_preflight_missing` and
 `content_agents_paid_attempt_authority_missing`. Docker was unavailable during
-the v4 refresh, so the no-paid Docker/network-disabled local bundle/config
+the v5 refresh, so the no-paid Docker/network-disabled local bundle/config
 dry-run was not rerun and remains a local blocker. No paid model probe, OpenAI
 call, Vast allocation, object-store mutation, or provider mutation was performed;
 `provider_mutations_performed: 0`.
@@ -373,21 +373,21 @@ No-paid Docker/network-disabled Content Agents local dry-run receipts:
 
 | Task | Backend | Receipt digest |
 |---|---|---|
-| Task A washer | Earth-to-Jake | `sha256:b87004ef5cd52b117a7048efc16dc7467937f4e8af992cae496817341fc2a4c4` |
-| Task A washer | Pan-Chera Multi-Agent-CAD | `sha256:5d3cd81536e720bd1c34e833554756401056f163348c53145dd0cc8e2a45182e` |
-| Task B notebook | Earth-to-Jake | `sha256:5b2aab4e1fa030d1321b5933772622eaef47082b23c9087c46a07424be03cf19` |
-| Task B notebook | Pan-Chera Multi-Agent-CAD | `sha256:f3605be2a3192477f35492de2c6b4424736fee7ce46c5c76e177e51cd412860b` |
+| Task A washer | Earth-to-Jake | `sha256:b5de200f37bf9840036e3b8928f3ec2a2c661bf0b9d4ef7f780277d650efb2fb` |
+| Task A washer | Pan-Chera Multi-Agent-CAD | `sha256:1b24bcfbd78b63feef03d15d28b18fd1801b7fe120aa0540b14aa020ccb84837` |
+| Task B notebook | Earth-to-Jake | `sha256:9ef9f9552d0e4ffafe10829955dd4829b2fc9b1da7edb576ad83f5906b7b09c2` |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | `sha256:56c3c238313c86ea9bd4c3cfbdcfd544e5a514e9aaf68246e080d7de458a9be9` |
 
 A local human-review-only visual comparison was materialized from the
 manifest-bound original reference frames and CAD snapshots. Receipt:
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`,
-digest `sha256:71733e7aa3f7367864fd336d77403962913bf6f7f31af6e4992b6d17f54a2441`.
+digest `sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad`.
 The corresponding contact sheet is
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`,
-digest `sha256:bb98193cb89ccb605198e4a40503244aa75e43917fe2c91de175db6c363a876d`.
+digest `sha256:6d21505f6f6e04f3f6d502f5dd6c25a6752208f085452caf0a7b316289758f94`.
 The checked-in binding manifest is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`,
-binding digest `sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe`.
+binding digest `sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3`.
 This receipt is a review index only; it did not regenerate CAD, execute agents,
 qualify SimReady USD, or make physical-equivalence claims.
 

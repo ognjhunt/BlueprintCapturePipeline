@@ -1,15 +1,15 @@
 {
   "schema_version": "adp_content_agents_execution_readiness.v1",
-  "generated_at": "2026-08-11T13:00:00Z",
+  "generated_at": "2026-08-11T00:00:00Z",
   "status": "blocked_before_paid_execution",
   "input_variant": "agent_cad_v1",
   "candidate_count": 4,
   "replacement_object_capacity": {
-    "minimum": 1,
     "maximum": 5,
+    "minimum": 1,
     "sealed_slots": 2
   },
-  "content_agents_bundle_matrix_digest": "sha256:7bc576c50b5814efe108c6ba6fc737e23e8aae099feac99c90bb3b04b9b9243f",
+  "content_agents_bundle_matrix_digest": "sha256:94f8ffbacffb78bafb64a2f47378a77db3dfdf2b1d3c199c4b2b9dbe6e602c86",
   "content_agents_executed": false,
   "paid_resource_allocated": false,
   "provider_mutations_performed": 0,
@@ -22,22 +22,22 @@
       "asset_id": "840920_simready_washer_candidate",
       "cad_agent_backend_id": "earthtojake_text_to_cad",
       "bundle": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
-        "sha256": "sha256:b044299c9ce006267af0daa728b3782fe3da02c99c396ff3c6c70102c4ece568",
-        "size_bytes": 48755267
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v5_20260811T_reference_object_binding/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:9e79209d365ef8ff4161f15947a824a1c4425d3745c60f66e4f01102624a7fca",
+        "size_bytes": 48755459
       },
       "bundle_receipt": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
-        "sha256": "sha256:d63aec7817acefe3fe7db4ce4764fd72ab87a6c196213f56b3ff7d61af592bf9",
-        "size_bytes": 12372
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v5_20260811T_reference_object_binding/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:5c9ea3f92f5a53f8dcc63eb642b2d36e38df5f9e0936f322c611c8301cdb1115",
+        "size_bytes": 13215
       },
       "config_preflight": null,
       "local_config_preflight": null,
       "static_config_preflight": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
-        "sha256": "sha256:596e5e5a1d4a60d9ab811c369ca6b00c786f30bce6749354949189aead065e51",
-        "size_bytes": 5078,
-        "receipt_digest": "sha256:b217a645f6fad69701bdaa298708676254ea35e7bda18ced959e616fa70156a3"
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v5_20260811T_reference_object_binding/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+        "sha256": "sha256:6778d5b4b4e965a9f14673aee7746133a722ef86c142b16ad519cf4a6ffae405",
+        "size_bytes": 5074,
+        "receipt_digest": "sha256:b5de200f37bf9840036e3b8928f3ec2a2c661bf0b9d4ef7f780277d650efb2fb"
       },
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
@@ -57,22 +57,22 @@
       "asset_id": "840920_simready_washer_candidate",
       "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "bundle": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
-        "sha256": "sha256:67a5aeace70e5ea87f011cd1fe16fe10730191bb56069095c592846299488199",
-        "size_bytes": 48792475
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v5_20260811T_reference_object_binding/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:c05f774ed97e3331d332cec6fa3a931965301584fd29d90da539e2e0bbfd4a69",
+        "size_bytes": 48792663
       },
       "bundle_receipt": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
-        "sha256": "sha256:417a8efd0b26b4b68991ede1dca2fc62b21ff244f7e4bd19c6af02385c813238",
-        "size_bytes": 14228
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v5_20260811T_reference_object_binding/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:f546e60c7fb1753950610a9a9918226fd7fc78b0d1af4cea4129a1996093eeb9",
+        "size_bytes": 15071
       },
       "config_preflight": null,
       "local_config_preflight": null,
       "static_config_preflight": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
-        "sha256": "sha256:2d29ab06583dfae767627d562a0d60a1c5ed52fbb5a080e3debd741fef917f06",
-        "size_bytes": 6917,
-        "receipt_digest": "sha256:dc2fe83c3511da5d9b36d6390649f89e63c8e35f3af7a468444666d28d07023d"
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v5_20260811T_reference_object_binding/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+        "sha256": "sha256:b01f8b04c667bbef9a55079a824a93715cc450aa7183fa60768c9e50fbf6bce4",
+        "size_bytes": 6913,
+        "receipt_digest": "sha256:1b24bcfbd78b63feef03d15d28b18fd1801b7fe120aa0540b14aa020ccb84837"
       },
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
@@ -92,22 +92,22 @@
       "asset_id": "840920_simready_notebook_candidate",
       "cad_agent_backend_id": "earthtojake_text_to_cad",
       "bundle": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
-        "sha256": "sha256:20a36478e8a71108d97d43737a8b214dd248710cde3259b7379a0b2d7139beb3",
-        "size_bytes": 48714222
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v5_20260811T_reference_object_binding/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:474e993c2b4b7071088dbd00fe4856d93d16dbc31c02339db94eb1232a5d37c8",
+        "size_bytes": 48714413
       },
       "bundle_receipt": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
-        "sha256": "sha256:820f70c30ee4933e10d0d8da4dd9ed20820d99c8f077e31b3c5138affbb6da95",
-        "size_bytes": 15381
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v5_20260811T_reference_object_binding/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:ef6d43b0d6b50ca5f8b7145136650f5f11f9c84b5978e310a5673e9b47b421b0",
+        "size_bytes": 16219
       },
       "config_preflight": null,
       "local_config_preflight": null,
       "static_config_preflight": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
-        "sha256": "sha256:4a19a331eb41ff27e48c64913ce030742d5c7d99bdae697da913ea8fab3578bf",
-        "size_bytes": 8082,
-        "receipt_digest": "sha256:3961e3d2a03ce71e414bfa634e3eb417b44def828360b6e54f493299488df4cc"
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v5_20260811T_reference_object_binding/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+        "sha256": "sha256:16b382f297483f692074a11603d0a32a90d07327c324e529c942839de18af2ef",
+        "size_bytes": 8078,
+        "receipt_digest": "sha256:9ef9f9552d0e4ffafe10829955dd4829b2fc9b1da7edb576ad83f5906b7b09c2"
       },
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
@@ -127,22 +127,22 @@
       "asset_id": "840920_simready_notebook_candidate",
       "cad_agent_backend_id": "pan_chera_multi_agent_cad",
       "bundle": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
-        "sha256": "sha256:2bff37fc6dc58c5c19090fbe785a550f85661dce17f9af2a61052137dfa1c8d6",
-        "size_bytes": 48939101
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v5_20260811T_reference_object_binding/adp_content_agents_provider_runtime_bundle.zip",
+        "sha256": "sha256:2ccd77ea7f3be265d298a70c49a5cdcf9353a7e6ccb1332889a7398cc9145a40",
+        "size_bytes": 48939294
       },
       "bundle_receipt": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
-        "sha256": "sha256:3e02c9e0423d067d06ff6134ba3a2d8697bbd1b695baf400e8d32a8cdc90117e",
-        "size_bytes": 19038
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v5_20260811T_reference_object_binding/adp_content_agents_bundle_receipt.json",
+        "sha256": "sha256:ad86438a2627dac752db6f66754bff0810254a3b59bf6c00d6b60a89e8ffa127",
+        "size_bytes": 19876
       },
       "config_preflight": null,
       "local_config_preflight": null,
       "static_config_preflight": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
-        "sha256": "sha256:5c896e31d10b84fc0329baad77f3cadb9c37cc526af06a9937a117fd5b1ae909",
-        "size_bytes": 11727,
-        "receipt_digest": "sha256:f5fe3e24e79291bd4a96538c759bc4db716d20db454d00452780e0ad32a1bc27"
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v5_20260811T_reference_object_binding/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+        "sha256": "sha256:478d5166ebda65b6c8fd5f54f6cb9b43f57d3d4ba2c3a3dabb8ee3b1e5e079d9",
+        "size_bytes": 11723,
+        "receipt_digest": "sha256:56c3c238313c86ea9bd4c3cfbdcfd544e5a514e9aaf68246e080d7de458a9be9"
       },
       "local_bundle_ready": true,
       "exact_entrypoint_rehearsed": true,
@@ -165,5 +165,5 @@
     "native_simulator_import_qualified": false,
     "physical_equivalence": false
   },
-  "receipt_digest": "sha256:65ac4595a7311c359f24346eaf8dad33133d86b1beea36685bd0dedda5adcf80"
+  "receipt_digest": "sha256:6c89272a087632044e7b5eac435b69da3c12f8c063fe71834ada1970d614c143"
 }

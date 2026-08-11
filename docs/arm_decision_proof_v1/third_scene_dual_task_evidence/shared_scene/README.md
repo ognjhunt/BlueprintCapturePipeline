@@ -51,19 +51,19 @@ Checked-in digest-bound manifests:
 - [`third_scene_840920_dual_task_agent_cad_matrix.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json)
 - [`third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json), manifest digest `sha256:7c584095a4e67104057d613f67c97e92fbd26d1a762bb2966f52b1c02a1b7ed2`
 - [`third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json), audit digest `sha256:f4c32aa0b83a17ff879b1cb243f6598ddfd8650e12bc21d0c57cbe8211a7c0b9`
-- [`third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json), binding digest `sha256:b41c3adfedaf585dd7e9031e7cfbc7fd2847e03df546d544382402bde6c81fbe`
+- [`third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json), binding digest `sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3`
 - [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
-- [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:65ac4595a7311c359f24346eaf8dad33133d86b1beea36685bd0dedda5adcf80`
+- [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:6c89272a087632044e7b5eac435b69da3c12f8c063fe71834ada1970d614c143`
 
 Local human-review-only visual comparison receipt:
 
-- `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`, receipt digest `sha256:71733e7aa3f7367864fd336d77403962913bf6f7f31af6e4992b6d17f54a2441`
-- Original observed references plus Earth-to-Jake and Pan-Chera CAD candidates: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`, image digest `sha256:bb98193cb89ccb605198e4a40503244aa75e43917fe2c91de175db6c363a876d`
-- Finder/browser review HTML: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/OPEN_ME_cad_agent_visual_comparison.html`, digest `sha256:046a97f073983da94c971d9a6c8b09878c0a0dd9b99b4859cce8dda78483f006`
+- `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`, receipt digest `sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad`
+- Original observed references plus Earth-to-Jake and Pan-Chera CAD candidates: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`, image digest `sha256:6d21505f6f6e04f3f6d502f5dd6c25a6752208f085452caf0a7b316289758f94`
+- Finder/browser review HTML: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/OPEN_ME_cad_agent_visual_comparison.html`, digest `sha256:0014fdb0b497480eaf2206a9485f70ed884fd8daa7c115b9ba2943d278f15219`
 
-The readiness receipt now includes no-paid Docker/network-disabled local
-bundle/config dry-run receipts for all four Content Agents bundles. Paid model
-access and paid attempt authority remain missing.
+The readiness receipt now includes Dockerless static bundle/config/input-USD
+preflight receipts for all four Content Agents bundles. Docker local dry-run,
+paid model access, and paid attempt authority remain missing.
 
 Claim boundary: these are CAD candidates and Content Agents bundle/readiness
 receipts only. Content Agents have not been executed in this goal state; no
