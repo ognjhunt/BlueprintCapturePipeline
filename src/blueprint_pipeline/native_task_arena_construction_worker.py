@@ -94,6 +94,12 @@ CAMERA_THRESHOLDS = {
     "wrist": {"minimum_pixels": 120, "minimum_pixel_fraction": 0.002},
     "overview": {"minimum_pixels": 200, "minimum_pixel_fraction": 0.003},
 }
+TASK_KINDS = frozenset({"rigid_pick_place", "articulated_open_close", "deformable_transfer"})
+_TASK_CAMERA_ROLES = {
+    "rigid_pick_place": frozenset({"movable_rigid"}),
+    "articulated_open_close": frozenset({"articulated_fixture"}),
+    "deformable_transfer": frozenset({"movable_deformable", "destination_receptacle"}),
+}
 
 
 def _announce(phase: str, status: str = "started") -> None:
@@ -113,9 +119,7 @@ def _sha256(path: Path) -> str:
 
 def _canonical_digest(value: Mapping[str, Any], *, field: str) -> str:
     payload = {key: item for key, item in value.items() if key != field}
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
@@ -129,6 +133,112 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     return value
+
+
+def _task_kind(plan: Mapping[str, Any]) -> str:
+    kind = plan.get("task_kind")
+    if kind not in TASK_KINDS:
+        raise RuntimeError("native_task_worker_task_kind_unsupported")
+    return str(kind)
+
+
+def _task_entity_ids(plan: Mapping[str, Any]) -> list[str]:
+    rows = plan.get("task_entities")
+    if rows is None:
+        return []
+    if not isinstance(rows, list) or not rows or any(not isinstance(row, Mapping) for row in rows):
+        raise RuntimeError("native_task_worker_task_entities_invalid")
+    entity_ids = [row.get("entity_id") for row in rows]
+    if any(
+        not isinstance(entity_id, str) or not entity_id.strip() or entity_id != entity_id.strip()
+        for entity_id in entity_ids
+    ) or len(set(entity_ids)) != len(entity_ids):
+        raise RuntimeError("native_task_worker_task_entities_invalid")
+    return sorted(str(entity_id) for entity_id in entity_ids)
+
+
+def _task_camera_entity_ids(plan: Mapping[str, Any]) -> list[str]:
+    kind = _task_kind(plan)
+    rows = plan.get("task_entities")
+    if rows is None:
+        return []
+    entity_ids = _task_entity_ids(plan)
+    roles = _TASK_CAMERA_ROLES[kind]
+    selected = sorted(str(row["entity_id"]) for row in rows if row.get("semantic_role") in roles)
+    if not selected or not set(selected).issubset(entity_ids):
+        raise RuntimeError("native_task_worker_camera_entity_binding_missing")
+    return selected
+
+
+def _fail_closed_deformable_diagnostic_observer(*args: Any, **kwargs: Any) -> Any:
+    del args, kwargs
+    raise RuntimeError("native_deformable_diagnostic_observer_not_bound")
+
+
+def _bind_native_task_readback(built: Any) -> tuple[Any | None, dict[str, Any]]:
+    """Bind the task-kind readback without inventing native evidence.
+
+    The current Arena backend cannot attribute rigid--deformable contact pairs
+    and force.  Its exact deformable readback is nevertheless constructed so
+    the shared environment gate, rather than a worker-local task special case,
+    owns the typed abstention.  Diagnostic callbacks fail closed because no
+    diagnostic sample is consumed before that capability gate.
+    """
+
+    plan = getattr(built, "plan", None)
+    if not isinstance(plan, Mapping):
+        raise RuntimeError("native_task_worker_arena_build_invalid")
+    kind = _task_kind(plan)
+    entity_ids = _task_entity_ids(plan)
+    if kind == "rigid_pick_place":
+        readback = None
+        source = "native_rigid_body_environment_readback"
+    elif kind == "articulated_open_close":
+        from blueprint_pipeline.native_task_arena_readback import (
+            NativeArticulatedTaskArenaReadback,
+        )
+
+        readback = NativeArticulatedTaskArenaReadback(built)
+        source = "native_articulated_task_readback"
+    else:
+        from blueprint_pipeline.native_deformable_task_arena_readback import (
+            CONTACT_CAPABILITY_BLOCKER,
+            NativeDeformableTaskArenaReadback,
+        )
+
+        readback = NativeDeformableTaskArenaReadback(
+            built,
+            destination_state_observer=(_fail_closed_deformable_diagnostic_observer),
+            solver_diagnostic_observer=(_fail_closed_deformable_diagnostic_observer),
+            entity_integrity_audit_observer=(_fail_closed_deformable_diagnostic_observer),
+            native_clock_observer=_fail_closed_deformable_diagnostic_observer,
+            post_reset_synchronizer=(_fail_closed_deformable_diagnostic_observer),
+        )
+        source = "native_entity_keyed_deformable_readback"
+    return readback, {
+        "schema_version": "native_task_worker_readback_binding.v1",
+        "task_kind": kind,
+        "task_entity_ids": entity_ids,
+        "readback_source": source,
+        "legacy_task_object_alias_used": bool(kind == "articulated_open_close" and not entity_ids),
+        "evaluation_or_scoring_admitted": False,
+        "blockers": ([CONTACT_CAPABILITY_BLOCKER] if kind == "deformable_transfer" else []),
+    }
+
+
+def _native_capability_blockers(exc: BaseException) -> list[str]:
+    try:
+        from blueprint_pipeline.native_deformable_task_arena_readback import (
+            CONTACT_CAPABILITY_BLOCKER,
+            NativeDeformableTaskArenaReadbackError,
+        )
+    except Exception:  # noqa: BLE001 - missing module is not capability evidence
+        return []
+    if type(exc) is not NativeDeformableTaskArenaReadbackError:
+        return []
+    errors = exc.errors
+    normalized = [str(error) for error in errors]
+    return [CONTACT_CAPABILITY_BLOCKER] if CONTACT_CAPABILITY_BLOCKER in normalized else []
 
 
 def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
@@ -197,9 +307,7 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
                 "executable": executable,
                 "available": completed.returncode == 0,
                 "returncode": completed.returncode,
-                "version_line": (
-                    (completed.stdout or completed.stderr).splitlines() or [""]
-                )[0],
+                "version_line": ((completed.stdout or completed.stderr).splitlines() or [""])[0],
             }
         )
         if completed.returncode != 0:
@@ -232,8 +340,7 @@ def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
         not isinstance(manifest, dict)
         or manifest.get("schema_version") != "native_task_arena_provider_bundle.v1"
         or manifest.get("execution_mode") != "construction_canary"
-        or manifest.get("input_digest")
-        != canonical_digest(manifest, digest_field="input_digest")
+        or manifest.get("input_digest") != canonical_digest(manifest, digest_field="input_digest")
     ):
         raise RuntimeError("native_task_construction_manifest_invalid")
     return manifest
@@ -289,6 +396,7 @@ def _camera_snapshot(
     *,
     env: Any,
     camera_scene_names: Mapping[str, str],
+    task_entity_ids: Sequence[str],
     output_root: Path,
     snapshot_id: str,
 ) -> dict[str, Any]:
@@ -296,6 +404,7 @@ def _camera_snapshot(
     from PIL import Image
 
     from blueprint_pipeline.native_task_camera_observability import (
+        measure_native_task_camera_entity_observability,
         measure_native_task_camera_observability,
     )
 
@@ -314,19 +423,33 @@ def _camera_snapshot(
         info = _jsonable((camera.data.info or {}).get("semantic_segmentation") or {})
         labels = info.get("idToLabels") or {}
         thresholds = CAMERA_THRESHOLDS[role]
-        observability = measure_native_task_camera_observability(
-            semantic_ids=semantic,
-            id_to_labels=labels,
-            target_label="task_object",
-            minimum_pixels=thresholds["minimum_pixels"],
-            minimum_pixel_fraction=thresholds["minimum_pixel_fraction"],
-        )
+        if task_entity_ids:
+            observability = measure_native_task_camera_entity_observability(
+                semantic_ids=semantic,
+                id_to_labels=labels,
+                entity_requirements=[
+                    {
+                        "entity_id": entity_id,
+                        "minimum_pixels": thresholds["minimum_pixels"],
+                        "minimum_pixel_fraction": thresholds["minimum_pixel_fraction"],
+                    }
+                    for entity_id in task_entity_ids
+                ],
+            )
+        else:
+            # Compatibility for sealed legacy packets that predate entity_id
+            # semantic tags.  New packets never use this class alias.
+            observability = measure_native_task_camera_observability(
+                semantic_ids=semantic,
+                id_to_labels=labels,
+                target_label="task_object",
+                minimum_pixels=thresholds["minimum_pixels"],
+                minimum_pixel_fraction=thresholds["minimum_pixel_fraction"],
+            )
         frame_dir = output_root / "construction_frames" / role
         frame_dir.mkdir(parents=True, exist_ok=True)
         frame_path = frame_dir / f"{snapshot_id}.png"
-        Image.fromarray(rgb_array, mode="RGB").save(
-            frame_path, format="PNG", compress_level=9
-        )
+        Image.fromarray(rgb_array, mode="RGB").save(frame_path, format="PNG", compress_level=9)
         rows.append(
             {
                 "role": role,
@@ -341,14 +464,10 @@ def _camera_snapshot(
                 "rgb_mean": float(rgb_array.mean()),
                 "intrinsic_matrix": _jsonable(camera.data.intrinsic_matrices)[0],
                 "position_world_m": _jsonable(camera.data.pos_w)[0],
-                "quaternion_world_opengl_xyzw": _jsonable(
-                    camera.data.quat_w_opengl
-                )[0],
+                "quaternion_world_opengl_xyzw": _jsonable(camera.data.quat_w_opengl)[0],
                 "observability": observability,
                 "semantic_id_to_labels": labels,
-                "native_sensor_timestamp": _jsonable(
-                    getattr(camera.data, "frame", None)
-                ),
+                "native_sensor_timestamp": _jsonable(getattr(camera.data, "frame", None)),
             }
         )
     return {"snapshot_id": snapshot_id, "cameras": rows}
@@ -358,8 +477,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     del argv
     runtime = Path(__file__).resolve().parent
     output_root = Path(
-        os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
-        or runtime.parent / "runtime_output"
+        os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR") or runtime.parent / "runtime_output"
     ).resolve()
     output = output_root / RESULT_FILENAME
     result: dict[str, Any] = {
@@ -398,9 +516,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _announce("simulation_app")
         from isaacsim.simulation_app import SimulationApp
 
-        simulation_app = SimulationApp(
-            {"headless": True, "renderer": "RayTracedLighting"}
-        )
+        simulation_app = SimulationApp({"headless": True, "renderer": "RayTracedLighting"})
         _announce("simulation_app", "completed")
         _announce("dependency_matrix")
         dependency_matrix = preflight_native_dependency_matrix(
@@ -421,27 +537,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         from blueprint_pipeline.native_franka_pose_servo import (
             NativeFrankaDifferentialIkServo,
         )
-        from blueprint_pipeline.native_task_arena_readback import (
-            NativeArticulatedTaskArenaReadback,
-        )
         from blueprint_pipeline.native_task_arena_runtime import (
             build_native_task_arena_environment,
         )
 
         _announce("environment_build")
-        built = build_native_task_arena_environment(
-            plan, device="cuda:0", bundle_root=packet
-        )
+        built = build_native_task_arena_environment(plan, device="cuda:0", bundle_root=packet)
         env = built.env
         seed = int(plan["scenario"]["seed"])
         env.reset(seed=seed)
         scene = env.unwrapped.scene
         robot = scene["robot"]
-        task_object = scene[built.scene_asset_names["task_object"]]
-        readback = NativeArticulatedTaskArenaReadback(built)
+        task_kind = _task_kind(plan)
+        task_entity_ids = _task_camera_entity_ids(plan)
+        readback, readback_binding = _bind_native_task_readback(built)
+        result["task_readback_binding"] = readback_binding
+        result["scene_entity_bindings"] = {
+            "scene_asset_names": dict(built.scene_asset_names),
+            "scene_asset_names_by_entity_id": dict(built.scene_asset_names_by_entity_id),
+            "scene_asset_prim_paths_by_entity_id": dict(built.scene_asset_prim_paths_by_entity_id),
+            "camera_scene_names": dict(built.camera_scene_names),
+        }
         result["native_isaac_executed"] = True
         result["phase_reached"] = "environment_built"
         _announce("environment_build", "completed")
+
+        if task_kind == "deformable_transfer":
+            result["phase_reached"] = "deformable_entity_environment_bound"
+            readback.ensure_evaluation_capable()
+        if task_kind != "articulated_open_close" or readback is None:
+            raise RuntimeError(f"native_task_construction_phase_plan_unsupported:{task_kind}")
+        task_object = scene[built.scene_asset_names["task_object"]]
 
         initial_sample = readback.read_task_sample()
         result["initial_readback"] = {
@@ -457,9 +583,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         initial_native = initial_sample["native_readback"]
         collision_threshold = float(
-            plan["articulation"]["state_thresholds"][
-                "collision_failure_minimum_force_n"
-            ]
+            plan["articulation"]["state_thresholds"]["collision_failure_minimum_force_n"]
         )
         if (
             initial_native["task_robot_contact_peak_force_n"] >= collision_threshold
@@ -469,9 +593,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["blockers"].append("native_task_initial_penetration_or_contact")
 
         _announce("gripper_convention")
-        gripper = _gripper_convention_probe(
-            env=env, robot=robot, seed=seed, torch=torch
-        )
+        gripper = _gripper_convention_probe(env=env, robot=robot, seed=seed, torch=torch)
         result["gripper_convention"] = gripper
         result["blockers"].extend(gripper["blockers"])
         if gripper["status"] != "measured":
@@ -501,6 +623,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _camera_snapshot(
                 env=env,
                 camera_scene_names=built.camera_scene_names,
+                task_entity_ids=task_entity_ids,
                 output_root=output_root,
                 snapshot_id="reset",
             )
@@ -557,6 +680,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _camera_snapshot(
                     env=env,
                     camera_scene_names=built.camera_scene_names,
+                    task_entity_ids=task_entity_ids,
                     output_root=output_root,
                     snapshot_id=phase["phase_id"],
                 )
@@ -567,12 +691,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         result["phase_results"] = phase_results
         result["total_action_steps"] = total_steps
-        failed_phases = [
-            row["phase_id"] for row in phase_results if not row["target_reached"]
-        ]
+        failed_phases = [row["phase_id"] for row in phase_results if not row["target_reached"]]
         result["blockers"].extend(
-            f"native_task_phase_ik_unreached:{phase_id}"
-            for phase_id in failed_phases
+            f"native_task_phase_ik_unreached:{phase_id}" for phase_id in failed_phases
         )
 
         camera_gates = {}
@@ -586,16 +707,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 key=lambda row: row["observability"]["pixel_count"],
             )
             camera_gates[role] = {
-                "passed": any(
-                    row["observability"]["passed"] for row in observations
-                ),
+                "passed": any(row["observability"]["passed"] for row in observations),
                 "best_snapshot_id": best["snapshot_id"],
                 "best_observability": best["observability"],
             }
             if not camera_gates[role]["passed"]:
-                result["blockers"].append(
-                    f"native_task_camera_observability_failed:{role}"
-                )
+                result["blockers"].append(f"native_task_camera_observability_failed:{role}")
         result["camera_snapshots"] = snapshots
         result["camera_gates"] = camera_gates
 
@@ -603,21 +720,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         env.reset(seed=seed)
         reset_sample = readback.read_task_sample()
         reset_arm = servo.read_arm_joint_positions()
-        requested_reset = _requested_arm_reset(
-            plan=plan, servo_binding=servo.binding
-        )
+        requested_reset = _requested_arm_reset(plan=plan, servo_binding=servo.binding)
         reset_errors = [
             abs(actual - expected)
             for actual, expected in zip(reset_arm, requested_reset, strict=True)
         ]
         task_reset_errors = {
-            joint_id: abs(
-                float(reset_sample["joint_positions_rad"][joint_id])
-                - float(expected)
-            )
-            for joint_id, expected in plan["task_spec"][
-                "joint_reset_positions_rad"
-            ].items()
+            joint_id: abs(float(reset_sample["joint_positions_rad"][joint_id]) - float(expected))
+            for joint_id, expected in plan["task_spec"]["joint_reset_positions_rad"].items()
         }
         reset_passed = max(reset_errors, default=0.0) <= 1.0e-4 and max(
             task_reset_errors.values(), default=0.0
@@ -634,19 +744,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         result["blockers"] = sorted(set(result["blockers"]))
         result["construction_gate_qualified"] = not result["blockers"]
-        result["status"] = (
-            "completed" if result["construction_gate_qualified"] else "blocked"
-        )
+        result["status"] = "completed" if result["construction_gate_qualified"] else "blocked"
         result["phase_reached"] = "construction_gate_complete"
         _announce(
             "construction_gate",
             "completed" if result["construction_gate_qualified"] else "blocked",
         )
     except BaseException as exc:  # noqa: BLE001 - one paid launch retains every failure
-        result["blockers"].append(
-            f"native_task_construction_failed_at_{result['phase_reached']}:"
-            f"{type(exc).__name__}:{exc}"
-        )
+        capability_blockers = _native_capability_blockers(exc)
+        if capability_blockers:
+            result["blockers"].extend(capability_blockers)
+            result["phase_reached"] = "native_contact_capability_blocked"
+        else:
+            result["blockers"].append(
+                f"native_task_construction_failed_at_{result['phase_reached']}:"
+                f"{type(exc).__name__}:{exc}"
+            )
         result["blockers"] = sorted(set(result["blockers"]))
         result["status"] = "blocked"
         _announce(str(result["phase_reached"]), "blocked")

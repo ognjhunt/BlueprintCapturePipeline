@@ -40,9 +40,7 @@ def _sha256(path: Path) -> str:
 
 def _canonical_digest(value: Mapping[str, Any], *, field: str) -> str:
     payload = {key: item for key, item in value.items() if key != field}
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
@@ -67,16 +65,13 @@ def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
         or manifest.get("execution_mode") != "controls"
         or manifest.get("policy_candidate_id") is not None
         or manifest.get("candidate_policy_queried") is not False
-        or manifest.get("input_digest")
-        != canonical_digest(manifest, digest_field="input_digest")
+        or manifest.get("input_digest") != canonical_digest(manifest, digest_field="input_digest")
     ):
         raise RuntimeError("native_task_controls_manifest_invalid")
     return manifest
 
 
-def _verified_runtime_inputs(
-    runtime: Path, manifest: Mapping[str, Any]
-) -> dict[str, Path]:
+def _verified_runtime_inputs(runtime: Path, manifest: Mapping[str, Any]) -> dict[str, Path]:
     rows = manifest.get("bound_runtime_inputs")
     if not isinstance(rows, list):
         raise RuntimeError("native_task_controls_runtime_inputs_invalid")
@@ -92,9 +87,7 @@ def _verified_runtime_inputs(
             or path.stat().st_size != row.get("size_bytes")
             or _sha256(path) != row.get("sha256")
         ):
-            raise RuntimeError(
-                f"native_task_controls_runtime_input_identity_mismatch:{relative}"
-            )
+            raise RuntimeError(f"native_task_controls_runtime_input_identity_mismatch:{relative}")
         verified[Path(relative).name] = path
     required = {
         "native_task_arena_construction_result.v1.json",
@@ -116,12 +109,49 @@ def _to_tensor(value: Any) -> Any:
     raise TypeError(f"unsupported_sim_array:{value_module}.{type(value).__name__}")
 
 
+def _bind_task_episode_environment(
+    *,
+    built: Any,
+    gripper_convention: Mapping[str, Any],
+    servo: Any,
+    to_tensor: Any,
+) -> tuple[Any, dict[str, Any]]:
+    """Route every task kind through one readback and episode seam."""
+
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _bind_native_task_readback,
+    )
+    from blueprint_pipeline.native_task_episode_environment import (
+        build_native_task_episode_environment,
+    )
+
+    task_readback, readback_binding = _bind_native_task_readback(built)
+    episode_environment, environment_receipt = build_native_task_episode_environment(
+        built=built,
+        gripper_convention=gripper_convention,
+        servo=servo,
+        task_readback=task_readback,
+        to_tensor=to_tensor,
+    )
+    return episode_environment, {
+        "task_readback_binding": readback_binding,
+        "episode_environment": environment_receipt,
+    }
+
+
+def _worker_capability_blockers(exc: BaseException) -> list[str]:
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _native_capability_blockers,
+    )
+
+    return _native_capability_blockers(exc)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     runtime = Path(__file__).resolve().parent
     output_root = Path(
-        os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
-        or runtime.parent / "runtime_output"
+        os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR") or runtime.parent / "runtime_output"
     ).resolve()
     output = output_root / RESULT_FILENAME
     result: dict[str, Any] = {
@@ -143,32 +173,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         inputs = _verified_runtime_inputs(runtime, manifest)
         packet = runtime / "native_task_packet"
         packet_receipt = json.loads(
-            (packet / "native_task_arena_packet_receipt.v1.json").read_text(
-                encoding="utf-8"
-            )
+            (packet / "native_task_arena_packet_receipt.v1.json").read_text(encoding="utf-8")
         )
         scene_plan = json.loads(
-            (packet / "native_task_arena_scene_plan.v1.json").read_text(
-                encoding="utf-8"
-            )
+            (packet / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8")
         )
         construction = json.loads(
-            inputs["native_task_arena_construction_result.v1.json"].read_text(
-                encoding="utf-8"
-            )
+            inputs["native_task_arena_construction_result.v1.json"].read_text(encoding="utf-8")
         )
         control_plan = json.loads(
             inputs["adp_task_control_plan.v1.json"].read_text(encoding="utf-8")
         )
         if (
-            packet_receipt.get("receipt_digest")
-            != manifest.get("packet_receipt_digest")
-            or scene_plan.get("plan_digest")
-            != manifest.get("arena_scene_plan_digest")
-            or construction.get("result_digest")
-            != control_plan.get("planner_receipt_digest")
-            or control_plan.get("construction_scene_plan_digest")
-            != scene_plan.get("plan_digest")
+            packet_receipt.get("receipt_digest") != manifest.get("packet_receipt_digest")
+            or scene_plan.get("plan_digest") != manifest.get("arena_scene_plan_digest")
+            or construction.get("result_digest") != control_plan.get("planner_receipt_digest")
+            or control_plan.get("construction_scene_plan_digest") != scene_plan.get("plan_digest")
         ):
             raise RuntimeError("native_task_controls_input_binding_mismatch")
         result["manifest_input_digest"] = manifest["input_digest"]
@@ -183,9 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _announce("simulation_app")
         from isaacsim.simulation_app import SimulationApp
 
-        simulation_app = SimulationApp(
-            {"headless": True, "renderer": "RayTracedLighting"}
-        )
+        simulation_app = SimulationApp({"headless": True, "renderer": "RayTracedLighting"})
         _announce("simulation_app", "completed")
 
         from blueprint_pipeline.native_task_arena_construction_worker import (
@@ -212,49 +230,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         from blueprint_pipeline.native_franka_pose_servo import (
             NativeFrankaDifferentialIkServo,
         )
-        from blueprint_pipeline.native_task_arena_readback import (
-            NativeArticulatedTaskArenaReadback,
-        )
         from blueprint_pipeline.native_task_arena_runtime import (
             build_native_task_arena_environment,
         )
-        from blueprint_pipeline.native_task_episode_environment import (
-            build_native_task_episode_environment,
-        )
 
         _announce("environment_build")
-        built = build_native_task_arena_environment(
-            scene_plan, device="cuda:0", bundle_root=packet
-        )
+        built = build_native_task_arena_environment(scene_plan, device="cuda:0", bundle_root=packet)
         env = built.env
         seed = int(scene_plan["scenario"]["seed"])
         env.reset(seed=seed)
         robot = env.unwrapped.scene["robot"]
-        readback = NativeArticulatedTaskArenaReadback(built)
         result["native_isaac_executed"] = True
         result["phase_reached"] = "environment_built"
         _announce("environment_build", "completed")
 
         _announce("gripper_convention")
-        gripper = _gripper_convention_probe(
-            env=env, robot=robot, seed=seed, torch=torch
-        )
+        gripper = _gripper_convention_probe(env=env, robot=robot, seed=seed, torch=torch)
         result["gripper_convention"] = gripper
         result["blockers"].extend(gripper["blockers"])
         if gripper["status"] != "measured":
             raise RuntimeError("native_task_controls_gripper_convention_unresolved")
         env.reset(seed=seed)
         servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
-        episode_environment, environment_receipt = (
-            build_native_task_episode_environment(
-                built=built,
-                gripper_convention=gripper,
-                servo=servo,
-                task_readback=readback,
-                to_tensor=_to_tensor,
-            )
+        episode_environment, environment_binding = _bind_task_episode_environment(
+            built=built,
+            gripper_convention=gripper,
+            servo=servo,
+            to_tensor=_to_tensor,
         )
-        result["episode_environment"] = environment_receipt
+        result.update(environment_binding)
         result["phase_reached"] = "episode_environment_bound"
         _announce("gripper_convention", "completed")
 
@@ -278,10 +282,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "completed" if result["controls_qualified"] else "blocked",
         )
     except BaseException as exc:  # noqa: BLE001 - retain every paid failure
-        result["blockers"].append(
-            f"native_task_controls_failed_at_{result['phase_reached']}:"
-            f"{type(exc).__name__}:{exc}"
-        )
+        capability_blockers = _worker_capability_blockers(exc)
+        if capability_blockers:
+            result["blockers"].extend(capability_blockers)
+            result["phase_reached"] = "native_contact_capability_blocked"
+        else:
+            result["blockers"].append(
+                f"native_task_controls_failed_at_{result['phase_reached']}:"
+                f"{type(exc).__name__}:{exc}"
+            )
         result["blockers"] = sorted(set(result["blockers"]))
         result["status"] = "blocked"
         _announce(str(result["phase_reached"]), "blocked")

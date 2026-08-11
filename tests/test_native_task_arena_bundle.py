@@ -20,14 +20,18 @@ from blueprint_pipeline.native_task_arena_bundle import (
 )
 from blueprint_pipeline.native_task_arena_construction_bundle import (
     CONSTRUCTION_RUNTIME_MODULE_NAMES,
+    DEFORMABLE_RUNTIME_MODULE_NAME as CONSTRUCTION_DEFORMABLE_RUNTIME_MODULE_NAME,
     PROBE_KIND,
     build_native_task_arena_construction_bundle,
+    construction_runtime_sources,
     load_verified_native_task_arena_construction_bundle,
 )
 from blueprint_pipeline.native_task_arena_controls_bundle import (
     CONTROLS_RUNTIME_MODULE_NAMES,
+    DEFORMABLE_RUNTIME_MODULE_NAME as CONTROLS_DEFORMABLE_RUNTIME_MODULE_NAME,
     PROBE_KIND as CONTROLS_PROBE_KIND,
     build_native_task_arena_controls_bundle,
+    controls_runtime_sources,
     load_verified_native_task_arena_controls_bundle,
 )
 from blueprint_pipeline.native_task_arena_vast import run_native_task_arena_vast
@@ -105,9 +109,7 @@ def _packet(root: Path, *, scene_id: str) -> Path:
         "simulator_execution_is_not_physical_truth": True,
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     (packet / "native_task_arena_packet_receipt.v1.json").write_text(
         json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -146,14 +148,10 @@ def _runtime_source_packet(root: Path) -> Path:
             }
             for name in ISAACLAB_PACKAGE_NAMES:
                 files[f"source/{name}/setup.py"] = (
-                    "from setuptools import setup; " f"setup(name='{name}')\n"
+                    f"from setuptools import setup; setup(name='{name}')\n"
                 )
-                files[f"source/{name}/pyproject.toml"] = (
-                    "[build-system]\nrequires=['setuptools']\n"
-                )
-                files[f"source/{name}/config/extension.toml"] = (
-                    "[package]\nversion='fixture'\n"
-                )
+                files[f"source/{name}/pyproject.toml"] = "[build-system]\nrequires=['setuptools']\n"
+                files[f"source/{name}/config/extension.toml"] = "[package]\nversion='fixture'\n"
                 files[f"source/{name}/{name}/__init__.py"] = "VERSION='fixture'\n"
         for relative, value in files.items():
             target = path / relative
@@ -179,9 +177,7 @@ def _runtime_source_packet(root: Path) -> Path:
     isaaclab, isaaclab_commit, isaaclab_tree = repository(
         root / "runtime-source-repos/isaaclab", arena=False
     )
-    arena, arena_commit, arena_tree = repository(
-        root / "runtime-source-repos/arena", arena=True
-    )
+    arena, arena_commit, arena_tree = repository(root / "runtime-source-repos/arena", arena=True)
     wheelhouse = root / "runtime-source-wheelhouse"
     wheelhouse.mkdir()
     for contract in RUNTIME_DEPENDENCY_WHEELS:
@@ -235,13 +231,9 @@ def test_rigid_and_articulated_packets_use_the_same_bundle_contract(
     assert receipt["packet_receipt_digest"].startswith("sha256:")
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
-        assert (
-            "provider_runtime/native_task_packet/assets/task_object.usd" in names
-        )
+        assert "provider_runtime/native_task_packet/assets/task_object.usd" in names
         assert "provider_runtime/blueprint_pipeline/runtime_helper.py" in names
-        assert archive.read(
-            "provider_runtime/adp_arena_provider_runner.py"
-        ) == worker.read_bytes()
+        assert archive.read("provider_runtime/adp_arena_provider_runner.py") == worker.read_bytes()
 
 
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])
@@ -308,17 +300,69 @@ def _articulated_packet(root: Path) -> tuple[Path, dict]:
     receipt_path = packet / "native_task_arena_packet_receipt.v1.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["arena_scene_plan_digest"] = scene["plan_digest"]
-    artifact = next(
-        row for row in receipt["artifacts"] if row["role"] == "arena_scene_plan"
-    )
+    artifact = next(row for row in receipt["artifacts"] if row["role"] == "arena_scene_plan")
     artifact["size_bytes"] = plan_path.stat().st_size
     artifact["sha256"] = _sha(plan_path)
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
-    receipt_path.write_text(
-        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return packet, scene
+
+
+def _deformable_packet(root: Path) -> tuple[Path, dict]:
+    packet = _packet(root, scene_id="multi-entity-deformable")
+    receipt_path = packet / "native_task_arena_packet_receipt.v1.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    task_object = packet / "assets/task_object.usd"
+    task_object.unlink()
+    receipt["source_bindings"] = [
+        row for row in receipt["source_bindings"] if row["semantic_role"] != "task_object"
+    ]
+    for role in ("movable_deformable", "destination_receptacle"):
+        path = packet / f"assets/{role}.usd"
+        path.write_text(f"exact:multi-entity-deformable:{role}\n", encoding="utf-8")
+        receipt["source_bindings"].append(
+            {
+                "semantic_role": role,
+                "source": {"root": "evidence", "relative_path": path.name},
+                "staged_relative_path": f"assets/{path.name}",
+                "staged_size_bytes": path.stat().st_size,
+                "staged_sha256": _sha(path),
+            }
+        )
+    scene = {
+        "schema_version": "native_task_arena_scene_plan.v1",
+        "task_kind": "deformable_transfer",
+        "task_entities": [
+            {
+                "entity_id": "movable-alpha",
+                "semantic_role": "movable_deformable",
+            },
+            {
+                "entity_id": "destination-alpha",
+                "semantic_role": "destination_receptacle",
+            },
+            {"entity_id": "support-alpha", "semantic_role": "support_surface"},
+            {"entity_id": "obstacle-alpha", "semantic_role": "obstacle"},
+            {"entity_id": "robot-alpha", "semantic_role": "robot"},
+        ],
+        "scenario": {"cell_id": "deformable-canonical", "seed": 23},
+        "task_spec": {
+            "schema_version": "adp_task_spec.v1",
+            "task_kind": "deformable_transfer",
+            "settle_window_samples": 40,
+            "maximum_action_steps": 450,
+        },
+        "plan_digest": "",
+    }
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    plan_path = packet / "native_task_arena_scene_plan.v1.json"
+    plan_path.write_text(json.dumps(scene, sort_keys=True) + "\n", encoding="utf-8")
+    receipt["arena_scene_plan_digest"] = scene["plan_digest"]
+    artifact = next(row for row in receipt["artifacts"] if row["role"] == "arena_scene_plan")
+    artifact["size_bytes"] = plan_path.stat().st_size
+    artifact["sha256"] = _sha(plan_path)
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return packet, scene
 
 
@@ -328,9 +372,7 @@ def _qualified_construction(root: Path, scene: dict) -> Path:
         "phases": [{"phase_id": "approach"}],
         "plan_digest": "",
     }
-    clearance["plan_digest"] = canonical_digest(
-        clearance, digest_field="plan_digest"
-    )
+    clearance["plan_digest"] = canonical_digest(clearance, digest_field="plan_digest")
     result = {
         "schema_version": "native_task_arena_construction_result.v1",
         "status": "completed",
@@ -338,18 +380,14 @@ def _qualified_construction(root: Path, scene: dict) -> Path:
         "blockers": [],
         "scene_plan_digest": scene["plan_digest"],
         "phase_results": [{"phase_id": "approach", "target_reached": True}],
-        "camera_gates": {
-            role: {"passed": True} for role in ("external", "wrist", "overview")
-        },
+        "camera_gates": {role: {"passed": True} for role in ("external", "wrist", "overview")},
         "reset_replay": {"passed": True},
         "construction_phase_plan": clearance,
         "result_digest": "",
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     path = root / "native_task_arena_construction_result.v1.json"
-    path.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
@@ -368,9 +406,7 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
     )
 
     assert receipt["execution_mode"] == "controls"
-    assert receipt["expected_output_filename"] == (
-        "native_task_arena_control_result.v1.json"
-    )
+    assert receipt["expected_output_filename"] == ("native_task_arena_control_result.v1.json")
     assert receipt["policy_candidate_id"] is None
     assert receipt["candidate_policy_queried"] is False
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
@@ -380,21 +416,115 @@ def test_qualified_construction_builds_one_complete_controls_bundle(
             "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
         }.issubset(names)
         assert {
-            f"provider_runtime/blueprint_pipeline/{name}"
-            for name in CONTROLS_RUNTIME_MODULE_NAMES
+            f"provider_runtime/blueprint_pipeline/{name}" for name in CONTROLS_RUNTIME_MODULE_NAMES
         }.issubset(names)
-        worker = archive.read(
-            "provider_runtime/adp_arena_provider_runner.py"
-        ).decode("utf-8")
+        assert (
+            "provider_runtime/blueprint_pipeline/"
+            f"{CONTROLS_DEFORMABLE_RUNTIME_MODULE_NAME}" not in names
+        )
+        worker = archive.read("provider_runtime/adp_arena_provider_runner.py").decode("utf-8")
         assert "840313" not in worker
         assert "840796" not in worker
         assert "refrigerator" not in worker
     loaded = load_verified_native_task_arena_controls_bundle(
-        tmp_path
-        / "controls-bundle/native_task_arena_provider_bundle_receipt.v1.json",
+        tmp_path / "controls-bundle/native_task_arena_provider_bundle_receipt.v1.json",
         expected_implementation_commit="c" * 40,
     )
     assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
+
+
+def test_deformable_construction_and_controls_bundles_bind_exact_readback_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet, scene = _deformable_packet(tmp_path)
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline"
+        / CONSTRUCTION_DEFORMABLE_RUNTIME_MODULE_NAME
+    )
+    assert CONSTRUCTION_DEFORMABLE_RUNTIME_MODULE_NAME == (CONTROLS_DEFORMABLE_RUNTIME_MODULE_NAME)
+    assert source not in construction_runtime_sources()
+    assert source not in controls_runtime_sources()
+    assert source in construction_runtime_sources(task_kind="deformable_transfer")
+    assert source in controls_runtime_sources(task_kind="deformable_transfer")
+
+    construction_bundle = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "deformable-construction-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="d" * 40,
+        generated_at="fixed",
+    )
+    repeated_construction_bundle = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "deformable-construction-bundle-repeat",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="d" * 40,
+        generated_at="fixed",
+    )
+    assert repeated_construction_bundle["bundle_sha256"] == (construction_bundle["bundle_sha256"])
+    construction = _qualified_construction(tmp_path, scene)
+    control_plan = {
+        "schema_version": "adp_task_control_plan.v1",
+        "planner_receipt_digest": json.loads(construction.read_text())["result_digest"],
+        "construction_scene_plan_digest": scene["plan_digest"],
+        "plan_digest": "",
+    }
+    control_plan["plan_digest"] = canonical_digest(control_plan, digest_field="plan_digest")
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_task_arena_controls_bundle."
+        "materialize_native_articulated_control_plan",
+        lambda **_kwargs: control_plan,
+    )
+    controls_bundle = build_native_task_arena_controls_bundle(
+        job_dir=tmp_path / "deformable-controls-bundle",
+        packet_dir=packet,
+        construction_result_path=construction,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="d" * 40,
+        generated_at="fixed",
+    )
+
+    archive_name = (
+        f"provider_runtime/blueprint_pipeline/{CONSTRUCTION_DEFORMABLE_RUNTIME_MODULE_NAME}"
+    )
+    for receipt in (construction_bundle, controls_bundle):
+        module_row = next(
+            row
+            for row in receipt["runtime_modules"]
+            if Path(row["relative_path"]).name == CONSTRUCTION_DEFORMABLE_RUNTIME_MODULE_NAME
+        )
+        assert module_row == {
+            "relative_path": (f"blueprint_pipeline/{CONSTRUCTION_DEFORMABLE_RUNTIME_MODULE_NAME}"),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha(source),
+        }
+        with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+            archived_bytes = archive.read(archive_name)
+        assert archived_bytes == source.read_bytes()
+        assert "sha256:" + hashlib.sha256(archived_bytes).hexdigest() == _sha(source)
+
+    extracted = tmp_path / "deformable-construction-extracted"
+    with zipfile.ZipFile(construction_bundle["bundle_path"]) as archive:
+        archive.extractall(extracted)
+    package_parent = extracted / "provider_runtime"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import importlib,sys;"
+                f"sys.path.insert(0,{str(package_parent)!r});"
+                "importlib.import_module("
+                "'blueprint_pipeline.native_deformable_task_arena_readback')"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_bundle_is_deterministic_for_one_sealed_packet(tmp_path: Path) -> None:
@@ -450,9 +580,7 @@ def test_policy_mode_requires_an_exact_candidate_binding(tmp_path: Path) -> None
             execution_mode="policy",
         )
 
-    assert excinfo.value.errors == (
-        "native_task_arena_bundle_policy_binding_invalid",
-    )
+    assert excinfo.value.errors == ("native_task_arena_bundle_policy_binding_invalid",)
 
 
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])
@@ -473,21 +601,18 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
         archive.extractall(extracted)
     package = extracted / "provider_runtime/blueprint_pipeline"
     expected = {
-        f"provider_runtime/blueprint_pipeline/{name}"
-        for name in CONSTRUCTION_RUNTIME_MODULE_NAMES
+        f"provider_runtime/blueprint_pipeline/{name}" for name in CONSTRUCTION_RUNTIME_MODULE_NAMES
     }
     assert expected.issubset(names)
     assert (
-        "provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip"
-        in names
+        "provider_runtime/blueprint_pipeline/"
+        f"{CONSTRUCTION_DEFORMABLE_RUNTIME_MODULE_NAME}" not in names
     )
+    assert "provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip" in names
     assert receipt["runtime_source_packet"]["redistribution_permitted"] is True
     assert "provider_runtime/blueprint_pipeline/native_task_arena_scene_plan.py" not in names
     assert "provider_runtime/blueprint_pipeline/adp009d_approach_capture.py" not in names
-    assert not any(
-        name.startswith("provider_runtime/blueprint_pipeline/adp009d")
-        for name in names
-    )
+    assert not any(name.startswith("provider_runtime/blueprint_pipeline/adp009d") for name in names)
 
     modules = [Path(name).stem for name in CONSTRUCTION_RUNTIME_MODULE_NAMES]
     completed = subprocess.run(
@@ -657,8 +782,7 @@ def test_explicit_concurrent_authority_uses_a_scoped_launch_lock(
     assert observed[0]["vast_launch_lock_file"] is None
     assert observed[1]["allowed_active_instance_ids"] == (47358598,)
     assert observed[1]["vast_launch_lock_file"] == (
-        (tmp_path / "concurrent").resolve()
-        / "native_task_arena_paid_launch.lock"
+        (tmp_path / "concurrent").resolve() / "native_task_arena_paid_launch.lock"
     )
 
 
@@ -675,9 +799,7 @@ def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:
             implementation_commit="f" * 40,
             container_image="nvcr.io/nvidia/isaac-sim:latest",
         )
-    assert excinfo.value.errors == (
-        "native_task_arena_bundle_container_image_not_digest_pinned",
-    )
+    assert excinfo.value.errors == ("native_task_arena_bundle_container_image_not_digest_pinned",)
 
 
 def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(
@@ -698,9 +820,7 @@ def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(
     )
     assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
 
-    Path(receipt["bundle_path"]).write_bytes(
-        Path(receipt["bundle_path"]).read_bytes() + b"tamper"
-    )
+    Path(receipt["bundle_path"]).write_bytes(Path(receipt["bundle_path"]).read_bytes() + b"tamper")
     with pytest.raises(ValueError, match="native_task_arena_bundle_bytes_identity_mismatch"):
         load_verified_native_task_arena_construction_bundle(
             receipt_path,
@@ -771,34 +891,26 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         args.extend(
             [
                 "--native-task-arena-bundle-receipt",
-                str(
-                    tmp_path
-                    / "frozen-bundle/native_task_arena_provider_bundle_receipt.v1.json"
-                ),
+                str(tmp_path / "frozen-bundle/native_task_arena_provider_bundle_receipt.v1.json"),
                 "--execute",
             ]
         )
 
     assert allocator.main(args) == 0
     assert observed["execute"] is execute
-    assert isinstance(
-        observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant
-    ) is execute
+    assert (
+        isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is execute
+    )
     if execute:
-        assert (
-            observed["prepared_bundle"]["bundle_sha256"]
-            == frozen_bundle["bundle_sha256"]
-        )
+        assert observed["prepared_bundle"]["bundle_sha256"] == frozen_bundle["bundle_sha256"]
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["private_data_uploaded"] is True
     assert admission["raw_dataset_bytes_uploaded"] is False
     assert admission["retry_cap"] == 0
-    assert admission["allocation_binding"]["packet_receipt_digest"].startswith(
+    assert admission["allocation_binding"]["packet_receipt_digest"].startswith("sha256:")
+    assert admission["allocation_binding"]["runtime_source_packet_receipt_digest"].startswith(
         "sha256:"
     )
-    assert admission["allocation_binding"][
-        "runtime_source_packet_receipt_digest"
-    ].startswith("sha256:")
 
 
 @pytest.mark.parametrize("execute", [False, True])
@@ -881,10 +993,7 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
     assert observed["execute"] is execute
     assert observed["prepared_bundle"]["execution_mode"] == "controls"
     if execute:
-        assert (
-            observed["prepared_bundle"]["bundle_sha256"]
-            == frozen_bundle["bundle_sha256"]
-        )
+        assert observed["prepared_bundle"]["bundle_sha256"] == frozen_bundle["bundle_sha256"]
     admission = json.loads((tmp_path / "controls-admission.json").read_text())
     assert admission["probe_kind"] == CONTROLS_PROBE_KIND
     assert admission["allocation_binding"]["execution_mode"] == "controls"

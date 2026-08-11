@@ -4,6 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueprint_pipeline.native_deformable_task_arena_readback import (
+    CONTACT_CAPABILITY_BLOCKER,
+    NativeDeformableTaskArenaReadback,
+    NativeDeformableTaskArenaReadbackError,
+)
 from blueprint_pipeline.native_task_episode_environment import (
     NativeTaskEpisodeEnvironmentError,
     build_native_task_episode_environment,
@@ -27,8 +32,18 @@ class _Servo:
 
 
 class _Readback:
+    def __init__(self):
+        self.reset_count = 0
+        self.capability_check_count = 0
+
     def read_task_sample(self):
         return {"joint_positions_rad": {"joint": 0.0}}
+
+    def reset_after_native_reset(self):
+        self.reset_count += 1
+
+    def ensure_evaluation_capable(self):
+        self.capability_check_count += 1
 
 
 class _Adapter:
@@ -98,12 +113,8 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
     assert receipt["task_state_source"] == expected_source
     assert receipt["camera_scene_names"] == _built(task_kind).camera_scene_names
     assert adapter.kwargs["camera_scene_names"] == receipt["camera_scene_names"]
-    assert (adapter.kwargs["rigid_task_object"] is None) == (
-        task_kind == "articulated_open_close"
-    )
-    assert (adapter.kwargs["task_sample_callback"] is None) == (
-        task_kind == "rigid_pick_place"
-    )
+    assert (adapter.kwargs["rigid_task_object"] is None) == (task_kind != "rigid_pick_place")
+    assert (adapter.kwargs["task_sample_callback"] is None) == (task_kind == "rigid_pick_place")
     assert adapter.kwargs["simulation_step_seconds"] == pytest.approx(1.0 / 15.0)
 
     action = adapter.kwargs["scripted_pose_action_callback"](
@@ -120,6 +131,7 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
         0.0,
         1.0,
     ]
+    adapter.kwargs["reset_callback"]()
 
 
 def test_articulated_factory_requires_native_task_readback() -> None:
@@ -138,6 +150,127 @@ def test_articulated_factory_requires_native_task_readback() -> None:
             task_readback=None,
             to_tensor=lambda value: value,
         )
+
+
+class _DeformableReadbackSubclass(NativeDeformableTaskArenaReadback):
+    pass
+
+
+class _DeformableReadbackProxy:
+    def __init__(self, target):
+        self._target = target
+
+    def __getattr__(self, name):
+        return getattr(self._target, name)
+
+
+@pytest.mark.parametrize("kind", ("missing", "fake", "subclass", "proxy"))
+def test_deformable_factory_rejects_self_attested_readback_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    constructed = []
+
+    def adapter_factory(**kwargs):
+        constructed.append(kwargs)
+        return _Adapter(**kwargs)
+
+    exact = NativeDeformableTaskArenaReadback.__new__(NativeDeformableTaskArenaReadback)
+    readback = {
+        "missing": None,
+        "fake": _Readback(),
+        "subclass": _DeformableReadbackSubclass.__new__(_DeformableReadbackSubclass),
+        "proxy": _DeformableReadbackProxy(exact),
+    }[kind]
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", adapter_factory)
+
+    with pytest.raises(
+        NativeTaskEpisodeEnvironmentError,
+        match="native_task_episode_deformable_readback_identity_untrusted",
+    ):
+        build_native_task_episode_environment(
+            built=_built("deformable_transfer"),
+            gripper_convention={
+                "closed_command": 1.0,
+                "open_command": 0.0,
+                "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+            },
+            servo=_Servo(),
+            task_readback=readback,
+            to_tensor=lambda value: value,
+        )
+
+    assert constructed == []
+
+
+def test_deformable_factory_raises_contact_blocker_before_adapter_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    constructed = []
+
+    def adapter_factory(**kwargs):
+        constructed.append(kwargs)
+        return _Adapter(**kwargs)
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", adapter_factory)
+    readback = NativeDeformableTaskArenaReadback.__new__(NativeDeformableTaskArenaReadback)
+    with pytest.raises(
+        NativeDeformableTaskArenaReadbackError,
+        match=CONTACT_CAPABILITY_BLOCKER,
+    ):
+        build_native_task_episode_environment(
+            built=_built("deformable_transfer"),
+            gripper_convention={
+                "closed_command": 1.0,
+                "open_command": 0.0,
+                "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+            },
+            servo=_Servo(),
+            task_readback=readback,
+            to_tensor=lambda value: value,
+        )
+
+    assert constructed == []
+
+
+def test_deformable_factory_ignores_instance_shadowed_capability_methods(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    constructed = []
+
+    def adapter_factory(**kwargs):
+        constructed.append(kwargs)
+        return _Adapter(**kwargs)
+
+    readback = NativeDeformableTaskArenaReadback.__new__(NativeDeformableTaskArenaReadback)
+    readback.ensure_evaluation_capable = lambda: None
+    readback.reset_after_native_reset = lambda: None
+    readback.read_task_sample = lambda: {"self_attested_contact": True}
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", adapter_factory)
+
+    with pytest.raises(
+        NativeDeformableTaskArenaReadbackError,
+        match=CONTACT_CAPABILITY_BLOCKER,
+    ):
+        build_native_task_episode_environment(
+            built=_built("deformable_transfer"),
+            gripper_convention={
+                "closed_command": 1.0,
+                "open_command": 0.0,
+                "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+            },
+            servo=_Servo(),
+            task_readback=readback,
+            to_tensor=lambda value: value,
+        )
+
+    assert constructed == []
 
 
 def test_factory_rejects_an_ambiguous_gripper_probe() -> None:

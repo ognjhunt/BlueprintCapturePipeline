@@ -401,6 +401,7 @@ def _deformable_request(evidence: Path) -> dict:
         "settle_window_samples": 4,
         "maximum_node_speed_mps": 0.02,
         "maximum_principal_strain": 0.25,
+        "minimum_grasp_contact_force_n": 0.1,
         "maximum_release_contact_force_n": 0.0,
         "minimum_robot_clearance_m": 0.15,
         "maximum_receptacle_translation_drift_m": 0.01,

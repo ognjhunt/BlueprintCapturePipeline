@@ -972,7 +972,7 @@ def test_deformable_reset_recipe_freezes_write_and_readback_order() -> None:
         "zero_nodal_velocities",
         "write_nodal_state_to_sim_index",
         "write_nodal_kinematic_target_to_sim_index",
-        "readback_data_nodal_state_and_kinematic_target",
+        "readback_physx_root_view_state_and_kinematic_target",
     ]
     assert [step["order"] for step in recipe["steps"]] == [1, 2, 3, 4, 5]
     assert recipe["steps"][3]["free_flag_value"] == 1.0

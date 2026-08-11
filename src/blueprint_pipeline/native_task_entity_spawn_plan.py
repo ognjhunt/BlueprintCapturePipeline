@@ -140,7 +140,7 @@ def _reset_recipe(
             },
             {
                 "order": 5,
-                "operation": "readback_data_nodal_state_and_kinematic_target",
+                "operation": "readback_physx_root_view_state_and_kinematic_target",
             },
         ]
     else:

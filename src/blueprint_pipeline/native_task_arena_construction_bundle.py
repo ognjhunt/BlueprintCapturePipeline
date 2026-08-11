@@ -42,11 +42,27 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
 )
+DEFORMABLE_RUNTIME_MODULE_NAME = "native_deformable_task_arena_readback.py"
 
 
-def construction_runtime_sources() -> tuple[Path, ...]:
+def construction_runtime_sources(*, task_kind: str | None = None) -> tuple[Path, ...]:
     package = Path(__file__).resolve().parent
-    return tuple(package / name for name in CONSTRUCTION_RUNTIME_MODULE_NAMES)
+    names = CONSTRUCTION_RUNTIME_MODULE_NAMES + (
+        (DEFORMABLE_RUNTIME_MODULE_NAME,) if task_kind == "deformable_transfer" else ()
+    )
+    return tuple(package / name for name in names)
+
+
+def _packet_task_kind(packet_dir: str | Path) -> str | None:
+    path = Path(packet_dir).expanduser().resolve() / "native_task_arena_scene_plan.v1.json"
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("native_task_arena_construction_scene_plan_invalid") from exc
+    if not isinstance(plan, dict):
+        raise ValueError("native_task_arena_construction_scene_plan_invalid")
+    task_kind = plan.get("task_kind")
+    return str(task_kind) if isinstance(task_kind, str) else None
 
 
 def build_native_task_arena_construction_bundle(
@@ -65,7 +81,9 @@ def build_native_task_arena_construction_bundle(
         packet_dir=packet_dir,
         runtime_source_packet_receipt=runtime_source_packet_receipt,
         worker_source=package / "native_task_arena_construction_worker.py",
-        runtime_module_sources=construction_runtime_sources(),
+        runtime_module_sources=construction_runtime_sources(
+            task_kind=_packet_task_kind(packet_dir)
+        ),
         implementation_commit=implementation_commit,
         execution_mode="construction_canary",
         container_image=QUALIFIED_ADP_IMAGE,
@@ -126,9 +144,7 @@ def load_verified_native_task_arena_construction_bundle(
         source_packet.get("receipt_digest") != expected_runtime_source_packet_digest
     ):
         errors.append("native_task_arena_bundle_runtime_source_packet_mismatch")
-    if receipt.get("input_digest") != canonical_digest(
-        manifest, digest_field="input_digest"
-    ):
+    if receipt.get("input_digest") != canonical_digest(manifest, digest_field="input_digest"):
         errors.append("native_task_arena_bundle_input_digest_invalid")
     if (
         receipt.get("bundle_size_bytes") != bundle_path.stat().st_size
@@ -142,6 +158,7 @@ def load_verified_native_task_arena_construction_bundle(
 
 __all__ = [
     "CONSTRUCTION_RUNTIME_MODULE_NAMES",
+    "DEFORMABLE_RUNTIME_MODULE_NAME",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "RESULT_SCHEMA_VERSION",

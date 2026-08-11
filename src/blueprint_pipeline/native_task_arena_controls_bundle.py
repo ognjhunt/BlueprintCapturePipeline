@@ -44,11 +44,15 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
 )
+DEFORMABLE_RUNTIME_MODULE_NAME = "native_deformable_task_arena_readback.py"
 
 
-def controls_runtime_sources() -> tuple[Path, ...]:
+def controls_runtime_sources(*, task_kind: str | None = None) -> tuple[Path, ...]:
     package = Path(__file__).resolve().parent
-    return tuple(package / name for name in CONTROLS_RUNTIME_MODULE_NAMES)
+    names = CONTROLS_RUNTIME_MODULE_NAMES + (
+        (DEFORMABLE_RUNTIME_MODULE_NAME,) if task_kind == "deformable_transfer" else ()
+    )
+    return tuple(package / name for name in names)
 
 
 def _read_mapping(path: Path, *, error: str) -> dict[str, Any]:
@@ -97,10 +101,15 @@ def build_native_task_arena_controls_bundle(
             packet_dir=packet,
             runtime_source_packet_receipt=runtime_source_packet_receipt,
             worker_source=(
-                Path(__file__).resolve().parent
-                / "native_task_arena_controls_worker.py"
+                Path(__file__).resolve().parent / "native_task_arena_controls_worker.py"
             ),
-            runtime_module_sources=controls_runtime_sources(),
+            runtime_module_sources=controls_runtime_sources(
+                task_kind=(
+                    str(scene_plan["task_kind"])
+                    if isinstance(scene_plan.get("task_kind"), str)
+                    else None
+                )
+            ),
             implementation_commit=implementation_commit,
             execution_mode="controls",
             expected_output_filename=RESULT_FILENAME,
@@ -123,9 +132,7 @@ def load_verified_native_task_arena_controls_bundle(
     """Reverify the immutable controls bundle without rebuilding its bytes."""
 
     path = Path(receipt_path).expanduser().resolve()
-    receipt = _read_mapping(
-        path, error="native_task_arena_controls_bundle_receipt_invalid"
-    )
+    receipt = _read_mapping(path, error="native_task_arena_controls_bundle_receipt_invalid")
     bundle_path = Path(str(receipt.get("bundle_path") or "")).expanduser().resolve()
     digest = hashlib.sha256()
     try:
@@ -169,13 +176,10 @@ def load_verified_native_task_arena_controls_bundle(
         errors.append("native_task_arena_controls_bundle_packet_mismatch")
     source_packet = receipt.get("runtime_source_packet") or {}
     if expected_runtime_source_packet_digest and (
-        source_packet.get("receipt_digest")
-        != expected_runtime_source_packet_digest
+        source_packet.get("receipt_digest") != expected_runtime_source_packet_digest
     ):
         errors.append("native_task_arena_controls_bundle_sources_mismatch")
-    if receipt.get("input_digest") != canonical_digest(
-        manifest, digest_field="input_digest"
-    ):
+    if receipt.get("input_digest") != canonical_digest(manifest, digest_field="input_digest"):
         errors.append("native_task_arena_controls_bundle_input_digest_invalid")
     if (
         receipt.get("bundle_size_bytes") != bundle_path.stat().st_size
@@ -189,6 +193,7 @@ def load_verified_native_task_arena_controls_bundle(
 
 __all__ = [
     "CONTROLS_RUNTIME_MODULE_NAMES",
+    "DEFORMABLE_RUNTIME_MODULE_NAME",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "RESULT_FILENAME",
