@@ -496,6 +496,27 @@ binding digest `sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e
 This receipt is a review index only; it did not regenerate CAD, execute agents,
 qualify SimReady USD, or make physical-equivalence claims.
 
+### General agent-CAD visual composition (unbound)
+
+Commit `46149a974` adds a reusable `1..5` replacement-object composition
+contract that joins an exact agent-authored STEP projection to a separately
+authored graph mechanics asset. It seals the selected CAD output, STEP/mesh
+projection, task freeze, and one explicit rigid transform per agent link before
+writing a new USD. The transform must be scale-free and right-handed; every
+agent link must be mapped exactly once, and every graph link without a visible
+agent CAD component must carry an explicit reason. The output preserves the
+agent STEP-derived mesh only as default-purpose visual geometry. Collision and
+physics geometry stays in the graph asset, must be guide/invisible, and is
+rejected if it—or any other graph primitive—could contribute renderable depth.
+
+This is an authoring/composition contract, not a completed 840920 artifact:
+no CAD candidate has yet been selected, no task-specific CAD-to-graph
+registration binding has been sealed, and no actual third-scene composed USD is
+claimed. It therefore cannot alter source-removal, depth-coverage, appearance,
+native-import, physics, or physical-equivalence status. Hermetic regressions
+cover agent mesh copying, non-rigid-transform rejection, collision and other
+renderable graph-geometry rejection, and the five-object set ceiling.
+
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
 | Task A canonical | Not run | Not run | Not admitted | Not admitted |
@@ -622,6 +643,12 @@ forks:
   image from the CAD-agent manifest by default, and treats agent output as
   advisory enrichment only. It does not construct simulator geometry, collision,
   physics authority, native import evidence, or physical truth.
+- `46149a974` adds a distinct agent-CAD visual-composition seam. It preserves
+  exact STEP-projected mesh geometry as visuals while treating graph geometry as
+  non-renderable collision/physics candidate only; it fails closed on scale
+  changes, missing/duplicate link mappings, renderable graph geometry, or a
+  sixth co-present replacement object. It does not select a CAD candidate or
+  qualify a 840920 replacement USD by itself.
 - Content Agents execution readiness is now a first-class no-provider receipt:
   it validates prepared bundle bytes and exact-entrypoint rehearsal, records
   config-preflight/paid-authority blockers, and cannot be mistaken for agent
@@ -835,7 +862,7 @@ Recent reusable-code and manifest commits:
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, held-out ownership audit, and a separate zero-residue coverage-conditioned deletion route that preserves the ownership/visibility distinction; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; a receipt-only portable mirror that excludes all raw dataset bytes; two-backend agent-CAD comparison contracts with deterministic CAD rejected; a Codex-first 1..5-object Content Agents route plus four completed metadata-only `gpt-5.6-luna` host-OAuth reviews that use no API key or artifact bytes; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; a separate agent-CAD visual-composition seam that preserves exact STEP-projected visuals while isolating graph collision geometry; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, held-out ownership audit, and a separate zero-residue coverage-conditioned deletion route that preserves the ownership/visibility distinction; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; a receipt-only portable mirror that excludes all raw dataset bytes; two-backend agent-CAD comparison contracts with deterministic CAD rejected; a Codex-first 1..5-object Content Agents route plus four completed metadata-only `gpt-5.6-luna` host-OAuth reviews that use no API key or artifact bytes; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Both released-code contribution runs completed, but both exact source-removal lanes abstained at `calibrated_gaussian_ownership_separation_without_protected_scene_deletion`. No source Gaussian deletion, replacement-depth coverage, occlusion/inpainting decision, native placement/camera/control gate, or candidate matrix is admitted. Content Agents enrichment remains advisory and not a replacement for source-removal evidence. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
@@ -849,8 +876,8 @@ and native state/contact compilers are implemented and hermetically exercised;
 local collision-schema qualification is not native task qualification.
 
 **Single next action:** select one of the agent-authored CAD candidates per
-object, convert it through the general SimReady asset path, then materialize a
-new, independently preregistered replacement-depth/source-layer packet. It may
-proceed only if the existing factual-ownership gate passes or the new
-coverage-conditioned path proves zero residual over the entire deleted source
-layer. Do not reinterpret or retry the frozen ownership attempts.
+object and seal its metric CAD-to-graph visual-registration binding, then
+materialize its new independently preregistered replacement-depth/source-layer
+packet. It may proceed only if the existing factual-ownership gate passes or
+the new coverage-conditioned path proves zero residual over the entire deleted
+source layer. Do not reinterpret or retry the frozen ownership attempts.
