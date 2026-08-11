@@ -292,24 +292,52 @@ def _rotmat_to_qvec(rotation: np.ndarray) -> np.ndarray:
 def _write_colmap(source: Path, cameras: Sequence[Mapping[str, Any]]) -> list[Path]:
     sparse = source / "sparse" / "0"
     sparse.mkdir(parents=True, exist_ok=True)
-    first = cameras[0]["intrinsics"]
-    camera_text = (
-        "# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n"
-        f"1 PINHOLE {first['width']} {first['height']} "
-        f"{first['fx']:.17g} {first['fy']:.17g} {first['cx']:.17g} {first['cy']:.17g}\n"
-    )
+    if not cameras:
+        raise Inpaint360AdapterError(["inpaint360_camera_count_invalid"])
+    camera_ids: dict[tuple[Any, ...], int] = {}
+    camera_lines = ["# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]"]
+    for row in cameras:
+        intrinsics = row["intrinsics"]
+        signature = (
+            intrinsics["model"],
+            intrinsics["width"],
+            intrinsics["height"],
+            intrinsics["fx"],
+            intrinsics["fy"],
+            intrinsics["cx"],
+            intrinsics["cy"],
+        )
+        if signature not in camera_ids:
+            camera_id = len(camera_ids) + 1
+            camera_ids[signature] = camera_id
+            camera_lines.append(
+                f"{camera_id} {intrinsics['model']} {intrinsics['width']} "
+                f"{intrinsics['height']} {intrinsics['fx']:.17g} "
+                f"{intrinsics['fy']:.17g} {intrinsics['cx']:.17g} "
+                f"{intrinsics['cy']:.17g}"
+            )
     cameras_path = sparse / "cameras.txt"
-    cameras_path.write_text(camera_text, encoding="utf-8")
+    cameras_path.write_text("\n".join(camera_lines) + "\n", encoding="utf-8")
     lines = ["# IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME"]
     for index, row in enumerate(cameras, start=1):
-        pose = np.asarray(row["T_world_camera_opencv"], dtype=np.float64)
+        pose = np.asarray(row.get("T_world_camera_opencv"), dtype=np.float64)
         if pose.shape != (4, 4) or not np.isfinite(pose).all():
             raise Inpaint360AdapterError(["inpaint360_camera_pose_invalid"])
         world_to_camera = np.linalg.inv(pose)
         qvec = _rotmat_to_qvec(world_to_camera[:3, :3])
         tvec = world_to_camera[:3, 3]
         values = " ".join(f"{value:.17g}" for value in (*qvec, *tvec))
-        lines.extend([f"{index} {values} 1 {row['camera_id']}.png", ""])
+        intrinsics = row["intrinsics"]
+        signature = (
+            intrinsics["model"],
+            intrinsics["width"],
+            intrinsics["height"],
+            intrinsics["fx"],
+            intrinsics["fy"],
+            intrinsics["cx"],
+            intrinsics["cy"],
+        )
+        lines.extend([f"{index} {values} {camera_ids[signature]} {row['camera_id']}.png", ""])
     images_path = sparse / "images.txt"
     images_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     points_path = sparse / "points3D.txt"
@@ -388,6 +416,161 @@ def _method_config_id(scene: Mapping[str, Any]) -> tuple[str, str | None]:
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", task_id):
         raise Inpaint360AdapterError(["inpaint360_task_id_invalid"])
     return f"{scene_id}__{target_instance_id}__{task_id}", task_id
+
+
+def _normalized_inpaint_camera_rows(
+    cameras: Any, *, receipt: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Normalize explicit OpenCV poses and admitted provider-frame aliases.
+
+    The released method consumes COLMAP/OpenCV extrinsics.  A provider-frame
+    pose is never assumed to be OpenCV merely because its matrix is rigid. New
+    public-scene packets carry an explicit alias contract.  The narrowly scoped
+    compatibility case preserves existing v2 packets produced by the sealed
+    Spark input builder, whose source-admission and renderer identities jointly
+    establish the same alias.
+    """
+
+    if not isinstance(cameras, list):
+        raise Inpaint360AdapterError(["inpaint360_camera_file_invalid"])
+    pose_contract = receipt.get("camera_pose_contract")
+    explicit_provider_alias = isinstance(pose_contract, Mapping) and (
+        pose_contract.get("schema_version")
+        == "public_scene_inpainting_camera_pose_contract.v1"
+        and pose_contract.get("camera_file_pose_field")
+        == "T_world_camera_provider_frame"
+        and pose_contract.get("semantic_pose_field") == "T_world_camera_opencv"
+        and pose_contract.get("camera_coordinate_convention")
+        == "opencv_x_right_y_down_z_forward"
+        and pose_contract.get("provider_frame_aliases_opencv") is True
+    )
+    source_admission = receipt.get("source_admission") or {}
+    renderer = receipt.get("renderer") or {}
+    legacy_provider_alias = (
+        source_admission.get("adapter")
+        == "dual_task_freeze_and_standard_splat_v1"
+        and renderer.get("name") == "reference_spark_renderer_exact_camera"
+        and renderer.get("authorization_class") == "method_input"
+    )
+    normalized: list[dict[str, Any]] = []
+    pose_fields: set[str] = set()
+    camera_ids: set[str] = set()
+    for row in cameras:
+        if not isinstance(row, Mapping):
+            raise Inpaint360AdapterError(["inpaint360_camera_row_invalid"])
+        camera_id = str(row.get("camera_id") or "")
+        if not camera_id or camera_id in camera_ids or "/" in camera_id or ".." in camera_id:
+            raise Inpaint360AdapterError(["inpaint360_camera_id_invalid_or_duplicate"])
+        camera_ids.add(camera_id)
+        opencv_pose = row.get("T_world_camera_opencv")
+        provider_pose = row.get("T_world_camera_provider_frame")
+        if opencv_pose is None and provider_pose is None:
+            raise Inpaint360AdapterError(["inpaint360_camera_pose_missing"])
+        if provider_pose is not None and not (explicit_provider_alias or legacy_provider_alias):
+            raise Inpaint360AdapterError(["inpaint360_provider_camera_alias_unproven"])
+        if opencv_pose is not None and provider_pose is not None:
+            try:
+                if not np.allclose(
+                    np.asarray(opencv_pose, dtype=np.float64),
+                    np.asarray(provider_pose, dtype=np.float64),
+                    atol=1e-9,
+                    rtol=0.0,
+                ):
+                    raise Inpaint360AdapterError(
+                        ["inpaint360_camera_pose_field_conflict"]
+                    )
+            except (TypeError, ValueError) as exc:
+                raise Inpaint360AdapterError(["inpaint360_camera_pose_invalid"]) from exc
+        pose_value = opencv_pose if opencv_pose is not None else provider_pose
+        try:
+            pose = np.asarray(pose_value, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise Inpaint360AdapterError(["inpaint360_camera_pose_invalid"]) from exc
+        if (
+            pose.shape != (4, 4)
+            or not np.isfinite(pose).all()
+            or not np.allclose(pose[3], [0.0, 0.0, 0.0, 1.0], atol=1e-9, rtol=0.0)
+            or not np.allclose(
+                pose[:3, :3].T @ pose[:3, :3], np.eye(3), atol=1e-6, rtol=0.0
+            )
+            or not np.isclose(np.linalg.det(pose[:3, :3]), 1.0, atol=1e-6, rtol=0.0)
+        ):
+            raise Inpaint360AdapterError(["inpaint360_camera_pose_invalid"])
+        intrinsics = row.get("intrinsics")
+        if not isinstance(intrinsics, Mapping):
+            raise Inpaint360AdapterError(["inpaint360_camera_intrinsics_invalid"])
+        try:
+            width = intrinsics["width"]
+            height = intrinsics["height"]
+            numeric_values = {
+                key: intrinsics[key] for key in ("fx", "fy", "cx", "cy")
+            }
+            if (
+                isinstance(width, bool)
+                or not isinstance(width, int)
+                or isinstance(height, bool)
+                or not isinstance(height, int)
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    for value in numeric_values.values()
+                )
+            ):
+                raise TypeError("camera_intrinsics_type_invalid")
+            normalized_intrinsics = {
+                "model": str(intrinsics["model"]),
+                "fx": float(numeric_values["fx"]),
+                "fy": float(numeric_values["fy"]),
+                "cx": float(numeric_values["cx"]),
+                "cy": float(numeric_values["cy"]),
+                "width": width,
+                "height": height,
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Inpaint360AdapterError(["inpaint360_camera_intrinsics_invalid"]) from exc
+        if (
+            normalized_intrinsics["model"] != "PINHOLE"
+            or normalized_intrinsics["width"] <= 0
+            or normalized_intrinsics["height"] <= 0
+            or not all(
+                np.isfinite(normalized_intrinsics[key]) and normalized_intrinsics[key] > 0.0
+                for key in ("fx", "fy")
+            )
+            or not all(
+                np.isfinite(normalized_intrinsics[key])
+                for key in ("cx", "cy")
+            )
+            or not 0.0 <= normalized_intrinsics["cx"] <= normalized_intrinsics["width"]
+            or not 0.0 <= normalized_intrinsics["cy"] <= normalized_intrinsics["height"]
+        ):
+            raise Inpaint360AdapterError(["inpaint360_camera_intrinsics_invalid"])
+        if opencv_pose is not None:
+            pose_fields.add("T_world_camera_opencv")
+        if provider_pose is not None:
+            pose_fields.add("T_world_camera_provider_frame")
+        normalized.append(
+            {
+                "camera_id": camera_id,
+                "T_world_camera_opencv": pose.tolist(),
+                "intrinsics": normalized_intrinsics,
+            }
+        )
+    if len(normalized) != 8:
+        raise Inpaint360AdapterError(["inpaint360_camera_count_invalid"])
+    return normalized, {
+        "input_pose_fields": sorted(pose_fields),
+        "semantic_pose_field": "T_world_camera_opencv",
+        "camera_coordinate_convention": "opencv_x_right_y_down_z_forward",
+        "provider_frame_alias_authority": (
+            "receipt_camera_pose_contract.v1"
+            if explicit_provider_alias
+            else (
+                "legacy_dual_task_sealed_spark_input_contract.v1"
+                if legacy_provider_alias
+                else None
+            )
+        ),
+    }
 
 
 def materialize_inpaint360_adapter(
@@ -487,9 +670,13 @@ def materialize_inpaint360_adapter(
             "size_bytes": standard_record["size_bytes"],
         },
     ]
-    cameras = json.loads(cameras_path.read_text(encoding="utf-8"))
-    if not isinstance(cameras, list) or len(cameras) != 8:
-        raise Inpaint360AdapterError(["inpaint360_camera_count_invalid"])
+    try:
+        source_cameras = json.loads(cameras_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Inpaint360AdapterError(["inpaint360_camera_file_invalid"]) from exc
+    cameras, camera_pose_binding = _normalized_inpaint_camera_rows(
+        source_cameras, receipt=receipt
+    )
 
     scene = receipt.get("scene") or {}
     method_config_id, task_id = _method_config_id(scene)
@@ -670,6 +857,7 @@ def materialize_inpaint360_adapter(
         "adapter_repository": adapter_repository,
         "adapter": {
             "camera_contract": "COLMAP_PINHOLE_text_from_T_world_camera_opencv",
+            "camera_pose_binding": camera_pose_binding,
             "mask_contract": "raw_hqsam_uint8_instance_id_1",
             "vanilla_gaussian_iteration": 30000,
             "method_config_id": method_config_id,

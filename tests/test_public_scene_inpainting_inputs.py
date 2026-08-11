@@ -580,6 +580,13 @@ def test_dual_task_adapter_reuses_qualified_standard_splat_and_sealed_renderer(
     )
     assert receipt["scene"]["task_id"] == "task_a_washer_door_open"
     assert receipt["renderer"]["authorization_class"] == "method_input"
+    assert receipt["camera_pose_contract"] == {
+        "schema_version": "public_scene_inpainting_camera_pose_contract.v1",
+        "camera_file_pose_field": "T_world_camera_provider_frame",
+        "semantic_pose_field": "T_world_camera_opencv",
+        "camera_coordinate_convention": "opencv_x_right_y_down_z_forward",
+        "provider_frame_aliases_opencv": True,
+    }
     assert set(receipt["renderer"]["render_manifest_digests"]) == {
         "images",
         "target_support",

@@ -184,6 +184,41 @@ def _rebase_standard_splat_to_data_root(paths: dict[str, Path]) -> Path:
     return target
 
 
+def _provider_frame_camera_rows(
+    paths: dict[str, Path], *, alias_authority: str | None
+) -> None:
+    camera_path = paths["input"] / "cameras.v1.json"
+    cameras = json.loads(camera_path.read_text())
+    for row in cameras:
+        row["T_world_camera_provider_frame"] = row.pop("T_world_camera_opencv")
+    camera_path.write_text(json.dumps(cameras))
+    receipt = json.loads(paths["receipt"].read_text())
+    receipt["derived_artifacts"]["cameras"] = _record(camera_path, paths["input"])
+    if alias_authority == "explicit":
+        receipt["camera_pose_contract"] = {
+            "schema_version": "public_scene_inpainting_camera_pose_contract.v1",
+            "camera_file_pose_field": "T_world_camera_provider_frame",
+            "semantic_pose_field": "T_world_camera_opencv",
+            "camera_coordinate_convention": "opencv_x_right_y_down_z_forward",
+            "provider_frame_aliases_opencv": True,
+        }
+    elif alias_authority == "legacy":
+        receipt["source_admission"] = {
+            "adapter": "dual_task_freeze_and_standard_splat_v1"
+        }
+        receipt["renderer"] = {
+            "name": "reference_spark_renderer_exact_camera",
+            "authorization_class": "method_input",
+        }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    paths["receipt"].write_text(json.dumps(receipt))
+    subprocess.run(["git", "-C", str(paths["repo"]), "add", "input_receipt.json"], check=True)
+    subprocess.run(
+        ["git", "-C", str(paths["repo"]), "commit", "-qm", "provider frame cameras"],
+        check=True,
+    )
+
+
 def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -319,6 +354,125 @@ def test_adapter_resolves_shared_standard_splat_from_data_root(
     assert {row["root"] for row in bindings if row["role"] in {"image", "mask"}} == {
         "input_root"
     }
+
+
+@pytest.mark.parametrize("alias_authority", ["explicit", "legacy"])
+def test_adapter_normalizes_admitted_provider_camera_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alias_authority: str
+) -> None:
+    paths = _fixture(tmp_path)
+    _provider_frame_camera_rows(paths, alias_authority=alias_authority)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.INPAINT360_COMMIT",
+        subprocess.run(
+            ["git", "-C", str(paths["method"]), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
+    receipt = materialize_inpaint360_adapter(
+        input_receipt_path=paths["receipt"],
+        input_root=paths["input"],
+        repo_root=paths["repo"],
+        data_root=paths["data"],
+        method_root=paths["method"],
+        output_root=paths["data"] / "adapter",
+    )
+    assert receipt["adapter"]["camera_pose_binding"]["input_pose_fields"] == [
+        "T_world_camera_provider_frame"
+    ]
+    assert receipt["adapter"]["camera_pose_binding"][
+        "provider_frame_alias_authority"
+    ] == (
+        "receipt_camera_pose_contract.v1"
+        if alias_authority == "explicit"
+        else "legacy_dual_task_sealed_spark_input_contract.v1"
+    )
+
+
+def test_adapter_rejects_unproven_provider_camera_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path)
+    _provider_frame_camera_rows(paths, alias_authority=None)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.INPAINT360_COMMIT",
+        subprocess.run(
+            ["git", "-C", str(paths["method"]), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
+    with pytest.raises(
+        Inpaint360AdapterError, match="provider_camera_alias_unproven"
+    ):
+        materialize_inpaint360_adapter(
+            input_receipt_path=paths["receipt"],
+            input_root=paths["input"],
+            repo_root=paths["repo"],
+            data_root=paths["data"],
+            method_root=paths["method"],
+            output_root=paths["data"] / "adapter",
+        )
+
+
+def test_adapter_writes_one_colmap_camera_per_exact_intrinsics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path)
+    camera_path = paths["input"] / "cameras.v1.json"
+    cameras = json.loads(camera_path.read_text())
+    cameras[1]["intrinsics"]["fx"] += 7.0
+    camera_path.write_text(json.dumps(cameras))
+    source_receipt = json.loads(paths["receipt"].read_text())
+    source_receipt["derived_artifacts"]["cameras"] = _record(
+        camera_path, paths["input"]
+    )
+    source_receipt["receipt_digest"] = canonical_digest(
+        source_receipt, digest_field="receipt_digest"
+    )
+    paths["receipt"].write_text(json.dumps(source_receipt))
+    subprocess.run(["git", "-C", str(paths["repo"]), "add", "input_receipt.json"], check=True)
+    subprocess.run(
+        ["git", "-C", str(paths["repo"]), "commit", "-qm", "distinct camera intrinsics"],
+        check=True,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.INPAINT360_COMMIT",
+        subprocess.run(
+            ["git", "-C", str(paths["method"]), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
+    materialize_inpaint360_adapter(
+        input_receipt_path=paths["receipt"],
+        input_root=paths["input"],
+        repo_root=paths["repo"],
+        data_root=paths["data"],
+        method_root=paths["method"],
+        output_root=paths["data"] / "adapter",
+    )
+    camera_lines = [
+        row
+        for row in (paths["data"] / "adapter/source/sparse/0/cameras.txt")
+        .read_text()
+        .splitlines()
+        if row and not row.startswith("#")
+    ]
+    image_lines = [
+        row
+        for row in (paths["data"] / "adapter/source/sparse/0/images.txt")
+        .read_text()
+        .splitlines()
+        if ".png" in row
+    ]
+    assert len(camera_lines) == 2
+    assert image_lines[0].split()[-2] == "1"
+    assert image_lines[1].split()[-2] == "2"
 
 
 def test_adapter_binds_task_specific_config_name(

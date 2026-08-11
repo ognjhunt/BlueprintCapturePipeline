@@ -1099,6 +1099,19 @@ def materialize_public_scene_inpainting_inputs(
                 for row in cameras
             ],
         },
+        "camera_pose_contract": {
+            "schema_version": "public_scene_inpainting_camera_pose_contract.v1",
+            "camera_file_pose_field": (
+                "T_world_camera_provider_frame"
+                if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+                else "T_world_camera_opencv"
+            ),
+            "semantic_pose_field": "T_world_camera_opencv",
+            "camera_coordinate_convention": "opencv_x_right_y_down_z_forward",
+            "provider_frame_aliases_opencv": (
+                source_adapter == "dual_task_freeze_and_standard_splat_v1"
+            ),
+        },
         "mask_policy": {
             "authority": request["mask_policy"]["authority"],
             "dilation_pixels": dilation,
