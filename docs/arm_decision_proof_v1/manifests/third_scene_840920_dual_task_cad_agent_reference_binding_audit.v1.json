@@ -1,0 +1,90 @@
+{
+  "agent_outputs_regenerated": false,
+  "all_candidate_references_manifest_bound": true,
+  "audit_digest": "sha256:dd4363e6c5feb62cddbbfbcf080a4e859778855bb3afb489dacb96616c311003",
+  "candidate_rows": [
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "binding_status": "manifest_bound",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "cad_agent_output": {
+        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_earthtojake_text_to_cad_cad_agent_output.v1.json",
+        "sha256": "sha256:3c2698a0787d3bdc59bd66ffb680ae271d5f0e732b179508b6b22fa8b2058ff5",
+        "size_bytes": 7209
+      },
+      "cad_agent_output_artifacts_verified": false,
+      "cad_agent_output_receipt_digest": "sha256:f833d05c801ae8352118127e8f7a4f179f14cf9f51a9f44bfeca3234702ad3dc",
+      "reference_image_count": 3,
+      "reference_manifest_object_digest": "sha256:6de02c167b204de6850ae99e39fdcad1ba2d48be7b40a56846b68194eddb8a9c",
+      "replacement_slot": 1,
+      "request_contains_reference_manifest_field": false,
+      "task_id": "task_a_washer_door_open"
+    },
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "binding_status": "manifest_bound",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "cad_agent_output": {
+        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_pan_chera_multi_agent_cad_cad_agent_output.v1.json",
+        "sha256": "sha256:898436ba7f4d8a20fa9802dc5083d96f111f8b59fab68d0404a0b7d70f389a99",
+        "size_bytes": 7294
+      },
+      "cad_agent_output_artifacts_verified": false,
+      "cad_agent_output_receipt_digest": "sha256:91b37071f5ed30df4f1c1f917b7e18e6a3fce6f14947fd718afac563634c4f4e",
+      "reference_image_count": 3,
+      "reference_manifest_object_digest": "sha256:6de02c167b204de6850ae99e39fdcad1ba2d48be7b40a56846b68194eddb8a9c",
+      "replacement_slot": 1,
+      "request_contains_reference_manifest_field": false,
+      "task_id": "task_a_washer_door_open"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "binding_status": "manifest_bound",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "cad_agent_output": {
+        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_earthtojake_text_to_cad_cad_agent_output.v1.json",
+        "sha256": "sha256:b78ed442f807db2383c7a8a134ad7643d1f099d09f5a60a51344fd1015081885",
+        "size_bytes": 7230
+      },
+      "cad_agent_output_artifacts_verified": false,
+      "cad_agent_output_receipt_digest": "sha256:36a7d633a6cf346df796f0d6dbbcd4834195872e1f7e28505875fe43028aaad7",
+      "reference_image_count": 3,
+      "reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
+      "replacement_slot": 2,
+      "request_contains_reference_manifest_field": false,
+      "task_id": "task_b_notebook_relocation"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "binding_status": "manifest_bound",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "cad_agent_output": {
+        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_pan_chera_multi_agent_cad_cad_agent_output.v1.json",
+        "sha256": "sha256:93e3a93914f6716b5a82744350ae4f83b43793aaabde8f844b44691222c8aa6d",
+        "size_bytes": 7351
+      },
+      "cad_agent_output_artifacts_verified": false,
+      "cad_agent_output_receipt_digest": "sha256:30e5b5e56e313ec085c381ffd0c2e7f63a9d9affa6c930fea6e340a6fbe21acf",
+      "reference_image_count": 3,
+      "reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
+      "replacement_slot": 2,
+      "request_contains_reference_manifest_field": false,
+      "task_id": "task_b_notebook_relocation"
+    }
+  ],
+  "claim_boundary": {
+    "cad_geometry_regenerated": false,
+    "historical_request_reference_binding_audited": true,
+    "physical_equivalence": false,
+    "simready_qualified": false
+  },
+  "historical_requests_rewritten": false,
+  "reference_manifest": {
+    "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+    "sha256": "sha256:f8bfe3bd2df5650a768314ef634e5029ed3233602ebca2817bd2041ca24d9372",
+    "size_bytes": 3331
+  },
+  "replacement_object_count": 2,
+  "scene_id": "840920",
+  "schema_version": "cad_agent_reference_binding_audit.v1"
+}

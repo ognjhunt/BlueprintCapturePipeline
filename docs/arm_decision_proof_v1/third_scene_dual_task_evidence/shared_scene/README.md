@@ -40,9 +40,17 @@ comparison board and the original source-object frame contact sheet are retained
 in the rights-bounded construction evidence root and are referenced by the
 per-task supporting inventories.
 
+The historical CAD-agent requests predate the manifest-bound request sealer.
+They are therefore not rewritten. Instead, the checked-in reference-binding
+audit verifies that all four historical outputs used the observed-reference
+packet admitted for their exact replacement slot, task, and asset, while
+explicitly recording that CAD geometry was not regenerated.
+
 Checked-in digest-bound manifests:
 
 - [`third_scene_840920_dual_task_agent_cad_matrix.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json)
+- [`third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json), manifest digest `sha256:7c584095a4e67104057d613f67c97e92fbd26d1a762bb2966f52b1c02a1b7ed2`
+- [`third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json), audit digest `sha256:dd4363e6c5feb62cddbbfbcf080a4e859778855bb3afb489dacb96616c311003`
 - [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
 - [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json)
 

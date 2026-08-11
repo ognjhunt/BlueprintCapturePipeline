@@ -28,6 +28,7 @@ learned policies were therefore not admitted. This is not a policy result.
   `c5d3d0d92` (reusable agent-CAD supporting-evidence row builder) and
   `7aa7b7fce` (four-candidate Content Agents execution-readiness receipt),
   plus the current manifest-bound CAD-agent request sealing follow-up,
+  and the current historical CAD-output reference-binding audit follow-up,
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
@@ -280,6 +281,19 @@ against pinned NVIDIA USD Content Agents `0.5.2`
 (`36dbf3f274f8e256637230a05a085853f65cc175`,
 tree `d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3`):
 
+The four already-authored historical CAD outputs predate that manifest-bound
+request sealer, so their request/output digests were not rewritten. Instead,
+`third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json` binds the
+two observed-reference packets for the two replacement slots, and
+`third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json` proves
+that all four historical CAD outputs used the reference packet admitted for
+their exact slot/task/asset. Manifest digest:
+`sha256:7c584095a4e67104057d613f67c97e92fbd26d1a762bb2966f52b1c02a1b7ed2`;
+audit digest:
+`sha256:dd4363e6c5feb62cddbbfbcf080a4e859778855bb3afb489dacb96616c311003`.
+The audit explicitly records `historical_requests_rewritten=false` and
+`agent_outputs_regenerated=false`.
+
 | Task | Backend | Meshes | Reference digest | Bundle digest | Rehearsal |
 |---|---:|---:|---|---|---|
 | Task A washer | Earth-to-Jake | 15 | `sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e` | `sha256:75b11c5b3515e88f6604d8fb567e7d254e6566475890912d370f96ebea98ddc0` | passed |
@@ -478,9 +492,9 @@ Recent reusable-code and manifest commits:
 - Focused Content Agents execution-readiness regressions before `7aa7b7fce` —
   `52 passed`; the generated readiness receipt digest was also recomputed and
   matched.
-- Focused CAD-agent reference-manifest contract regressions for the current
-  follow-up — `15 passed`; adjacent Content Agents/evidence-index regressions —
-  `63 passed`.
+- Focused CAD-agent reference-manifest and historical binding-audit regressions
+  plus adjacent Content Agents/evidence-index regressions for the current
+  follow-up — `81 passed`.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
 - Focused depth, scenario, construction, readback, control, and scoring
@@ -501,7 +515,7 @@ Recent reusable-code and manifest commits:
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; agent-CAD-to-Content-Agents Mesh bundle adapter with manifest-derived references; Content Agents single-use paid-attempt authority; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; manifest-bound CAD-agent reference selection and historical CAD-output reference-binding audit; agent-CAD-to-Content-Agents Mesh bundle adapter with manifest-derived references; Content Agents single-use paid-attempt authority; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes (all four bundles are locally ready but blocked on config preflight plus fresh paid authority), replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |

@@ -12,12 +12,14 @@ from blueprint_pipeline.simready_cad_agent_contract import (
     INSPECTION_SCHEMA_VERSION,
     SimReadyCadAgentContractError,
     file_record,
+    materialize_cad_agent_reference_binding_audit,
     seal_cad_agent_execution_receipt,
     seal_cad_agent_matrix,
     seal_cad_agent_output,
     seal_cad_agent_reference_manifest,
     seal_cad_agent_request,
     validate_cad_agent_matrix,
+    validate_cad_agent_reference_binding_audit,
     validate_cad_agent_output,
     validate_cad_agent_reference_manifest,
     validate_cad_agent_request,
@@ -449,6 +451,94 @@ def test_same_object_compares_two_agent_backends(tmp_path: Path):
         ]
     )
     assert validate_cad_agent_matrix(matrix) == matrix
+
+
+def test_reference_binding_audit_binds_outputs_to_manifest(tmp_path: Path) -> None:
+    request = _request(tmp_path / "request")
+    output = _output(tmp_path / "output", request, "earth")
+    output_path = tmp_path / "output.json"
+    output_path.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
+    manifest_path = Path(request["inputs"]["reference_manifest"]["path"])
+
+    audit = materialize_cad_agent_reference_binding_audit(
+        scene_id=request["scene_id"],
+        reference_manifest_path=manifest_path,
+        cad_agent_output_paths=[output_path],
+    )
+
+    assert validate_cad_agent_reference_binding_audit(audit) == audit
+    assert audit["replacement_object_count"] == 1
+    assert audit["candidate_rows"][0]["binding_status"] == "manifest_bound"
+    assert audit["candidate_rows"][0]["cad_agent_output_artifacts_verified"] is True
+
+
+def test_reference_binding_audit_can_bind_historical_output_without_artifact_reopen(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path / "request")
+    output = _output(tmp_path / "output", request, "earth")
+    output_path = tmp_path / "output.json"
+    output_path.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
+    Path(output["artifacts"]["generator_source"]["path"]).write_text(
+        "mutated after historical receipt\n", encoding="utf-8"
+    )
+    manifest_path = Path(request["inputs"]["reference_manifest"]["path"])
+
+    with pytest.raises(SimReadyCadAgentContractError):
+        materialize_cad_agent_reference_binding_audit(
+            scene_id=request["scene_id"],
+            reference_manifest_path=manifest_path,
+            cad_agent_output_paths=[output_path],
+        )
+
+    audit = materialize_cad_agent_reference_binding_audit(
+        scene_id=request["scene_id"],
+        reference_manifest_path=manifest_path,
+        cad_agent_output_paths=[output_path],
+        verify_cad_output_artifact_files=False,
+    )
+
+    assert validate_cad_agent_reference_binding_audit(audit) == audit
+    assert audit["candidate_rows"][0]["cad_agent_output_artifacts_verified"] is False
+
+
+def test_reference_binding_audit_rejects_swapped_manifest_reference(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path / "request")
+    output = _output(tmp_path / "output", request, "earth")
+    output_path = tmp_path / "output.json"
+    output_path.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
+    wrong_reference = _write(tmp_path / "wrong.png", b"wrong-reference")
+    swapped_manifest = seal_cad_agent_reference_manifest(
+        scene_id=request["scene_id"],
+        objects=[
+            {
+                "replacement_slot": request["replacement_slot"],
+                "task_id": request["task_id"],
+                "asset_id": request["asset_id"],
+                "task_freeze_path": request["inputs"]["task_freeze"]["path"],
+                "reference_image_paths": [wrong_reference],
+            }
+        ],
+    )
+    swapped_manifest_path = tmp_path / "swapped-references.json"
+    swapped_manifest_path.write_text(
+        json.dumps(swapped_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SimReadyCadAgentContractError) as excinfo:
+        materialize_cad_agent_reference_binding_audit(
+            scene_id=request["scene_id"],
+            reference_manifest_path=swapped_manifest_path,
+            cad_agent_output_paths=[output_path],
+        )
+
+    assert any(
+        code.startswith("cad_agent_reference_binding_audit_manifest_join_invalid")
+        for code in excinfo.value.codes
+    )
 
 
 def test_matrix_rejects_six_replacement_objects_before_outputs(tmp_path: Path):

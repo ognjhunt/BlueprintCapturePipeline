@@ -1,0 +1,64 @@
+{
+  "manifest_digest": "sha256:7c584095a4e67104057d613f67c97e92fbd26d1a762bb2966f52b1c02a1b7ed2",
+  "maximum_replacement_objects": 5,
+  "objects": [
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "reference_authority": "observed_scene_reconnaissance_frames",
+      "reference_images": [
+        {
+          "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/reconnaissance/target_candidates_v1/frames/washer_front_close.png",
+          "sha256": "sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e",
+          "size_bytes": 931175
+        },
+        {
+          "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/reconnaissance/target_candidates_v1/frames/washer_front_wide.png",
+          "sha256": "sha256:505c678ad68d49d249cd4c19852232db4fa93d230990b82b882595b6487a5e3a",
+          "size_bytes": 1017733
+        },
+        {
+          "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/reconnaissance/target_candidates_v1/frames/washer_right.png",
+          "sha256": "sha256:9891631b546aa7b7de05b79e9fb89bc12b5ed46aa2727b0683170a8b79ce8d7f",
+          "size_bytes": 919146
+        }
+      ],
+      "replacement_slot": 1,
+      "task_freeze": {
+        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json",
+        "sha256": "sha256:20259ab89d449875eb6836dce864dc0f6604c4bcae19ec9e594bdd387b8fb20a",
+        "size_bytes": 7881
+      },
+      "task_id": "task_a_washer_door_open"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "reference_authority": "observed_scene_reconnaissance_frames",
+      "reference_images": [
+        {
+          "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/reconnaissance/rigid_alternates_v1/frames/notebook_front.png",
+          "sha256": "sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6",
+          "size_bytes": 912829
+        },
+        {
+          "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/reconnaissance/rigid_alternates_v1/frames/notebook_oblique.png",
+          "sha256": "sha256:7e3eed258b48e6db43b7904fae37b9fad73151f37a4f39a26f9e3fa5eff78edb",
+          "size_bytes": 903246
+        },
+        {
+          "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/reconnaissance/rigid_alternates_v1/frames/notebook_side.png",
+          "sha256": "sha256:d3df6b4dea719ad1d419a1ebb50a4d83c956c8c0527a53b734c06e84f02b0b8b",
+          "size_bytes": 903111
+        }
+      ],
+      "replacement_slot": 2,
+      "task_freeze": {
+        "path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json",
+        "sha256": "sha256:2911d1c37b7f96b68c5b71b3272769f5f6ba27e5fd2a01a45f81f33395abff13",
+        "size_bytes": 4951
+      },
+      "task_id": "task_b_notebook_relocation"
+    }
+  ],
+  "scene_id": "840920",
+  "schema_version": "simready_cad_agent_reference_manifest.v1"
+}
