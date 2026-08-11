@@ -951,3 +951,59 @@ def test_a_spec_without_a_sealed_placement_says_so_rather_than_pretending(
 
     result = json.loads(output.read_text(encoding="utf-8"))
     assert result.get("sealed_placement_check", {}).get("status") == "not_declared"
+
+
+def test_the_overview_camera_stands_back_and_upright(stubbed_arena, tmp_path):
+    """external_camera_2 is the review stream (REVIEW_CAMERA_BINDING maps it
+    to 'overview'), but Arena mounts it on the robot's other shoulder - a
+    near-field view nobody can review an episode from. The worker moves it
+    to a computed static world pose that frames robot, task object and
+    handle together, at review resolution, leaving the two policy cameras
+    untouched."""
+
+    import math as _math
+
+    from blueprint_pipeline.overview_camera_placement import plan_overview_camera
+
+    runtime = _write_runtime(tmp_path)
+    spec = json.loads((runtime / "adp009d_articulated_scene_spec.json").read_text())
+    for row in spec["composition"]["objects"]:
+        if row.get("semantic_role") == "task_object":
+            row["spawn_position_world_m"] = [1.9742142, 1.4792181, 0.0]
+    (runtime / "adp009d_articulated_scene_spec.json").write_text(json.dumps(spec))
+
+    output = tmp_path / "out" / "result.json"
+    worker = _load_worker()
+    worker.main(
+        [
+            "--runtime-dir", str(runtime),
+            "--output-dir", str(output.parent),
+            "--spec", str(runtime / "adp009d_articulated_scene_spec.json"),
+            "--output", str(output),
+        ]
+    )
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    overview = result.get("overview_camera") or {}
+    assert overview.get("prim_path", "").endswith("/overview_camera")
+    assert overview.get("width") == worker.OVERVIEW_CAMERA_WIDTH
+    assert overview.get("height") == worker.OVERVIEW_CAMERA_HEIGHT
+
+    expected = plan_overview_camera(
+        scene_points_world_m=[
+            [1.75, 1.99, 0.0],
+            [1.9742142, 1.4792181, 0.0],
+            spec.get("handle_position_world_m") or [1.9742142, 1.4792181, 0.0],
+        ],
+        fov_horizontal_rad=overview["fov_horizontal_rad"],
+        image_aspect=worker.OVERVIEW_CAMERA_WIDTH / worker.OVERVIEW_CAMERA_HEIGHT,
+    )
+    assert overview["position_world_m"] == pytest.approx(
+        expected["position_world_m"], abs=1e-6
+    )
+    assert overview["rotation_wxyz_opengl"] == pytest.approx(
+        expected["rotation_wxyz_opengl"], abs=1e-6
+    )
+    # the two policy cameras keep their policy resolution
+    assert result["camera_resolution"] == [worker.CAMERA_WIDTH, worker.CAMERA_HEIGHT]
+    assert _math.dist(overview["position_world_m"], [1.9, 1.7, 0.5]) > 1.0

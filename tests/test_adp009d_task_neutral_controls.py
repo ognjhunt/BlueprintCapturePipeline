@@ -50,7 +50,13 @@ class _Environment:
         return list(self.joints)
 
     def read_task_sample(self):
+        # The live adapter stamps every sample with its own step counter,
+        # which counts EVERY physics step including the settle steps. rt57
+        # blocked on task_control_sample_step_mismatch because the fake
+        # omitted this field and the settle change desynced the two counters
+        # unseen. The fake counts like the adapter counts.
         return {
+            "step_index": len(self.steps),
             "joint_positions_rad": {
                 "refrigerator_upper_door_hinge": max(0.0, self.joints[0]),
                 "refrigerator_lower_door_hinge": 0.0,

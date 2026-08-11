@@ -60,6 +60,7 @@ try:  # flat provider bundle
     )
     from articulated_control_verdict import seal_detent_torque
     from decision_evidence_contracts import canonical_digest
+    from overview_camera_placement import plan_overview_camera
 except ModuleNotFoundError:  # repository checkout
     import sys as _sys
 
@@ -80,6 +81,7 @@ except ModuleNotFoundError:  # repository checkout
     )
     from blueprint_pipeline.articulated_control_verdict import seal_detent_torque
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.overview_camera_placement import plan_overview_camera
 
 
 RESULT_SCHEMA_VERSION = "adp009d_articulated_scene_result.v1"
@@ -97,6 +99,14 @@ CANDIDATE_POLICY_QUERIED = False
 # cost in an episode and is discarded downstream.
 CAMERA_WIDTH = 320
 CAMERA_HEIGHT = 180
+# The review stream is for a human, not a policy: one static camera that
+# keeps the whole episode in frame, at a resolution worth watching. Costs
+# one camera's render at 4x pixels; the policy inputs stay untouched.
+OVERVIEW_CAMERA_WIDTH = 640
+OVERVIEW_CAMERA_HEIGHT = 360
+# DROID rig intrinsics fallback: 2*atan(5.376 / (2*2.1)) when the fake or a
+# future cfg carries no spawn intrinsics to read.
+OVERVIEW_FOV_FALLBACK_RAD = 1.8338
 ARENA_ENVIRONMENT_NAME = "Blueprint-ADP009D-Articulated-Scene-v0"
 # The scene key for the arm. Declared by DroidSceneCfg as the attribute
 # "robot"; the prim it spawns is "{ENV_REGEX_NS}/Robot". The two differ in
@@ -458,6 +468,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         # at Arena's defaults does not carry the pose metadata the policy-input
         # contract requires. Mirrors the rigid lane rather than inventing a
         # second convention.
+        # Scene points the review camera must keep in frame for the whole
+        # episode: where the arm stands, where the task object stands, and
+        # where the interaction happens.
+        task_row_position = [0.0, 0.0, 0.0]
+        for row in composition.get("objects") or []:
+            if row.get("semantic_role") == "task_object":
+                task_row_position = [
+                    float(v)
+                    for v in (
+                        row.get("spawn_position_world_m")
+                        if row.get("spawn_position_world_m") is not None
+                        else row.get("initial_position_world_m") or (0, 0, 0)
+                    )
+                ]
+        overview_scene_points = [
+            [float(v) for v in (base.get("position_xyz") or (0, 0, 0))],
+            task_row_position,
+            [
+                float(v)
+                for v in (
+                    spec.get("handle_position_world_m") or task_row_position
+                )
+            ],
+        ]
+
         for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
             camera_cfg = getattr(
                 getattr(embodiment, "camera_config", None), camera_name, None
@@ -474,8 +509,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Arena leaves this false, which freezes camera.data.pos_w at
             # initialisation even while the parented view moves.
             camera_cfg.update_latest_camera_pose = True
-            camera_cfg.width = CAMERA_WIDTH
-            camera_cfg.height = CAMERA_HEIGHT
+            if camera_name == "external_camera_2":
+                # REVIEW_CAMERA_BINDING maps this stream to "overview", but
+                # Arena mounts it on the robot's other shoulder - a
+                # near-field view nobody can review an episode from. Move it
+                # to a computed static world pose that frames the whole
+                # scene, upright, at a resolution worth watching. Policy
+                # inputs are untouched: this stream was review-only already.
+                spawn_cfg = getattr(camera_cfg, "spawn", None)
+                focal = float(getattr(spawn_cfg, "focal_length", 0.0) or 0.0)
+                aperture = float(
+                    getattr(spawn_cfg, "horizontal_aperture", 0.0) or 0.0
+                )
+                fov = (
+                    2.0 * math.atan(aperture / (2.0 * focal))
+                    if focal > 0.0 and aperture > 0.0
+                    else OVERVIEW_FOV_FALLBACK_RAD
+                )
+                overview_plan = plan_overview_camera(
+                    scene_points_world_m=overview_scene_points,
+                    fov_horizontal_rad=fov,
+                    image_aspect=OVERVIEW_CAMERA_WIDTH / OVERVIEW_CAMERA_HEIGHT,
+                )
+                camera_cfg.prim_path = "{ENV_REGEX_NS}/overview_camera"
+                offset = getattr(camera_cfg, "offset", None)
+                if offset is None:
+                    import types as _types
+
+                    offset = _types.SimpleNamespace(convention="opengl")
+                    camera_cfg.offset = offset
+                offset.pos = tuple(overview_plan["position_world_m"])
+                offset.rot = tuple(overview_plan["rotation_wxyz_opengl"])
+                offset.convention = "opengl"
+                camera_cfg.width = OVERVIEW_CAMERA_WIDTH
+                camera_cfg.height = OVERVIEW_CAMERA_HEIGHT
+                result["overview_camera"] = {
+                    "prim_path": camera_cfg.prim_path,
+                    "position_world_m": overview_plan["position_world_m"],
+                    "rotation_wxyz_opengl": overview_plan["rotation_wxyz_opengl"],
+                    "fov_horizontal_rad": fov,
+                    "width": OVERVIEW_CAMERA_WIDTH,
+                    "height": OVERVIEW_CAMERA_HEIGHT,
+                    "placement_receipt": overview_plan["receipt"],
+                }
+            else:
+                camera_cfg.width = CAMERA_WIDTH
+                camera_cfg.height = CAMERA_HEIGHT
         result["camera_resolution"] = [CAMERA_WIDTH, CAMERA_HEIGHT]
         _phase(result, "cameras_configured")
 

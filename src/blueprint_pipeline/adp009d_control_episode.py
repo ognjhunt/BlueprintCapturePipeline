@@ -916,8 +916,14 @@ def _run_task_control_episode(
         environment.step(
             environment.hold_action(gripper_command=float(gripper_open_command))
         )
+    # The adapter's own counter has already advanced by the settle steps, and
+    # every sample it stamps counts from reset, not from scoring. The episode
+    # counts the same way or the mismatch guard (rightly) refuses.
+    sample_step_base = SETTLE_STEPS_AFTER_RESET
     samples = [
-        _task_neutral_sample(environment, task_kind=task_kind, step_index=0)
+        _task_neutral_sample(
+            environment, task_kind=task_kind, step_index=sample_step_base
+        )
     ]
     policy_inputs = [
         _persist_observation(
@@ -973,7 +979,9 @@ def _run_task_control_episode(
         )
         samples.append(
             _task_neutral_sample(
-                environment, task_kind=task_kind, step_index=step_index
+                environment,
+                task_kind=task_kind,
+                step_index=sample_step_base + step_index,
             )
         )
         if step_index % CONTROL_REVIEW_FRAME_STRIDE_STEPS == 0:
