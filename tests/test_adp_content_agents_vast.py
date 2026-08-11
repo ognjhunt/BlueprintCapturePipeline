@@ -560,6 +560,29 @@ def test_agent_cad_reference_is_derived_from_manifest_not_operator_guess(
     assert receipt["reference_image_sha256"] == first_reference["sha256"]
 
 
+def test_agent_cad_bundle_rejects_manual_reference_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, reference, _usd = _agent_cad_evidence(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="adp_content_agents_agent_cad_reference_must_come_from_manifest",
+    ):
+        content_agents.build_content_agents_vast_bundle(
+            repo_root=ROOT,
+            content_agents_root=source,
+            job_dir=tmp_path / "agent-cad-manual-reference-rejected",
+            input_variant="agent_cad_v1",
+            reference_image_path=reference,
+            agent_cad_output_manifest_path=output_path,
+            agent_mesh_projection_receipt_path=projection_path,
+            generated_at="fixed",
+        )
+
+
 def test_agent_cad_variant_rejects_changed_projection_usd(
     tmp_path: Path,
 ) -> None:
