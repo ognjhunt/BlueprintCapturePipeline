@@ -223,29 +223,53 @@ def materialize_content_agents_execution_readiness(
         blockers = ["content_agents_paid_attempt_authority_missing"]
         preflight_path_value = preflights.get(key)
         preflight_record: dict[str, Any] | None = None
+        local_preflight_record: dict[str, Any] | None = None
         if preflight_path_value is None:
-            blockers.append("content_agents_config_preflight_missing")
+            blockers.append("content_agents_local_config_preflight_missing")
+            blockers.append("content_agents_paid_model_access_preflight_missing")
         else:
             preflight_path = Path(preflight_path_value).expanduser().resolve()
             preflight = _read_json(preflight_path)
+            base_preflight_valid = (
+                preflight_path.is_file()
+                and preflight.get("bundle_receipt_sha256") == _sha256(receipt_path)
+                and preflight.get("bundle_sha256") == bundle_record.get("sha256")
+                and preflight.get("receipt_digest")
+                == canonical_digest(preflight, digest_field="receipt_digest")
+            )
+            schema = preflight.get("schema_version")
             if (
-                not preflight_path.is_file()
-                or preflight.get("schema_version")
-                != "adp_content_agents_bundle_config_preflight.v2"
-                or preflight.get("status") != "passed"
-                or preflight.get("bundle_receipt_sha256") != _sha256(receipt_path)
-                or preflight.get("bundle_sha256") != bundle_record.get("sha256")
-                or preflight.get("receipt_digest")
-                != canonical_digest(preflight, digest_field="receipt_digest")
+                base_preflight_valid
+                and schema == "adp_content_agents_bundle_config_preflight.v2"
+                and preflight.get("status") == "passed"
             ):
-                blockers.append("content_agents_config_preflight_invalid")
-            else:
                 preflight_record = {
                     "path": str(preflight_path),
                     "sha256": _sha256(preflight_path),
                     "size_bytes": preflight_path.stat().st_size,
                     "receipt_digest": preflight["receipt_digest"],
                 }
+            elif (
+                base_preflight_valid
+                and schema == "adp_content_agents_local_bundle_config_preflight.v1"
+                and preflight.get("status")
+                == "local_passed_paid_model_access_not_checked"
+                and preflight.get("docker_network_disabled") is True
+                and preflight.get("paid_model_access_required") is False
+                and preflight.get("provider_mutations_performed") == 0
+                and preflight.get("paid_resource_allocated") is False
+                and preflight.get("blockers")
+                == ["content_agents_paid_model_access_preflight_missing"]
+            ):
+                local_preflight_record = {
+                    "path": str(preflight_path),
+                    "sha256": _sha256(preflight_path),
+                    "size_bytes": preflight_path.stat().st_size,
+                    "receipt_digest": preflight["receipt_digest"],
+                }
+                blockers.append("content_agents_paid_model_access_preflight_missing")
+            else:
+                blockers.append("content_agents_config_preflight_invalid")
         rows.append(
             {
                 "task_id": item.get("task_id"),
@@ -263,8 +287,10 @@ def materialize_content_agents_execution_readiness(
                     "size_bytes": receipt_path.stat().st_size,
                 },
                 "config_preflight": preflight_record,
+                "local_config_preflight": local_preflight_record,
                 "local_bundle_ready": True,
                 "exact_entrypoint_rehearsed": True,
+                "paid_model_access_required_for_execute": True,
                 "paid_attempt_authority_required_for_execute": True,
                 "execute_admitted": False,
                 "provider_mutations_performed": 0,

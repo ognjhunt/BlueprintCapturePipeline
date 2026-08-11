@@ -35,6 +35,7 @@ from .provider_archive import ProviderArchiveError, extract_provider_archive
 
 
 SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v2"
+LOCAL_SCHEMA_VERSION = "adp_content_agents_local_bundle_config_preflight.v1"
 LOCAL_IMAGE = "blueprint/adp009a-content-agents:0.5.2"
 LOCAL_IMAGE_PLATFORM = "linux/arm64"
 # A container build is not bit-reproducible: the base tag moves and uv
@@ -85,6 +86,9 @@ DRY_RUN_MARKERS = {
 }
 MATERIAL_VALIDATE_MARKER = "Pipeline completed successfully"
 USD_BBOX_MARKER = "BLUEPRINT_CONTENT_AGENTS_DEFAULT_PURPOSE_BBOX_OK"
+LOCAL_NO_PAID_SECRET = "__BLUEPRINT_LOCAL_CONFIG_PREFLIGHT_NO_PAID_SECRET__"
+
+
 def usd_bbox_script(input_usd_name: str) -> str:
     """Assert NVIDIA 0.5.2 can bound the bundle's own input at default purpose.
 
@@ -324,6 +328,7 @@ def materialize_bundle_config_preflight(
     docker: str = "docker",
     image: str = LOCAL_IMAGE,
     generated_at: str | None = None,
+    require_paid_model_access: bool = True,
 ) -> dict[str, Any]:
     """Execute all three upstream dry-runs against the exact upload bundle."""
 
@@ -347,10 +352,24 @@ def materialize_bundle_config_preflight(
     config_records = _bundle_config_records(bundle_path)
     image_record = _inspect_image(docker=docker, image=image)
     source_identity = _orchestrator_source_identity()
-    secret = _secret()
-    if not secret:
-        raise ContentAgentsBundlePreflightError("openai_secret_missing")
-    model_access = _probe_model_access(secret, output)
+    if require_paid_model_access:
+        secret = _secret()
+        if not secret:
+            raise ContentAgentsBundlePreflightError("openai_secret_missing")
+        model_access = _probe_model_access(secret, output)
+    else:
+        secret = LOCAL_NO_PAID_SECRET
+        model_access = {
+            "provider": "openai",
+            "status": "not_executed",
+            "models": {
+                CONTENT_LLM_MODEL: {"status": "not_executed"},
+                CONTENT_IMAGE_MODEL: {"status": "not_executed"},
+            },
+            "paid_inference_performed": False,
+            "uploaded_scene_bytes": False,
+            "blockers": ["content_agents_paid_model_access_preflight_missing"],
+        }
     environment = os.environ.copy()
     for name in SECRET_ENV_NAMES:
         environment[name] = secret
@@ -372,6 +391,7 @@ def materialize_bundle_config_preflight(
                 "--rm",
                 "--platform",
                 LOCAL_IMAGE_PLATFORM,
+                *(["--network", "none"] if not require_paid_model_access else []),
                 "-v",
                 f"{expanded}:/bundle",
                 "-w",
@@ -425,12 +445,13 @@ def materialize_bundle_config_preflight(
         validation_command = [
             docker,
             "run",
-            "--rm",
-            "--platform",
-            LOCAL_IMAGE_PLATFORM,
-            "-v",
-            f"{expanded}:/bundle",
-            "-w",
+                "--rm",
+                "--platform",
+                LOCAL_IMAGE_PLATFORM,
+                *(["--network", "none"] if not require_paid_model_access else []),
+                "-v",
+                f"{expanded}:/bundle",
+                "-w",
             "/bundle/provider_runtime",
             "-e",
             "OPENAI_API_KEY",
@@ -479,12 +500,13 @@ def materialize_bundle_config_preflight(
         bbox_command = [
             docker,
             "run",
-            "--rm",
-            "--platform",
-            LOCAL_IMAGE_PLATFORM,
-            "-v",
-            f"{expanded}:/bundle",
-            "--entrypoint",
+                "--rm",
+                "--platform",
+                LOCAL_IMAGE_PLATFORM,
+                *(["--network", "none"] if not require_paid_model_access else []),
+                "-v",
+                f"{expanded}:/bundle",
+                "--entrypoint",
             "python",
             image,
             *bbox_arguments,
@@ -512,11 +534,17 @@ def materialize_bundle_config_preflight(
         }
 
     receipt: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": (
+            SCHEMA_VERSION if require_paid_model_access else LOCAL_SCHEMA_VERSION
+        ),
         "generated_at": generated_at or utc_now_iso(),
         "generated_by": "blueprint_pipeline.adp_content_agents_bundle_preflight",
         "orchestrator_source_identity": source_identity,
-        "status": "passed",
+        "status": (
+            "passed"
+            if require_paid_model_access
+            else "local_passed_paid_model_access_not_checked"
+        ),
         "bundle_receipt_path": str(receipt_path),
         "bundle_receipt_sha256": _sha256_file(receipt_path),
         "bundle_path": str(bundle_path),
@@ -528,10 +556,16 @@ def materialize_bundle_config_preflight(
         "configs": config_records,
         "executions": executions,
         "all_required_dry_runs_executed": True,
+        "docker_network_disabled": not require_paid_model_access,
+        "paid_model_access_required": require_paid_model_access,
         "provider_mutations_performed": 0,
         "paid_resource_allocated": False,
         "raw_secret_values_recorded": False,
-        "blockers": [],
+        "blockers": (
+            []
+            if require_paid_model_access
+            else ["content_agents_paid_model_access_preflight_missing"]
+        ),
         "receipt_digest": "",
     }
     serialized = json.dumps(receipt, sort_keys=True)
@@ -540,6 +574,32 @@ def materialize_bundle_config_preflight(
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     write_json(output / "adp_content_agents_bundle_config_preflight.json", receipt)
     return receipt
+
+
+def materialize_local_bundle_config_preflight(
+    *,
+    bundle_receipt_path: str | Path,
+    evidence_dir: str | Path,
+    docker: str = "docker",
+    image: str = LOCAL_IMAGE,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Run only local Content Agents bundle/config/container checks.
+
+    This deliberately does not probe OpenAI model or image-generation access and
+    runs container checks with Docker networking disabled. It is sufficient to
+    clear locally decidable bundle/config blockers, but it is not an execution
+    admission receipt.
+    """
+
+    return materialize_bundle_config_preflight(
+        bundle_receipt_path=bundle_receipt_path,
+        evidence_dir=evidence_dir,
+        docker=docker,
+        image=image,
+        generated_at=generated_at,
+        require_paid_model_access=False,
+    )
 
 
 def validate_bundle_config_preflight(
@@ -696,6 +756,180 @@ def validate_bundle_config_preflight(
     return sorted(set(blockers))
 
 
+def validate_local_bundle_config_preflight(
+    *,
+    preflight: Mapping[str, Any],
+    prepared_bundle: Mapping[str, Any],
+    preflight_receipt_path: str | Path,
+    expected_orchestrator_source_commit: str,
+) -> list[str]:
+    """Re-derive every local no-paid binding used before model-access admission."""
+
+    blockers: list[str] = []
+    preflight_path = Path(preflight_receipt_path).expanduser().resolve()
+    evidence_root = preflight_path.parent
+    bundle_path = Path(str(prepared_bundle.get("bundle_path") or "")).expanduser().resolve()
+    source_identity = preflight.get("orchestrator_source_identity")
+    if not isinstance(source_identity, Mapping):
+        source_identity = {}
+    model_access = preflight.get("model_access")
+    if not isinstance(model_access, Mapping):
+        model_access = {}
+    if (
+        preflight.get("schema_version") != LOCAL_SCHEMA_VERSION
+        or preflight.get("generated_by")
+        != "blueprint_pipeline.adp_content_agents_bundle_preflight"
+        or preflight.get("status") != "local_passed_paid_model_access_not_checked"
+        or source_identity.get("commit") != expected_orchestrator_source_commit
+        or source_identity.get("checkout_clean") is not True
+        or preflight.get("receipt_digest")
+        != canonical_digest(preflight, digest_field="receipt_digest")
+        or preflight.get("bundle_sha256") != prepared_bundle.get("bundle_sha256")
+        or preflight.get("bundle_path") != str(bundle_path)
+        or preflight.get("content_agents_source_commit") != SOURCE_COMMIT
+        or preflight.get("content_agents_source_tree") != SOURCE_TREE
+        or not _admitted_local_image_record(preflight.get("local_container_image"))
+        or model_access.get("paid_inference_performed") is not False
+        or model_access.get("uploaded_scene_bytes") is not False
+        or model_access.get("blockers")
+        != ["content_agents_paid_model_access_preflight_missing"]
+        or preflight.get("all_required_dry_runs_executed") is not True
+        or preflight.get("docker_network_disabled") is not True
+        or preflight.get("paid_model_access_required") is not False
+        or preflight.get("provider_mutations_performed") != 0
+        or preflight.get("paid_resource_allocated") is not False
+        or preflight.get("raw_secret_values_recorded") is not False
+        or preflight.get("blockers")
+        != ["content_agents_paid_model_access_preflight_missing"]
+    ):
+        blockers.append("adp_content_agents_local_config_preflight_binding_invalid")
+
+    try:
+        observed_configs = _bundle_config_records(bundle_path)
+    except (OSError, ContentAgentsBundlePreflightError):
+        observed_configs = {}
+    if preflight.get("configs") != observed_configs:
+        blockers.append(
+            "adp_content_agents_local_config_preflight_config_digest_mismatch"
+        )
+    executions = preflight.get("executions")
+    if not isinstance(executions, Mapping):
+        blockers.append("adp_content_agents_local_config_preflight_execution_missing")
+        executions = {}
+    for name in ("material", "texture", "physics"):
+        row = executions.get(name)
+        if not isinstance(row, Mapping):
+            blockers.append(
+                f"adp_content_agents_local_config_preflight_execution_missing:{name}"
+            )
+            continue
+        log_path = Path(str(row.get("log_path") or "")).expanduser().resolve()
+        if evidence_root != log_path.parent:
+            blockers.append(
+                f"adp_content_agents_local_config_preflight_log_outside_evidence:{name}"
+            )
+        expected = {
+            "entrypoint": ENTRYPOINTS[name],
+            "arguments": ["run", "/bundle/" + CONFIG_MEMBERS[name], "--dry-run"],
+            "secret_environment_names_passed_by_name": list(SECRET_ENV_NAMES),
+            "returncode": 0,
+            "required_marker": DRY_RUN_MARKERS[name],
+            "log_path": str(log_path),
+            "log_size_bytes": log_path.stat().st_size if log_path.is_file() else 0,
+            "log_sha256": _sha256_file(log_path) if log_path.is_file() else "",
+        }
+        log_text = log_path.read_text(encoding="utf-8") if log_path.is_file() else ""
+        if dict(row) != expected or DRY_RUN_MARKERS[name] not in log_text:
+            blockers.append(
+                f"adp_content_agents_local_config_preflight_execution_invalid:{name}"
+            )
+    validation_row = executions.get("material_validate_input")
+    if not isinstance(validation_row, Mapping):
+        blockers.append(
+            "adp_content_agents_local_config_preflight_execution_missing:"
+            "material_validate_input"
+        )
+    else:
+        validation_log = Path(
+            str(validation_row.get("log_path") or "")
+        ).expanduser().resolve()
+        if evidence_root != validation_log.parent:
+            blockers.append(
+                "adp_content_agents_local_config_preflight_log_outside_evidence:"
+                "material_validate_input"
+            )
+        validation_arguments = [
+            "run",
+            "/bundle/" + CONFIG_MEMBERS["material"],
+            "--only",
+            "validate_input",
+            "--clean",
+        ]
+        expected_validation = {
+            "entrypoint": ENTRYPOINTS["material"],
+            "arguments": validation_arguments,
+            "secret_environment_names_passed_by_name": ["OPENAI_API_KEY"],
+            "returncode": 0,
+            "required_marker": MATERIAL_VALIDATE_MARKER,
+            "log_path": str(validation_log),
+            "log_size_bytes": (
+                validation_log.stat().st_size if validation_log.is_file() else 0
+            ),
+            "log_sha256": (
+                _sha256_file(validation_log) if validation_log.is_file() else ""
+            ),
+        }
+        validation_text = (
+            validation_log.read_text(encoding="utf-8")
+            if validation_log.is_file()
+            else ""
+        )
+        if (
+            dict(validation_row) != expected_validation
+            or MATERIAL_VALIDATE_MARKER not in validation_text
+        ):
+            blockers.append(
+                "adp_content_agents_local_config_preflight_execution_invalid:"
+                "material_validate_input"
+            )
+    bbox_row = executions.get("usd_default_purpose_bbox")
+    if not isinstance(bbox_row, Mapping):
+        blockers.append(
+            "adp_content_agents_local_config_preflight_execution_missing:"
+            "usd_default_purpose_bbox"
+        )
+    else:
+        bbox_log = Path(str(bbox_row.get("log_path") or "")).expanduser().resolve()
+        if evidence_root != bbox_log.parent:
+            blockers.append(
+                "adp_content_agents_local_config_preflight_log_outside_evidence:"
+                "usd_default_purpose_bbox"
+            )
+        recorded_arguments = list(bbox_row.get("arguments") or [])
+        recorded_script = recorded_arguments[1] if len(recorded_arguments) == 2 else ""
+        input_name = ""
+        marker = "/bundle/provider_runtime/input/"
+        if marker in recorded_script:
+            input_name = recorded_script.split(marker, 1)[1].split("'", 1)[0]
+        expected_bbox = {
+            "entrypoint": "python",
+            "arguments": ["-c", usd_bbox_script(input_name)] if input_name else [],
+            "secret_environment_names_passed_by_name": [],
+            "returncode": 0,
+            "required_marker": USD_BBOX_MARKER,
+            "log_path": str(bbox_log),
+            "log_size_bytes": bbox_log.stat().st_size if bbox_log.is_file() else 0,
+            "log_sha256": _sha256_file(bbox_log) if bbox_log.is_file() else "",
+        }
+        bbox_text = bbox_log.read_text(encoding="utf-8") if bbox_log.is_file() else ""
+        if dict(bbox_row) != expected_bbox or USD_BBOX_MARKER not in bbox_text:
+            blockers.append(
+                "adp_content_agents_local_config_preflight_execution_invalid:"
+                "usd_default_purpose_bbox"
+            )
+    return sorted(set(blockers))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Execute exact Content Agents config dry-runs before GPU allocation."
@@ -703,12 +937,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bundle-receipt", required=True)
     parser.add_argument("--evidence-dir", required=True)
     parser.add_argument("--docker", default="docker")
-    args = parser.parse_args(argv)
-    receipt = materialize_bundle_config_preflight(
-        bundle_receipt_path=args.bundle_receipt,
-        evidence_dir=args.evidence_dir,
-        docker=args.docker,
+    parser.add_argument(
+        "--local-no-paid-model-access",
+        action="store_true",
+        help=(
+            "Run only local bundle/container/config checks with Docker networking "
+            "disabled; do not probe paid model or image-generation access."
+        ),
     )
+    args = parser.parse_args(argv)
+    if args.local_no_paid_model_access:
+        receipt = materialize_local_bundle_config_preflight(
+            bundle_receipt_path=args.bundle_receipt,
+            evidence_dir=args.evidence_dir,
+            docker=args.docker,
+        )
+    else:
+        receipt = materialize_bundle_config_preflight(
+            bundle_receipt_path=args.bundle_receipt,
+            evidence_dir=args.evidence_dir,
+            docker=args.docker,
+        )
     print(json.dumps(receipt, indent=2, sort_keys=True))
     return 0
 
