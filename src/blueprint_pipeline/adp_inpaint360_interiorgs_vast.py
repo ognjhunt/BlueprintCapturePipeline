@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -46,9 +47,6 @@ LAMA_REQUIRED_RUNTIME_FILES = (
     "saicinpainting/training/data/datasets.py",
     "saicinpainting/training/data/masks.py",
 )
-SCENE_ID = "840313"
-TARGET_INSTANCE_ID = "160"
-TARGET_METHOD_INSTANCE_ID = 1
 DEFAULT_IMAGE = (
     "docker.io/nvidia/cuda@sha256:60eda04ab6790aa76d73bf0df245b361eabc6d8f7b6f6cf9846c70f399b9a1eb"
 )
@@ -173,22 +171,53 @@ def _validate_prerequisite(receipt: Mapping[str, Any]) -> Mapping[str, Any]:
     return big_lama
 
 
-def _validate_adapter(receipt: Mapping[str, Any], *, adapter_root: Path) -> list[tuple[str, Path]]:
+def _adapter_target_binding(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the scene/task identity that owns one Inpaint360 packet."""
+
+    scene = receipt.get("scene") or {}
+    adapter = receipt.get("adapter") or {}
+    scene_id = str(scene.get("publisher_scene_id") or "")
+    target_instance_id = str(scene.get("target_instance_id") or "")
+    task_value = scene.get("task_id")
+    task_id = str(task_value or "") or None
+    if not scene_id.isdigit() or not target_instance_id.isdigit():
+        raise ValueError("adp_inpaint360_scene_target_identity_invalid")
+    if task_id is not None and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", task_id):
+        raise ValueError("adp_inpaint360_task_id_invalid")
+    expected_config_id = (
+        f"{scene_id}__{target_instance_id}__{task_id}" if task_id else scene_id
+    )
+    method_config_id = str(adapter.get("method_config_id") or scene_id)
+    if method_config_id != expected_config_id:
+        raise ValueError("adp_inpaint360_method_config_identity_mismatch")
+    method_instance_id = adapter.get("target_method_instance_id")
+    if (
+        isinstance(method_instance_id, bool)
+        or not isinstance(method_instance_id, int)
+        or not 1 <= method_instance_id <= 255
+    ):
+        raise ValueError("adp_inpaint360_method_target_identity_invalid")
+    return {
+        "scene_id": scene_id,
+        "target_instance_id": target_instance_id,
+        "task_id": task_id,
+        "method_config_id": method_config_id,
+        "target_method_instance_id": method_instance_id,
+    }
+
+
+def _validate_adapter(
+    receipt: Mapping[str, Any], *, adapter_root: Path
+) -> tuple[list[tuple[str, Path]], dict[str, Any]]:
     if canonical_digest(receipt, digest_field="receipt_digest") != receipt.get("receipt_digest"):
         raise ValueError("adp_inpaint360_adapter_receipt_digest_mismatch")
-    scene = receipt.get("scene") or {}
     source = receipt.get("source") or {}
     adapter = receipt.get("adapter") or {}
     if receipt.get("status") != "prepared_unexecuted":
         raise ValueError("adp_inpaint360_adapter_not_prepared")
-    if scene.get("publisher_scene_id") != SCENE_ID:
-        raise ValueError("adp_inpaint360_scene_id_mismatch")
-    if scene.get("target_instance_id") != TARGET_INSTANCE_ID:
-        raise ValueError("adp_inpaint360_target_instance_mismatch")
+    target = _adapter_target_binding(receipt)
     if source.get("commit") != SOURCE_COMMIT or source.get("tree") != SOURCE_TREE:
         raise ValueError("adp_inpaint360_adapter_source_identity_mismatch")
-    if adapter.get("target_method_instance_id") != TARGET_METHOD_INSTANCE_ID:
-        raise ValueError("adp_inpaint360_method_target_identity_mismatch")
     if adapter.get("target_object_radius_derivation") != "max_distance_from_metric_obb_center":
         raise ValueError("adp_inpaint360_target_radius_not_evidence_derived")
     radius = adapter.get("target_object_radius_m")
@@ -225,14 +254,14 @@ def _validate_adapter(receipt: Mapping[str, Any], *, adapter_root: Path) -> list
         rows.append((relative, path))
     required = {
         "config/distill.json",
-        f"config/object_removal/blueprint/{SCENE_ID}.json",
-        f"config/object_inpaint/blueprint/{SCENE_ID}.json",
+        f"config/object_removal/blueprint/{target['method_config_id']}.json",
+        f"config/object_inpaint/blueprint/{target['method_config_id']}.json",
         "vanilla_3dgs/cfg_args",
         "vanilla_3dgs/point_cloud/iteration_30000/point_cloud.ply",
     }
     if not required.issubset({relative for relative, _ in rows}):
         raise ValueError("adp_inpaint360_adapter_required_artifact_missing")
-    return rows
+    return rows, target
 
 
 def build_inpaint360_interiorgs_bundle(
@@ -309,7 +338,7 @@ def build_inpaint360_interiorgs_bundle(
     ):
         raise ValueError("adp_inpaint360_vgg16_weights_bytes_changed")
     adapter_receipt = _read_json(adapter_receipt_file)
-    adapter_rows = _validate_adapter(adapter_receipt, adapter_root=packet)
+    adapter_rows, target = _validate_adapter(adapter_receipt, adapter_root=packet)
     source_rows = _tracked_files(source)
     source_manifest = _file_manifest(source_rows)
     lama_manifest = _file_manifest(lama_rows)
@@ -332,10 +361,12 @@ def build_inpaint360_interiorgs_bundle(
         shutil.copy2(scripts / name, runtime / name)
     spec = {
         "schema_version": "adp_inpaint360_interiorgs_spec.v1",
-        "scene_id": SCENE_ID,
-        "target_instance_id": TARGET_INSTANCE_ID,
+        "scene_id": target["scene_id"],
+        "target_instance_id": target["target_instance_id"],
+        "task_id": target["task_id"],
+        "method_config_id": target["method_config_id"],
         "target_semantic_label": adapter_receipt["scene"]["target_semantic_label"],
-        "target_method_instance_id": TARGET_METHOD_INSTANCE_ID,
+        "target_method_instance_id": target["target_method_instance_id"],
         "target_object_radius_m": adapter_receipt["adapter"]["target_object_radius_m"],
         "target_obb_corners_m": adapter_receipt["adapter"]["target_obb_corners_m"],
         "target_removal_volume_contract": adapter_receipt["adapter"][
@@ -436,6 +467,7 @@ def build_inpaint360_interiorgs_bundle(
         "lama_runtime_archive_sha256": _sha256(runtime / "lama_training_data.zip"),
         "lama_runtime_manifest_digest": canonical_digest({"files": lama_manifest}),
         "adapter_receipt_digest": adapter_receipt["receipt_digest"],
+        "target_binding": target,
         "prerequisite_receipt_digest": prerequisite["receipt_digest"],
         "adapter_archive_sha256": _sha256(runtime / "interiorgs_adapter.zip"),
         "adapter_manifest_digest": canonical_digest({"files": adapter_manifest}),
@@ -479,6 +511,27 @@ def _remaining_minutes(
     runtime_minutes = math.floor(max(0.0, hard_ttl_seconds - prior_seconds) / 60.0)
     spend_minutes = math.floor(max(0.0, hard_cap_usd - prior_cost) * 60.0 / max_hourly_rate_usd)
     return max(0, min(runtime_minutes, spend_minutes))
+
+
+def _bundle_target_key_prefix(bundle: Mapping[str, Any]) -> str:
+    """Create a provider prefix unique to one sealed scene/task target."""
+
+    target = bundle.get("target_binding")
+    if not isinstance(target, Mapping):
+        raise ValueError("adp_inpaint360_bundle_target_binding_invalid")
+    scene_id = str(target.get("scene_id") or "")
+    target_instance_id = str(target.get("target_instance_id") or "")
+    config_id = str(target.get("method_config_id") or "")
+    task_id = target.get("task_id")
+    if (
+        not scene_id.isdigit()
+        or not target_instance_id.isdigit()
+        or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", config_id)
+        or task_id is not None
+        and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", str(task_id))
+    ):
+        raise ValueError("adp_inpaint360_bundle_target_binding_invalid")
+    return f"{DEFAULT_KEY_PREFIX}/{scene_id}/{target_instance_id}/{config_id}"
 
 
 def _extract(path: Path, destination: Path) -> dict[str, Any]:
@@ -555,6 +608,7 @@ def run_inpaint360_interiorgs_vast(
         or _sha256(bundle_path) != bundle.get("bundle_sha256")
     ):
         raise ValueError("adp_inpaint360_prepared_bundle_binding_invalid")
+    key_prefix = _bundle_target_key_prefix(bundle)
     if not execute:
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -587,7 +641,7 @@ def run_inpaint360_interiorgs_vast(
     staging = stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
         bundle_path=str(bundle_path),
-        key_prefix=DEFAULT_KEY_PREFIX,
+        key_prefix=key_prefix,
         expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
     )
     if staging.get("status") != "completed":

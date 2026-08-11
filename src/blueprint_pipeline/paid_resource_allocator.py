@@ -2048,6 +2048,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or prepared_bundle.get("retry_cap") != 0
                     or prepared_bundle.get("blockers") not in ([], None)
                     or not prepared_bundle.get("adapter_receipt_digest")
+                    or not isinstance(prepared_bundle.get("target_binding"), Mapping)
+                    or not str(
+                        (prepared_bundle.get("target_binding") or {}).get("scene_id")
+                        or ""
+                    ).isdigit()
+                    or not str(
+                        (prepared_bundle.get("target_binding") or {}).get(
+                            "target_instance_id"
+                        )
+                        or ""
+                    ).isdigit()
+                    or not str(
+                        (prepared_bundle.get("target_binding") or {}).get(
+                            "method_config_id"
+                        )
+                        or ""
+                    )
                     or prepared_bundle.get("blueprint_repository_tracked_state") != "clean"
                     or prepared_bundle.get("blueprint_repository_commit")
                     != expected_source_commit
@@ -2102,6 +2119,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "prerequisite_receipt_digest": ADP_INPAINT360_PREREQUISITE_RECEIPT_DIGEST,
                 "adapter_receipt_digest": (
                     prepared_bundle.get("adapter_receipt_digest") if prepared_bundle else None
+                ),
+                "target_binding": (
+                    prepared_bundle.get("target_binding") if prepared_bundle else None
                 ),
                 "container_image": ADP_INPAINT360_INTERIORGS_IMAGE,
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,

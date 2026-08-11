@@ -305,6 +305,16 @@ released-code seam-repair path if a future qualified cutout exposes the same
 regions. No image was edited, no Gaussian was deleted, and no inpainting output
 or background claim is admitted.
 
+The admitted released-code Inpaint360 staging/launch lane is now also
+task-neutral: it derives a safe config identity from the sealed
+`(publisher_scene_id, target_instance_id, task_id)` tuple and gives that exact
+target a distinct object-store prefix. The old 840313 single-target packet is a
+tested compatibility case; new multi-target packets cannot silently share its
+config file, target identity, or provider prefix. This is reusable preflight
+work only. It does not cure the current ownership abstention, establish the
+publisher's raw-byte disclosure authority for a third-scene upload, or execute
+an inpainting run.
+
 Task A SimReady candidate: **authored and statically structure-qualified, not
 simulator-qualified**. Its general graph compiler emitted six links, five
 joints, ten primitive colliders, complete mass/COM/inertia and material

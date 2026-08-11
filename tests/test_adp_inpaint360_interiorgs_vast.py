@@ -49,7 +49,14 @@ def _load_rasterizer_probe():
     return module
 
 
-def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+def _fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scene_id: str = "840313",
+    target_instance_id: str = "160",
+    task_id: str | None = None,
+) -> dict[str, Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
@@ -132,10 +139,13 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
         runtime, "LAMA_SOURCE_LICENSE_SHA256", runtime._sha256(lama_license)
     )
     packet = tmp_path / "adapter"
+    method_config_id = (
+        f"{scene_id}__{target_instance_id}__{task_id}" if task_id else scene_id
+    )
     required = {
         "config/distill.json": b"{}\n",
-        "config/object_removal/blueprint/840313.json": b"{}\n",
-        "config/object_inpaint/blueprint/840313.json": b"{}\n",
+        f"config/object_removal/blueprint/{method_config_id}.json": b"{}\n",
+        f"config/object_inpaint/blueprint/{method_config_id}.json": b"{}\n",
         "vanilla_3dgs/cfg_args": b"Namespace()\n",
         "vanilla_3dgs/point_cloud/iteration_30000/point_cloud.ply": b"ply fixture",
         "source/images/view.png": b"image",
@@ -152,29 +162,35 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
                 "sha256": runtime._sha256(path),
             }
         )
+    scene: dict[str, object] = {
+        "publisher_scene_id": scene_id,
+        "target_instance_id": target_instance_id,
+        "target_semantic_label": "canned_beverage",
+    }
+    if task_id is not None:
+        scene["task_id"] = task_id
+    adapter: dict[str, object] = {
+        "target_method_instance_id": 1,
+        "target_object_radius_m": 0.095,
+        "target_object_radius_derivation": "max_distance_from_metric_obb_center",
+        "target_obb_corners_m": [
+            [float(x), float(y), float(z)]
+            for x in (0, 1)
+            for y in (0, 1)
+            for z in (0, 1)
+        ],
+        "target_removal_volume_contract": (
+            "gaussian_center_inside_exact_publisher_obb"
+        ),
+        "staged_artifacts": records,
+    }
+    if task_id is not None:
+        adapter["method_config_id"] = method_config_id
     adapter_receipt: dict[str, object] = {
         "status": "prepared_unexecuted",
-        "scene": {
-            "publisher_scene_id": runtime.SCENE_ID,
-            "target_instance_id": runtime.TARGET_INSTANCE_ID,
-            "target_semantic_label": "canned_beverage",
-        },
+        "scene": scene,
         "source": {"commit": commit, "tree": tree},
-        "adapter": {
-            "target_method_instance_id": runtime.TARGET_METHOD_INSTANCE_ID,
-            "target_object_radius_m": 0.095,
-            "target_object_radius_derivation": "max_distance_from_metric_obb_center",
-            "target_obb_corners_m": [
-                [float(x), float(y), float(z)]
-                for x in (0, 1)
-                for y in (0, 1)
-                for z in (0, 1)
-            ],
-            "target_removal_volume_contract": (
-                "gaussian_center_inside_exact_publisher_obb"
-            ),
-            "staged_artifacts": records,
-        },
+        "adapter": adapter,
     }
     adapter_receipt["receipt_digest"] = canonical_digest(
         adapter_receipt, digest_field="receipt_digest"
@@ -338,6 +354,54 @@ def test_bundle_passes_vast_preflight_and_has_fail_closed_launch_script(
     )
     assert preflight["status"] == "passed"
     assert preflight["blockers"] == []
+
+
+def test_bundle_binds_task_specific_config_and_provider_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(
+        tmp_path,
+        monkeypatch,
+        scene_id="840920",
+        target_instance_id="385",
+        task_id="task_b_notebook_relocation",
+    )
+    receipt = _build(paths)
+    spec = json.loads(
+        (paths["job"] / "provider_runtime" / "execution_spec.json").read_text()
+    )
+    assert spec["scene_id"] == "840920"
+    assert spec["target_instance_id"] == "385"
+    assert spec["task_id"] == "task_b_notebook_relocation"
+    assert spec["method_config_id"] == "840920__385__task_b_notebook_relocation"
+    assert receipt["target_binding"] == {
+        "scene_id": "840920",
+        "target_instance_id": "385",
+        "task_id": "task_b_notebook_relocation",
+        "method_config_id": "840920__385__task_b_notebook_relocation",
+        "target_method_instance_id": 1,
+    }
+    assert runtime._bundle_target_key_prefix(receipt).endswith(
+        "/840920/385/840920__385__task_b_notebook_relocation"
+    )
+
+
+def test_bundle_rejects_task_to_config_identity_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(
+        tmp_path,
+        monkeypatch,
+        scene_id="840920",
+        target_instance_id="385",
+        task_id="task_b_notebook_relocation",
+    )
+    receipt = json.loads(paths["adapter_receipt"].read_text())
+    receipt["adapter"]["method_config_id"] = "840920__165__task_a_washer_door_open"
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _write_json(paths["adapter_receipt"], receipt)
+    with pytest.raises(ValueError, match="method_config_identity_mismatch"):
+        _build(paths)
 
 
 def test_bundle_rejects_mutated_adapter_artifact(
@@ -1281,6 +1345,9 @@ def test_canonical_allocator_issues_inpaint360_grant_only_for_execute(
     assert admission["allocation_binding"]["expected_source_commit"] == receipt[
         "blueprint_repository_commit"
     ]
+    assert admission["allocation_binding"]["target_binding"] == receipt[
+        "target_binding"
+    ]
 
 
 def test_canonical_allocator_rejects_mistyped_expected_source_commit(
@@ -1351,6 +1418,22 @@ def test_live_runner_dry_run_performs_no_provider_mutation(
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
     assert result["retry_cap"] == 0
+
+
+def test_live_runner_rejects_missing_target_binding_before_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(tmp_path, monkeypatch)
+    receipt = _build(paths)
+    receipt.pop("target_binding")
+    with pytest.raises(ValueError, match="bundle_target_binding_invalid"):
+        runtime.run_inpaint360_interiorgs_vast(
+            job_dir=tmp_path / "run",
+            paid_resource_admission_grant=None,
+            execute=False,
+            prepared_bundle=receipt,
+            public_image=runtime.DEFAULT_IMAGE,
+        )
 
 
 def test_fresh_live_job_has_full_budget_without_preexisting_ledger(tmp_path: Path) -> None:

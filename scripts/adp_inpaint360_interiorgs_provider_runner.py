@@ -1099,8 +1099,9 @@ def main() -> int:
     lama_env = dict(main_env)
     lama_env["TORCH_HOME"] = str(source / "LaMa")
     lama_env["PYTHONPATH"] = str(source / "LaMa")
-    config_removal = packet / f"config/object_removal/blueprint/{spec['scene_id']}.json"
-    config_inpaint = packet / f"config/object_inpaint/blueprint/{spec['scene_id']}.json"
+    config_id = str(spec.get("method_config_id") or spec["scene_id"])
+    config_removal = packet / f"config/object_removal/blueprint/{config_id}.json"
+    config_inpaint = packet / f"config/object_inpaint/blueprint/{config_id}.json"
     source_data = packet / "source"
     model = packet / "inpaint360_model"
     vanilla = packet / "vanilla_3dgs"
@@ -1628,6 +1629,8 @@ def main() -> int:
         "status": "completed" if not blockers else "blocked",
         "scene_id": spec["scene_id"],
         "target_instance_id": spec["target_instance_id"],
+        "task_id": spec.get("task_id"),
+        "method_config_id": config_id,
         "target_method_instance_id": spec["target_method_instance_id"],
         "source_commit": spec["source"]["commit"],
         "source_tree": spec["source"]["tree"],

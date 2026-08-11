@@ -27,7 +27,13 @@ def _record(path: Path, root: Path) -> dict:
     }
 
 
-def _fixture(tmp_path: Path) -> dict[str, Path]:
+def _fixture(
+    tmp_path: Path,
+    *,
+    scene_id: str = "840313",
+    target_instance_id: str = "160",
+    task_id: str | None = None,
+) -> dict[str, Path]:
     repo, data, method = tmp_path / "repo", tmp_path / "data", tmp_path / "method"
     repo.mkdir()
     data.mkdir()
@@ -87,23 +93,26 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         masks.append({"camera_id": camera_id, **_record(mask, input_root)})
     cameras_path = input_root / "cameras.v1.json"
     cameras_path.write_text(json.dumps(cameras))
+    scene = {
+        "publisher_scene_id": scene_id,
+        "target_instance_id": target_instance_id,
+        "target_obb_corners_m": [
+            [-0.1, -0.2, -0.3],
+            [0.1, -0.2, -0.3],
+            [0.1, 0.2, -0.3],
+            [-0.1, 0.2, -0.3],
+            [-0.1, -0.2, 0.3],
+            [0.1, -0.2, 0.3],
+            [0.1, 0.2, 0.3],
+            [-0.1, 0.2, 0.3],
+        ],
+    }
+    if task_id is not None:
+        scene["task_id"] = task_id
     receipt = {
         "schema_version": "adp009b_interiorgs_edit_input_receipt.v1",
         "status": "render_derived_input_packet_materialized",
-        "scene": {
-            "publisher_scene_id": "840313",
-            "target_instance_id": "160",
-            "target_obb_corners_m": [
-                [-0.1, -0.2, -0.3],
-                [0.1, -0.2, -0.3],
-                [0.1, 0.2, -0.3],
-                [-0.1, 0.2, -0.3],
-                [-0.1, -0.2, 0.3],
-                [0.1, -0.2, 0.3],
-                [0.1, 0.2, 0.3],
-                [-0.1, 0.2, 0.3],
-            ],
-        },
+        "scene": scene,
         "proof_boundaries": {"inpainting_result": False},
         "derived_artifacts": {
             "cameras": _record(cameras_path, input_root),
@@ -227,6 +236,50 @@ def test_adapter_rejects_mutated_frame(tmp_path: Path, monkeypatch: pytest.Monke
             repo_root=paths["repo"], data_root=paths["data"], method_root=paths["method"],
             output_root=paths["data"] / "adapter",
         )
+
+
+def test_adapter_binds_task_specific_config_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(
+        tmp_path,
+        scene_id="840920",
+        target_instance_id="385",
+        task_id="task_b_notebook_relocation",
+    )
+    real_run = subprocess.run
+
+    def patched_run(command, **kwargs):
+        if (
+            command[:4]
+            == ["git", "-C", str(paths["method"]), "rev-parse"]
+            and command[-1] == "HEAD"
+        ):
+            return subprocess.CompletedProcess(command, 0, INPAINT360_COMMIT + "\n", "")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.subprocess.run",
+        patched_run,
+    )
+    receipt = materialize_inpaint360_adapter(
+        input_receipt_path=paths["receipt"],
+        input_root=paths["input"],
+        repo_root=paths["repo"],
+        data_root=paths["data"],
+        method_root=paths["method"],
+        output_root=paths["data"] / "adapter",
+    )
+    config_id = "840920__385__task_b_notebook_relocation"
+    output = paths["data"] / "adapter"
+    assert receipt["adapter"]["method_config_id"] == config_id
+    assert receipt["adapter"]["task_id"] == "task_b_notebook_relocation"
+    assert (
+        output / f"config/object_removal/blueprint/{config_id}.json"
+    ).is_file()
+    assert (
+        output / f"config/object_inpaint/blueprint/{config_id}.json"
+    ).is_file()
 
 
 def test_adapter_rejects_missing_metric_target_obb(

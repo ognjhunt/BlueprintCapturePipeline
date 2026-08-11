@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -210,6 +211,28 @@ def _target_object_radius_m(scene: Mapping[str, Any]) -> float:
     return radius
 
 
+def _method_config_id(scene: Mapping[str, Any]) -> tuple[str, str | None]:
+    """Return a safe, task-bound upstream config stem.
+
+    Old single-target packets did not retain a task ID and continue to use the
+    publisher scene ID as their config stem.  New packets bind scene, target,
+    and task so two removals from one scene cannot silently share an upstream
+    config file.
+    """
+
+    scene_id = str(scene.get("publisher_scene_id") or "")
+    target_instance_id = str(scene.get("target_instance_id") or "")
+    task_value = scene.get("task_id")
+    task_id = str(task_value or "") or None
+    if not scene_id.isdigit() or not target_instance_id.isdigit():
+        raise Inpaint360AdapterError(["inpaint360_scene_target_identity_invalid"])
+    if task_id is None:
+        return scene_id, None
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", task_id):
+        raise Inpaint360AdapterError(["inpaint360_task_id_invalid"])
+    return f"{scene_id}__{target_instance_id}__{task_id}", task_id
+
+
 def materialize_inpaint360_adapter(
     *,
     input_receipt_path: str | Path,
@@ -257,6 +280,7 @@ def materialize_inpaint360_adapter(
         raise Inpaint360AdapterError(["inpaint360_camera_count_invalid"])
 
     scene = receipt.get("scene") or {}
+    method_config_id, task_id = _method_config_id(scene)
     target_object_radius_m = _target_object_radius_m(scene)
     target_obb_corners_m = [
         [float(value) for value in row]
@@ -325,7 +349,11 @@ def materialize_inpaint360_adapter(
         encoding="utf-8",
     )
     removal_config = (
-        output / "config" / "object_removal" / "blueprint" / "840313.json"
+        output
+        / "config"
+        / "object_removal"
+        / "blueprint"
+        / f"{method_config_id}.json"
     )
     removal_config.parent.mkdir(parents=True, exist_ok=True)
     removal_config.write_text(
@@ -342,7 +370,11 @@ def materialize_inpaint360_adapter(
         encoding="utf-8",
     )
     inpaint_config = (
-        output / "config" / "object_inpaint" / "blueprint" / "840313.json"
+        output
+        / "config"
+        / "object_inpaint"
+        / "blueprint"
+        / f"{method_config_id}.json"
     )
     inpaint_config.parent.mkdir(parents=True, exist_ok=True)
     inpaint_config.write_text(
@@ -403,14 +435,16 @@ def materialize_inpaint360_adapter(
             "camera_contract": "COLMAP_PINHOLE_text_from_T_world_camera_opencv",
             "mask_contract": "raw_hqsam_uint8_instance_id_1",
             "vanilla_gaussian_iteration": 30000,
+            "method_config_id": method_config_id,
+            "task_id": task_id,
             "target_method_instance_id": 1,
             "target_object_radius_m": target_object_radius_m,
             "target_object_radius_derivation": "max_distance_from_metric_obb_center",
             "target_obb_corners_m": target_obb_corners_m,
             "target_removal_volume_contract": "gaussian_center_inside_exact_publisher_obb",
             "paired_config_contract": (
-                "config/object_removal/blueprint/840313.json_to_"
-                "config/object_inpaint/blueprint/840313.json"
+                f"config/object_removal/blueprint/{method_config_id}.json_to_"
+                f"config/object_inpaint/blueprint/{method_config_id}.json"
             ),
             "upstream_cfg_args_materialized": True,
             "staged_artifacts": artifacts,
