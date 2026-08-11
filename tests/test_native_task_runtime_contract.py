@@ -502,6 +502,33 @@ def test_runtime_preserves_five_copresent_replacements_and_one_subject() -> None
     }
 
 
+def test_runtime_accepts_single_repeatable_replacement_with_construction_binding() -> None:
+    fixture = _five_replacement_fixture()
+    fixture["assets"] = [
+        row
+        for row in fixture["assets"]
+        if row.get("semantic_role") != "replacement"
+        or row.get("asset_id") == "replacement_0"
+    ]
+    fixture["construction_bindings"] = seal_replacement_construction_bindings(
+        scene_freeze_digest=_sha("1"),
+        task_freeze_set_digest=_sha("2"),
+        bindings=fixture["construction_bindings"]["bindings"][:1],
+    )
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    replacement_objects = [
+        row
+        for row in contract["objects"]
+        if row["source_semantic_role"] == "replacement"
+    ]
+    assert len(replacement_objects) == 1
+    assert replacement_objects[0]["task_subject"] is True
+    assert contract["task_subject_asset_id"] == "replacement_0"
+    assert len(contract["construction_bindings"]["bindings"]) == 1
+
+
 def test_runtime_rejects_sixth_replacement_before_scene_build() -> None:
     fixture = _five_replacement_fixture()
     fixture["assets"].append(
