@@ -209,6 +209,10 @@ def _public_task_evaluation_launch_profile() -> dict[str, object]:
             "blockers": ["scripted_positive_control_not_passed"],
         },
         "claim_ceiling": request["claim_ceiling"],
+        "required_authorization": {
+            "max_spend_usd": 6.0,
+            "hard_ttl_seconds": 5400,
+        },
     }
 
 

@@ -410,7 +410,13 @@ def public_launch_profile_descriptor(profile: Mapping[str, Any]) -> dict[str, An
     blockers = validate_launch_profile(profile)
     if blockers:
         raise TaskEvaluationLaunchError(",".join(blockers))
-    return {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
+    descriptor = {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
+    allocator = _mapping(profile.get("allocator"))
+    descriptor["required_authorization"] = {
+        "max_spend_usd": allocator.get("max_spend_usd"),
+        "hard_ttl_seconds": allocator.get("hard_ttl_seconds"),
+    }
+    return descriptor
 
 
 def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[str]:
@@ -418,8 +424,21 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
 
     descriptor = _mapping(value)
     blockers: list[str] = []
-    if set(descriptor) != set(PUBLIC_PROFILE_DESCRIPTOR_FIELDS):
+    if set(descriptor) != {*PUBLIC_PROFILE_DESCRIPTOR_FIELDS, "required_authorization"}:
         blockers.append("launch_profile_public_descriptor_fields_invalid")
+    authorization = _mapping(descriptor.get("required_authorization"))
+    if set(authorization) != {"max_spend_usd", "hard_ttl_seconds"}:
+        blockers.append("launch_profile_public_required_authorization_fields_invalid")
+    public_spend = authorization.get("max_spend_usd")
+    if (
+        not isinstance(public_spend, (int, float))
+        or isinstance(public_spend, bool)
+        or public_spend <= 0
+    ):
+        blockers.append("launch_profile_public_required_spend_invalid")
+    public_ttl = authorization.get("hard_ttl_seconds")
+    if not isinstance(public_ttl, int) or isinstance(public_ttl, bool) or public_ttl <= 0:
+        blockers.append("launch_profile_public_required_ttl_invalid")
     if not _is_identifier(descriptor.get("profile_id")):
         blockers.append("launch_profile_public_id_invalid")
     if not _is_digest(descriptor.get("profile_digest")):
