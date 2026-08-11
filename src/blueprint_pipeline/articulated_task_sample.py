@@ -177,8 +177,16 @@ def build_articulated_task_sample(
         # into a refused one, so it degrades to a recorded cause instead.
         try:
             diagnostics = read_contact_diagnostics()
+            # Magnitudes coerce to float; labels (like the attribution path)
+            # pass through as strings. rt59's float('none') took the whole
+            # advisory channel down with it.
             sample["contact_diagnostics"] = {
-                key: float(value) for key, value in dict(diagnostics).items()
+                key: (
+                    value
+                    if isinstance(value, str)
+                    else float(value)
+                )
+                for key, value in dict(diagnostics).items()
             }
         except Exception as exc:  # noqa: BLE001 - advisory channel
             sample["contact_diagnostics"] = {

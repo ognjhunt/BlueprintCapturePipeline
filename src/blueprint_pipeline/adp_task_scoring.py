@@ -291,10 +291,19 @@ def score_articulated_task_episode(
         value <= float(spec["non_task_joint_motion_tolerance_rad"])
         for value in non_target_max_delta.values()
     )
+    # The same tolerance the sample-level check carries. rt59 failed both
+    # controls on a hinge reading of -8.8e-11 rad - numerical dust, not an
+    # excursion - because this inline check compared against the limit
+    # exactly while every other limit check in the lane tolerates noise.
+    limit_tolerance = float(spec.get("reset_tolerance_rad") or 0.0)
     hard_limit_violation = any(
         sample["joint_limit_violation"]
         or any(
-            not (spec["joint_hard_limits_rad"][joint_id][0] <= position <= spec["joint_hard_limits_rad"][joint_id][1])
+            not (
+                spec["joint_hard_limits_rad"][joint_id][0] - limit_tolerance
+                <= position
+                <= spec["joint_hard_limits_rad"][joint_id][1] + limit_tolerance
+            )
             for joint_id, position in sample["joint_positions_rad"].items()
         )
         for sample in normalized

@@ -996,3 +996,50 @@ def test_run_qualification_pipeline_suppresses_failure_writer_errors(
             descriptor_gcs_uri="not-a-gs-uri",
             config=SimpleNamespace(gcs_root=tmp_path / "gcs", runtime_preflight_enabled=False),
         )
+
+
+def test_float_noise_below_a_hard_limit_is_not_a_violation():
+    """rt59: lower hinge at -8.8e-11 rad - PhysX float jitter - failed BOTH
+    controls through the scorer's exact-zero comparison. The sample-level
+    check has always carried a tolerance; the scorer's inline check now
+    carries the same one. A hard-limit violation is a material excursion,
+    not the sign bit of numerical dust."""
+
+    from blueprint_pipeline.adp_task_scoring import (
+        OUTCOME_NEVER_MOVED,
+        score_task_episode_from_spec,
+    )
+
+    spec = {
+        "schema_version": "adp_task_spec.v1",
+        "task_kind": "articulated_open_close",
+        "target_joint_id": "upper",
+        "joint_hard_limits_rad": {"upper": [0.0, 1.5708], "lower": [0.0, 1.5708]},
+        "joint_reset_positions_rad": {"upper": 0.0, "lower": 0.0},
+        "target_success_interval_rad": [0.785, 0.96],
+        "movement_epsilon_rad": 0.01,
+        "non_task_joint_motion_tolerance_rad": 0.01,
+        "reset_tolerance_rad": 0.005,
+        "maximum_action_steps": 200,
+        "settle_window_samples": 3,
+        "maximum_settled_target_speed_rad_s": 0.05,
+    }
+    noise = -8.8e-11
+    samples = [
+        {
+            "joint_positions_rad": {"upper": 0.0, "lower": noise},
+            "joint_velocities_rad_s": {"upper": 0.0, "lower": 0.0},
+            "joint_limit_violation": False,
+            "task_contact_active": False,
+            "containment_violation": False,
+            "robot_collision_failure": False,
+            "scene_collision_failure": False,
+            "retreat_completed": True,
+            "step_index": index,
+        }
+        for index in range(6)
+    ]
+
+    score = score_task_episode_from_spec(task_spec=spec, samples=samples)
+
+    assert score["outcome"] == OUTCOME_NEVER_MOVED
