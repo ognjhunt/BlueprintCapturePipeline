@@ -33,7 +33,9 @@ canonical paid-resource allocator used by the maintained CLI path.
    blockers, recommend only a deterministically admissible Pipeline profile, or
    request one human decision. Its receipt history is a bounded, digest-bound
    observation window so historical launches cannot exhaust the fixed inference
-   ceiling. The run remains safe and operable when it is off or typed-blocked.
+   ceiling. It reads only the publisher-generated launch-profile catalog, never
+   extra historical profile files installed on the host. The run remains safe
+   and operable when it is off or typed-blocked.
 
 ## Publish an immutable profile
 

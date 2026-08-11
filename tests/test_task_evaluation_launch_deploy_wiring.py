@@ -79,6 +79,9 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "ReadOnlyPaths=" in supervisor
     assert "task-evaluation-launches" in supervisor
     assert "task-evaluation-launch-runs" in supervisor
+    assert "task-evaluation-launch-profile-catalog.json" in supervisor
+    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in supervisor
+    assert "--public-catalog" in supervisor
     assert "paid_resource_allocator" not in supervisor
     assert "provider-secrets" not in supervisor
 
