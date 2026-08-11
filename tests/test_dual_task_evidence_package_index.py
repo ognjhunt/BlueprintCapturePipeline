@@ -145,6 +145,45 @@ def test_package_index_rejects_tampered_task_index(tmp_path: Path) -> None:
         )
 
 
+def test_package_index_admits_external_cad_visual_comparison_receipt(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    package = workspace / "evidence"
+    package.mkdir(parents=True)
+    _task_index(package, "task_a")
+    visual = {
+        "schema_version": "scene_replacement_cad_agent_visual_comparison.v1",
+        "status": "review_media_materialized",
+        "receipt_digest": "",
+    }
+    visual["receipt_digest"] = canonical_digest(visual, digest_field="receipt_digest")
+    _write_json(workspace / "shared/visual.json", visual)
+
+    result = materialize_dual_task_evidence_package_index(
+        workspace_root=workspace,
+        package_root=package,
+        title="Fixture package",
+        status_summary="typed abstention",
+        blocker_summary="held-out ownership failed",
+        cad_summary="CAD review media bound",
+        task_indexes=[
+            {
+                "label": "Task A",
+                "task_id": "task_a",
+                "relative_path": "task_a/episode_evidence_index.v1.json",
+            }
+        ],
+        shared_manifests=[
+            {"label": "CAD visual comparison", "relative_path": "shared/visual.json"}
+        ],
+    )
+
+    assert result["shared_manifests"][0]["schema_version"] == (
+        "scene_replacement_cad_agent_visual_comparison.v1"
+    )
+
+
 def test_checked_in_package_index_exposes_cad_visual_comparison_binding() -> None:
     html = (PACKAGE / "index.html").read_text(encoding="utf-8")
     receipt = json.loads((PACKAGE / PACKAGE_INDEX_FILENAME).read_text(encoding="utf-8"))

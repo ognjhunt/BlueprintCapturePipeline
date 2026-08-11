@@ -671,6 +671,73 @@ def test_abstention_index_verifies_and_links_supporting_receipts(
     assert "supporting_evidence_inventory.v1.json" in html
 
 
+def test_abstention_index_admits_digest_bound_ownership_and_heldout_receipts(
+    tmp_path: Path,
+) -> None:
+    freeze_digest = "sha256:" + "a" * 64
+    ownership = {
+        "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
+        "freeze_digest": freeze_digest,
+        "receipt_digest": "",
+    }
+    ownership["receipt_digest"] = canonical_digest(
+        ownership, digest_field="receipt_digest"
+    )
+    ownership_path = tmp_path / "ownership.json"
+    ownership_path.write_text(json.dumps(ownership), encoding="utf-8")
+    replay = {
+        "schema_version": "adp009b_gaussian_excision_ownership_replay.v1",
+        "freeze_digest": freeze_digest,
+        "ownership_receipt_digest": ownership["receipt_digest"],
+        "replay_digest": "",
+    }
+    replay["replay_digest"] = canonical_digest(replay, digest_field="replay_digest")
+    replay_path = tmp_path / "replay.json"
+    replay_path.write_text(json.dumps(replay), encoding="utf-8")
+    heldout = {
+        "schema_version": "adp009b_gaussian_excision_heldout_audit.v1",
+        "freeze_digest": freeze_digest,
+        "ownership_receipt_digest": ownership["receipt_digest"],
+        "ownership_replay_digest": replay["replay_digest"],
+        "receipt_digest": "",
+    }
+    heldout["receipt_digest"] = canonical_digest(heldout, digest_field="receipt_digest")
+    heldout_path = tmp_path / "heldout.json"
+    heldout_path.write_text(json.dumps(heldout), encoding="utf-8")
+    abstention = {
+        "schema_version": "adp_task_evaluation_run_abstention.v1",
+        "status": "typed_evidence_backed_abstention",
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "smallest_missing_capability": (
+            "calibrated_gaussian_ownership_separation_without_protected_scene_deletion"
+        ),
+        "controls_executed": False,
+        "learned_candidate_episodes_executed": False,
+        "receipt_digest": "",
+    }
+    abstention["receipt_digest"] = canonical_digest(
+        abstention, digest_field="receipt_digest"
+    )
+
+    result = materialize_episode_evidence_index(
+        run_root=tmp_path,
+        episode_receipt_paths=[],
+        run_identity={
+            "scene_id": "fixture_scene",
+            "task_id": "fixture_task",
+            "scenario_suite_digest": "sha256:frozen-suite",
+        },
+        abstention_receipt=abstention,
+        supporting_receipt_paths=[ownership_path, replay_path, heldout_path],
+    )
+
+    assert [row["schema_version"] for row in result["index"]["supporting_evidence"]] == [
+        "adp009b_gaussian_excision_heldout_audit.v1",
+        "adp009b_gaussian_excision_ownership_receipt.v1",
+        "adp009b_gaussian_excision_ownership_replay.v1",
+    ]
+
+
 def test_supporting_inventory_rejects_tampered_external_artifact(
     tmp_path: Path,
 ) -> None:

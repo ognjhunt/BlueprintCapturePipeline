@@ -843,6 +843,9 @@ def agent_cad_content_agents_supporting_artifacts(
 _SUPPORTING_RECEIPT_DIGEST_FIELDS = {
     "adp_gaussian_excision_attempt_receipt.v1": "receipt_digest",
     "adp_gaussian_excision_recovery_readiness.v1": "receipt_digest",
+    "adp009b_gaussian_excision_ownership_receipt.v1": "receipt_digest",
+    "adp009b_gaussian_excision_ownership_replay.v1": "replay_digest",
+    "adp009b_gaussian_excision_heldout_audit.v1": "receipt_digest",
     SUPPORTING_INVENTORY_SCHEMA_VERSION: "inventory_digest",
 }
 
