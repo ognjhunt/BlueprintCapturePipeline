@@ -896,6 +896,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             read_robot_contact_forces=lambda: _sensor_forces("robot_contact_sensor"),
             read_pinch_position_m=_observed_pinch_world,
             pinch_on_task_corridor=_pinch_on_task_corridor,
+            read_gripper_net_forces=lambda: _sensor_forces("finger_contact_sensor"),
             # The room is static and cannot report contact itself. What the
             # robot touches that is NOT the twin is, in this scene, the room:
             # net force minus the filtered per-partner force against the twin.

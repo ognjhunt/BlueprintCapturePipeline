@@ -144,6 +144,7 @@ def build_scene_observations(
     non_finger_body_indices: Sequence[int] | None = None,
     read_pinch_position_m: Callable[[], Sequence[float]] | None = None,
     pinch_on_task_corridor: Callable[[Sequence[float]], bool] | None = None,
+    read_gripper_net_forces: Callable[[], Any] | None = None,
     contact_force_threshold_n: float = DEFAULT_CONTACT_FORCE_THRESHOLD_N,
     base_displacement_tolerance_m: float = DEFAULT_BASE_DISPLACEMENT_TOLERANCE_M,
     retreat_distance_m: float = DEFAULT_RETREAT_DISTANCE_M,
@@ -168,11 +169,16 @@ def build_scene_observations(
         )
 
     def _finger_net_force() -> float:
+        # The gripper subtree's own sensor, its own row space. rt60 sampled
+        # the ARM sensor with finger-sensor indices - the rt29 crossover
+        # resurrected - and read 0.00N through an entire 50-degree pull.
+        if read_gripper_net_forces is None:
+            return 0.0
         forces = _require(
-            read_robot_contact_forces(),
-            error="articulated_scene_observation_robot_contact_unavailable",
+            read_gripper_net_forces(),
+            error="articulated_scene_observation_gripper_contact_unavailable",
         )
-        return max_contact_force_n(forces, body_indices=finger_body_indices)
+        return max_contact_force_n(forces)
 
     def _task_contact_attribution() -> str:
         """Which evidence path says the fingers are on the task, if any.

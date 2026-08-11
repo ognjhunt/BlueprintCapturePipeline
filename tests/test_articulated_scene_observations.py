@@ -234,6 +234,7 @@ class TestContactAttributionFallback:
             "non_finger_body_indices": [1],
             "read_pinch_position_m": lambda: HANDLE,
             "pinch_on_task_corridor": lambda point: True,
+            "read_gripper_net_forces": lambda: [[[0.0, 25.0, 0.0]]],
         }
         base.update(overrides)
         return build_scene_observations(**base)
