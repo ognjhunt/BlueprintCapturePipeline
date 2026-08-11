@@ -27,11 +27,16 @@ learned policies were therefore not admitted. This is not a policy result.
   `a1a73e0db` (portable agent-CAD evidence indexed), followed by
   `c5d3d0d92` (reusable agent-CAD supporting-evidence row builder) and
   `7aa7b7fce` (four-candidate Content Agents execution-readiness receipt),
-  plus the current manifest-bound CAD-agent request sealing follow-up,
-  and the current historical CAD-output reference-binding audit follow-up,
-  and the current local/paid Content Agents preflight split follow-up,
-  and the current Dockerless static plus no-paid Docker Content Agents preflight
-  follow-up,
+  `6fc66d258` (manifest-bound CAD-agent request sealing),
+  `5c5c6b46f` (historical CAD-output reference-binding audit),
+  `f2f8883a2` (local/paid Content Agents preflight split),
+  `193cea212` (initial Content Agents readiness blocker refresh),
+  `d51cdc62f` (Dockerless static Content Agents preflight),
+  `e807e9b20` (static preflight evidence recorded),
+  `4b21a7de0` (manifest-derived CAD visual comparison index),
+  `07f80fce7` (1..5-object scalable Content Agents readiness matrix), and
+  `12c46e6c3` (no-paid Docker/network-disabled Content Agents dry-run
+  preflights),
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
