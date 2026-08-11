@@ -99,7 +99,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
+          # GitHub-hosted runners also carry third-party Microsoft/Azure apt
+          # sources.  A transient mirror or signing failure there must not
+          # consume this bounded impacted-test job before its test evidence
+          # is even collected; use the same Ubuntu-media preparation as the
+          # production full CPU lane.
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure-cli*' \) -print -delete || true
+          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y ffmpeg
 
       - name: Install dependencies
