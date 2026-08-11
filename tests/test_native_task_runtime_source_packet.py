@@ -141,6 +141,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         ("lightwheel-sdk", "1.0.3"),
         ("requests", "2.34.2"),
         ("PyYAML", "6.0.3"),
+        ("pytetwild", "0.2.1"),
     }.issubset(
         {
             (row["package"], row["version"])
@@ -258,6 +259,11 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert next(
         row for row in result["runtime_dependencies_installed"] if row["package"] == "h5py"
     )["pure_python"] is False
+    assert next(
+        row
+        for row in result["runtime_dependencies_installed"]
+        if row["package"] == "pytetwild"
+    )["wheel_tag"] == "cp312-abi3-manylinux_2_28_x86_64"
     assert len(observed) == 1
     assert observed[0][1:3] == ["-I", "-c"]
     assert "sys.path[:0]=" in observed[0][3]

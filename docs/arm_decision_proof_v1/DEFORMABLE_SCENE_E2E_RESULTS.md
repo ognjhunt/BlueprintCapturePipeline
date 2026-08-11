@@ -324,8 +324,32 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 - Current provider state after v25 teardown is zero:
   `vastai show instances --raw` returned `[]`. The deformable lane owns no live
   provider instance.
-- Deformable Vast/GPU attempts with allocation: `11`; prelaunch-blocked attempts:
-  `3`; local dry-run command-shape nulls: `2`; uploads: `9`; automatic retries:
+- Deformable native canary v26 dry-run prepared the immutable provider bundle
+  from commit `97ec188c4` and source-package v4. Status: `dry_run_ready`;
+  blockers: `[]`; provider mutations: `0`; no policy query. Bundle SHA-256 is
+  `sha256:f4d1d100042000a57c57bb89e0625f4305df0b6e9e6ad5f69750529de30b4cb2`;
+  bundle receipt digest is
+  `sha256:f58d7a685f0cf2bdb5e24e92fa3da1bd1c98ac79b96e2cbb6da38f9943880470`;
+  allocation input digest is
+  `sha256:18922d3affea4b92c0eae9d599da548992d17cd7e82a72d4a1ad085948d4acfb`.
+- Deformable native canary v26 launched Vast instance `47457936` on machine
+  `117871` (`RTX 6000Ada`, `$0.711111111111111/hr`), reached Isaac Sim 6.0.1,
+  Warp CUDA startup, bundle download, verified runtime-source provisioning, and
+  native worker execution. The worker then returned a terminal blocker
+  `ImportError: Automatic tetrahedralization of volume deformables requires the
+  optional 'pytetwild' package. Install pytetwild or provide a
+  pre-tetrahedralized UsdGeom.TetMesh under the deformable prim '/Deformable'.`
+  Cost: `$0.033783`; no policy query; teardown, object-store cleanup, final
+  validation, and provider-zero all passed. This is a one-shot static
+  dependency/pre-tet admission miss, not a native cook/contact capability
+  result. The reusable fix pins `pytetwild==0.2.1` as a cp312/abi3/manylinux
+  runtime wheel, adds it to the import probe, and blocks the worker with a typed
+  dependency error before native authoring if omitted.
+- Current provider state after v26 teardown is zero:
+  `vastai show instances --raw` returned `[]`. The deformable lane owns no live
+  provider instance.
+- Deformable Vast/GPU attempts with allocation: `12`; prelaunch-blocked attempts:
+  `3`; local dry-run command-shape nulls: `3`; uploads: `10`; automatic retries:
   `0`.
 
 ## Claim table
@@ -334,7 +358,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, and v25 exposed a stale body/cooking configuration mismatch before native asset qualification |
+| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, v25 exposed a stale body/cooking configuration mismatch before native asset qualification, and v26 exposed the missing `pytetwild`/pre-tetrahedralized-TetMesh admission requirement before native asset qualification |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -365,6 +389,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `dcaa2c5ac` | Record deformable provider gate status |
 | `0730f8ba6` | Align deformable material config with pinned PhysX |
 | `dff14c289` | Record deformable v24 dry run |
+| `97ec188c4` | Split deformable body and cook config |
 
 Each listed commit was pushed to
 `origin/codex/adp-deformable-scene-e2e-20260810`.
@@ -379,11 +404,12 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to commit and push the reusable pinned-PhysX
-body/cooking split, regenerate the source package/bundle at that exact commit,
-and execute one no-retry v26 Vast native canary after a fresh provider-zero
-prelaunch guard passes. If the canary qualifies cook/load/reset/contact/cameras,
-the run continues to zero-action and scripted controls before any learned
-policy. If the native backend cannot provide qualified rigid--deformable contact
-attribution, the run seals a typed native capability abstention and does not
-evaluate `pi05_droid` or `groot_n17_droid`.
+The single next action is to commit and push the reusable `pytetwild` runtime
+dependency closure, regenerate the runtime source packet, source package, and
+provider bundle at that exact commit, and execute one no-retry v27 Vast native
+canary after a fresh provider-zero prelaunch guard passes. If the canary
+qualifies cook/load/reset/contact/cameras, the run continues to zero-action and
+scripted controls before any learned policy. If the native backend still cannot
+provide qualified rigid--deformable contact attribution after cook succeeds, the
+run seals a typed native capability abstention and does not evaluate
+`pi05_droid` or `groot_n17_droid`.

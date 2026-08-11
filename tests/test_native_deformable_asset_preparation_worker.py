@@ -166,11 +166,40 @@ def test_worker_reads_one_frozen_plan_and_delegates_without_claim_upgrade(
         registry_builder=lambda **_kwargs: {
             symbol: (lambda: None) for symbol in worker._ALL_SYMBOLS
         },
+        runtime_import_checker=lambda _name: object(),
     )
     assert result == {"worker_result_digest": "sha256:" + "b" * 64}
     assert observed["plan"] == {"plan_digest": "sha256:" + "a" * 64}
     assert observed["stage_api"] == "stage-api"
     assert set(observed["native_api_registry"]) == set(worker._ALL_SYMBOLS)
+
+
+def test_worker_blocks_before_native_registry_when_pytetwild_missing(tmp_path: Path):
+    plan = tmp_path / "plan.json"
+    plan.write_text('{"plan_digest":"sha256:' + "a" * 64 + '"}\n', encoding="utf-8")
+    registry_called = False
+
+    def registry_builder(**_kwargs):
+        nonlocal registry_called
+        registry_called = True
+        return {}
+
+    with pytest.raises(worker.NativeDeformableAssetPreparationWorkerError) as exc:
+        worker.run_native_deformable_asset_preparation_worker(
+            plan_path=plan,
+            expected_plan_digest="sha256:" + "a" * 64,
+            package_root=tmp_path / "package",
+            output_root=tmp_path / "output",
+            isaaclab_source_root=tmp_path / "source",
+            stage_api="stage-api",
+            registry_builder=registry_builder,
+            runtime_import_checker=lambda _name: None,
+        )
+
+    assert registry_called is False
+    assert "native_deformable_worker_runtime_dependency_unavailable:pytetwild" in str(
+        exc.value
+    )
 
 
 def test_plan_reader_rejects_symlink_fifo_and_oversize(

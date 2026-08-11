@@ -289,6 +289,22 @@ RUNTIME_DEPENDENCY_WHEELS = (
         "pure_python": False,
         "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
     },
+    # Isaac Lab's pinned volumetric deformable authoring path calls
+    # ``from pytetwild import tetrahedralize`` when a clean source asset
+    # provides only a closed surface mesh.  Bind this optional cook dependency
+    # into the one-shot source packet so a paid native canary cannot discover
+    # it serially after SimulationApp startup.
+    {
+        "filename": (
+            "pytetwild-0.2.1-cp312-abi3-manylinux_2_27_x86_64."
+            "manylinux_2_28_x86_64.whl"
+        ),
+        "package": "pytetwild",
+        "version": "0.2.1",
+        "license_spdx": "MPL-2.0",
+        "pure_python": False,
+        "wheel_tag": "cp312-abi3-manylinux_2_28_x86_64",
+    },
 )
 
 

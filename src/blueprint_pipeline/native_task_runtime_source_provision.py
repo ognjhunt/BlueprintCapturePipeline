@@ -34,6 +34,7 @@ TOP_LEVEL_PACKAGES = (
     "typing_extensions",
     "wcwidth",
     "h5py",
+    "pytetwild",
     "msgpack",
     "zmq",
     "rsl_rl",

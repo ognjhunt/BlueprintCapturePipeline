@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import importlib.util
 import inspect
 import json
 import os
@@ -46,6 +47,7 @@ _ISAAC_SYMBOLS = (
     DEFORMABLE_PHYSICS_BINDING_API,
 )
 _ALL_SYMBOLS = NATIVE_REQUIRED_API_SYMBOLS
+REQUIRED_RUNTIME_IMPORTS = ("pytetwild",)
 _MAX_EXCEPTION_MESSAGE_CHARS = 2048
 _MAX_EXCEPTION_TRACEBACK_CHARS = 8192
 
@@ -225,6 +227,21 @@ def build_pinned_native_api_registry(
     )
 
 
+def _verify_required_runtime_imports(
+    checker: Callable[[str], object | None] = importlib.util.find_spec,
+) -> None:
+    """Fail before native cook if pinned optional runtime imports are absent."""
+
+    missing = [name for name in REQUIRED_RUNTIME_IMPORTS if checker(name) is None]
+    if missing:
+        raise NativeDeformableAssetPreparationWorkerError(
+            [
+                "native_deformable_worker_runtime_dependency_unavailable:"
+                + ",".join(missing)
+            ]
+        )
+
+
 def run_native_deformable_asset_preparation_worker(
     *,
     plan_path: str | Path,
@@ -236,6 +253,7 @@ def run_native_deformable_asset_preparation_worker(
     registry_builder: Callable[..., Mapping[str, Callable[..., Any]]] = (
         build_pinned_native_api_registry
     ),
+    runtime_import_checker: Callable[[str], object | None] = importlib.util.find_spec,
 ) -> dict[str, Any]:
     """Read one frozen plan and execute it once inside an already started runtime."""
 
@@ -256,6 +274,7 @@ def run_native_deformable_asset_preparation_worker(
         raise NativeDeformableAssetPreparationWorkerError(
             ["native_deformable_worker_plan_json_invalid"]
         )
+    _verify_required_runtime_imports(runtime_import_checker)
     registry = dict(registry_builder(isaaclab_source_root=isaaclab_source_root))
     adapter = stage_api if stage_api is not None else OpenUsdNativeDeformableStageAdapter()
     return execute_native_deformable_asset_preparation(
