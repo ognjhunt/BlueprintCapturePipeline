@@ -185,7 +185,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 
 ## Cost and provider lifecycle
 
-- Deformable Vast/GPU spend: `$0.00`.
+- Deformable Vast/GPU spend retained so far: `$0.141578`.
 - Palatial/Newton local attempt 001: retained free null, 120 requested CPU
   frames, hard timeout at 300 seconds, `$0.00`, scratch removed, receipt file
   SHA-256 `a159530bca09fccf07cd42dc0e6a097e876621e47861e323ad6f779f647164fb`.
@@ -197,12 +197,26 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   `3c9914f2b759f50b573aa9b1a6c7bc39af0995664fbaff76a2dcd5f3b0f7673b`.
 - Separate Pan-Chera/Luna CAD-agent attempt: retained paid null, exactly one API
   call, no retry, `$0.010374`, no CAD artifact.
-- No deformable-owned Vast instance has been launched.
-- A terminal read-only Vast API inventory at
-  `2026-08-11T03:23:22.683869+00:00` returned `[]`; provider-zero receipt digest
-  `sha256:945ee4dfa8684c18695d925cb027a93030efbc776ebcb117e9624bf66ae24be8`.
-- Deformable Vast/GPU attempts: `0`; deformable Vast/GPU cost: `$0.00`; uploads:
-  `0`; automatic retries: `0`.
+- Deformable native canary v1 launched Vast instance `47433394`, reached image
+  pull/startup infrastructure, then the provider instance disappeared before the
+  worker produced output. It is retained as an infrastructure null, not a native
+  qualification attempt. Cost: `$0.084282`; no policy query.
+- Deformable native canary v2 launched Vast instance `47434418`, reached Isaac
+  Sim/Warp CUDA startup and provider entrypoint execution, then failed on a
+  generated provider Python syntax error before the towel worker produced a
+  native result. Cost: `$0.057296`; no policy query. The reusable escaping fix
+  landed in commit `efb09b036`.
+- Deformable native canary v3 packaged the fixed immutable provider bundle at
+  commit `efb09b036` but was blocked before any Vast allocation by a separate
+  active provider instance. Cost: `$0.00`; provider mutations: `0`; no policy
+  query.
+- Current provider state is not zero as of the latest live refresh in this
+  thread: Vast instance `47435022`, label `blueprint-adp009d-1786424400`, belongs
+  to a separate ADP009D canary lane and blocks the next deformable launch under
+  the shared single-flight guard. The deformable lane owns no live provider
+  instance.
+- Deformable Vast/GPU attempts with allocation: `2`; prelaunch-blocked attempts:
+  `1`; uploads: `2`; automatic retries: `0`.
 
 ## Claim table
 
@@ -223,21 +237,30 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `9637fb5f4` | Deformable policy, camera, and controls routing |
 | `ceb895694` | Vast inventory binding to opaque paid admission grants |
 | `1b04968b5` | Fail-closed deformable native-canary evidence package |
+| `0409249f1` | Retain the initial prelaunch rights abstention |
+| `8c46808e1` | Supersede the paid generated-asset rights blocker with owner private-processing authority |
+| `e114138de` | Add the canonical Vast lane for the deformable asset cook |
+| `8271fb172` | Preserve meaningful Vast startup logs across terminal noise |
+| `efb09b036` | Fix generated deformable provider Python escaping |
 
 Each listed commit was pushed to
-`origin/codex/adp-deformable-scene-e2e-20260810`. The final abstention/evidence
-commit is the published successor of `1b04968b5`.
+`origin/codex/adp-deformable-scene-e2e-20260810`. Commit `efb09b036` is the
+current published implementation head for the next native canary.
 
 ## Completion and single next action
 
-Completion path B is satisfied at the smallest external-input boundary. The
-portable Finder index is
+Completion is not yet satisfied. The former external-input rights blocker is
+superseded for private Vast processing, and the current smallest untested gate
+is native cook/readback plus rigid--deformable contact capability for the exact
+prepared towel asset. The portable Finder index is
 [`OPEN_ME_episode_evidence_index.html`](evidence/deformable_scene_840873/OPEN_ME_episode_evidence_index.html).
 It contains zero episode rows because no control or learned-policy episode was
-authorized; that absence is evidence, not a policy null.
+executed; that absence is evidence, not a policy null.
 
-The single next action is to obtain an immutable job-specific SimReadyGen terms
-receipt or written Lightwheel authorization covering internal/commercial
-simulation, third-party cloud copying, derived evidence redistribution,
-attribution, retention/deletion, and model-training use. Only then may a fresh
-provider-zero admission authorize one no-retry Vast blank-stage canary.
+The single next action is to wait for provider-zero, then run exactly one
+fresh no-retry Vast native canary from the fixed `efb09b036` bundle in a new
+evidence root. If the canary qualifies cook/load/reset/contact/cameras, the run
+continues to zero-action and scripted controls before any learned policy. If the
+native backend cannot provide qualified rigid--deformable contact attribution,
+the run seals a typed native capability abstention and does not evaluate
+`pi05_droid` or `groot_n17_droid`.
