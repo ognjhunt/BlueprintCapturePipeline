@@ -16,6 +16,10 @@ from blueprint_pipeline.native_task_runtime_contract import (
     NativeTaskRuntimeContractError,
 )
 from blueprint_pipeline.replacement_construction_bindings import (
+    GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
+    MASK_SET_QUALIFICATION_SCHEMA_VERSION,
+    REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
+    SOURCE_COLLIDER_DELETION_SCHEMA_VERSION,
     seal_replacement_construction_bindings,
 )
 
@@ -24,12 +28,12 @@ def _sha(character: str) -> str:
     return "sha256:" + character * 64
 
 
-def _evidence_record(name: str, digest: str) -> dict:
+def _evidence_record(name: str, digest: str, schema_version: str) -> dict:
     return {
         "path": f"/fixture/{name}.json",
         "size_bytes": 1,
         "sha256": _sha("f"),
-        "schema_version": f"{name}.v1",
+        "schema_version": schema_version,
         "canonical_digest": digest,
     }
 
@@ -37,24 +41,48 @@ def _evidence_record(name: str, digest: str) -> dict:
 def _construction_row_with_evidence(row: dict) -> dict:
     row = json.loads(json.dumps(row))
     row["evidence_receipts"] = {
-        "task_freeze": _evidence_record("task_freeze", row["task_freeze_digest"]),
-        "mask_set": _evidence_record("mask_set", row["mask_set_receipt_digest"]),
+        "task_freeze": _evidence_record(
+            "task_freeze", row["task_freeze_digest"], "dual_task_task_freeze.v1"
+        ),
+        "mask_set": _evidence_record(
+            "mask_set",
+            row["mask_set_receipt_digest"],
+            MASK_SET_QUALIFICATION_SCHEMA_VERSION,
+        ),
         "gaussian_removal": _evidence_record(
-            "gaussian_removal", row["source_removal_receipt_digest"]
+            "gaussian_removal",
+            row["source_removal_receipt_digest"],
+            GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
         ),
         "source_collider_deletion": {
             "selected_deletion_id": row["collider_deletion_id"],
             "independent": _evidence_record(
                 "source_collider_deletion",
                 row["collider_deletion_receipt_digest"],
+                SOURCE_COLLIDER_DELETION_SCHEMA_VERSION,
             ),
         },
         "replacement_qualification": _evidence_record(
             "replacement_qualification",
             row["replacement_qualification_receipt_digest"],
+            REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
         ),
     }
     return row
+
+
+def _materialized_construction(value: dict) -> dict:
+    result = json.loads(json.dumps(value))
+    result["scene_freeze_receipt"] = _evidence_record(
+        "scene_freeze",
+        result["scene_freeze_digest"],
+        "dual_task_scene_freeze.v1",
+    )
+    result["construction_digest"] = canonical_digest(
+        result,
+        digest_field="construction_digest",
+    )
+    return result
 
 
 def _pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
@@ -386,55 +414,59 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
     articulated_request["task_spec"]["subject_asset_id"] = "articulated_a"
     articulated_freeze_digest = "sha256:" + "1" * 64
     rigid_freeze_digest = "sha256:" + "2" * 64
-    shared_construction = seal_replacement_construction_bindings(
-        scene_freeze_digest="sha256:" + "3" * 64,
-        task_freeze_join_digest="sha256:" + "4" * 64,
-        bindings=[
-            _construction_row_with_evidence(
-                {
-                "task_id": "articulated_fixture",
-                "asset_id": "articulated_a",
-                "task_freeze_digest": articulated_freeze_digest,
-                "source_object_instance_id": "source_a",
-                "removal_id": "removal_a",
-                "mask_set_id": "masks_a",
-                "mask_set_receipt_digest": "sha256:" + "5" * 64,
-                "source_removal_receipt_digest": "sha256:" + "6" * 64,
-                "source_removal_qualified": True,
-                "collider_deletion_id": "collider_a",
-                "source_collider_prim_path": "/Root/source_a",
-                "collider_deletion_receipt_digest": "sha256:" + "7" * 64,
-                "collider_deletion_qualified": True,
-                "replacement_qualification_id": "qualification_a",
-                "replacement_qualification_receipt_digest": "sha256:" + "8" * 64,
-                "replacement_asset_sha256": task_asset["source"]["sha256"],
-                "replacement_simulator_import_qualified": True,
-                }
-            ),
-            _construction_row_with_evidence(
-                {
-                "task_id": "rigid_task_b",
-                "asset_id": "rigid_b",
-                "task_freeze_digest": rigid_freeze_digest,
-                "source_object_instance_id": "source_b",
-                "removal_id": "removal_b",
-                "mask_set_id": "masks_b",
-                "mask_set_receipt_digest": "sha256:" + "9" * 64,
-                "source_removal_receipt_digest": "sha256:" + "a" * 64,
-                "source_removal_qualified": True,
-                "collider_deletion_id": "collider_b",
-                "source_collider_prim_path": "/Root/source_b",
-                "collider_deletion_receipt_digest": "sha256:" + "b" * 64,
-                "collider_deletion_qualified": True,
-                "replacement_qualification_id": "qualification_b",
-                "replacement_qualification_receipt_digest": "sha256:" + "c" * 64,
-                "replacement_asset_sha256": articulated_request["assets"][-1][
-                    "source"
-                ]["sha256"],
-                "replacement_simulator_import_qualified": True,
-                }
-            ),
-        ],
+    shared_construction = _materialized_construction(
+        seal_replacement_construction_bindings(
+            scene_freeze_digest="sha256:" + "3" * 64,
+            task_freeze_join_digest="sha256:" + "4" * 64,
+            bindings=[
+                _construction_row_with_evidence(
+                    {
+                        "task_id": "articulated_fixture",
+                        "asset_id": "articulated_a",
+                        "task_freeze_digest": articulated_freeze_digest,
+                        "source_object_instance_id": "source_a",
+                        "removal_id": "removal_a",
+                        "mask_set_id": "masks_a",
+                        "mask_set_receipt_digest": "sha256:" + "5" * 64,
+                        "source_removal_receipt_digest": "sha256:" + "6" * 64,
+                        "source_removal_qualified": True,
+                        "collider_deletion_id": "collider_a",
+                        "source_collider_prim_path": "/Root/source_a",
+                        "collider_deletion_receipt_digest": "sha256:" + "7" * 64,
+                        "collider_deletion_qualified": True,
+                        "replacement_qualification_id": "qualification_a",
+                        "replacement_qualification_receipt_digest": "sha256:"
+                        + "8" * 64,
+                        "replacement_asset_sha256": task_asset["source"]["sha256"],
+                        "replacement_simulator_import_qualified": True,
+                    }
+                ),
+                _construction_row_with_evidence(
+                    {
+                        "task_id": "rigid_task_b",
+                        "asset_id": "rigid_b",
+                        "task_freeze_digest": rigid_freeze_digest,
+                        "source_object_instance_id": "source_b",
+                        "removal_id": "removal_b",
+                        "mask_set_id": "masks_b",
+                        "mask_set_receipt_digest": "sha256:" + "9" * 64,
+                        "source_removal_receipt_digest": "sha256:" + "a" * 64,
+                        "source_removal_qualified": True,
+                        "collider_deletion_id": "collider_b",
+                        "source_collider_prim_path": "/Root/source_b",
+                        "collider_deletion_receipt_digest": "sha256:" + "b" * 64,
+                        "collider_deletion_qualified": True,
+                        "replacement_qualification_id": "qualification_b",
+                        "replacement_qualification_receipt_digest": "sha256:"
+                        + "c" * 64,
+                        "replacement_asset_sha256": articulated_request["assets"][
+                            -1
+                        ]["source"]["sha256"],
+                        "replacement_simulator_import_qualified": True,
+                    }
+                ),
+            ],
+        )
     )
     articulated_request["construction_bindings"] = shared_construction
     articulated_request["task_freeze_digest"] = articulated_freeze_digest

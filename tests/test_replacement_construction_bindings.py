@@ -14,6 +14,7 @@ from blueprint_pipeline.replacement_construction_bindings import (
     ReplacementConstructionBindingsError,
     materialize_replacement_construction_bindings,
     seal_replacement_construction_bindings,
+    validate_materialized_replacement_construction_bindings,
     validate_replacement_construction_bindings,
 )
 from blueprint_pipeline.simready_graph_asset_static_qualification import (
@@ -423,6 +424,18 @@ def test_path_backed_materializer_derives_all_claims_from_receipts(
             "replacement_qualification",
         }
         for row in result["bindings"]
+    )
+    assert validate_materialized_replacement_construction_bindings(result) == result
+
+
+def test_materialized_validator_rejects_low_level_sealer_output() -> None:
+    sealed = _sealed()
+
+    with pytest.raises(ReplacementConstructionBindingsError) as excinfo:
+        validate_materialized_replacement_construction_bindings(sealed)
+
+    assert "replacement_construction_scene_freeze_receipt_invalid" in (
+        excinfo.value.errors
     )
 
 

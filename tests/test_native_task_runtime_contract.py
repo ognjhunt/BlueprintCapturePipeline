@@ -14,6 +14,10 @@ from blueprint_pipeline.native_task_runtime_contract import (
     materialize_native_task_runtime_contract,
 )
 from blueprint_pipeline.replacement_construction_bindings import (
+    GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
+    MASK_SET_QUALIFICATION_SCHEMA_VERSION,
+    REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
+    SOURCE_COLLIDER_DELETION_SCHEMA_VERSION,
     seal_replacement_construction_bindings,
 )
 
@@ -22,12 +26,12 @@ def _sha(character: str) -> str:
     return "sha256:" + character * 64
 
 
-def _evidence_record(name: str, digest: str) -> dict:
+def _evidence_record(name: str, digest: str, schema_version: str) -> dict:
     return {
         "path": f"/fixture/{name}.json",
         "size_bytes": 1,
         "sha256": _sha("a"),
-        "schema_version": f"{name}.v1",
+        "schema_version": schema_version,
         "canonical_digest": digest,
     }
 
@@ -35,24 +39,48 @@ def _evidence_record(name: str, digest: str) -> dict:
 def _construction_row_with_evidence(row: dict) -> dict:
     row = json.loads(json.dumps(row))
     row["evidence_receipts"] = {
-        "task_freeze": _evidence_record("task_freeze", row["task_freeze_digest"]),
-        "mask_set": _evidence_record("mask_set", row["mask_set_receipt_digest"]),
+        "task_freeze": _evidence_record(
+            "task_freeze", row["task_freeze_digest"], "dual_task_task_freeze.v1"
+        ),
+        "mask_set": _evidence_record(
+            "mask_set",
+            row["mask_set_receipt_digest"],
+            MASK_SET_QUALIFICATION_SCHEMA_VERSION,
+        ),
         "gaussian_removal": _evidence_record(
-            "gaussian_removal", row["source_removal_receipt_digest"]
+            "gaussian_removal",
+            row["source_removal_receipt_digest"],
+            GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
         ),
         "source_collider_deletion": {
             "selected_deletion_id": row["collider_deletion_id"],
             "independent": _evidence_record(
                 "source_collider_deletion",
                 row["collider_deletion_receipt_digest"],
+                SOURCE_COLLIDER_DELETION_SCHEMA_VERSION,
             ),
         },
         "replacement_qualification": _evidence_record(
             "replacement_qualification",
             row["replacement_qualification_receipt_digest"],
+            REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
         ),
     }
     return row
+
+
+def _materialized_construction(value: dict) -> dict:
+    result = json.loads(json.dumps(value))
+    result["scene_freeze_receipt"] = _evidence_record(
+        "scene_freeze",
+        result["scene_freeze_digest"],
+        "dual_task_scene_freeze.v1",
+    )
+    result["construction_digest"] = canonical_digest(
+        result,
+        digest_field="construction_digest",
+    )
+    return result
 
 
 def _pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
@@ -355,10 +383,12 @@ def _construction_bindings() -> dict:
             "replacement_simulator_import_qualified": True,
         },
     ]
-    return seal_replacement_construction_bindings(
-        scene_freeze_digest=_sha("1"),
-        task_freeze_join_digest=_sha("2"),
-        bindings=[_construction_row_with_evidence(row) for row in rows],
+    return _materialized_construction(
+        seal_replacement_construction_bindings(
+            scene_freeze_digest=_sha("1"),
+            task_freeze_join_digest=_sha("2"),
+            bindings=[_construction_row_with_evidence(row) for row in rows],
+        )
     )
 
 
@@ -519,10 +549,12 @@ def _five_replacement_fixture() -> dict:
     fixture["assets"] = [*scene_assets, *replacement_assets]
     fixture["task_spec"]["subject_asset_id"] = "replacement_0"
     fixture["task_freeze_digest"] = binding_rows[0]["task_freeze_digest"]
-    fixture["construction_bindings"] = seal_replacement_construction_bindings(
-        scene_freeze_digest=_sha("1"),
-        task_freeze_set_digest=_sha("2"),
-        bindings=binding_rows,
+    fixture["construction_bindings"] = _materialized_construction(
+        seal_replacement_construction_bindings(
+            scene_freeze_digest=_sha("1"),
+            task_freeze_set_digest=_sha("2"),
+            bindings=binding_rows,
+        )
     )
     return fixture
 
@@ -550,10 +582,12 @@ def test_runtime_accepts_single_repeatable_replacement_with_construction_binding
         if row.get("semantic_role") != "replacement"
         or row.get("asset_id") == "replacement_0"
     ]
-    fixture["construction_bindings"] = seal_replacement_construction_bindings(
-        scene_freeze_digest=_sha("1"),
-        task_freeze_set_digest=_sha("2"),
-        bindings=fixture["construction_bindings"]["bindings"][:1],
+    fixture["construction_bindings"] = _materialized_construction(
+        seal_replacement_construction_bindings(
+            scene_freeze_digest=_sha("1"),
+            task_freeze_set_digest=_sha("2"),
+            bindings=fixture["construction_bindings"]["bindings"][:1],
+        )
     )
 
     contract = materialize_native_task_runtime_contract(**fixture)
@@ -661,9 +695,8 @@ def test_native_runtime_rejects_caller_authored_construction_without_evidence() 
     with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
         materialize_native_task_runtime_contract(**fixture)
 
-    assert (
-        "native_task_runtime_construction_evidence_receipts_missing:0"
-        in excinfo.value.errors
+    assert "replacement_construction_scene_freeze_receipt_invalid" in (
+        excinfo.value.errors
     )
 
 

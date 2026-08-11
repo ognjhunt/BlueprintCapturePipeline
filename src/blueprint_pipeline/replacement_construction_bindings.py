@@ -499,6 +499,103 @@ def validate_replacement_construction_bindings(
     return payload
 
 
+def _materialized_file_record_valid(
+    record: Any,
+    *,
+    expected_digest: str,
+    expected_schema_version: str,
+) -> bool:
+    return (
+        isinstance(record, Mapping)
+        and isinstance(record.get("path"), str)
+        and bool(str(record.get("path") or "").strip())
+        and isinstance(record.get("size_bytes"), int)
+        and not isinstance(record.get("size_bytes"), bool)
+        and int(record.get("size_bytes")) > 0
+        and _digest(record.get("sha256"))
+        and record.get("schema_version") == expected_schema_version
+        and record.get("canonical_digest") == expected_digest
+    )
+
+
+def validate_materialized_replacement_construction_bindings(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate construction bindings produced by the file-backed materializer.
+
+    The low-level sealer remains useful for canonicalization and unit fixtures.
+    Native runtime admission requires this stronger shape so a caller cannot
+    bypass file-backed scene/task/removal/collider/replacement evidence with
+    digest-shaped rows.
+    """
+
+    payload = validate_replacement_construction_bindings(value)
+    errors: list[str] = []
+    if not _materialized_file_record_valid(
+        payload.get("scene_freeze_receipt"),
+        expected_digest=str(payload.get("scene_freeze_digest") or ""),
+        expected_schema_version="dual_task_scene_freeze.v1",
+    ):
+        errors.append("replacement_construction_scene_freeze_receipt_invalid")
+    expected_row_schemas = {
+        "task_freeze": "dual_task_task_freeze.v1",
+        "mask_set": MASK_SET_QUALIFICATION_SCHEMA_VERSION,
+        "gaussian_removal": GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
+        "replacement_qualification": REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
+    }
+    expected_row_digests = {
+        "task_freeze": "task_freeze_digest",
+        "mask_set": "mask_set_receipt_digest",
+        "gaussian_removal": "source_removal_receipt_digest",
+        "replacement_qualification": "replacement_qualification_receipt_digest",
+    }
+    for index, row in enumerate(payload["bindings"]):
+        evidence = row.get("evidence_receipts")
+        if not isinstance(evidence, Mapping):
+            errors.append(f"replacement_construction_materialized_evidence_missing:{index}")
+            continue
+        for receipt_id, schema_version in expected_row_schemas.items():
+            if not _materialized_file_record_valid(
+                evidence.get(receipt_id),
+                expected_digest=str(row.get(expected_row_digests[receipt_id]) or ""),
+                expected_schema_version=schema_version,
+            ):
+                errors.append(
+                    "replacement_construction_materialized_evidence_invalid:"
+                    f"{index}:{receipt_id}"
+                )
+        collider = evidence.get("source_collider_deletion")
+        independent = (
+            collider.get("independent") if isinstance(collider, Mapping) else None
+        )
+        if (
+            not isinstance(collider, Mapping)
+            or collider.get("selected_deletion_id") != row.get("collider_deletion_id")
+            or not _materialized_file_record_valid(
+                independent,
+                expected_digest=str(row.get("collider_deletion_receipt_digest") or ""),
+                expected_schema_version=SOURCE_COLLIDER_DELETION_SCHEMA_VERSION,
+            )
+        ):
+            errors.append(
+                "replacement_construction_materialized_evidence_invalid:"
+                f"{index}:source_collider_deletion"
+            )
+        batch = collider.get("batch") if isinstance(collider, Mapping) else None
+        if batch is not None and not _materialized_file_record_valid(
+            batch,
+            expected_digest=str(batch.get("canonical_digest") or ""),
+            expected_schema_version=SOURCE_COLLIDER_BATCH_DELETION_SCHEMA_VERSION,
+        ):
+            errors.append(
+                "replacement_construction_materialized_evidence_invalid:"
+                f"{index}:source_collider_batch"
+            )
+    if errors:
+        raise ReplacementConstructionBindingsError(errors)
+    return payload
+
+
 def seal_replacement_construction_bindings(
     *,
     scene_freeze_digest: str,
@@ -776,5 +873,6 @@ __all__ = [
     "SOURCE_COLLIDER_DELETION_SCHEMA_VERSION",
     "materialize_replacement_construction_bindings",
     "seal_replacement_construction_bindings",
+    "validate_materialized_replacement_construction_bindings",
     "validate_replacement_construction_bindings",
 ]

@@ -25,7 +25,7 @@ from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 from .replacement_construction_bindings import (
     ReplacementConstructionBindingsError,
-    validate_replacement_construction_bindings,
+    validate_materialized_replacement_construction_bindings,
 )
 
 
@@ -772,7 +772,7 @@ def materialize_native_task_runtime_contract(
             errors.append("native_task_runtime_construction_bindings_missing")
         else:
             try:
-                qualified_construction = validate_replacement_construction_bindings(
+                qualified_construction = validate_materialized_replacement_construction_bindings(
                     construction_bindings
                 )
             except ReplacementConstructionBindingsError as exc:
