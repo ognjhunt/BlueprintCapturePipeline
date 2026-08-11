@@ -829,6 +829,7 @@ def test_derived_topology_partitions_and_passes_full_authoring_chain(
         joint_limits_rad=[0.0, math.pi / 2.0],
         door_back_plane_y_m=0.178,
         door_face_plane_y_m=0.306,
+        historical_replay_only=True,
     )
 
     assert derived["schema_version"] == "articulated_topology_from_source.v1"
@@ -847,7 +848,6 @@ def test_derived_topology_partitions_and_passes_full_authoring_chain(
     assert partition["component_hinge_upper"] == ("upper_door", "hinge_hardware")
     assert partition["component_foot"] == ("cabinet", "cabinet_shell")
     assert derived["claim_boundary"]["joint_agent_output"] is False
-
     template = _physics_template()
     template["maximum_reset_pairwise_overlap_m"] = 0.006
     template["task_door_envelope_m"] = {
@@ -870,6 +870,25 @@ def test_derived_topology_partitions_and_passes_full_authoring_chain(
     assert receipt["handle"]["source"] == "observed_source_component"
     assert receipt["topology_validation"]["status"] == "topology_statically_admitted"
     assert receipt["physics_validation"]["status"] == "physics_statically_admitted"
+
+
+def test_deterministic_topology_is_not_selectable_for_new_authoring(
+    tmp_path: Path,
+) -> None:
+    source = _source_like_fixture(tmp_path / "source.usda")
+    with pytest.raises(ArticulatedSimReadyReplacementError) as excinfo:
+        derive_articulated_topology_from_source(
+            source_asset_usd_path=source,
+            output_usd_path=tmp_path / "topology.usda",
+            seam_z_m=UPPER_INTERVAL[0],
+            hinge_pivot_asset_xy_m=[HINGE_ASSET[0], HINGE_ASSET[1]],
+            joint_limits_rad=[0.0, math.pi / 2.0],
+            door_back_plane_y_m=0.178,
+            door_face_plane_y_m=0.306,
+        )
+    assert "deterministic_cad_authoring_removed_use_agent_backend" in str(
+        excinfo.value
+    )
 
 
 def test_agent_enriched_asset_must_keep_blueprint_authored_link_masses(

@@ -111,6 +111,14 @@ observed-versus-generated labels. The shared scene must keep both replacements
 co-present. A task selects its subject by stable asset ID; the inactive object
 must still reset and read back correctly.
 
+Each replacement object must compare two agent-authored CAD candidates at the
+same frozen metric envelope: Earth-to-Jake and Pan-Chera Multi-Agent-CAD through
+its Aider-first or traceable Codex route. Deterministic CAD, collision graphs,
+and scoring primitives are forbidden as replacement-geometry authors; only
+deterministic conversion, measurement, and verification are admitted. The
+reusable matrix and scene contracts must support one to five replacement
+objects, even though this bounded rehearsal freezes exactly two.
+
 For each task, native construction must qualify its own Franka base, approach,
 contact, path, release, retreat, recovery, support stability, penetration,
 joint-limit, containment, and reset gates without moving unrelated geometry.

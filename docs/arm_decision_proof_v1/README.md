@@ -78,7 +78,9 @@ Until the pre-capture Franka rehearsal is complete:
   collision proxy, but no measurement-authoritative local surface mesh;
 - NVIDIA USD Content Agents v0.5.2 is a candidate USD conversion,
   material/physics-authoring, and static SimReady-validation backend after
-  deterministic geometry exists; it is not image-to-CAD authority;
+  agent-authored CAD or mesh geometry exists; it is not image-to-CAD authority.
+  New replacement authoring compares Earth-to-Jake and Pan-Chera Multi-Agent-CAD
+  candidates at the same frozen scale, while deterministic CAD is inadmissible;
 - new capture feature development remains zero. The final proof uses the
   existing Raw V3.2 path for one fresh workcell unless a measured gate identifies
   a missing measurement;

@@ -1,4 +1,4 @@
-"""Build the deterministic CAD-derived SimReady control for ADP-009A."""
+"""Replay the historical deterministic CAD-derived ADP-009A control only."""
 
 from __future__ import annotations
 
@@ -469,7 +469,12 @@ def materialize_parametric_simready_control(
     output_receipt: Path,
     simready_validator: Path | None = None,
     simready_foundation_root: Path | None = None,
+    historical_replay_only: bool = False,
 ) -> dict[str, Any]:
+    if historical_replay_only is not True:
+        raise PublicSceneSimReadyControlError(
+            "deterministic_cad_authoring_removed_use_agent_backend"
+        )
     repo_root = repo_root.expanduser().resolve()
     evidence_root = evidence_root.expanduser().resolve()
     request_path = _require_under(request_path, repo_root)
@@ -767,6 +772,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-receipt", type=Path, required=True)
     parser.add_argument("--simready-validator", type=Path)
     parser.add_argument("--simready-foundation-root", type=Path)
+    parser.add_argument("--historical-replay-only", action="store_true")
     args = parser.parse_args(argv)
     receipt = materialize_parametric_simready_control(
         request_path=args.request,
@@ -776,6 +782,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_receipt=args.output_receipt,
         simready_validator=args.simready_validator,
         simready_foundation_root=args.simready_foundation_root,
+        historical_replay_only=args.historical_replay_only,
     )
     print(json.dumps({"status": receipt["status"], "receipt_digest": receipt["receipt_digest"]}, sort_keys=True))
     return 0

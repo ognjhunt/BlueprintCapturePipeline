@@ -219,22 +219,42 @@ native import, joint/physics behavior, appearance, placement, reach/contact,
 cameras, reset execution, zero-action, scripted-positive, or policy execution;
 those remain blocked.
 
-Both objects now also have independent prompt-bound parametric CAD candidates,
-generated locally through the general graph-spec-to-OpenCascade adapter. The
-prompt is semantic guidance only; every dimension, link membership, and rest
-pose comes from the exact graph spec, and generated hidden geometry is not
-observed truth. The washer STEP is `133,900` bytes,
-`sha256:24d23298eb41bdcaf37e2afad2815505a8be66ea122a551a80090ce468a8267a`;
-the notebook STEP is `33,182` bytes,
-`sha256:491d663bb87192b8b7df98dffb7b4e1f8cf02eefffa6b0df50f78d372de32a6b`.
-Both were independently regenerated and matched byte-for-byte after the
-adapter normalized OpenCascade's wall-clock and process-global STEP metadata.
-Portable bindings are retained in
-[Task A](manifests/third_scene_840920_task_a_graph_cad_candidate_binding.v1.json)
-and
-[Task B](manifests/third_scene_840920_task_b_graph_cad_candidate_binding.v1.json).
-These are generated CAD candidates, not Content Agents outputs, native-import
-qualifications, appearance evidence, or physical equivalents.
+The earlier graph-to-OpenCascade candidates are rejected and are not admissible
+replacement geometry. Their bytes were moved into a digest-bound rejected-
+artifact quarantine rather than silently deleted. New authoring uses two
+independent agent backends per object—Earth-to-Jake and Pan-Chera
+Multi-Agent-CAD—against the same observed reference packet and frozen metric
+envelope. Deterministic conversion and independent STEP measurement remain
+allowed; deterministic CAD, collision graphs, and scoring primitives cannot
+author replacement geometry. Agent-authored candidates remain generated CAD,
+not Content Agents outputs, native-import qualifications, appearance evidence,
+or physical equivalents.
+
+The sealed dual-task CAD-agent matrix is checked in at
+`docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json`
+with digest
+`sha256:bf64ddab12de51d7f3f6fcf863d82e085eef80e512df99743e1485b230ba2426`.
+It binds exactly two replacement slots today while preserving the general
+one-to-five object capacity:
+
+| Task | Backend | Execution route | STEP digest | Output receipt | Cost |
+|---|---|---|---|---|---|
+| Task A washer | Earth-to-Jake | `codex_skill_step_first` | `sha256:d1db5a6d354923899894b45753a8b9ce8a6c41acccd053c42fcd199cf91a950a` | `sha256:f833d05c801ae8352118127e8f7a4f179f14cf9f51a9f44bfeca3234702ad3dc` | `$0.00` |
+| Task A washer | Pan-Chera Multi-Agent-CAD | `codex_agent_direct_repo_route` | `sha256:509af5523b4fa4c66c0a7304b0c33ab5fa862a7174436e6495c22974913efa74` | `sha256:91b37071f5ed30df4f1c1f917b7e18e6a3fce6f14947fd718afac563634c4f4e` | `$0.00` |
+| Task B notebook | Earth-to-Jake | `codex_skill_step_first` | `sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c` | `sha256:36a7d633a6cf346df796f0d6dbbcd4834195872e1f7e28505875fe43028aaad7` | `$0.00` |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | `codex_agent_direct_repo_route` | `sha256:fb72f8e3f23a1260a54bd0620bf994ba09bd58d37cbcfec93134c9213e33863b` | `sha256:30e5b5e56e313ec085c381ffd0c2e7f63a9d9affa6c930fea6e340a6fbe21acf` | `$0.00` |
+
+For NVIDIA Content Agents, each STEP was deterministically projected into a
+Mesh-only USD working copy. These are agent-input artifacts only; they are not
+canonical simulator assets, collision assets, physics authority, native imports,
+or appearance qualifications:
+
+| Task | Backend | Meshes | Projection receipt | Agent-input USD |
+|---|---:|---:|---|---|
+| Task A washer | Earth-to-Jake | 15 | `sha256:b05b312f3b37db5c33aa3e9b6ffe261a5e59f0fa175c3337e755e531e06becac` | `sha256:a302bfdea80d0c5ce096a7b273945cca050499639a612c45d0c7406795430157` |
+| Task A washer | Pan-Chera Multi-Agent-CAD | 40 | `sha256:7f72bca1fa48c620909fbfb45abe537209cddfc435ef6bf26686b07c707edf9b` | `sha256:18711b7d6f6075b7f309c532b81572236049043c309955dff658a9432430ee7e` |
+| Task B notebook | Earth-to-Jake | 79 | `sha256:36fcb32e67764c7f14c4f346d5193fb0b1db30e8cd38788d1516a9d716d0d348` | `sha256:52ceda6a9b51dc79dcd9636f81c1468d24e2652ea1b73767d7a571cd46ffe1a7` |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:c4aa978d8b10592c4775f54fda23acb414ac4a785845464d8462a4dd614bab84` | `sha256:a0afcce7930ef8b0abbd526dcb85164c54cdc1ad9c6d42373e316bc16a1685f5` |
 
 | Task/cell | Zero action | Scripted positive | pi05_droid | groot_n17_droid |
 |---|---|---|---|---|
@@ -312,11 +332,13 @@ forks:
   rows. The rehearsal-specific join remains stricter—exactly two materially
   different tasks—while hermetic `1`, `2`, and `5` object fixtures prove the
   reusable ceiling and a sixth object fails before scene construction.
-- A deterministic prompt-bound graph-to-CAD adapter now emits portable AP214
-  STEP candidates without loading the legacy can-specific authoring path. It
-  binds exact graph-spec bytes and provenance labels, normalizes nondeterministic
-  OpenCascade header/session metadata, and cannot upgrade generated geometry to
-  observed truth or simulator qualification.
+- A general CAD-agent request/output matrix now supports one to five replacement
+  objects and requires both Earth-to-Jake and Pan-Chera Multi-Agent-CAD for every
+  selected object at the same frozen scale. It fails closed on deterministic CAD,
+  graph-derived geometry, missing source archives, unbound execution traces,
+  caller-only inspection claims, metric-envelope mismatches, or shared candidate
+  identities. Historical deterministic-CAD code remains replay-only and cannot
+  be selected for new authoring.
 
 Hermetic regressions preserve the 840313 rigid fixture, 840796 articulated
 fixture, and dual-task shared-asset fixture. Scene-specific values remain in
@@ -380,14 +402,15 @@ Before the final reusable-code commit:
   while Git wrote a disposable fixture index; its exact affected test passed
   after this lane's temporary pytest directory was removed.
 - Focused graph-native state, bounded 1..5 replacement construction, independent
-  collider removal, runtime admission, static GPU-collision, and deterministic
-  graph-to-CAD regressions — `116 passed`.
+  collider removal, runtime admission, static GPU-collision, and agent-CAD
+  contract regressions are retained; exact current counts are recorded at the
+  next commit gate.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; deterministic prompt-bound parametric CAD candidates; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |

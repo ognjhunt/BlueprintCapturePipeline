@@ -113,6 +113,23 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return repo_root, evidence_root, request_path
 
 
+def test_deterministic_control_is_not_selectable_for_new_authoring(
+    tmp_path: Path,
+) -> None:
+    repo_root, evidence_root, request_path = _fixture(tmp_path)
+    with pytest.raises(
+        PublicSceneSimReadyControlError,
+        match="deterministic_cad_authoring_removed_use_agent_backend",
+    ):
+        materialize_parametric_simready_control(
+            request_path=request_path,
+            repo_root=repo_root,
+            evidence_root=evidence_root,
+            output_usda=repo_root / "output" / "control.usda",
+            output_receipt=repo_root / "output" / "receipt.json",
+        )
+
+
 def test_materializer_derives_mesh_usd_and_prepared_receipt(tmp_path: Path) -> None:
     repo_root, evidence_root, request_path = _fixture(tmp_path)
     output_usda = repo_root / "output" / "control.usda"
@@ -124,6 +141,7 @@ def test_materializer_derives_mesh_usd_and_prepared_receipt(tmp_path: Path) -> N
         evidence_root=evidence_root,
         output_usda=output_usda,
         output_receipt=output_receipt,
+        historical_replay_only=True,
     )
 
     assert receipt["status"] == "prepared_for_independent_validation"
@@ -211,6 +229,7 @@ output.write_text(json.dumps({asset: {
         output_receipt=repo_root / "receipt.json",
         simready_validator=validator,
         simready_foundation_root=foundation,
+        historical_replay_only=True,
     )
 
     validation = receipt["simready_foundation_validation"]
@@ -236,6 +255,7 @@ def test_materializer_rejects_caller_asserted_qualification(tmp_path: Path) -> N
             evidence_root=evidence_root,
             output_usda=repo_root / "output.usda",
             output_receipt=repo_root / "receipt.json",
+            historical_replay_only=True,
         )
 
 
@@ -252,6 +272,7 @@ def test_materializer_rejects_mesh_dimension_mismatch(tmp_path: Path) -> None:
             evidence_root=evidence_root,
             output_usda=repo_root / "output.usda",
             output_receipt=repo_root / "receipt.json",
+            historical_replay_only=True,
         )
 
 
@@ -268,6 +289,7 @@ def test_materializer_rejects_cad_evidence_outside_root(tmp_path: Path) -> None:
             evidence_root=evidence_root,
             output_usda=repo_root / "output.usda",
             output_receipt=repo_root / "receipt.json",
+            historical_replay_only=True,
         )
 
 
@@ -300,6 +322,7 @@ def test_materializer_binds_multiview_derived_colour_and_rejects_caller_substitu
         evidence_root=evidence_root,
         output_usda=repo_root / "output.usda",
         output_receipt=repo_root / "receipt.json",
+        historical_replay_only=True,
     )
     assert receipt["visual_match_evidence"]["camera_count"] == 3
     assert receipt["visual_match_evidence"]["derived_srgb_diffuse_color"] == pytest.approx(
@@ -317,4 +340,5 @@ def test_materializer_binds_multiview_derived_colour_and_rejects_caller_substitu
             evidence_root=evidence_root,
             output_usda=repo_root / "wrong.usda",
             output_receipt=repo_root / "wrong.json",
+            historical_replay_only=True,
         )

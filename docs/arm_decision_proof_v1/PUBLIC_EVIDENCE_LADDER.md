@@ -301,8 +301,10 @@ validation. It is **not** an image-to-CAD or splat-to-CAD generator. Its physics
 predictions and VLM judges are proposals, not measured property authority.
 
 Use it behind a provider-neutral `simready_authoring_backend` contract after
-geometry already exists. The first canary is a checked-in parametric rigid
-object with analytic dimensions, volume, center of mass, and inertia. Bind the
+agent-authored CAD or mesh geometry already exists. Deterministic format
+conversion and independent measurement are allowed; deterministic CAD,
+collision primitives, and task-scoring graphs are not geometry-authoring
+backends. Bind the
 exact Content Agents, converter, SimReady profile, model/backend, renderer,
 solver, prompt/config, source/output, and environment digests. Require
 `Prop-Robotics-Isaac@1.0.0` explicitly and run dynamic Isaac checks separately;
@@ -311,14 +313,19 @@ static SimReady validation is not task physics.
 Compare:
 
 - known-good manually authored USD control;
-- deterministic parametric CAD plus NVIDIA Content Agents;
+- Earth-to-Jake agent-authored CAD plus NVIDIA Content Agents;
+- Pan-Chera Multi-Agent-CAD through its Aider-first or traceable Codex route,
+  plus NVIDIA Content Agents;
 - SimReadyGen only if its exact code, rights, and runtime remain admitted.
 
 Promote the Content Agents path only if it preserves geometry and satisfies the
 same metric, collision, dynamics, contact, grasp, repeatability, latency, cost,
-and human-correction gates. A Codex- or Claude-authored CAD script is acceptable
-only when the script, parameters, CAD kernel, and output are immutable and the
-geometry passes independent tests.
+and human-correction gates. Each selected object must retain both agent-authored
+comparison candidates at the same frozen metric dimensions. The reusable matrix
+admits one to five replacement objects; every candidate's source references,
+agent trace, script, parameters, CAD kernel, and output must be immutable and
+independently inspected. The historical deterministic-CAD lane remains readable
+only for evidence replay and is not selectable for new authoring.
 
 ### 7. ScanNet++: retained access outcome; transfer moved to fresh capture
 

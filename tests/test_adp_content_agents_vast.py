@@ -269,6 +269,23 @@ def test_match_v2_configs_remove_unproven_aluminum_assertion(tmp_path: Path) -> 
     assert "pale mint green" in texture
 
 
+def test_legacy_content_agents_input_is_not_selectable_for_new_authoring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    reference = _reference_image(tmp_path, monkeypatch)
+    with pytest.raises(
+        ValueError,
+        match="deterministic_cad_authoring_removed_use_agent_backend",
+    ):
+        content_agents.build_content_agents_vast_bundle(
+            repo_root=ROOT,
+            content_agents_root=source,
+            reference_image_path=reference,
+            job_dir=tmp_path / "rejected",
+        )
+
+
 def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -280,6 +297,7 @@ def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
         reference_image_path=reference,
         job_dir=tmp_path / "first",
         generated_at="fixed",
+        historical_replay_only=True,
     )
     second = content_agents.build_content_agents_vast_bundle(
         repo_root=ROOT,
@@ -287,6 +305,7 @@ def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
         reference_image_path=reference,
         job_dir=tmp_path / "second",
         generated_at="fixed",
+        historical_replay_only=True,
     )
 
     assert first["blockers"] == []
@@ -343,6 +362,7 @@ def test_bundle_rejects_changed_reference_bytes(
             content_agents_root=source,
             reference_image_path=reference,
             job_dir=tmp_path / "job",
+            historical_replay_only=True,
         )
 
 
@@ -1125,11 +1145,12 @@ def _articulated_runtime_configs(tmp_path: Path) -> dict:
 
 def test_remote_config_contract_accepts_the_articulated_target_prims(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The contract guards runtime failure modes, not one scene's prim paths."""
 
     content_agents._validate_remote_configs(
-        source=Path("/private/tmp/usd-content-agents-0.5.2-20260808"),
+        source=_fake_source(tmp_path, monkeypatch),
         config_sources=_articulated_runtime_configs(tmp_path),
     )
 

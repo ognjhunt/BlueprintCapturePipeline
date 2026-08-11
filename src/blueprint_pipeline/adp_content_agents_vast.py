@@ -637,6 +637,7 @@ def build_content_agents_vast_bundle(
     input_variant: str = "control_v1",
     evidence_root: str | Path | None = None,
     generated_at: str | None = None,
+    historical_replay_only: bool = False,
 ) -> dict[str, Any]:
     """Build one immutable bundle with explicit public-dataset byte accounting.
 
@@ -645,6 +646,8 @@ def build_content_agents_vast_bundle(
     InteriorGS source bytes or Aura/InteriorGS appearance frames.
     """
 
+    if historical_replay_only is not True:
+        raise ValueError("deterministic_cad_authoring_removed_use_agent_backend")
     repo = Path(repo_root).expanduser().resolve()
     source = Path(content_agents_root).expanduser().resolve()
     reference_source = Path(reference_image_path).expanduser().resolve()
@@ -1100,6 +1103,7 @@ def main(argv: list[str] | None = None) -> int:
         default="control_v1",
     )
     parser.add_argument("--evidence-root")
+    parser.add_argument("--historical-replay-only", action="store_true")
     args = parser.parse_args(argv)
     receipt = build_content_agents_vast_bundle(
         repo_root=args.repo_root,
@@ -1108,6 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
         job_dir=args.job_dir,
         input_variant=args.input_variant,
         evidence_root=args.evidence_root,
+        historical_replay_only=args.historical_replay_only,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))
     return 0 if receipt.get("status") == "ready" else 2

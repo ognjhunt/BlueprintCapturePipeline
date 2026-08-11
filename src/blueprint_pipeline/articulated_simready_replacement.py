@@ -972,8 +972,9 @@ def derive_articulated_topology_from_source(
     slab_minimum_x_span_fraction: float = 0.85,
     hinge_column_x_maximum_m: float | None = None,
     subset_family_name: str = "blueprint_connected_components",
+    historical_replay_only: bool = False,
 ) -> dict[str, Any]:
-    """Deterministically construct the articulated topology from source subsets.
+    """Replay the historical deterministic topology construction only.
 
     This is the checked-in "deterministic parametric CAD" comparison arm of the
     evidence ladder: every partition threshold is an observed value from the
@@ -985,6 +986,11 @@ def derive_articulated_topology_from_source(
     authoring and validators consume either path. It never claims Joint Agent
     equivalence, native qualification, or physical truth.
     """
+
+    if historical_replay_only is not True:
+        raise ArticulatedSimReadyReplacementError(
+            ["deterministic_cad_authoring_removed_use_agent_backend"]
+        )
 
     try:
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
