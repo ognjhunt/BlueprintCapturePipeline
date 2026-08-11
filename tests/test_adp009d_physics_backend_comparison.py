@@ -13,6 +13,10 @@ import pytest
 from blueprint_pipeline.adp009d_physics_backend_comparison import (
     CANARY_ADMISSION_SCHEMA_VERSION,
     COMPARABILITY_BINDINGS,
+    FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
+    FRANKA_INERTIA_UNIT_CORRECTION_FACTOR,
+    FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
+    FRANKA_SOURCE_MESH_SCALE,
     MEASUREMENT_FIELDS,
     PROBE_SCHEMA_VERSION,
     PhysicsBackendContractError,
@@ -424,7 +428,7 @@ def test_backend_contract_is_strict_and_physx_remains_default_profile() -> None:
         normalize_physics_backend(None)
 
 
-def test_newton_robot_inertial_overlay_is_exact_mass_only_and_digest_bound() -> None:
+def test_newton_robot_inertial_overlay_is_exact_and_digest_bound() -> None:
     overlay = build_newton_robot_inertial_overlay_contract()
 
     assert overlay == build_backend_profile("newton")["asset_conversion"][
@@ -437,7 +441,21 @@ def test_newton_robot_inertial_overlay_is_exact_mass_only_and_digest_bound() -> 
         assert overlay["body_masses_kg"][f"{side}_inner_knuckle"] > 0.0
         assert overlay["body_masses_kg"][f"{side}_outer_knuckle"] > 0.0
     assert overlay["authored_center_of_mass_allowed"] is False
-    assert overlay["authored_diagonal_inertia_allowed"] is False
+    assert overlay["robotiq_authored_diagonal_inertia_allowed"] is False
+    assert overlay["franka_exact_unit_corrected_diagonal_inertia_required"] is True
+    conversion = overlay["franka_inertia_unit_conversion"]
+    assert conversion["expected_stage_meters_per_unit"] == 1.0
+    assert conversion["source_mesh_scale"] == FRANKA_SOURCE_MESH_SCALE
+    assert conversion["correction_factor"] == FRANKA_INERTIA_UNIT_CORRECTION_FACTOR
+    assert conversion["source_diagonal_inertia_kg_m2"] == {
+        name: list(value)
+        for name, value in FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2.items()
+    }
+    assert conversion["corrected_diagonal_inertia_kg_m2"] == {
+        name: list(value)
+        for name, value in FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2.items()
+    }
+    assert conversion["arbitrary_minimum_inertia_clamp_allowed"] is False
     assert overlay["authored_principal_axes_allowed"] is False
     assert overlay["arbitrary_minimum_mass_or_inertia_clamp_allowed"] is False
     assert overlay["usd_float32_mass_roundtrip_tolerance_kg"] == 2.0e-8

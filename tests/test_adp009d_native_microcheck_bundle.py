@@ -37,6 +37,9 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
 from blueprint_pipeline.adp009d_physics_backend_comparison import (
     DROID_FRANKA_ROBOTIQ_USD_DIGEST,
     DROID_FRANKA_ROBOTIQ_USD_URI,
+    FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
+    FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
+    FRANKA_SOURCE_MESH_SCALE,
     ROBOTIQ_BODY_MASSES_KG,
     build_backend_profile,
     build_newton_robot_inertial_overlay_contract,
@@ -3320,6 +3323,34 @@ def _newton_robot_inertial_observations(*, post_apply: bool) -> dict[str, dict]:
     }
 
 
+def _newton_franka_inertia_observations(*, post_apply: bool) -> dict[str, dict]:
+    expected = (
+        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2
+        if post_apply
+        else FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2
+    )
+    return {
+        name: {
+            "prim_path": f"/World/envs/env_0/Robot/{name}",
+            "rigid_body_api_applied": True,
+            "mass_api_applied": True,
+            "mass_authored": True,
+            "mass_kg": 1.0 + index,
+            "center_of_mass_authored": True,
+            "center_of_mass": [0.0, 0.0, 0.0],
+            "diagonal_inertia_authored": True,
+            "diagonal_inertia_kg_m2": list(expected[name]),
+            "principal_axes_authored": False,
+            "collision_mesh_count": 1,
+            "collision_mesh_paths": [
+                f"/World/envs/env_0/Robot/{name}/geometry/{name}"
+            ],
+            "collision_mesh_scales": [[FRANKA_SOURCE_MESH_SCALE] * 3],
+        }
+        for index, name in enumerate(sorted(expected))
+    }
+
+
 def test_newton_robot_inertial_targets_fail_closed_on_asset_schema_drift() -> None:
     before = _newton_robot_inertial_observations(post_apply=False)
     after = _newton_robot_inertial_observations(post_apply=True)
@@ -3368,10 +3399,51 @@ def test_newton_robot_inertial_targets_fail_closed_on_asset_schema_drift() -> No
     )
 
 
+def test_newton_franka_inertia_conversion_rejects_asset_and_value_drift() -> None:
+    before = _newton_franka_inertia_observations(post_apply=False)
+    after = _newton_franka_inertia_observations(post_apply=True)
+
+    assert isaac_runtime._newton_franka_inertia_target_blockers(
+        before, post_apply=False
+    ) == []
+    assert isaac_runtime._newton_franka_inertia_target_blockers(
+        after, post_apply=True
+    ) == []
+
+    wrong_scale = json.loads(json.dumps(before))
+    wrong_scale["panda_link3"]["collision_mesh_scales"] = [[1.0, 1.0, 1.0]]
+    assert any(
+        blocker.endswith(":panda_link3")
+        for blocker in isaac_runtime._newton_franka_inertia_target_blockers(
+            wrong_scale, post_apply=False
+        )
+    )
+
+    wrong_source_inertia = json.loads(json.dumps(before))
+    wrong_source_inertia["panda_link6"]["diagonal_inertia_kg_m2"][0] *= 2.0
+    assert any(
+        blocker.endswith(":panda_link6")
+        for blocker in isaac_runtime._newton_franka_inertia_target_blockers(
+            wrong_source_inertia, post_apply=False
+        )
+    )
+
+    uncorrected = json.loads(json.dumps(after))
+    uncorrected["panda_link7"]["diagonal_inertia_kg_m2"] = list(
+        FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2["panda_link7"]
+    )
+    assert any(
+        blocker.endswith(":panda_link7")
+        for blocker in isaac_runtime._newton_franka_inertia_target_blockers(
+            uncorrected, post_apply=True
+        )
+    )
+
+
 def test_newton_robot_inertial_receipt_binds_source_and_overlay_digest() -> None:
     overlay = build_newton_robot_inertial_overlay_contract()
     receipt = {
-        "schema_version": "adp009d_newton_robotiq_inertial_overlay_receipt.v1",
+        "schema_version": "adp009d_newton_robot_inertial_overlay_receipt.v2",
         "status": "applied_and_verified",
         "physics_backend": "newton",
         "source_robot_asset_uri": DROID_FRANKA_ROBOTIQ_USD_URI,
@@ -3380,6 +3452,14 @@ def test_newton_robot_inertial_receipt_binds_source_and_overlay_digest() -> None
         "robot_root_prim_path": "/World/envs/env_0/Robot",
         "body_count": len(ROBOTIQ_BODY_MASSES_KG),
         "body_observations": _newton_robot_inertial_observations(
+            post_apply=True
+        ),
+        "franka_body_count": len(FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2),
+        "stage_meters_per_unit": 1.0,
+        "franka_source_observations": _newton_franka_inertia_observations(
+            post_apply=False
+        ),
+        "franka_inertia_observations": _newton_franka_inertia_observations(
             post_apply=True
         ),
         "physx_property_admission": {
@@ -3403,9 +3483,11 @@ def test_newton_robot_inertial_receipt_binds_source_and_overlay_digest() -> None
             ],
             "remaining_unmapped_authored_properties": [],
         },
-        "authored_properties": ["physics:mass"],
+        "authored_properties": ["physics:diagonalInertia", "physics:mass"],
         "source_usd_mutated": False,
-        "center_of_mass_and_inertia_deferred_to_pinned_newton_importer": True,
+        "robotiq_center_of_mass_and_inertia_deferred_to_pinned_newton_importer": True,
+        "franka_source_center_of_mass_preserved": True,
+        "franka_diagonal_inertia_unit_conversion_applied": True,
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = isaac_runtime._canonical_digest(

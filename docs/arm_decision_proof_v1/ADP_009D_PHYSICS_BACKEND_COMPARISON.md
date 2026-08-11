@@ -108,8 +108,9 @@ matched no Newton counterpart. The sealed USD's sole authored rigid body is its
 `canned_beverage` root.
 Terminal receipt
 `sha256:9816ed8355a38e11111eb87d5adf5d63735470f92f86e8779a1e4fd28412e901`
-records the typed blocker, zero policy queries, zero retries, a settled `$0.133`
-provider charge, 20 retained artifacts, successful teardown, and fresh
+records the typed blocker, zero policy queries, zero retries, a `$0.133`
+provider charge at terminal-receipt time (`$0.149` after final API settlement),
+20 retained artifacts, successful teardown, and fresh
 API-confirmed provider-zero.
 
 A provider-free bundle and admission attempt at implementation commit
@@ -123,7 +124,8 @@ The fourth controls-only canary at that same commit proved the exact source
 body label `canned_beverage` also matches no Newton counterpart. Terminal receipt
 `sha256:7a420975420b88841ac3b1b1c3dd88699140514888caa4f9f44efaba3b1a138a`
 records the typed pre-controls blocker, zero policy queries, zero retries, a
-settled `$0.148` provider charge, 20 retained artifacts totaling 277,996 bytes,
+`$0.148` provider charge at terminal-receipt time (`$0.156` after final API
+settlement), 20 retained artifacts totaling 277,996 bytes,
 successful teardown, and fresh API-confirmed provider-zero. The repair keeps
 PhysX's existing body filter unchanged and uses Newton's native shape-level
 filter for the sealed can's exact authored `body_collider`; static SAGE remains
@@ -141,7 +143,8 @@ lacked positive mass and inertia; the first named body was
 `left_outer_knuckle`. Terminal receipt
 `sha256:c2e7de0cc4a6fc6b8077a5a2971093e5a4c5510ccd13c784143cdc67719cdc73`
 records zero controls and policy queries, a typed pre-controls media gap, 20
-retained artifacts totaling 280,242 bytes, a settled `$0.148` charge,
+retained artifacts totaling 280,242 bytes, a `$0.148` charge at
+terminal-receipt time (`$0.172` after final API settlement),
 successful teardown, and fresh API-confirmed provider-zero.
 
 A sixth controls-only canary at implementation commit
@@ -152,25 +155,54 @@ stores `UsdFileCfg.func` as a lazy `ResolvableString`; generic `__wrapped__`
 inspection intentionally does not resolve that reference. Terminal receipt
 `sha256:2da3ea2f428c0b28cfa3c38cf3be88f71797a9ff3bd97c79766b8a5c024dffa2`
 records zero controls and policy queries, a typed pre-controls media gap, 20
-retained artifacts totaling 238,891 bytes, the exact settled `$0.159` charge,
+retained artifacts totaling 238,891 bytes, a `$0.159` charge at terminal-receipt
+time (`$0.182` after final API settlement),
 successful teardown, and fresh API-confirmed provider-zero. The repair uses
 Isaac Lab's public `string_to_callable` resolver only after requiring the exact
 pinned `spawn_from_usd` reference, re-verifies the resolved function's module
 and name, and then requires the official `@clone` wrapper before unwrapping it.
 Any other reference or wrapper shape remains fail closed.
 
+A seventh controls-only canary at implementation commit
+`d1af040beda4759efc0451b37f44322f2815b85c` proved the repaired spawn wrapper,
+full environment construction, five native contact-sensor instances, all three
+320x180 camera paths, two deterministic resets, zero-action delivery, and 40
+camera warm-up frames. It then failed closed before scripted controls because
+all seven arm-joint positions became non-finite:
+`canonical_hold_arm_pose_drift:maximum_error_rad=nan`. The terminal receipt,
+digest
+`sha256:e614fe638aeaf57e6ab8b6928a3a43c52ac187ce6ed27814b29f0d59aa30be68`,
+records zero policy queries, no candidate outcomes, 22 retained artifacts
+totaling 4,906,480 bytes, exact settled provider charge `$0.280`, successful
+teardown, and fresh API-confirmed provider-zero.
+
+Inspection of the exact digest-bound DROID USD showed that every Franka link
+from `panda_link0` through `panda_link7` authors its collision mesh with uniform
+scale `0.01`, while its diagonal inertia already contains that scale-squared
+factor twice. Newton preserves those near-zero inertias and the initially valid
+reset state evolves to NaNs. The Newton-only repair admits exactly one unit
+conversion: each of the eight exact source diagonal-inertia vectors is divided
+by `0.01^2`. It validates the source mesh paths, collision APIs, scales, masses,
+centers of mass, principal-axis authoring, and exact source inertia values
+before applying the correction; validates the exact corrected values after;
+and rejects any asset, body-set, scale, or value drift. No arbitrary minimum
+inertia clamp or replacement robot model is allowed. This conversion remains
+comparison-only asset adaptation, not independently meaningful fidelity
+evidence.
+
 The admitted repair is Newton-only and digest-bound. It verifies the exact
 Arena DROID USD bytes, requires the exact nine massless Robotiq rigid bodies and
-at least one collider per body, then authors only their physically sourced
-masses in the live session layer before Newton finalizes its model. Center of
-mass and inertia are derived from the target USD's own collision geometry and
-scaled to each mass by the
+at least one collider per body, then authors their physically sourced masses in
+the live session layer before Newton finalizes its model. Robotiq center of mass
+and inertia are derived from the target USD's own collision geometry and scaled
+to each mass by the
 [pinned Newton importer](https://github.com/newton-physics/newton/tree/2684d75bfa4bb8b058a93b81c458a74b7701c997);
 URDF frame-dependent COM or inertia is not copied. The mass source is the
 BSD-licensed Robotiq 2F-85 URDF at revision
 `a65190bdbb0666609fe7e8c3bb17341e09e81625`, and both source digests, all nine
-masses, collider coverage, applied properties, and the unmodified source flag
-are retained in an immutable runtime receipt. Asset drift, pre-existing mass
+masses, collider coverage, eight exact Franka source and corrected inertia
+vectors, applied properties, and the unmodified source flag are retained in an
+immutable runtime receipt. Asset drift, pre-existing Robotiq mass
 authoring, missing colliders, extra/missing bodies, arbitrary minimum-inertia
 clamps, or receipt drift block the run. The same pre-import receipt retains the
 exact PhysX-authored properties that Newton's pinned resolver maps and blocks

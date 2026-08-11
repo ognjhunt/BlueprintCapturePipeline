@@ -86,6 +86,9 @@ try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_physics_backend_comparison import (
         DROID_FRANKA_ROBOTIQ_USD_DIGEST,
         DROID_FRANKA_ROBOTIQ_USD_URI,
+        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
+        FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
+        FRANKA_SOURCE_MESH_SCALE,
         NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
         NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
         ROBOTIQ_BODY_MASSES_KG,
@@ -100,6 +103,9 @@ except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_physics_backend_comparison import (
         DROID_FRANKA_ROBOTIQ_USD_DIGEST,
         DROID_FRANKA_ROBOTIQ_USD_URI,
+        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
+        FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
+        FRANKA_SOURCE_MESH_SCALE,
         NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
         NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
         ROBOTIQ_BODY_MASSES_KG,
@@ -683,6 +689,192 @@ def _inspect_newton_robot_inertial_targets(
     return observed
 
 
+def _inspect_newton_franka_inertia_targets(
+    stage: Any, robot_root_prim_path: str
+) -> dict[str, dict[str, Any]]:
+    """Read the exact Franka link inertias and centimeter-scaled colliders."""
+
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    observed: dict[str, dict[str, Any]] = {}
+    for body_name in sorted(FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2):
+        prim_path = f"{robot_root_prim_path}/{body_name}"
+        prim = stage.GetPrimAtPath(prim_path)
+        if not (prim and prim.IsValid()):
+            observed[body_name] = {
+                "prim_path": prim_path,
+                "rigid_body_api_applied": False,
+                "mass_api_applied": False,
+                "mass_authored": False,
+                "mass_kg": None,
+                "center_of_mass_authored": False,
+                "center_of_mass": None,
+                "diagonal_inertia_authored": False,
+                "diagonal_inertia_kg_m2": None,
+                "principal_axes_authored": False,
+                "collision_mesh_count": 0,
+                "collision_mesh_paths": [],
+                "collision_mesh_scales": [],
+            }
+            continue
+        collision_meshes: list[Any] = []
+        for descendant in Usd.PrimRange(prim):
+            if descendant == prim:
+                continue
+            if descendant.HasAPI(UsdPhysics.RigidBodyAPI):
+                continue
+            if descendant.IsA(UsdGeom.Mesh) and descendant.HasAPI(
+                UsdPhysics.CollisionAPI
+            ):
+                collision_meshes.append(descendant)
+        has_mass_api = prim.HasAPI(UsdPhysics.MassAPI)
+        mass_api = UsdPhysics.MassAPI(prim) if has_mass_api else None
+        mass_attr = mass_api.GetMassAttr() if mass_api else None
+        center_attr = mass_api.GetCenterOfMassAttr() if mass_api else None
+        inertia_attr = mass_api.GetDiagonalInertiaAttr() if mass_api else None
+        axes_attr = mass_api.GetPrincipalAxesAttr() if mass_api else None
+        mass_authored = bool(mass_attr and mass_attr.HasAuthoredValue())
+        center_authored = bool(center_attr and center_attr.HasAuthoredValue())
+        inertia_authored = bool(inertia_attr and inertia_attr.HasAuthoredValue())
+        axes_authored = bool(axes_attr and axes_attr.HasAuthoredValue())
+        observed[body_name] = {
+            "prim_path": prim_path,
+            "rigid_body_api_applied": prim.HasAPI(UsdPhysics.RigidBodyAPI),
+            "mass_api_applied": has_mass_api,
+            "mass_authored": mass_authored,
+            "mass_kg": float(mass_attr.Get()) if mass_authored else None,
+            "center_of_mass_authored": center_authored,
+            "center_of_mass": (
+                [float(value) for value in center_attr.Get()]
+                if center_authored
+                else None
+            ),
+            "diagonal_inertia_authored": inertia_authored,
+            "diagonal_inertia_kg_m2": (
+                [float(value) for value in inertia_attr.Get()]
+                if inertia_authored
+                else None
+            ),
+            "principal_axes_authored": axes_authored,
+            "collision_mesh_count": len(collision_meshes),
+            "collision_mesh_paths": [
+                str(mesh.GetPath()) for mesh in collision_meshes
+            ],
+            "collision_mesh_scales": [
+                [
+                    float(value)
+                    for value in mesh.GetAttribute("xformOp:scale").Get()
+                ]
+                if mesh.GetAttribute("xformOp:scale").HasAuthoredValue()
+                else None
+                for mesh in collision_meshes
+            ],
+        }
+    return observed
+
+
+def _newton_franka_inertia_target_blockers(
+    observed: dict[str, dict[str, Any]], *, post_apply: bool
+) -> list[str]:
+    """Reject any drift around the exact asset-specific inertia conversion."""
+
+    blockers: list[str] = []
+    expected_names = set(FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2)
+    conversion = build_newton_robot_inertial_overlay_contract()[
+        "franka_inertia_unit_conversion"
+    ]
+    tolerance = float(
+        conversion[
+            "corrected_value_absolute_tolerance"
+            if post_apply
+            else "source_value_absolute_tolerance"
+        ]
+    )
+    expected_inertias = (
+        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2
+        if post_apply
+        else FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2
+    )
+    if set(observed) != expected_names:
+        blockers.append("adp009d_newton_franka_inertia_body_set_invalid")
+    for body_name in sorted(expected_names.intersection(observed)):
+        row = observed[body_name]
+        if row.get("rigid_body_api_applied") is not True:
+            blockers.append(
+                f"adp009d_newton_franka_rigid_body_missing:{body_name}"
+            )
+        mass = row.get("mass_kg")
+        if (
+            row.get("mass_api_applied") is not True
+            or row.get("mass_authored") is not True
+            or isinstance(mass, bool)
+            or not isinstance(mass, (int, float))
+            or not math.isfinite(float(mass))
+            or float(mass) <= 0.0
+        ):
+            blockers.append(f"adp009d_newton_franka_mass_invalid:{body_name}")
+        if row.get("center_of_mass_authored") is not True or row.get(
+            "center_of_mass"
+        ) != [0.0, 0.0, 0.0]:
+            blockers.append(
+                f"adp009d_newton_franka_center_of_mass_drifted:{body_name}"
+            )
+        if row.get("principal_axes_authored") is not False:
+            blockers.append(
+                f"adp009d_newton_franka_principal_axes_drifted:{body_name}"
+            )
+        inertia = row.get("diagonal_inertia_kg_m2")
+        expected = expected_inertias[body_name]
+        if (
+            row.get("diagonal_inertia_authored") is not True
+            or not isinstance(inertia, list)
+            or len(inertia) != 3
+            or any(
+                isinstance(actual, bool)
+                or not isinstance(actual, (int, float))
+                or not math.isfinite(float(actual))
+                or not math.isclose(
+                    float(actual),
+                    float(wanted),
+                    rel_tol=0.0,
+                    abs_tol=tolerance,
+                )
+                for actual, wanted in zip(inertia, expected, strict=True)
+            )
+        ):
+            blockers.append(
+                f"adp009d_newton_franka_diagonal_inertia_invalid:{body_name}"
+            )
+        expected_mesh_path = f"{row.get('prim_path')}/geometry/{body_name}"
+        mesh_scales = row.get("collision_mesh_scales")
+        mesh_scale_valid = (
+            isinstance(mesh_scales, list)
+            and len(mesh_scales) == 1
+            and isinstance(mesh_scales[0], list)
+            and len(mesh_scales[0]) == 3
+            and all(
+                isinstance(actual, (int, float))
+                and not isinstance(actual, bool)
+                and math.isclose(
+                    float(actual),
+                    FRANKA_SOURCE_MESH_SCALE,
+                    rel_tol=0.0,
+                    abs_tol=float(conversion["mesh_scale_absolute_tolerance"]),
+                )
+                for actual in mesh_scales[0]
+            )
+        )
+        if (
+            row.get("collision_mesh_count") != 1
+            or row.get("collision_mesh_paths") != [expected_mesh_path]
+            or not mesh_scale_valid
+        ):
+            blockers.append(
+                f"adp009d_newton_franka_collision_mesh_drifted:{body_name}"
+            )
+    return sorted(set(blockers))
+
+
 def _newton_physx_property_is_mapped(property_name: str) -> bool:
     """Whether the pinned Newton importer gives this PhysX property semantics."""
 
@@ -754,18 +946,32 @@ def _block_newton_unmapped_physx_properties(
 def _apply_newton_robot_inertial_overlay(
     *, stage: Any, robot_root_prim_path: str, source_asset_digest: str
 ) -> dict[str, Any]:
-    """Apply and verify the admitted Newton-only mass session layer."""
+    """Apply and verify the admitted Newton-only inertial session layer."""
 
-    from pxr import UsdPhysics
+    from pxr import Gf, UsdGeom, UsdPhysics
 
     contract = build_newton_robot_inertial_overlay_contract()
     if source_asset_digest != DROID_FRANKA_ROBOTIQ_USD_DIGEST:
         raise RuntimeError("adp009d_newton_robot_source_asset_digest_invalid")
+    stage_meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+    if not math.isclose(stage_meters_per_unit, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+        raise RuntimeError("adp009d_newton_robot_stage_units_invalid")
     before = _inspect_newton_robot_inertial_targets(stage, robot_root_prim_path)
     blockers = _newton_robot_inertial_target_blockers(before, post_apply=False)
     if blockers:
         raise RuntimeError(
             "adp009d_newton_robot_inertial_source_invalid:" + ",".join(blockers)
+        )
+    franka_before = _inspect_newton_franka_inertia_targets(
+        stage, robot_root_prim_path
+    )
+    blockers = _newton_franka_inertia_target_blockers(
+        franka_before, post_apply=False
+    )
+    if blockers:
+        raise RuntimeError(
+            "adp009d_newton_franka_inertia_source_invalid:"
+            + ",".join(blockers)
         )
     physx_property_admission = _block_newton_unmapped_physx_properties(
         stage, robot_root_prim_path
@@ -776,14 +982,45 @@ def _apply_newton_robot_inertial_overlay(
         )
         mass_api = UsdPhysics.MassAPI.Apply(prim)
         mass_api.CreateMassAttr().Set(float(mass_kg))
+    for body_name, diagonal_inertia in sorted(
+        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2.items()
+    ):
+        prim = stage.GetPrimAtPath(f"{robot_root_prim_path}/{body_name}")
+        UsdPhysics.MassAPI(prim).CreateDiagonalInertiaAttr().Set(
+            Gf.Vec3f(*diagonal_inertia)
+        )
     after = _inspect_newton_robot_inertial_targets(stage, robot_root_prim_path)
     blockers = _newton_robot_inertial_target_blockers(after, post_apply=True)
     if blockers:
         raise RuntimeError(
             "adp009d_newton_robot_inertial_overlay_invalid:" + ",".join(blockers)
         )
+    franka_after = _inspect_newton_franka_inertia_targets(
+        stage, robot_root_prim_path
+    )
+    blockers = _newton_franka_inertia_target_blockers(
+        franka_after, post_apply=True
+    )
+    for body_name in sorted(FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2):
+        if franka_after.get(body_name, {}).get("mass_kg") != franka_before.get(
+            body_name, {}
+        ).get("mass_kg"):
+            blockers.append(
+                f"adp009d_newton_franka_mass_not_preserved:{body_name}"
+            )
+        if franka_after.get(body_name, {}).get(
+            "center_of_mass"
+        ) != franka_before.get(body_name, {}).get("center_of_mass"):
+            blockers.append(
+                f"adp009d_newton_franka_center_of_mass_not_preserved:{body_name}"
+            )
+    if blockers:
+        raise RuntimeError(
+            "adp009d_newton_franka_inertia_overlay_invalid:"
+            + ",".join(sorted(set(blockers)))
+        )
     receipt: dict[str, Any] = {
-        "schema_version": "adp009d_newton_robotiq_inertial_overlay_receipt.v1",
+        "schema_version": "adp009d_newton_robot_inertial_overlay_receipt.v2",
         "status": "applied_and_verified",
         "physics_backend": "newton",
         "source_robot_asset_uri": DROID_FRANKA_ROBOTIQ_USD_URI,
@@ -792,10 +1029,16 @@ def _apply_newton_robot_inertial_overlay(
         "robot_root_prim_path": robot_root_prim_path,
         "body_count": len(after),
         "body_observations": after,
+        "franka_body_count": len(franka_after),
+        "stage_meters_per_unit": stage_meters_per_unit,
+        "franka_source_observations": franka_before,
+        "franka_inertia_observations": franka_after,
         "physx_property_admission": physx_property_admission,
-        "authored_properties": ["physics:mass"],
+        "authored_properties": ["physics:diagonalInertia", "physics:mass"],
         "source_usd_mutated": False,
-        "center_of_mass_and_inertia_deferred_to_pinned_newton_importer": True,
+        "robotiq_center_of_mass_and_inertia_deferred_to_pinned_newton_importer": True,
+        "franka_source_center_of_mass_preserved": True,
+        "franka_diagonal_inertia_unit_conversion_applied": True,
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = _canonical_digest(
@@ -817,12 +1060,14 @@ def _validate_newton_robot_inertial_overlay_receipt(
         or {}
     )
     body_observations = value.get("body_observations")
+    franka_source_observations = value.get("franka_source_observations")
+    franka_inertia_observations = value.get("franka_inertia_observations")
     property_receipt = value.get("physx_property_admission")
     if (
         backend_profile.get("physics_backend") != "newton"
         or overlay_contract != build_newton_robot_inertial_overlay_contract()
         or value.get("schema_version")
-        != "adp009d_newton_robotiq_inertial_overlay_receipt.v1"
+        != "adp009d_newton_robot_inertial_overlay_receipt.v2"
         or value.get("status") != "applied_and_verified"
         or value.get("physics_backend") != "newton"
         or value.get("source_robot_asset_uri") != DROID_FRANKA_ROBOTIQ_USD_URI
@@ -831,11 +1076,21 @@ def _validate_newton_robot_inertial_overlay_receipt(
         or value.get("overlay_contract_digest")
         != overlay_contract.get("overlay_digest")
         or value.get("body_count") != len(ROBOTIQ_BODY_MASSES_KG)
-        or value.get("authored_properties") != ["physics:mass"]
+        or value.get("franka_body_count")
+        != len(FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2)
+        or value.get("stage_meters_per_unit")
+        != overlay_contract.get("franka_inertia_unit_conversion", {}).get(
+            "expected_stage_meters_per_unit"
+        )
+        or value.get("authored_properties")
+        != ["physics:diagonalInertia", "physics:mass"]
         or value.get("source_usd_mutated") is not False
         or value.get(
-            "center_of_mass_and_inertia_deferred_to_pinned_newton_importer"
+            "robotiq_center_of_mass_and_inertia_deferred_to_pinned_newton_importer"
         )
+        is not True
+        or value.get("franka_source_center_of_mass_preserved") is not True
+        or value.get("franka_diagonal_inertia_unit_conversion_applied")
         is not True
         or value.get("receipt_digest")
         != _canonical_digest(value, digest_field="receipt_digest")
@@ -849,6 +1104,40 @@ def _validate_newton_robot_inertial_overlay_receipt(
                 body_observations, post_apply=True
             )
         )
+    if not isinstance(franka_source_observations, dict):
+        blockers.append("adp009d_newton_robot_inertial_overlay_receipt_invalid")
+    else:
+        blockers.extend(
+            _newton_franka_inertia_target_blockers(
+                franka_source_observations, post_apply=False
+            )
+        )
+    if not isinstance(franka_inertia_observations, dict):
+        blockers.append("adp009d_newton_robot_inertial_overlay_receipt_invalid")
+    else:
+        blockers.extend(
+            _newton_franka_inertia_target_blockers(
+                franka_inertia_observations, post_apply=True
+            )
+        )
+    if isinstance(franka_source_observations, dict) and isinstance(
+        franka_inertia_observations, dict
+    ):
+        for body_name in sorted(FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2):
+            if franka_inertia_observations.get(body_name, {}).get(
+                "mass_kg"
+            ) != franka_source_observations.get(body_name, {}).get("mass_kg"):
+                blockers.append(
+                    f"adp009d_newton_franka_mass_not_preserved:{body_name}"
+                )
+            if franka_inertia_observations.get(body_name, {}).get(
+                "center_of_mass"
+            ) != franka_source_observations.get(body_name, {}).get(
+                "center_of_mass"
+            ):
+                blockers.append(
+                    f"adp009d_newton_franka_center_of_mass_not_preserved:{body_name}"
+                )
     if not isinstance(property_receipt, dict):
         blockers.append("adp009d_newton_physx_property_admission_receipt_invalid")
     else:

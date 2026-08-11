@@ -76,6 +76,25 @@ ROBOTIQ_BODY_MASSES_KG = {
     "right_outer_finger": 0.0273093985570947,
     "right_outer_knuckle": 0.00684838849401352,
 }
+FRANKA_SOURCE_MESH_SCALE = 0.01
+FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2 = {
+    "panda_link0": (1.2988697e-6, 1.6535528e-6, 2.0331163e-6),
+    "panda_link1": (1.8686388e-6, 1.4378986e-6, 9.06812e-7),
+    "panda_link2": (1.9038872e-6, 9.1429115e-7, 1.4697537e-6),
+    "panda_link3": (1.2930018e-6, 1.5024211e-6, 1.427346e-6),
+    "panda_link4": (1.3387461e-6, 1.4514325e-6, 1.5517554e-6),
+    "panda_link5": (3.255657e-6, 2.7066046e-6, 1.1502337e-6),
+    "panda_link6": (2.6052564e-7, 3.9897228e-7, 4.704859e-7),
+    "panda_link7": (6.316591e-8, 6.319639e-8, 1.0607721e-7),
+}
+FRANKA_INERTIA_UNIT_CORRECTION_FACTOR = 1.0 / (FRANKA_SOURCE_MESH_SCALE**2)
+FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2 = {
+    body_name: tuple(
+        component * FRANKA_INERTIA_UNIT_CORRECTION_FACTOR
+        for component in source_inertia
+    )
+    for body_name, source_inertia in FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2.items()
+}
 NEWTON_MAPPED_PHYSX_PROPERTY_NAMES = (
     "physxArticulation:enabledSelfCollisions",
     "physxCollision:contactOffset",
@@ -165,19 +184,24 @@ def _runtime_identity() -> dict[str, Any]:
 
 
 def build_newton_robot_inertial_overlay_contract() -> dict[str, Any]:
-    """Bind the only admitted mass repair for the pinned DROID robot asset.
+    """Bind the only admitted inertial repair for the pinned DROID robot asset.
 
     The Arena USD omits ``PhysicsMassAPI`` from all nine Robotiq rigid bodies.
-    Only mass is overlaid.  The pinned Newton USD importer then derives center
-    of mass and inertia from the exact target collision geometry in its native
-    body frames and scales those properties to the authored mass.  Copying COM
-    or inertia from the source URDF would be unsafe because its body frames are
-    not assumed to match the flattened Arena USD.
+    Their mass is overlaid and the pinned Newton USD importer then derives
+    center of mass and inertia from the exact target collision geometry.  The
+    same USD authors the eight Franka link meshes at scale 0.01 but its already
+    scaled diagonal inertias contain that scale-squared factor twice.  Newton
+    preserves those near-zero values and becomes non-finite.  The exact source
+    values are therefore divided once by 0.01 squared; no guessed clamp or
+    replacement robot model is admitted.
     """
 
     contract: dict[str, Any] = {
-        "schema_version": "adp009d_newton_robotiq_inertial_overlay.v1",
-        "mode": "mass_only_session_layer_before_newton_model_finalize",
+        "schema_version": "adp009d_newton_robot_inertial_overlay.v2",
+        "mode": (
+            "robotiq_mass_and_franka_inertia_unit_correction_session_layer_"
+            "before_newton_model_finalize"
+        ),
         "physics_backend": "newton",
         "source_robot_asset": {
             "uri": DROID_FRANKA_ROBOTIQ_USD_URI,
@@ -196,6 +220,28 @@ def build_newton_robot_inertial_overlay_contract() -> dict[str, Any]:
         "expected_source_body_count": 9,
         "expected_source_mass_api_applied": False,
         "minimum_collision_shapes_per_body": 1,
+        "franka_inertia_unit_conversion": {
+            "body_count": len(FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2),
+            "expected_stage_meters_per_unit": 1.0,
+            "source_mesh_scale": FRANKA_SOURCE_MESH_SCALE,
+            "source_diagonal_inertia_kg_m2": {
+                name: list(value)
+                for name, value in FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2.items()
+            },
+            "correction_factor": FRANKA_INERTIA_UNIT_CORRECTION_FACTOR,
+            "corrected_diagonal_inertia_kg_m2": {
+                name: list(value)
+                for name, value in FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2.items()
+            },
+            "formula": "source_diagonal_inertia / source_mesh_scale_squared",
+            "source_center_of_mass_preserved": True,
+            "source_mass_preserved": True,
+            "source_principal_axes_preserved": True,
+            "arbitrary_minimum_inertia_clamp_allowed": False,
+            "mesh_scale_absolute_tolerance": 1.0e-9,
+            "source_value_absolute_tolerance": 1.0e-12,
+            "corrected_value_absolute_tolerance": 1.0e-8,
+        },
         "center_of_mass_resolution": (
             "newton_usd_compute_mass_properties_from_target_collision_geometry"
         ),
@@ -203,7 +249,8 @@ def build_newton_robot_inertial_overlay_contract() -> dict[str, Any]:
             "newton_target_collision_geometry_uniform_density_scaled_to_authored_mass"
         ),
         "authored_center_of_mass_allowed": False,
-        "authored_diagonal_inertia_allowed": False,
+        "robotiq_authored_diagonal_inertia_allowed": False,
+        "franka_exact_unit_corrected_diagonal_inertia_required": True,
         "authored_principal_axes_allowed": False,
         "arbitrary_minimum_mass_or_inertia_clamp_allowed": False,
         "usd_float32_mass_roundtrip_tolerance_kg": 2.0e-8,
@@ -1432,6 +1479,10 @@ __all__ = [
     "DEFAULT_PHYSICS_BACKEND",
     "DROID_FRANKA_ROBOTIQ_USD_DIGEST",
     "DROID_FRANKA_ROBOTIQ_USD_URI",
+    "FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2",
+    "FRANKA_INERTIA_UNIT_CORRECTION_FACTOR",
+    "FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2",
+    "FRANKA_SOURCE_MESH_SCALE",
     "MEASUREMENT_FIELDS",
     "NEWTON_MAPPED_PHYSX_PROPERTY_NAMES",
     "NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES",

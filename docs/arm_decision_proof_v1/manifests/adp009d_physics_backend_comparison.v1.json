@@ -2,8 +2,8 @@
   "backend_contact_configurations": {
     "newton": {
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "backend_profile_digest": "sha256:c63b438e8e3cbe6b694638979f0f963c762dbfe8ec433c039900d50d0b572f46",
-      "configuration_digest": "sha256:f3bcab4e299afcb06e508133fd33f43ed3e7a73c598c3b6b53456acd61fba881",
+      "backend_profile_digest": "sha256:5a3b3f5c346501b239c84543b998202a9100ad7873db53d3a6b1e1e3027fdc57",
+      "configuration_digest": "sha256:79222ad04e05d6631afa3c016e1697e42b4db21d920658b27fb204bbe8d03ea0",
       "contact_model": {
         "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
         "contact_buffer_limit": {
@@ -52,7 +52,6 @@
         "robot_inertial_overlay": {
           "arbitrary_minimum_mass_or_inertia_clamp_allowed": false,
           "authored_center_of_mass_allowed": false,
-          "authored_diagonal_inertia_allowed": false,
           "authored_principal_axes_allowed": false,
           "body_masses_kg": {
             "base_link": 0.30915,
@@ -68,6 +67,105 @@
           "center_of_mass_resolution": "newton_usd_compute_mass_properties_from_target_collision_geometry",
           "expected_source_body_count": 9,
           "expected_source_mass_api_applied": false,
+          "franka_exact_unit_corrected_diagonal_inertia_required": true,
+          "franka_inertia_unit_conversion": {
+            "arbitrary_minimum_inertia_clamp_allowed": false,
+            "body_count": 8,
+            "corrected_diagonal_inertia_kg_m2": {
+              "panda_link0": [
+                0.012988696999999999,
+                0.016535528,
+                0.020331163
+              ],
+              "panda_link1": [
+                0.018686387999999998,
+                0.014378986,
+                0.009068119999999999
+              ],
+              "panda_link2": [
+                0.019038872000000002,
+                0.0091429115,
+                0.014697537
+              ],
+              "panda_link3": [
+                0.012930018,
+                0.015024211,
+                0.01427346
+              ],
+              "panda_link4": [
+                0.013387461,
+                0.014514325,
+                0.015517554
+              ],
+              "panda_link5": [
+                0.03255657,
+                0.027066045999999996,
+                0.011502337000000001
+              ],
+              "panda_link6": [
+                0.0026052564,
+                0.0039897228,
+                0.004704859
+              ],
+              "panda_link7": [
+                0.0006316591,
+                0.0006319639,
+                0.0010607721
+              ]
+            },
+            "corrected_value_absolute_tolerance": 1e-08,
+            "correction_factor": 10000.0,
+            "expected_stage_meters_per_unit": 1.0,
+            "formula": "source_diagonal_inertia / source_mesh_scale_squared",
+            "mesh_scale_absolute_tolerance": 1e-09,
+            "source_center_of_mass_preserved": true,
+            "source_diagonal_inertia_kg_m2": {
+              "panda_link0": [
+                1.2988697e-06,
+                1.6535528e-06,
+                2.0331163e-06
+              ],
+              "panda_link1": [
+                1.8686388e-06,
+                1.4378986e-06,
+                9.06812e-07
+              ],
+              "panda_link2": [
+                1.9038872e-06,
+                9.1429115e-07,
+                1.4697537e-06
+              ],
+              "panda_link3": [
+                1.2930018e-06,
+                1.5024211e-06,
+                1.427346e-06
+              ],
+              "panda_link4": [
+                1.3387461e-06,
+                1.4514325e-06,
+                1.5517554e-06
+              ],
+              "panda_link5": [
+                3.255657e-06,
+                2.7066046e-06,
+                1.1502337e-06
+              ],
+              "panda_link6": [
+                2.6052564e-07,
+                3.9897228e-07,
+                4.704859e-07
+              ],
+              "panda_link7": [
+                6.316591e-08,
+                6.319639e-08,
+                1.0607721e-07
+              ]
+            },
+            "source_mass_preserved": true,
+            "source_mesh_scale": 0.01,
+            "source_principal_axes_preserved": true,
+            "source_value_absolute_tolerance": 1e-12
+          },
           "inertia_resolution": "newton_target_collision_geometry_uniform_density_scaled_to_authored_mass",
           "mass_source": {
             "digest": "sha256:ac7ac559cfbf89033ed00d370a3375aae45eee31c7b4b28c361ad31198d1832b",
@@ -80,9 +178,9 @@
             "revision": "a65190bdbb0666609fe7e8c3bb17341e09e81625"
           },
           "minimum_collision_shapes_per_body": 1,
-          "mode": "mass_only_session_layer_before_newton_model_finalize",
+          "mode": "robotiq_mass_and_franka_inertia_unit_correction_session_layer_before_newton_model_finalize",
           "newton_importer_revision": "2684d75bfa4bb8b058a93b81c458a74b7701c997",
-          "overlay_digest": "sha256:4df9d771ae3c32b36d70298abf4e8f287716a12a2dbc12ab51c920eae017412e",
+          "overlay_digest": "sha256:e98dfe0accdf19d5daf139468e5af40b64cb3eb5a9bcc3599ba672159ae7b0d1",
           "physics_backend": "newton",
           "physx_property_admission": {
             "arena_max_depenetration_velocity_override_authored": false,
@@ -108,8 +206,9 @@
             "runtime_receipt_required": true,
             "unmapped_authored_property_policy": "block_value_before_newton_model_import"
           },
+          "robotiq_authored_diagonal_inertia_allowed": false,
           "runtime_receipt_required": true,
-          "schema_version": "adp009d_newton_robotiq_inertial_overlay.v1",
+          "schema_version": "adp009d_newton_robot_inertial_overlay.v2",
           "source_robot_asset": {
             "digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25",
             "source_mutated": false,
@@ -155,7 +254,7 @@
       "mid_run_backend_switch_allowed": false,
       "physics_backend": "newton",
       "policy_query_allowed": false,
-      "profile_digest": "sha256:c63b438e8e3cbe6b694638979f0f963c762dbfe8ec433c039900d50d0b572f46",
+      "profile_digest": "sha256:5a3b3f5c346501b239c84543b998202a9100ad7873db53d3a6b1e1e3027fdc57",
       "profile_id": "adp009d-840313-newton-controls-v1",
       "program_id": "arm-decision-proof-v1",
       "required_capabilities": {
@@ -306,7 +405,7 @@
   "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
   "contract_kind": "provider_free_design",
   "default_physics_backend": "physx",
-  "design_digest": "sha256:6c182a222ce7002aaa37f6eb89c0f7a2407a3361a7f9cc9462d3ccae0f5fdc94",
+  "design_digest": "sha256:a8e8cad55de9be3857927060059dd5dc47b28f0f1db7c04928ca8c5f16630a2d",
   "mid_run_backend_switch_allowed": false,
   "newton_canary_admission": {
     "artifact_storage_required": true,
