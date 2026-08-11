@@ -17,6 +17,7 @@ from blueprint_pipeline.gaussian_splat_decode import (
 from blueprint_pipeline.public_scene_replacement_occlusion import (
     CONTRIBUTION_SCHEMA,
     COVERAGE_SCHEMA,
+    DIRECT_EVIDENCE_EXPANSION_SET_SCHEMA,
     OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA,
     OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA,
     REQUEST_SCHEMA,
@@ -26,6 +27,7 @@ from blueprint_pipeline.public_scene_replacement_occlusion import (
     coverage_safe_ambiguous,
     materialize_bound_index_union_candidate,
     materialize_direct_evidence_expansion_candidate,
+    materialize_direct_evidence_expansion_set,
     materialize_ownership_coverage_cutout_candidate,
     materialize_ownership_coverage_cutout_set,
     materialize_replacement_occlusion_cutout,
@@ -182,13 +184,23 @@ def _coverage_cutout_inputs(
     ownership_root = tmp_path / "ownership" / task_id
     ownership_root.mkdir(parents=True)
     selected = set(owned) | set(ambiguous)
-    retained = [index for index in range(read_standard_3dgs_ply(source).count) if index not in selected]
+    source_count = read_standard_3dgs_ply(source).count
+    retained = [index for index in range(source_count) if index not in selected]
     array_paths = {
         "owned_indices": ownership_root / "owned.npy",
         "ambiguous_indices": ownership_root / "ambiguous.npy",
         "retained_indices": ownership_root / "retained.npy",
+        "historical_obb_source_indices": ownership_root / "historical_obb.npy",
+        "protected_camera_count": ownership_root / "protected_camera_count.npy",
+        "core_camera_count": ownership_root / "core_camera_count.npy",
+        "core_fraction": ownership_root / "core_fraction.npy",
+        "geometry_score": ownership_root / "geometry_score.npy",
     }
-    np.save(array_paths["owned_indices"], np.asarray(sorted(owned), dtype=np.int64), allow_pickle=False)
+    np.save(
+        array_paths["owned_indices"],
+        np.asarray(sorted(owned), dtype=np.int64),
+        allow_pickle=False,
+    )
     np.save(
         array_paths["ambiguous_indices"],
         np.asarray(sorted(ambiguous), dtype=np.int64),
@@ -199,6 +211,23 @@ def _coverage_cutout_inputs(
         np.asarray(retained, dtype=np.int64),
         allow_pickle=False,
     )
+    np.save(
+        array_paths["historical_obb_source_indices"],
+        np.asarray(sorted(selected), dtype=np.int64),
+        allow_pickle=False,
+    )
+    protected = np.zeros(source_count, dtype=np.int16)
+    core_count = np.zeros(source_count, dtype=np.int16)
+    core_fraction = np.zeros(source_count, dtype=np.float64)
+    geometry = np.zeros(source_count, dtype=np.float64)
+    for index in ambiguous:
+        core_count[index] = 2
+        core_fraction[index] = 0.95
+        geometry[index] = 1.0
+    np.save(array_paths["protected_camera_count"], protected, allow_pickle=False)
+    np.save(array_paths["core_camera_count"], core_count, allow_pickle=False)
+    np.save(array_paths["core_fraction"], core_fraction, allow_pickle=False)
+    np.save(array_paths["geometry_score"], geometry, allow_pickle=False)
     ownership: dict[str, object] = {
         "schema_version": "adp009b_gaussian_excision_ownership_receipt.v1",
         "status": "three_way_ownership_materialized_heldout_not_evaluated",
@@ -209,7 +238,7 @@ def _coverage_cutout_inputs(
             "sha256": _sha256(source),
         },
         "ownership": {
-            "source_gaussian_count": read_standard_3dgs_ply(source).count,
+            "source_gaussian_count": source_count,
             "owned_count": len(owned),
             "retained_count": len(retained),
             "ambiguous_count": len(ambiguous),
@@ -718,6 +747,108 @@ def test_coverage_conditioned_successor_set_rejects_shared_deletion_before_write
             task_freeze_paths=[task_a, task_b],
             excision_freeze_paths_by_task={"task_a": excision_a, "task_b": excision_b},
             ownership_receipt_paths_by_task={"task_a": ownership_a, "task_b": ownership_b},
+            output_root=output,
+        )
+
+    assert not output.exists()
+
+
+def test_direct_evidence_successor_set_supports_five_independent_objects(
+    tmp_path: Path,
+) -> None:
+    """The selective calibration-only successor is also a 1--5 object seam."""
+
+    source = _source_splat(tmp_path / "source.ply", count=15)
+    task_paths: list[Path] = []
+    excision_paths: dict[str, Path] = {}
+    ownership_paths: dict[str, Path] = {}
+    policies: dict[str, dict[str, object]] = {}
+    for slot in range(5):
+        task_id = f"task_{slot}"
+        task_path, excision_path, ownership_path = _coverage_cutout_inputs(
+            tmp_path,
+            source=source,
+            task_id=task_id,
+            slot=slot,
+            owned=[slot * 2],
+            ambiguous=[slot * 2 + 1],
+        )
+        task_paths.append(task_path)
+        excision_paths[task_id] = excision_path
+        ownership_paths[task_id] = ownership_path
+        policies[task_id] = {
+            "minimum_core_camera_count": 2,
+            "minimum_core_fraction": 0.95,
+            "minimum_geometry_score": 0.0,
+        }
+
+    receipt = materialize_direct_evidence_expansion_set(
+        source_standard_splat_path=source,
+        task_freeze_paths=task_paths,
+        excision_freeze_paths_by_task=excision_paths,
+        ownership_receipt_paths_by_task=ownership_paths,
+        selection_policy_by_task=policies,
+        output_root=tmp_path / "direct-successor-set",
+    )
+
+    assert receipt["schema_version"] == DIRECT_EVIDENCE_EXPANSION_SET_SCHEMA
+    assert receipt["task_set"]["task_count"] == 5
+    assert len(receipt["task_candidates"]) == 5
+    assert receipt["shared_scene_union"]["counts"] == {
+        "source": 15,
+        "deleted_total": 10,
+        "retained_total": 5,
+    }
+    assert receipt["selection"]["heldout_pixels_used_to_select_indices"] is False
+    assert (
+        receipt["selection"]["factual_gaussian_ownership_established_for_direct_expansion"]
+        is False
+    )
+    assert receipt["shared_scene_union"]["preservation"]["retained_rows_byte_exact"] is True
+    assert np.load(
+        tmp_path / "direct-successor-set/shared_scene_union/deleted_source_indices.npy"
+    ).tolist() == list(range(10))
+
+
+def test_direct_evidence_successor_set_rejects_shared_deletion_before_write(
+    tmp_path: Path,
+) -> None:
+    """A direct-evidence expansion cannot silently consume another task's row."""
+
+    source = _source_splat(tmp_path / "source.ply", count=6)
+    task_a, excision_a, ownership_a = _coverage_cutout_inputs(
+        tmp_path,
+        source=source,
+        task_id="task_a",
+        slot=0,
+        owned=[0],
+        ambiguous=[1],
+    )
+    task_b, excision_b, ownership_b = _coverage_cutout_inputs(
+        tmp_path,
+        source=source,
+        task_id="task_b",
+        slot=1,
+        owned=[2],
+        ambiguous=[1],
+    )
+    output = tmp_path / "blocked-direct-successor-set"
+    policy = {
+        "minimum_core_camera_count": 2,
+        "minimum_core_fraction": 0.95,
+        "minimum_geometry_score": 0.0,
+    }
+
+    with pytest.raises(
+        ReplacementOcclusionError,
+        match="direct_expansion_set_independent_candidate_overlap:task_a:task_b",
+    ):
+        materialize_direct_evidence_expansion_set(
+            source_standard_splat_path=source,
+            task_freeze_paths=[task_a, task_b],
+            excision_freeze_paths_by_task={"task_a": excision_a, "task_b": excision_b},
+            ownership_receipt_paths_by_task={"task_a": ownership_a, "task_b": ownership_b},
+            selection_policy_by_task={"task_a": policy, "task_b": policy},
             output_root=output,
         )
 

@@ -36,6 +36,7 @@ OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA = (
     "adp009b_ownership_coverage_cutout_candidate.v1"
 )
 OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA = "adp009b_ownership_coverage_cutout_set.v1"
+DIRECT_EVIDENCE_EXPANSION_SET_SCHEMA = "adp009b_direct_evidence_expansion_set.v1"
 
 _OWNERSHIP_RECEIPT_SCHEMA = "adp009b_gaussian_excision_ownership_receipt.v1"
 _OWNERSHIP_RECEIPT_STATUSES = frozenset(
@@ -645,9 +646,9 @@ def materialize_bound_index_union_candidate(
     return receipt
 
 
-def _ownership_output_array(
+def _ownership_output_path(
     *, ownership_path: Path, record: object, code: str
-) -> tuple[Path, np.ndarray]:
+) -> Path:
     if not isinstance(record, Mapping):
         raise ReplacementOcclusionError([code])
     relative = str(record.get("relative_path") or "")
@@ -660,6 +661,17 @@ def _ownership_output_array(
         or _sha256(path) != record.get("sha256")
     ):
         raise ReplacementOcclusionError([code])
+    return path
+
+
+def _ownership_output_array(
+    *, ownership_path: Path, record: object, code: str
+) -> tuple[Path, np.ndarray]:
+    path = _ownership_output_path(
+        ownership_path=ownership_path,
+        record=record,
+        code=code,
+    )
     values = _load_array(path, code)
     if (
         values.ndim != 1
@@ -1172,6 +1184,459 @@ def materialize_ownership_coverage_cutout_set(
     return receipt
 
 
+def materialize_direct_evidence_expansion_set(
+    *,
+    source_standard_splat_path: str | Path,
+    task_freeze_paths: Sequence[str | Path],
+    excision_freeze_paths_by_task: Mapping[str, str | Path],
+    ownership_receipt_paths_by_task: Mapping[str, str | Path],
+    selection_policy_by_task: Mapping[str, Mapping[str, Any]],
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Materialize a 1--5 object direct-evidence successor set.
+
+    This is the narrower successor to an ``owned ∪ ambiguous`` diagnostic
+    candidate.  It expands each owned set only with records that independently
+    satisfy a frozen calibration-only core-support policy.  The rule is applied
+    separately to each task slice and produces a shared union only after every
+    proposed source row has been checked for cross-object overlap.
+
+    The output is still a derived diagnostic: source ownership for its direct
+    expansion remains conditional on a later exact-camera, all-state actual-USD
+    coverage audit.  Neither held-out pixels, replacement outcomes, nor policy
+    outcomes take part in selecting its indices.
+    """
+
+    source = Path(source_standard_splat_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if not source.is_file() or source.is_symlink():
+        raise ReplacementOcclusionError(["direct_expansion_set_source_splat_missing"])
+    if output.exists() and any(output.iterdir()):
+        raise ReplacementOcclusionError(["direct_expansion_set_output_not_empty"])
+    if isinstance(task_freeze_paths, (str, bytes)) or not task_freeze_paths:
+        raise ReplacementOcclusionError(["direct_expansion_set_task_freezes_missing"])
+
+    task_paths = [Path(path).expanduser().resolve() for path in task_freeze_paths]
+    raw_tasks: list[dict[str, Any]] = []
+    for path in task_paths:
+        if not path.is_file() or path.is_symlink():
+            raise ReplacementOcclusionError(["direct_expansion_set_task_freeze_missing"])
+        raw_tasks.append(
+            _read_object(path, code="direct_expansion_set_task_freeze_unreadable")
+        )
+    try:
+        task_set = validate_task_freeze_set(raw_tasks)
+    except DualTaskRehearsalContractError as exc:
+        raise ReplacementOcclusionError(
+            [f"direct_expansion_set_{code}" for code in exc.errors]
+        ) from exc
+
+    tasks_by_id = {str(task["task_id"]): task for task in raw_tasks}
+    paths_by_id = {
+        str(task["task_id"]): path
+        for task, path in zip(raw_tasks, task_paths, strict=True)
+    }
+    task_ids = sorted(tasks_by_id)
+    if set(excision_freeze_paths_by_task) != set(task_ids):
+        raise ReplacementOcclusionError(["direct_expansion_set_excision_freeze_keys_invalid"])
+    if set(ownership_receipt_paths_by_task) != set(task_ids):
+        raise ReplacementOcclusionError(
+            ["direct_expansion_set_ownership_receipt_keys_invalid"]
+        )
+    if set(selection_policy_by_task) != set(task_ids):
+        raise ReplacementOcclusionError(["direct_expansion_set_policy_keys_invalid"])
+
+    source_sha256 = _sha256(source)
+    source_size = source.stat().st_size
+    source_splat = read_standard_3dgs_ply(source)
+    records: list[dict[str, Any]] = []
+    selected_indices: dict[str, np.ndarray] = {}
+    errors: list[str] = []
+    for task_id in task_ids:
+        task = tasks_by_id[task_id]
+        excision_path = Path(excision_freeze_paths_by_task[task_id]).expanduser().resolve()
+        ownership_path = Path(ownership_receipt_paths_by_task[task_id]).expanduser().resolve()
+        if not excision_path.is_file() or excision_path.is_symlink():
+            errors.append(f"direct_expansion_set_excision_freeze_missing:{task_id}")
+            continue
+        if not ownership_path.is_file() or ownership_path.is_symlink():
+            errors.append(f"direct_expansion_set_ownership_receipt_missing:{task_id}")
+            continue
+        excision = _read_object(
+            excision_path,
+            code=f"direct_expansion_set_excision_freeze_unreadable:{task_id}",
+        )
+        ownership = _read_object(
+            ownership_path,
+            code=f"direct_expansion_set_ownership_receipt_unreadable:{task_id}",
+        )
+        expected_excision_digest = canonical_digest(excision, digest_field="freeze_digest")
+        if (
+            excision.get("schema_version")
+            != "adp009b_gaussian_excision_audit_freeze.v1"
+            or excision.get("status") != "frozen_before_excision_execution"
+            or excision.get("freeze_digest") != expected_excision_digest
+            or excision.get("learned_policy_outcomes_observed") is not False
+            or excision.get("replacement_usd_inserted") is not False
+        ):
+            errors.append(f"direct_expansion_set_excision_freeze_invalid:{task_id}")
+            continue
+        scene = excision.get("scene")
+        if not isinstance(scene, Mapping) or (
+            scene.get("task_id") != task_id
+            or scene.get("target_instance_id")
+            != task["source_object"]["instance_id"]
+            or scene.get("removal_id") != task["removal_plan"]["removal_id"]
+            or scene.get("mask_set_id") != task["removal_plan"]["mask_set_id"]
+        ):
+            errors.append(f"direct_expansion_set_excision_task_join_invalid:{task_id}")
+            continue
+        excision_source = excision.get("source_standard_splat")
+        if not isinstance(excision_source, Mapping) or (
+            excision_source.get("sha256") != source_sha256
+            or excision_source.get("size_bytes") != source_size
+        ):
+            errors.append(f"direct_expansion_set_excision_source_mismatch:{task_id}")
+            continue
+        if (
+            ownership.get("schema_version") != _OWNERSHIP_RECEIPT_SCHEMA
+            or ownership.get("status") not in _OWNERSHIP_RECEIPT_STATUSES
+            or ownership.get("receipt_digest")
+            != canonical_digest(ownership, digest_field="receipt_digest")
+            or ownership.get("freeze_digest") != excision.get("freeze_digest")
+            or ownership.get("heldout_cameras_accessed_for_classification") is not False
+            or ownership.get("replacement_usd_inserted") is not False
+        ):
+            errors.append(f"direct_expansion_set_ownership_receipt_invalid:{task_id}")
+            continue
+        ownership_source = ownership.get("source_standard_splat")
+        if not isinstance(ownership_source, Mapping) or (
+            ownership_source.get("sha256") != source_sha256
+            or ownership_source.get("size_bytes") != source_size
+        ):
+            errors.append(f"direct_expansion_set_ownership_source_mismatch:{task_id}")
+            continue
+        outputs = ownership.get("outputs")
+        if not isinstance(outputs, Mapping):
+            errors.append(f"direct_expansion_set_ownership_outputs_invalid:{task_id}")
+            continue
+        try:
+            owned_path, owned = _ownership_output_array(
+                ownership_path=ownership_path,
+                record=outputs.get("owned_indices"),
+                code=f"direct_expansion_set_owned_indices_invalid:{task_id}",
+            )
+            ambiguous_path, ambiguous = _ownership_output_array(
+                ownership_path=ownership_path,
+                record=outputs.get("ambiguous_indices"),
+                code=f"direct_expansion_set_ambiguous_indices_invalid:{task_id}",
+            )
+            retained_path, retained = _ownership_output_array(
+                ownership_path=ownership_path,
+                record=outputs.get("retained_indices"),
+                code=f"direct_expansion_set_retained_indices_invalid:{task_id}",
+            )
+            candidate_path = _ownership_output_path(
+                ownership_path=ownership_path,
+                record=outputs.get("historical_obb_source_indices"),
+                code=f"direct_expansion_set_candidate_indices_invalid:{task_id}",
+            )
+            protected_path = _ownership_output_path(
+                ownership_path=ownership_path,
+                record=outputs.get("protected_camera_count"),
+                code=f"direct_expansion_set_protected_counts_invalid:{task_id}",
+            )
+            core_count_path = _ownership_output_path(
+                ownership_path=ownership_path,
+                record=outputs.get("core_camera_count"),
+                code=f"direct_expansion_set_core_counts_invalid:{task_id}",
+            )
+            core_fraction_path = _ownership_output_path(
+                ownership_path=ownership_path,
+                record=outputs.get("core_fraction"),
+                code=f"direct_expansion_set_core_fraction_invalid:{task_id}",
+            )
+            geometry_path = _ownership_output_path(
+                ownership_path=ownership_path,
+                record=outputs.get("geometry_score"),
+                code=f"direct_expansion_set_geometry_score_invalid:{task_id}",
+            )
+            candidate_indices = np.asarray(
+                _load_array(
+                    candidate_path,
+                    f"direct_expansion_set_candidate_indices_invalid:{task_id}",
+                ),
+                dtype=np.int64,
+            )
+            protected = _load_array(
+                protected_path,
+                f"direct_expansion_set_protected_counts_invalid:{task_id}",
+            )
+            core_count = _load_array(
+                core_count_path,
+                f"direct_expansion_set_core_counts_invalid:{task_id}",
+            )
+            core_fraction = _load_array(
+                core_fraction_path,
+                f"direct_expansion_set_core_fraction_invalid:{task_id}",
+            )
+            geometry = _load_array(
+                geometry_path,
+                f"direct_expansion_set_geometry_score_invalid:{task_id}",
+            )
+        except ReplacementOcclusionError as exc:
+            errors.extend(exc.codes)
+            continue
+        source_count = source_splat.count
+        selected_owned_ambiguous = np.union1d(owned, ambiguous).astype(np.int64)
+        if (
+            not selected_owned_ambiguous.size
+            or any(
+                values.size and (values[0] < 0 or values[-1] >= source_count)
+                for values in (owned, ambiguous, retained)
+            )
+            or np.intersect1d(owned, ambiguous, assume_unique=True).size
+            or np.intersect1d(owned, retained, assume_unique=True).size
+            or np.intersect1d(ambiguous, retained, assume_unique=True).size
+            or not np.array_equal(
+                np.union1d(selected_owned_ambiguous, retained),
+                np.arange(source_count, dtype=np.int64),
+            )
+        ):
+            errors.append(f"direct_expansion_set_ownership_partition_invalid:{task_id}")
+            continue
+        counts = ownership.get("ownership")
+        if (
+            not isinstance(counts, Mapping)
+            or counts.get("source_gaussian_count") != source_count
+            or counts.get("owned_count") != int(owned.size)
+            or counts.get("ambiguous_count") != int(ambiguous.size)
+            or counts.get("retained_count") != int(retained.size)
+            or counts.get("exhaustive") is not True
+            or counts.get("pairwise_disjoint") is not True
+        ):
+            errors.append(f"direct_expansion_set_ownership_counts_invalid:{task_id}")
+            continue
+        policy = selection_policy_by_task[task_id]
+        if not isinstance(policy, Mapping) or set(policy) != {
+            "minimum_core_camera_count",
+            "minimum_core_fraction",
+            "minimum_geometry_score",
+        }:
+            errors.append(f"direct_expansion_set_policy_invalid:{task_id}")
+            continue
+        try:
+            minimum_core_count = policy["minimum_core_camera_count"]
+            if isinstance(minimum_core_count, bool) or not isinstance(
+                minimum_core_count, int
+            ):
+                raise ValueError("minimum_core_camera_count")
+            minimum_fraction = float(policy["minimum_core_fraction"])
+            minimum_geometry = float(policy["minimum_geometry_score"])
+            if not (
+                math.isfinite(minimum_fraction)
+                and math.isfinite(minimum_geometry)
+            ):
+                raise ValueError("policy_not_finite")
+            owned_flags = np.zeros(source_count, dtype=bool)
+            owned_flags[owned] = True
+            expansion = select_direct_calibration_evidence_expansion(
+                candidate_indices,
+                owned_flags,
+                protected,
+                core_count,
+                core_fraction,
+                geometry,
+                minimum_core_camera_count=minimum_core_count,
+                minimum_core_fraction=minimum_fraction,
+                minimum_geometry_score=minimum_geometry,
+            )
+        except (KeyError, TypeError, ValueError, ReplacementOcclusionError):
+            errors.append(f"direct_expansion_set_policy_or_evidence_invalid:{task_id}")
+            continue
+        selected = np.union1d(owned, expansion).astype(np.int64)
+        if not selected.size:
+            errors.append(f"direct_expansion_set_selected_indices_empty:{task_id}")
+            continue
+        selected_indices[task_id] = selected
+        records.append(
+            {
+                "task_id": task_id,
+                "task": task,
+                "task_path": paths_by_id[task_id],
+                "excision": excision,
+                "excision_path": excision_path,
+                "ownership": ownership,
+                "ownership_path": ownership_path,
+                "candidate_path": candidate_path,
+                "owned_path": owned_path,
+                "protected_path": protected_path,
+                "core_count_path": core_count_path,
+                "core_fraction_path": core_fraction_path,
+                "geometry_path": geometry_path,
+                "policy": {
+                    "minimum_core_camera_count": minimum_core_count,
+                    "minimum_core_fraction": minimum_fraction,
+                    "minimum_geometry_score": minimum_geometry,
+                },
+                "owned_count": int(owned.size),
+                "direct_expansion_count": int(expansion.size),
+            }
+        )
+    if errors:
+        raise ReplacementOcclusionError(errors)
+
+    for left_index, left_task_id in enumerate(task_ids):
+        for right_task_id in task_ids[left_index + 1 :]:
+            if np.intersect1d(
+                selected_indices[left_task_id],
+                selected_indices[right_task_id],
+                assume_unique=True,
+            ).size:
+                raise ReplacementOcclusionError(
+                    [
+                        "direct_expansion_set_independent_candidate_overlap:"
+                        f"{left_task_id}:{right_task_id}"
+                    ]
+                )
+
+    output.mkdir(parents=True, exist_ok=True)
+    candidates: list[dict[str, Any]] = []
+    candidate_indices: dict[str, np.ndarray] = {}
+    for slot, record in enumerate(records, start=1):
+        task_id = str(record["task_id"])
+        candidate_root = output / "task_candidates" / f"slot_{slot:02d}"
+        candidate = materialize_direct_evidence_expansion_candidate(
+            source_standard_splat_path=source,
+            owned_indices_path=record["owned_path"],
+            candidate_indices_path=record["candidate_path"],
+            protected_camera_count_path=record["protected_path"],
+            core_camera_count_path=record["core_count_path"],
+            core_fraction_path=record["core_fraction_path"],
+            geometry_score_path=record["geometry_path"],
+            output_root=candidate_root,
+            **record["policy"],
+        )
+        candidate_receipt_path = (
+            candidate_root / "adp009b_direct_evidence_expansion_candidate.v1.json"
+        )
+        deleted_path = _verify_artifact(
+            candidate_root,
+            candidate["outputs"]["deleted_source_indices"],
+            code=f"direct_expansion_set_candidate_indices_invalid:{task_id}",
+        )
+        deleted = np.asarray(np.load(deleted_path, allow_pickle=False), dtype=np.int64)
+        if not np.array_equal(deleted, selected_indices[task_id]):
+            raise ReplacementOcclusionError(
+                [f"direct_expansion_set_candidate_indices_invalid:{task_id}"]
+            )
+        candidate_indices[task_id] = deleted
+        task = record["task"]
+        excision = record["excision"]
+        ownership = record["ownership"]
+        candidates.append(
+            {
+                "slot": slot,
+                "task_id": task_id,
+                "task_freeze_digest": task["task_freeze_digest"],
+                "source_object_instance_id": task["source_object"]["instance_id"],
+                "removal_id": task["removal_plan"]["removal_id"],
+                "mask_set_id": task["removal_plan"]["mask_set_id"],
+                "task_freeze": _input_record(record["task_path"]),
+                "excision_freeze": {
+                    **_input_record(record["excision_path"]),
+                    "freeze_digest": excision["freeze_digest"],
+                },
+                "ownership_receipt": {
+                    **_input_record(record["ownership_path"]),
+                    "receipt_digest": ownership["receipt_digest"],
+                },
+                "selection_policy": dict(record["policy"]),
+                "candidate_receipt": {
+                    **_record(candidate_receipt_path, output),
+                    "receipt_digest": candidate["receipt_digest"],
+                },
+                "counts": dict(candidate["counts"]),
+            }
+        )
+
+    deleted_union = np.unique(
+        np.concatenate([candidate_indices[task_id] for task_id in task_ids])
+    )
+    retained_union = np.setdiff1d(
+        np.arange(source_splat.count, dtype=np.int64),
+        deleted_union,
+        assume_unique=True,
+    )
+    shared_root = output / "shared_scene_union"
+    shared_root.mkdir()
+    deleted_indices_path = shared_root / "deleted_source_indices.npy"
+    retained_indices_path = shared_root / "retained_source_indices.npy"
+    np.save(deleted_indices_path, deleted_union, allow_pickle=False)
+    np.save(retained_indices_path, retained_union, allow_pickle=False)
+    deleted_ply = write_standard_3dgs_ply_subset_exact(
+        source,
+        shared_root / "deleted_source_gaussians.ply",
+        deleted_union,
+    )
+    retained_ply = write_standard_3dgs_ply_subset_exact(
+        source,
+        shared_root / "retained_scene_gaussians.ply",
+        retained_union,
+    )
+    preservation = verify_standard_3dgs_ply_subset_exact(source, retained_ply, retained_union)
+    if preservation.get("retained_rows_byte_exact") is not True:
+        raise ReplacementOcclusionError(["direct_expansion_set_retained_rows_changed"])
+
+    receipt: dict[str, Any] = {
+        "schema_version": DIRECT_EVIDENCE_EXPANSION_SET_SCHEMA,
+        "status": (
+            "direct_calibration_evidence_successor_set_materialized_"
+            "pending_per_task_actual_usd_source_layer_coverage"
+        ),
+        "source_standard_splat": _input_record(source),
+        "task_set": task_set,
+        "selection": {
+            "rule": "direct_calibration_evidence_expansion.v1",
+            "heldout_pixels_used_to_select_indices": False,
+            "replacement_usd_used_to_select_indices": False,
+            "learned_policy_outcomes_used": False,
+            "factual_gaussian_ownership_established_for_direct_expansion": False,
+            "fresh_confirmation_coverage_required_before_qualification": True,
+        },
+        "task_candidates": candidates,
+        "shared_scene_union": {
+            "counts": {
+                "source": source_splat.count,
+                "deleted_total": int(deleted_union.size),
+                "retained_total": int(retained_union.size),
+            },
+            "preservation": preservation,
+            "outputs": {
+                "deleted_source_indices": _record(deleted_indices_path, output),
+                "retained_source_indices": _record(retained_indices_path, output),
+                "deleted_source_gaussians": _record(deleted_ply, output),
+                "retained_scene_gaussians": _record(retained_ply, output),
+            },
+        },
+        "claim_boundary": {
+            "source_gaussians_deleted_from_canonical_scene": False,
+            "candidate_derived_layers_only": True,
+            "all_task_slices_independent": True,
+            "overlapping_task_deletions_allowed": False,
+            "factual_gaussian_ownership_established_for_direct_expansion": False,
+            "replacement_depth_coverage_qualified": False,
+            "inpainting_decision_qualified": False,
+            "native_simulator_import_qualified": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = output / f"{DIRECT_EVIDENCE_EXPANSION_SET_SCHEMA}.json"
+    receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def evaluate_depth_coverage(
     removal_alpha: np.ndarray,
     replacement_depth_m: np.ndarray,
@@ -1515,6 +1980,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "CONTRIBUTION_SCHEMA",
     "COVERAGE_SCHEMA",
+    "DIRECT_EVIDENCE_EXPANSION_SET_SCHEMA",
     "OWNERSHIP_COVERAGE_CUTOUT_CANDIDATE_SCHEMA",
     "OWNERSHIP_COVERAGE_CUTOUT_SET_SCHEMA",
     "RECEIPT_SCHEMA",
@@ -1526,6 +1992,7 @@ __all__ = [
     "evaluate_depth_coverage",
     "materialize_replacement_occlusion_cutout",
     "materialize_direct_evidence_expansion_candidate",
+    "materialize_direct_evidence_expansion_set",
     "materialize_ownership_coverage_cutout_candidate",
     "materialize_ownership_coverage_cutout_set",
     "materialize_bound_index_union_candidate",
