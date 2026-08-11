@@ -1716,7 +1716,7 @@ def test_robot_contact_sensor_is_read_only_and_part_of_the_native_scene() -> Non
     ]
 
 
-def test_robot_contact_sensor_targets_the_nested_robotiq_finger_prims() -> None:
+def test_robot_contact_sensor_targets_nested_robotiq_fingers_per_backend() -> None:
     """The d898 paid canary proved a single-level Robot/.* wildcard resolves zero
     finger bodies: Isaac Lab matches prim-path tokens one USD level at a time and
     the pinned DROID embodiment nests the fingers at
@@ -1730,13 +1730,39 @@ def test_robot_contact_sensor_targets_the_nested_robotiq_finger_prims() -> None:
     source = _Path(runtime.__file__).read_text(encoding="utf-8")
 
     assert 'prim_path="{ENV_REGEX_NS}/Robot/.*"' not in source
-    expression = (
-        '"{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"\n'
-        '                "(left_inner_finger|right_inner_finger)"'
+    physx_expression = runtime._robot_contact_sensor_prim_path("physx")
+    newton_expression = runtime._robot_contact_sensor_prim_path("newton")
+    assert physx_expression == (
+        "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
+        "(left_inner_finger|right_inner_finger)"
     )
-    assert expression in source
+    assert newton_expression == (
+        "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/*inner_finger"
+    )
     for body in FINGER_BODIES:
-        assert body in expression
+        assert body in physx_expression
+
+
+def test_newton_robot_contact_selector_is_fnmatch_not_regex_alternation() -> None:
+    """Newton converts ``.*`` only; parentheses and pipes become literals.
+
+    Vast instance 47486783 reached Newton environment construction but failed
+    closed because the shared PhysX regex matched zero Newton model labels.
+    Preserve an equivalent two-body selector in Newton's actual fnmatch syntax.
+    """
+
+    from fnmatch import fnmatchcase
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    pattern = runtime._robot_contact_sensor_prim_path("newton").rsplit("/", 1)[-1]
+
+    assert not set("()|").intersection(pattern)
+    assert fnmatchcase("left_inner_finger", pattern)
+    assert fnmatchcase("right_inner_finger", pattern)
+    assert not fnmatchcase("left_inner_finger_knuckle", pattern)
+    assert not fnmatchcase("right_inner_finger_knuckle", pattern)
+    assert not fnmatchcase("left_outer_finger", pattern)
 
 
 def test_the_appearance_is_visual_only_and_never_a_collider() -> None:
@@ -3134,7 +3160,7 @@ def test_contact_partner_filter_uses_one_sensor_per_finger_and_the_rigid_body() 
     # not carry a filter, or PhysX reports unreliable filtered values for it.
     primary = source[source.index('name="robot_contact"') : source.index("partner_contacts = [")]
     assert "filter_prim_paths_expr" not in primary
-    assert "(left_inner_finger|right_inner_finger)" in primary
+    assert "_robot_contact_sensor_prim_path(args.physics_backend)" in primary
 
     per_finger = source[source.index("partner_contacts = [") : source.index("light = SpawnerObject")]
     assert "filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH]" in per_finger

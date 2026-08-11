@@ -66,7 +66,7 @@ object staging or compute allocation, and it validates the current canonical
 paid-spend lock before even arming that watchdog. Any mismatch blocks storage
 and compute. The contract itself does not authorize or launch a paid canary.
 
-### Observed Newton canary: 2026-08-11
+### Observed Newton canaries: 2026-08-11
 
 One explicitly authorized controls-only canary at implementation commit
 `c615284b41d151a1885dd38f2608c0ca8e0f4c71` failed closed before environment
@@ -84,6 +84,20 @@ zero retries, a digest for every retained evidence input, and a fresh API
 inventory of zero RunPod, Vast, and DigitalOcean resources. This is comparison
 evidence only; it is not controls parity, fidelity evidence, or engine-promotion
 evidence.
+
+A second controls-only canary at implementation commit
+`c77ca07f204f235e3f3a5ea06d2201dd13d33de2` proved the exact pinned runtime
+versions and reached Newton environment construction. It then failed closed
+before reset because the PhysX regular-expression selector for the two Robotiq
+inner fingers was not valid Newton `fnmatch` syntax, so Newton matched zero
+contact-sensor bodies. Terminal receipt
+`sha256:3c7d60acf54a5fc92451245b59cc045eb95e202393af150c807f4cf540c68a5a`
+records the typed pre-controls blocker, zero policy queries, zero retries, a
+`$0.154` provider charge, 20 retained artifacts, successful teardown, and fresh
+API-confirmed provider-zero. The runtime now preserves the PhysX selector and
+uses an equivalent Newton-only suffix glob selecting exactly the two terminal
+finger bodies; that repair remains candidate code until a new native canary
+proves contact-force and contact-partner readback.
 
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.

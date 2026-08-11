@@ -261,6 +261,27 @@ CONTACT_SAGE_COLLISION_SENSOR_NAMES = {
     "left_inner_finger": "robot_contact_sage_left",
     "right_inner_finger": "robot_contact_sage_right",
 }
+
+
+def _robot_contact_sensor_prim_path(physics_backend: str) -> str:
+    """Return an equivalent two-finger selector in the backend's pattern syntax.
+
+    PhysX resolves ``ContactSensorCfg.prim_path`` as a regular expression.  The
+    pinned experimental Newton contact adapter converts only ``.*`` to a
+    ``fnmatch`` glob; regex grouping and alternation remain literal characters.
+    Terminal canary 47486783 therefore matched zero Newton bodies when given
+    ``(left_inner_finger|right_inner_finger)``.  A suffix glob selects the same
+    two terminal finger bodies in both bare-name and full-path Newton labels,
+    without also selecting the ``*_inner_finger_knuckle`` bodies.
+    """
+
+    backend = normalize_physics_backend(physics_backend)
+    base = "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
+    if backend == "newton":
+        return base + "*inner_finger"
+    return base + "(left_inner_finger|right_inner_finger)"
+
+
 # The worker imports the episode adapter under a flattened module name, so this
 # file cannot read the adapter's constant at module scope.  Mirrored here and
 # pinned equal by test, because a silent drift would misreport how far the
@@ -1340,10 +1361,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     robot_contact = ContactSensorAsset(
         name="robot_contact",
         sensor_cfg=ContactSensorCfg(
-            prim_path=(
-                "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
-                "(left_inner_finger|right_inner_finger)"
-            ),
+            prim_path=_robot_contact_sensor_prim_path(args.physics_backend),
             update_period=0.0,
             history_length=1,
             debug_vis=False,
