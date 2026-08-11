@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -99,6 +101,8 @@ def test_builds_replayable_bundle_with_exact_native_runtime_contract(
         names = set(archive.namelist())
         assert "provider_runtime/input_package/source/asset.usd" in names
         assert "provider_runtime/run_adp_arena_provider_runtime.sh" in names
+        assert "provider_runtime/blueprint_pipeline/core/__init__.py" in names
+        assert "provider_runtime/blueprint_pipeline/core/common.py" in names
         entrypoint = archive.read(
             "provider_runtime/run_native_deformable_asset_provider_runtime.sh"
         ).decode()
@@ -118,6 +122,26 @@ def test_builds_replayable_bundle_with_exact_native_runtime_contract(
     assert entrypoint.index("native_task_runtime_environment.sh") < entrypoint.index(
         "native_deformable_asset_preparation_worker"
     )
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        archive.extractall(extracted)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import pathlib,sys;"
+                f"sys.path.insert(0,{str(extracted / 'provider_runtime')!r});"
+                "import blueprint_pipeline.common as common;"
+                "assert common.utc_now_iso"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
     replay = load_verified_native_deformable_asset_provider_bundle(
         Path(receipt["bundle_path"]).parent
         / "native_deformable_asset_provider_bundle_receipt.v1.json",

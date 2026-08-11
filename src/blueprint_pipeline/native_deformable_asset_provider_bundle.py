@@ -34,6 +34,8 @@ RESULT_SCHEMA_VERSION = "native_deformable_asset_vast_execution.v1"
 _MAX_INPUT_FILE_BYTES = 512 * 1024 * 1024
 _RUNTIME_MODULES = (
     "common.py",
+    "core/__init__.py",
+    "core/common.py",
     "decision_evidence_contracts.py",
     "external_simready_deformable_asset.py",
     "native_deformable_asset_preparation.py",
@@ -355,7 +357,9 @@ def build_native_deformable_asset_provider_bundle(
         ) from exc
     (package / "__init__.py").write_text("", encoding="utf-8")
     for name, content in module_snapshots.items():
-        (package / name).write_bytes(content)
+        destination = package / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
     input_root = runtime / "input_package"
     for relative_name, content in source_snapshots.items():
         relative = PurePosixPath(relative_name)
