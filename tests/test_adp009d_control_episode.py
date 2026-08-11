@@ -16,6 +16,7 @@ from blueprint_pipeline.adp009d_control_episode import (
     run_control_episode,
     run_required_controls,
 )
+from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelope
 from blueprint_pipeline.adp009d_droid_observation import (
     DROID_EXTERIOR_VIEW_1,
     DROID_WRIST_VIEW,
@@ -95,6 +96,7 @@ class _ControlEnvironment:
         positive_moves_object: bool = True,
         grasp_frame_converges: bool = True,
         grasp_frame_step_fraction: float = 1.0,
+        contact_envelope: dict | None = None,
     ) -> None:
         self.positive_moves_object = positive_moves_object
         self.grasp_frame_converges = grasp_frame_converges
@@ -110,6 +112,7 @@ class _ControlEnvironment:
         self.pending_target = None
         self.pending_gripper = 1.0
         self.actions: list[list[float]] = []
+        self.contact_envelope = contact_envelope or canonical_contact_envelope()
 
     def reset(self) -> None:
         self.reset_count += 1
@@ -164,7 +167,7 @@ class _ControlEnvironment:
         zeros = [0.0] * 7
         limits = [87.0] * 4 + [12.0] * 3
         return {
-            "schema_version": "adp009d_arm_dynamics_observation.v1",
+            "schema_version": "adp009d_arm_dynamics_observation.v2",
             "joint_position_rad": list(self.joints),
             "joint_velocity_rad_s": zeros,
             "joint_position_target_rad": list(self.joints),
@@ -175,6 +178,7 @@ class _ControlEnvironment:
             "torque_clip_residual_nm": zeros,
             "body_contact_force_world_n": None,
             "body_incoming_joint_wrench_body": {},
+            "contact_envelope": dict(self.contact_envelope),
         }
 
     def read_object_sample(self):
@@ -324,11 +328,12 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
     assert grasp["arrival_tolerance_m"] == pytest.approx(
         0.085 / 2.0
         - instance["resolved_parameters"]["object_radius_m"]
-        - 0.003
+        - canonical_contact_envelope()["effective_contact_envelope_m"]
     )
     assert grasp["arrival_tolerance_basis"] == (
-        "open_jaw_radial_clearance_minus_safety_clearance"
+        "open_jaw_radial_clearance_minus_effective_contact_envelope"
     )
+    assert first["contact_envelope"] == canonical_contact_envelope()
     assert first["open_gripper_geometry"] == {
         "full_opening_m": 0.085,
         "object_diameter_m": pytest.approx(
@@ -338,11 +343,19 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
             0.085 / 2.0
             - instance["resolved_parameters"]["object_radius_m"]
         ),
-        "safety_clearance_m": 0.003,
+        "effective_contact_envelope_m": pytest.approx(0.01),
+        "radial_clearance_after_effective_contact_envelope_m": pytest.approx(
+            0.085 / 2.0
+            - instance["resolved_parameters"]["object_radius_m"]
+            - 0.01
+        ),
+        "clearance_accounting": (
+            "radial_clearance_m_minus_effective_contact_envelope_m"
+        ),
         "aperture_safe_arrival_tolerance_m": pytest.approx(
             0.085 / 2.0
             - instance["resolved_parameters"]["object_radius_m"]
-            - 0.003
+            - 0.01
         ),
     }
     assert grasp["minimum_steps"] == 30
@@ -427,6 +440,11 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
     assert pair["cell_admitted_for_policy_execution"] is True
     assert pair["policy_execution_blockers"] == []
     assert pair["positive_failure_is_policy_failure"] is False
+    assert pair["contact_envelope"] == canonical_contact_envelope()
+    assert all(
+        row["contact_envelope"] == canonical_contact_envelope()
+        for row in pair["controls"]
+    )
     assert all(row["control_passed"] for row in pair["controls"])
     negative = json.loads(
         (tmp_path / f"adp009d_control_episode.{ZERO_ACTION_NEGATIVE}.json").read_text()
@@ -465,7 +483,7 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
     ]
     assert all(row["action_recomputed"] for row in pregrasp_actions)
     assert {row["action_hold_index"] for row in pregrasp_actions} == {0}
-    assert (tmp_path / "adp009d_control_plan.v11.json").is_file()
+    assert (tmp_path / "adp009d_control_plan.v12.json").is_file()
     assert negative["action_trace"][0]["isaac_action"][:7] == negative[
         "action_trace"
     ][0]["observed_joint_position_before_rad"]
@@ -480,7 +498,14 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         assert receipt["state_trace_digest"].startswith("sha256:")
         assert receipt["action_trace_digest"].startswith("sha256:")
         assert receipt["arm_dynamics_summary"]["schema_version"] == (
-            "adp009d_arm_dynamics_summary.v1"
+            "adp009d_arm_dynamics_summary.v2"
+        )
+        assert receipt["contact_envelope"] == canonical_contact_envelope()
+        assert receipt["initial_arm_dynamics"]["contact_envelope"] == (
+            canonical_contact_envelope()
+        )
+        assert receipt["arm_dynamics_summary"]["contact_envelope"] == (
+            canonical_contact_envelope()
         )
         assert receipt["action_trace"][0]["arm_dynamics_before"][
             "joint_effort_limit_nm"
@@ -540,10 +565,10 @@ def test_nonconverging_phase_aborts_before_grasp_and_retains_typed_evidence(
             "arrival_tolerance_m": pytest.approx(
                 0.085 / 2.0
                 - _instance()["resolved_parameters"]["object_radius_m"]
-                - 0.003
+                - 0.01
             ),
             "arrival_tolerance_basis": (
-                "open_jaw_radial_clearance_minus_safety_clearance"
+                "open_jaw_radial_clearance_minus_effective_contact_envelope"
             ),
             "terminal_position_within_tolerance": False,
             "terminal_orientation_error_deg": 0.0,
@@ -575,7 +600,7 @@ def test_control_plan_rejects_object_that_cannot_clear_open_jaws() -> None:
     with pytest.raises(ControlEpisodeError) as excinfo:
         materialize_control_plan(instance)
 
-    assert "control_plan_object_open_jaw_clearance_insufficient" in (
+    assert "control_plan_object_open_jaw_effective_clearance_insufficient" in (
         excinfo.value.errors
     )
 
@@ -591,6 +616,27 @@ def test_control_plan_requires_observed_object_radius() -> None:
         materialize_control_plan(instance)
 
     assert "control_plan_object_radius_missing" in excinfo.value.errors
+
+
+def test_controls_reject_a_drifted_runtime_contact_envelope_before_motion(
+    tmp_path: Path,
+) -> None:
+    drifted_envelope = canonical_contact_envelope()
+    drifted_envelope["sdf_margin_m"] = 0.01
+    environment = _ControlEnvironment(contact_envelope=drifted_envelope)
+
+    with pytest.raises(ControlEpisodeError, match="sdf_margin_invalid"):
+        run_control_episode(
+            environment=environment,
+            plan=materialize_control_plan(_instance()),
+            control_id=ZERO_ACTION_NEGATIVE,
+            gripper_open_command=1.0,
+            gripper_closed_command=0.0,
+            media_output_dir=tmp_path,
+            episode_id="drifted-contact-envelope",
+        )
+
+    assert environment.actions == []
 
 
 def test_paid_canary_legacy_pregrasp_residual_is_not_admitted(
@@ -613,7 +659,9 @@ def test_paid_canary_legacy_pregrasp_residual_is_not_admitted(
     arrival = receipt["phase_arrivals"][0]
     assert arrival["terminal_position_error_m"] == pytest.approx(0.01585)
     assert arrival["terminal_lateral_error_m"] == pytest.approx(0.01585)
-    assert arrival["arrival_tolerance_m"] == pytest.approx(0.00840527398565496)
+    assert arrival["arrival_tolerance_m"] == pytest.approx(
+        0.0014052739856549607
+    )
     assert arrival["target_reached"] is False
     assert "lateral_error_m=0.015850" in receipt["phase_execution_blocker"]
 
@@ -731,6 +779,7 @@ def test_partner_matrix_separates_filtered_contact_from_unattributed_force() -> 
             "step_index": step,
             "phase_id": "descend",
             "arm_dynamics_after": {
+                "schema_version": "adp009d_arm_dynamics_observation.v2",
                 "joint_position_rad": zeros,
                 "joint_velocity_rad_s": zeros,
                 "joint_position_target_rad": zeros,
@@ -744,6 +793,7 @@ def test_partner_matrix_separates_filtered_contact_from_unattributed_force() -> 
                     None if partner is None else {"left_inner_finger": [0.0, 0.0, partner]}
                 ),
                 "body_incoming_joint_wrench_body": {"panda_link1": [0.0] * 6},
+                "contact_envelope": canonical_contact_envelope(),
             },
         }
 
@@ -772,7 +822,7 @@ def test_contact_partner_force_shape_is_validated_and_optional() -> None:
 
     zeros = [0.0] * 7
     base = {
-        "schema_version": "adp009d_arm_dynamics_observation.v1",
+        "schema_version": "adp009d_arm_dynamics_observation.v2",
         "joint_position_rad": zeros,
         "joint_velocity_rad_s": zeros,
         "joint_position_target_rad": zeros,
@@ -783,6 +833,7 @@ def test_contact_partner_force_shape_is_validated_and_optional() -> None:
         "torque_clip_residual_nm": zeros,
         "body_contact_force_world_n": {"left_inner_finger": [0.0, 0.0, 1.0]},
         "body_incoming_joint_wrench_body": {"panda_link1": [0.0] * 6},
+        "contact_envelope": canonical_contact_envelope(),
     }
 
     assert _canonical_dynamics_observation(dict(base)) is not None

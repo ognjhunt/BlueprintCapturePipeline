@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelope
 from blueprint_pipeline.adp009d_live_readiness import build_live_readiness
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -23,6 +24,7 @@ def _fixtures(tmp_path: Path) -> dict[str, object]:
         "schema_version": "adp009d_control_pair.v1",
         "instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
         "candidate_policy_queried": False,
+        "contact_envelope": canonical_contact_envelope(),
         "cell_admitted_for_policy_execution": True,
         "policy_execution_blockers": [],
         "controls": [
@@ -30,11 +32,13 @@ def _fixtures(tmp_path: Path) -> dict[str, object]:
                 "control_id": "zero_action_negative",
                 "control_passed": True,
                 "observed_outcome": "never_moved",
+                "contact_envelope": canonical_contact_envelope(),
             },
             {
                 "control_id": "deterministic_scripted_positive",
                 "control_passed": True,
                 "observed_outcome": "placed_in_target",
+                "contact_envelope": canonical_contact_envelope(),
             },
         ],
     }
@@ -56,6 +60,7 @@ def _fixtures(tmp_path: Path) -> dict[str, object]:
         "policy_candidate_id": None,
         "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
         "retry_cap": 0,
+        "contact_envelope": canonical_contact_envelope(),
         "bundle_sha256": "sha256:" + "b" * 64,
         "asset_bindings": [
             {
@@ -155,3 +160,15 @@ def test_live_readiness_blocks_failed_positive_and_nonzero_provider(tmp_path: Pa
     assert receipt["live_execution_enabled"] is False
     assert "live_readiness_controls_not_passed" in receipt["blockers"]
     assert "live_readiness_provider_zero_invalid" in receipt["blockers"]
+
+
+def test_live_readiness_blocks_a_missing_contact_envelope(tmp_path: Path) -> None:
+    values = _fixtures(tmp_path)
+    bundle = values["bundle_receipt"]
+    assert isinstance(bundle, dict)
+    del bundle["contact_envelope"]
+
+    receipt = build_live_readiness(**values)
+
+    assert receipt["status"] == "blocked"
+    assert "live_readiness_contact_envelope_invalid" in receipt["blockers"]

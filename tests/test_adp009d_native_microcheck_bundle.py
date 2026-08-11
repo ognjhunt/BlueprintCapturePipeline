@@ -9,6 +9,13 @@ import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp009d_isaac_runtime as isaac_runtime
+from blueprint_pipeline.adp009d_contact_envelope import (
+    APPROVED_CAN_SDF_MARGIN_M,
+    APPROVED_CAN_SDF_NARROW_BAND_THICKNESS_M,
+    APPROVED_CAN_SDF_RESOLUTION,
+    APPROVED_CAN_SDF_SUBGRID_RESOLUTION,
+    canonical_contact_envelope,
+)
 from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     APPROVED_CAN_ADAPTER_FILENAME,
     DEFAULT_IMAGE,
@@ -89,7 +96,19 @@ def Xform "canned_beverage"
         encoding="utf-8",
     )
     harness = tmp_path / "harness.json"
-    harness.write_text('{"schema_version":"test"}\n', encoding="utf-8")
+    harness.write_text(
+        json.dumps(
+            {
+                "schema_version": "test",
+                "physics": {"settings": {"contact_offset_m": 0.005}},
+                "canonical_condition": {
+                    "parameters": {"object_contact_offset_m": 0.005}
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     bindings = {
         "approved_can.usda": _digest(approved),
         "sage_collision.usd": _digest(sage),
@@ -148,7 +167,19 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     api_schemas = can_collider.GetMetadata("apiSchemas")
     assert "PhysxSDFMeshCollisionAPI" in list(api_schemas.GetAddedOrExplicitItems())
     assert can_collider.GetAttribute("physics:approximation").Get() == "sdf"
-    assert can_collider.GetAttribute("physxSDFMeshCollision:sdfResolution").Get() == 256
+    assert can_collider.GetAttribute("physxSDFMeshCollision:sdfMargin").Get() == pytest.approx(
+        APPROVED_CAN_SDF_MARGIN_M
+    )
+    assert can_collider.GetAttribute(
+        "physxSDFMeshCollision:sdfNarrowBandThickness"
+    ).Get() == pytest.approx(APPROVED_CAN_SDF_NARROW_BAND_THICKNESS_M)
+    assert can_collider.GetAttribute("physxSDFMeshCollision:sdfResolution").Get() == (
+        APPROVED_CAN_SDF_RESOLUTION
+    )
+    assert can_collider.GetAttribute(
+        "physxSDFMeshCollision:sdfSubgridResolution"
+    ).Get() == APPROVED_CAN_SDF_SUBGRID_RESOLUTION
+    assert first["contact_envelope"] == canonical_contact_envelope()
     with zipfile.ZipFile(first["bundle_path"]) as archive:
         names = set(archive.namelist())
         overlay = archive.read("provider_runtime/assets/sage_collision_overlay.usda").decode()
@@ -159,6 +190,7 @@ def test_bundle_is_deterministic_and_keeps_sealed_sources_unchanged(tmp_path: Pa
     assert "adp009d_native_microcheck.json" in entrypoint
     assert "provider_runtime/assets/approved_can.usda" in names
     assert f"provider_runtime/assets/{APPROVED_CAN_ADAPTER_FILENAME}" in names
+    assert "provider_runtime/adp009d_contact_envelope.py" in names
     assert "provider_runtime/assets/sage_collision.usd" in names
     assert "provider_runtime/adp009d_task_destination.v1.json" in names
     assert f"provider_runtime/assets/{TASK_COLLISION_DERIVATIVE_FILENAME}" in names
@@ -205,7 +237,7 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
         ).decode()
     assert "provider_runtime/adp009d_control_episode.py" in names
     assert "provider_runtime/adp009d_scenario_instance.v1.json" in names
-    assert "provider_runtime/adp009d_control_plan.v11.json" in names
+    assert "provider_runtime/adp009d_control_plan.v12.json" in names
     assert 'BLUEPRINT_ADP009D_CONTROLS="1"' in entrypoint
     assert "adp009d_policy_provisioning.pi05_droid.sh" not in names
     media_preflight = entrypoint.index(
@@ -222,6 +254,33 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
     assert "command -v ffprobe" in entrypoint
     assert "apt-get install -y -qq ffmpeg" in entrypoint
     assert "adp009d_media_toolchain_status.json" in entrypoint
+
+
+def test_bundle_rejects_a_harness_contact_offset_drift(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    harness.write_text(
+        json.dumps(
+            {
+                "physics": {"settings": {"contact_offset_m": 0.004}},
+                "canonical_condition": {
+                    "parameters": {"object_contact_offset_m": 0.005}
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="harness_contact_offset_invalid"):
+        build_native_microcheck_bundle(
+            job_dir=tmp_path / "drifted-contact-offset",
+            approved_can_path=approved,
+            sage_collision_path=sage,
+            harness_manifest_path=harness,
+            implementation_commit="a" * 40,
+            generated_at="fixed",
+            expected_asset_bindings=bindings,
+        )
 
 
 def test_isolated_bundle_builder_returns_fresh_digest_bound_receipt(tmp_path: Path) -> None:

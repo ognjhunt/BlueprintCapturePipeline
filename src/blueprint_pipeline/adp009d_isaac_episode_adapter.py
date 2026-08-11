@@ -39,8 +39,19 @@ except ModuleNotFoundError:  # repository package
         DROID_EXTERIOR_VIEW_1,
         DROID_WRIST_VIEW,
     )
+try:  # flat provider-bundle layout
+    from adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        validate_contact_envelope,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        validate_contact_envelope,
+    )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v10"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v11"
+ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
 
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
@@ -446,6 +457,7 @@ class IsaacEpisodeAdapter:
         ]
         | None = None,
         contact_sensor: Any | None = None,
+        contact_envelope: Mapping[str, Any] | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -464,6 +476,10 @@ class IsaacEpisodeAdapter:
         self._scripted_pose_action_callback = scripted_pose_action_callback
         self._camera_pose_callback = camera_pose_callback
         self._contact_sensor = contact_sensor
+        try:
+            self._contact_envelope = validate_contact_envelope(contact_envelope)
+        except ContactEnvelopeError as exc:
+            raise IsaacEpisodeAdapterError([str(exc)]) from exc
         self._control_step_index = 0
         if (
             not math.isfinite(self._gripper_closed_width_m)
@@ -650,7 +666,7 @@ class IsaacEpisodeAdapter:
             for torque, limit in zip(applied, effort_limits, strict=True)
         ]
         return {
-            "schema_version": "adp009d_arm_dynamics_observation.v1",
+            "schema_version": ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION,
             "joint_position_rad": positions,
             "joint_velocity_rad_s": velocities,
             "joint_position_target_rad": targets,
@@ -665,6 +681,7 @@ class IsaacEpisodeAdapter:
             "body_contact_force_world_n": self._body_contact_forces_world_n(),
             "body_contact_partner_force_world_n": self._body_contact_partner_forces_n(),
             "body_incoming_joint_wrench_body": self._body_incoming_joint_wrenches(),
+            "contact_envelope": dict(self._contact_envelope),
         }
 
     def step(self, isaac_action: Sequence[float]) -> None:
@@ -958,8 +975,10 @@ def describe_adapter() -> dict[str, Any]:
             "rotate_linear_and_angular_rows_world_to_robot_root"
         ),
         "arm_dynamics_observation_schema_version": (
-            "adp009d_arm_dynamics_observation.v1"
+            ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION
         ),
+        "contact_envelope_runtime_validation_required": True,
+        "contact_envelope_retained_in_arm_dynamics_observation": True,
         "contact_force_source": "IsaacLab ContactSensor.data.net_forces_w",
         "incoming_joint_wrench_source": (
             "IsaacLab ArticulationData.body_incoming_joint_wrench_b"
@@ -1016,9 +1035,13 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
     ):
         errors.append("isaac_episode_adapter_jacobian_frame_transform_drifted")
     if bindings.get("arm_dynamics_observation_schema_version") != (
-        "adp009d_arm_dynamics_observation.v1"
+        ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION
     ):
         errors.append("isaac_episode_adapter_arm_dynamics_schema_drifted")
+    if bindings.get("contact_envelope_runtime_validation_required") is not True:
+        errors.append("isaac_episode_adapter_contact_envelope_validation_missing")
+    if bindings.get("contact_envelope_retained_in_arm_dynamics_observation") is not True:
+        errors.append("isaac_episode_adapter_contact_envelope_retention_missing")
     if bindings.get("contact_force_source") != (
         "IsaacLab ContactSensor.data.net_forces_w"
     ):
@@ -1052,6 +1075,7 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
 
 __all__ = [
     "ADAPTER_SCHEMA_VERSION",
+    "ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION",
     "CAMERA_VIEW_BINDING",
     "END_EFFECTOR_BODY_CANDIDATES",
     "FINGER_BODIES",

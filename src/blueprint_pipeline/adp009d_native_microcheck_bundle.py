@@ -16,6 +16,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .adp009d_contact_envelope import (
+    APPROVED_CAN_SDF_MARGIN_M,
+    APPROVED_CAN_SDF_NARROW_BAND_THICKNESS_M,
+    APPROVED_CAN_SDF_RESOLUTION,
+    APPROVED_CAN_SDF_SUBGRID_RESOLUTION,
+    ContactEnvelopeError,
+    contact_envelope_from_harness_manifest,
+)
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -733,10 +741,10 @@ def Xform "{APPROVED_CAN_DEFAULT_PRIM}" (
         )
         {{
             uniform token physics:approximation = "sdf"
-            float physxSDFMeshCollision:sdfMargin = 0.01
-            float physxSDFMeshCollision:sdfNarrowBandThickness = 0.01
-            int physxSDFMeshCollision:sdfResolution = 256
-            int physxSDFMeshCollision:sdfSubgridResolution = 6
+            float physxSDFMeshCollision:sdfMargin = {APPROVED_CAN_SDF_MARGIN_M:.4f}
+            float physxSDFMeshCollision:sdfNarrowBandThickness = {APPROVED_CAN_SDF_NARROW_BAND_THICKNESS_M:.4f}
+            int physxSDFMeshCollision:sdfResolution = {APPROVED_CAN_SDF_RESOLUTION}
+            int physxSDFMeshCollision:sdfSubgridResolution = {APPROVED_CAN_SDF_SUBGRID_RESOLUTION}
         }}
     }}
 }}
@@ -911,6 +919,14 @@ def build_native_microcheck_bundle(
     elif expected_aura_particlefield_sha256 is not None:
         raise ValueError("adp009d_aura_appearance_path_required")
     harness_source = Path(harness_manifest_path).expanduser().resolve()
+    try:
+        harness_manifest = json.loads(harness_source.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise ValueError("adp009d_contact_envelope_harness_unreadable") from exc
+    try:
+        contact_envelope = contact_envelope_from_harness_manifest(harness_manifest)
+    except ContactEnvelopeError as exc:
+        raise ValueError(str(exc)) from exc
     shutil.copy2(harness_source, runtime / "adp009d_franka_eval_harness_manifest.v1.json")
     shutil.copy2(
         source_dir / "adp009d_worker_environment_facts.py",
@@ -928,6 +944,7 @@ def build_native_microcheck_bundle(
         "adp009d_droid_observation.py",
         "adp009d_droid_action_execution.py",
         "droid_policy_bridge.py",
+        "adp009d_contact_envelope.py",
         "adp009d_policy_episode.py",
         "adp009d_control_episode.py",
         # Wired into the runtime but never shipped, so a live run reached the
@@ -974,7 +991,10 @@ def build_native_microcheck_bundle(
         encoding="utf-8",
     )
     if run_controls:
-        from .adp009d_control_episode import materialize_control_plan
+        from .adp009d_control_episode import (
+            CONTROL_PLAN_FILENAME,
+            materialize_control_plan,
+        )
 
         instance_source = (
             Path(scenario_instance_path).expanduser().resolve()
@@ -990,7 +1010,7 @@ def build_native_microcheck_bundle(
         scenario_instance = json.loads(instance_source.read_text(encoding="utf-8"))
         control_plan = materialize_control_plan(scenario_instance)
         shutil.copy2(instance_source, runtime / "adp009d_scenario_instance.v1.json")
-        (runtime / "adp009d_control_plan.v11.json").write_text(
+        (runtime / CONTROL_PLAN_FILENAME).write_text(
             json.dumps(control_plan, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
@@ -1058,6 +1078,7 @@ def build_native_microcheck_bundle(
         },
         "asset_bindings": asset_rows,
         "harness_manifest_sha256": _sha256(harness_source),
+        "contact_envelope": contact_envelope,
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "policy_candidate_id": policy_candidate_id,
         "controls_requested": bool(run_controls),

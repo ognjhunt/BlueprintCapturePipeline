@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .adp009d_contact_envelope import (
+    ContactEnvelopeError,
+    validate_contact_envelope,
+)
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -73,6 +77,16 @@ def _control_pair_blockers(pair: Mapping[str, Any]) -> list[str]:
         or set(by_id) != {"zero_action_negative", "deterministic_scripted_positive"}
     ):
         blockers.append("live_readiness_controls_not_passed")
+    try:
+        contact_envelope = validate_contact_envelope(pair.get("contact_envelope"))
+    except ContactEnvelopeError:
+        blockers.append("live_readiness_control_contact_envelope_invalid")
+    else:
+        if any(
+            row.get("contact_envelope") != contact_envelope
+            for row in rows
+        ):
+            blockers.append("live_readiness_control_contact_envelope_invalid")
     return blockers
 
 
@@ -109,6 +123,18 @@ def build_live_readiness(
         for row in bundle_receipt.get("asset_bindings", [])
         if isinstance(row, Mapping)
     }
+    try:
+        bundle_contact_envelope = validate_contact_envelope(
+            bundle_receipt.get("contact_envelope")
+        )
+        pair_contact_envelope = validate_contact_envelope(
+            control_pair.get("contact_envelope")
+        )
+    except ContactEnvelopeError:
+        blockers.append("live_readiness_contact_envelope_invalid")
+    else:
+        if bundle_contact_envelope != pair_contact_envelope:
+            blockers.append("live_readiness_contact_envelope_invalid")
     if (
         bundle_receipt.get("schema_version") != "adp009d_native_microcheck_bundle.v1"
         or bundle_receipt.get("status") != "ready"
@@ -194,6 +220,9 @@ def build_live_readiness(
             "allocator_artifact_manifest_emitted": "live_readiness_artifact_manifest_invalid" not in blockers,
             "teardown_completed": "live_readiness_teardown_invalid" not in blockers,
             "provider_zero_after_teardown": "live_readiness_provider_zero_invalid" not in blockers,
+            "contact_envelope_bound": "live_readiness_contact_envelope_invalid"
+            not in blockers
+            and "live_readiness_control_contact_envelope_invalid" not in blockers,
         },
         "evidence_digests": {
             "release": release_evidence.get("release_digest"),

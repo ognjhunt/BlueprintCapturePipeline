@@ -101,6 +101,17 @@ the production secret integration. The dispatcher, not the profile, appends
 `--execute` after validating a current signed spend envelope and the production
 execute gate.
 
+### Contact-envelope controls gate
+
+The approved can's SDF adapter is a materialized runtime input, not an
+operator-tuned setting. Its 2.5 mm SDF margin and 2.5 mm narrow band are
+combined with the frozen 5 mm Robotiq finger contact offset into a retained
+10 mm effective contact envelope. The bundle validates the harness binding and
+both the static and live PhysX colliders; the v12 controls plan subtracts that
+envelope from the open-jaw clearance. Every native arm-dynamics receipt retains
+the same envelope. A mismatch blocks controls before policy execution and must
+remain a typed runtime blocker rather than becoming a policy result.
+
 ## Optional bounded prelaunch skills
 
 A new scene profile may include a `prelaunch_skill_plan` only when that exact
