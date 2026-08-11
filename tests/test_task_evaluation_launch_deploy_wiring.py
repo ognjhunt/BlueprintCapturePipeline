@@ -30,6 +30,14 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "blueprint-gpu-spend-guard.service" in dispatcher
     assert "GIT_CONFIG_KEY_0=safe.directory" in dispatcher
     assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_PIPELINE_REPO}"' in dispatcher
+    for binding in (
+        "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
+        "NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key",
+        "DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username",
+        "DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat",
+        "HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token",
+    ):
+        assert binding in dispatcher
     assert "PathExistsGlob=" in path_unit
     assert "task-evaluation-launches/pending/*.json" in path_unit
 
@@ -71,3 +79,11 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
     assert "# BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER=true" in environment
     assert "# BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true" in environment
     assert "# BLUEPRINT_TASK_EVALUATION_AGENT_SUPERVISOR_ENABLED=true" in environment
+    for binding in (
+        "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
+        "NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key",
+        "DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username",
+        "DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat",
+        "HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token",
+    ):
+        assert binding in environment
