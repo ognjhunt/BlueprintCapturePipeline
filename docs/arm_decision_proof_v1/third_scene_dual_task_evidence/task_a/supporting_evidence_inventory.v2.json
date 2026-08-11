@@ -1,6 +1,6 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 56,
+  "artifact_count": 58,
   "artifacts": [
     {
       "asset_id": "840920_simready_washer_candidate",
@@ -38,6 +38,19 @@
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_zip",
       "sha256": "sha256:e19c17ace854fb5bc28f78c59e0b871979df78db50954d712b82d1da924dcc65",
       "size_bytes": 50693494,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
+    },
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/blocked_local_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+      "replacement_slot": 1,
+      "role": "agent_cad:earthtojake_text_to_cad:content_agents_local_docker_preflight",
+      "sha256": "sha256:8d6221b4a6ad78c8be82e0c441bf265e02b66a62b98745e756cf00236e4a0563",
+      "size_bytes": 3350,
       "source_root_id": "third_scene_rights_bounded_construction_root",
       "task_id": "task_a_washer_door_open"
     },
@@ -220,6 +233,19 @@
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_zip",
       "sha256": "sha256:b8457053f2e0662b0e013e0e08fffbe61011e835d562be947adc053768ac3949",
       "size_bytes": 50730693,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_a_washer_door_open"
+    },
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/blocked_local_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+      "replacement_slot": 1,
+      "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_local_docker_preflight",
+      "sha256": "sha256:d5723f9e0c2cd1e562d18f48142c41006eb507ea3433f766c15f3ebc9d55887c",
+      "size_bytes": 3362,
       "source_root_id": "third_scene_rights_bounded_construction_root",
       "task_id": "task_a_washer_door_open"
     },
@@ -620,7 +646,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:4bd3924c9894964cc4cfbac87cc99cf5556bccd37f29ffa977717b855f629399",
+  "inventory_digest": "sha256:6688b9e86d4f833814e29a2062f0c016dc11b15032fefeb5363d08e4e703cbbd",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,

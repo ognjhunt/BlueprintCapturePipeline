@@ -32,7 +32,12 @@
         "size_bytes": 15053
       },
       "config_preflight": null,
-      "local_config_preflight": null,
+      "local_config_preflight": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/blocked_local_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+        "sha256": "sha256:8d6221b4a6ad78c8be82e0c441bf265e02b66a62b98745e756cf00236e4a0563",
+        "size_bytes": 3350,
+        "receipt_digest": "sha256:bc648cf3e0fe0c7566a3cc93934d54acd5625704118366f2475d1873c70fef2f"
+      },
       "static_config_preflight": {
         "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/earthtojake_cad_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/static_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
         "sha256": "sha256:425ab224f72b96fbb0689026b9214b8dfa9a0cc4d8416945c1c72041b980e573",
@@ -46,7 +51,7 @@
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_local_docker_config_preflight_missing",
+        "content_agents_local_docker_daemon_unavailable",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing"
       ]
@@ -67,7 +72,12 @@
         "size_bytes": 16909
       },
       "config_preflight": null,
-      "local_config_preflight": null,
+      "local_config_preflight": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/blocked_local_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+        "sha256": "sha256:d5723f9e0c2cd1e562d18f48142c41006eb507ea3433f766c15f3ebc9d55887c",
+        "size_bytes": 3362,
+        "receipt_digest": "sha256:4d436beba244026f2f0546fae09facd4b5e59e8682aed60758d646fcce81e50f"
+      },
       "static_config_preflight": {
         "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/multi_agent_cad_codex_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/static_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
         "sha256": "sha256:1ce57e38f7bc749882a59b336e8bbb7a2d5c1d5f2f7b80900fba04a79c5eca33",
@@ -81,7 +91,7 @@
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_local_docker_config_preflight_missing",
+        "content_agents_local_docker_daemon_unavailable",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing"
       ]
@@ -102,7 +112,12 @@
         "size_bytes": 18049
       },
       "config_preflight": null,
-      "local_config_preflight": null,
+      "local_config_preflight": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/blocked_local_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+        "sha256": "sha256:4a211d8399e2236229b5d803d6fa282df9c0ef57842d691f544d3e5a15d438e3",
+        "size_bytes": 3350,
+        "receipt_digest": "sha256:6a2c939875ee403cd042771800935b1a6b36e00d7cf9d71117c3719dec2a9a71"
+      },
       "static_config_preflight": {
         "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/earthtojake_cad_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/static_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
         "sha256": "sha256:089106de3384368bc5940c4faeb98820f29315687f224f1f8dc89d7b652b5e6b",
@@ -116,7 +131,7 @@
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_local_docker_config_preflight_missing",
+        "content_agents_local_docker_daemon_unavailable",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing"
       ]
@@ -137,7 +152,12 @@
         "size_bytes": 21706
       },
       "config_preflight": null,
-      "local_config_preflight": null,
+      "local_config_preflight": {
+        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/blocked_local_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+        "sha256": "sha256:7e8d9152fc5083ce5c0eda0453b9fa7cad9546ac69c47bc99645bd067177eea8",
+        "size_bytes": 3363,
+        "receipt_digest": "sha256:6a1a6706da0623926d7c910b7720c62c555555eacfb5dd4c4c753bae08a56bd2"
+      },
       "static_config_preflight": {
         "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/multi_agent_cad_codex_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/static_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
         "sha256": "sha256:4f60248aebfa7ef83f77f290dea9af5276f087bce5c5b348a767369ac1828c8e",
@@ -151,7 +171,7 @@
       "execute_admitted": false,
       "provider_mutations_performed": 0,
       "blockers": [
-        "content_agents_local_docker_config_preflight_missing",
+        "content_agents_local_docker_daemon_unavailable",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing"
       ]
@@ -165,5 +185,5 @@
     "native_simulator_import_qualified": false,
     "physical_equivalence": false
   },
-  "receipt_digest": "sha256:16321c35e29ec41818b94c1b6485f011101c36f157d4d6b01e972d43035f8e9d"
+  "receipt_digest": "sha256:64aa5f329ea4abd9ffca2812c247fca683275a802849dcf0c36e157e91d5c82c"
 }

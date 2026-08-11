@@ -353,18 +353,19 @@ with digest
 The no-provider execution-readiness receipt is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`
 with digest
-`sha256:16321c35e29ec41818b94c1b6485f011101c36f157d4d6b01e972d43035f8e9d`.
+`sha256:64aa5f329ea4abd9ffca2812c247fca683275a802849dcf0c36e157e91d5c82c`.
 It validates all four prepared bundle bytes, exact-entrypoint rehearsals,
 all manifest-bound reference image bindings, and Dockerless static
-bundle/config/input-USD preflight receipts. The current
-blockers for every candidate are
-`content_agents_local_docker_config_preflight_missing`,
+bundle/config/input-USD preflight receipts. It also retains a blocked
+local-Docker preflight receipt for each candidate. The current blockers for
+every candidate are
+`content_agents_local_docker_daemon_unavailable`,
 `content_agents_paid_model_access_preflight_missing` and
-`content_agents_paid_attempt_authority_missing`. Docker was unavailable during
-the v5 refresh, so the no-paid Docker/network-disabled local bundle/config
-dry-run was not rerun and remains a local blocker. No paid model probe, OpenAI
-call, Vast allocation, object-store mutation, or provider mutation was performed;
-`provider_mutations_performed: 0`.
+`content_agents_paid_attempt_authority_missing`. The local Docker CLI exists on
+this host, but no Docker daemon/socket was available, so the no-paid
+Docker/network-disabled bundle/config dry-run did not execute. No paid model
+probe, OpenAI call, Vast allocation, object-store mutation, or provider mutation
+was performed; `provider_mutations_performed: 0`.
 
 Static Content Agents bundle/config/input-USD preflight receipts:
 
@@ -375,9 +376,10 @@ Static Content Agents bundle/config/input-USD preflight receipts:
 | Task B notebook | Earth-to-Jake | 79 | `sha256:7a0ee763ffe0581f51008caefb9fbfd3ea8c74fa6930ad9d1d1e015ab4be5db0` |
 | Task B notebook | Pan-Chera Multi-Agent-CAD | 135 | `sha256:9f0a868a3e171ac5cac2b5b1d6405d1f99e1a8dd348d84a7872b7f26466b0f97` |
 
-No v5 no-paid Docker/network-disabled Content Agents local dry-run receipt is
-currently admitted. That gate remains represented by
-`content_agents_local_docker_config_preflight_missing` in the readiness receipt.
+No no-paid Docker/network-disabled Content Agents local dry-run passed in this
+state. That gate is now represented by four blocked local-Docker preflight
+receipts with `content_agents_local_docker_daemon_unavailable` in the readiness
+receipt.
 
 A local human-review-only visual comparison was materialized from the
 manifest-bound original reference frames and CAD snapshots. Receipt:
@@ -544,11 +546,11 @@ independent STEP inspection receipts, and STEP candidates for the task, both
 Content Agents Mesh projection receipts, Dockerless static Content Agents
 preflight receipts, and both Content Agents autoref bundle receipts/ZIPs without
 embedding rights-bounded dataset-derived bytes. Current inventory digests: Task
-A `sha256:4bd3924c9894964cc4cfbac87cc99cf5556bccd37f29ffa977717b855f629399`;
-Task B `sha256:3f13537888e94597f68009197f8c1d4b0ab8782999b10538eb776a62723d2c66`.
+A `sha256:6688b9e86d4f833814e29a2062f0c016dc11b15032fefeb5363d08e4e703cbbd`;
+Task B `sha256:7fe56526ca04b1acd7bd9eb643bb4c9b2d077683214a8015d712212db7363d67`.
 Current episode-index digests: Task A
-`sha256:80b81732f8d91c03eb4f25c075f6257be5bd196747a60f78056330e4dc276135`;
-Task B `sha256:51e907549569387fdc3031762a2aff1a5113f721f676e61c7b0da0227463cdc5`.
+`sha256:6c7c8ffa5ac13768066f7dbbafe52ac28022211e6b185ee6718042ee3eda9422`;
+Task B `sha256:a4f18fe6061ce55122085bb7a6a14326606f053c5d962f05e1587dcf4d3b65ce`.
 
 ## Verification
 

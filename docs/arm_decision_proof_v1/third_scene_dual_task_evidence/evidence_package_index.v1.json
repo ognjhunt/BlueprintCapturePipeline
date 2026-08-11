@@ -2,7 +2,7 @@
   "blocker_summary": "Both replacement candidates and both independent collider deletions are authored. The current smallest blocker is fresh paid authority for qualified FlashSplat contribution/ownership output from each separately frozen, repaired bundle. Both historical zero-retry attempts and both repaired-but-unexecuted bundle receipts are retained. This package contains no fake media or episode links.",
   "cad_summary": "Agent-authored CAD comparison evidence has been added for both replacement objects using both admitted CAD backends. The manifest-driven visual comparison binding, CAD matrix, reference manifest, reference-binding audit, Content Agents bundle matrix, and Content Agents execution-readiness receipt are all linked below. Paid model access and paid attempt authority remain missing, so Content Agents were not executed and no SimReady/native/physics/appearance/physical-equivalence claim is made.",
   "overview_review_only": true,
-  "package_index_digest": "sha256:8c6f1e1de620831aa9b8d2b57fe1583a3774edcdec78bb7e999e1b1437307358",
+  "package_index_digest": "sha256:3797666c884dbd93be17799a48cb118fe540c62e7b0ba14690b7e7efa4462299",
   "schema_version": "adp_dual_task_evidence_package_index.v1",
   "shared_manifest_count": 6,
   "shared_manifests": [
@@ -60,11 +60,11 @@
       "digest_field": "receipt_digest",
       "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
       "label": "Four-candidate Content Agents execution-readiness receipt",
-      "receipt_digest": "sha256:16321c35e29ec41818b94c1b6485f011101c36f157d4d6b01e972d43035f8e9d",
+      "receipt_digest": "sha256:64aa5f329ea4abd9ffca2812c247fca683275a802849dcf0c36e157e91d5c82c",
       "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
       "schema_version": "adp_content_agents_execution_readiness.v1",
-      "sha256": "sha256:a98d0618d6c5bec5f890192fbab9f49ffe1f5050c00fe8c1ae31ad3ae6d04557",
-      "size_bytes": 9507
+      "sha256": "sha256:4df6b09476d17e793087775c4ce90c2df44a9fa08b62bab28a626a754c7466ad",
+      "size_bytes": 11571
     }
   ],
   "simulator_artifacts_are_not_physical_truth": true,
@@ -74,12 +74,12 @@
     {
       "episode_count": 0,
       "html_relative_path": "task_a/OPEN_ME_episode_evidence_index.html",
-      "html_sha256": "sha256:09d52b9823237f2ef88f3b78f4093f5574668de9f3b7a712f2be2e8e21435746",
+      "html_sha256": "sha256:5835af64abc6490fa9eb15f17539848dbc8bacffaa7a39c5805441dc1469f957",
       "html_size_bytes": 2233,
-      "index_digest": "sha256:80b81732f8d91c03eb4f25c075f6257be5bd196747a60f78056330e4dc276135",
+      "index_digest": "sha256:6c7c8ffa5ac13768066f7dbbafe52ac28022211e6b185ee6718042ee3eda9422",
       "label": "Task A: washer-door evidence index",
       "relative_path": "task_a/episode_evidence_index.v1.json",
-      "sha256": "sha256:74033e4d84389b7398ce63c5dfed3703c42f0698d5ed69ccf1b93ab4c4339ea3",
+      "sha256": "sha256:9b1d2362f7a328401c91875c8e29bf662b06519ddb78df0ea719233e4fa0ad79",
       "size_bytes": 4411,
       "task_id": "task_a_washer_door_open",
       "typed_abstention_status": "typed_evidence_backed_abstention"
@@ -87,12 +87,12 @@
     {
       "episode_count": 0,
       "html_relative_path": "task_b/OPEN_ME_episode_evidence_index.html",
-      "html_sha256": "sha256:92c2f3f9488447df0da8f32c853a4eb7fcf12cbea8bd019552a555279b46008c",
+      "html_sha256": "sha256:22060e8ecebe41c81326a6b698d157654923521d804b618e4632d975b6782258",
       "html_size_bytes": 2236,
-      "index_digest": "sha256:51e907549569387fdc3031762a2aff1a5113f721f676e61c7b0da0227463cdc5",
+      "index_digest": "sha256:a4f18fe6061ce55122085bb7a6a14326606f053c5d962f05e1587dcf4d3b65ce",
       "label": "Task B: notebook-relocation evidence index",
       "relative_path": "task_b/episode_evidence_index.v1.json",
-      "sha256": "sha256:7f1fe63ca63623267fa7ffbde9062b52d19717c4ece88f1902e27ba05207cf9f",
+      "sha256": "sha256:2ff6768fd320390cd5644133bc10554a63ead5527626cbc3eea59624136701e2",
       "size_bytes": 4412,
       "task_id": "task_b_notebook_relocation",
       "typed_abstention_status": "typed_evidence_backed_abstention"

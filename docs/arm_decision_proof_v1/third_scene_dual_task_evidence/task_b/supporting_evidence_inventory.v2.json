@@ -1,6 +1,6 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 56,
+  "artifact_count": 58,
   "artifacts": [
     {
       "asset_id": "840920_simready_notebook_candidate",
@@ -38,6 +38,19 @@
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_zip",
       "sha256": "sha256:10301598fa5101bc18134db0779cd165d481fb4369fd2ee7799f402da73d4f47",
       "size_bytes": 50521897,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/blocked_local_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+      "replacement_slot": 2,
+      "role": "agent_cad:earthtojake_text_to_cad:content_agents_local_docker_preflight",
+      "sha256": "sha256:4a211d8399e2236229b5d803d6fa282df9c0ef57842d691f544d3e5a15d438e3",
+      "size_bytes": 3350,
       "source_root_id": "third_scene_rights_bounded_construction_root",
       "task_id": "task_b_notebook_relocation"
     },
@@ -220,6 +233,19 @@
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_zip",
       "sha256": "sha256:29d2da2a30c228cf880eb1d40683887fa2a9dce9d1e1fd40701166a4dfc01541",
       "size_bytes": 50746779,
+      "source_root_id": "third_scene_rights_bounded_construction_root",
+      "task_id": "task_b_notebook_relocation"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "pan_chera_multi_agent_cad",
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_bundle_v7_20260811T_plural_reference_binding/blocked_local_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
+      "replacement_slot": 2,
+      "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_local_docker_preflight",
+      "sha256": "sha256:7e8d9152fc5083ce5c0eda0453b9fa7cad9546ac69c47bc99645bd067177eea8",
+      "size_bytes": 3363,
       "source_root_id": "third_scene_rights_bounded_construction_root",
       "task_id": "task_b_notebook_relocation"
     },
@@ -620,7 +646,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:3f13537888e94597f68009197f8c1d4b0ab8782999b10538eb776a62723d2c66",
+  "inventory_digest": "sha256:7fe56526ca04b1acd7bd9eb643bb4c9b2d077683214a8015d712212db7363d67",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,
