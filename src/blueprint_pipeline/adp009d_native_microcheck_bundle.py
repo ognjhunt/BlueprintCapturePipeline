@@ -33,6 +33,7 @@ DEFAULT_IMAGE = (
     "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@"
     "sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9"
 )
+CA_CERTIFICATE_PATH = "/etc/ssl/certs/ca-certificates.crt"
 ARENA_REVISION = "8b4a3a47fc53de23e8205089d71109a2e2348acd"
 ARENA_TREE = "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
 ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
@@ -85,26 +86,37 @@ export BLUEPRINT_ADP009D_CONTROLS="@@CONTROLS@@"
 export BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES="@@CAMERA_WARMUP_FRAMES@@"
 export BLUEPRINT_ADP009D_STOP_AFTER_FRAMES="@@STOP_AFTER_FRAMES@@"
 export BLUEPRINT_ADP009D_CAMERA_RESOLUTION="@@CAMERA_RESOLUTION@@"
+export BLUEPRINT_ADP009D_CA_CERT_PATH="@@CA_CERTIFICATE_PATH@@"
 mkdir -p "$OUT_DIR"
 
 # Portable review media is an episode requirement, including controls-only
 # runs.  Policy provisioning used to install ffmpeg incidentally, so the first
 # controls-only canary reached its zero-action episode and then failed while
 # sealing evidence.  Make the toolchain a base runtime dependency and prove it
-# before any checkpoint fetch or simulator startup.
+# before any checkpoint fetch or simulator startup.  The same preflight owns
+# public-source transport trust: a filtered clone has to fetch blobs during
+# the pinned checkout, and an image with no CA bundle can otherwise make a
+# source/materialization failure look like a scene or controller failure.
+# TLS verification remains enabled; this path never accepts a no-verify
+# workaround.
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:media_toolchain:started"
-if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1 \
+  || ! test -s "$BLUEPRINT_ADP009D_CA_CERT_PATH"; then
   DEBIAN_FRONTEND=noninteractive apt-get update -qq \
     >"$OUT_DIR/adp009d_media_toolchain_install.log" 2>&1 && \
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates ffmpeg \
     >>"$OUT_DIR/adp009d_media_toolchain_install.log" 2>&1
 fi
-if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
-  printf '{"schema_version":"adp009d_media_toolchain.v1","status":"ready","ffmpeg":true,"ffprobe":true}\n' \
-    >"$OUT_DIR/adp009d_media_toolchain_status.json"
+if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 \
+  && test -s "$BLUEPRINT_ADP009D_CA_CERT_PATH"; then
+  # Do not inherit an ambient no-verify escape hatch from a provider image.
+  unset GIT_SSL_NO_VERIFY
+  export GIT_SSL_CAINFO="$BLUEPRINT_ADP009D_CA_CERT_PATH"
+  printf '{"schema_version":"adp009d_media_toolchain.v1","status":"ready","ffmpeg":true,"ffprobe":true,"ca_certificates":true,"ca_certificate_path":"%s","git_ssl_verify":true}\n' \
+    "$BLUEPRINT_ADP009D_CA_CERT_PATH" >"$OUT_DIR/adp009d_media_toolchain_status.json"
   echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:media_toolchain:completed"
 else
-  printf '{"schema_version":"adp009d_media_toolchain.v1","status":"blocked","ffmpeg":false,"ffprobe":false}\n' \
+  printf '{"schema_version":"adp009d_media_toolchain.v1","status":"blocked","ffmpeg":false,"ffprobe":false,"ca_certificates":false,"git_ssl_verify":true}\n' \
     >"$OUT_DIR/adp009d_media_toolchain_status.json"
   echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:media_toolchain:blocked"
   exit 86
@@ -1051,7 +1063,8 @@ def build_native_microcheck_bundle(
             "@@STOP_AFTER_FRAMES@@",
             str(os.environ.get("BLUEPRINT_ADP009D_STOP_AFTER_FRAMES", "")),
         )
-        .replace("@@CAMERA_RESOLUTION@@", camera_resolution),
+        .replace("@@CAMERA_RESOLUTION@@", camera_resolution)
+        .replace("@@CA_CERTIFICATE_PATH@@", CA_CERTIFICATE_PATH),
     )
     generated = generated_at or utc_now_iso()
     manifest: dict[str, Any] = {
@@ -1089,6 +1102,11 @@ def build_native_microcheck_bundle(
         "camera_resolution_binding": camera_resolution or None,
         "media_toolchain_required": ["ffmpeg", "ffprobe"],
         "media_toolchain_preflight_before_simulator": True,
+        "source_transport_trust": {
+            "ca_certificate_package": "ca-certificates",
+            "ca_certificate_path": CA_CERTIFICATE_PATH,
+            "git_ssl_verify": True,
+        },
         "expected_output_filename": "adp009d_native_microcheck.json",
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
