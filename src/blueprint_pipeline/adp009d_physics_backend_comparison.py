@@ -446,6 +446,7 @@ def validate_newton_canary_admission(
         blockers.append("adp009d_newton_admission_profile_invalid")
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     expires = _parse_time(value.get("expires_at"))
+    issued = _parse_time(value.get("issued_at"))
     if (
         value.get("schema_version") != CANARY_ADMISSION_SCHEMA_VERSION
         or value.get("status") != "passed"
@@ -472,10 +473,14 @@ def validate_newton_canary_admission(
         or expires is None
         or expires <= current
         or (expires - current).total_seconds() > 3600
+        or issued is None
+        or issued > current + timedelta(seconds=5)
+        or (current - issued).total_seconds() > 1800
+        or expires <= issued
+        or (expires - issued).total_seconds() > 1800
         or value.get("provider_mutation_performed") is not False
         or not isinstance(value.get("authorization_evidence_ref"), str)
         or not str(value.get("authorization_evidence_ref") or "").strip()
-        or _parse_time(value.get("issued_at")) is None
         or not isinstance(value.get("canonical_spend_admission_digest"), str)
         or not str(value.get("canonical_spend_admission_digest")).startswith("sha256:")
         or not isinstance(value.get("provider_zero_precheck_digest"), str)

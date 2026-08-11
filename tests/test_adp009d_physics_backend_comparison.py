@@ -306,6 +306,26 @@ def test_complete_newton_admission_is_time_bounded_and_non_mutating() -> None:
     assert admission["provider_mutation_performed"] is False
 
 
+@pytest.mark.parametrize(
+    "issued_at",
+    (
+        "2026-08-11T15:59:59+00:00",
+        "2026-08-11T16:30:06+00:00",
+    ),
+)
+def test_newton_admission_rejects_stale_or_future_issuance(issued_at: str) -> None:
+    now = datetime(2026, 8, 11, 16, 30, tzinfo=timezone.utc)
+    admission = _admission(build_backend_profile("newton"), now)
+    admission["issued_at"] = issued_at
+    admission["admission_digest"] = canonical_digest(
+        admission, digest_field="admission_digest"
+    )
+
+    assert validate_newton_canary_admission(
+        admission, profile=build_backend_profile("newton"), now=now
+    ) == ["adp009d_newton_canary_admission_invalid"]
+
+
 def test_newton_admission_builder_binds_authority_spend_and_provider_zero() -> None:
     now = datetime(2026, 8, 11, 16, 40, tzinfo=timezone.utc)
     inventory = [
