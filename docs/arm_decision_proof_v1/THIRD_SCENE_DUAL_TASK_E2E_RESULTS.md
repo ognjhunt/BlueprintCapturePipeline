@@ -63,7 +63,16 @@ result.
   `c1f978ed92c9d3965f2f3208e299279baffc1f26` (typed held-out ownership
   abstentions) and `5d0c855145d525c7cb01d8bd2cc0fe188ce306f7` (portable
   evidence-index support for ownership, replay, held-out, and CAD-comparison
-  receipts).
+  receipts), followed by
+  `1165b77fd70c998d0d4ec55924e988135c924d67` (a checked-in receipt-only
+  terminal-evidence mirror that copies no raw dataset bytes) and
+  `d7256699aaf3596c6a645045cc3133ce1606b21e` (the general 1..5-object
+  Codex-first Content Agents route). The latter sends local packet/scope/config
+  review to host-authenticated Codex without an API key or provider bundle, and
+  rejects a Codex-only request before bundle creation. The pinned NVIDIA
+  pipeline remains selected only for its complete released
+  material/texture/physics/validation capability; Codex is not represented as
+  an NVIDIA Content Agents execution.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
 - External 840796 worktrees and evidence roots were not modified.
@@ -547,6 +556,13 @@ forks:
   it validates prepared bundle bytes and exact-entrypoint rehearsal, records
   config-preflight/paid-authority blockers, and cannot be mistaken for agent
   execution or SimReady qualification.
+- Content-Agent-capable work is now explicitly Codex-first: a general
+  1..5-object route isolates local input/material/physics-scope/configuration/
+  receipt review from API-backed released-code execution. A Codex-only route is
+  rejected before a VAST bundle directory is created; a hybrid route binds each
+  candidate object and the exact residual NVIDIA pipeline capability. This
+  optimization remains advisory and cannot change any source-removal,
+  simulator, or physical-evidence boolean.
 - Content Agents paid execution now has its own single-use attempt-authority
   contract. Allocator dry-runs remain mutation-free and do not require the
   grant; `--execute` requires an exact bundle/config-preflight authority and
@@ -708,12 +724,19 @@ Recent reusable-code and manifest commits:
   `.venv/bin/ruff check src/ tests/` passed. The test proves that ownership,
   replay, held-out-audit, and external CAD-review receipts are digest-verified
   supporting evidence, not source-removal or simulator qualification.
+- Focused portable-mirror, evidence-index, typed-abstention, Codex-route, and
+  Content Agents bundle regressions for `1165b77fd` / `d7256699a` — `102
+  passed`. The required precommit selector selected `1168` tests (with `9996`
+  deselected) and `.venv/bin/ruff check src/ tests/` passed. The route tests
+  prove that a Codex-only item cannot create a provider bundle and that a
+  hybrid route is digest-bound to its exact task, slot, asset, and CAD-output
+  receipt before any NVIDIA bundle is materialized.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, and held-out ownership audit; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; two-backend agent-CAD comparison contracts with deterministic CAD rejected; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, and held-out ownership audit; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; a receipt-only portable mirror that excludes all raw dataset bytes; two-backend agent-CAD comparison contracts with deterministic CAD rejected; a Codex-first 1..5-object Content Agents route that prevents Codex-only review work from making provider/API bundles; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Both released-code contribution runs completed, but both exact source-removal lanes abstained at `calibrated_gaussian_ownership_separation_without_protected_scene_deletion`. No source Gaussian deletion, replacement-depth coverage, occlusion/inpainting decision, native placement/camera/control gate, or candidate matrix is admitted. Content Agents enrichment remains advisory and not a replacement for source-removal evidence. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
