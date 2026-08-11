@@ -14,8 +14,14 @@ from blueprint_pipeline.gaussian_source_removal_qualification import (
 from blueprint_pipeline.replacement_construction_bindings import (
     GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
     MASK_SET_QUALIFICATION_SCHEMA_VERSION,
-    REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
     materialize_replacement_construction_bindings,
+)
+from blueprint_pipeline.simready_graph_asset_static_qualification import (
+    SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+)
+from blueprint_pipeline.simready_replacement_native_qualification import (
+    NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+    materialize_simready_replacement_native_qualification,
 )
 
 
@@ -334,19 +340,54 @@ def test_derived_source_removal_receipt_feeds_construction_bindings(
         },
         field="receipt_digest",
     )
-    replacement_path = _write(
-        tmp_path / "replacement.json",
+    asset_sha256 = _sha(71)
+    static_path = _write(
+        tmp_path / "static_qualification.json",
         {
-            "schema_version": REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
-            "status": "native_simulator_import_qualified",
-            **common,
+            "schema_version": STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+            "status": "authored_structure_statically_qualified",
+            "task_id": task["task_id"],
+            "task_freeze_digest": task["task_freeze_digest"],
             "asset_id": removal["replacement_asset_id"],
-            "replacement_qualification_id": removal["replacement_qualification_id"],
-            "replacement_asset_sha256": _sha(71),
-            "native_simulator_import_qualified": True,
+            "replacement_usd": {
+                "path": "/fixture/replacement.usda",
+                "size_bytes": 123,
+                "sha256": asset_sha256,
+            },
+            "authored_structure_statically_qualified": True,
+            "structural_findings": [],
+            "contract_blockers": ["native_simulator_import_unexecuted"],
             "receipt_digest": "",
         },
         field="receipt_digest",
+    )
+    native_import_path = _write(
+        tmp_path / "native_import.json",
+        {
+            "schema_version": NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+            "status": "native_import_qualified",
+            **common,
+            "asset_id": removal["replacement_asset_id"],
+            "replacement_qualification_id": removal["replacement_qualification_id"],
+            "replacement_asset_sha256": asset_sha256,
+            "native_isaac_executed": True,
+            "native_simulator_import_qualified": True,
+            "physical_equivalence_claimed": False,
+            "simulator_import_identity": {
+                "runtime": "fixture_native_import",
+                "imported_prim_path": "/World/replacement_fixture",
+            },
+            "receipt_digest": "",
+        },
+        field="receipt_digest",
+    )
+    replacement_path = tmp_path / "replacement.json"
+    materialize_simready_replacement_native_qualification(
+        scene_freeze_receipt_path=paths["scene"],
+        task_freeze_receipt_path=paths["task"],
+        static_qualification_receipt_path=static_path,
+        native_import_receipt_path=native_import_path,
+        output_path=replacement_path,
     )
 
     construction = materialize_replacement_construction_bindings(

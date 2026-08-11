@@ -11,11 +11,17 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.replacement_construction_bindings import (
     GAUSSIAN_REMOVAL_QUALIFICATION_SCHEMA_VERSION,
     MASK_SET_QUALIFICATION_SCHEMA_VERSION,
-    REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
     ReplacementConstructionBindingsError,
     materialize_replacement_construction_bindings,
     seal_replacement_construction_bindings,
     validate_replacement_construction_bindings,
+)
+from blueprint_pipeline.simready_graph_asset_static_qualification import (
+    SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+)
+from blueprint_pipeline.simready_replacement_native_qualification import (
+    NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+    materialize_simready_replacement_native_qualification,
 )
 
 
@@ -289,35 +295,71 @@ def _path_backed_packet(
                 "receipt_digest": collider_value["receipt_digest"],
             }
         )
-        replacement = _write_receipt(
-            lane_root / "replacement.json",
+        asset_sha256 = _num_sha(index + 3)
+        qualification_identity = {
+            key: common[key]
+            for key in (
+                "scene_id",
+                "scene_freeze_digest",
+                "task_id",
+                "task_freeze_digest",
+                "source_object_instance_id",
+            )
+        }
+        static = _write_receipt(
+            lane_root / "static_qualification.json",
             {
-                "schema_version": REPLACEMENT_QUALIFICATION_SCHEMA_VERSION,
-                "status": "native_simulator_import_qualified",
-                **{
-                    key: common[key]
-                    for key in (
-                        "scene_id",
-                        "scene_freeze_digest",
-                        "task_id",
-                        "task_freeze_digest",
-                        "source_object_instance_id",
-                    )
-                },
+                "schema_version": STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+                "status": "authored_structure_statically_qualified",
+                "task_id": task["task_id"],
+                "task_freeze_digest": task["task_freeze_digest"],
                 "asset_id": removal["replacement_asset_id"],
-                "replacement_qualification_id": removal["replacement_qualification_id"],
-                "replacement_asset_sha256": _num_sha(index + 3),
-                "native_simulator_import_qualified": True,
+                "replacement_usd": {
+                    "path": "/fixture/replacement.usda",
+                    "size_bytes": 123,
+                    "sha256": asset_sha256,
+                },
+                "authored_structure_statically_qualified": True,
+                "structural_findings": [],
+                "contract_blockers": ["native_simulator_import_unexecuted"],
                 "receipt_digest": "",
             },
         )
+        native_import = _write_receipt(
+            lane_root / "native_import.json",
+            {
+                "schema_version": NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+                "status": "native_import_qualified",
+                **qualification_identity,
+                "asset_id": removal["replacement_asset_id"],
+                "replacement_qualification_id": removal["replacement_qualification_id"],
+                "replacement_asset_sha256": asset_sha256,
+                "native_isaac_executed": True,
+                "native_simulator_import_qualified": True,
+                "physical_equivalence_claimed": False,
+                "simulator_import_identity": {
+                    "runtime": "fixture_native_import",
+                    "imported_prim_path": f"/World/{removal['replacement_asset_id']}",
+                },
+                "receipt_digest": "",
+            },
+        )
+        replacement = materialize_simready_replacement_native_qualification(
+            scene_freeze_receipt_path=scene_path,
+            task_freeze_receipt_path=task_path,
+            static_qualification_receipt_path=static,
+            native_import_receipt_path=native_import,
+            output_path=lane_root / "replacement.json",
+        )
+        replacement_path = lane_root / "replacement.json"
+        assert replacement["replacement_asset_sha256"] == asset_sha256
         lanes.append(
             {
                 "task_freeze_receipt_path": str(task_path),
                 "mask_set_receipt_path": str(mask),
                 "gaussian_removal_receipt_path": str(gaussian),
                 "source_collider_deletion_receipt_path": str(collider),
-                "replacement_qualification_receipt_path": str(replacement),
+                "replacement_qualification_receipt_path": str(replacement_path),
             }
         )
     batch = _write_receipt(
@@ -450,6 +492,31 @@ def test_path_backed_materializer_rejects_shared_or_swapped_task_evidence(
         )
 
     assert any(expected_error in error for error in excinfo.value.errors)
+
+
+def test_path_backed_materializer_rejects_replacement_without_native_evidence(
+    tmp_path: Path,
+) -> None:
+    scene_path, lanes = _path_backed_packet(tmp_path)
+    replacement_path = Path(lanes[0]["replacement_qualification_receipt_path"])
+    replacement = json.loads(replacement_path.read_text(encoding="utf-8"))
+    replacement.pop("evidence_receipts")
+    replacement["receipt_digest"] = canonical_digest(
+        replacement,
+        digest_field="receipt_digest",
+    )
+    replacement_path.write_text(json.dumps(replacement, sort_keys=True) + "\n")
+
+    with pytest.raises(ReplacementConstructionBindingsError) as excinfo:
+        materialize_replacement_construction_bindings(
+            scene_freeze_receipt_path=scene_path,
+            evidence_lanes=lanes,
+        )
+
+    assert any(
+        "replacement_qualification:0_native_evidence_missing" in error
+        for error in excinfo.value.errors
+    )
 
 
 def test_path_backed_materializer_rejects_swapped_collider_deletion_ids(

@@ -22,6 +22,12 @@ from .dual_task_rehearsal_contract import (
     validate_task_freeze,
     validate_task_freeze_set,
 )
+from .simready_graph_asset_static_qualification import (
+    SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+)
+from .simready_replacement_native_qualification import (
+    NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+)
 
 
 SCHEMA_VERSION = "replacement_construction_bindings.v2"
@@ -124,6 +130,105 @@ def _receipt_file_record(
         "schema_version": value["schema_version"],
         "canonical_digest": value[digest_field],
     }
+
+
+def _verify_file_record(
+    record: Any,
+    *,
+    parent_path: Path,
+    role: str,
+    schema_version: str,
+    status: str,
+    digest_field: str,
+) -> tuple[Path, dict[str, Any]]:
+    if not isinstance(record, Mapping):
+        raise ReplacementConstructionBindingsError(
+            [f"replacement_construction_{role}_evidence_missing"]
+        )
+    record_path = Path(str(record.get("path") or "")).expanduser().resolve()
+    if (
+        record_path.is_symlink()
+        or not record_path.is_file()
+        or record_path.stat().st_size != record.get("size_bytes")
+        or _sha256(record_path) != record.get("sha256")
+        or record.get("schema_version") != schema_version
+    ):
+        raise ReplacementConstructionBindingsError(
+            [f"replacement_construction_{role}_evidence_invalid"]
+        )
+    path, value = _read_json_receipt(
+        record_path,
+        role=role,
+        schema_version=schema_version,
+        status=status,
+        digest_field=digest_field,
+    )
+    if (
+        record.get("canonical_digest") != value[digest_field]
+        or path == parent_path
+    ):
+        raise ReplacementConstructionBindingsError(
+            [f"replacement_construction_{role}_evidence_invalid"]
+        )
+    return path, value
+
+
+def _verify_replacement_native_qualification_evidence(
+    *,
+    replacement_path: Path,
+    replacement: Mapping[str, Any],
+    expected: Mapping[str, str],
+    index: int,
+) -> None:
+    role = f"replacement_qualification:{index}"
+    evidence = replacement.get("evidence_receipts")
+    if not isinstance(evidence, Mapping):
+        raise ReplacementConstructionBindingsError(
+            [f"replacement_construction_{role}_native_evidence_missing"]
+        )
+    _, static = _verify_file_record(
+        evidence.get("static_qualification"),
+        parent_path=replacement_path,
+        role=f"{role}:static_qualification",
+        schema_version=STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+        status="authored_structure_statically_qualified",
+        digest_field="receipt_digest",
+    )
+    _, native = _verify_file_record(
+        evidence.get("native_import"),
+        parent_path=replacement_path,
+        role=f"{role}:native_import",
+        schema_version=NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+        status="native_import_qualified",
+        digest_field="receipt_digest",
+    )
+    _require_identity(
+        receipt=static,
+        expected={
+            key: expected[key] for key in ("task_id", "task_freeze_digest", "asset_id")
+        },
+        role=f"{role}:static",
+    )
+    _require_identity(receipt=native, expected=expected, role=f"{role}:native_import")
+    static_asset = (static.get("replacement_usd") or {}).get("sha256")
+    errors: list[str] = []
+    if static_asset != replacement.get("replacement_asset_sha256"):
+        errors.append(f"replacement_construction_{role}_static_asset_mismatch")
+    if native.get("replacement_asset_sha256") != replacement.get("replacement_asset_sha256"):
+        errors.append(f"replacement_construction_{role}_native_asset_mismatch")
+    if native.get("native_isaac_executed") is not True:
+        errors.append(f"replacement_construction_{role}_native_execution_missing")
+    if native.get("native_simulator_import_qualified") is not True:
+        errors.append(f"replacement_construction_{role}_native_import_not_qualified")
+    if replacement.get("native_import_receipt_digest") != native.get("receipt_digest"):
+        errors.append(f"replacement_construction_{role}_native_receipt_mismatch")
+    if (
+        replacement.get("static_qualification_receipt_digest")
+        != static.get("receipt_digest")
+    ):
+        errors.append(f"replacement_construction_{role}_static_receipt_mismatch")
+    if errors:
+        raise ReplacementConstructionBindingsError(errors)
 
 
 def _require_identity(
@@ -555,22 +660,25 @@ def materialize_replacement_construction_bindings(
             expected=common_identity,
             role=f"gaussian_removal:{index}",
         )
+        replacement_identity = {
+            **{
+                key: common_identity[key]
+                for key in (
+                    "scene_id",
+                    "scene_freeze_digest",
+                    "task_id",
+                    "task_freeze_digest",
+                    "source_object_instance_id",
+                )
+            },
+            "asset_id": str(removal["replacement_asset_id"]),
+            "replacement_qualification_id": str(
+                removal["replacement_qualification_id"]
+            ),
+        }
         _require_identity(
             receipt=replacement,
-            expected={
-                **{
-                    key: common_identity[key]
-                    for key in (
-                        "scene_id",
-                        "scene_freeze_digest",
-                        "task_id",
-                        "task_freeze_digest",
-                        "source_object_instance_id",
-                    )
-                },
-                "asset_id": str(removal["replacement_asset_id"]),
-                "replacement_qualification_id": str(removal["replacement_qualification_id"]),
-            },
+            expected=replacement_identity,
             role=f"replacement_qualification:{index}",
         )
         errors: list[str] = []
@@ -594,6 +702,12 @@ def materialize_replacement_construction_bindings(
             errors.append(f"replacement_construction_replacement_asset_digest_invalid:{index}")
         if errors:
             raise ReplacementConstructionBindingsError(errors)
+        _verify_replacement_native_qualification_evidence(
+            replacement_path=replacement_path,
+            replacement=replacement,
+            expected=replacement_identity,
+            index=index,
+        )
 
         task_path, _ = receipts["task_freeze"]
         bindings.append(
