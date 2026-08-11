@@ -1365,6 +1365,75 @@ def _verified_render_rows(
     return manifest, by_camera
 
 
+def _full_resolution_residual_masks_are_inpainting_authority(
+    *,
+    black_manifest: Mapping[str, Any],
+    white_manifest: Mapping[str, Any],
+    black_rows: Mapping[str, Mapping[str, Any]],
+    white_rows: Mapping[str, Mapping[str, Any]],
+    depth_manifest: Mapping[str, Any],
+    source_frames_match_depth: bool,
+    output_width: int,
+    output_height: int,
+    coverage_margin_pixels: int,
+) -> bool:
+    """Return whether residual masks can constrain, but not complete, an edit.
+
+    A coarse source-layer audit is useful for deciding that a replacement does
+    *not* cover a deletion, but it must never become an inpainting mask.  This
+    narrow promotion requires the actual calibrated source-frame dimensions,
+    a full-resolution replacement-depth sweep, matched black/white method
+    inputs, and a conservative erosion margin.  It authorizes only a later
+    backend's inside-mask edit boundary; it never claims an inpainting result.
+    """
+
+    admitted_classes = {"method_input", "evaluation_authorized"}
+    expected_dimensions = {"width": output_width, "height": output_height}
+    black_settings = (
+        black_manifest.get("render_settings")
+        if isinstance(black_manifest.get("render_settings"), Mapping)
+        else {}
+    )
+    white_settings = (
+        white_manifest.get("render_settings")
+        if isinstance(white_manifest.get("render_settings"), Mapping)
+        else {}
+    )
+    black_calibration = (
+        black_manifest.get("calibrated_camera_file")
+        if isinstance(black_manifest.get("calibrated_camera_file"), Mapping)
+        else {}
+    )
+    white_calibration = (
+        white_manifest.get("calibrated_camera_file")
+        if isinstance(white_manifest.get("calibrated_camera_file"), Mapping)
+        else {}
+    )
+    if (
+        black_manifest.get("authorization_class") not in admitted_classes
+        or white_manifest.get("authorization_class") not in admitted_classes
+        or black_manifest.get("authorization_class")
+        != white_manifest.get("authorization_class")
+        or black_manifest.get("splat_digest") != white_manifest.get("splat_digest")
+        or black_settings.get("dimensions") != expected_dimensions
+        or white_settings.get("dimensions") != expected_dimensions
+        or black_calibration.get("binding") != "caller_file_exact_match"
+        or white_calibration.get("binding") != "caller_file_exact_match"
+        or set(black_rows) != set(white_rows)
+        or any(
+            row.get("width") != output_width or row.get("height") != output_height
+            for row in [*black_rows.values(), *white_rows.values()]
+        )
+        or depth_manifest.get("resolution_scale") != 1.0
+        or isinstance(coverage_margin_pixels, bool)
+        or not isinstance(coverage_margin_pixels, int)
+        or coverage_margin_pixels < 1
+        or not source_frames_match_depth
+    ):
+        return False
+    return True
+
+
 def conservative_max_pool_alpha(
     alpha: np.ndarray, *, output_height: int, output_width: int
 ) -> np.ndarray:
@@ -1524,6 +1593,7 @@ def materialize_source_layer_replacement_coverage_audit(
     output_height, output_width = depth.shape[1:]
     source_alpha = []
     black_by_camera: dict[str, np.ndarray] = {}
+    source_frames_match_depth = True
     for camera_id in camera_ids:
         black_frame = black_path.parent / str(black_rows[camera_id]["relative_path"])
         white_frame = white_path.parent / str(white_rows[camera_id]["relative_path"])
@@ -1533,6 +1603,11 @@ def materialize_source_layer_replacement_coverage_audit(
             raise ArticulatedUsdDepthSweepError(
                 ["source_coverage_render_frame_unreadable"]
             )
+        if (
+            black.shape[:2] != (output_height, output_width)
+            or white.shape[:2] != (output_height, output_width)
+        ):
+            source_frames_match_depth = False
         black_by_camera[camera_id] = cv2.resize(
             black, (output_width, output_height), interpolation=cv2.INTER_AREA
         )
@@ -1543,6 +1618,17 @@ def materialize_source_layer_replacement_coverage_audit(
                 output_width=output_width,
             )
         )
+    inpainting_mask_authority = _full_resolution_residual_masks_are_inpainting_authority(
+        black_manifest=black_manifest,
+        white_manifest=white_manifest,
+        black_rows=black_rows,
+        white_rows=white_rows,
+        depth_manifest=depth_manifest,
+        source_frames_match_depth=source_frames_match_depth,
+        output_width=output_width,
+        output_height=output_height,
+        coverage_margin_pixels=coverage_margin_pixels,
+    )
     alpha_array = np.stack(source_alpha).astype(np.float32)
     rows = evaluate_source_alpha_coverage(
         alpha_array,
@@ -1673,7 +1759,23 @@ def materialize_source_layer_replacement_coverage_audit(
         "source_alpha": _record(alpha_path, output),
         "review_contact_sheets": review_records,
         "uncovered_source_support_masks": seam_records,
-        "uncovered_source_support_masks_are_inpainting_authority": False,
+        "uncovered_source_support_masks_are_inpainting_authority": (
+            inpainting_mask_authority
+        ),
+        "inpainting_mask_eligibility": {
+            "full_resolution_source_frames": source_frames_match_depth,
+            "full_resolution_replacement_depth": depth_manifest.get(
+                "resolution_scale"
+            )
+            == 1.0,
+            "calibrated_method_input_pair": inpainting_mask_authority,
+            "authorizes_only": (
+                "future_exact_mask_contained_multi_view_edit_input"
+                if inpainting_mask_authority
+                else None
+            ),
+            "inpainting_result_qualified": False,
+        },
         "cells": rows,
         "summary": {
             "cell_count": len(rows),

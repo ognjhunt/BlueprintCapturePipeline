@@ -178,7 +178,12 @@ def _sha256(path: Path) -> str:
 
 
 def _render_manifest(
-    root: Path, *, background: str, image: np.ndarray, scene_id: str
+    root: Path,
+    *,
+    background: str,
+    image: np.ndarray,
+    scene_id: str,
+    inpainting_mask_input_authorized: bool = False,
 ) -> Path:
     root.mkdir()
     frames = root / "frames"
@@ -202,6 +207,22 @@ def _render_manifest(
             }
         ],
     }
+    if inpainting_mask_input_authorized:
+        value.update(
+            {
+                "authorization_class": "method_input",
+                "calibrated_camera_file": {
+                    "binding": "caller_file_exact_match",
+                    "camera_count": 1,
+                },
+                "render_settings": {
+                    "dimensions": {
+                        "width": int(image.shape[1]),
+                        "height": int(image.shape[0]),
+                    }
+                },
+            }
+        )
     value["sealed_camera_render_manifest_digest"] = canonical_digest(
         value, digest_field="sealed_camera_render_manifest_digest"
     )
@@ -1169,6 +1190,109 @@ def test_source_layer_coverage_audit_binds_render_pair_and_depth(
         tmp_path / "audit/uncovered_source_support_masks/external.png"
     ).is_file()
     assert receipt["uncovered_source_support_masks_are_inpainting_authority"] is False
+
+
+def test_full_resolution_calibrated_residual_masks_can_bound_future_inpainting(
+    tmp_path: Path,
+) -> None:
+    usd = _fixture_usd(tmp_path / "fixture.usda")
+    depth_root = tmp_path / "depth"
+    materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0],
+        moving_link_path="/Asset/door",
+        hinge_origin_asset_m=[0.0, 0.0, 0.0],
+        hinge_axis_asset=[0.0, 0.0, 1.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=depth_root,
+        resolution_scale=1.0,
+    )
+    alpha = np.zeros((48, 64), dtype=np.float32)
+    alpha[15:30, 20:40] = 0.8
+    foreground = np.zeros((48, 64, 3), dtype=np.float32)
+    foreground[..., 1] = 120.0
+    black = np.clip(foreground * alpha[..., None], 0, 255).astype(np.uint8)
+    white = np.clip(
+        foreground * alpha[..., None] + 255.0 * (1.0 - alpha[..., None]),
+        0,
+        255,
+    ).astype(np.uint8)
+    black_manifest = _render_manifest(
+        tmp_path / "black",
+        background="#000000",
+        image=black,
+        scene_id="840920",
+        inpainting_mask_input_authorized=True,
+    )
+    white_manifest = _render_manifest(
+        tmp_path / "white",
+        background="#ffffff",
+        image=white,
+        scene_id="840920",
+        inpainting_mask_input_authorized=True,
+    )
+
+    receipt = materialize_source_layer_replacement_coverage_audit(
+        black_render_manifest_path=black_manifest,
+        white_render_manifest_path=white_manifest,
+        depth_sweep_manifest_path=depth_root
+        / "adp009b_articulated_usd_depth_sweep.v1.json",
+        output_root=tmp_path / "audit",
+        coverage_margin_pixels=1,
+    )
+
+    assert receipt["uncovered_source_support_masks_are_inpainting_authority"] is True
+    assert receipt["inpainting_mask_eligibility"] == {
+        "full_resolution_source_frames": True,
+        "full_resolution_replacement_depth": True,
+        "calibrated_method_input_pair": True,
+        "authorizes_only": "future_exact_mask_contained_multi_view_edit_input",
+        "inpainting_result_qualified": False,
+    }
+
+
+def test_full_resolution_review_only_residual_masks_cannot_authorize_inpainting(
+    tmp_path: Path,
+) -> None:
+    usd = _fixture_usd(tmp_path / "fixture.usda")
+    depth_root = tmp_path / "depth"
+    materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0],
+        moving_link_path="/Asset/door",
+        hinge_origin_asset_m=[0.0, 0.0, 0.0],
+        hinge_axis_asset=[0.0, 0.0, 1.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=depth_root,
+        resolution_scale=1.0,
+    )
+    alpha = np.zeros((48, 64), dtype=np.float32)
+    alpha[15:30, 20:40] = 0.8
+    black = np.zeros((48, 64, 3), dtype=np.uint8)
+    white = np.full((48, 64, 3), 255, dtype=np.uint8)
+    black[alpha > 0.0, 1] = 96
+    white[alpha > 0.0, 1] = 96
+    black_manifest = _render_manifest(
+        tmp_path / "black", background="#000000", image=black, scene_id="840920"
+    )
+    white_manifest = _render_manifest(
+        tmp_path / "white", background="#ffffff", image=white, scene_id="840920"
+    )
+
+    receipt = materialize_source_layer_replacement_coverage_audit(
+        black_render_manifest_path=black_manifest,
+        white_render_manifest_path=white_manifest,
+        depth_sweep_manifest_path=depth_root
+        / "adp009b_articulated_usd_depth_sweep.v1.json",
+        output_root=tmp_path / "audit",
+        coverage_margin_pixels=1,
+    )
+
+    assert receipt["uncovered_source_support_masks_are_inpainting_authority"] is False
+    assert receipt["inpainting_mask_eligibility"]["full_resolution_source_frames"] is True
+    assert receipt["inpainting_mask_eligibility"]["calibrated_method_input_pair"] is False
 
 
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])
