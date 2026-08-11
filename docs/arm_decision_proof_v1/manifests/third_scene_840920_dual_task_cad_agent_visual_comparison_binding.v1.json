@@ -3,7 +3,7 @@
     "earthtojake_text_to_cad",
     "pan_chera_multi_agent_cad"
   ],
-  "binding_digest": "sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3",
+  "binding_digest": "sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d",
   "cad_matrix_digest": "sha256:5c156afb6837e6e796dc0092e4a7a2f9060962b29f820b8fe5738ee25049dfbb",
   "claim_boundary": {
     "agent_authored_cad_candidate": true,
@@ -16,9 +16,10 @@
   },
   "comparison_receipt": {
     "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json",
-    "sha256": "sha256:a08984f4ad4ff4d641943824f5acbfb66b6638339d13fb9fef0c78ed3bc881cb",
-    "size_bytes": 9935
+    "sha256": "sha256:47260e08ac8ab23a2086b06a312954f872f2df86370a49eced05182cc7d30ada",
+    "size_bytes": 11671
   },
+  "comparison_receipt_digest": "sha256:14a5b702f0433c52fbdbdb144c0c8339fdabe577b01b1303e8e60ba1fd4c97af",
   "contact_sheet": {
     "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png",
     "sha256": "sha256:6d21505f6f6e04f3f6d502f5dd6c25a6752208f085452caf0a7b316289758f94",
@@ -33,6 +34,33 @@
   "object_count": 2,
   "program_id": "arm-decision-proof-v1",
   "raw_dataset_bytes_embedded": false,
+  "reference_binding_source": "scene_level_manifest_derived_per_replacement_object",
+  "reference_manifest_rows": [
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "reference_manifest": {
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+        "sha256": "sha256:f8bfe3bd2df5650a768314ef634e5029ed3233602ebca2817bd2041ca24d9372",
+        "size_bytes": 3331
+      },
+      "reference_manifest_object_digest": "sha256:6de02c167b204de6850ae99e39fdcad1ba2d48be7b40a56846b68194eddb8a9c",
+      "reference_signature": "sha256:69441be0af2514d74ea38a590efb1dbf6a8d9bdf32bb210f5dadc6e37ab162b4",
+      "replacement_slot": 1,
+      "task_id": "task_a_washer_door_open"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "reference_manifest": {
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+        "sha256": "sha256:f8bfe3bd2df5650a768314ef634e5029ed3233602ebca2817bd2041ca24d9372",
+        "size_bytes": 3331
+      },
+      "reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
+      "reference_signature": "sha256:05910f8ccb228fc07a65b736612f73c99a10f2048d477b7538239f16b956594e",
+      "replacement_slot": 2,
+      "task_id": "task_b_notebook_relocation"
+    }
+  ],
   "replacement_object_capacity": {
     "maximum": 5,
     "minimum": 1,
@@ -41,5 +69,5 @@
   "scene_id": "840920",
   "schema_version": "third_scene_cad_agent_visual_comparison_binding.v1",
   "source_frame_pixels_committed_to_repo": false,
-  "status": "digest_bound_private_review_media_available"
+  "status": "digest_bound_private_review_media"
 }

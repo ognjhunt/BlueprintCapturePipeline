@@ -278,7 +278,7 @@ snapshots, STEP records, and per-object reference-image digest consistency
 before writing review media. The private evidence-root receipt is
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`
 with digest
-`sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad`;
+`sha256:14a5b702f0433c52fbdbdb144c0c8339fdabe577b01b1303e8e60ba1fd4c97af`;
 the contact sheet is
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`
 with digest
@@ -286,7 +286,7 @@ with digest
 The checked-in binding manifest is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`
 with binding digest
-`sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3`.
+`sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d`.
 This is human-review media only; it does not select a CAD winner or qualify
 SimReady/native/appearance/physics behavior.
 
@@ -377,13 +377,13 @@ currently admitted. That gate remains represented by
 A local human-review-only visual comparison was materialized from the
 manifest-bound original reference frames and CAD snapshots. Receipt:
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`,
-digest `sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad`.
+digest `sha256:14a5b702f0433c52fbdbdb144c0c8339fdabe577b01b1303e8e60ba1fd4c97af`.
 The corresponding contact sheet is
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`,
 digest `sha256:6d21505f6f6e04f3f6d502f5dd6c25a6752208f085452caf0a7b316289758f94`.
 The checked-in binding manifest is
 `docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`,
-binding digest `sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3`.
+binding digest `sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d`.
 This receipt is a review index only; it did not regenerate CAD, execute agents,
 qualify SimReady USD, or make physical-equivalence claims.
 

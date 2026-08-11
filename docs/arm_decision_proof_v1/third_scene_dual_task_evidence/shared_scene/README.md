@@ -51,13 +51,13 @@ Checked-in digest-bound manifests:
 - [`third_scene_840920_dual_task_agent_cad_matrix.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json)
 - [`third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json), manifest digest `sha256:7c584095a4e67104057d613f67c97e92fbd26d1a762bb2966f52b1c02a1b7ed2`
 - [`third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json), audit digest `sha256:f4c32aa0b83a17ff879b1cb243f6598ddfd8650e12bc21d0c57cbe8211a7c0b9`
-- [`third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json), binding digest `sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3`
+- [`third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json), binding digest `sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d`
 - [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
 - [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:f0ac8196af2d884b4526b76268a0a279e0edb293243b724a35062e7a17f30f35`
 
 Local human-review-only visual comparison receipt:
 
-- `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`, receipt digest `sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad`
+- `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`, receipt digest `sha256:14a5b702f0433c52fbdbdb144c0c8339fdabe577b01b1303e8e60ba1fd4c97af`
 - Original observed references plus Earth-to-Jake and Pan-Chera CAD candidates: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`, image digest `sha256:6d21505f6f6e04f3f6d502f5dd6c25a6752208f085452caf0a7b316289758f94`
 - Finder/browser review HTML: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/OPEN_ME_cad_agent_visual_comparison.html`, digest `sha256:0014fdb0b497480eaf2206a9485f70ed884fd8daa7c115b9ba2943d278f15219`
 

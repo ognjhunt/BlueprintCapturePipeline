@@ -380,8 +380,8 @@
       "portable_link_available": false,
       "relative_path": "shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json",
       "role": "agent_cad_comparison:manifest_driven_receipt",
-      "sha256": "sha256:a08984f4ad4ff4d641943824f5acbfb66b6638339d13fb9fef0c78ed3bc881cb",
-      "size_bytes": 9935,
+      "sha256": "sha256:47260e08ac8ab23a2086b06a312954f872f2df86370a49eced05182cc7d30ada",
+      "size_bytes": 11671,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
@@ -620,7 +620,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:ffcce36f8375e73f3eebd1070fbc941babc89b135014b2662bb887de7c5aa762",
+  "inventory_digest": "sha256:817ea7d22cadbf5c31aad228d8730e246d446692b4cf2ad3073c5f53088bf790",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,

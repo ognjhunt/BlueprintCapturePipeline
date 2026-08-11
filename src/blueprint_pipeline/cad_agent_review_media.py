@@ -110,6 +110,14 @@ def _reference_signature(records: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+def _file_identity(record: Mapping[str, Any]) -> tuple[int, str]:
+    size = record.get("size_bytes")
+    digest = str(record.get("sha256") or "")
+    if not isinstance(size, int) or size <= 0 or not digest.startswith("sha256:"):
+        raise CadAgentReviewMediaError("cad_review_file_identity_invalid")
+    return (int(size), digest)
+
+
 def _choose_snapshot(records: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
     if not records:
         raise CadAgentReviewMediaError("cad_review_snapshot_missing")
@@ -126,14 +134,33 @@ def _rows_from_matrix(matrix: Mapping[str, Any]) -> list[dict[str, Any]]:
         candidates = object_row["candidates"]
         reference_signature: str | None = None
         reference_images: list[dict[str, Any]] | None = None
+        reference_manifest: dict[str, Any] | None = None
+        reference_manifest_identity: tuple[int, str] | None = None
+        reference_manifest_object_digest: str | None = None
         candidate_rows: list[dict[str, Any]] = []
         for candidate in candidates:
             request = candidate["request"]
+            inputs = request["inputs"]
             backend_id = request["backend"]["backend_id"]
-            refs = request["inputs"]["reference_images"]
+            refs = inputs["reference_images"]
             candidate_reference_signature = _reference_signature(refs)
+            candidate_reference_manifest = _verified_file_record(
+                inputs["reference_manifest"],
+                role=f"reference_manifest:{backend_id}",
+            )
+            candidate_reference_manifest_identity = _file_identity(
+                candidate_reference_manifest
+            )
+            candidate_reference_manifest_object_digest = str(
+                inputs.get("reference_manifest_object_digest") or ""
+            )
             if reference_signature is None:
                 reference_signature = candidate_reference_signature
+                reference_manifest = candidate_reference_manifest
+                reference_manifest_identity = candidate_reference_manifest_identity
+                reference_manifest_object_digest = (
+                    candidate_reference_manifest_object_digest
+                )
                 reference_images = [
                     _verified_file_record(ref, role=f"reference:{backend_id}")
                     for ref in refs
@@ -141,6 +168,15 @@ def _rows_from_matrix(matrix: Mapping[str, Any]) -> list[dict[str, Any]]:
             elif reference_signature != candidate_reference_signature:
                 raise CadAgentReviewMediaError(
                     "cad_review_candidate_reference_mismatch"
+                )
+            elif (
+                reference_manifest_identity
+                != candidate_reference_manifest_identity
+                or reference_manifest_object_digest
+                != candidate_reference_manifest_object_digest
+            ):
+                raise CadAgentReviewMediaError(
+                    "cad_review_candidate_reference_manifest_mismatch"
                 )
             artifacts = candidate["artifacts"]
             snapshot = _choose_snapshot(artifacts.get("snapshots") or [])
@@ -151,6 +187,10 @@ def _rows_from_matrix(matrix: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "output_receipt_digest": candidate["receipt_digest"],
                     "status": candidate["status"],
                     "measured_envelope_mm": candidate["measured_envelope_mm"],
+                    "reference_manifest_object_digest": (
+                        candidate_reference_manifest_object_digest
+                    ),
+                    "reference_binding_source": inputs["reference_binding_source"],
                     "snapshot": _verified_file_record(
                         snapshot, role=f"snapshot:{backend_id}"
                     ),
@@ -162,7 +202,12 @@ def _rows_from_matrix(matrix: Mapping[str, Any]) -> list[dict[str, Any]]:
         backend_ids = [row["backend_id"] for row in candidate_rows]
         if backend_ids != sorted(ADMITTED_BACKENDS):
             raise CadAgentReviewMediaError("cad_review_candidate_backend_order_invalid")
-        if reference_images is None or reference_signature is None:
+        if (
+            reference_images is None
+            or reference_signature is None
+            or reference_manifest is None
+            or reference_manifest_object_digest is None
+        ):
             raise CadAgentReviewMediaError("cad_review_reference_missing")
         rows.append(
             {
@@ -170,6 +215,9 @@ def _rows_from_matrix(matrix: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "task_id": object_row["task_id"],
                 "asset_id": object_row["asset_id"],
                 "reference_signature": reference_signature,
+                "reference_manifest": reference_manifest,
+                "reference_manifest_object_digest": reference_manifest_object_digest,
+                "reference_binding_source": "manifest_derived",
                 "reference_thumbnail": reference_images[0],
                 "reference_images": reference_images,
                 "candidates": candidate_rows,

@@ -2,7 +2,7 @@
   "blocker_summary": "Both replacement candidates and both independent collider deletions are authored. The current smallest blocker is fresh paid authority for qualified FlashSplat contribution/ownership output from each separately frozen, repaired bundle. Both historical zero-retry attempts and both repaired-but-unexecuted bundle receipts are retained. This package contains no fake media or episode links.",
   "cad_summary": "Agent-authored CAD comparison evidence has been added for both replacement objects using both admitted CAD backends. The manifest-driven visual comparison binding, CAD matrix, reference manifest, reference-binding audit, Content Agents bundle matrix, and Content Agents execution-readiness receipt are all linked below. Paid model access and paid attempt authority remain missing, so Content Agents were not executed and no SimReady/native/physics/appearance/physical-equivalence claim is made.",
   "overview_review_only": true,
-  "package_index_digest": "sha256:0ff2d6246a56e01ce7f2bcfc3f3d764aae15b1fcf588aea3958b3b6d3aa060cf",
+  "package_index_digest": "sha256:5340fb885672248fc663f7fea89831e0dfec8c7feed3ca4a7cade65647115ed1",
   "schema_version": "adp_dual_task_evidence_package_index.v1",
   "shared_manifest_count": 6,
   "shared_manifests": [
@@ -40,11 +40,11 @@
       "digest_field": "binding_digest",
       "html_link": "../manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json",
       "label": "Manifest-driven CAD visual comparison binding",
-      "receipt_digest": "sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3",
+      "receipt_digest": "sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d",
       "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json",
       "schema_version": "third_scene_cad_agent_visual_comparison_binding.v1",
-      "sha256": "sha256:b30d9dd0aaf8b709bfc01631d2530d3c0f7573139e5ecd0265d69448a6af7606",
-      "size_bytes": 2029
+      "sha256": "sha256:ac13e75181ee608016c3226b9c2db3de0446f85065d286c52bfec9cf5f674852",
+      "size_bytes": 3649
     },
     {
       "digest_field": "receipt_digest",

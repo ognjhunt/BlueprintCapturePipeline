@@ -101,27 +101,29 @@ def _candidate(
     asset_id: str = "840920_simready_washer_candidate",
     task_freeze_path: Path = TASK_A_FREEZE,
     reference_color: tuple[int, int, int] = (120, 10, 10),
+    reference_manifest_path: Path | None = None,
 ) -> dict[str, object]:
     candidate_root = root / task_id / f"slot_{replacement_slot}" / backend_id
     brief = _write(candidate_root / "brief.md", "make fixture CAD\n")
-    reference = _write_png(candidate_root / "reference.png", reference_color)
-    reference_manifest = seal_cad_agent_reference_manifest(
-        scene_id="fixture_scene",
-        objects=[
-            {
-                "replacement_slot": replacement_slot,
-                "task_id": task_id,
-                "asset_id": asset_id,
-                "task_freeze_path": task_freeze_path,
-                "reference_image_paths": [reference],
-            }
-        ],
-    )
-    reference_manifest_path = candidate_root / "reference_manifest.v1.json"
-    reference_manifest_path.write_text(
-        json.dumps(reference_manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    if reference_manifest_path is None:
+        reference = _write_png(candidate_root / "reference.png", reference_color)
+        reference_manifest = seal_cad_agent_reference_manifest(
+            scene_id="fixture_scene",
+            objects=[
+                {
+                    "replacement_slot": replacement_slot,
+                    "task_id": task_id,
+                    "asset_id": asset_id,
+                    "task_freeze_path": task_freeze_path,
+                    "reference_image_paths": [reference],
+                }
+            ],
+        )
+        reference_manifest_path = candidate_root / "reference_manifest.v1.json"
+        reference_manifest_path.write_text(
+            json.dumps(reference_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     request = seal_cad_agent_request(
         request_id=f"fixture-{backend_id}",
         scene_id="fixture_scene",
@@ -191,12 +193,62 @@ def _candidate(
     )
 
 
-def _matrix(root: Path, *, mismatch_reference: bool = False) -> Path:
-    first = _candidate(root, backend_id="earthtojake_text_to_cad")
+def _reference_manifest_path(
+    root: Path,
+    *,
+    replacement_slot: int,
+    task_id: str,
+    asset_id: str,
+    task_freeze_path: Path,
+    reference_color: tuple[int, int, int],
+) -> Path:
+    shared_root = root / task_id / f"slot_{replacement_slot}" / "shared_reference"
+    reference = _write_png(shared_root / "reference.png", reference_color)
+    manifest = seal_cad_agent_reference_manifest(
+        scene_id="fixture_scene",
+        objects=[
+            {
+                "replacement_slot": replacement_slot,
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "task_freeze_path": task_freeze_path,
+                "reference_image_paths": [reference],
+            }
+        ],
+    )
+    path = shared_root / "reference_manifest.v1.json"
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def _matrix(
+    root: Path,
+    *,
+    mismatch_reference: bool = False,
+    mismatch_reference_manifest: bool = False,
+) -> Path:
+    shared_reference_manifest_path = _reference_manifest_path(
+        root,
+        replacement_slot=1,
+        task_id="task_a_washer_door_open",
+        asset_id="840920_simready_washer_candidate",
+        task_freeze_path=TASK_A_FREEZE,
+        reference_color=(120, 10, 10),
+    )
+    first = _candidate(
+        root,
+        backend_id="earthtojake_text_to_cad",
+        reference_manifest_path=shared_reference_manifest_path,
+    )
     second = _candidate(
         root,
         backend_id="pan_chera_multi_agent_cad",
         reference_color=(10, 120, 10) if mismatch_reference else (120, 10, 10),
+        reference_manifest_path=(
+            None
+            if mismatch_reference or mismatch_reference_manifest
+            else shared_reference_manifest_path
+        ),
     )
     matrix = seal_cad_agent_matrix(
         objects=[
@@ -221,6 +273,14 @@ def _five_object_matrix(root: Path) -> Path:
         task_freeze_path = _task_freeze_fixture(
             root / "freezes", task_id=task_id, asset_id=asset_id
         )
+        shared_reference_manifest_path = _reference_manifest_path(
+            root,
+            replacement_slot=slot,
+            task_id=task_id,
+            asset_id=asset_id,
+            task_freeze_path=task_freeze_path,
+            reference_color=(100 + slot, 10, 10),
+        )
         candidates = [
             _candidate(
                 root,
@@ -230,6 +290,7 @@ def _five_object_matrix(root: Path) -> Path:
                 asset_id=asset_id,
                 task_freeze_path=task_freeze_path,
                 reference_color=(100 + slot, 10, 10),
+                reference_manifest_path=shared_reference_manifest_path,
             ),
             _candidate(
                 root,
@@ -239,6 +300,7 @@ def _five_object_matrix(root: Path) -> Path:
                 asset_id=asset_id,
                 task_freeze_path=task_freeze_path,
                 reference_color=(100 + slot, 10, 10),
+                reference_manifest_path=shared_reference_manifest_path,
             ),
         ]
         objects.append(
@@ -276,7 +338,16 @@ def test_visual_comparison_materializes_manifest_bound_contact_sheet(tmp_path: P
         "pan_chera_multi_agent_cad",
     ]
     assert receipt["rows"][0]["reference_signature"].startswith("sha256:")
+    assert receipt["rows"][0]["reference_manifest"]["sha256"].startswith("sha256:")
+    assert receipt["rows"][0]["reference_manifest_object_digest"].startswith(
+        "sha256:"
+    )
+    assert receipt["rows"][0]["reference_binding_source"] == "manifest_derived"
     assert receipt["rows"][0]["candidates"][0]["backend_id"] == "earthtojake_text_to_cad"
+    assert (
+        receipt["rows"][0]["candidates"][0]["reference_manifest_object_digest"]
+        == receipt["rows"][0]["reference_manifest_object_digest"]
+    )
     assert receipt["claim_boundary"]["simready_qualified"] is False
     assert (tmp_path / "review" / CONTACT_SHEET_FILENAME).is_file()
     assert (tmp_path / "review" / HTML_FILENAME).is_file()
@@ -321,6 +392,21 @@ def test_visual_comparison_rejects_backend_reference_mismatch(tmp_path: Path) ->
         )
 
 
+def test_visual_comparison_rejects_backend_reference_manifest_mismatch(
+    tmp_path: Path,
+) -> None:
+    matrix_path = _matrix(tmp_path, mismatch_reference_manifest=True)
+
+    with pytest.raises(
+        CadAgentReviewMediaError,
+        match="cad_review_candidate_reference_manifest_mismatch",
+    ):
+        materialize_cad_agent_visual_comparison(
+            matrix_path=matrix_path,
+            output_dir=tmp_path / "review",
+        )
+
+
 def test_results_doc_points_to_manifest_driven_visual_comparison() -> None:
     results = (
         ROOT
@@ -329,8 +415,8 @@ def test_results_doc_points_to_manifest_driven_visual_comparison() -> None:
 
     assert "cad_agent_visual_comparison.v1.json" in results
     assert "third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json" in results
-    assert "sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad" in results
-    assert "sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3" in results
+    assert "sha256:14a5b702f0433c52fbdbdb144c0c8339fdabe577b01b1303e8e60ba1fd4c97af" in results
+    assert "sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d" in results
     assert (
         "Dockerless static Content Agents bundle/config/input-USD preflight with "
         "local Docker dry-run retained as an explicit blocker when unavailable"
