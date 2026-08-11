@@ -52,12 +52,12 @@ Checked-in digest-bound manifests:
 - [`third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json), manifest digest `sha256:7c584095a4e67104057d613f67c97e92fbd26d1a762bb2966f52b1c02a1b7ed2`
 - [`third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json), audit digest `sha256:dd4363e6c5feb62cddbbfbcf080a4e859778855bb3afb489dacb96616c311003`
 - [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
-- [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:8aa239edecb5c84b42cbc30d86402306875096e2c9c41842c36fc7691e33ea39`
+- [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:7d1b50d9d84f5083c7d70fc56cbc2da2703d5ad9dfb1cf68f60195affbc08885`
 
-The readiness receipt separates local no-paid bundle/config/container preflight
-from paid OpenAI model/image capability probing. The real local Docker preflight
-has not run in this environment because the Docker/Colima daemon was unavailable;
-paid model access and paid attempt authority also remain missing.
+The readiness receipt now includes Dockerless static bundle/config/input-USD
+preflight receipts for all four Content Agents bundles. The no-paid Docker dry
+run has not run in this environment because the Docker/Colima daemon was
+unavailable; paid model access and paid attempt authority also remain missing.
 
 Claim boundary: these are CAD candidates and Content Agents bundle/readiness
 receipts only. Content Agents have not been executed in this goal state; no
