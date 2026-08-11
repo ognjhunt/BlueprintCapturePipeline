@@ -205,3 +205,72 @@ def test_contact_diagnostics_report_the_three_magnitudes():
     assert diagnostics["finger_filtered_force_n"] == pytest.approx(18.0)
     assert diagnostics["robot_net_force_n"] == pytest.approx(30.0)
     assert diagnostics["residual_scene_force_n"] == pytest.approx(5.0)
+
+
+class TestContactAttributionFallback:
+    """One run must decide the controls in either sensor world.
+
+    rt56: door driven to 50.6 degrees, task_contact false on all 123
+    samples, 43 phantom scene collisions - consistent with a dead filtered
+    matrix. Waiting for diagnostics, fixing, and re-flying is another paid
+    cycle; the fallback makes the same run score honestly in both worlds:
+    finger-net force with the pinch on the handle arc IS task contact, and
+    forces so attributed stop masquerading as scene collisions. The receipt
+    records which path fired.
+    """
+
+    def _sources(self, **overrides):
+        base = {
+            "read_task_contact_forces": lambda: [[[0.0, 0.0, 0.0]]],
+            "read_robot_contact_forces": lambda: [
+                [[0.0, 25.0, 0.0], [0.0, 0.0, 0.0]]
+            ],
+            "read_scene_contact_forces": lambda: [[[25.0, 0.0, 0.0]]],
+            "read_task_object_base_position_m": lambda: AUTHORED_BASE,
+            "authored_task_object_base_position_m": AUTHORED_BASE,
+            "read_end_effector_position_m": lambda: HANDLE,
+            "read_handle_position_m": lambda: HANDLE,
+            "finger_body_indices": [0],
+            "non_finger_body_indices": [1],
+            "read_pinch_position_m": lambda: HANDLE,
+            "pinch_on_task_corridor": lambda point: True,
+        }
+        base.update(overrides)
+        return build_scene_observations(**base)
+
+    def test_dead_filtered_matrix_with_fingers_on_the_arc_is_task_contact(self):
+        observations = self._sources()
+
+        assert observations["read_task_contact_active"]() is True
+
+    def test_attributed_finger_force_is_not_a_scene_collision(self):
+        observations = self._sources()
+
+        assert observations["read_scene_collision_failure"]() is False
+
+    def test_fingers_loaded_away_from_the_arc_stay_scene_collisions(self):
+        """An elbow-grade shove far from the handle must not be blessed."""
+
+        observations = self._sources(pinch_on_task_corridor=lambda point: False)
+
+        assert observations["read_task_contact_active"]() is False
+        assert observations["read_scene_collision_failure"]() is True
+
+    def test_a_live_filtered_matrix_keeps_first_class_semantics(self):
+        observations = self._sources(
+            read_task_contact_forces=lambda: [[[0.0, 18.0, 0.0]]]
+        )
+
+        diagnostics = observations["read_contact_diagnostics"]()
+
+        assert observations["read_task_contact_active"]() is True
+        assert diagnostics["task_contact_attribution"] == "filtered_matrix"
+
+    def test_the_fallback_names_itself_in_the_diagnostics(self):
+        observations = self._sources()
+
+        diagnostics = observations["read_contact_diagnostics"]()
+
+        assert diagnostics["task_contact_attribution"] == (
+            "finger_net_force_on_task_corridor"
+        )

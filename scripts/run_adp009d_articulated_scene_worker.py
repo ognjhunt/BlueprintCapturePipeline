@@ -854,12 +854,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             # share of each body's contact.
             return converted[0].sum(dim=1).unsqueeze(0)
 
+        # The pinch point, for contact attribution: the mid-point of the two
+        # pad tips from the ee_frame transformer, in world coordinates.
+        def _observed_pinch_world() -> list[float]:
+            ee = scene["ee_frame"]
+            names = list(getattr(ee.data, "target_frame_names", []) or [])
+            li = names.index("tool_leftfinger")
+            ri = names.index("tool_rightfinger")
+            targets = _to_torch(ee.data.target_pos_w)[0]
+            return [
+                float((targets[li][i] + targets[ri][i]) / 2.0) for i in range(3)
+            ]
+
+        # Where the handle CAN be: the arc its bar sweeps around the hinge.
+        # Distance to the arc, not to the closed pose - a corridor anchored
+        # to the closed handle would disown the grasp the moment the door
+        # moves. Absent hinge geometry disables the fallback entirely; the
+        # first-class filtered matrix is never affected.
+        corridor_hinge = spec.get("hinge_point_world_m")
+        corridor_handle = spec.get("handle_position_world_m")
+
+        def _pinch_on_task_corridor(point) -> bool:
+            if corridor_hinge is None or corridor_handle is None:
+                return False
+            hinge = [float(v) for v in corridor_hinge]
+            bar = [float(v) for v in corridor_handle]
+            radius = (
+                (bar[0] - hinge[0]) ** 2 + (bar[1] - hinge[1]) ** 2
+            ) ** 0.5
+            planar = (
+                (float(point[0]) - hinge[0]) ** 2
+                + (float(point[1]) - hinge[1]) ** 2
+            ) ** 0.5
+            return abs(planar - radius) < 0.12 and abs(float(point[2]) - bar[2]) < 0.10
+
         observation_holder["readers"] = build_scene_observations(
             # Fingers-against-the-twin, from the robot sensor's filtered
             # matrix. The task object's own sensor cannot answer this: its rows
             # are the fridge's bodies, so finger indices mean nothing there.
             read_task_contact_forces=_finger_contact_with_task_object,
             read_robot_contact_forces=lambda: _sensor_forces("robot_contact_sensor"),
+            read_pinch_position_m=_observed_pinch_world,
+            pinch_on_task_corridor=_pinch_on_task_corridor,
             # The room is static and cannot report contact itself. What the
             # robot touches that is NOT the twin is, in this scene, the room:
             # net force minus the filtered per-partner force against the twin.

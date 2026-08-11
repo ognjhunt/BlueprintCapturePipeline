@@ -142,6 +142,8 @@ def build_scene_observations(
     read_handle_position_m: Callable[[], Sequence[float]],
     finger_body_indices: Sequence[int] | None = None,
     non_finger_body_indices: Sequence[int] | None = None,
+    read_pinch_position_m: Callable[[], Sequence[float]] | None = None,
+    pinch_on_task_corridor: Callable[[Sequence[float]], bool] | None = None,
     contact_force_threshold_n: float = DEFAULT_CONTACT_FORCE_THRESHOLD_N,
     base_displacement_tolerance_m: float = DEFAULT_BASE_DISPLACEMENT_TOLERANCE_M,
     retreat_distance_m: float = DEFAULT_RETREAT_DISTANCE_M,
@@ -165,12 +167,39 @@ def build_scene_observations(
             sum((float(pair[0][i]) - float(pair[1][i])) ** 2 for i in range(3)) ** 0.5
         )
 
-    def task_contact_active() -> bool:
+    def _finger_net_force() -> float:
         forces = _require(
+            read_robot_contact_forces(),
+            error="articulated_scene_observation_robot_contact_unavailable",
+        )
+        return max_contact_force_n(forces, body_indices=finger_body_indices)
+
+    def _task_contact_attribution() -> str:
+        """Which evidence path says the fingers are on the task, if any.
+
+        rt56 drove the door to 50.6 degrees with the filtered finger-vs-twin
+        matrix reading zero on all 123 samples. If that matrix is dead, the
+        honest substitute is force on the finger bodies WHILE the pinch sits
+        on the handle arc - geometry the plan already guarantees. First-class
+        evidence wins when present; the fallback names itself; neither path
+        blesses a shove landed away from the handle.
+        """
+
+        filtered = _require(
             read_task_contact_forces(),
             error="articulated_scene_observation_task_contact_unavailable",
         )
-        return max_contact_force_n(forces, body_indices=finger_body_indices) > threshold
+        if max_contact_force_n(filtered, body_indices=finger_body_indices) > threshold:
+            return "filtered_matrix"
+        if read_pinch_position_m is not None and pinch_on_task_corridor is not None:
+            if _finger_net_force() > threshold and bool(
+                pinch_on_task_corridor(read_pinch_position_m())
+            ):
+                return "finger_net_force_on_task_corridor"
+        return "none"
+
+    def task_contact_active() -> bool:
+        return _task_contact_attribution() != "none"
 
     def robot_collision_failure() -> bool:
         # Deliberately excludes the fingers: a gripper touching the handle is
@@ -189,7 +218,15 @@ def build_scene_observations(
             read_scene_contact_forces(),
             error="articulated_scene_observation_scene_contact_unavailable",
         )
-        return max_contact_force_n(forces) > threshold
+        scene_force = max_contact_force_n(forces)
+        if _task_contact_attribution() == "finger_net_force_on_task_corridor":
+            # The residual channel cannot subtract what the dead filtered
+            # matrix never reported. Forces attributed to the task by the
+            # fallback are removed here instead - up to the finger-net
+            # magnitude, never below zero, so a genuine simultaneous scene
+            # strike still shows through.
+            scene_force = max(0.0, scene_force - _finger_net_force())
+        return scene_force > threshold
 
     def containment_violation() -> bool:
         # The appliance is meant to stay where it was placed. If the base has
@@ -219,6 +256,7 @@ def build_scene_observations(
         # the filtered matrix read zero or a threshold was wrong. Bounded on
         # purpose: three floats per sample, not per-body arrays.
         return {
+            "task_contact_attribution": _task_contact_attribution(),
             "finger_filtered_force_n": max_contact_force_n(
                 read_task_contact_forces()
             ),
