@@ -438,6 +438,9 @@ forks:
 - `fe2fede78`: native runtime admission now requires materialized
   construction-binding receipts, including scene-freeze and exact per-lane
   evidence schema records, rather than accepting low-level sealer output.
+- `6f1f254b1`: replacement native-qualification now requires native-import
+  receipts to carry retained native-import execution evidence, closing the
+  lower-level hand-authored import receipt path.
 - `3475aaa25`: variable-camera registered excision evidence, authorized-render
   bindings, file-backed construction joins, general graph USD authoring, and
   fail-closed non-servo task-joint semantics.
@@ -675,6 +678,9 @@ Recent reusable-code and manifest commits:
 - Focused materialized-construction runtime/packet regressions for
   `fe2fede78` — `60 passed`; required precommit selector —
   `1164 passed, 9973 deselected`; Ruff over `src/ tests/` passed.
+- Focused retained native-import execution evidence regressions for
+  `6f1f254b1` — `31 passed`; required precommit selector —
+  `1164 passed, 9974 deselected`; Ruff over `src/ tests/` passed.
 
 ## Claim table
 
