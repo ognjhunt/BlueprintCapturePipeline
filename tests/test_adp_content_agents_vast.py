@@ -649,9 +649,10 @@ def test_content_agents_execution_readiness_records_missing_authority_boundary(
     assert readiness["items"][0]["local_bundle_ready"] is True
     assert readiness["items"][0]["execute_admitted"] is False
     assert readiness["items"][0]["blockers"] == [
-        "content_agents_local_config_preflight_missing",
+        "content_agents_local_docker_config_preflight_missing",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing",
+        "content_agents_static_config_preflight_missing",
     ]
     assert readiness["receipt_digest"] == canonical_digest(
         readiness, digest_field="receipt_digest"
@@ -701,6 +702,56 @@ def test_content_agents_execution_readiness_accepts_local_no_paid_preflight(
         local_preflight.read_text(encoding="utf-8")
     )["receipt_digest"]
     assert row["blockers"] == [
+        "content_agents_paid_attempt_authority_missing",
+        "content_agents_paid_model_access_preflight_missing",
+    ]
+
+
+def test_content_agents_execution_readiness_accepts_static_no_docker_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    output_path, projection_path, _reference, _usd = _agent_cad_evidence(tmp_path)
+    bundle_receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "agent-cad-bundle",
+        input_variant="agent_cad_v1",
+        agent_cad_output_manifest_path=output_path,
+        agent_mesh_projection_receipt_path=projection_path,
+        generated_at="fixed",
+    )
+    bundle_receipt_path = Path(bundle_receipt["bundle_path"]).with_name(
+        "adp_content_agents_bundle_receipt.json"
+    )
+    static_preflight = _passing_static_config_preflight(
+        tmp_path / "static-preflight",
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+    )
+    key = "task_a_washer_door_open|1|earthtojake_text_to_cad"
+
+    readiness = content_agents.materialize_content_agents_execution_readiness(
+        content_agents_bundle_matrix=_single_agent_cad_content_bundle_matrix(
+            bundle_receipt_path=bundle_receipt_path,
+            bundle_receipt=bundle_receipt,
+            cad_output_path=output_path,
+            projection_path=projection_path,
+        ),
+        output_path=tmp_path / "readiness.json",
+        config_preflight_receipts={key: static_preflight},
+        generated_at="fixed",
+    )
+
+    row = readiness["items"][0]
+    assert row["config_preflight"] is None
+    assert row["local_config_preflight"] is None
+    assert row["static_config_preflight"]["receipt_digest"] == json.loads(
+        static_preflight.read_text(encoding="utf-8")
+    )["receipt_digest"]
+    assert row["blockers"] == [
+        "content_agents_local_docker_config_preflight_missing",
         "content_agents_paid_attempt_authority_missing",
         "content_agents_paid_model_access_preflight_missing",
     ]
@@ -1199,6 +1250,57 @@ def _passing_local_config_preflight(
     return path
 
 
+def _passing_static_config_preflight(
+    tmp_path: Path, *, bundle_receipt_path: Path, bundle_receipt: dict
+) -> Path:
+    path = _passing_local_config_preflight(
+        tmp_path,
+        bundle_receipt_path=bundle_receipt_path,
+        bundle_receipt=bundle_receipt,
+    )
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    receipt["schema_version"] = bundle_preflight.STATIC_SCHEMA_VERSION
+    receipt["status"] = "static_passed_docker_and_paid_model_access_not_checked"
+    receipt["docker_executed"] = False
+    receipt["docker_network_disabled"] = None
+    receipt["blockers"] = [
+        "content_agents_local_docker_config_preflight_missing",
+        "content_agents_paid_model_access_preflight_missing",
+    ]
+    receipt["input_records"] = {
+        "source_archive": {
+            "member": "provider_runtime/content_agents_source.zip",
+            "size_bytes": 1,
+            "sha256": "sha256:" + "1" * 64,
+        },
+        "reference_image": {
+            "member": "provider_runtime/input/reference.png",
+            "size_bytes": 1,
+            "sha256": "sha256:" + "2" * 64,
+        },
+        "input_usd": {
+            "member": "provider_runtime/input/source_asset.usda",
+            "size_bytes": 1,
+            "sha256": "sha256:" + "3" * 64,
+        },
+    }
+    receipt["input_usd"] = {
+        "default_prim_path": "/Asset",
+        "mesh_count": 1,
+        "default_purpose_mesh_count": 1,
+        "declared_target_mesh_count": 0,
+        "bbox_min": [0.0, 0.0, 0.0],
+        "bbox_max": [1.0, 1.0, 0.0],
+        "source_archive_extractable": True,
+        "input_usd_opened": True,
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    write_json(path, receipt)
+    return path
+
+
 def _allocator_bundle(
     tmp_path: Path, *, content: bytes = b"config", native_probe: bool = False
 ) -> tuple[Path, dict]:
@@ -1603,11 +1705,40 @@ def _executable_preflight_fixture(tmp_path: Path) -> tuple[Path, str]:
         archive.writestr(
             "provider_runtime/content_agents_source.zip", source_buffer.getvalue()
         )
-        for member in bundle_preflight.CONFIG_MEMBERS.values():
-            archive.writestr(member, "project:\n  name: exact-bundle-test\n")
+        archive.writestr("provider_runtime/adp_content_agents_provider_runner.py", "pass\n")
         archive.writestr(
-            "provider_runtime/input/adp009a_840313_canned_beverage_control.usda",
-            '#usda 1.0\ndef Xform "canned_beverage" {}\n',
+            "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+            "#!/bin/sh\n",
+        )
+        archive.writestr("provider_runtime/input/reference.png", b"PNG")
+        for member in bundle_preflight.CONFIG_MEMBERS.values():
+            archive.writestr(
+                member,
+                "project:\n"
+                "  name: exact-bundle-test\n"
+                "input:\n"
+                "  usd_path: ../input/source_asset.usda\n"
+                "  reference_images:\n"
+                "    - ../input/reference.png\n",
+            )
+        archive.writestr(
+            "provider_runtime/input/source_asset.usda",
+            """#usda 1.0
+(
+    defaultPrim = "Asset"
+)
+def Xform "Asset"
+{
+    def Mesh "mesh"
+    {
+        uniform token subdivisionScheme = "none"
+        token purpose = "default"
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }
+}
+""",
         )
     bundle_receipt = tmp_path / "exact-bundle-receipt.json"
     write_json(
@@ -1807,6 +1938,80 @@ def test_local_bundle_preflight_executes_offline_without_paid_model_probe(
         )
     )
     assert not list(tmp_path.glob("adp-content-agents-preflight-*"))
+
+
+def test_static_bundle_preflight_inspects_bundle_without_docker_or_paid_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_receipt, _secret = _executable_preflight_fixture(tmp_path)
+    observed_commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        command = list(command)
+        observed_commands.append(command)
+        assert command[0] == "git"
+        if command[-2:] == ["rev-parse", "HEAD"]:
+            stdout = "c" * 40 + "\n"
+        elif command[-2:] == ["rev-parse", "HEAD^{tree}"]:
+            stdout = "d" * 40 + "\n"
+        elif command[-2:] == ["status", "--porcelain"]:
+            stdout = ""
+        else:
+            raise AssertionError(command)
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(bundle_preflight.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        bundle_preflight,
+        "_secret",
+        lambda: (_ for _ in ()).throw(AssertionError("secret not allowed")),
+    )
+    monkeypatch.setattr(
+        bundle_preflight,
+        "_probe_model_access",
+        lambda _secret, _output: (_ for _ in ()).throw(
+            AssertionError("paid model probe not allowed")
+        ),
+    )
+    evidence = tmp_path / "static-evidence"
+
+    receipt = bundle_preflight.materialize_static_bundle_config_preflight(
+        bundle_receipt_path=bundle_receipt,
+        evidence_dir=evidence,
+        generated_at="fixed",
+    )
+
+    assert observed_commands == [
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD^{tree}"],
+        ["git", "-C", str(ROOT), "status", "--porcelain"],
+    ]
+    assert receipt["schema_version"] == bundle_preflight.STATIC_SCHEMA_VERSION
+    assert receipt["status"] == "static_passed_docker_and_paid_model_access_not_checked"
+    assert receipt["docker_executed"] is False
+    assert receipt["input_usd"]["mesh_count"] == 1
+    assert receipt["blockers"] == [
+        "content_agents_local_docker_config_preflight_missing",
+        "content_agents_paid_model_access_preflight_missing",
+    ]
+    assert bundle_preflight.validate_static_bundle_config_preflight(
+        preflight=receipt,
+        prepared_bundle=json.loads(bundle_receipt.read_text()),
+        preflight_receipt_path=(
+            evidence / "adp_content_agents_static_bundle_config_preflight.json"
+        ),
+        expected_orchestrator_source_commit="c" * 40,
+    ) == []
+    assert "adp_content_agents_local_config_preflight_binding_invalid" in (
+        bundle_preflight.validate_local_bundle_config_preflight(
+            preflight=receipt,
+            prepared_bundle=json.loads(bundle_receipt.read_text()),
+            preflight_receipt_path=(
+                evidence / "adp_content_agents_static_bundle_config_preflight.json"
+            ),
+            expected_orchestrator_source_commit="c" * 40,
+        )
+    )
 
 
 def test_exact_bundle_preflight_fails_before_receipt_when_any_cli_fails(

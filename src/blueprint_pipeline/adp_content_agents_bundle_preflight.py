@@ -12,6 +12,9 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import yaml
+from pxr import Usd, UsdGeom
+
 from .adp_content_agents_vast import (
     CONTENT_IMAGE_MODEL,
     CONTENT_LLM_MODEL,
@@ -36,6 +39,7 @@ from .provider_archive import ProviderArchiveError, extract_provider_archive
 
 SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v2"
 LOCAL_SCHEMA_VERSION = "adp_content_agents_local_bundle_config_preflight.v1"
+STATIC_SCHEMA_VERSION = "adp_content_agents_static_bundle_config_preflight.v1"
 LOCAL_IMAGE = "blueprint/adp009a-content-agents:0.5.2"
 LOCAL_IMAGE_PLATFORM = "linux/arm64"
 # A container build is not bit-reproducible: the base tag moves and uv
@@ -319,6 +323,242 @@ def _bundle_config_records(bundle_path: Path) -> dict[str, dict[str, Any]]:
             return records
     except zipfile.BadZipFile as exc:
         raise ContentAgentsBundlePreflightError("bundle_zip_invalid") from exc
+
+
+def _bundle_static_input_records(bundle_path: Path) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            members = set(archive.namelist())
+            required = {
+                "provider_runtime/content_agents_source.zip",
+                "provider_runtime/input/reference.png",
+                "provider_runtime/input/source_asset.usda",
+                "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+                "provider_runtime/adp_content_agents_provider_runner.py",
+            }
+            missing = sorted(required - members)
+            if missing:
+                raise ContentAgentsBundlePreflightError(
+                    "bundle_static_member_missing:" + ",".join(missing)
+                )
+            input_usds = sorted(
+                name
+                for name in members
+                if name.startswith("provider_runtime/input/")
+                and name.endswith((".usd", ".usda", ".usdc"))
+            )
+            if input_usds != ["provider_runtime/input/source_asset.usda"]:
+                raise ContentAgentsBundlePreflightError(
+                    "bundle_static_input_usd_ambiguous"
+                )
+            source_zip_bytes = archive.read("provider_runtime/content_agents_source.zip")
+            return {
+                "source_archive": {
+                    "member": "provider_runtime/content_agents_source.zip",
+                    "size_bytes": len(source_zip_bytes),
+                    "sha256": _sha256_bytes(source_zip_bytes),
+                },
+                "reference_image": {
+                    "member": "provider_runtime/input/reference.png",
+                    "size_bytes": len(
+                        archive.read("provider_runtime/input/reference.png")
+                    ),
+                    "sha256": _sha256_bytes(
+                        archive.read("provider_runtime/input/reference.png")
+                    ),
+                },
+                "input_usd": {
+                    "member": "provider_runtime/input/source_asset.usda",
+                    "size_bytes": len(
+                        archive.read("provider_runtime/input/source_asset.usda")
+                    ),
+                    "sha256": _sha256_bytes(
+                        archive.read("provider_runtime/input/source_asset.usda")
+                    ),
+                },
+            }
+    except zipfile.BadZipFile as exc:
+        raise ContentAgentsBundlePreflightError("bundle_zip_invalid") from exc
+
+
+def _bundle_config_semantics(bundle_path: Path) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            rows: dict[str, Any] = {}
+            target_paths: set[str] = set()
+            for name, member in CONFIG_MEMBERS.items():
+                try:
+                    config = yaml.safe_load(archive.read(member))
+                except yaml.YAMLError as exc:
+                    raise ContentAgentsBundlePreflightError(
+                        f"bundle_static_config_yaml_invalid:{name}"
+                    ) from exc
+                if not isinstance(config, Mapping):
+                    raise ContentAgentsBundlePreflightError(
+                        f"bundle_static_config_yaml_invalid:{name}"
+                    )
+                input_section = config.get("input")
+                if not isinstance(input_section, Mapping):
+                    raise ContentAgentsBundlePreflightError(
+                        f"bundle_static_config_input_invalid:{name}"
+                    )
+                if input_section.get("usd_path") != "../input/source_asset.usda":
+                    raise ContentAgentsBundlePreflightError(
+                        f"bundle_static_config_usd_path_invalid:{name}"
+                    )
+                references = input_section.get("reference_images", [])
+                if references and references != ["../input/reference.png"]:
+                    raise ContentAgentsBundlePreflightError(
+                        f"bundle_static_config_reference_invalid:{name}"
+                    )
+                for field in (
+                    "target_prims",
+                    "physics_target_prim_paths",
+                    "appearance_target_prim_paths",
+                ):
+                    values = config.get(field)
+                    if isinstance(values, list):
+                        target_paths.update(str(value) for value in values)
+                material_textures = config.get("material_textures")
+                if isinstance(material_textures, Mapping):
+                    for row in material_textures.values():
+                        if isinstance(row, Mapping) and isinstance(
+                            row.get("target_prim_paths"), list
+                        ):
+                            target_paths.update(
+                                str(value) for value in row["target_prim_paths"]
+                            )
+                rows[name] = {
+                    "member": member,
+                    "usd_path": input_section.get("usd_path"),
+                    "reference_images": list(references) if references else [],
+                    "parsed_yaml_mapping": True,
+                }
+            return {
+                "configs": rows,
+                "declared_target_prim_paths": sorted(target_paths),
+            }
+    except zipfile.BadZipFile as exc:
+        raise ContentAgentsBundlePreflightError("bundle_zip_invalid") from exc
+
+
+def _inspect_input_usd_static(bundle_path: Path, target_prim_paths: Sequence[str]) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="adp-content-agents-static-") as raw:
+        expanded = Path(raw) / "bundle"
+        ensure_dir(expanded)
+        _safe_extract(bundle_path, expanded)
+        source_zip = expanded / "provider_runtime/content_agents_source.zip"
+        source = expanded / "provider_runtime/content_agents_source"
+        ensure_dir(source)
+        _safe_extract(source_zip, source)
+        stage = Usd.Stage.Open(
+            str(expanded / "provider_runtime/input/source_asset.usda")
+        )
+        if stage is None:
+            raise ContentAgentsBundlePreflightError("bundle_static_input_usd_open_failed")
+        default_prim = stage.GetDefaultPrim()
+        if not default_prim or not default_prim.IsValid():
+            raise ContentAgentsBundlePreflightError("bundle_static_input_default_prim_missing")
+        meshes = [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)]
+        if not meshes:
+            raise ContentAgentsBundlePreflightError("bundle_static_input_mesh_missing")
+        non_default = [
+            prim.GetPath().pathString
+            for prim in meshes
+            if UsdGeom.Mesh(prim).ComputePurpose() != UsdGeom.Tokens.default_
+        ]
+        if non_default:
+            raise ContentAgentsBundlePreflightError(
+                "bundle_static_input_mesh_purpose_invalid"
+            )
+        missing_targets = [
+            path
+            for path in target_prim_paths
+            if not stage.GetPrimAtPath(path).IsA(UsdGeom.Mesh)
+        ]
+        if missing_targets:
+            raise ContentAgentsBundlePreflightError(
+                "bundle_static_input_target_mesh_missing:" + ",".join(missing_targets)
+            )
+        bound = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
+        ).ComputeWorldBound(default_prim).ComputeAlignedRange()
+        if bound.IsEmpty():
+            raise ContentAgentsBundlePreflightError(
+                "bundle_static_input_default_purpose_bbox_empty"
+            )
+        return {
+            "default_prim_path": default_prim.GetPath().pathString,
+            "mesh_count": len(meshes),
+            "default_purpose_mesh_count": len(meshes),
+            "declared_target_mesh_count": len(target_prim_paths),
+            "bbox_min": [float(value) for value in bound.GetMin()],
+            "bbox_max": [float(value) for value in bound.GetMax()],
+            "source_archive_extractable": True,
+            "input_usd_opened": True,
+        }
+
+
+def materialize_static_bundle_config_preflight(
+    *,
+    bundle_receipt_path: str | Path,
+    evidence_dir: str | Path,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Inspect exact Content Agents bundle/config/input bytes without Docker/API."""
+
+    receipt_path = Path(bundle_receipt_path).expanduser().resolve()
+    output = Path(evidence_dir).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
+    ensure_dir(output)
+    bundle_receipt = _read_json(receipt_path)
+    bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
+    if (
+        bundle_receipt.get("status") != "ready"
+        or bundle_receipt.get("source_commit") != SOURCE_COMMIT
+        or bundle_receipt.get("source_tree") != SOURCE_TREE
+        or not bundle_path.is_file()
+        or _sha256_file(bundle_path) != bundle_receipt.get("bundle_sha256")
+    ):
+        raise ContentAgentsBundlePreflightError("bundle_receipt_binding_invalid")
+    config_records = _bundle_config_records(bundle_path)
+    input_records = _bundle_static_input_records(bundle_path)
+    config_semantics = _bundle_config_semantics(bundle_path)
+    input_usd = _inspect_input_usd_static(
+        bundle_path, config_semantics["declared_target_prim_paths"]
+    )
+    receipt: dict[str, Any] = {
+        "schema_version": STATIC_SCHEMA_VERSION,
+        "generated_at": generated_at or utc_now_iso(),
+        "generated_by": "blueprint_pipeline.adp_content_agents_bundle_preflight",
+        "orchestrator_source_identity": _orchestrator_source_identity(),
+        "status": "static_passed_docker_and_paid_model_access_not_checked",
+        "bundle_receipt_path": str(receipt_path),
+        "bundle_receipt_sha256": _sha256_file(receipt_path),
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": _sha256_file(bundle_path),
+        "content_agents_source_commit": SOURCE_COMMIT,
+        "content_agents_source_tree": SOURCE_TREE,
+        "configs": config_records,
+        "config_semantics": config_semantics,
+        "input_records": input_records,
+        "input_usd": input_usd,
+        "docker_executed": False,
+        "docker_network_disabled": None,
+        "paid_model_access_required": False,
+        "provider_mutations_performed": 0,
+        "paid_resource_allocated": False,
+        "raw_secret_values_recorded": False,
+        "blockers": [
+            "content_agents_local_docker_config_preflight_missing",
+            "content_agents_paid_model_access_preflight_missing",
+        ],
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(output / "adp_content_agents_static_bundle_config_preflight.json", receipt)
+    return receipt
 
 
 def materialize_bundle_config_preflight(
@@ -930,6 +1170,75 @@ def validate_local_bundle_config_preflight(
     return sorted(set(blockers))
 
 
+def validate_static_bundle_config_preflight(
+    *,
+    preflight: Mapping[str, Any],
+    prepared_bundle: Mapping[str, Any],
+    preflight_receipt_path: str | Path,
+    expected_orchestrator_source_commit: str,
+) -> list[str]:
+    """Re-derive Dockerless static bundle/config/input-USD bindings."""
+
+    blockers: list[str] = []
+    bundle_path = Path(str(prepared_bundle.get("bundle_path") or "")).expanduser().resolve()
+    source_identity = preflight.get("orchestrator_source_identity")
+    if not isinstance(source_identity, Mapping):
+        source_identity = {}
+    if (
+        preflight.get("schema_version") != STATIC_SCHEMA_VERSION
+        or preflight.get("generated_by")
+        != "blueprint_pipeline.adp_content_agents_bundle_preflight"
+        or preflight.get("status")
+        != "static_passed_docker_and_paid_model_access_not_checked"
+        or source_identity.get("commit") != expected_orchestrator_source_commit
+        or source_identity.get("checkout_clean") is not True
+        or preflight.get("receipt_digest")
+        != canonical_digest(preflight, digest_field="receipt_digest")
+        or preflight.get("bundle_sha256") != prepared_bundle.get("bundle_sha256")
+        or preflight.get("bundle_path") != str(bundle_path)
+        or preflight.get("content_agents_source_commit") != SOURCE_COMMIT
+        or preflight.get("content_agents_source_tree") != SOURCE_TREE
+        or preflight.get("docker_executed") is not False
+        or preflight.get("paid_model_access_required") is not False
+        or preflight.get("provider_mutations_performed") != 0
+        or preflight.get("paid_resource_allocated") is not False
+        or preflight.get("raw_secret_values_recorded") is not False
+        or preflight.get("blockers")
+        != [
+            "content_agents_local_docker_config_preflight_missing",
+            "content_agents_paid_model_access_preflight_missing",
+        ]
+    ):
+        blockers.append("adp_content_agents_static_config_preflight_binding_invalid")
+    try:
+        observed_configs = _bundle_config_records(bundle_path)
+        input_records = _bundle_static_input_records(bundle_path)
+        config_semantics = _bundle_config_semantics(bundle_path)
+        input_usd = _inspect_input_usd_static(
+            bundle_path, config_semantics["declared_target_prim_paths"]
+        )
+    except (OSError, ContentAgentsBundlePreflightError):
+        observed_configs = {}
+        input_records = {}
+        config_semantics = {}
+        input_usd = {}
+    if preflight.get("configs") != observed_configs:
+        blockers.append(
+            "adp_content_agents_static_config_preflight_config_digest_mismatch"
+        )
+    if preflight.get("input_records") != input_records:
+        blockers.append(
+            "adp_content_agents_static_config_preflight_input_digest_mismatch"
+        )
+    if preflight.get("config_semantics") != config_semantics:
+        blockers.append(
+            "adp_content_agents_static_config_preflight_semantics_mismatch"
+        )
+    if preflight.get("input_usd") != input_usd:
+        blockers.append("adp_content_agents_static_config_preflight_usd_mismatch")
+    return sorted(set(blockers))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Execute exact Content Agents config dry-runs before GPU allocation."
@@ -945,8 +1254,23 @@ def main(argv: list[str] | None = None) -> int:
             "disabled; do not probe paid model or image-generation access."
         ),
     )
+    parser.add_argument(
+        "--static-no-docker-no-paid-model-access",
+        action="store_true",
+        help=(
+            "Inspect bundle/config/input USD bytes only; do not run Docker and "
+            "do not probe paid model or image-generation access."
+        ),
+    )
     args = parser.parse_args(argv)
-    if args.local_no_paid_model_access:
+    if args.local_no_paid_model_access and args.static_no_docker_no_paid_model_access:
+        raise ContentAgentsBundlePreflightError("preflight_mode_ambiguous")
+    if args.static_no_docker_no_paid_model_access:
+        receipt = materialize_static_bundle_config_preflight(
+            bundle_receipt_path=args.bundle_receipt,
+            evidence_dir=args.evidence_dir,
+        )
+    elif args.local_no_paid_model_access:
         receipt = materialize_local_bundle_config_preflight(
             bundle_receipt_path=args.bundle_receipt,
             evidence_dir=args.evidence_dir,
