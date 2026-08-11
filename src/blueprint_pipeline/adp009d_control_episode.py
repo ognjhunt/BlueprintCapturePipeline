@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v5"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v6"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -69,6 +69,7 @@ CONTROLLED_BODY_QUATERNION_WORLD_XYZW = [1.0, 0.0, 0.0, 0.0]
 PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
+PHASE_ORIENTATION_TOLERANCE_DEG = 2.0
 # The DROID Robotiq 2F-85 is the frozen ADP-009D embodiment.  A generic pose
 # tolerance is not enough before descending around an object: the tool can be
 # "at" pregrasp while one open finger is already over the object.  Preserve a
@@ -299,6 +300,10 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
                 phase["arrival_tolerance_m"] = PHASE_ARRIVAL_TOLERANCE_M
                 phase["arrival_tolerance_basis"] = "generic_pose_tolerance"
             phase["arrival_stability_steps"] = PHASE_ARRIVAL_STABILITY_STEPS
+            phase["orientation_tolerance_deg"] = PHASE_ORIENTATION_TOLERANCE_DEG
+            phase["orientation_tolerance_basis"] = (
+                "top_down_task_orientation_angular_distance"
+            )
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
 
     plan: dict[str, Any] = {
@@ -370,6 +375,11 @@ def _phase_arrival(
     tolerance = float(phase["arrival_tolerance_m"])
     error = math.dist(achieved, target)
     lateral_error = math.dist(achieved[:2], target[:2])
+    orientation_error_deg = _orientation_error_degrees(
+        achieved_quaternion_xyzw=_controlled_body_quaternion(terminal_sample),
+        target_quaternion_xyzw=phase["target_quaternion_world_xyzw"],
+    )
+    orientation_tolerance_deg = float(phase["orientation_tolerance_deg"])
     stability_steps_required = int(phase["arrival_stability_steps"])
     return {
         "phase_id": str(phase["phase_id"]),
@@ -381,7 +391,19 @@ def _phase_arrival(
         "terminal_lateral_error_m": lateral_error,
         "arrival_tolerance_m": tolerance,
         "arrival_tolerance_basis": str(phase["arrival_tolerance_basis"]),
-        "terminal_within_tolerance": error <= tolerance,
+        "terminal_position_within_tolerance": error <= tolerance,
+        "terminal_orientation_error_deg": orientation_error_deg,
+        "orientation_tolerance_deg": orientation_tolerance_deg,
+        "orientation_tolerance_basis": str(
+            phase["orientation_tolerance_basis"]
+        ),
+        "terminal_orientation_within_tolerance": (
+            orientation_error_deg <= orientation_tolerance_deg
+        ),
+        "terminal_within_tolerance": (
+            error <= tolerance
+            and orientation_error_deg <= orientation_tolerance_deg
+        ),
         "minimum_steps": int(phase["minimum_steps"]),
         "maximum_steps": int(phase["maximum_steps"]),
         "steps_executed": int(steps_executed),
@@ -399,7 +421,59 @@ def _within_phase_arrival_tolerance(
     achieved = [
         float(value) for value in sample["grasp_frame_position_world_m"]
     ]
-    return math.dist(achieved, target) <= float(phase["arrival_tolerance_m"])
+    orientation_error_deg = _orientation_error_degrees(
+        achieved_quaternion_xyzw=_controlled_body_quaternion(sample),
+        target_quaternion_xyzw=phase["target_quaternion_world_xyzw"],
+    )
+    return (
+        math.dist(achieved, target) <= float(phase["arrival_tolerance_m"])
+        and orientation_error_deg <= float(phase["orientation_tolerance_deg"])
+    )
+
+
+def _controlled_body_quaternion(sample: Mapping[str, Any]) -> list[float]:
+    pose = sample.get("controlled_body_pose_world")
+    if not isinstance(pose, Sequence) or isinstance(pose, (str, bytes)):
+        raise ControlEpisodeError(["control_episode_controlled_body_pose_missing"])
+    try:
+        values = [float(value) for value in pose]
+    except (TypeError, ValueError) as exc:
+        raise ControlEpisodeError(
+            ["control_episode_controlled_body_pose_invalid"]
+        ) from exc
+    if len(values) != 7 or not all(math.isfinite(value) for value in values):
+        raise ControlEpisodeError(["control_episode_controlled_body_pose_invalid"])
+    quaternion = values[3:7]
+    if abs(math.sqrt(sum(value * value for value in quaternion)) - 1.0) > 1.0e-5:
+        raise ControlEpisodeError(["control_episode_controlled_body_pose_invalid"])
+    return quaternion
+
+
+def _orientation_error_degrees(
+    *,
+    achieved_quaternion_xyzw: Sequence[float],
+    target_quaternion_xyzw: Sequence[float],
+) -> float:
+    """Return the shortest angular distance between equivalent quaternions."""
+
+    try:
+        achieved = [float(value) for value in achieved_quaternion_xyzw]
+        target = [float(value) for value in target_quaternion_xyzw]
+    except (TypeError, ValueError) as exc:
+        raise ControlEpisodeError(
+            ["control_episode_target_orientation_invalid"]
+        ) from exc
+    if (
+        len(achieved) != 4
+        or len(target) != 4
+        or not all(math.isfinite(value) for value in (*achieved, *target))
+        or abs(math.sqrt(sum(value * value for value in achieved)) - 1.0) > 1.0e-5
+        or abs(math.sqrt(sum(value * value for value in target)) - 1.0) > 1.0e-5
+    ):
+        raise ControlEpisodeError(["control_episode_target_orientation_invalid"])
+    dot = abs(sum(a * b for a, b in zip(achieved, target, strict=True)))
+    dot = min(1.0, max(0.0, dot))
+    return math.degrees(2.0 * math.acos(dot))
 
 
 def _persist_observation(
@@ -605,6 +679,10 @@ def run_control_episode(
                     "lateral_error_m="
                     f"{arrival['terminal_lateral_error_m']:.6f}:"
                     f"tolerance_m={arrival['arrival_tolerance_m']:.6f}:"
+                    "orientation_error_deg="
+                    f"{arrival['terminal_orientation_error_deg']:.6f}:"
+                    "orientation_tolerance_deg="
+                    f"{arrival['orientation_tolerance_deg']:.6f}:"
                     "stability_steps="
                     f"{arrival['arrival_stability_steps_observed']}/"
                     f"{arrival['arrival_stability_steps_required']}"
@@ -747,7 +825,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v5.json", plan)
+    _write_json(output / "adp009d_control_plan.v6.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
