@@ -1112,9 +1112,16 @@ def test_canonical_allocator_issues_grant_only_for_execute(
     assert admission["private_or_licensed_dataset_bytes_uploaded"] is False
     assert admission["hard_cap_usd"] == 2.0
     assert admission["allocation_binding"]["config_preflight_receipt_sha256"]
+    assert admission["paid_attempt_authority_required_for_execute"] is True
     if execute:
+        assert (
+            admission["authority"]
+            == "explicit_content_agents_paid_attempt_authority_bound"
+        )
         assert admission["allocation_binding"]["paid_attempt_authority_digest"]
         assert list((tmp_path / "consumed").glob("content-agents-*.json"))
+    else:
+        assert admission["authority"] == "dry_run_no_paid_authority_required"
 
 
 def test_canonical_allocator_discloses_public_sage_bytes(
@@ -1135,6 +1142,7 @@ def test_canonical_allocator_discloses_public_sage_bytes(
 
     assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=False)) == 0
     admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["authority"] == "dry_run_no_paid_authority_required"
     assert admission["private_or_licensed_dataset_bytes_uploaded"] is True
     assert admission["private_or_gated_dataset_bytes_uploaded"] is False
     assert admission["public_licensed_sage_collision_bytes_uploaded"] is True
@@ -1212,6 +1220,8 @@ def test_content_agents_execute_requires_paid_attempt_authority(
         "adp_content_agents_paid_attempt_authority_missing"
         in admission["blockers"]
     )
+    assert admission["authority"] == "missing_content_agents_paid_attempt_authority"
+    assert admission["paid_attempt_authority_required_for_execute"] is True
     assert observed["called"] is False
 
 

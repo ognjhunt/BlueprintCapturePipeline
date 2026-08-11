@@ -2621,6 +2621,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "sage_collision_sha256"
                 )
             )
+            content_agents_authority_state = (
+                "explicit_content_agents_paid_attempt_authority_bound"
+                if paid_attempt_authority is not None
+                else "missing_content_agents_paid_attempt_authority"
+                if args.execute
+                else "dry_run_no_paid_authority_required"
+            )
             paid_admission.update(
                 {
                     "program_id": "arm-decision-proof-v1",
@@ -2630,9 +2637,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "hard_cap_usd": args.adp_max_spend_usd,
                     "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                     "retry_cap": 0,
-                    "authority": (
-                        "user_authorized_all_in_scope_goal_resources_including_gpu_usage"
-                    ),
+                    "authority": content_agents_authority_state,
+                    "paid_attempt_authority_required_for_execute": True,
                     "private_or_licensed_dataset_bytes_uploaded": (
                         public_sage_collision_uploaded
                     ),
