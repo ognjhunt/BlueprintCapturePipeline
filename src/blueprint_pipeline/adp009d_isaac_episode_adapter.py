@@ -215,6 +215,99 @@ def controlled_body_pose_for_grasp_frame_target(
     return target_body, target_quaternion
 
 
+def bounded_grasp_frame_target_for_task_orientation(
+    *,
+    current_position_world_m: Sequence[float],
+    current_quaternion_world_xyzw: Sequence[float],
+    target_position_world_m: Sequence[float],
+    target_quaternion_world_xyzw: Sequence[float],
+    max_translation_step_m: float,
+    orientation_tolerance_deg: float,
+) -> dict[str, Any]:
+    """Resolve one local Cartesian target without mixing large rotation/translation.
+
+    The native DLS controller is a local solver.  Asking it to descend the full
+    335 mm grasp distance in one step made it trade orientation for translation,
+    sweep the open jaws laterally, and stall on the can.  Hold translation while
+    task orientation is outside tolerance; otherwise move at most one bounded
+    Cartesian increment toward the preregistered target.
+    """
+
+    try:
+        current = [float(value) for value in current_position_world_m]
+        target = [float(value) for value in target_position_world_m]
+        current_quaternion = [
+            float(value) for value in current_quaternion_world_xyzw
+        ]
+        target_quaternion = [
+            float(value) for value in target_quaternion_world_xyzw
+        ]
+        max_step = float(max_translation_step_m)
+        orientation_tolerance = float(orientation_tolerance_deg)
+    except (TypeError, ValueError) as exc:
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_bounded_task_space_target_invalid"]
+        ) from exc
+    values = (*current, *target, *current_quaternion, *target_quaternion)
+    if (
+        len(current) != 3
+        or len(target) != 3
+        or len(current_quaternion) != 4
+        or len(target_quaternion) != 4
+        or not all(math.isfinite(value) for value in values)
+        or not math.isfinite(max_step)
+        or max_step <= 0.0
+        or not math.isfinite(orientation_tolerance)
+        or orientation_tolerance <= 0.0
+        or abs(
+            math.sqrt(sum(value * value for value in current_quaternion)) - 1.0
+        )
+        > 1.0e-5
+        or abs(
+            math.sqrt(sum(value * value for value in target_quaternion)) - 1.0
+        )
+        > 1.0e-5
+    ):
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_bounded_task_space_target_invalid"]
+        )
+    quaternion_dot = abs(
+        sum(
+            current_value * target_value
+            for current_value, target_value in zip(
+                current_quaternion, target_quaternion, strict=True
+            )
+        )
+    )
+    orientation_error_deg = math.degrees(
+        2.0 * math.acos(min(1.0, max(0.0, quaternion_dot)))
+    )
+    delta = [target[index] - current[index] for index in range(3)]
+    requested_translation_m = math.sqrt(sum(value * value for value in delta))
+    translation_held_for_orientation = orientation_error_deg > orientation_tolerance
+    if translation_held_for_orientation or requested_translation_m == 0.0:
+        resolved = list(current)
+        translation_step_m = 0.0
+    elif requested_translation_m <= max_step:
+        resolved = list(target)
+        translation_step_m = requested_translation_m
+    else:
+        scale = max_step / requested_translation_m
+        resolved = [
+            current[index] + delta[index] * scale for index in range(3)
+        ]
+        translation_step_m = max_step
+    return {
+        "position_world_m": resolved,
+        "orientation_error_deg": orientation_error_deg,
+        "orientation_tolerance_deg": orientation_tolerance,
+        "translation_requested_m": requested_translation_m,
+        "translation_step_m": translation_step_m,
+        "max_translation_step_m": max_step,
+        "translation_held_for_orientation": translation_held_for_orientation,
+    }
+
+
 def _as_array(value: Any) -> Any:
     """Whatever the simulator handed back, as a numpy array.
 
@@ -423,6 +516,8 @@ class IsaacEpisodeAdapter:
         target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
         max_joint_delta_rad: float,
+        max_task_space_translation_step_m: float,
+        orientation_tolerance_deg: float,
     ) -> list[float]:
         """Resolve one deterministic pose-servo step through the injected native IK."""
 
@@ -439,6 +534,10 @@ class IsaacEpisodeAdapter:
             ),
             gripper_command=float(gripper_command),
             max_joint_delta_rad=float(max_joint_delta_rad),
+            max_task_space_translation_step_m=float(
+                max_task_space_translation_step_m
+            ),
+            orientation_tolerance_deg=float(orientation_tolerance_deg),
         )
         action = [float(value) for value in values]
         if len(action) != self._action_dim or not all(

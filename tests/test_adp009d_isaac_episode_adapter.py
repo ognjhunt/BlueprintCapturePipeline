@@ -18,6 +18,7 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     GRIPPER_PHYSICAL_FULL_OPENING_M,
     IsaacEpisodeAdapter,
     IsaacEpisodeAdapterError,
+    bounded_grasp_frame_target_for_task_orientation,
     controlled_body_pose_for_grasp_frame_target,
     describe_adapter,
     rgb_from_camera_output,
@@ -96,6 +97,63 @@ def test_grasp_frame_target_rejects_a_nonrigid_orientation() -> None:
         )
 
 
+def test_bounded_task_space_target_holds_translation_until_orientation_is_safe() -> None:
+    half_angle = math.radians(9.1716) / 2.0
+
+    result = bounded_grasp_frame_target_for_task_orientation(
+        current_position_world_m=[3.468, -3.310, 0.946],
+        current_quaternion_world_xyzw=[
+            0.0,
+            0.0,
+            math.sin(half_angle),
+            math.cos(half_angle),
+        ],
+        target_position_world_m=[3.468, -3.310, 0.611],
+        target_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        max_translation_step_m=0.01,
+        orientation_tolerance_deg=2.0,
+    )
+
+    assert result["position_world_m"] == [3.468, -3.310, 0.946]
+    assert result["orientation_error_deg"] == pytest.approx(9.1716)
+    assert result["translation_requested_m"] == pytest.approx(0.335)
+    assert result["translation_step_m"] == 0.0
+    assert result["translation_held_for_orientation"] is True
+
+
+def test_bounded_task_space_target_steps_locally_toward_large_descent() -> None:
+    result = bounded_grasp_frame_target_for_task_orientation(
+        current_position_world_m=[3.468, -3.310, 0.946],
+        current_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        target_position_world_m=[3.468, -3.310, 0.611],
+        target_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+        max_translation_step_m=0.01,
+        orientation_tolerance_deg=2.0,
+    )
+
+    assert result["position_world_m"] == pytest.approx(
+        [3.468, -3.310, 0.936]
+    )
+    assert result["orientation_error_deg"] == 0.0
+    assert result["translation_step_m"] == 0.01
+    assert result["translation_held_for_orientation"] is False
+
+
+def test_bounded_task_space_target_rejects_unbounded_step_contract() -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_bounded_task_space_target_invalid",
+    ):
+        bounded_grasp_frame_target_for_task_orientation(
+            current_position_world_m=[0.0, 0.0, 0.0],
+            current_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+            target_position_world_m=[0.0, 0.0, 1.0],
+            target_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+            max_translation_step_m=0.0,
+            orientation_tolerance_deg=2.0,
+        )
+
+
 def test_grasp_frame_target_rotates_the_measured_full_offset_into_task_orientation() -> None:
     target_body, target_quaternion = controlled_body_pose_for_grasp_frame_target(
         current_body_position_world_m=[1.0, 2.0, 3.0],
@@ -155,7 +213,8 @@ def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -
     assert "target_quaternion_world_xyzw" in callback
     assert "semantic_finger_tool_midpoint_world_m(" in callback
     assert '"raw_finger_body_midpoint_world_m"' in callback
-    assert 'runtime / "adp009d_control_plan.v6.json"' in callback
+    assert "bounded_grasp_frame_target_for_task_orientation(" in callback
+    assert 'runtime / "adp009d_control_plan.v7.json"' in callback
 
 
 class _Tensor(list):
@@ -482,9 +541,13 @@ def test_control_hold_metadata_and_injected_scripted_pose_share_native_action_se
         target_quaternion_world_xyzw=[1.0, 0.0, 0.0, 0.0],
         gripper_command=0.0,
         max_joint_delta_rad=0.03,
+        max_task_space_translation_step_m=0.01,
+        orientation_tolerance_deg=2.0,
     )
     assert scripted_action == [0.2] * 7 + [0.0]
     assert calls[0]["max_joint_delta_rad"] == 0.03
+    assert calls[0]["max_task_space_translation_step_m"] == 0.01
+    assert calls[0]["orientation_tolerance_deg"] == 2.0
     metadata = adapter.read_control_observation_metadata()
     assert metadata["simulation_time_s"] == 0.0
     assert metadata["timestamp_ns"] == 0

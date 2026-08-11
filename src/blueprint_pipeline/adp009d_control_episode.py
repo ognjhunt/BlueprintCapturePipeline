@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v6"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v7"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -70,6 +70,7 @@ PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
 PHASE_ORIENTATION_TOLERANCE_DEG = 2.0
+MAX_TASK_SPACE_TRANSLATION_STEP_M = 0.01
 # The DROID Robotiq 2F-85 is the frozen ADP-009D embodiment.  A generic pose
 # tolerance is not enough before descending around an object: the tool can be
 # "at" pregrasp while one open finger is already over the object.  Preserve a
@@ -128,6 +129,8 @@ class ControlEnvironment(Protocol):
         target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
         max_joint_delta_rad: float,
+        max_task_space_translation_step_m: float,
+        orientation_tolerance_deg: float,
     ) -> Sequence[float]: ...
 
 
@@ -303,6 +306,12 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
             phase["orientation_tolerance_deg"] = PHASE_ORIENTATION_TOLERANCE_DEG
             phase["orientation_tolerance_basis"] = (
                 "top_down_task_orientation_angular_distance"
+            )
+            phase["max_task_space_translation_step_m"] = (
+                MAX_TASK_SPACE_TRANSLATION_STEP_M
+            )
+            phase["task_space_translation_strategy"] = (
+                "orientation_first_bounded_local_increment"
             )
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
 
@@ -605,6 +614,12 @@ def run_control_episode(
                     ],
                     gripper_command=gripper_command,
                     max_joint_delta_rad=float(phase["max_joint_delta_rad"]),
+                    max_task_space_translation_step_m=float(
+                        phase["max_task_space_translation_step_m"]
+                    ),
+                    orientation_tolerance_deg=float(
+                        phase["orientation_tolerance_deg"]
+                    ),
                 )
             environment.step(action)
             step_index += 1
@@ -825,7 +840,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v6.json", plan)
+    _write_json(output / "adp009d_control_plan.v7.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(
