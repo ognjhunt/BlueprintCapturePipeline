@@ -68,7 +68,7 @@ override, not the normal production source.
 The dry profile is immutable and remains bound to the deployment commit that
 created it. Do not overwrite it to enable spend. After the protected-main
 controls canary passes, build a separate
-`adp009d-840313-franka-live-v1` profile. The live builder verifies all five
+`adp009d-840313-franka-live-<commit>` profile. The live builder verifies all five
 InteriorGS/SAGE source bytes, the retained Aura construction and task-volume
 exclusion lineage, the exact NuRec appearance byte, the SimReady can, SAGE
 collision, harness/scenario inputs, the passing zero/positive control pair, the

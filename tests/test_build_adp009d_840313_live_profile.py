@@ -39,7 +39,7 @@ def test_live_builder_routes_the_exact_runtime_through_the_canonical_allocator(
     readiness = {
         "schema_version": "task_evaluation_runtime_readiness.v1",
         "status": "passed",
-        "profile_id": builder.PROFILE_ID,
+        "profile_id": builder.READINESS_PROFILE_ID,
         "blockers": [],
         "receipt_digest": "sha256:" + "3" * 64,
     }
@@ -68,6 +68,8 @@ def test_live_builder_routes_the_exact_runtime_through_the_canonical_allocator(
     profile = json.loads(Path(receipt["profile_path"]).read_text(encoding="utf-8"))
     argv = profile["allocator"]["argv"]
     assert receipt["live_execution_enabled"] is True
+    assert receipt["profile_id"] == f"{builder.LIVE_PROFILE_ID_PREFIX}-{commit}"
+    assert profile["profile_id"] == receipt["profile_id"]
     assert profile["execution_admission"]["live_enabled"] is True
     assert profile["execution_admission"]["blockers"] == []
     assert profile["allocator"]["entrypoint"] == builder.CANONICAL_ALLOCATOR_ENTRYPOINT
@@ -80,6 +82,15 @@ def test_live_builder_routes_the_exact_runtime_through_the_canonical_allocator(
     assert argv[argv.index("--adp009d-policy-candidate") + 1] == "pi05_droid,groot_n17_droid"
     assert "--adp009d-controls" in argv
     assert "--adp009d-authorize-gated-backbone" in argv
+
+
+def test_live_profile_identity_changes_with_allocator_source_commit() -> None:
+    first = builder.live_profile_id_for_source_commit("a" * 40)
+    second = builder.live_profile_id_for_source_commit("b" * 40)
+
+    assert first == f"{builder.LIVE_PROFILE_ID_PREFIX}-{'a' * 40}"
+    assert second == f"{builder.LIVE_PROFILE_ID_PREFIX}-{'b' * 40}"
+    assert first != second
 
 
 def test_live_builder_rejects_nonimmutable_readiness_uri(

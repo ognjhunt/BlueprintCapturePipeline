@@ -14,7 +14,7 @@ from blueprint_pipeline.adp009d_840313_runtime_bundle import (
 from blueprint_pipeline.adp009d_live_readiness import (
     APPEARANCE_DIGEST,
     EVALUATION_RUN_SPEC_DIGEST,
-    PROFILE_ID,
+    PROFILE_ID as READINESS_PROFILE_ID,
     RUNTIME_BUNDLE_DIGEST,
     SOURCE_BUNDLE_DIGEST,
     build_live_readiness,
@@ -46,6 +46,19 @@ from scripts.build_adp009d_840313_launch_profile import (
 
 
 RUNTIME_MANIFEST_NAME = "adp009d_840313_franka_runtime_bundle.v1.json"
+LIVE_PROFILE_ID_PREFIX = "adp009d-840313-franka-live"
+
+
+def live_profile_id_for_source_commit(source_commit: str) -> str:
+    """Give every immutable live allocator identity its own publication ID."""
+
+    normalized = source_commit.strip().lower()
+    if (
+        len(normalized) != 40
+        or any(character not in "0123456789abcdef" for character in normalized)
+    ):
+        raise ProductionProfileBuildError("live_profile_source_commit_invalid")
+    return f"{LIVE_PROFILE_ID_PREFIX}-{normalized}"
 
 
 def _read_evidence(path: str | Path) -> dict[str, Any]:
@@ -75,6 +88,7 @@ def build_live_profile_release(
     guard = Path(provider_guard_path).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     verify_protected_main_checkout(repo, source_commit)
+    profile_id = live_profile_id_for_source_commit(source_commit)
     if not readiness_uri.startswith(("s3://", "gs://", "https://")):
         raise ProductionProfileBuildError("live_profile_readiness_uri_invalid")
 
@@ -129,7 +143,7 @@ def build_live_profile_release(
     }
     preflight_request = {
         "schema_version": REQUEST_SCHEMA_VERSION,
-        "profile_id": PROFILE_ID,
+        "profile_id": profile_id,
         "provider": "vast",
         "retry_cap": 0,
         "live_execution_authorized": True,
@@ -184,7 +198,7 @@ def build_live_profile_release(
     source_uri = f"{RAW_GITHUB_ROOT}/{source_commit}/{MANIFEST_RELATIVE_ROOT.as_posix()}"
     profile: dict[str, Any] = {
         "schema_version": "task_evaluation_launch_profile.v1",
-        "profile_id": PROFILE_ID,
+        "profile_id": profile_id,
         "program_id": "arm-decision-proof-v1",
         "source_bundle": {
             "bundle_id": BUNDLE_ID,
@@ -216,7 +230,7 @@ def build_live_profile_release(
                 "--adapter-output",
                 f"{LAUNCH_RUN_ROOT_PLACEHOLDER}/allocator/result.json",
                 "--pod-name",
-                PROFILE_ID,
+                profile_id,
                 "--expected-source-commit",
                 source_commit,
                 "--provider",
@@ -285,13 +299,13 @@ def build_live_profile_release(
     blockers = [*validate_launch_profile(profile), *verify_profile_immutable_inputs(profile)]
     if blockers:
         raise ProductionProfileBuildError(",".join(sorted(set(blockers))))
-    profile_path = output / f"{PROFILE_ID}.json"
+    profile_path = output / f"{profile_id}.json"
     _write_exact(profile_path, profile)
     receipt = {
         "schema_version": "adp009d_840313_live_profile_build_receipt.v1",
         "status": "built",
         "source_commit": source_commit,
-        "profile_id": PROFILE_ID,
+        "profile_id": profile_id,
         "profile_digest": profile["profile_digest"],
         "source_bundle_digest": SOURCE_BUNDLE_DIGEST,
         "evaluation_run_spec_digest": EVALUATION_RUN_SPEC_DIGEST,
