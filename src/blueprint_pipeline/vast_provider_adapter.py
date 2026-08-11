@@ -1434,10 +1434,6 @@ def _machine_id_set(values: Iterable[Any]) -> set[int]:
     return result
 
 
-def _version_tuple(value: Any) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", _string(value)))
-
-
 def _version_at_least(value: Any, minimum: str) -> bool:
     if not minimum:
         return True
@@ -4073,8 +4069,26 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
                 "exited": status in {"exited", "stopped_before_start"},
                 "probe_error": None,
             }
-    # Absent from the listing entirely: destroyed out from under this run.
-    return {"observed": True, "status": "absent", "exited": True, "probe_error": None}
+    if any(
+        key in payload
+        for key in ("instances", "results", "data", "response")
+    ):
+        # A well-formed provider listing that omits this id means the instance
+        # was destroyed out from under this run.  An unrelated or malformed
+        # payload is not evidence of death and must fail open to the existing
+        # bounded log watchdog.
+        return {
+            "observed": True,
+            "status": "absent",
+            "exited": True,
+            "probe_error": None,
+        }
+    return {
+        "observed": False,
+        "status": "unknown",
+        "exited": False,
+        "probe_error": "provider_instance_listing_unrecognized",
+    }
 
 
 def _instance_list_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -4314,8 +4328,6 @@ def _request_logs_and_fetch(
     break_reason = ""
     attempt_index = 0
     container_missing_count = 0
-    # Two consecutive readings, so a single API glitch cannot kill a healthy
-    # run; still detects a dead container in about a minute rather than thirty.
     instance_exited_count = 0
     last_instance_liveness: dict[str, Any] = {}
     while True:
@@ -4352,11 +4364,6 @@ def _request_logs_and_fetch(
         output_log_path.write_text(
             _redact_text(output_text, secret_values), encoding="utf-8"
         )
-        last_instance_liveness = _instance_liveness(instance_id=instance_id, api_key=api_key)
-        if last_instance_liveness.get("exited"):
-            instance_exited_count += 1
-        elif last_instance_liveness.get("observed"):
-            instance_exited_count = 0
         marker_found = any(marker and marker in attempt_text for marker in success_markers)
         container_missing = "No such container" in attempt_text
         runtime_phase_count = attempt_text.count("BLUEPRINT_WAM_RUNTIME_PHASE:")
@@ -4391,6 +4398,32 @@ def _request_logs_and_fetch(
         )
         if container_missing:
             container_missing_count += 1
+        terminal_container_missing = container_missing and container_missing_count >= max(
+            1, int(container_missing_retry_attempts)
+        )
+        deadline_reached = time.monotonic() >= deadline
+        # The provider probe is a terminal-reason classifier, not another poll
+        # in the hot log loop.  Probe only when the bounded watchdog is already
+        # ready to stop; this preserves the established log-poll API cadence and
+        # avoids charging every heartbeat with a second provider request.  Two
+        # positive terminal readings are required so a single stale provider
+        # response cannot misclassify a healthy instance.
+        if (
+            not marker_found
+            and not terminal_container_missing
+            and (no_progress_timeout_reached or deadline_reached)
+        ):
+            first_liveness = _instance_liveness(instance_id=instance_id, api_key=api_key)
+            last_instance_liveness = first_liveness
+            if first_liveness.get("exited"):
+                second_liveness = _instance_liveness(
+                    instance_id=instance_id, api_key=api_key
+                )
+                last_instance_liveness = second_liveness
+                instance_exited_count = int(bool(second_liveness.get("exited"))) + 1
+            else:
+                instance_exited_count = 0
+        instance_exited = instance_exited_count >= 2
         attempts.append(
             {
                 "attempt": attempt_index,
@@ -4416,11 +4449,6 @@ def _request_logs_and_fetch(
                 "instance_liveness_probe_error": last_instance_liveness.get("probe_error"),
             }
         )
-        terminal_container_missing = container_missing and container_missing_count >= max(
-            1, int(container_missing_retry_attempts)
-        )
-        deadline_reached = time.monotonic() >= deadline
-        instance_exited = instance_exited_count >= 2
         if marker_found:
             break_reason = "success_marker_found"
         elif instance_exited:

@@ -1250,6 +1250,72 @@ def test_request_logs_breaks_on_no_progress_timeout(
     assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
 
 
+def test_request_logs_names_confirmed_provider_exit_at_watchdog_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    calls = {"logs": 0, "liveness": 0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        if kwargs["method"] == "PUT":
+            calls["logs"] += 1
+            return 200, {"result_url": "https://example.invalid/log.txt"}
+        calls["liveness"] += 1
+        return 200, {
+            "instances": [
+                {"id": 123, "actual_status": "exited"},
+            ]
+        }
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: "")
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=2,
+    )
+
+    assert calls["logs"] == 1
+    assert calls["liveness"] == 2
+    assert result["break_reason"] == "instance_exited"
+    assert result["instance_final_status"] == "exited"
+    assert result["instance_exited_observed"] is True
+    assert result["log_poll_attempts"][-1]["instance_exited_observed_count"] == 2
+
+
+def test_instance_liveness_rejects_unrecognized_payload_as_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+
+    result = vpa._instance_liveness(instance_id=123, api_key="secret")
+
+    assert result == {
+        "observed": False,
+        "status": "unknown",
+        "exited": False,
+        "probe_error": "provider_instance_listing_unrecognized",
+    }
+
+
 def test_request_logs_dud_container_flicker_is_not_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
