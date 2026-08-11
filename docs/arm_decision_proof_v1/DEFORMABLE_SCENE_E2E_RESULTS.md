@@ -286,8 +286,20 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   and package receipt digest
   `sha256:e654319c53c0de1ac6d25c9ea4bd5e69e863b591eea799267b9ee08ff2ac100f`;
   it uses `static_friction` and `elasticity_damping`, with no `damping_scale`.
-- Current provider state after the latest deformable-owned attempt was
-  provider-zero: `vastai show instances --raw` returned `[]` after v23 teardown.
+- Deformable native canary v24 dry-run prepared the immutable provider bundle
+  from commit `0730f8ba6` and source-package v3. Status: `dry_run_ready`;
+  blockers: `[]`; provider mutations: `0`; no policy query. Bundle SHA-256 is
+  `sha256:eb04e8f9890c0882834674358cc70fe488eda0b915b5858e4d8e3d2d8b0a4aeb`;
+  bundle receipt digest is
+  `sha256:74d5b2efe896a01197de0372fa0e6c62695841a86841ed85cf2e0a123b03c4c6`;
+  allocation input digest is
+  `sha256:7dd9ac5c4867dc8b2a4b237a0640474929d3ad2f392b317c19725f03a4e4104c`.
+- Current provider state as of `2026-08-11T10:25:06Z` is not zero:
+  `vastai show instances --raw` returned external ADP-009D instance `47455676`,
+  label `blueprint-adp009d-1786443359`, machine `24733`, rate
+  `$0.5703703703703703/hr`. The deformable lane owns no live provider instance.
+  The v24 execute remains gated by the canonical single-flight/provider-zero
+  rule.
 - Deformable Vast/GPU attempts with allocation: `10`; prelaunch-blocked attempts:
   `2`; local dry-run command-shape nulls: `2`; uploads: `8`; automatic retries:
   `0`.
@@ -298,7 +310,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, and v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification |
+| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, and v24 execution is waiting on provider-zero because external ADP-009D instance `47455676` is live |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -327,6 +339,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `8f7268bfe` | Retain deformable worker exception diagnostics |
 | `75d49940f` | Verify live Vast hourly rate after launch |
 | `dcaa2c5ac` | Record deformable provider gate status |
+| `0730f8ba6` | Align deformable material config with pinned PhysX |
 
 Each listed commit was pushed to
 `origin/codex/adp-deformable-scene-e2e-20260810`. Commit `4716f49ce` is the
@@ -343,9 +356,8 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to run exactly one fresh no-retry Vast native canary
-from a committed material-schema fix and regenerated source package v3 in a new
-evidence root after a fresh provider-zero prelaunch guard passes. If the canary qualifies
+The single next action is to execute the already-prepared v24 no-retry Vast
+native canary bundle after a fresh provider-zero prelaunch guard passes. If the canary qualifies
 cook/load/reset/contact/cameras, the run continues to zero-action and scripted
 controls before any learned policy. If the native backend cannot provide
 qualified rigid--deformable contact attribution, the run seals a typed native
