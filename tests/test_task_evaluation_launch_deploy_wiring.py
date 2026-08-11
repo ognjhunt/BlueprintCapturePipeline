@@ -32,6 +32,11 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
 
     assert "task_evaluation_launch_dispatcher" in dispatcher
     assert "--execute" in dispatcher
+    assert (
+        '"$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] '
+        '&& [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true'
+    ) in dispatcher
+    assert "EnvironmentFile values override Environment=" in dispatcher
     assert "blueprint-gpu-spend-guard.service" in dispatcher
     assert "GIT_CONFIG_KEY_0=safe.directory" in dispatcher
     for unit in (dispatcher, reconciler, supervisor):
