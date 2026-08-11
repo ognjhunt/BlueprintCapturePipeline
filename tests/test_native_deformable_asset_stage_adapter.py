@@ -103,7 +103,11 @@ def _author_native_readback(
 ) -> None:
     body = stage.GetPrimAtPath("/Deformable")
     surface = stage.GetPrimAtPath("/Deformable/Visuals/Surface")
-    for schema in ("OmniPhysicsDeformableBodyAPI", "PhysxBaseDeformableBodyAPI", "PhysxCollisionAPI"):
+    for schema in (
+        "OmniPhysicsDeformableBodyAPI",
+        "PhysxBaseDeformableBodyAPI",
+        "PhysxCollisionAPI",
+    ):
         body.AddAppliedSchema(schema)
     for field, value in body_and_cooking.items():
         if field in {"deformable_body_enabled", "kinematic_enabled", "mass"}:
@@ -157,8 +161,9 @@ def _author_native_readback(
 def _install_hermetic_registered_physx(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test-only registry seam; production always imports real ``PhysxSchema``."""
 
-    def validate(prim, expected, *, error):
+    def validate(prim, expected, *, error, native_authoring_symbols=()):
         del error
+        del native_authoring_symbols
         authored = adapter_module._schema_names(prim)
         assert set(expected).issubset(authored)
         return sorted(expected.values())
@@ -459,6 +464,43 @@ def test_raw_schema_tokens_do_not_prove_registered_physx_apis(tmp_path: Path) ->
         "native_deformable_stage_physx_schema_runtime_unavailable",
         "native_deformable_stage_native_schema_readback_invalid",
     }.intersection(exc.value.errors)
+
+
+def test_moduleless_omni_schema_token_requires_pinned_native_authoring_call() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    prim = stage.DefinePrim("/Body", "Xform")
+    prim.AddAppliedSchema("OmniPhysicsDeformableBodyAPI")
+    expected = {
+        "OmniPhysicsDeformableBodyAPI": "pxr.OmniPhysicsSchema.OmniPhysicsDeformableBodyAPI"
+    }
+
+    observed = adapter_module._registered_physx_schema_names(
+        prim,
+        expected,
+        error="native_deformable_stage_native_schema_readback_invalid",
+        native_authoring_symbols=["isaaclab.sim.schemas.schemas:define_deformable_body_properties"],
+    )
+
+    assert observed == ["pxr.OmniPhysicsSchema.OmniPhysicsDeformableBodyAPI"]
+
+
+def test_moduleless_omni_schema_token_without_native_authoring_call_fails() -> None:
+    stage = Usd.Stage.CreateInMemory()
+    prim = stage.DefinePrim("/Body", "Xform")
+    prim.AddAppliedSchema("OmniPhysicsDeformableBodyAPI")
+
+    with pytest.raises(NativeDeformableAssetStageAdapterError) as exc:
+        adapter_module._registered_physx_schema_names(
+            prim,
+            {
+                "OmniPhysicsDeformableBodyAPI": (
+                    "pxr.OmniPhysicsSchema.OmniPhysicsDeformableBodyAPI"
+                )
+            },
+            error="native_deformable_stage_native_schema_readback_invalid",
+        )
+
+    assert "native_deformable_stage_physx_schema_runtime_unavailable" in exc.value.errors
 
 
 def test_source_composition_is_rejected_before_stage_composition(

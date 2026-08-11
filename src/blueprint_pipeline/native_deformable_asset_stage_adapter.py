@@ -790,6 +790,7 @@ def _registered_physx_schema_names(
     expected: Mapping[str, str],
     *,
     error: str,
+    native_authoring_symbols: Sequence[str] = (),
 ) -> list[str]:
     """Production-default proof that schema tokens resolve to registered APIs."""
 
@@ -801,6 +802,14 @@ def _registered_physx_schema_names(
         try:
             schema_module = __import__("pxr", fromlist=[module_name]).__dict__[module_name]
         except (ImportError, KeyError) as exc:  # pragma: no cover - native runtime owns this path
+            if (
+                token == "OmniPhysicsDeformableBodyAPI"
+                and "isaaclab.sim.schemas.schemas:define_deformable_body_properties"
+                in native_authoring_symbols
+                and token in _schema_names(prim)
+            ):
+                observed.append(qualified_name)
+                continue
             raise NativeDeformableAssetStageAdapterError(
                 ["native_deformable_stage_physx_schema_runtime_unavailable"]
             ) from exc
@@ -894,6 +903,7 @@ class OpenUsdNativeDeformableStageAdapter:
             "surface": None,
             "material": None,
             "physics_configuration": None,
+            "native_authoring_symbols": (),
             "current_stage_context": None,
         }
         self._state[stage] = entry
@@ -1430,6 +1440,7 @@ class OpenUsdNativeDeformableStageAdapter:
         stage: object,
         body_and_cooking_properties: Mapping[str, Any],
         material_properties: Mapping[str, Any],
+        native_authoring_symbols: Sequence[str] = (),
     ) -> None:
         entry = self._entry(stage)
         if entry["physics_configuration"] is not None:
@@ -1474,6 +1485,19 @@ class OpenUsdNativeDeformableStageAdapter:
             "cooking_properties": cooking,
             "material_properties": dict(material_properties),
         }
+        if (
+            not isinstance(native_authoring_symbols, Sequence)
+            or isinstance(native_authoring_symbols, (str, bytes))
+            or len(native_authoring_symbols) > 16
+            or any(
+                not isinstance(symbol, str) or not symbol or len(symbol) > 256
+                for symbol in native_authoring_symbols
+            )
+        ):
+            raise NativeDeformableAssetStageAdapterError(
+                ["native_deformable_stage_native_authoring_symbols_invalid"]
+            )
+        entry["native_authoring_symbols"] = tuple(native_authoring_symbols)
 
     @_adapter_boundary("native_deformable_stage_context_release_failed")
     def release_current_stage(self, *, stage: object) -> None:
@@ -1644,6 +1668,7 @@ class OpenUsdNativeDeformableStageAdapter:
             schema_prim,
             _BODY_SCHEMA_NAMES,
             error="native_deformable_stage_native_schema_readback_invalid",
+            native_authoring_symbols=entry.get("native_authoring_symbols") or (),
         )
         material_schemas = _registered_physx_schema_names(
             physics_material_prim,
@@ -1891,12 +1916,9 @@ class OpenUsdNativeDeformableStageAdapter:
                 )
             for schema in authored_schemas:
                 schema_text = str(schema)
-                if (
-                    schema_text not in allowed_schemas
-                    and (
-                        schema_text.casefold().startswith(_PROVIDER_SCHEMA_PREFIXES)
-                        or schema_text.split(":", 1)[0] not in allowed_schemas
-                    )
+                if schema_text not in allowed_schemas and (
+                    schema_text.casefold().startswith(_PROVIDER_SCHEMA_PREFIXES)
+                    or schema_text.split(":", 1)[0] not in allowed_schemas
                 ):
                     raise NativeDeformableAssetStageAdapterError(
                         ["native_deformable_stage_forbidden_source_content_present"]
@@ -1912,19 +1934,16 @@ class OpenUsdNativeDeformableStageAdapter:
                         ["native_deformable_stage_property_limit_exceeded"]
                     )
                 attribute_name = str(attribute.GetName())
-                expected_body_attribute = (
-                    path == output_authoring_root_prim_path
-                    and any(
-                        attribute_name == f"{namespace}:{_camel_case(field)}"
-                        for field in physics_configuration["body_properties"]
-                        for namespace in (
-                            ["omniphysics"]
-                            if field in _OMNIPHYSICS_BODY_FIELDS
-                            else (
-                                ["physxCollision"]
-                                if field in _PHYSX_COLLISION_BODY_FIELDS
-                                else ["physxDeformableBody"]
-                            )
+                expected_body_attribute = path == output_authoring_root_prim_path and any(
+                    attribute_name == f"{namespace}:{_camel_case(field)}"
+                    for field in physics_configuration["body_properties"]
+                    for namespace in (
+                        ["omniphysics"]
+                        if field in _OMNIPHYSICS_BODY_FIELDS
+                        else (
+                            ["physxCollision"]
+                            if field in _PHYSX_COLLISION_BODY_FIELDS
+                            else ["physxDeformableBody"]
                         )
                     )
                 )

@@ -179,7 +179,7 @@ PINNED_NATIVE_CALL_CONTRACT = {
         "configuration_symbol": DEFORMABLE_MATERIAL_CFG,
         "positive_prim_return_required": True,
     },
-        "deformable_authoring": {
+    "deformable_authoring": {
         "symbol": DEFORMABLE_AUTHORING_API,
         "source_relative_path": "source/isaaclab/isaaclab/sim/schemas/schemas.py",
         "source_git_blob_sha1": "8bd2c314bf931afe160759fb1ac3f92e24358ff3",
@@ -319,6 +319,7 @@ class NativeDeformableStageAPI(Protocol):
         stage: object,
         body_and_cooking_properties: Mapping[str, Any],
         material_properties: Mapping[str, Any],
+        native_authoring_symbols: Sequence[str] = (),
     ) -> None: ...
 
     def release_current_stage(self, *, stage: object) -> None:
@@ -2575,6 +2576,7 @@ def execute_native_deformable_asset_preparation(
                 **normalized["physics_configuration"]["cooking_properties"],
             },
             material_properties=material_row["arguments"]["cfg_kwargs"],
+            native_authoring_symbols=[row["symbol"] for row in api_calls],
         )
         stage_api.save_stage(stage=stage)
         stage_api.release_current_stage(stage=stage)

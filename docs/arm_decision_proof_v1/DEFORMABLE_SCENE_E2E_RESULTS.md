@@ -194,7 +194,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 
 ## Cost and provider lifecycle
 
-- Deformable Vast/GPU spend retained so far: `$0.634007`.
+- Deformable Vast/GPU spend retained so far: `$0.651621`.
 - Palatial/Newton local attempt 001: retained free null, 120 requested CPU
   frames, hard timeout at 300 seconds, `$0.00`, scratch removed, receipt file
   SHA-256 `a159530bca09fccf07cd42dc0e6a097e876621e47861e323ad6f779f647164fb`.
@@ -405,8 +405,24 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   `sha256:186cbb5ee07c94eed3fa9f1b52396c208f4322ea46a2b489cd45580ad30a4f59`;
   allocation input digest is
   `sha256:6b366a0325d05b33c37b7440ff074f0c0f561acc5155c8fcb345ad3a19841d13`.
-- Deformable Vast/GPU attempts with allocation: `14`; prelaunch-blocked attempts:
-  `3`; local dry-run command-shape nulls: `3`; uploads: `12`; automatic retries:
+- Deformable native canary v29 launched Vast instance `47461534` on machine
+  `46769` (`RTX 3090`, `$0.37037037037037035/hr`), reached Isaac Sim 6.0.1,
+  Warp CUDA startup, bundle download, verified runtime-source provisioning, and
+  native worker execution. Its terminal blocker was
+  `native_deformable_stage_physx_schema_runtime_unavailable`: the exact pinned
+  runtime accepted the authored `OmniPhysicsDeformableBodyAPI` token but did not
+  export a `pxr.OmniPhysicsSchema` Python wrapper. The worker stopped during
+  schema readback, before cook-array, reset, contact, or camera qualification.
+  Cost: `$0.017614`; no policy query; teardown, object-store cleanup, final
+  validation, and global provider-zero all passed. This is a reusable schema
+  proof-contract gap, not a native cook/contact capability finding. The v30
+  repair permits that one module-less authored token only when the exact pinned
+  `isaaclab.sim.schemas.schemas:define_deformable_body_properties` call was
+  recorded in the same native configuration; all other registered-schema proofs
+  remain strict.
+- Deformable Vast/GPU spend retained so far: `$0.651621`.
+- Deformable Vast/GPU attempts with allocation: `15`; prelaunch-blocked attempts:
+  `3`; local dry-run command-shape nulls: `3`; uploads: `13`; automatic retries:
   `0`.
 
 ## Claim table
@@ -415,7 +431,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, v25 exposed a stale body/cooking configuration mismatch before native asset qualification, v26 exposed the missing `pytetwild`/pre-tetrahedralized-TetMesh admission requirement before native asset qualification, v27 exposed an incorrect visual-mesh physics material/schema readback contract before native qualification, and v28 exposed stale embedded preparation-plan admission before native qualification |
+| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, v25 exposed a stale body/cooking configuration mismatch before native asset qualification, v26 exposed the missing `pytetwild`/pre-tetrahedralized-TetMesh admission requirement before native asset qualification, v27 exposed an incorrect visual-mesh physics material/schema readback contract before native qualification, v28 exposed stale embedded preparation-plan admission, and v29 exposed a missing runtime Python wrapper for the otherwise authored OmniPhysics deformable schema token |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -449,6 +465,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `97ec188c4` | Split deformable body and cook config |
 | `098d91d8e` | Pin deformable tetrahedralization dependency |
 | `3f3dcf152` | Bind deformable physics material at body root |
+| `5d66d3ec` | Reject stale deformable preparation plans |
 
 Each listed commit was pushed to
 `origin/codex/adp-deformable-scene-e2e-20260810`.
@@ -463,11 +480,11 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to commit and push the reusable stale-plan admission
-guard, regenerate the provider bundle at that exact commit from source-package
-v5, and execute one no-retry v29 Vast native canary under provider-zero. If the canary
-qualifies cook/load/reset/contact/cameras, the run continues to zero-action and
-scripted controls before any learned policy. If the native backend still cannot
+The single next action is to commit and push the v29 schema-wrapper-proof repair,
+regenerate the provider bundle at that exact commit from source-package v5, and
+execute one no-retry v30 Vast native canary under confirmed provider-zero. If the
+canary qualifies cook/load/reset/contact/cameras, the run continues to zero-action
+and scripted controls before any learned policy. If the native backend still cannot
 provide qualified rigid--deformable contact attribution after cook succeeds, the
-run seals a typed native capability abstention and does not evaluate
-`pi05_droid` or `groot_n17_droid`.
+run seals a typed native capability abstention and does not evaluate `pi05_droid`
+or `groot_n17_droid`.

@@ -625,6 +625,11 @@ def test_injected_native_worker_calls_all_pinned_apis_and_verifier_stays_bounded
             **_physics()["cooking_properties"],
         },
         "material_properties": _physics()["material_properties"],
+        "native_authoring_symbols": [
+            DEFORMABLE_MATERIAL_API,
+            DEFORMABLE_AUTHORING_API,
+            DEFORMABLE_PHYSICS_BINDING_API,
+        ],
     }
     assert DEFORMABLE_COOKING_API not in names
     assert worker_return["readback"]["empty_tet_mesh_prim_paths"] == []
