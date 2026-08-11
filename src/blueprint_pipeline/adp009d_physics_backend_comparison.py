@@ -8,7 +8,7 @@ probe receipts, and compiles a backend-neutral controls comparison receipt.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 try:  # pragma: no cover - flat layout inside the sealed runtime bundle
@@ -473,11 +473,102 @@ def validate_newton_canary_admission(
         or expires <= current
         or (expires - current).total_seconds() > 3600
         or value.get("provider_mutation_performed") is not False
+        or not isinstance(value.get("authorization_evidence_ref"), str)
+        or not str(value.get("authorization_evidence_ref") or "").strip()
+        or _parse_time(value.get("issued_at")) is None
+        or not isinstance(value.get("canonical_spend_admission_digest"), str)
+        or not str(value.get("canonical_spend_admission_digest")).startswith("sha256:")
+        or not isinstance(value.get("provider_zero_precheck_digest"), str)
+        or not str(value.get("provider_zero_precheck_digest")).startswith("sha256:")
         or value.get("admission_digest")
         != canonical_digest(value, digest_field="admission_digest")
     ):
         blockers.append("adp009d_newton_canary_admission_invalid")
     return sorted(set(blockers))
+
+
+def build_newton_canary_admission(
+    *,
+    authorization_evidence_ref: str,
+    spend_admission_lock: Mapping[str, Any],
+    provider_zero_precheck: Mapping[str, Any],
+    max_spend_usd: float,
+    hard_ttl_seconds: int,
+    issued_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Compile the current explicit authority and read-only gates into one receipt."""
+
+    authority = str(authorization_evidence_ref or "").strip()
+    if not authority:
+        raise PhysicsBackendContractError("adp009d_newton_authorization_evidence_missing")
+    current = (issued_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    try:
+        from .spend_admission_lock import validate_spend_admission_lock
+    except ImportError:  # pragma: no cover - control-plane builder is package-only
+        from spend_admission_lock import validate_spend_admission_lock
+
+    if validate_spend_admission_lock(spend_admission_lock, now=current):
+        raise PhysicsBackendContractError("adp009d_newton_spend_admission_invalid")
+    inventory_rows = provider_zero_precheck.get("inventory_results")
+    vast_rows = [
+        dict(row)
+        for row in inventory_rows or []
+        if isinstance(row, Mapping) and row.get("provider") == "vast"
+    ]
+    generated_at = _parse_time(provider_zero_precheck.get("generated_at"))
+    if (
+        provider_zero_precheck.get("schema_version") != "gpu_spend_guard.v1"
+        or provider_zero_precheck.get("live_instance_count") != 0
+        or provider_zero_precheck.get("blockers") != []
+        or len(vast_rows) != 1
+        or vast_rows[0].get("status") != "succeeded"
+        or vast_rows[0].get("row_count") != 0
+        or vast_rows[0].get("blockers") != []
+        or generated_at is None
+        or abs((current - generated_at).total_seconds()) > 300
+    ):
+        raise PhysicsBackendContractError("adp009d_newton_provider_zero_precheck_invalid")
+    profile = build_backend_profile("newton")
+    receipt: dict[str, Any] = {
+        "schema_version": CANARY_ADMISSION_SCHEMA_VERSION,
+        "status": "passed",
+        "backend_profile_digest": profile["profile_digest"],
+        "controls_only": True,
+        "policy_query_allowed": False,
+        "candidate_outcome_access_allowed": False,
+        "canonical_allocator": (
+            "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
+        ),
+        "authorization_evidence_ref": authority,
+        "issued_at": current.isoformat(),
+        "expires_at": (current.replace(microsecond=0) + timedelta(minutes=30)).isoformat(),
+        "explicit_paid_run_authorization": True,
+        "canonical_spend_admission": True,
+        "canonical_spend_admission_digest": canonical_digest(
+            spend_admission_lock, digest_field="receipt_digest"
+        ),
+        "watchdog_required": True,
+        "artifact_storage_required": True,
+        "teardown_required": True,
+        "provider_zero_precheck_passed": True,
+        "provider_zero_precheck_digest": canonical_digest(
+            provider_zero_precheck, digest_field="receipt_digest"
+        ),
+        "retry_cap": 0,
+        "max_spend_usd": max_spend_usd,
+        "hard_ttl_seconds": hard_ttl_seconds,
+        "provider_mutation_performed": False,
+        "admission_digest": "",
+    }
+    receipt["admission_digest"] = canonical_digest(
+        receipt, digest_field="admission_digest"
+    )
+    blockers = validate_newton_canary_admission(
+        receipt, profile=profile, now=current
+    )
+    if blockers:
+        raise PhysicsBackendContractError("adp009d_newton_canary_admission_invalid")
+    return receipt
 
 
 def _validate_control_run(
@@ -883,6 +974,7 @@ __all__ = [
     "build_comparison_design_contract",
     "build_comparison_receipt",
     "normalize_physics_backend",
+    "build_newton_canary_admission",
     "validate_backend_contact_configuration",
     "validate_backend_probe",
     "validate_backend_profile",

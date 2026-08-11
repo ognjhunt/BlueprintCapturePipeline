@@ -17,6 +17,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     build_backend_profile,
     build_comparison_design_contract,
     build_comparison_receipt,
+    build_newton_canary_admission,
     normalize_physics_backend,
     validate_backend_probe,
     validate_backend_profile,
@@ -26,6 +27,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
 )
 from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.spend_admission_lock import build_spend_admission_lock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,12 +85,16 @@ def _admission(profile: dict, now: datetime) -> dict:
         "canonical_allocator": (
             "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
         ),
+        "authorization_evidence_ref": "codex-thread:test-explicit-authorization",
+        "issued_at": now.isoformat(),
         "explicit_paid_run_authorization": True,
         "canonical_spend_admission": True,
+        "canonical_spend_admission_digest": "sha256:" + "f" * 64,
         "watchdog_required": True,
         "artifact_storage_required": True,
         "teardown_required": True,
         "provider_zero_precheck_passed": True,
+        "provider_zero_precheck_digest": "sha256:" + "0" * 64,
         "retry_cap": 0,
         "max_spend_usd": 2.0,
         "hard_ttl_seconds": 3600,
@@ -298,6 +304,70 @@ def test_complete_newton_admission_is_time_bounded_and_non_mutating() -> None:
         admission, profile=profile, now=now
     ) == []
     assert admission["provider_mutation_performed"] is False
+
+
+def test_newton_admission_builder_binds_authority_spend_and_provider_zero() -> None:
+    now = datetime(2026, 8, 11, 16, 40, tzinfo=timezone.utc)
+    inventory = [
+        {
+            "provider": provider,
+            "status": "succeeded",
+            "required": True,
+            "credential_present": True,
+            "row_count": 0,
+            "blockers": [],
+        }
+        for provider in ("runpod", "vast", "digitalocean")
+    ]
+    spend_lock = build_spend_admission_lock(
+        fleet_budget={"status": "passed", "total_spend_usd": 0.0, "blockers": []},
+        billing_reconciliation={
+            "status": "reconciled",
+            "required": True,
+            "billing_export_schema_version": "blueprint.provider_billing_export.v1",
+            "billing_export_sha256": "sha256:" + "a" * 64,
+            "billing_export_mode_octal": "0600",
+            "generated_at": now.isoformat(),
+            "currency": "USD",
+            "scope": "blueprint_beta_100_user_cohort",
+            "provider_totals_usd": {
+                "runpod": 98.0,
+                "vast": 253.0,
+                "digitalocean": 142.0,
+            },
+            "blockers": [],
+        },
+        instances=[],
+        reap_results=[],
+        inventory_results=inventory,
+        override_path=None,
+        now=now,
+    )
+    provider_zero = {
+        "schema_version": "gpu_spend_guard.v1",
+        "generated_at": now.isoformat(),
+        "live_instance_count": 0,
+        "blockers": [],
+        "inventory_results": inventory,
+    }
+
+    admission = build_newton_canary_admission(
+        authorization_evidence_ref="codex-thread:user-authorized-newton",
+        spend_admission_lock=spend_lock,
+        provider_zero_precheck=provider_zero,
+        max_spend_usd=2.0,
+        hard_ttl_seconds=7200,
+        issued_at=now,
+    )
+
+    assert validate_newton_canary_admission(
+        admission, profile=build_backend_profile("newton"), now=now
+    ) == []
+    assert admission["authorization_evidence_ref"] == (
+        "codex-thread:user-authorized-newton"
+    )
+    assert admission["canonical_spend_admission_digest"].startswith("sha256:")
+    assert admission["provider_zero_precheck_digest"].startswith("sha256:")
 
 
 def test_comparison_receipt_requires_exact_common_bindings() -> None:
