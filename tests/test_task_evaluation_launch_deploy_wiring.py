@@ -37,6 +37,7 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_PIPELINE_REPO}"' in dispatcher
     for binding in (
         "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
+        "VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
         "NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key",
         "DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username",
         "DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat",
@@ -81,6 +82,7 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
         "task-evaluation-launches/blocked",
         "task-evaluation-launch-runs",
         "task-evaluation-launch-reconciliation",
+        "provider-locks",
     ):
         assert directory in installer
 
@@ -91,6 +93,7 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
     assert "# BLUEPRINT_TASK_EVALUATION_AGENT_SUPERVISOR_ENABLED=true" in environment
     for binding in (
         "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
+        "VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
         "NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key",
         "DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username",
         "DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat",

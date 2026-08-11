@@ -98,7 +98,8 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/robot-eval-job-requests" \
   "${STATE_DIR}/incoming_webapp_job_requests" \
   "${STATE_DIR}/deliveries" \
-  "${STATE_DIR}/gpu_spend_guard"
+  "${STATE_DIR}/gpu_spend_guard" \
+  "${STATE_DIR}/provider-locks"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launches/pending" \
   "${STATE_DIR}/task-evaluation-launches/processing" \
