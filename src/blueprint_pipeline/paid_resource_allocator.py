@@ -12,6 +12,7 @@ import json
 import os
 import signal
 import subprocess
+import time
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -236,32 +237,65 @@ def admit_pigey_candidate_runtime(*, runtime: Any, **kwargs: Any) -> AdmissionRe
     return admission, grant
 
 
-def _current_checkout_source_state() -> tuple[str, bool]:
-    try:
-        commit_result = subprocess.run(
-            ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD^{commit}"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        status_result = subprocess.run(
-            ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "", False
+# git's background auto-repack after a deploy can hold the object store long
+# enough to exceed a short identity probe, and a launch was failed closed by
+# that race with a blocker claiming the checkout was dirty when it was not.
+# Retry briefly so a transient repack does not reject a paid launch.
+CHECKOUT_IDENTITY_PROBE_TIMEOUT_SECONDS = 20
+CHECKOUT_IDENTITY_PROBE_ATTEMPTS = 3
+CHECKOUT_IDENTITY_PROBE_BACKOFF_SECONDS = 2.0
+
+
+def _run_checkout_probe(argv: Sequence[str]) -> subprocess.CompletedProcess | None:
+    """Run one git identity probe, retrying a transient failure.
+
+    Returns ``None`` when the probe could not be run at all, which is a
+    different fact from a probe that ran and reported a dirty tree.
+    """
+
+    for attempt in range(CHECKOUT_IDENTITY_PROBE_ATTEMPTS):
+        try:
+            result = subprocess.run(
+                list(argv),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=CHECKOUT_IDENTITY_PROBE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            result = None
+        if result is not None and result.returncode == 0:
+            return result
+        if attempt + 1 < CHECKOUT_IDENTITY_PROBE_ATTEMPTS:
+            time.sleep(CHECKOUT_IDENTITY_PROBE_BACKOFF_SECONDS)
+    return result
+
+
+def _current_checkout_source_state() -> tuple[str, bool, bool]:
+    """Resolve the checkout identity, separating "cannot tell" from "dirty".
+
+    A dirty checkout still resolves ``HEAD``, so an unresolvable commit and a
+    non-clean tree reported together mean the probe itself failed.  Reporting
+    that as a dirty checkout asserts something untrue about the deployment.
+    """
+
+    commit_result = _run_checkout_probe(
+        ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD^{commit}"]
+    )
+    status_result = _run_checkout_probe(
+        ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"]
+    )
+    if commit_result is None or status_result is None:
+        return "", False, False
+    if commit_result.returncode != 0 or status_result.returncode != 0:
+        return "", False, False
     commit = commit_result.stdout.strip().lower()
     commit_valid = bool(
-        commit_result.returncode == 0
-        and len(commit) == 40
+        len(commit) == 40
         and all(character in "0123456789abcdef" for character in commit)
     )
-    clean = bool(status_result.returncode == 0 and not status_result.stdout.strip())
-    return (commit if commit_valid else ""), clean
+    clean = not status_result.stdout.strip()
+    return (commit if commit_valid else ""), clean, True
 
 
 def _current_origin_main_commit() -> str:
@@ -366,8 +400,12 @@ def _current_remote_branch_commit(branch: str) -> str:
 def _source_checkout_blockers(
     expected_source_commit: str, *, allow_pushed_branch_diagnostic: bool = False
 ) -> tuple[list[str], str]:
-    checkout_commit, checkout_clean = _current_checkout_source_state()
+    checkout_commit, checkout_clean, probe_ran = _current_checkout_source_state()
     blockers: list[str] = []
+    if not probe_ran:
+        # Same distinction as the control-plane identity: a probe that could not
+        # run must not be recorded as a dirty or commitless checkout.
+        return ["gpu_canary_checkout_identity_probe_failed"], ""
     if not checkout_commit:
         blockers.append("gpu_canary_checkout_source_commit_unavailable")
     elif expected_source_commit.strip().lower() != checkout_commit:
@@ -405,18 +443,24 @@ def _control_plane_checkout_blockers() -> tuple[list[str], dict[str, object]]:
     immutable runtime-image rebuild.
     """
 
-    checkout_commit, checkout_clean = _current_checkout_source_state()
+    checkout_commit, checkout_clean, probe_ran = _current_checkout_source_state()
     origin_main_commit = _current_origin_main_commit()
     remote_main_commit = _current_remote_main_commit()
     blockers: list[str] = []
-    if not checkout_commit:
-        blockers.append("gpu_canary_orchestrator_source_commit_unavailable")
-    if not checkout_clean:
-        blockers.append("gpu_canary_orchestrator_checkout_not_clean")
+    if not probe_ran:
+        # Still fails closed, but names the real condition instead of asserting
+        # a dirty checkout that was never observed.
+        blockers.append("gpu_canary_orchestrator_identity_probe_failed")
+    else:
+        if not checkout_commit:
+            blockers.append("gpu_canary_orchestrator_source_commit_unavailable")
+        if not checkout_clean:
+            blockers.append("gpu_canary_orchestrator_checkout_not_clean")
     identity = {
         "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
         "orchestrator_source_commit": checkout_commit or None,
         "checkout_clean": checkout_clean,
+        "identity_probe_ran": probe_ran,
         "origin_main_commit": origin_main_commit or None,
         "remote_main_commit": remote_main_commit or None,
         "orchestrator_equals_origin_main": bool(
