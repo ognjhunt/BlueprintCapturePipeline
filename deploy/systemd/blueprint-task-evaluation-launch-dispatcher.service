@@ -43,6 +43,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipel
 # credential to the canonical read-only secret directory. The allocator still
 # fails closed when a required file is absent; these paths grant no authority.
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
+Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock
 Environment=NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key
 Environment=DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username
 Environment=DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat
