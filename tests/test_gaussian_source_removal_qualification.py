@@ -20,7 +20,8 @@ from blueprint_pipeline.simready_graph_asset_static_qualification import (
     SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
 )
 from blueprint_pipeline.simready_replacement_native_qualification import (
-    NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+    NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+    materialize_simready_replacement_native_import_receipt,
     materialize_simready_replacement_native_qualification,
 )
 
@@ -301,15 +302,7 @@ def test_derived_source_removal_receipt_feeds_construction_bindings(
     paths = _fixture_receipts(tmp_path)
     scene = json.loads(paths["scene"].read_text(encoding="utf-8"))
     task = json.loads(paths["task"].read_text(encoding="utf-8"))
-    source = task["source_object"]
     removal = task["removal_plan"]
-    common = {
-        "scene_id": scene["selected_scene_id"],
-        "scene_freeze_digest": scene["scene_freeze_digest"],
-        "task_id": task["task_id"],
-        "task_freeze_digest": task["task_freeze_digest"],
-        "source_object_instance_id": source["instance_id"],
-    }
     qualified_removal_path = tmp_path / "qualified_removal.json"
     materialize_gaussian_source_removal_qualification(
         scene_freeze_path=paths["scene"],
@@ -361,14 +354,12 @@ def test_derived_source_removal_receipt_feeds_construction_bindings(
         },
         field="receipt_digest",
     )
-    native_import_path = _write(
-        tmp_path / "native_import.json",
+    native_execution_path = _write(
+        tmp_path / "native_import_execution.json",
         {
-            "schema_version": NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
-            "status": "native_import_qualified",
-            **common,
+            "schema_version": NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+            "status": "completed",
             "asset_id": removal["replacement_asset_id"],
-            "replacement_qualification_id": removal["replacement_qualification_id"],
             "replacement_asset_sha256": asset_sha256,
             "native_isaac_executed": True,
             "native_simulator_import_qualified": True,
@@ -377,9 +368,18 @@ def test_derived_source_removal_receipt_feeds_construction_bindings(
                 "runtime": "fixture_native_import",
                 "imported_prim_path": "/World/replacement_fixture",
             },
-            "receipt_digest": "",
+            "native_readback": {"asset_imported": True},
+            "execution_digest": "",
         },
-        field="receipt_digest",
+        field="execution_digest",
+    )
+    native_import_path = tmp_path / "native_import.json"
+    materialize_simready_replacement_native_import_receipt(
+        scene_freeze_receipt_path=paths["scene"],
+        task_freeze_receipt_path=paths["task"],
+        static_qualification_receipt_path=static_path,
+        native_import_execution_receipt_path=native_execution_path,
+        output_path=native_import_path,
     )
     replacement_path = tmp_path / "replacement.json"
     materialize_simready_replacement_native_qualification(

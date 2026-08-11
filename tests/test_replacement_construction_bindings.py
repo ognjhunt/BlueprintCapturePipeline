@@ -20,7 +20,8 @@ from blueprint_pipeline.simready_graph_asset_static_qualification import (
     SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
 )
 from blueprint_pipeline.simready_replacement_native_qualification import (
-    NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+    NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+    materialize_simready_replacement_native_import_receipt,
     materialize_simready_replacement_native_qualification,
 )
 
@@ -175,6 +176,13 @@ def _write_receipt(path: Path, payload: dict) -> Path:
     return path
 
 
+def _write_execution(path: Path, payload: dict) -> Path:
+    payload["execution_digest"] = canonical_digest(payload, digest_field="execution_digest")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
 def _file_sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -296,16 +304,6 @@ def _path_backed_packet(
             }
         )
         asset_sha256 = _num_sha(index + 3)
-        qualification_identity = {
-            key: common[key]
-            for key in (
-                "scene_id",
-                "scene_freeze_digest",
-                "task_id",
-                "task_freeze_digest",
-                "source_object_instance_id",
-            )
-        }
         static = _write_receipt(
             lane_root / "static_qualification.json",
             {
@@ -325,14 +323,12 @@ def _path_backed_packet(
                 "receipt_digest": "",
             },
         )
-        native_import = _write_receipt(
-            lane_root / "native_import.json",
+        native_execution = _write_execution(
+            lane_root / "native_import_execution.json",
             {
-                "schema_version": NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
-                "status": "native_import_qualified",
-                **qualification_identity,
+                "schema_version": NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+                "status": "completed",
                 "asset_id": removal["replacement_asset_id"],
-                "replacement_qualification_id": removal["replacement_qualification_id"],
                 "replacement_asset_sha256": asset_sha256,
                 "native_isaac_executed": True,
                 "native_simulator_import_qualified": True,
@@ -341,14 +337,24 @@ def _path_backed_packet(
                     "runtime": "fixture_native_import",
                     "imported_prim_path": f"/World/{removal['replacement_asset_id']}",
                 },
-                "receipt_digest": "",
+                "native_readback": {"asset_imported": True},
+                "execution_digest": "",
             },
         )
+        native_import = materialize_simready_replacement_native_import_receipt(
+            scene_freeze_receipt_path=scene_path,
+            task_freeze_receipt_path=task_path,
+            static_qualification_receipt_path=static,
+            native_import_execution_receipt_path=native_execution,
+            output_path=lane_root / "native_import.json",
+        )
+        native_import_path = lane_root / "native_import.json"
+        assert native_import["asset_id"] == removal["replacement_asset_id"]
         replacement = materialize_simready_replacement_native_qualification(
             scene_freeze_receipt_path=scene_path,
             task_freeze_receipt_path=task_path,
             static_qualification_receipt_path=static,
-            native_import_receipt_path=native_import,
+            native_import_receipt_path=native_import_path,
             output_path=lane_root / "replacement.json",
         )
         replacement_path = lane_root / "replacement.json"

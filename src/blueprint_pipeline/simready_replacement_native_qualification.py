@@ -33,6 +33,9 @@ from .simready_graph_asset_static_qualification import (
 
 SCHEMA_VERSION = "simready_replacement_native_qualification.v1"
 NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION = "simready_replacement_native_import_receipt.v1"
+NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION = (
+    "simready_replacement_native_import_execution.v1"
+)
 
 
 class SimReadyReplacementNativeQualificationError(ValueError):
@@ -164,6 +167,168 @@ def validate_simready_replacement_native_import_receipt(
     return payload
 
 
+def validate_simready_replacement_native_import_execution(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a retained native import probe execution receipt.
+
+    This is the output expected from the future native import worker.  It is not
+    itself the construction-facing qualification: it must first be joined to the
+    frozen scene/task and exact static graph-asset qualification by
+    ``materialize_simready_replacement_native_import_receipt``.
+    """
+
+    try:
+        payload = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise SimReadyReplacementNativeQualificationError(
+            ["simready_replacement_native_import_execution_invalid"]
+        ) from exc
+    errors: list[str] = []
+    if not _canonical_receipt_valid(
+        payload,
+        schema_version=NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION,
+        status="completed",
+        digest_field="execution_digest",
+    ):
+        errors.append("simready_replacement_native_import_execution_invalid")
+    if payload.get("native_isaac_executed") is not True:
+        errors.append("simready_replacement_native_import_execution_missing")
+    if payload.get("native_simulator_import_qualified") is not True:
+        errors.append("simready_replacement_native_import_execution_not_qualified")
+    if payload.get("physical_equivalence_claimed") is not False:
+        errors.append("simready_replacement_native_import_execution_physical_claim_invalid")
+    if not _digest(payload.get("replacement_asset_sha256")):
+        errors.append("simready_replacement_native_import_execution_asset_digest_invalid")
+    import_identity = payload.get("simulator_import_identity")
+    if not isinstance(import_identity, Mapping) or not str(
+        import_identity.get("runtime") or ""
+    ):
+        errors.append("simready_replacement_native_import_execution_identity_unbound")
+    readback = payload.get("native_readback")
+    if not isinstance(readback, Mapping) or readback.get("asset_imported") is not True:
+        errors.append("simready_replacement_native_import_execution_readback_missing")
+    if errors:
+        raise SimReadyReplacementNativeQualificationError(errors)
+    return payload
+
+
+def materialize_simready_replacement_native_import_receipt(
+    *,
+    scene_freeze_receipt_path: str | Path,
+    task_freeze_receipt_path: str | Path,
+    static_qualification_receipt_path: str | Path,
+    native_import_execution_receipt_path: str | Path,
+    output_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Join retained native execution to scene/task/static asset identity."""
+
+    scene_path, raw_scene = _read_json(scene_freeze_receipt_path, role="scene_freeze")
+    task_path, raw_task = _read_json(task_freeze_receipt_path, role="task_freeze")
+    static_path, static = _read_json(
+        static_qualification_receipt_path,
+        role="static_qualification",
+    )
+    execution_path, raw_execution = _read_json(
+        native_import_execution_receipt_path,
+        role="native_import_execution",
+    )
+    try:
+        scene = validate_scene_freeze(raw_scene)
+        task = validate_task_freeze(raw_task)
+        execution = validate_simready_replacement_native_import_execution(raw_execution)
+    except (
+        DualTaskRehearsalContractError,
+        SimReadyReplacementNativeQualificationError,
+    ) as exc:
+        codes = getattr(exc, "errors", getattr(exc, "codes", (str(exc),)))
+        raise SimReadyReplacementNativeQualificationError(
+            [
+                f"simready_replacement_native_import_input_invalid:{code}"
+                for code in codes
+            ]
+        ) from exc
+
+    removal = task["removal_plan"]
+    source = task["source_object"]
+    common_identity = {
+        "scene_id": str(scene["selected_scene_id"]),
+        "scene_freeze_digest": str(scene["scene_freeze_digest"]),
+        "task_id": str(task["task_id"]),
+        "task_freeze_digest": str(task["task_freeze_digest"]),
+        "source_object_instance_id": str(source["instance_id"]),
+        "asset_id": str(removal["replacement_asset_id"]),
+        "replacement_qualification_id": str(removal["replacement_qualification_id"]),
+    }
+    errors: list[str] = []
+    if task["scene_freeze_digest"] != scene["scene_freeze_digest"]:
+        errors.append("simready_replacement_native_import_task_scene_mismatch")
+    if not _canonical_receipt_valid(
+        static,
+        schema_version=STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+        status="authored_structure_statically_qualified",
+    ):
+        errors.append("simready_replacement_native_import_static_qualification_invalid")
+    static_identity = {
+        key: common_identity[key] for key in ("task_id", "task_freeze_digest", "asset_id")
+    }
+    errors.extend(
+        _identity_errors(static, static_identity, role="import_static_qualification")
+    )
+    static_asset = (static.get("replacement_usd") or {}).get("sha256")
+    if not _digest(static_asset):
+        errors.append("simready_replacement_native_import_static_asset_digest_invalid")
+    if execution.get("asset_id") != common_identity["asset_id"]:
+        errors.append("simready_replacement_native_import_execution_asset_mismatch")
+    if execution.get("replacement_asset_sha256") != static_asset:
+        errors.append("simready_replacement_native_import_asset_digest_mismatch")
+    if errors:
+        raise SimReadyReplacementNativeQualificationError(errors)
+
+    result: dict[str, Any] = {
+        "schema_version": NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+        "status": "native_import_qualified",
+        **common_identity,
+        "replacement_asset_sha256": str(execution["replacement_asset_sha256"]),
+        "native_isaac_executed": True,
+        "native_simulator_import_qualified": True,
+        "physical_equivalence_claimed": False,
+        "execution_digest": execution["execution_digest"],
+        "static_qualification_receipt_digest": static["receipt_digest"],
+        "simulator_import_identity": json.loads(
+            json.dumps(execution["simulator_import_identity"], sort_keys=True)
+        ),
+        "native_readback": json.loads(
+            json.dumps(execution["native_readback"], sort_keys=True)
+        ),
+        "evidence_receipts": {
+            "scene_freeze": _file_record(
+                scene_path, scene, digest_field="scene_freeze_digest"
+            ),
+            "task_freeze": _file_record(
+                task_path, task, digest_field="task_freeze_digest"
+            ),
+            "static_qualification": _file_record(
+                static_path, static, digest_field="receipt_digest"
+            ),
+            "native_import_execution": _file_record(
+                execution_path, execution, digest_field="execution_digest"
+            ),
+        },
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    if output_path is not None:
+        destination = Path(output_path).expanduser().resolve()
+        if destination.exists() or destination.is_symlink():
+            raise SimReadyReplacementNativeQualificationError(
+                ["simready_replacement_native_import_output_exists"]
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(canonical_json(result) + "\n", encoding="utf-8")
+    return result
+
+
 def materialize_simready_replacement_native_qualification(
     *,
     scene_freeze_receipt_path: str | Path,
@@ -287,9 +452,12 @@ def materialize_simready_replacement_native_qualification(
 
 
 __all__ = [
+    "NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION",
     "NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "SimReadyReplacementNativeQualificationError",
+    "materialize_simready_replacement_native_import_receipt",
     "materialize_simready_replacement_native_qualification",
+    "validate_simready_replacement_native_import_execution",
     "validate_simready_replacement_native_import_receipt",
 ]
