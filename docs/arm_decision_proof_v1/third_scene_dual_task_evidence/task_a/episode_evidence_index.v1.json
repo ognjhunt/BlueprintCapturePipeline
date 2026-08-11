@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:6c7c8ffa5ac13768066f7dbbafe52ac28022211e6b185ee6718042ee3eda9422",
+  "index_digest": "sha256:1bfd2e6af2e90f6a12e859b0cda8b6a2ce106c35ee32aef2580fe93c4e9012b3",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -19,27 +19,11 @@
   "supporting_evidence": [
     {
       "portable_link_available": true,
-      "receipt_digest": "sha256:5fb14dff7ecb7a44eebf8a69e94717e7ad27493c0430fcd54767841aae26afe2",
-      "relative_path": "gaussian_excision_attempt.v1.json",
-      "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
-      "sha256": "sha256:41a7f83806130171c7185d3a34080fc26a7ff26597966d6f10b64c7a4acbefd5",
-      "size_bytes": 2409
-    },
-    {
-      "portable_link_available": true,
-      "receipt_digest": "sha256:081fca829535789d7023d1cdda05345bbc54cec296acbb812e7e0eef2055db43",
-      "relative_path": "gaussian_excision_recovery_readiness.v1.json",
-      "schema_version": "adp_gaussian_excision_recovery_readiness.v1",
-      "sha256": "sha256:b82d508b602b97e8d25969357ab282dc54c7afe9358b339a5cce8db98928e6b0",
-      "size_bytes": 2121
-    },
-    {
-      "portable_link_available": true,
-      "receipt_digest": "sha256:6688b9e86d4f833814e29a2062f0c016dc11b15032fefeb5363d08e4e703cbbd",
+      "receipt_digest": "sha256:344a01a4868fefb9dc7c0b796a02c1ddcbdc2b745e1f3bd9e50c4389bd8dc98c",
       "relative_path": "supporting_evidence_inventory.v2.json",
       "schema_version": "adp_supporting_evidence_inventory.v1",
-      "sha256": "sha256:83f3f12c6367af069488013d35d4ccc42c7cfe3fba3e00e642180ac89b4c0607",
-      "size_bytes": 34729
+      "sha256": "sha256:a78365cffd252991e01cba28911d93c2294bf3b0d407d1a95fc5f41c60154435",
+      "size_bytes": 34713
     }
   ],
   "typed_abstention": {

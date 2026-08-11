@@ -1,7 +1,7 @@
 {
   "episode_count": 0,
   "episodes": [],
-  "index_digest": "sha256:a4f18fe6061ce55122085bb7a6a14326606f053c5d962f05e1587dcf4d3b65ce",
+  "index_digest": "sha256:ca556047ad5d0616dc445e664bba0a2ba43f584a989f224d1f392d64da1b8228",
   "overview_is_review_only": true,
   "required_camera_ids": [
     "external",
@@ -19,27 +19,11 @@
   "supporting_evidence": [
     {
       "portable_link_available": true,
-      "receipt_digest": "sha256:ea2fb17f2f648aada43da166a2f1c504a5975b97d2916123baf6af04537252da",
-      "relative_path": "gaussian_excision_attempt.v1.json",
-      "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
-      "sha256": "sha256:5bf949ae4dcdf01969e887f9f2138bef1e600af7375c89123e806a8b09db529d",
-      "size_bytes": 2404
-    },
-    {
-      "portable_link_available": true,
-      "receipt_digest": "sha256:cf134d4fe842c7790691393ecfbfbdd18a8b72620c08516fefd39f770f17dbb8",
-      "relative_path": "gaussian_excision_recovery_readiness.v1.json",
-      "schema_version": "adp_gaussian_excision_recovery_readiness.v1",
-      "sha256": "sha256:2756515237a6313b8886d1359b017a57192c473177337a69775c9725e51f9259",
-      "size_bytes": 2121
-    },
-    {
-      "portable_link_available": true,
-      "receipt_digest": "sha256:7fe56526ca04b1acd7bd9eb643bb4c9b2d077683214a8015d712212db7363d67",
+      "receipt_digest": "sha256:cc19f8cccabb7c0ef0f8f480c1b46eb84d7121c04ffb808978bc602db3045683",
       "relative_path": "supporting_evidence_inventory.v2.json",
       "schema_version": "adp_supporting_evidence_inventory.v1",
-      "sha256": "sha256:67c96c02b49b79f86ed768ddaec126c2c2c4e24a697553ce7dcd706362cd7cbf",
-      "size_bytes": 34943
+      "sha256": "sha256:0df480e055eb92dff5a6bcfe55545593467046869f306a349582559ce11dddb9",
+      "size_bytes": 34927
     }
   ],
   "typed_abstention": {
