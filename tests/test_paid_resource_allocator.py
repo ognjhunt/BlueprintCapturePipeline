@@ -152,6 +152,40 @@ def test_detached_gpu_canary_launcher_starts_new_session_without_recording_argum
     ).stat().st_mode & 0o777 == 0o600
 
 
+def test_generic_gpu_canary_still_requires_its_own_legacy_inputs(
+    tmp_path: Path,
+) -> None:
+    admission = tmp_path / "admission.json"
+    adapter = tmp_path / "adapter.json"
+
+    assert (
+        allocator.main(
+            [
+                "gpu-canary",
+                "--probe-kind",
+                "startup",
+                "--admission-out",
+                str(admission),
+                "--adapter-output",
+                str(adapter),
+                "--expected-source-commit",
+                "a" * 40,
+                "--provider-output-put-url-file",
+                str(tmp_path / "unused-output-url.txt"),
+            ]
+        )
+        == 2
+    )
+    result = json.loads(admission.read_text(encoding="utf-8"))
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == [
+        "generic_gpu_canary_required_arguments_missing:"
+        "bound_request_out,model_cache_evidence,pod_name,preflight_bundle,"
+        "provider_launch_request,release_evidence"
+    ]
+    assert json.loads(adapter.read_text(encoding="utf-8")) == result
+
+
 def _write_inputs(tmp_path: Path, *, paid: bool = True) -> Namespace:
     packet = tmp_path / "packet.json"
     builder = tmp_path / "builder.json"

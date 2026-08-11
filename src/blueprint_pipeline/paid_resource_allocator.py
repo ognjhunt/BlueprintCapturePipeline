@@ -1020,14 +1020,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     cpu_local.add_argument("--build-workdir", required=True)
     cpu_local.add_argument("--build-script", required=True)
     gpu = commands.add_parser("gpu-canary")
-    gpu.add_argument("--provider-launch-request", required=True)
-    gpu.add_argument("--release-evidence", required=True)
-    gpu.add_argument("--model-cache-evidence", required=True)
-    gpu.add_argument("--preflight-bundle", required=True)
+    # These are legacy generic-canary inputs.  Specialized paid lanes bind
+    # their own immutable bundles and must not need meaningless placeholders.
+    # The generic branch below still rejects their absence before any mutation.
+    gpu.add_argument("--provider-launch-request")
+    gpu.add_argument("--release-evidence")
+    gpu.add_argument("--model-cache-evidence")
+    gpu.add_argument("--preflight-bundle")
     gpu.add_argument("--admission-out", required=True)
-    gpu.add_argument("--bound-request-out", required=True)
+    gpu.add_argument("--bound-request-out")
     gpu.add_argument("--adapter-output", required=True)
-    gpu.add_argument("--pod-name", required=True)
+    gpu.add_argument("--pod-name")
     gpu.add_argument("--expected-source-commit")
     gpu.add_argument(
         "--experimental-branch-diagnostic",
@@ -4798,6 +4801,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "provider_mutations_performed": 0,
             }
             write_json(Path(args.admission_out), result)
+            print(json.dumps({"success": False}, sort_keys=True))
+            return 2
+        generic_missing = [
+            name
+            for name in (
+                "provider_launch_request",
+                "release_evidence",
+                "model_cache_evidence",
+                "preflight_bundle",
+                "bound_request_out",
+                "pod_name",
+            )
+            if not getattr(args, name, None)
+        ]
+        if generic_missing:
+            result = {
+                "status": "blocked",
+                "blockers": [
+                    "generic_gpu_canary_required_arguments_missing:"
+                    + ",".join(sorted(generic_missing))
+                ],
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(args.admission_out), result)
+            write_json(Path(args.adapter_output), result)
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
         source_blockers, checkout_commit = _source_checkout_blockers(
