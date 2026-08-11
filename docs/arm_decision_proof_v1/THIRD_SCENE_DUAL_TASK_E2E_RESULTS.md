@@ -42,8 +42,10 @@ learned policies were therefore not admitted. This is not a policy result.
   (manifest-driven CAD review media), followed by `f9f06c58f` (refreshed
   Content Agents readiness), `b78234797` (refreshed digest-bound task and
   package evidence indexes), and `7b7fca40f` (task/slot/asset/backend identity
-  retained in agent-CAD supporting evidence inventories, with a 1..5-slot
-  regression),
+  retained in generated agent-CAD supporting evidence rows and evidence
+  inventories, with a 1..5-slot regression), followed by `f507973fb` (the
+  portable inventory materializer now rejects hand-fed `agent_cad:*` rows that
+  omit task/slot/asset/backend identity or relabel the backend),
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
@@ -607,12 +609,19 @@ Recent reusable-code and manifest commits:
   regression proves that the supporting-evidence inventory can filter one
   manifest-bound task from a five-slot CAD/Content Agents matrix and retain
   explicit task, slot, asset, and backend identity for every CAD-agent row.
+- Focused agent-CAD/Content Agents/evidence-index regressions for `f507973fb`
+  — `80 passed`; required precommit selector —
+  `1162 passed, 9953 deselected`; Ruff over `src/ tests/` passed. The real
+  Task A and Task B supporting inventories were re-materialized under the
+  stricter identity contract and reproduced their existing digests unchanged:
+  `sha256:62103ce321a55fb21e006e93b94eae37521867a7c56c8b63f82da597edb450ed`
+  and `sha256:15a98a0244d329f25724499887190f38fb5a950da6da2d98151ca674c30e0646`.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; manifest-bound CAD-agent reference selection and historical CAD-output reference-binding audit; agent-CAD-to-Content-Agents Mesh bundle adapter with manifest-derived references; Dockerless static and no-paid Docker/network-disabled Content Agents bundle/config/input-USD preflight; Content Agents single-use paid-attempt authority; identity-bound agent-CAD supporting inventories that retain task, slot, asset, and backend metadata for 1..5 replacement-object matrices; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; generated abstention-bound blocker placeholders; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; manifest-bound CAD-agent reference selection and historical CAD-output reference-binding audit; agent-CAD-to-Content-Agents Mesh bundle adapter with manifest-derived references; Dockerless static and no-paid Docker/network-disabled Content Agents bundle/config/input-USD preflight; Content Agents single-use paid-attempt authority; identity-bound agent-CAD supporting inventories that retain task, slot, asset, and backend metadata for 1..5 replacement-object matrices and fail closed on missing or relabeled identity even when rows are manually supplied; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; generated abstention-bound blocker placeholders; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes (all four bundles passed local/static preflight but remain blocked on paid model access plus fresh paid authority), replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
