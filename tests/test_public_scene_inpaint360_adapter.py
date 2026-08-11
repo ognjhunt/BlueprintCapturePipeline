@@ -33,6 +33,7 @@ def _fixture(
     scene_id: str = "840313",
     target_instance_id: str = "160",
     task_id: str | None = None,
+    external_receipt: bool = False,
 ) -> dict[str, Path]:
     repo, data, method = tmp_path / "repo", tmp_path / "data", tmp_path / "method"
     repo.mkdir()
@@ -122,14 +123,44 @@ def _fixture(
         },
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
-    receipt_path = repo / "input_receipt.json"
+    receipt_path = (data if external_receipt else repo) / "input_receipt.json"
     receipt_path.write_text(json.dumps(receipt))
+    if external_receipt:
+        (repo / "README.md").write_text("external evidence binding fixture\n")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
     return {"repo": repo, "data": data, "method": method, "input": input_root, "receipt": receipt_path}
+
+
+def _external_receipt_binding(paths: dict[str, Path], *, task_id: str) -> Path:
+    """Commit a generic local-evidence receipt binding to the fixture repo."""
+
+    import hashlib
+
+    receipt = json.loads(paths["receipt"].read_text())
+    binding = {
+        "schema_version": "public_scene_render_input_local_binding.v1",
+        "program_id": "arm-decision-proof-v1",
+        "task_id": task_id,
+        "render_input_receipt": {
+            "path": paths["receipt"].relative_to(paths["data"]).as_posix(),
+            "file_sha256": "sha256:"
+            + hashlib.sha256(paths["receipt"].read_bytes()).hexdigest(),
+            "receipt_digest": receipt["receipt_digest"],
+        },
+    }
+    binding["binding_digest"] = canonical_digest(binding, digest_field="binding_digest")
+    path = paths["repo"] / "input_receipt_binding.json"
+    path.write_text(json.dumps(binding))
+    subprocess.run(["git", "-C", str(paths["repo"]), "add", path.name], check=True)
+    subprocess.run(
+        ["git", "-C", str(paths["repo"]), "commit", "-qm", "bind external receipt"],
+        check=True,
+    )
+    return path
 
 
 def test_adapter_stages_exact_colmap_masks_and_unexecuted_receipt(
@@ -280,6 +311,118 @@ def test_adapter_binds_task_specific_config_name(
     assert (
         output / f"config/object_inpaint/blueprint/{config_id}.json"
     ).is_file()
+
+
+def test_external_receipt_requires_tracked_digest_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(
+        tmp_path,
+        scene_id="840920",
+        target_instance_id="385",
+        task_id="task_b_notebook_relocation",
+        external_receipt=True,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.INPAINT360_COMMIT",
+        subprocess.run(
+            ["git", "-C", str(paths["method"]), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
+    with pytest.raises(
+        Inpaint360AdapterError, match="external_input_receipt_binding_required"
+    ):
+        materialize_inpaint360_adapter(
+            input_receipt_path=paths["receipt"],
+            input_root=paths["input"],
+            repo_root=paths["repo"],
+            data_root=paths["data"],
+            method_root=paths["method"],
+            output_root=paths["data"] / "adapter",
+        )
+
+
+def test_external_receipt_binding_stages_exact_task_packet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_id = "task_b_notebook_relocation"
+    paths = _fixture(
+        tmp_path,
+        scene_id="840920",
+        target_instance_id="385",
+        task_id=task_id,
+        external_receipt=True,
+    )
+    binding_path = _external_receipt_binding(paths, task_id=task_id)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.INPAINT360_COMMIT",
+        subprocess.run(
+            ["git", "-C", str(paths["method"]), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
+    receipt = materialize_inpaint360_adapter(
+        input_receipt_path=paths["receipt"],
+        input_receipt_binding_path=binding_path,
+        input_root=paths["input"],
+        repo_root=paths["repo"],
+        data_root=paths["data"],
+        method_root=paths["method"],
+        output_root=paths["data"] / "adapter",
+    )
+    assert receipt["input_receipt_binding"] == {
+        "schema_version": "public_scene_render_input_local_binding.v1",
+        "binding_path": "input_receipt_binding.json",
+        "binding_digest": json.loads(binding_path.read_text())["binding_digest"],
+        "input_receipt_file_sha256": _record(paths["receipt"], paths["data"])[
+            "sha256"
+        ],
+        "input_receipt_receipt_digest": json.loads(paths["receipt"].read_text())["receipt_digest"],
+        "task_id": task_id,
+        "task_freeze_digest": None,
+    }
+    assert receipt["adapter"]["method_config_id"] == "840920__385__task_b_notebook_relocation"
+
+
+def test_external_receipt_binding_rejects_task_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _fixture(
+        tmp_path,
+        scene_id="840920",
+        target_instance_id="385",
+        task_id="task_b_notebook_relocation",
+        external_receipt=True,
+    )
+    binding_path = _external_receipt_binding(
+        paths, task_id="task_a_washer_door_open"
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpaint360_adapter.INPAINT360_COMMIT",
+        subprocess.run(
+            ["git", "-C", str(paths["method"]), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    )
+    with pytest.raises(
+        Inpaint360AdapterError, match="binding_task_identity_mismatch"
+    ):
+        materialize_inpaint360_adapter(
+            input_receipt_path=paths["receipt"],
+            input_receipt_binding_path=binding_path,
+            input_root=paths["input"],
+            repo_root=paths["repo"],
+            data_root=paths["data"],
+            method_root=paths["method"],
+            output_root=paths["data"] / "adapter",
+        )
 
 
 def test_adapter_rejects_missing_metric_target_obb(

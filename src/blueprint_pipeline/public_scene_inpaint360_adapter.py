@@ -114,6 +114,106 @@ def _adapter_repository_identity(repo: Path) -> dict[str, Any]:
     }
 
 
+def _tracked_repository_file(repo: Path, path: Path, code: str) -> str:
+    """Return a clean-repository-relative path only for a tracked binding."""
+
+    try:
+        relative = path.relative_to(repo).as_posix()
+    except ValueError as exc:
+        raise Inpaint360AdapterError([code]) from exc
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", relative],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise Inpaint360AdapterError([code]) from exc
+    return relative
+
+
+def _external_input_receipt_binding(
+    *,
+    receipt_path: Path,
+    input_root: Path,
+    repo: Path,
+    data: Path,
+    binding_path: str | Path | None,
+) -> dict[str, Any]:
+    """Authorize an evidence-root receipt through a tracked digest binding.
+
+    Production render packets are deliberately retained outside the source
+    checkout.  This prevents a caller from substituting an arbitrary local
+    receipt merely because it is self-digesting: the source checkout must
+    contain a clean, tracked binding to the exact evidence-root file.
+    """
+
+    if binding_path is None:
+        raise Inpaint360AdapterError(
+            ["inpaint360_external_input_receipt_binding_required"]
+        )
+    binding_file = _under(
+        binding_path,
+        repo,
+        "inpaint360_input_receipt_binding_outside_repo",
+    )
+    relative_binding_path = _tracked_repository_file(
+        repo,
+        binding_file,
+        "inpaint360_input_receipt_binding_not_tracked",
+    )
+    binding = _read_object(
+        binding_file, "inpaint360_input_receipt_binding_invalid"
+    )
+    if (
+        not isinstance(binding.get("schema_version"), str)
+        or not binding["schema_version"]
+        or canonical_digest(binding, digest_field="binding_digest")
+        != binding.get("binding_digest")
+    ):
+        raise Inpaint360AdapterError(
+            ["inpaint360_input_receipt_binding_digest_mismatch"]
+        )
+    record = binding.get("render_input_receipt")
+    if not isinstance(record, Mapping):
+        raise Inpaint360AdapterError(["inpaint360_input_receipt_binding_invalid"])
+    relative_path = record.get("path")
+    expected_file_sha256 = record.get("file_sha256")
+    expected_receipt_digest = record.get("receipt_digest")
+    if (
+        not isinstance(relative_path, str)
+        or not relative_path
+        or not isinstance(expected_file_sha256, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_file_sha256)
+        or not isinstance(expected_receipt_digest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_receipt_digest)
+    ):
+        raise Inpaint360AdapterError(["inpaint360_input_receipt_binding_invalid"])
+    expected_receipt_path = _under(
+        data / relative_path,
+        data,
+        "inpaint360_input_receipt_binding_path_invalid",
+    )
+    if expected_receipt_path != receipt_path:
+        raise Inpaint360AdapterError(
+            ["inpaint360_input_receipt_binding_path_mismatch"]
+        )
+    if not receipt_path.is_file() or _sha256(receipt_path) != expected_file_sha256:
+        raise Inpaint360AdapterError(
+            ["inpaint360_input_receipt_binding_file_bytes_changed"]
+        )
+    return {
+        "schema_version": binding["schema_version"],
+        "binding_path": relative_binding_path,
+        "binding_digest": binding["binding_digest"],
+        "input_receipt_file_sha256": expected_file_sha256,
+        "input_receipt_receipt_digest": expected_receipt_digest,
+        "task_id": binding.get("task_id"),
+        "task_freeze_digest": binding.get("task_freeze_digest"),
+    }
+
+
 def _rotmat_to_qvec(rotation: np.ndarray) -> np.ndarray:
     rxx, ryx, rzx, rxy, ryy, rzy, rxz, ryz, rzz = rotation.flat
     matrix = np.asarray(
@@ -236,6 +336,7 @@ def _method_config_id(scene: Mapping[str, Any]) -> tuple[str, str | None]:
 def materialize_inpaint360_adapter(
     *,
     input_receipt_path: str | Path,
+    input_receipt_binding_path: str | Path | None = None,
     input_root: str | Path,
     repo_root: str | Path,
     data_root: str | Path,
@@ -252,10 +353,45 @@ def materialize_inpaint360_adapter(
         if receipt_output is not None
         else None
     )
-    receipt_path = _under(input_receipt_path, repo, "inpaint360_input_receipt_outside_repo")
+    requested_receipt_path = Path(input_receipt_path).expanduser().resolve()
+    if requested_receipt_path == repo or repo in requested_receipt_path.parents:
+        receipt_path = requested_receipt_path
+        input_receipt_binding = None
+    else:
+        receipt_path = _under(
+            requested_receipt_path,
+            data,
+            "inpaint360_input_receipt_outside_data",
+        )
+        input_receipt_binding = _external_input_receipt_binding(
+            receipt_path=receipt_path,
+            input_root=input_dir,
+            repo=repo,
+            data=data,
+            binding_path=input_receipt_binding_path,
+        )
     receipt = _read_object(receipt_path, "inpaint360_input_receipt_invalid")
     if canonical_digest(receipt, digest_field="receipt_digest") != receipt.get("receipt_digest"):
         raise Inpaint360AdapterError(["inpaint360_input_receipt_digest_mismatch"])
+    if input_receipt_binding is not None:
+        if receipt["receipt_digest"] != input_receipt_binding["input_receipt_receipt_digest"]:
+            raise Inpaint360AdapterError(
+                ["inpaint360_input_receipt_binding_receipt_digest_mismatch"]
+            )
+        scene = receipt.get("scene") or {}
+        task_id = str(scene.get("task_id") or "") or None
+        if input_receipt_binding["task_id"] != task_id:
+            raise Inpaint360AdapterError(
+                ["inpaint360_input_receipt_binding_task_identity_mismatch"]
+            )
+        expected_freeze = input_receipt_binding["task_freeze_digest"]
+        actual_freeze = (receipt.get("source_admission") or {}).get(
+            "task_freeze_digest"
+        )
+        if expected_freeze is not None and expected_freeze != actual_freeze:
+            raise Inpaint360AdapterError(
+                ["inpaint360_input_receipt_binding_freeze_digest_mismatch"]
+            )
     if receipt.get("status") != "render_derived_input_packet_materialized":
         raise Inpaint360AdapterError(["inpaint360_input_packet_not_materialized"])
     if receipt.get("proof_boundaries", {}).get("inpainting_result") is not False:
@@ -428,6 +564,7 @@ def materialize_inpaint360_adapter(
         "adp_item": "ADP-009B",
         "status": "prepared_unexecuted",
         "input_receipt_digest": receipt["receipt_digest"],
+        "input_receipt_binding": input_receipt_binding,
         "scene": receipt["scene"],
         "source": source_identity,
         "adapter_repository": adapter_repository,
@@ -478,6 +615,7 @@ def materialize_inpaint360_adapter(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-receipt", required=True)
+    parser.add_argument("--input-receipt-binding")
     parser.add_argument("--input-root", required=True)
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--data-root", required=True)
@@ -487,6 +625,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     receipt = materialize_inpaint360_adapter(
         input_receipt_path=args.input_receipt,
+        input_receipt_binding_path=args.input_receipt_binding,
         input_root=args.input_root,
         repo_root=args.repo_root,
         data_root=args.data_root,
