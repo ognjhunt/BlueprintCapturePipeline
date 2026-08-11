@@ -18,6 +18,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .cad_agent_review_media import (
+    CadAgentReviewMediaError,
+    selected_cad_agent_visual_review,
+)
 from .cad_agent_mesh_projection import (
     PROJECTION_SCHEMA_VERSION,
     CadAgentMeshProjectionError,
@@ -34,7 +38,7 @@ from .simready_cad_agent_contract import (
 from .simready_graph_asset import RECEIPT_SCHEMA as GRAPH_ASSET_RECEIPT_SCHEMA
 
 
-BINDING_SCHEMA_VERSION = "simready_agent_cad_visual_binding.v1"
+BINDING_SCHEMA_VERSION = "simready_agent_cad_visual_binding.v2"
 COMPOSITION_SCHEMA_VERSION = "simready_agent_cad_visual_composition.v1"
 COMPOSITION_SET_SCHEMA_VERSION = "scene_agent_cad_visual_composition_set.v1"
 
@@ -701,6 +705,20 @@ def _validate_binding(
         binding.get("mesh_projection_receipt"), verify_files=verify_files
     )
     request = cad_output["request"]
+    try:
+        visual_review = selected_cad_agent_visual_review(
+            binding.get("cad_agent_visual_review") or {},
+            scene_id=str(request.get("scene_id") or ""),
+            task_id=str(request.get("task_id") or ""),
+            asset_id=str(request.get("asset_id") or ""),
+            backend_id=str(((request.get("backend") or {}).get("backend_id")) or ""),
+            cad_agent_output_receipt_digest=str(cad_output.get("receipt_digest") or ""),
+            verify_files=verify_files,
+        )
+    except CadAgentReviewMediaError as exc:
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_visual_reference_review_invalid", str(exc)]
+        ) from exc
     if (
         binding.get("scene_id") != request.get("scene_id")
         or binding.get("task_id") != graph.get("task_id")
@@ -733,6 +751,7 @@ def _validate_binding(
         "cad_output": cad_output,
         "projection": projection,
         "packet": packet,
+        "visual_review": visual_review,
     }
     return binding, context
 
@@ -752,6 +771,7 @@ def seal_agent_cad_visual_binding(
     cad_agent_output_receipt_path: str | Path | None = None,
     cad_agent_matrix_path: str | Path | None = None,
     cad_agent_backend_id: str | None = None,
+    cad_agent_visual_review_path: str | Path,
     mesh_projection_receipt_path: str | Path,
     link_bindings: Sequence[Mapping[str, Any]],
     unmapped_graph_link_reasons: Mapping[str, str],
@@ -779,6 +799,7 @@ def seal_agent_cad_visual_binding(
         else None
     )
     projection_record = _file_record(mesh_projection_receipt_path)
+    visual_review_record = _file_record(cad_agent_visual_review_path)
     graph, graph_stage = _load_graph_authoring(graph_record, verify_files=True)
     candidate_source = {
         "task_id": graph["task_id"],
@@ -812,6 +833,19 @@ def seal_agent_cad_visual_binding(
         or not _same_file((cad_output.get("artifacts") or {}).get("step"), projection.get("step"))
     ):
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_binding_identity_mismatch"])
+    try:
+        selected_cad_agent_visual_review(
+            visual_review_record,
+            scene_id=str(request.get("scene_id") or ""),
+            task_id=str(request.get("task_id") or ""),
+            asset_id=str(request.get("asset_id") or ""),
+            backend_id=str(((request.get("backend") or {}).get("backend_id")) or ""),
+            cad_agent_output_receipt_digest=str(cad_output.get("receipt_digest") or ""),
+        )
+    except CadAgentReviewMediaError as exc:
+        raise AgentCadGraphVisualCompositionError(
+            ["agent_cad_visual_reference_review_invalid", str(exc)]
+        ) from exc
     binding: dict[str, Any] = {
         "schema_version": BINDING_SCHEMA_VERSION,
         "scene_id": request["scene_id"],
@@ -828,6 +862,7 @@ def seal_agent_cad_visual_binding(
             }
         ),
         "cad_agent_output_receipt_digest": cad_output["receipt_digest"],
+        "cad_agent_visual_review": visual_review_record,
         "mesh_projection_receipt": projection_record,
         "link_bindings": rows,
         "unmapped_graph_link_reasons": unmapped,

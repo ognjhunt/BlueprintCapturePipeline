@@ -358,6 +358,19 @@ with binding digest
 This is human-review media only; it does not select a CAD winner or qualify
 SimReady/native/appearance/physics behavior.
 
+The general CAD construction gate now also requires a digest-bound
+`scene_replacement_cad_agent_visual_reference_review.v1` receipt before a
+candidate can be composed with a graph asset. It opens every manifest-bound
+observed reference image and candidate snapshot, renders all reference frames
+in the review board, and requires one decision per candidate that covers every
+reference-image digest. Each decision records visible matches, mismatches, and
+explicit generated-candidate content; a rejected candidate cannot enter visual
+composition. This is an image-grounded admission record, not an automatic
+appearance score or an appearance/native/physical-equivalence qualification.
+The historical review board above predates this stricter receipt and will be
+rematerialized only for the selected two construction candidates; it does not
+retroactively select either CAD backend.
+
 For NVIDIA Content Agents, each STEP was deterministically projected into a
 Mesh-only USD working copy. These are agent-input artifacts only; they are not
 canonical simulator assets, collision assets, physics authority, native imports,

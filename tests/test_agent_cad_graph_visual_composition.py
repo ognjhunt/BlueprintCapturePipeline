@@ -6,6 +6,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
+from PIL import Image
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.agent_cad_graph_visual_composition import (
@@ -18,6 +19,11 @@ from blueprint_pipeline.agent_cad_graph_visual_composition import (
 from blueprint_pipeline.cad_agent_mesh_projection import (
     PACKET_SCHEMA_VERSION,
     materialize_mesh_usd_projection,
+)
+from blueprint_pipeline.cad_agent_review_media import (
+    RECEIPT_FILENAME,
+    materialize_cad_agent_visual_comparison,
+    seal_cad_agent_visual_reference_review,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.simready_cad_agent_contract import (
@@ -55,6 +61,12 @@ def _record(path: Path) -> dict:
         "size_bytes": path.stat().st_size,
         "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
     }
+
+
+def _write_png(path: Path, color: tuple[int, int, int]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (40, 30), color).save(path)
+    return path
 
 
 def _backend(
@@ -147,22 +159,26 @@ def _cad_output(
     *,
     step: Path,
     backend_id: str = "earthtojake_text_to_cad",
+    reference_manifest_path: Path | None = None,
 ) -> Path:
     brief = _write(tmp_path / "brief.md", "Exact observed dimensions only")
-    image = _write(tmp_path / "reference.png", b"reference")
-    reference = seal_cad_agent_reference_manifest(
-        scene_id="fixture_scene",
-        objects=[
-            {
-                "replacement_slot": 1,
-                "task_id": TASK_ID,
-                "asset_id": ASSET_ID,
-                "task_freeze_path": FREEZE_A,
-                "reference_image_paths": [image],
-            }
-        ],
-    )
-    reference_path = _write(tmp_path / "references.json", json.dumps(reference))
+    if reference_manifest_path is None:
+        image = _write_png(tmp_path / "reference.png", (120, 10, 10))
+        reference = seal_cad_agent_reference_manifest(
+            scene_id="fixture_scene",
+            objects=[
+                {
+                    "replacement_slot": 1,
+                    "task_id": TASK_ID,
+                    "asset_id": ASSET_ID,
+                    "task_freeze_path": FREEZE_A,
+                    "reference_image_paths": [image],
+                }
+            ],
+        )
+        reference_path = _write(tmp_path / "references.json", json.dumps(reference))
+    else:
+        reference_path = reference_manifest_path
     request = seal_cad_agent_request(
         request_id="fixture-agent-cad",
         scene_id="fixture_scene",
@@ -176,7 +192,7 @@ def _cad_output(
         reference_manifest_path=reference_path,
     )
     generator = _write(tmp_path / "agent.py", "# agent authored\n")
-    snapshot = _write(tmp_path / "snapshot.png", b"snapshot")
+    snapshot = _write_png(tmp_path / "snapshot_iso.png", (10, 110, 180))
     inspection = {
         "schema_version": INSPECTION_SCHEMA_VERSION,
         "status": "passed",
@@ -225,6 +241,91 @@ def _cad_output(
         actual_cost_usd=0.0 if backend_id == "earthtojake_text_to_cad" else 0.75,
     )
     return _write(tmp_path / "cad_output.json", json.dumps(output))
+
+
+def _visual_review_for_matrix(tmp_path: Path, matrix_path: Path) -> Path:
+    media = materialize_cad_agent_visual_comparison(
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "review_media",
+    )
+    decisions: list[dict] = []
+    for row in media["rows"]:
+        references = [reference["sha256"] for reference in row["reference_images"]]
+        for candidate in row["candidates"]:
+            decisions.append(
+                {
+                    "replacement_slot": row["replacement_slot"],
+                    "task_id": row["task_id"],
+                    "asset_id": row["asset_id"],
+                    "backend_id": candidate["backend_id"],
+                    "cad_agent_output_receipt_digest": candidate[
+                        "output_receipt_digest"
+                    ],
+                    "reference_signature": row["reference_signature"],
+                    "reviewed_reference_image_digests": references,
+                    "review_status": "conditionally_admitted_for_construction",
+                    "observed_feature_findings": [
+                        {
+                            "feature_id": f"reference_{index}",
+                            "status": "mismatch",
+                            "evidence_reference_image_digests": [digest],
+                        }
+                        for index, digest in enumerate(references)
+                    ],
+                    "visible_mismatch_codes": ["fixture_visual_mismatch"],
+                    "generated_candidate_content_labels": [
+                        "unseen_geometry_is_generated_candidate"
+                    ],
+                }
+            )
+    review_path = tmp_path / "review_media" / "visual_review.v1.json"
+    seal_cad_agent_visual_reference_review(
+        review_media_receipt_path=tmp_path / "review_media" / RECEIPT_FILENAME,
+        reviewer={
+            "reviewer_kind": "codex_visual_review",
+            "reviewer_id": "fixture-codex",
+            "visual_input_mode": (
+                "all_manifest_bound_reference_frames_and_candidate_snapshots"
+            ),
+        },
+        candidate_decisions=decisions,
+        output_path=review_path,
+    )
+    return review_path
+
+
+def _visual_review_for_candidate(
+    tmp_path: Path, *, candidate_path: Path, step: Path
+) -> Path:
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    backend_id = candidate["request"]["backend"]["backend_id"]
+    alternate_backend = (
+        "pan_chera_multi_agent_cad"
+        if backend_id == "earthtojake_text_to_cad"
+        else "earthtojake_text_to_cad"
+    )
+    alternate = json.loads(
+        _cad_output(
+            tmp_path / "alternate",
+            step=step,
+            backend_id=alternate_backend,
+            reference_manifest_path=Path(
+                candidate["request"]["inputs"]["reference_manifest"]["path"]
+            ),
+        ).read_text(encoding="utf-8")
+    )
+    matrix = seal_cad_agent_matrix(
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": TASK_ID,
+                "asset_id": ASSET_ID,
+                "candidates": [candidate, alternate],
+            }
+        ]
+    )
+    matrix_path = _write(tmp_path / "matrix.v1.json", json.dumps(matrix))
+    return _visual_review_for_matrix(tmp_path, matrix_path)
 
 
 def _graph_authoring_receipt(
@@ -285,10 +386,14 @@ def _identity() -> list[list[float]]:
 def _prepared(tmp_path: Path) -> tuple[Path, Path]:
     step, projection = _mesh_projection(tmp_path / "projection")
     cad_output = _cad_output(tmp_path / "cad", step=step)
+    visual_review = _visual_review_for_candidate(
+        tmp_path / "visual_review", candidate_path=cad_output, step=step
+    )
     graph = _graph_authoring_receipt(tmp_path / "graph")
     binding = seal_agent_cad_visual_binding(
         graph_authoring_receipt_path=graph,
         cad_agent_output_receipt_path=cad_output,
+        cad_agent_visual_review_path=visual_review,
         mesh_projection_receipt_path=projection,
         link_bindings=[
             {
@@ -337,6 +442,9 @@ def test_agent_cad_visuals_are_composed_without_promoting_collision_meshes(
 def test_binding_rejects_nonrigid_agent_to_graph_transform(tmp_path: Path) -> None:
     step, projection = _mesh_projection(tmp_path / "projection")
     cad_output = _cad_output(tmp_path / "cad", step=step)
+    visual_review = _visual_review_for_candidate(
+        tmp_path / "visual_review", candidate_path=cad_output, step=step
+    )
     graph = _graph_authoring_receipt(tmp_path / "graph")
     scaled = _identity()
     scaled[0][0] = 2.0
@@ -344,6 +452,7 @@ def test_binding_rejects_nonrigid_agent_to_graph_transform(tmp_path: Path) -> No
         seal_agent_cad_visual_binding(
             graph_authoring_receipt_path=graph,
             cad_agent_output_receipt_path=cad_output,
+            cad_agent_visual_review_path=visual_review,
             mesh_projection_receipt_path=projection,
             link_bindings=[
                 {
@@ -370,6 +479,9 @@ def test_binding_can_derive_link_local_transform_from_graph_reset_pose(
 ) -> None:
     step, projection = _mesh_projection(tmp_path / "projection")
     cad_output = _cad_output(tmp_path / "cad", step=step)
+    visual_review = _visual_review_for_candidate(
+        tmp_path / "visual_review", candidate_path=cad_output, step=step
+    )
     graph = _graph_authoring_receipt(
         tmp_path / "graph", door_translation=(0.0, 0.2, 0.3)
     )
@@ -377,6 +489,7 @@ def test_binding_can_derive_link_local_transform_from_graph_reset_pose(
     binding = seal_agent_cad_visual_binding(
         graph_authoring_receipt_path=graph,
         cad_agent_output_receipt_path=cad_output,
+        cad_agent_visual_review_path=visual_review,
         mesh_projection_receipt_path=projection,
         link_bindings=[
             {
@@ -417,10 +530,15 @@ def test_binding_selects_one_exact_candidate_from_a_verified_cad_matrix(
 ) -> None:
     step, projection = _mesh_projection(tmp_path / "projection")
     earth_path = _cad_output(tmp_path / "earth", step=step)
-    multi_path = _cad_output(
-        tmp_path / "multi", step=step, backend_id="pan_chera_multi_agent_cad"
-    )
     earth = json.loads(earth_path.read_text(encoding="utf-8"))
+    multi_path = _cad_output(
+        tmp_path / "multi",
+        step=step,
+        backend_id="pan_chera_multi_agent_cad",
+        reference_manifest_path=Path(
+            earth["request"]["inputs"]["reference_manifest"]["path"]
+        ),
+    )
     multi = json.loads(multi_path.read_text(encoding="utf-8"))
     matrix = seal_cad_agent_matrix(
         objects=[
@@ -433,11 +551,13 @@ def test_binding_selects_one_exact_candidate_from_a_verified_cad_matrix(
         ]
     )
     matrix_path = _write(tmp_path / "matrix.json", json.dumps(matrix))
+    visual_review = _visual_review_for_matrix(tmp_path / "visual_review", matrix_path)
     graph = _graph_authoring_receipt(tmp_path / "graph")
     binding = seal_agent_cad_visual_binding(
         graph_authoring_receipt_path=graph,
         cad_agent_matrix_path=matrix_path,
         cad_agent_backend_id="earthtojake_text_to_cad",
+        cad_agent_visual_review_path=visual_review,
         mesh_projection_receipt_path=projection,
         link_bindings=[
             {
@@ -464,11 +584,15 @@ def test_binding_selects_one_exact_candidate_from_a_verified_cad_matrix(
 def test_binding_rejects_render_visible_graph_collision(tmp_path: Path) -> None:
     step, projection = _mesh_projection(tmp_path / "projection")
     cad_output = _cad_output(tmp_path / "cad", step=step)
+    visual_review = _visual_review_for_candidate(
+        tmp_path / "visual_review", candidate_path=cad_output, step=step
+    )
     graph = _graph_authoring_receipt(tmp_path / "graph", collision_isolated=False)
     with pytest.raises(AgentCadGraphVisualCompositionError) as caught:
         seal_agent_cad_visual_binding(
             graph_authoring_receipt_path=graph,
             cad_agent_output_receipt_path=cad_output,
+            cad_agent_visual_review_path=visual_review,
             mesh_projection_receipt_path=projection,
             link_bindings=[
                 {
@@ -493,11 +617,15 @@ def test_binding_rejects_render_visible_graph_collision(tmp_path: Path) -> None:
 def test_binding_rejects_renderable_noncollision_graph_geometry(tmp_path: Path) -> None:
     step, projection = _mesh_projection(tmp_path / "projection")
     cad_output = _cad_output(tmp_path / "cad", step=step)
+    visual_review = _visual_review_for_candidate(
+        tmp_path / "visual_review", candidate_path=cad_output, step=step
+    )
     graph = _graph_authoring_receipt(tmp_path / "graph", extra_renderable=True)
     with pytest.raises(AgentCadGraphVisualCompositionError) as caught:
         seal_agent_cad_visual_binding(
             graph_authoring_receipt_path=graph,
             cad_agent_output_receipt_path=cad_output,
+            cad_agent_visual_review_path=visual_review,
             mesh_projection_receipt_path=projection,
             link_bindings=[
                 {

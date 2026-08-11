@@ -13,6 +13,9 @@ from blueprint_pipeline.cad_agent_review_media import (
     RECEIPT_FILENAME,
     CadAgentReviewMediaError,
     materialize_cad_agent_visual_comparison,
+    seal_cad_agent_visual_reference_review,
+    selected_cad_agent_visual_review,
+    validate_cad_agent_visual_reference_review,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.simready_cad_agent_contract import (
@@ -407,6 +410,119 @@ def test_visual_comparison_rejects_backend_reference_manifest_mismatch(
         )
 
 
+def _review_decisions(receipt: dict[str, object]) -> list[dict[str, object]]:
+    decisions: list[dict[str, object]] = []
+    for row in receipt["rows"]:  # type: ignore[index]
+        references = [reference["sha256"] for reference in row["reference_images"]]
+        for candidate in row["candidates"]:
+            decisions.append(
+                {
+                    "replacement_slot": row["replacement_slot"],
+                    "task_id": row["task_id"],
+                    "asset_id": row["asset_id"],
+                    "backend_id": candidate["backend_id"],
+                    "cad_agent_output_receipt_digest": candidate[
+                        "output_receipt_digest"
+                    ],
+                    "reference_signature": row["reference_signature"],
+                    "reviewed_reference_image_digests": references,
+                    "review_status": "conditionally_admitted_for_construction",
+                    "observed_feature_findings": [
+                        {
+                            "feature_id": f"reference_frame_{index}",
+                            "status": "mismatch",
+                            "evidence_reference_image_digests": [digest],
+                        }
+                        for index, digest in enumerate(references)
+                    ],
+                    "visible_mismatch_codes": ["fixture_visual_mismatch"],
+                    "generated_candidate_content_labels": [
+                        "unseen_geometry_is_generated_candidate"
+                    ],
+                }
+            )
+    return decisions
+
+
+def test_visual_review_requires_every_reference_image_and_gates_selection(
+    tmp_path: Path,
+) -> None:
+    matrix_path = _matrix(tmp_path)
+    media = materialize_cad_agent_visual_comparison(
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "review",
+    )
+    review_path = tmp_path / "review" / "visual_reference_review.v1.json"
+    review = seal_cad_agent_visual_reference_review(
+        review_media_receipt_path=tmp_path / "review" / RECEIPT_FILENAME,
+        reviewer={
+            "reviewer_kind": "codex_visual_review",
+            "reviewer_id": "fixture-codex",
+            "visual_input_mode": (
+                "all_manifest_bound_reference_frames_and_candidate_snapshots"
+            ),
+        },
+        candidate_decisions=_review_decisions(media),
+        output_path=review_path,
+    )
+
+    assert validate_cad_agent_visual_reference_review(review) == review
+    selected = selected_cad_agent_visual_review(
+        file_record(review_path),
+        scene_id="fixture_scene",
+        task_id="task_a_washer_door_open",
+        asset_id="840920_simready_washer_candidate",
+        backend_id="earthtojake_text_to_cad",
+        cad_agent_output_receipt_digest=media["rows"][0]["candidates"][0][
+            "output_receipt_digest"
+        ],
+    )
+    assert selected["review_status"] == "conditionally_admitted_for_construction"
+
+    incomplete = _review_decisions(media)
+    incomplete[0]["reviewed_reference_image_digests"] = []
+    with pytest.raises(
+        CadAgentReviewMediaError,
+        match="cad_review_decision_reference_coverage_invalid",
+    ):
+        seal_cad_agent_visual_reference_review(
+            review_media_receipt_path=tmp_path / "review" / RECEIPT_FILENAME,
+            reviewer={
+                "reviewer_kind": "codex_visual_review",
+                "reviewer_id": "fixture-codex",
+                "visual_input_mode": (
+                    "all_manifest_bound_reference_frames_and_candidate_snapshots"
+                ),
+            },
+            candidate_decisions=incomplete,
+        )
+
+
+def test_visual_review_scales_to_five_independent_replacements(
+    tmp_path: Path,
+) -> None:
+    matrix_path = _five_object_matrix(tmp_path)
+    media = materialize_cad_agent_visual_comparison(
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "review",
+    )
+    review = seal_cad_agent_visual_reference_review(
+        review_media_receipt_path=tmp_path / "review" / RECEIPT_FILENAME,
+        reviewer={
+            "reviewer_kind": "codex_visual_review",
+            "reviewer_id": "fixture-codex",
+            "visual_input_mode": (
+                "all_manifest_bound_reference_frames_and_candidate_snapshots"
+            ),
+        },
+        candidate_decisions=_review_decisions(media),
+    )
+
+    assert review["candidate_count"] == 10
+    assert review["reviewed_reference_image_count"] == 5
+    assert len(review["candidate_decisions"]) == 10
+
+
 def test_results_doc_points_to_manifest_driven_visual_comparison() -> None:
     results = (
         ROOT
@@ -418,9 +534,10 @@ def test_results_doc_points_to_manifest_driven_visual_comparison() -> None:
     assert "sha256:14a5b702f0433c52fbdbdb144c0c8339fdabe577b01b1303e8e60ba1fd4c97af" in results
     assert "sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d" in results
     assert (
-        "Dockerless static Content Agents bundle/config/input-USD preflight with "
-        "local Docker dry-run retained as an explicit blocker when unavailable"
+        "Static Content Agents bundle/config/input-USD preflight receipts:"
     ) in results
+    assert "scene_replacement_cad_agent_visual_reference_review.v1" in results
+    assert "requires one decision per candidate that covers every" in results
     assert (
         "all four bundles passed local/static preflight"
     ) not in results
