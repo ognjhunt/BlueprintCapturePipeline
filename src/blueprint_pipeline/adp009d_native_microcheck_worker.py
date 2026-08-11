@@ -156,36 +156,60 @@ def _materialize_source(source: Path, output: Path) -> dict[str, Any]:
         shutil.rmtree(source)
     rows = [
         _run(
-            ["git", "clone", "--filter=blob:none", "--no-checkout", ARENA_REPOSITORY, str(source)],
+            [
+                "git",
+                "-c",
+                "http.sslVerify=true",
+                "clone",
+                "--filter=blob:none",
+                "--no-checkout",
+                ARENA_REPOSITORY,
+                str(source),
+            ],
             log_path=output / "arena_clone.log",
         )
     ]
     if rows[-1]["returncode"] != 0:
         raise RuntimeError("arena_source_clone_failed")
-    rows.append(
-        _run(
-            ["git", "-C", str(source), "checkout", "--detach", ARENA_REVISION],
-            log_path=output / "arena_checkout.log",
-        )
+    checkout = _run(
+        [
+            "git",
+            "-c",
+            "http.sslVerify=true",
+            "-C",
+            str(source),
+            "checkout",
+            "--detach",
+            ARENA_REVISION,
+        ],
+        log_path=output / "arena_checkout.log",
     )
-    rows.append(
-        _run(
-            [
-                "git",
-                "-c",
-                "url.https://github.com/.insteadOf=git@github.com:",
-                "-C",
-                str(source),
-                "submodule",
-                "update",
-                "--init",
-                "submodules/IsaacLab",
-            ],
-            log_path=output / "isaac_lab_submodule.log",
-        )
+    rows.append(checkout)
+    # A filtered checkout fetches missing blobs from GitHub.  If it fails (for
+    # example because the image lacks a trusted CA bundle), do not run a
+    # submodule command against an incomplete tree and report its misleading
+    # pathspec error as the root cause.
+    if checkout["returncode"] != 0:
+        raise RuntimeError("arena_source_checkout_failed")
+    submodule = _run(
+        [
+            "git",
+            "-c",
+            "http.sslVerify=true",
+            "-c",
+            "url.https://github.com/.insteadOf=git@github.com:",
+            "-C",
+            str(source),
+            "submodule",
+            "update",
+            "--init",
+            "submodules/IsaacLab",
+        ],
+        log_path=output / "isaac_lab_submodule.log",
     )
-    if any(row["returncode"] != 0 for row in rows):
-        raise RuntimeError("arena_source_materialization_failed")
+    rows.append(submodule)
+    if submodule["returncode"] != 0:
+        raise RuntimeError("arena_source_submodule_materialization_failed")
     observed = {
         "arena_revision": _git(source, "rev-parse", "HEAD"),
         "arena_tree": _git(source, "rev-parse", "HEAD^{tree}"),

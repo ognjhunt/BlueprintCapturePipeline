@@ -32,6 +32,11 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
 
     assert "task_evaluation_launch_dispatcher" in dispatcher
     assert "--execute" in dispatcher
+    assert (
+        '"$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] '
+        '&& [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true'
+    ) in dispatcher
+    assert "EnvironmentFile values override Environment=" in dispatcher
     assert "blueprint-gpu-spend-guard.service" in dispatcher
     assert "GIT_CONFIG_KEY_0=safe.directory" in dispatcher
     for unit in (dispatcher, reconciler, supervisor):
@@ -113,3 +118,35 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
         "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
     ):
         assert binding in environment
+
+
+def test_installer_gives_the_service_account_ownership_of_the_checkout() -> None:
+    """A root-owned checkout makes git refuse with "detected dubious ownership"
+    when the service account probes the allocator's source identity, which
+    rejects a paid launch at admission. Observed in production after a root
+    deploy."""
+    from pathlib import Path as _Path
+
+    script = _Path("scripts/install_live_pipeline_control_plane.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${REPO_ROOT}"' in script
+    assert "dubious ownership" in script
+
+
+def test_dispatcher_exit_code_separates_outcome_from_dispatch_failure() -> None:
+    """Exiting non-zero on a blocked launch made systemd mark the unit failed and
+    deactivate the path unit watching the queue, so one blocked run silently
+    stopped every later website trigger from dispatching."""
+    from pathlib import Path as _Path
+
+    source = _Path(
+        "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'return 0 if result["status"] == "completed" else 2' not in source
+    assert (
+        'return 0 if result.get("schema_version") == QUEUE_RUN_SCHEMA_VERSION else 2'
+        in source
+    )

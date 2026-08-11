@@ -85,6 +85,12 @@ if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     --shell /usr/sbin/nologin "${SERVICE_USER}"
 fi
 
+# The service account runs git against this checkout to pin the allocator's
+# source identity. A root-owned checkout makes git refuse with "detected
+# dubious ownership", the identity probe fails, and a paid launch is rejected
+# at admission -- so the account that reads the repository must own it.
+run chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${REPO_ROOT}"
+
 run install -d -m 0755 "${SYSTEMD_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${ENV_DIR}"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \

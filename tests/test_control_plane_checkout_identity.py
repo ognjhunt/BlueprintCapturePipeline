@@ -25,6 +25,47 @@ def test_identity_probe_failure_is_not_reported_as_a_dirty_checkout(monkeypatch)
     assert identity["orchestrator_source_commit"] is None
 
 
+def test_checkout_identity_probes_trust_the_resolved_immutable_checkout(
+    monkeypatch,
+) -> None:
+    """A symlink-safe systemd setting alone does not trust ``ROOT.resolve()``."""
+    commit = "a" * 40
+    commands: list[list[str]] = []
+
+    def fake(argv):
+        commands.append(list(argv))
+        return _completed(commit + "\n") if "rev-parse" in argv else _completed("")
+
+    monkeypatch.setattr(allocator, "_run_checkout_probe", fake)
+
+    blockers, identity = allocator._control_plane_checkout_blockers()
+
+    assert blockers == []
+    assert identity["orchestrator_source_commit"] == commit
+    assert commands == [
+        [
+            "git",
+            "-c",
+            f"safe.directory={allocator.ROOT}",
+            "-C",
+            str(allocator.ROOT),
+            "rev-parse",
+            "--verify",
+            "HEAD^{commit}",
+        ],
+        [
+            "git",
+            "-c",
+            f"safe.directory={allocator.ROOT}",
+            "-C",
+            str(allocator.ROOT),
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        ],
+    ]
+
+
 def test_a_genuinely_dirty_checkout_still_blocks(monkeypatch) -> None:
     commit = "a" * 40
 
