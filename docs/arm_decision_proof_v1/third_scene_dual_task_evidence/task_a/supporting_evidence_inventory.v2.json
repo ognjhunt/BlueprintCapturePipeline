@@ -1,6 +1,6 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 56,
+  "artifact_count": 54,
   "artifacts": [
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
@@ -14,37 +14,28 @@
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
+      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_receipt",
-      "sha256": "sha256:d0b7e5a3756b71c5544a9b30b6b6bf8cd52d7b72efd30df6db0ff6a21f0f8dd4",
-      "size_bytes": 12271,
+      "sha256": "sha256:d63aec7817acefe3fe7db4ce4764fd72ab87a6c196213f56b3ff7d61af592bf9",
+      "size_bytes": 12372,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_provider_runtime_bundle.zip",
+      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_zip",
-      "sha256": "sha256:75b11c5b3515e88f6604d8fb567e7d254e6566475890912d370f96ebea98ddc0",
-      "size_bytes": 48755223,
+      "sha256": "sha256:b044299c9ce006267af0daa728b3782fe3da02c99c396ff3c6c70102c4ece568",
+      "size_bytes": 48755267,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/local_bundle_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
-      "role": "agent_cad:earthtojake_text_to_cad:content_agents_local_docker_preflight",
-      "sha256": "sha256:3feb39867a748dae44e7f1b925f98160aaca891ecae82f55adeb605f743adef0",
-      "size_bytes": 7487,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
-    },
-    {
-      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-      "portable_link_available": false,
-      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+      "relative_path": "task_a/earthtojake_cad_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
       "role": "agent_cad:earthtojake_text_to_cad:content_agents_static_preflight",
-      "sha256": "sha256:f60bc6d2c5366a7a9d458819934f1503b6577fdb434fe0d8ef8ce751b878dfe3",
-      "size_bytes": 5060,
+      "sha256": "sha256:596e5e5a1d4a60d9ab811c369ca6b00c786f30bce6749354949189aead065e51",
+      "size_bytes": 5078,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
@@ -140,37 +131,28 @@
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
+      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_bundle_receipt.json",
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_receipt",
-      "sha256": "sha256:040e261e995c5ef4944d98283040fcd91ca2fc33f4786374c1d375131a299a6c",
-      "size_bytes": 14127,
+      "sha256": "sha256:417a8efd0b26b4b68991ede1dca2fc62b21ff244f7e4bd19c6af02385c813238",
+      "size_bytes": 14228,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_provider_runtime_bundle.zip",
+      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/adp_content_agents_provider_runtime_bundle.zip",
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_zip",
-      "sha256": "sha256:6419191ebd0dcc9e8d34bd1fd4614459d9fc4d3ec8f4ec8128f2b9acd635bf4b",
-      "size_bytes": 48792435,
+      "sha256": "sha256:67a5aeace70e5ea87f011cd1fe16fe10730191bb56069095c592846299488199",
+      "size_bytes": 48792475,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
-      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/local_bundle_config_preflight_v1/adp_content_agents_bundle_config_preflight.json",
-      "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_local_docker_preflight",
-      "sha256": "sha256:6094dd3455cd692b8b9c0bb27c293f09af0998483571035c2ba7a3f385bb0000",
-      "size_bytes": 7529,
-      "source_root_id": "third_scene_rights_bounded_construction_root"
-    },
-    {
-      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-      "portable_link_available": false,
-      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
+      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_bundle_v4_20260811T_binding_file_refresh/static_bundle_config_preflight_v1/adp_content_agents_static_bundle_config_preflight.json",
       "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_static_preflight",
-      "sha256": "sha256:68d6085ac6b644ade56bba6c4210dc5579c562dc69aafb42a7309b0dcbbb2ad0",
-      "size_bytes": 6899,
+      "sha256": "sha256:2d29ab06583dfae767627d562a0d60a1c5ed52fbb5a080e3debd741fef917f06",
+      "size_bytes": 6917,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
@@ -508,7 +490,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:19b8812a7d19390d83d1e3bc88023fa355f380b1cd931e5bbc1343f62a95b815",
+  "inventory_digest": "sha256:18101da6d9ed10eb95f6772b0e812ad0da951a06df15b883c0ce3d3fa17bb9a4",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,

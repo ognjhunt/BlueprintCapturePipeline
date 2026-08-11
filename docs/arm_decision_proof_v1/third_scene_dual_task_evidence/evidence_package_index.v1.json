@@ -2,7 +2,7 @@
   "blocker_summary": "Both replacement candidates and both independent collider deletions are authored. The current smallest blocker is fresh paid authority for qualified FlashSplat contribution/ownership output from each separately frozen, repaired bundle. Both historical zero-retry attempts and both repaired-but-unexecuted bundle receipts are retained. This package contains no fake media or episode links.",
   "cad_summary": "Agent-authored CAD comparison evidence has been added for both replacement objects using both admitted CAD backends. The manifest-driven visual comparison binding, CAD matrix, reference manifest, reference-binding audit, Content Agents bundle matrix, and Content Agents execution-readiness receipt are all linked below. Paid model access and paid attempt authority remain missing, so Content Agents were not executed and no SimReady/native/physics/appearance/physical-equivalence claim is made.",
   "overview_review_only": true,
-  "package_index_digest": "sha256:5e0ec73a601b6f0dc10b15d6bc1395b6300e3aaac91125b64c3672f4b68420da",
+  "package_index_digest": "sha256:92e25cf05c3ef70b3881b3ffa31f0c4a36df832a9a9c9e109712956663cea6c9",
   "schema_version": "adp_dual_task_evidence_package_index.v1",
   "shared_manifest_count": 6,
   "shared_manifests": [
@@ -74,12 +74,12 @@
     {
       "episode_count": 0,
       "html_relative_path": "task_a/OPEN_ME_episode_evidence_index.html",
-      "html_sha256": "sha256:18b5e4b4e1bccb78e913eb47c97f06895b17fe97d3c3126bf3a434d18f911485",
+      "html_sha256": "sha256:e9c13bbd086b29f5b98e45e3d7c5f412d904ca4c944bdcddef506af8fc674cb6",
       "html_size_bytes": 2233,
-      "index_digest": "sha256:84973d5557079dce28fd2caf91fdff4c98916f2d3715b78903cae885c90a4914",
+      "index_digest": "sha256:16eb93c68855ae1f065436d0a9fb44c3e000deb5a983b6805d16d00f2c626ac5",
       "label": "Task A: washer-door evidence index",
       "relative_path": "task_a/episode_evidence_index.v1.json",
-      "sha256": "sha256:237e3b15ecb8f42fcf689bf0ea0f82e76e30dcb7f4ce82f3c2b21c11e279342c",
+      "sha256": "sha256:782bf761888d3d409282bb8b0921f015b9aa0ccf283920fe352d42f61f964b70",
       "size_bytes": 4411,
       "task_id": "task_a_washer_door_open",
       "typed_abstention_status": "typed_evidence_backed_abstention"
@@ -87,12 +87,12 @@
     {
       "episode_count": 0,
       "html_relative_path": "task_b/OPEN_ME_episode_evidence_index.html",
-      "html_sha256": "sha256:52d29d351813cb9466119da7085909a34175b26a4dcd4ae5564831c5d1b90c28",
+      "html_sha256": "sha256:513681258b326cc0ab525e9724e8a7a9bb55993a5f050a8d4cab06928d58b9c8",
       "html_size_bytes": 2236,
-      "index_digest": "sha256:7e61fe901025bf5cb0878b580b885c3f5580bde8be80b6a33504697ae1fcb368",
+      "index_digest": "sha256:4c49c4dbcaf07967e048044576e2b1e735a0d273e9d70ebb1541a28d2450384d",
       "label": "Task B: notebook-relocation evidence index",
       "relative_path": "task_b/episode_evidence_index.v1.json",
-      "sha256": "sha256:8035eb18c157deeda1133ff0127c25c405d4f6c6493fa3455f94da9191e97358",
+      "sha256": "sha256:338eef76cebd45a2f253e58d627756fa115a9deb4527a2b6c6e8102de7e50ea3",
       "size_bytes": 4412,
       "task_id": "task_b_notebook_relocation",
       "typed_abstention_status": "typed_evidence_backed_abstention"

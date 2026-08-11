@@ -325,6 +325,7 @@ def _content_execution_readiness(
     bundle_matrix: dict[str, object],
     fixture_rows: list[dict[str, object]],
     source_root: Path,
+    include_local_preflight: bool = True,
 ) -> dict[str, object]:
     rows = []
     for fixture in fixture_rows:
@@ -338,13 +339,17 @@ def _content_execution_readiness(
             relative_name="static_bundle_config_preflight_v1/"
             "adp_content_agents_static_bundle_config_preflight.json",
         )
-        local = _preflight_receipt(
-            source_root,
-            fixture=fixture,
-            schema_version="adp_content_agents_local_bundle_config_preflight.v1",
-            status="local_passed_paid_model_access_not_checked",
-            relative_name="local_bundle_config_preflight_v1/"
-            "adp_content_agents_bundle_config_preflight.json",
+        local = (
+            _preflight_receipt(
+                source_root,
+                fixture=fixture,
+                schema_version="adp_content_agents_local_bundle_config_preflight.v1",
+                status="local_passed_paid_model_access_not_checked",
+                relative_name="local_bundle_config_preflight_v1/"
+                "adp_content_agents_bundle_config_preflight.json",
+            )
+            if include_local_preflight
+            else None
         )
         rows.append(
             {
@@ -779,6 +784,50 @@ def test_agent_cad_content_agents_rows_materialize_task_inventory(
     )
     assert inventory["artifact_count"] == len(rows)
     assert inventory["artifact_bytes_embedded"] is False
+
+
+def test_agent_cad_content_agents_rows_omit_missing_local_docker_preflight(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "external"
+    earth = _cad_output_fixture(
+        source_root, backend_id="earthtojake_text_to_cad"
+    )
+    mac = _cad_output_fixture(
+        source_root, backend_id="pan_chera_multi_agent_cad"
+    )
+    cad_matrix = seal_cad_agent_matrix(
+        objects=[
+            {
+                "replacement_slot": 1,
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_simready_washer_candidate",
+                "candidates": [earth["output"], mac["output"]],
+            }
+        ]
+    )
+    bundle_matrix = _content_bundle_matrix(fixture_rows=[earth, mac])
+    readiness = _content_execution_readiness(
+        bundle_matrix=bundle_matrix,
+        fixture_rows=[earth, mac],
+        source_root=source_root,
+        include_local_preflight=False,
+    )
+
+    rows = agent_cad_content_agents_supporting_artifacts(
+        source_root=source_root,
+        cad_agent_matrix=cad_matrix,
+        content_agents_bundle_matrix=bundle_matrix,
+        content_agents_execution_readiness=readiness,
+        task_id="task_a_washer_door_open",
+    )
+
+    roles = {row["role"] for row in rows}
+    assert (
+        "agent_cad:earthtojake_text_to_cad:content_agents_static_preflight"
+        in roles
+    )
+    assert not any("content_agents_local_docker_preflight" in role for role in roles)
 
 
 def test_agent_cad_content_agents_rows_reject_projection_join_mismatch(
