@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -52,6 +54,9 @@ QUALIFIED_AUTHORIZATION_CLASSES = frozenset(
 SUPPORTED_COLOR_SPACE = "srgb"
 SUPPORTED_ALPHA_MODE = "opaque_rgb"
 SUPPORTED_EXPOSURE_MODE = "renderer_default_unmodified"
+DEFAULT_RENDER_INITIAL_PROGRESS_TIMEOUT_SECONDS = 300.0
+DEFAULT_RENDER_PROGRESS_TIMEOUT_SECONDS = 120.0
+_RENDER_PROGRESS_POLL_SECONDS = 1.0
 
 
 class SealedCameraRenderError(ValueError):
@@ -83,6 +88,81 @@ def _render_harness_failure_codes(
         if str(blocker).strip()
     )
     return codes
+
+
+def _nonempty_expected_frame_count(expected_paths: Sequence[Path]) -> int:
+    """Count complete-looking output frames without interpreting their pixels."""
+
+    return sum(
+        path.is_file() and not path.is_symlink() and path.stat().st_size > 0
+        for path in expected_paths
+    )
+
+
+def _stop_renderer_process(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """End a stalled renderer and collect whatever diagnostic output it produced."""
+
+    process.terminate()
+    try:
+        stdout, stderr = process.communicate(timeout=10.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+    return str(stdout or ""), str(stderr or "")
+
+
+def _wait_for_renderer_with_progress_watchdog(
+    *,
+    process: subprocess.Popen[str],
+    expected_frame_paths: Sequence[Path],
+    render_timeout_seconds: float,
+    initial_progress_timeout_seconds: float,
+    progress_timeout_seconds: float,
+) -> tuple[str, str]:
+    """Wait for a renderer while failing closed on no output-frame progress.
+
+    The Spark driver emits its JSON only after every view is complete.  A plain
+    ``communicate(timeout=...)`` therefore cannot distinguish an expensive
+    first render from a dead renderer.  Output frame creation is the stable,
+    renderer-agnostic progress signal: it neither reads pixels nor assigns any
+    scientific meaning to a partially rendered frame.
+    """
+
+    started_at = time.monotonic()
+    last_progress_at = started_at
+    completed_count = 0
+    expected_count = len(expected_frame_paths)
+    while True:
+        now = time.monotonic()
+        remaining = render_timeout_seconds - (now - started_at)
+        if remaining <= 0.0:
+            _stop_renderer_process(process)
+            raise SealedCameraRenderError(["render_harness_timeout"])
+        try:
+            stdout, stderr = process.communicate(
+                timeout=min(_RENDER_PROGRESS_POLL_SECONDS, remaining)
+            )
+            return str(stdout or ""), str(stderr or "")
+        except subprocess.TimeoutExpired:
+            pass
+
+        now = time.monotonic()
+        observed_count = _nonempty_expected_frame_count(expected_frame_paths)
+        if observed_count > completed_count:
+            completed_count = observed_count
+            last_progress_at = now
+        if completed_count == 0:
+            stalled = now - started_at >= initial_progress_timeout_seconds
+            blocker = "render_harness_initial_progress_timeout"
+        else:
+            stalled = (
+                completed_count < expected_count
+                and now - last_progress_at >= progress_timeout_seconds
+            )
+            blocker = "render_harness_frame_progress_timeout"
+        if stalled:
+            _stop_renderer_process(process)
+            raise SealedCameraRenderError([blocker])
 
 
 def _sha256_file(path: Path) -> str:
@@ -271,7 +351,9 @@ def render_splat_at_exact_cameras(
     warmup_ms: int = 2500,
     settle_frames: int = 6,
     settle_ms: int = 100,
-    render_timeout: int = 3600,
+    render_timeout: float = 3600.0,
+    initial_progress_timeout_seconds: float = DEFAULT_RENDER_INITIAL_PROGRESS_TIMEOUT_SECONDS,
+    progress_timeout_seconds: float = DEFAULT_RENDER_PROGRESS_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Render the exact splat file at exact cameras and return a digest-bound manifest.
 
@@ -323,6 +405,24 @@ def render_splat_at_exact_cameras(
         or not 0 <= background_rgb <= 0xFFFFFF
     ):
         errors.append("render_background_rgb_invalid")
+    timeout_values = {
+        "timeout": render_timeout,
+        "initial_progress_timeout": initial_progress_timeout_seconds,
+        "progress_timeout": progress_timeout_seconds,
+    }
+    for name, value in timeout_values.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value <= 0
+        ):
+            errors.append(f"render_{name}_invalid")
+    if not errors and (
+        float(initial_progress_timeout_seconds) > float(render_timeout)
+        or float(progress_timeout_seconds) > float(render_timeout)
+    ):
+        errors.append("render_progress_timeout_exceeds_render_timeout")
     if shutil.which(node) is None:
         errors.append("render_node_runtime_unavailable")
     if not harness.is_file() or not entry.is_file():
@@ -431,14 +531,21 @@ def render_splat_at_exact_cameras(
         "--bg",
         f"0x{background_rgb:06x}",
     ]
-    try:
-        process = subprocess.run(
-            command, capture_output=True, text=True, timeout=render_timeout
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise SealedCameraRenderError(["render_harness_timeout"]) from exc
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, stderr = _wait_for_renderer_with_progress_watchdog(
+        process=process,
+        expected_frame_paths=[frames_dir / f"{spec['id']}.png" for spec in camera_specs],
+        render_timeout_seconds=float(render_timeout),
+        initial_progress_timeout_seconds=float(initial_progress_timeout_seconds),
+        progress_timeout_seconds=float(progress_timeout_seconds),
+    )
     harness_output: dict[str, Any] = {}
-    stdout = (process.stdout or "").strip()
+    stdout = stdout.strip()
     if stdout:
         try:
             harness_output = json.loads(stdout[stdout.index("{") :])
@@ -447,8 +554,8 @@ def render_splat_at_exact_cameras(
     if process.returncode != 0 or harness_output.get("status") != "completed":
         raise SealedCameraRenderError(
             _render_harness_failure_codes(
-                stderr=process.stderr or "",
-                stdout=process.stdout or "",
+                stderr=stderr,
+                stdout=stdout,
                 harness_output=harness_output,
             )
         )
@@ -538,6 +645,11 @@ def render_splat_at_exact_cameras(
             "warmup_ms": warmup_ms,
             "settle_frames": settle_frames,
             "settle_ms": settle_ms,
+            "render_timeout_seconds": float(render_timeout),
+            "initial_progress_timeout_seconds": float(
+                initial_progress_timeout_seconds
+            ),
+            "progress_timeout_seconds": float(progress_timeout_seconds),
         },
         "renders": rendered_rows,
         "render_count": len(rendered_rows),

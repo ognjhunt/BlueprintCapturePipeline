@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import struct
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -11,12 +12,81 @@ from PIL import Image
 from blueprint_pipeline.sealed_camera_render import (
     SealedCameraRenderError,
     _render_harness_failure_codes,
+    _wait_for_renderer_with_progress_watchdog,
     render_splat_at_exact_cameras,
     transform_camera_into_provider_frame,
 )
 
 
 DIGEST = "sha256:" + "a" * 64
+
+
+class _StalledRendererProcess:
+    """Minimal Popen double whose renderer never completes on its own."""
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        if self.terminated or self.killed:
+            self.returncode = -15
+            return "", "stopped"
+        raise subprocess.TimeoutExpired(cmd="fixture-renderer", timeout=timeout)
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def test_renderer_progress_watchdog_stops_before_first_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _StalledRendererProcess()
+    clock = iter((0.0, 0.0, 1.1))
+    monkeypatch.setattr(
+        "blueprint_pipeline.sealed_camera_render.time.monotonic", lambda: next(clock)
+    )
+
+    with pytest.raises(SealedCameraRenderError) as exc:
+        _wait_for_renderer_with_progress_watchdog(
+            process=process,  # type: ignore[arg-type]
+            expected_frame_paths=[tmp_path / "frames/first.png"],
+            render_timeout_seconds=10.0,
+            initial_progress_timeout_seconds=1.0,
+            progress_timeout_seconds=1.0,
+        )
+
+    assert exc.value.codes == ("render_harness_initial_progress_timeout",)
+    assert process.terminated is True
+
+
+def test_renderer_progress_watchdog_stops_after_frame_progress_stalls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frame = tmp_path / "frames/first.png"
+    frame.parent.mkdir()
+    frame.write_bytes(b"complete-frame")
+    process = _StalledRendererProcess()
+    clock = iter((0.0, 0.0, 1.0, 2.0, 4.1))
+    monkeypatch.setattr(
+        "blueprint_pipeline.sealed_camera_render.time.monotonic", lambda: next(clock)
+    )
+
+    with pytest.raises(SealedCameraRenderError) as exc:
+        _wait_for_renderer_with_progress_watchdog(
+            process=process,  # type: ignore[arg-type]
+            expected_frame_paths=[frame, tmp_path / "frames/second.png"],
+            render_timeout_seconds=10.0,
+            initial_progress_timeout_seconds=5.0,
+            progress_timeout_seconds=3.0,
+        )
+
+    assert exc.value.codes == ("render_harness_frame_progress_timeout",)
+    assert process.terminated is True
 
 
 def test_render_harness_failure_classifies_missing_playwright_browser() -> None:
@@ -120,6 +190,56 @@ def test_exact_camera_render_rejects_unbound_background_rgb(
         )
 
     assert exc.value.codes == ("render_background_rgb_invalid",)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"render_timeout": 0}, "render_timeout_invalid"),
+        (
+            {"initial_progress_timeout_seconds": float("nan")},
+            "render_initial_progress_timeout_invalid",
+        ),
+        (
+            {"progress_timeout_seconds": 0},
+            "render_progress_timeout_invalid",
+        ),
+        (
+            {"render_timeout": 5, "progress_timeout_seconds": 6},
+            "render_progress_timeout_exceeds_render_timeout",
+        ),
+    ],
+)
+def test_exact_camera_render_rejects_invalid_progress_watchdog_configuration(
+    tmp_path: Path, overrides: dict[str, object], expected: str
+) -> None:
+    splat = tmp_path / "scene.ply"
+    _write_standard_3dgs_ply(splat, [(0.0, 0.0, 2.0, 1.0, 1.0, 1.0)])
+    with pytest.raises(SealedCameraRenderError) as exc:
+        render_splat_at_exact_cameras(
+            splat_path=splat,
+            cameras=[
+                {
+                    "camera_id": "fixture",
+                    "T_world_camera_provider_frame": np.eye(4).tolist(),
+                    "intrinsics": {
+                        "fx": 32.0,
+                        "fy": 32.0,
+                        "cx": 16.0,
+                        "cy": 16.0,
+                        "width": 32,
+                        "height": 32,
+                    },
+                }
+            ],
+            output_dir=tmp_path / "render",
+            provider_splat_import_receipt_digest=DIGEST,
+            alignment_digest=DIGEST,
+            camera_set_label="fixture",
+            **overrides,
+        )
+
+    assert expected in exc.value.codes
 
 
 def test_evaluation_authorized_render_requires_durable_camera_calibration(
