@@ -53,7 +53,7 @@ Checked-in digest-bound manifests:
 - [`third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_reference_binding_audit.v1.json), audit digest `sha256:f4c32aa0b83a17ff879b1cb243f6598ddfd8650e12bc21d0c57cbe8211a7c0b9`
 - [`third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json), binding digest `sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3`
 - [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
-- [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:6c89272a087632044e7b5eac435b69da3c12f8c063fe71834ada1970d614c143`
+- [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:f0ac8196af2d884b4526b76268a0a279e0edb293243b724a35062e7a17f30f35`
 
 Local human-review-only visual comparison receipt:
 

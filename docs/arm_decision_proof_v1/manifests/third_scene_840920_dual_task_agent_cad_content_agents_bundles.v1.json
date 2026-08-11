@@ -36,7 +36,7 @@
         "version": "0.5.2"
       },
       "exact_bundle_entrypoint_rehearsal_status": "passed",
-      "mesh_count": 0,
+      "mesh_count": 15,
       "mesh_packet_digest": "sha256:c11207bf8b52d7ad2d2c41082c71b931cfce94922450158adb6819efa38d16e8",
       "mesh_projection_receipt_digest": "sha256:b05b312f3b37db5c33aa3e9b6ffe261a5e59f0fa175c3337e755e531e06becac",
       "reference_image_sha256": "sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e",
@@ -69,7 +69,7 @@
         "version": "0.5.2"
       },
       "exact_bundle_entrypoint_rehearsal_status": "passed",
-      "mesh_count": 0,
+      "mesh_count": 40,
       "mesh_packet_digest": "sha256:4d3977c4641149961e88c35172bf6a4d7a31ad6c33a010fd79b9304a98b7b4d4",
       "mesh_projection_receipt_digest": "sha256:7f72bca1fa48c620909fbfb45abe537209cddfc435ef6bf26686b07c707edf9b",
       "reference_image_sha256": "sha256:e676715baabb95d7868c79cef2d14248b3c6a6bc95ce8bce0a2c9b7ba6a10c9e",
@@ -102,7 +102,7 @@
         "version": "0.5.2"
       },
       "exact_bundle_entrypoint_rehearsal_status": "passed",
-      "mesh_count": 0,
+      "mesh_count": 79,
       "mesh_packet_digest": "sha256:fbc05fc2ea99ea2535e8edc0f17689f22870178164407ecd71a7057ca3bade80",
       "mesh_projection_receipt_digest": "sha256:36fcb32e67764c7f14c4f346d5193fb0b1db30e8cd38788d1516a9d716d0d348",
       "reference_image_sha256": "sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6",
@@ -135,7 +135,7 @@
         "version": "0.5.2"
       },
       "exact_bundle_entrypoint_rehearsal_status": "passed",
-      "mesh_count": 0,
+      "mesh_count": 135,
       "mesh_packet_digest": "sha256:c004166eb55f3046a24bece7c8aa9066a0b42010838168dacad2dc536fd3540e",
       "mesh_projection_receipt_digest": "sha256:c4aa978d8b10592c4775f54fda23acb414ac4a785845464d8462a4dd614bab84",
       "reference_image_sha256": "sha256:fb36119977be6764bddf1282d84b69732aa37f0aea0b903a43e77cfdd9ae94f6",
@@ -143,7 +143,7 @@
       "task_id": "task_b_notebook_relocation"
     }
   ],
-  "receipt_digest": "sha256:94f8ffbacffb78bafb64a2f47378a77db3dfdf2b1d3c199c4b2b9dbe6e602c86",
+  "receipt_digest": "sha256:d9701f273d466098e1267ef5d4202a502e5eccb274a60680d1c814b5c14a2d40",
   "replacement_object_capacity": {
     "maximum": 5,
     "minimum": 1,

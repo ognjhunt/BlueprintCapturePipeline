@@ -272,6 +272,16 @@ def materialize_content_agents_execution_readiness(
         bindings = receipt.get("input_variant_bindings")
         if not isinstance(bindings, Mapping) or receipt.get("input_variant") != "agent_cad_v1":
             raise ValueError("adp_content_agents_readiness_bundle_binding_invalid")
+        input_normalization = receipt.get("input_usd_normalization")
+        mesh_count = item.get("mesh_count")
+        if (
+            not isinstance(input_normalization, Mapping)
+            or not isinstance(mesh_count, int)
+            or isinstance(mesh_count, bool)
+            or mesh_count < 1
+            or input_normalization.get("mesh_count") != mesh_count
+        ):
+            raise ValueError("adp_content_agents_readiness_mesh_count_mismatch")
         expected_binding_fields = {
             "task_id": item.get("task_id"),
             "asset_id": item.get("asset_id"),
@@ -307,6 +317,18 @@ def materialize_content_agents_execution_readiness(
             raise ValueError(
                 "adp_content_agents_readiness_bundle_binding_file_mismatch"
             )
+        projection_receipt_path = Path(
+            str((bindings.get("mesh_projection_receipt") or {}).get("path") or "")
+        ).expanduser().resolve()
+        projection_receipt = _read_json(projection_receipt_path)
+        if (
+            projection_receipt.get("schema_version")
+            != "cad_agent_mesh_usd_projection.v1"
+            or projection_receipt.get("mesh_count") != mesh_count
+            or projection_receipt.get("receipt_digest")
+            != item.get("mesh_projection_receipt_digest")
+        ):
+            raise ValueError("adp_content_agents_readiness_mesh_count_mismatch")
         key = (
             f"{item.get('task_id')}|{item.get('replacement_slot')}|"
             f"{item.get('cad_agent_backend_id')}"

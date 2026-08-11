@@ -331,5 +331,12 @@ def test_results_doc_points_to_manifest_driven_visual_comparison() -> None:
     assert "third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json" in results
     assert "sha256:c0b6784847d12259bc603e4ba1b47004505f7ebb04acc6f8997d4b649f56c8ad" in results
     assert "sha256:02cb4abbf136c7156105e198e4a8ca9c027b1b72967aa698f8c4f744932fc7b3" in results
+    assert (
+        "Dockerless static Content Agents bundle/config/input-USD preflight with "
+        "local Docker dry-run retained as an explicit blocker when unavailable"
+    ) in results
+    assert (
+        "all four bundles passed local/static preflight"
+    ) not in results
     assert "third_scene_840920_agent_cad_visual_comparison_receipt.v1.json" not in results
     assert "sha256:05febab49762d604f047df6a7f8975b25f50b6ac432493566feecb90e90f020c" not in results

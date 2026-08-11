@@ -599,6 +599,7 @@ def _single_agent_cad_content_bundle_matrix(
         "mesh_projection_receipt_digest": projection["receipt_digest"],
         "mesh_packet_digest": projection["packet_digest"],
         "candidate_step_sha256": cad_output["artifacts"]["step"]["sha256"],
+        "mesh_count": projection["mesh_count"],
         "bundle": {
             "path": bundle_receipt["bundle_path"],
             "sha256": bundle_receipt["bundle_sha256"],
@@ -1076,6 +1077,25 @@ def test_content_agents_execution_readiness_rejects_tampered_bundle_identity(
         )
 
 
+def test_content_agents_execution_readiness_rejects_stale_mesh_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    matrix = _agent_cad_content_bundle_matrix(tmp_path=tmp_path, source=source)
+    matrix["items"][0]["mesh_count"] = 0
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+
+    with pytest.raises(
+        ValueError, match="adp_content_agents_readiness_mesh_count_mismatch"
+    ):
+        content_agents.materialize_content_agents_execution_readiness(
+            content_agents_bundle_matrix=matrix,
+            output_path=tmp_path / "readiness.json",
+            generated_at="fixed",
+        )
+
+
 def test_agent_cad_reference_is_derived_from_manifest_not_operator_guess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1162,6 +1182,7 @@ def test_checked_in_agent_cad_content_agents_bundle_matrix_is_claim_bounded() ->
         (2, "earthtojake_text_to_cad"),
         (2, "pan_chera_multi_agent_cad"),
     }
+    assert {row["mesh_count"] for row in manifest["items"]} == {15, 40, 79, 135}
     assert all(
         row["exact_bundle_entrypoint_rehearsal_status"] == "passed"
         and row["blockers"] == []
