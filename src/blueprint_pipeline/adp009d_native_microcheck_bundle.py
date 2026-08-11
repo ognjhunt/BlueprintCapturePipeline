@@ -990,7 +990,7 @@ def build_native_microcheck_bundle(
         scenario_instance = json.loads(instance_source.read_text(encoding="utf-8"))
         control_plan = materialize_control_plan(scenario_instance)
         shutil.copy2(instance_source, runtime / "adp009d_scenario_instance.v1.json")
-        (runtime / "adp009d_control_plan.v6.json").write_text(
+        (runtime / "adp009d_control_plan.v7.json").write_text(
             json.dumps(control_plan, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )

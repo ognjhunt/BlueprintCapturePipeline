@@ -2161,6 +2161,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             try:
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
                 from adp009d_isaac_episode_adapter import (
+                    bounded_grasp_frame_target_for_task_orientation,
                     controlled_body_pose_for_grasp_frame_target,
                     semantic_finger_tool_midpoint_world_m,
                 )
@@ -2279,6 +2280,8 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     target_quaternion_world_xyzw,
                     gripper_command,
                     max_joint_delta_rad,
+                    max_task_space_translation_step_m,
+                    orientation_tolerance_deg,
                 ):
                     """One bounded native differential-IK action for a control phase."""
 
@@ -2306,6 +2309,22 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                             for value in body_poses[finger_indices[1], :7]
                         ],
                     )
+                    bounded_grasp_target = (
+                        bounded_grasp_frame_target_for_task_orientation(
+                            current_position_world_m=finger_midpoint,
+                            current_quaternion_world_xyzw=[
+                                float(value) for value in body_pose[3:7]
+                            ],
+                            target_position_world_m=target_position_world_m,
+                            target_quaternion_world_xyzw=(
+                                target_quaternion_world_xyzw
+                            ),
+                            max_translation_step_m=(
+                                max_task_space_translation_step_m
+                            ),
+                            orientation_tolerance_deg=orientation_tolerance_deg,
+                        )
+                    )
                     target_body_position_world, held_body_quaternion_world = (
                         controlled_body_pose_for_grasp_frame_target(
                             current_body_position_world_m=[
@@ -2318,7 +2337,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 float(value) for value in finger_midpoint
                             ],
                             target_grasp_frame_position_world_m=(
-                                target_position_world_m
+                                bounded_grasp_target["position_world_m"]
                             ),
                             target_body_quaternion_world_xyzw=(
                                 target_quaternion_world_xyzw
@@ -2371,6 +2390,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 "target_grasp_frame_position_world_m": [
                                     float(value) for value in target_position_world_m
                                 ],
+                                "bounded_grasp_frame_target": bounded_grasp_target,
                                 "current_grasp_frame_position_world_m": [
                                     float(value) for value in finger_midpoint
                                 ],
@@ -2516,7 +2536,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v6.json"
+                        control_plan_path = runtime / "adp009d_control_plan.v7.json"
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(
