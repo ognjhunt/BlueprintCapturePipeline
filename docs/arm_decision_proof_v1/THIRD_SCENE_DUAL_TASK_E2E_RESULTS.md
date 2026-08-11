@@ -441,6 +441,9 @@ forks:
 - `6f1f254b1`: replacement native-qualification now requires native-import
   receipts to carry retained native-import execution evidence, closing the
   lower-level hand-authored import receipt path.
+- `d9e0bd63d`: native import execution receipts are now derived from retained
+  native import probe results, giving the asset-import lane a pre-construction
+  producer path instead of direct execution receipt authoring.
 - `3475aaa25`: variable-camera registered excision evidence, authorized-render
   bindings, file-backed construction joins, general graph USD authoring, and
   fail-closed non-servo task-joint semantics.
@@ -681,6 +684,9 @@ Recent reusable-code and manifest commits:
 - Focused retained native-import execution evidence regressions for
   `6f1f254b1` — `31 passed`; required precommit selector —
   `1164 passed, 9974 deselected`; Ruff over `src/ tests/` passed.
+- Focused native import probe-result producer regressions for `d9e0bd63d` —
+  `32 passed`; required precommit selector — `1164 passed, 9975 deselected`;
+  Ruff over `src/ tests/` passed.
 
 ## Claim table
 
