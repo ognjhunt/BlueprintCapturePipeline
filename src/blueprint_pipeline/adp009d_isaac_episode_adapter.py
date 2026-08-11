@@ -458,6 +458,7 @@ class IsaacEpisodeAdapter:
         | None = None,
         contact_sensor: Any | None = None,
         contact_envelope: Mapping[str, Any] | None = None,
+        partner_contact_sensors: Mapping[str, Any] | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -480,6 +481,7 @@ class IsaacEpisodeAdapter:
             self._contact_envelope = validate_contact_envelope(contact_envelope)
         except ContactEnvelopeError as exc:
             raise IsaacEpisodeAdapterError([str(exc)]) from exc
+        self._partner_contact_sensors = dict(partner_contact_sensors or {})
         self._control_step_index = 0
         if (
             not math.isfinite(self._gripper_closed_width_m)
@@ -601,38 +603,45 @@ class IsaacEpisodeAdapter:
         return result
 
     def _body_contact_partner_forces_n(self) -> dict[str, list[float]] | None:
-        """Name the contact partner when the sensor was built with a filter.
+        """Name the contact partner using one filtered sensor per finger.
 
         Supplementary to ``net_forces_w``: a stalled finger reporting a large net
         force but a zero partner force is being held by geometry outside the
-        filter, which is the distinction the net force alone cannot make.  A
-        sensor built without a filter degrades to ``None`` rather than failing a
-        paid run, because the primary contact evidence is unaffected.
+        filter, which is the distinction the net force alone cannot make.
+
+        PhysX filtered reporting is one-to-many, so each sensor here covers
+        exactly one body.  A sensor covering more than one body would silently
+        report unreliable values, so it is rejected rather than trusted.  No
+        filtered sensors at all degrades to ``None``, because ``net_forces_w``
+        remains the primary evidence and must not fail a paid run.
         """
 
-        if self._contact_sensor is None:
+        if not self._partner_contact_sensors:
             return None
-        matrix = getattr(self._contact_sensor.data, "force_matrix_w", None)
-        if matrix is None:
-            return None
-        values = self._to_torch(matrix)
-        if values.ndim != 4 or values.shape[0] < 1 or values.shape[2] < 1:
-            return None
-        body_names = list(self._contact_sensor.body_names)
         result: dict[str, list[float]] = {}
-        for index, name in enumerate(body_names):
-            if index >= values.shape[1]:
-                break
-            # One filter partner is configured; sum any additional partners into
-            # the same reading so a widened filter cannot silently drop force.
-            vector = [
-                float(values[0, index, :, axis].sum()) for axis in range(3)
-            ]
+        for name, sensor in sorted(self._partner_contact_sensors.items()):
+            body_names = list(sensor.body_names)
+            if len(body_names) != 1:
+                raise IsaacEpisodeAdapterError(
+                    [
+                        "isaac_episode_contact_partner_sensor_not_one_to_many:"
+                        + f"{name}:{len(body_names)}"
+                    ]
+                )
+            matrix = getattr(sensor.data, "force_matrix_w", None)
+            if matrix is None:
+                continue
+            values = self._to_torch(matrix)
+            if values.ndim != 4 or values.shape[0] < 1 or values.shape[2] < 1:
+                continue
+            # Sum across filter partners so widening the filter later cannot
+            # silently drop force from the attribution.
+            vector = [float(values[0, 0, :, axis].sum()) for axis in range(3)]
             if not all(math.isfinite(value) for value in vector):
                 raise IsaacEpisodeAdapterError(
                     [f"isaac_episode_contact_partner_force_invalid:{name}"]
                 )
-            result[str(name)] = vector
+            result[str(body_names[0])] = vector
         return result or None
 
     def _body_incoming_joint_wrenches(self) -> dict[str, list[float]]:

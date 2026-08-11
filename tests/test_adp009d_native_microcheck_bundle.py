@@ -1404,7 +1404,7 @@ def test_aura_is_rendered_by_isaac_not_composited_afterward() -> None:
     assert 'AURA_PARTICLEFIELD_FILENAME = "aura_ghost_removed_surflets.usd"' in source
     assert "aura_appearance" in source
     # Added to the rendered scene, not to a separate compositing step.
-    assert "assets=[sage, approved_can, robot_contact, light]" in source
+    assert "assets=[sage, approved_can, robot_contact, *partner_contacts, light]" in source
     assert "[aura_appearance] if aura_appearance is not None else []" in source
 
 
@@ -2813,3 +2813,71 @@ def test_the_readiness_probe_and_the_episode_agree_on_the_response_shape() -> No
     episode = _Path(runtime.__file__).read_text(encoding="utf-8")
     assert "isinstance(response, dict)" in probe
     assert "isinstance(response, dict)" in episode
+
+
+def test_contact_partner_filter_uses_one_sensor_per_finger_and_the_rigid_body() -> None:
+    """PhysX filtered contact reporting is one-to-many only. The pinned IsaacLab
+    docstring names this exact shape (many sensor bodies against one partner) as
+    unsupported, so each finger needs its own filtered sensor, and the filter
+    must name the can's rigid body because `PhysicsRigidBodyAPI` lives at the
+    `canned_beverage` root rather than on `colliders/body_collider`."""
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import FINGER_BODIES
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+
+    assert runtime.CONTACT_PARTNER_FILTER_PRIM_PATH == "{ENV_REGEX_NS}/approved_can"
+    assert "colliders/body_collider" not in runtime.CONTACT_PARTNER_FILTER_PRIM_PATH
+    assert set(runtime.CONTACT_PARTNER_SENSOR_NAMES) == set(FINGER_BODIES)
+    assert len(set(runtime.CONTACT_PARTNER_SENSOR_NAMES.values())) == len(FINGER_BODIES)
+
+    # The unfiltered two-body sensor stays the primary net-force source and must
+    # not carry a filter, or PhysX reports unreliable filtered values for it.
+    primary = source[source.index('name="robot_contact"') : source.index("partner_contacts = [")]
+    assert "filter_prim_paths_expr" not in primary
+    assert "(left_inner_finger|right_inner_finger)" in primary
+
+    per_finger = source[source.index("partner_contacts = [") : source.index("light = SpawnerObject")]
+    assert "filter_prim_paths_expr=[CONTACT_PARTNER_FILTER_PRIM_PATH]" in per_finger
+    assert "Robotiq_2F_85/{body_name}" in per_finger
+
+
+def test_finger_collision_envelope_probe_measures_reach_and_cannot_break_a_run() -> None:
+    """Arena's tool frame is a +46 mm semantic point, not the finger's collision
+    extent, and the gap between them is what decides whether a commanded descend
+    is reachable. Measure it before any motion, and never let the measurement
+    fail a paid run."""
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import (
+        FINGER_TOOL_FRAME_LOCAL_OFFSET_M,
+    )
+
+    # The worker imports the adapter under a flattened name, so the runtime
+    # mirrors this constant; a silent drift would misreport the reach margin.
+    assert runtime.FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M == FINGER_TOOL_FRAME_LOCAL_OFFSET_M[2]
+
+    # No Isaac stage in the fast lane: the probe must degrade, not raise.
+    probe = runtime._probe_finger_collision_envelope()
+    assert probe["schema_version"] == "adp009d_finger_collision_envelope_probe.v1"
+    assert probe["status"] == "unavailable"
+    assert probe["tool_frame_local_offset_m"] == FINGER_TOOL_FRAME_LOCAL_OFFSET_M[2]
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+    body = source[
+        source.index("def _probe_finger_collision_envelope")
+        : source.index("def _build_environment")
+    ]
+    assert "ComputeLocalBound" in body
+    assert "reach_beyond_tool_frame_m" in body
+    assert "half_width_across_tool_axis_m" in body
+    # Read-only: the probe may not command, spawn, or mutate anything.
+    for forbidden in ("set_joint", "write", "step(", "spawn", "DeletePrim"):
+        assert forbidden not in body
+    # Runs before the gripper convention probe, so it is measured pre-motion.
+    assert source.index("finger_collision_envelope = _probe_finger_collision_envelope()") < (
+        source.index('_phase("gripper_convention_probe")')
+    )

@@ -913,3 +913,31 @@ def test_module_imports_without_isaac_or_torch() -> None:
     assert "import torch" not in header
     assert "import isaaclab" not in header
     assert "from pxr" not in header
+
+
+def test_partner_sensor_covering_two_bodies_is_rejected_not_trusted() -> None:
+    """A filtered sensor spanning both fingers is the unsupported PhysX shape and
+    reports unreliable values, so it must fail closed rather than be summarized
+    as attribution evidence."""
+    import pytest
+
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import (
+        IsaacEpisodeAdapter,
+        IsaacEpisodeAdapterError,
+    )
+
+    class _Data:
+        force_matrix_w = [[[[0.0, 0.0, 1.0]], [[0.0, 0.0, 2.0]]]]
+
+    class _Sensor:
+        body_names = ["left_inner_finger", "right_inner_finger"]
+        data = _Data()
+
+    adapter = IsaacEpisodeAdapter.__new__(IsaacEpisodeAdapter)
+    adapter._partner_contact_sensors = {"robot_contact_can_left": _Sensor()}
+    with pytest.raises(IsaacEpisodeAdapterError) as excinfo:
+        adapter._body_contact_partner_forces_n()
+    assert "not_one_to_many" in str(excinfo.value)
+
+    adapter._partner_contact_sensors = {}
+    assert adapter._body_contact_partner_forces_n() is None
