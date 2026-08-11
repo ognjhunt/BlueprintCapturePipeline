@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # repository package
         DROID_WRIST_VIEW,
     )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v9"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v10"
 
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
@@ -445,6 +445,7 @@ class IsaacEpisodeAdapter:
             [str], tuple[Sequence[float], Sequence[float]] | None
         ]
         | None = None,
+        contact_sensor: Any | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
@@ -462,6 +463,7 @@ class IsaacEpisodeAdapter:
         )
         self._scripted_pose_action_callback = scripted_pose_action_callback
         self._camera_pose_callback = camera_pose_callback
+        self._contact_sensor = contact_sensor
         self._control_step_index = 0
         if (
             not math.isfinite(self._gripper_closed_width_m)
@@ -487,6 +489,18 @@ class IsaacEpisodeAdapter:
             raise IsaacEpisodeAdapterError(["isaac_episode_end_effector_body_missing"])
         self._end_effector_name = end_effector_name
         self._end_effector_index = body_names.index(end_effector_name)
+        if contact_sensor is not None:
+            contact_body_names = list(contact_sensor.body_names)
+            missing_contact_bodies = [
+                name for name in FINGER_BODIES if name not in contact_body_names
+            ]
+            if missing_contact_bodies:
+                raise IsaacEpisodeAdapterError(
+                    [
+                        "isaac_episode_contact_sensor_body_missing:"
+                        + ",".join(missing_contact_bodies)
+                    ]
+                )
 
     # -- EpisodeEnvironment -------------------------------------------------
 
@@ -538,6 +552,84 @@ class IsaacEpisodeAdapter:
     def read_arm_joint_positions(self) -> list[float]:
         joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
         return [float(value) for value in joints]
+
+    def _arm_vector(self, attribute: str) -> list[float]:
+        raw = getattr(self._robot.data, attribute, None)
+        if raw is None:
+            raise IsaacEpisodeAdapterError(
+                [f"isaac_episode_arm_dynamics_missing:{attribute}"]
+            )
+        values = self._to_torch(raw)[0, :ARM_JOINT_COUNT]
+        result = [float(value) for value in values]
+        if len(result) != ARM_JOINT_COUNT or not all(
+            math.isfinite(value) for value in result
+        ):
+            raise IsaacEpisodeAdapterError(
+                [f"isaac_episode_arm_dynamics_invalid:{attribute}"]
+            )
+        return result
+
+    def _body_contact_forces_world_n(self) -> dict[str, list[float]] | None:
+        if self._contact_sensor is None:
+            return None
+        forces = self._to_torch(self._contact_sensor.data.net_forces_w)[0]
+        body_names = list(self._contact_sensor.body_names)
+        result: dict[str, list[float]] = {}
+        for index, name in enumerate(body_names):
+            vector = [float(value) for value in forces[index, :3]]
+            if not all(math.isfinite(value) for value in vector):
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_contact_force_invalid:{name}"]
+                )
+            result[str(name)] = vector
+        return result
+
+    def _body_incoming_joint_wrenches(self) -> dict[str, list[float]]:
+        raw = getattr(self._robot.data, "body_incoming_joint_wrench_b", None)
+        if raw is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_arm_dynamics_missing:body_incoming_joint_wrench_b"]
+            )
+        wrenches = self._to_torch(raw)[0]
+        result: dict[str, list[float]] = {}
+        for index, name in enumerate(self._robot.data.body_names):
+            vector = [float(value) for value in wrenches[index, :6]]
+            if not all(math.isfinite(value) for value in vector):
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_incoming_joint_wrench_invalid:{name}"]
+                )
+            result[str(name)] = vector
+        return result
+
+    def read_arm_dynamics_observation(self) -> dict[str, Any]:
+        """Read actuator tracking and contact state through pinned Isaac APIs."""
+
+        positions = self._arm_vector("joint_pos")
+        velocities = self._arm_vector("joint_vel")
+        targets = self._arm_vector("joint_pos_target")
+        computed = self._arm_vector("computed_torque")
+        applied = self._arm_vector("applied_torque")
+        effort_limits = self._arm_vector("joint_effort_limits")
+        utilization = [
+            abs(torque) / limit if limit > 0.0 else 0.0
+            for torque, limit in zip(applied, effort_limits, strict=True)
+        ]
+        return {
+            "schema_version": "adp009d_arm_dynamics_observation.v1",
+            "joint_position_rad": positions,
+            "joint_velocity_rad_s": velocities,
+            "joint_position_target_rad": targets,
+            "computed_torque_nm": computed,
+            "applied_torque_nm": applied,
+            "joint_effort_limit_nm": effort_limits,
+            "joint_effort_utilization": utilization,
+            "torque_clip_residual_nm": [
+                before - after
+                for before, after in zip(computed, applied, strict=True)
+            ],
+            "body_contact_force_world_n": self._body_contact_forces_world_n(),
+            "body_incoming_joint_wrench_body": self._body_incoming_joint_wrenches(),
+        }
 
     def step(self, isaac_action: Sequence[float]) -> None:
         values = [float(v) for v in isaac_action]
@@ -737,6 +829,12 @@ class IsaacEpisodeAdapter:
             "source": FINGER_TOOL_FRAME_SOURCE,
             "raw_body_midpoint_retained": True,
         }
+        contact_forces = self._body_contact_forces_world_n()
+        if contact_forces is not None:
+            sample["finger_contact_forces_n"] = [
+                math.sqrt(sum(component * component for component in contact_forces[name]))
+                for name in FINGER_BODIES
+            ]
         return sample
 
     # -- internals ----------------------------------------------------------
@@ -823,6 +921,13 @@ def describe_adapter() -> dict[str, Any]:
         "scripted_control_jacobian_frame_transform": (
             "rotate_linear_and_angular_rows_world_to_robot_root"
         ),
+        "arm_dynamics_observation_schema_version": (
+            "adp009d_arm_dynamics_observation.v1"
+        ),
+        "contact_force_source": "IsaacLab ContactSensor.data.net_forces_w",
+        "incoming_joint_wrench_source": (
+            "IsaacLab ArticulationData.body_incoming_joint_wrench_b"
+        ),
         "scripted_control_task_space_translation_strategies": [
             DIRECT_GLOBAL_POSE_TARGET,
             ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT,
@@ -874,6 +979,18 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         "rotate_linear_and_angular_rows_world_to_robot_root"
     ):
         errors.append("isaac_episode_adapter_jacobian_frame_transform_drifted")
+    if bindings.get("arm_dynamics_observation_schema_version") != (
+        "adp009d_arm_dynamics_observation.v1"
+    ):
+        errors.append("isaac_episode_adapter_arm_dynamics_schema_drifted")
+    if bindings.get("contact_force_source") != (
+        "IsaacLab ContactSensor.data.net_forces_w"
+    ):
+        errors.append("isaac_episode_adapter_contact_force_source_drifted")
+    if bindings.get("incoming_joint_wrench_source") != (
+        "IsaacLab ArticulationData.body_incoming_joint_wrench_b"
+    ):
+        errors.append("isaac_episode_adapter_incoming_joint_wrench_source_drifted")
     if list(
         bindings.get("scripted_control_task_space_translation_strategies") or []
     ) != [

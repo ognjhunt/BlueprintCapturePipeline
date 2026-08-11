@@ -288,6 +288,19 @@ class _Data:
         self.joint_pos = joint_pos
         self.body_pose_w = body_pose_w
         self.joint_limits = joint_limits
+        if joint_pos is not None:
+            shape = np.asarray(joint_pos).shape
+            self.joint_vel = np.zeros(shape)
+            self.joint_pos_target = np.asarray(joint_pos).copy()
+            self.computed_torque = np.zeros(shape)
+            self.applied_torque = np.zeros(shape)
+            self.joint_effort_limits = np.tile(
+                np.array([[87.0] * 4 + [12.0] * (shape[1] - 4)]),
+                (shape[0], 1),
+            )
+            self.body_incoming_joint_wrench_b = np.zeros(
+                (shape[0], len(body_names), 6)
+            )
 
 
 class _Robot:
@@ -319,6 +332,15 @@ class _Can:
         self.data.root_pose_w = np.array(
             [[3.468, -3.310, 0.526, 0.0, 0.0, 0.0, 1.0]], dtype=float
         )
+
+
+class _ContactSensor:
+    def __init__(self, body_names):
+        self.body_names = list(body_names)
+        forces = np.zeros((1, len(body_names), 3), dtype=float)
+        forces[0, body_names.index("left_inner_finger")] = [3.0, 4.0, 0.0]
+        forces[0, body_names.index("right_inner_finger")] = [0.0, 0.0, 6.0]
+        self.data = type("ContactData", (), {"net_forces_w": forces})()
 
 
 class _Camera:
@@ -370,17 +392,46 @@ class _Env:
         self.stepped.append([float(v) for v in np.asarray(tensor)[0]])
 
 
-def _adapter(env=None):
+def _adapter(env=None, *, with_contact_sensor=False):
+    robot = _Robot()
     return IsaacEpisodeAdapter(
         env=env or _Env(),
-        robot=_Robot(),
+        robot=robot,
         approved_can=_Can(),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
         gripper_closed_width_m=0.0,
         gripper_open_width_m=0.06,
+        contact_sensor=(
+            _ContactSensor(robot.data.body_names) if with_contact_sensor else None
+        ),
     )
+
+
+def test_arm_dynamics_observation_retains_actuator_and_contact_readback() -> None:
+    adapter = _adapter(with_contact_sensor=True)
+
+    dynamics = adapter.read_arm_dynamics_observation()
+    sample = adapter.read_object_sample()
+
+    assert dynamics["schema_version"] == "adp009d_arm_dynamics_observation.v1"
+    assert dynamics["joint_effort_limit_nm"] == [87.0] * 4 + [12.0] * 3
+    assert dynamics["body_contact_force_world_n"]["left_inner_finger"] == [
+        3.0,
+        4.0,
+        0.0,
+    ]
+    assert len(dynamics["body_incoming_joint_wrench_body"]) == len(
+        adapter._robot.data.body_names
+    )
+    assert sample["finger_contact_forces_n"] == [5.0, 6.0]
+
+
+def test_arm_dynamics_observation_retains_typed_contact_gap_off_gpu() -> None:
+    dynamics = _adapter().read_arm_dynamics_observation()
+
+    assert dynamics["body_contact_force_world_n"] is None
 
 
 def test_alpha_is_dropped_at_the_boundary_not_downstream() -> None:
@@ -739,6 +790,12 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["scripted_control_jacobian_frame_transform"] == (
         "rotate_linear_and_angular_rows_world_to_robot_root"
     )
+    assert bindings["arm_dynamics_observation_schema_version"] == (
+        "adp009d_arm_dynamics_observation.v1"
+    )
+    assert bindings["contact_force_source"] == (
+        "IsaacLab ContactSensor.data.net_forces_w"
+    )
     assert bindings["scripted_control_task_space_translation_strategies"] == [
         "direct_global_pose_target",
         "orientation_first_bounded_local_increment",
@@ -790,6 +847,12 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     drifted = dict(bindings)
     drifted["scripted_control_jacobian_frame_transform"] = "none"
     assert "isaac_episode_adapter_jacobian_frame_transform_drifted" in (
+        validate_adapter_bindings(drifted)
+    )
+
+    drifted = dict(bindings)
+    drifted["contact_force_source"] = "inferred_from_motion"
+    assert "isaac_episode_adapter_contact_force_source_drifted" in (
         validate_adapter_bindings(drifted)
     )
 
