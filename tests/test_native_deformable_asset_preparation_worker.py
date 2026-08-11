@@ -85,9 +85,6 @@ def _fake_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             contract["configuration_sources"][symbol] = row
         assert callable(getattr(module, name))
         setattr(module, symbol.split(":", 1)[1], getattr(module, name))
-    cook_module = types.ModuleType("omni.physx.scripts.deformableUtils")
-    cook_module.add_physx_deformable_body = lambda **_kwargs: True
-    modules[cook_module.__name__] = cook_module
     monkeypatch.setattr(worker, "PINNED_NATIVE_CALL_CONTRACT", contract)
     return root, modules
 

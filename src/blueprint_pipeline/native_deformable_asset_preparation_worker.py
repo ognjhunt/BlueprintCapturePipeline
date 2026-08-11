@@ -24,10 +24,10 @@ from typing import Any
 from .native_deformable_asset_preparation import (
     DEFORMABLE_AUTHORING_API,
     DEFORMABLE_BODY_CFG,
-    DEFORMABLE_COOKING_API,
     DEFORMABLE_MATERIAL_API,
     DEFORMABLE_MATERIAL_CFG,
     DEFORMABLE_PHYSICS_BINDING_API,
+    NATIVE_REQUIRED_API_SYMBOLS,
     PINNED_NATIVE_CALL_CONTRACT,
     execute_native_deformable_asset_preparation,
 )
@@ -44,7 +44,7 @@ _ISAAC_SYMBOLS = (
     DEFORMABLE_AUTHORING_API,
     DEFORMABLE_PHYSICS_BINDING_API,
 )
-_ALL_SYMBOLS = (*_ISAAC_SYMBOLS, DEFORMABLE_COOKING_API)
+_ALL_SYMBOLS = NATIVE_REQUIRED_API_SYMBOLS
 
 
 class NativeDeformableAssetPreparationWorkerError(ValueError):
@@ -176,12 +176,6 @@ def _build_registry(
     for symbol in _ALL_SYMBOLS:
         module, value = _resolve_symbol(symbol, importer)
         registry[symbol] = value
-        if symbol not in source_rows:
-            if module.__name__ != "omni.physx.scripts.deformableUtils":
-                raise NativeDeformableAssetPreparationWorkerError(
-                    [f"native_deformable_worker_symbol_module_invalid:{symbol}"]
-                )
-            continue
         row = source_rows[symbol]
         relative = PurePosixPath(str(row["source_relative_path"]))
         if relative.is_absolute() or ".." in relative.parts:

@@ -260,9 +260,6 @@ def _execute(
         # value therefore represents a signature/return-contract drift here.
         return None if binding_succeeds else object()
 
-    def cook(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError(f"duplicate direct cook forbidden: {args!r} {kwargs!r}")
-
     output_root = tmp_path / "native-output"
     result = execute_native_deformable_asset_preparation(
         plan=plan,
@@ -280,7 +277,6 @@ def _execute(
             DEFORMABLE_BODY_CFG: BodyCfg,
             DEFORMABLE_AUTHORING_API: define,
             DEFORMABLE_PHYSICS_BINDING_API: bind_physics_material,
-            DEFORMABLE_COOKING_API: cook,
         },
     )
     return result, output_root, events
@@ -339,7 +335,6 @@ def test_plan_bakes_metric_scale_and_rebuilds_only_allowlisted_content(
         DEFORMABLE_BODY_CFG,
         DEFORMABLE_AUTHORING_API,
         DEFORMABLE_PHYSICS_BINDING_API,
-        DEFORMABLE_COOKING_API,
     ]
     assert plan["native_runtime"]["executed_api_symbols"] == [
         DEFORMABLE_MATERIAL_API,
@@ -348,6 +343,12 @@ def test_plan_bakes_metric_scale_and_rebuilds_only_allowlisted_content(
     ]
     assert (
         plan["native_runtime"]["embedded_cooking_contract"]["direct_cooking_call_forbidden"] is True
+    )
+    assert (
+        plan["native_runtime"]["embedded_cooking_contract"][
+            "legacy_external_cooking_symbol_not_required"
+        ]
+        == DEFORMABLE_COOKING_API
     )
     assert plan["native_runtime"]["pinned_source_call_contract"] == (PINNED_NATIVE_CALL_CONTRACT)
     assert PINNED_NATIVE_CALL_CONTRACT["material_spawn"]["parameters"] == [
@@ -359,9 +360,8 @@ def test_plan_bakes_metric_scale_and_rebuilds_only_allowlisted_content(
         PINNED_NATIVE_CALL_CONTRACT["deformable_authoring"]["direct_duplicate_cook_forbidden"]
         is True
     )
-    assert (
-        PINNED_NATIVE_CALL_CONTRACT["deformable_authoring"]["embedded_cooking_prim_keyword"]
-        == "prim_path"
+    assert PINNED_NATIVE_CALL_CONTRACT["deformable_authoring"]["embedded_cooking_owner"] == (
+        DEFORMABLE_AUTHORING_API
     )
     assert PINNED_NATIVE_CALL_CONTRACT["deformable_authoring"]["parameters"] == [
         "prim_path",

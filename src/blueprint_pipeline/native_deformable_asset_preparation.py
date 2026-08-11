@@ -93,6 +93,18 @@ DEFORMABLE_BODY_SCHEMAS = tuple(
     if not schema.endswith("PhysxDeformableBodyMaterialAPI")
 )
 DEFORMABLE_MATERIAL_SCHEMAS = ("pxr.PhysxSchema.PhysxDeformableBodyMaterialAPI",)
+NATIVE_REQUIRED_API_SYMBOLS = (
+    DEFORMABLE_MATERIAL_CFG,
+    DEFORMABLE_MATERIAL_API,
+    DEFORMABLE_BODY_CFG,
+    DEFORMABLE_AUTHORING_API,
+    DEFORMABLE_PHYSICS_BINDING_API,
+)
+NATIVE_EXECUTED_API_SYMBOLS = (
+    DEFORMABLE_MATERIAL_API,
+    DEFORMABLE_AUTHORING_API,
+    DEFORMABLE_PHYSICS_BINDING_API,
+)
 
 MATERIAL_API_STATUS = "positive_native_prim_returned"
 AUTHORING_API_STATUS = "pinned_none_returned_readback_required"
@@ -170,8 +182,7 @@ PINNED_NATIVE_CALL_CONTRACT = {
             "sim_mesh_prim_path",
         ],
         "configuration_symbol": DEFORMABLE_BODY_CFG,
-        "embedded_cooking_symbol": DEFORMABLE_COOKING_API,
-        "embedded_cooking_prim_keyword": "prim_path",
+        "embedded_cooking_owner": "isaaclab.sim.schemas.schemas:define_deformable_body_properties",
         "explicit_success_return": None,
         "direct_duplicate_cook_forbidden": True,
         "schema_is_applied_to_single_mesh_child": True,
@@ -1559,22 +1570,11 @@ def materialize_native_deformable_asset_preparation_plan(
                 PINNED_NATIVE_CALL_CONTRACT,
                 error="native_deformable_pinned_call_contract_not_json",
             ),
-            "required_api_symbols": [
-                DEFORMABLE_MATERIAL_CFG,
-                DEFORMABLE_MATERIAL_API,
-                DEFORMABLE_BODY_CFG,
-                DEFORMABLE_AUTHORING_API,
-                DEFORMABLE_PHYSICS_BINDING_API,
-                DEFORMABLE_COOKING_API,
-            ],
-            "executed_api_symbols": [
-                DEFORMABLE_MATERIAL_API,
-                DEFORMABLE_AUTHORING_API,
-                DEFORMABLE_PHYSICS_BINDING_API,
-            ],
+            "required_api_symbols": list(NATIVE_REQUIRED_API_SYMBOLS),
+            "executed_api_symbols": list(NATIVE_EXECUTED_API_SYMBOLS),
             "embedded_cooking_contract": {
                 "owner_symbol": DEFORMABLE_AUTHORING_API,
-                "cooking_symbol": DEFORMABLE_COOKING_API,
+                "legacy_external_cooking_symbol_not_required": DEFORMABLE_COOKING_API,
                 "direct_cooking_call_forbidden": True,
                 "pinned_authoring_return": None,
             },
@@ -2055,22 +2055,11 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
             PINNED_NATIVE_CALL_CONTRACT,
             error="native_deformable_pinned_call_contract_not_json",
         ),
-        "required_api_symbols": [
-            DEFORMABLE_MATERIAL_CFG,
-            DEFORMABLE_MATERIAL_API,
-            DEFORMABLE_BODY_CFG,
-            DEFORMABLE_AUTHORING_API,
-            DEFORMABLE_PHYSICS_BINDING_API,
-            DEFORMABLE_COOKING_API,
-        ],
-        "executed_api_symbols": [
-            DEFORMABLE_MATERIAL_API,
-            DEFORMABLE_AUTHORING_API,
-            DEFORMABLE_PHYSICS_BINDING_API,
-        ],
+        "required_api_symbols": list(NATIVE_REQUIRED_API_SYMBOLS),
+        "executed_api_symbols": list(NATIVE_EXECUTED_API_SYMBOLS),
         "embedded_cooking_contract": {
             "owner_symbol": DEFORMABLE_AUTHORING_API,
-            "cooking_symbol": DEFORMABLE_COOKING_API,
+            "legacy_external_cooking_symbol_not_required": DEFORMABLE_COOKING_API,
             "direct_cooking_call_forbidden": True,
             "pinned_authoring_return": None,
         },
@@ -2387,14 +2376,9 @@ def execute_native_deformable_asset_preparation(
     output = Path(output_root).expanduser().absolute()
     if output.exists() or output.is_symlink():
         raise NativeDeformableAssetPreparationError(["native_deformable_preparation_output_exists"])
-    if set(native_api_registry) != {
-        DEFORMABLE_MATERIAL_CFG,
-        DEFORMABLE_MATERIAL_API,
-        DEFORMABLE_BODY_CFG,
-        DEFORMABLE_AUTHORING_API,
-        DEFORMABLE_PHYSICS_BINDING_API,
-        DEFORMABLE_COOKING_API,
-    } or any(not callable(value) for value in native_api_registry.values()):
+    if set(native_api_registry) != set(NATIVE_REQUIRED_API_SYMBOLS) or any(
+        not callable(value) for value in native_api_registry.values()
+    ):
         raise NativeDeformableAssetPreparationError(
             ["native_deformable_preparation_api_registry_invalid"]
         )
@@ -2602,19 +2586,8 @@ def execute_native_deformable_asset_preparation(
                 "source_revision": ISAACLAB_COMMIT,
                 "source_tree": ISAACLAB_TREE,
                 "pinned_source_call_contract_digest": canonical_digest(PINNED_NATIVE_CALL_CONTRACT),
-                "required_api_symbols": [
-                    DEFORMABLE_MATERIAL_CFG,
-                    DEFORMABLE_MATERIAL_API,
-                    DEFORMABLE_BODY_CFG,
-                    DEFORMABLE_AUTHORING_API,
-                    DEFORMABLE_PHYSICS_BINDING_API,
-                    DEFORMABLE_COOKING_API,
-                ],
-                "executed_api_symbols": [
-                    DEFORMABLE_MATERIAL_API,
-                    DEFORMABLE_AUTHORING_API,
-                    DEFORMABLE_PHYSICS_BINDING_API,
-                ],
+                "required_api_symbols": list(NATIVE_REQUIRED_API_SYMBOLS),
+                "executed_api_symbols": list(NATIVE_EXECUTED_API_SYMBOLS),
                 "single_cook_owner_symbol": DEFORMABLE_AUTHORING_API,
             },
             "api_calls": api_calls,
@@ -3125,19 +3098,8 @@ def verify_native_deformable_asset_preparation_return(
         "source_revision": ISAACLAB_COMMIT,
         "source_tree": ISAACLAB_TREE,
         "pinned_source_call_contract_digest": canonical_digest(PINNED_NATIVE_CALL_CONTRACT),
-        "required_api_symbols": [
-            DEFORMABLE_MATERIAL_CFG,
-            DEFORMABLE_MATERIAL_API,
-            DEFORMABLE_BODY_CFG,
-            DEFORMABLE_AUTHORING_API,
-            DEFORMABLE_PHYSICS_BINDING_API,
-            DEFORMABLE_COOKING_API,
-        ],
-        "executed_api_symbols": [
-            DEFORMABLE_MATERIAL_API,
-            DEFORMABLE_AUTHORING_API,
-            DEFORMABLE_PHYSICS_BINDING_API,
-        ],
+        "required_api_symbols": list(NATIVE_REQUIRED_API_SYMBOLS),
+        "executed_api_symbols": list(NATIVE_EXECUTED_API_SYMBOLS),
         "single_cook_owner_symbol": DEFORMABLE_AUTHORING_API,
     }
     if returned.get("runtime_identity") != expected_runtime:
