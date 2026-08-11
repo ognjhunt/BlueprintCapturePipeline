@@ -50,8 +50,10 @@ learned policies were therefore not admitted. This is not a policy result.
   (manual CAD reference-image override removed from request sealing),
   `6bfd74882` (all manifest-bound CAD reference images copied into Content
   Agents bundles), `15e1bb617` (all Content Agents reference bindings verified
-  in readiness), and `39bd53f4b` (historical CAD inspection source records and
-  plural static preflight references supported),
+  in readiness), `39bd53f4b` (historical CAD inspection source records and
+  plural static preflight references supported), `1c4f374f4` (generic
+  state-cell excision coverage joins), and `c9ad7c8d2` (file-backed
+  source-removal qualification receipts derived from upstream evidence),
   pushed on
   `codex/adp-third-scene-dual-task-agent-cad-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
@@ -471,6 +473,14 @@ forks:
   rows. The rehearsal-specific join remains stricter—exactly two materially
   different tasks—while hermetic `1`, `2`, and `5` object fixtures prove the
   reusable ceiling and a sixth object fails before scene construction.
+- The source-removal qualification seam is no longer a caller-authored bridge.
+  A general file-backed materializer now derives each
+  `gaussian_source_removal_qualification.v1` receipt from the scene freeze,
+  task freeze, calibrated mask-set receipt, ownership receipt, held-out audit,
+  and excision/coverage join. Construction bindings still require the compact
+  qualification receipt, but that receipt must now be derived from upstream
+  evidence and fails closed when held-out ownership or coverage/inpainting
+  admission is missing.
 - A general CAD-agent request/output matrix now supports one to five replacement
   objects and requires both Earth-to-Jake and Pan-Chera Multi-Agent-CAD for every
   selected object at the same frozen scale. It fails closed on deterministic CAD,
@@ -642,14 +652,18 @@ Recent reusable-code and manifest commits:
   `local_passed_paid_model_access_not_checked` receipts; the refreshed readiness
   digest is
   `sha256:6a0b26246e60c8379ea2f7bd839e3d136cd0ce48939ebcee0923fb285413e160`.
+- Focused source-removal qualification regressions for `c9ad7c8d2` —
+  `2 passed`; adjacent replacement-construction binding regressions —
+  `27 passed`; required precommit selector —
+  `1164 passed, 9969 deselected`; Ruff over `src/ tests/` passed.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; two-backend agent-CAD comparison contracts with deterministic CAD rejected; manifest-bound CAD-agent reference selection and historical CAD-output reference-binding audit; agent-CAD-to-Content-Agents Mesh bundle adapter with all manifest-derived references copied, configured, statically preflighted, local-Docker-preflighted, and readiness-validated; Dockerless static Content Agents bundle/config/input-USD preflight; no-paid Docker/network-disabled local Content Agents bundle/config preflight; Content Agents single-use paid-attempt authority; identity-bound agent-CAD supporting inventories that retain task, slot, asset, and backend metadata for 1..5 replacement-object matrices and fail closed on missing or relabeled identity even when rows are manually supplied; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; generated abstention-bound blocker placeholders; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; complete collision-pair normalization; static authored-structure and primitive/mesh GPU-collision schema qualification; graph-native state/contact bindings without handle or one-link assumptions; bounded 1..5 replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; file-backed source-removal qualification receipts derived from scene/task freezes, calibrated masks, ownership/held-out audits, and excision/coverage joins; two-backend agent-CAD comparison contracts with deterministic CAD rejected; manifest-bound CAD-agent reference selection and historical CAD-output reference-binding audit; agent-CAD-to-Content-Agents Mesh bundle adapter with all manifest-derived references copied, configured, statically preflighted, local-Docker-preflighted, and readiness-validated; Dockerless static Content Agents bundle/config/input-USD preflight; no-paid Docker/network-disabled local Content Agents bundle/config preflight; Content Agents single-use paid-attempt authority; identity-bound agent-CAD supporting inventories that retain task, slot, asset, and backend metadata for 1..5 replacement-object matrices and fail closed on missing or relabeled identity even when rows are manually supplied; registered variable-camera excision evidence; generic state-cell excision coverage joins; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; generated abstention-bound blocker placeholders; graph/rigid replacement-depth contracts with opaque-geometry and explicit-triangle admission; task-neutral articulated/rigid construction and controls dispatch; orientation-aware arrival; continuous locked-joint, support-contact, all-body collision, and forbidden robot-task contact gates; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
-| Blocked/abstained | Two exact Gaussian removals, NVIDIA Content Agents enrichment passes (all four bundles passed Dockerless static preflight and no-paid Docker/network-disabled local preflight but remain blocked on paid model access and fresh paid authority), replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
+| Blocked/abstained | Two exact Gaussian removals and their derived source-removal qualification receipts remain unmaterialized because qualified paid Gaussian ownership/contribution outputs are missing; NVIDIA Content Agents enrichment passes (all four bundles passed Dockerless static preflight and no-paid Docker/network-disabled local preflight but remain blocked on paid model access and fresh paid authority), replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
 
 ## Remaining ambiguity and single next action
