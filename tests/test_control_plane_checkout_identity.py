@@ -78,3 +78,24 @@ def test_clean_checkout_reports_no_blockers(monkeypatch) -> None:
     assert identity["identity_probe_ran"] is True
     assert identity["checkout_clean"] is True
     assert identity["orchestrator_source_commit"] == commit
+
+
+def test_source_checkout_blockers_also_separate_probe_failure_from_dirty(monkeypatch) -> None:
+    """The expected-source-commit gate reads the same probe, so it must make the
+    same distinction or it will report an unobserved checkout state too."""
+    monkeypatch.setattr(
+        allocator, "_current_checkout_source_state", lambda: ("", False, False)
+    )
+
+    blockers, commit = allocator._source_checkout_blockers("d" * 40)
+
+    assert blockers == ["gpu_canary_checkout_identity_probe_failed"]
+    assert "gpu_canary_checkout_not_clean" not in blockers
+    assert commit == ""
+
+    monkeypatch.setattr(
+        allocator, "_current_checkout_source_state", lambda: ("d" * 40, False, True)
+    )
+    blockers, commit = allocator._source_checkout_blockers("d" * 40)
+    assert "gpu_canary_checkout_not_clean" in blockers
+    assert commit == "d" * 40

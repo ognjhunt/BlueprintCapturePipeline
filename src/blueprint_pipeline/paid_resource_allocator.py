@@ -400,8 +400,12 @@ def _current_remote_branch_commit(branch: str) -> str:
 def _source_checkout_blockers(
     expected_source_commit: str, *, allow_pushed_branch_diagnostic: bool = False
 ) -> tuple[list[str], str]:
-    checkout_commit, checkout_clean = _current_checkout_source_state()
+    checkout_commit, checkout_clean, probe_ran = _current_checkout_source_state()
     blockers: list[str] = []
+    if not probe_ran:
+        # Same distinction as the control-plane identity: a probe that could not
+        # run must not be recorded as a dirty or commitless checkout.
+        return ["gpu_canary_checkout_identity_probe_failed"], ""
     if not checkout_commit:
         blockers.append("gpu_canary_checkout_source_commit_unavailable")
     elif expected_source_commit.strip().lower() != checkout_commit:
