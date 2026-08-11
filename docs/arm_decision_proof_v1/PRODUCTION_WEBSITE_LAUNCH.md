@@ -49,7 +49,7 @@ Then validate and publish it with:
 
 ```bash
 python scripts/publish_task_evaluation_launch_profiles.py \
-  --profile /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/<commit>/adp009d-840313-franka-dry-v1.json \
+  --profile /var/lib/blueprint/pipeline-control-plane/task-evaluation-profile-releases/<commit>/adp009d-840313-franka-dry-<commit>.json \
   --profile-dir /etc/blueprint/task-evaluation-launch-profiles \
   --webapp-catalog-out /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
 ```

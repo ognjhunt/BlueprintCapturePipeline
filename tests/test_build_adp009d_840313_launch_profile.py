@@ -50,6 +50,8 @@ def test_builder_emits_exact_dry_profile_with_per_launch_outputs(
     profile = json.loads(Path(receipt["profile_path"]).read_text())
     preflight = json.loads(Path(receipt["preflight_request_path"]).read_text())
     assert receipt["status"] == "built"
+    assert receipt["profile_id"] == f"{builder.PROFILE_ID_PREFIX}-{commit}"
+    assert profile["profile_id"] == receipt["profile_id"]
     assert receipt["live_execution_enabled"] is False
     assert receipt["provider_mutation_performed"] is False
     assert validate_launch_profile(profile) == []
@@ -78,6 +80,15 @@ def test_builder_emits_exact_dry_profile_with_per_launch_outputs(
     assert profile["allocator"]["retry_cap"] == 0
     assert preflight["required_provider_zero"] == ["digitalocean", "runpod", "vast"]
     assert preflight["live_execution_authorized"] is False
+
+
+def test_dry_profile_identity_changes_with_allocator_source_commit() -> None:
+    first = builder.profile_id_for_source_commit("a" * 40)
+    second = builder.profile_id_for_source_commit("b" * 40)
+
+    assert first == f"{builder.PROFILE_ID_PREFIX}-{'a' * 40}"
+    assert second == f"{builder.PROFILE_ID_PREFIX}-{'b' * 40}"
+    assert first != second
 
 
 def test_builder_fails_closed_on_non_main_or_dirty_checkout(
