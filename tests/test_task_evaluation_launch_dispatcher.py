@@ -20,6 +20,7 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     stage_launch_request,
     validate_launch_profile,
     validate_launch_request,
+    validate_public_launch_profile_descriptor,
 )
 from blueprint_pipeline.task_evaluation_launch_reconciler import reconcile_launches
 from scripts.publish_task_evaluation_launch_profiles import publish_profiles
@@ -688,20 +689,28 @@ def test_profile_publisher_emits_webapp_descriptor_without_allocator_arguments(
     catalog = json.loads((tmp_path / "catalog.json").read_text())
     assert catalog == [
         {
-            field: profile[field]
-            for field in (
-                "profile_id",
-                "profile_digest",
-                "source_bundle",
-                "evaluation_run_spec",
-                "required_controls",
-                "execution_admission",
-                "claim_ceiling",
-            )
+            **{
+                field: profile[field]
+                for field in (
+                    "profile_id",
+                    "profile_digest",
+                    "source_bundle",
+                    "evaluation_run_spec",
+                    "required_controls",
+                    "execution_admission",
+                    "claim_ceiling",
+                )
+            },
+            "required_authorization": {
+                "max_spend_usd": profile["allocator"]["max_spend_usd"],
+                "hard_ttl_seconds": profile["allocator"]["hard_ttl_seconds"],
+            },
         }
     ]
     assert "allocator" not in catalog[0]
     assert "provider-launch-request" not in json.dumps(catalog)
+    assert catalog[0]["required_authorization"]["max_spend_usd"] > 0
+    assert catalog[0]["required_authorization"]["hard_ttl_seconds"] > 0
 
     replay = publish_profiles(
         profile_paths=[source],
@@ -741,3 +750,49 @@ def test_public_catalog_rejects_execution_fields_symlinks_and_duplicates(
     (tmp_path / "catalog-link.json").symlink_to(tmp_path / "catalog.json")
     with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
         load_public_launch_profile_catalog(tmp_path / "catalog-link.json")
+
+
+def test_public_descriptor_requires_bounded_authorization_projection(
+    tmp_path: Path,
+) -> None:
+    """The catalog must tell approvers the exact spend/TTL the profile demands."""
+
+    profile = _profile(tmp_path)
+    source = tmp_path / "staging" / "profile.json"
+    _write(source, profile)
+    publish_profiles(
+        profile_paths=[source],
+        profile_dir=tmp_path / "published",
+        webapp_catalog_out=tmp_path / "catalog.json",
+    )
+    descriptor = json.loads((tmp_path / "catalog.json").read_text())[0]
+    assert descriptor["required_authorization"] == {
+        "max_spend_usd": profile["allocator"]["max_spend_usd"],
+        "hard_ttl_seconds": profile["allocator"]["hard_ttl_seconds"],
+    }
+    assert validate_public_launch_profile_descriptor(descriptor) == []
+
+    missing = {
+        key: value for key, value in descriptor.items() if key != "required_authorization"
+    }
+    assert "launch_profile_public_descriptor_fields_invalid" in (
+        validate_public_launch_profile_descriptor(missing)
+    )
+
+    smuggled = json.loads(json.dumps(descriptor))
+    smuggled["required_authorization"]["argv"] = ["--execute"]
+    assert "launch_profile_public_required_authorization_fields_invalid" in (
+        validate_public_launch_profile_descriptor(smuggled)
+    )
+
+    nonpositive = json.loads(json.dumps(descriptor))
+    nonpositive["required_authorization"]["max_spend_usd"] = 0
+    assert "launch_profile_public_required_spend_invalid" in (
+        validate_public_launch_profile_descriptor(nonpositive)
+    )
+
+    bool_ttl = json.loads(json.dumps(descriptor))
+    bool_ttl["required_authorization"]["hard_ttl_seconds"] = True
+    assert "launch_profile_public_required_ttl_invalid" in (
+        validate_public_launch_profile_descriptor(bool_ttl)
+    )
