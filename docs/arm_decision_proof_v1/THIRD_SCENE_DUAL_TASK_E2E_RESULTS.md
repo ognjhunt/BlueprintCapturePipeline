@@ -315,6 +315,17 @@ work only. It does not cure the current ownership abstention, establish the
 publisher's raw-byte disclosure authority for a third-scene upload, or execute
 an inpainting run.
 
+Task B's exact eight-camera notebook packet has now passed this local staging
+gate. Its retained receipt is
+`third_scene_840920_task_b_inpaint360_adapter_receipt.v1.json`, digest
+`sha256:1997da1ce445cbb40f3516a9969b6a76770e3527c48cbd3dd36fa1eaba90a689`.
+It binds the checked-in local evidence receipt binding, task freeze,
+`840920__385__task_b_notebook_relocation` config identity, and the sealed-Spark
+legacy camera alias to OpenCV used by the released code. It stages 25
+digest-bound local artifacts; `author_method_executed=false`,
+`gpu_allocated=false`, and `source_modified=false`. This is a preparation
+receipt, not a removal, inpainted image, or licensed-upload admission.
+
 Task A SimReady candidate: **authored and statically structure-qualified, not
 simulator-qualified**. Its general graph compiler emitted six links, five
 joints, ten primitive colliders, complete mass/COM/inertia and material
