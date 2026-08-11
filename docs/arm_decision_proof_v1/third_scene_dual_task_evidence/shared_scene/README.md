@@ -31,3 +31,21 @@ and was not touched. The estimates are not a reconciled billing export.
 Portable closeout receipt:
 [`provider_closeout.v1.json`](provider_closeout.v1.json), digest
 `sha256:71f6d1843dc2c76ae0536e23495620d500c091ce630f73e6ff69fa388af4cefe`.
+
+## Agent-authored CAD and Content Agents bundle evidence
+
+Both frozen replacement objects now have two agent-authored CAD candidates:
+Earth-to-Jake text-to-CAD and Pan-Chera Multi-Agent-CAD/Codex. The four-candidate
+comparison board and the original source-object frame contact sheet are retained
+in the rights-bounded construction evidence root and are referenced by the
+per-task supporting inventories.
+
+Checked-in digest-bound manifests:
+
+- [`third_scene_840920_dual_task_agent_cad_matrix.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json)
+- [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
+
+Claim boundary: these are CAD candidates and Content Agents bundle/preflight
+receipts only. Content Agents have not been executed in this goal state; no
+candidate is SimReady-qualified, native-simulator-import-qualified,
+appearance-qualified, physics-qualified, or physically equivalent.

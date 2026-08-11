@@ -1,7 +1,160 @@
 {
   "artifact_bytes_embedded": false,
-  "artifact_count": 24,
+  "artifact_count": 42,
   "artifacts": [
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
+      "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_receipt",
+      "sha256": "sha256:bb17367918e58e3e546a4063d4521e1f06c874e4c244cc40d0073c1cc9c6a1ea",
+      "size_bytes": 15280,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_provider_runtime_bundle.zip",
+      "role": "agent_cad:earthtojake_text_to_cad:content_agents_bundle_zip",
+      "sha256": "sha256:4b72121743246bff05e1d189da56cdab4e3cc9741ae394c7a25fe8138a09a823",
+      "size_bytes": 48714180,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/cad_agent_execution_receipt.v1.json",
+      "role": "agent_cad:earthtojake_text_to_cad:execution_receipt",
+      "sha256": "sha256:10b70095f2fa25d4b9eab6bfa199889bb66f466383126cfed0b5fd0b1d088746",
+      "size_bytes": 2144,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/content_agents_input_v1/mesh_packet.v1.json",
+      "role": "agent_cad:earthtojake_text_to_cad:mesh_packet",
+      "sha256": "sha256:6bfff1f05a20dac615f7603e239afca66da8abda3c5afa2aee9ca823c53f71af",
+      "size_bytes": 128818,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/content_agents_input_v1/projection_receipt.v1.json",
+      "role": "agent_cad:earthtojake_text_to_cad:mesh_projection_receipt",
+      "sha256": "sha256:55289898152fda5008d3973eb315a8cfeb56411cddf31eebfacca356f55bf1be",
+      "size_bytes": 5384,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/content_agents_input_v1/agent_input.usda",
+      "role": "agent_cad:earthtojake_text_to_cad:mesh_usd_agent_input",
+      "sha256": "sha256:52ceda6a9b51dc79dcd9636f81c1468d24e2652ea1b73767d7a571cd46ffe1a7",
+      "size_bytes": 195102,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/notebook.step",
+      "role": "agent_cad:earthtojake_text_to_cad:primary_step",
+      "sha256": "sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c",
+      "size_bytes": 1363752,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/earthtojake_cad_v1/snapshots/notebook_front_20260811T032706Z.png",
+      "role": "agent_cad:earthtojake_text_to_cad:review_snapshot",
+      "sha256": "sha256:a256830781ec53eac8a84b49b48cb21214a0b9df9a803f925269ed332d6dfe78",
+      "size_bytes": 53874,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_bundle_receipt.json",
+      "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_receipt",
+      "sha256": "sha256:e6e3891495b15e5803cd56d19d310400ca152015618f70744228ba9ec9f2383c",
+      "size_bytes": 18937,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_bundle_v1_20260811T_autoref_agent_cad/adp_content_agents_provider_runtime_bundle.zip",
+      "role": "agent_cad:pan_chera_multi_agent_cad:content_agents_bundle_zip",
+      "sha256": "sha256:c27bbd11e5352f73157decf5ba1b566dd7238c67ccbd6c5e5ab14eee790ffba3",
+      "size_bytes": 48939056,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/cad_agent_execution_receipt.v1.json",
+      "role": "agent_cad:pan_chera_multi_agent_cad:execution_receipt",
+      "sha256": "sha256:041d506f22840428addbb52b11d566732f68ae51d140aa8bd414523eb60499a4",
+      "size_bytes": 2311,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_input_v1/mesh_packet.v1.json",
+      "role": "agent_cad:pan_chera_multi_agent_cad:mesh_packet",
+      "sha256": "sha256:168e13a3c8b03520f5f5db6f9f408b1a485b723536f652a2237ccdc3dddf4da2",
+      "size_bytes": 4272004,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_input_v1/projection_receipt.v1.json",
+      "role": "agent_cad:pan_chera_multi_agent_cad:mesh_projection_receipt",
+      "sha256": "sha256:d8a080b87bf1063d9380c4ff7d5827021ee47d4ee4542aca06ef93531796d0d4",
+      "size_bytes": 8932,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_input_v1/agent_input.usda",
+      "role": "agent_cad:pan_chera_multi_agent_cad:mesh_usd_agent_input",
+      "sha256": "sha256:a0afcce7930ef8b0abbd526dcb85164c54cdc1ad9c6d42373e316bc16a1685f5",
+      "size_bytes": 3678405,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/notebook_mac_codex.step",
+      "role": "agent_cad:pan_chera_multi_agent_cad:primary_step",
+      "sha256": "sha256:fb72f8e3f23a1260a54bd0620bf994ba09bd58d37cbcfec93134c9213e33863b",
+      "size_bytes": 4611779,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "task_b/multi_agent_cad_codex_v1/snapshots/notebook_mac_codex_front_20260811T042241Z.png",
+      "role": "agent_cad:pan_chera_multi_agent_cad:review_snapshot",
+      "sha256": "sha256:1a8256da6d7800228ebf52064e1294784efe880801e57c020b9c36f1a3aaa707",
+      "size_bytes": 73052,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "shared_scene/cad_agent_comparison_v1/all_four_cad_candidates_side_by_side_front_best.png",
+      "role": "agent_cad_comparison:all_four_front_best",
+      "sha256": "sha256:2bfc91ee625ba8ed8b71219ac29a72d7b5ad606ada278118c779d73b7d629544",
+      "size_bytes": 365224,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
     {
       "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
       "portable_link_available": false,
@@ -18,6 +171,15 @@
       "role": "gaussian_excision_freeze",
       "sha256": "sha256:d81c576e2874949d8108520ec4d64835a2fa88c85e1bac3a936b26c2b35a3d1c",
       "size_bytes": 17699,
+      "source_root_id": "third_scene_rights_bounded_construction_root"
+    },
+    {
+      "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
+      "portable_link_available": false,
+      "relative_path": "shared_scene/original_source_object_frames_v1/selected_original_source_object_frames_contact_sheet.png",
+      "role": "observed_source_object_frames:contact_sheet",
+      "sha256": "sha256:5bec077f34c79c973148b157c89f87b4fb4cd26d06c974d674c6e6d974888746",
+      "size_bytes": 1476529,
       "source_root_id": "third_scene_rights_bounded_construction_root"
     },
     {
@@ -220,7 +382,7 @@
     }
   ],
   "disclosure_class": "digest_receipt_only_dataset_derived_bytes_not_embedded",
-  "inventory_digest": "sha256:4404526e6906909814ed2effadd0b1ad650ad441f71bafc17d0e2d576728c7bc",
+  "inventory_digest": "sha256:adc9f236b11a3d3d415a437dd8f776eb4bbcb00534ee8f7671453f966f9df355",
   "publication_authority_inferred": false,
   "schema_version": "adp_supporting_evidence_inventory.v1",
   "source_root_absolute_path_recorded": false,
