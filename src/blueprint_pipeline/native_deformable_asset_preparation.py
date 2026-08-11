@@ -54,7 +54,6 @@ from .external_simready_deformable_asset import (
 from .native_task_entity_asset_authoring_bundle import (
     DEFORMABLE_AUTHORING_API,
     DEFORMABLE_COOKING_API,
-    DEFORMABLE_REQUIRED_SCHEMAS,
 )
 from .native_task_runtime_source_packet import (
     ISAACLAB_COMMIT,
@@ -87,10 +86,10 @@ DEFORMABLE_MATERIAL_CFG = (
 )
 DEFORMABLE_BODY_CFG = "isaaclab.sim.schemas.schemas_cfg:DeformableBodyPropertiesCfg"
 DEFORMABLE_PHYSICS_BINDING_API = "isaaclab.sim.utils.prims:bind_physics_material"
-DEFORMABLE_BODY_SCHEMAS = tuple(
-    schema
-    for schema in DEFORMABLE_REQUIRED_SCHEMAS
-    if not schema.endswith("PhysxDeformableBodyMaterialAPI")
+DEFORMABLE_BODY_SCHEMAS = (
+    "pxr.PhysxSchema.OmniPhysicsDeformableBodyAPI",
+    "pxr.PhysxSchema.PhysxBaseDeformableBodyAPI",
+    "pxr.PhysxSchema.PhysxCollisionAPI",
 )
 DEFORMABLE_MATERIAL_SCHEMAS = ("pxr.PhysxSchema.PhysxDeformableBodyMaterialAPI",)
 NATIVE_REQUIRED_API_SYMBOLS = (
@@ -128,24 +127,34 @@ _OUTPUT_SNAPSHOT_DESCRIPTOR_RESERVE = 64
 
 _BODY_CFG_FIELDS = frozenset(
     {
-        "deformable_enabled",
+        "deformable_body_enabled",
         "kinematic_enabled",
+        "mass",
         "self_collision",
         "self_collision_filter_distance",
         "settling_threshold",
-        "sleep_damping",
+        "settling_damping",
         "sleep_threshold",
         "solver_position_iteration_count",
-        "vertex_velocity_damping",
+        "linear_damping",
+        "max_linear_velocity",
+        "contact_offset",
+        "rest_offset",
+        "max_depenetration_velocity",
+        "enable_speculative_c_c_d",
+        "disable_gravity",
+        "collision_pair_update_frequency",
+        "collision_iteration_multiplier",
+    }
+)
+_SOURCE_COOKING_FIELDS = frozenset(
+    {
         "simulation_hexahedral_resolution",
         "collision_simplification",
         "collision_simplification_remeshing",
         "collision_simplification_remeshing_resolution",
         "collision_simplification_target_triangle_count",
         "collision_simplification_force_conforming",
-        "contact_offset",
-        "rest_offset",
-        "max_depenetration_velocity",
     }
 )
 _MATERIAL_CFG_FIELDS = frozenset(
@@ -170,7 +179,7 @@ PINNED_NATIVE_CALL_CONTRACT = {
         "configuration_symbol": DEFORMABLE_MATERIAL_CFG,
         "positive_prim_return_required": True,
     },
-    "deformable_authoring": {
+        "deformable_authoring": {
         "symbol": DEFORMABLE_AUTHORING_API,
         "source_relative_path": "source/isaaclab/isaaclab/sim/schemas/schemas.py",
         "source_git_blob_sha1": "8bd2c314bf931afe160759fb1ac3f92e24358ff3",
@@ -183,9 +192,11 @@ PINNED_NATIVE_CALL_CONTRACT = {
         ],
         "configuration_symbol": DEFORMABLE_BODY_CFG,
         "embedded_cooking_owner": "isaaclab.sim.schemas.schemas:define_deformable_body_properties",
+        "body_cfg_constructor_receives_cooking_fields": False,
+        "source_cooking_properties_recorded_not_constructor_kwargs": True,
         "explicit_success_return": None,
         "direct_duplicate_cook_forbidden": True,
-        "schema_is_applied_to_single_mesh_child": True,
+        "schema_is_applied_to_authoring_root": True,
     },
     "physics_material_binding": {
         "symbol": DEFORMABLE_PHYSICS_BINDING_API,
@@ -851,20 +862,22 @@ def _normalize_physics_configuration(value: Any, *, errors: list[str]) -> dict[s
     material = result.get("material_properties", {})
     if set(body) & set(cooking):
         errors.append("native_deformable_physics_body_cooking_field_overlap")
-    if not (set(body) | set(cooking)).issubset(_BODY_CFG_FIELDS):
+    if not set(body).issubset(_BODY_CFG_FIELDS):
         errors.append("native_deformable_physics_body_cfg_fields_unsupported")
+    if not set(cooking).issubset(_SOURCE_COOKING_FIELDS):
+        errors.append("native_deformable_physics_cooking_fields_unsupported")
     if not set(material).issubset(_MATERIAL_CFG_FIELDS):
         errors.append("native_deformable_physics_material_cfg_fields_unsupported")
-    if body.get("deformable_enabled") is not True:
+    if body.get("deformable_body_enabled") is not True:
         errors.append("native_deformable_physics_deformable_enabled_required")
     if body.get("kinematic_enabled") is not False:
         errors.append("native_deformable_physics_kinematic_disabled_required")
     if not {
-        "deformable_enabled",
+        "deformable_body_enabled",
         "kinematic_enabled",
         "self_collision",
         "solver_position_iteration_count",
-        "vertex_velocity_damping",
+        "linear_damping",
         "contact_offset",
         "rest_offset",
     }.issubset(body):
@@ -877,9 +890,11 @@ def _normalize_physics_configuration(value: Any, *, errors: list[str]) -> dict[s
     }.issubset(cooking):
         errors.append("native_deformable_physics_cooking_required_fields_missing")
     for field in (
-        "deformable_enabled",
+        "deformable_body_enabled",
         "kinematic_enabled",
         "self_collision",
+        "enable_speculative_c_c_d",
+        "disable_gravity",
         "collision_simplification",
         "collision_simplification_remeshing",
         "collision_simplification_force_conforming",
@@ -890,6 +905,7 @@ def _normalize_physics_configuration(value: Any, *, errors: list[str]) -> dict[s
                 errors.append(f"native_deformable_physics_{field}_type_invalid")
     for field in (
         "solver_position_iteration_count",
+        "collision_pair_update_frequency",
         "simulation_hexahedral_resolution",
         "collision_simplification_remeshing_resolution",
         "collision_simplification_target_triangle_count",
@@ -916,12 +932,15 @@ def _normalize_physics_configuration(value: Any, *, errors: list[str]) -> dict[s
     numeric_fields = {
         "self_collision_filter_distance",
         "settling_threshold",
-        "sleep_damping",
+        "settling_damping",
         "sleep_threshold",
-        "vertex_velocity_damping",
+        "linear_damping",
+        "max_linear_velocity",
         "contact_offset",
         "rest_offset",
         "max_depenetration_velocity",
+        "collision_iteration_multiplier",
+        "mass",
     }
     for field in sorted(numeric_fields & (set(body) | set(cooking))):
         candidate = body[field] if field in body else cooking[field]
@@ -1474,10 +1493,7 @@ def materialize_native_deformable_asset_preparation_plan(
         raise NativeDeformableAssetPreparationError(errors)
     define_arguments = {
         "prim_path": OUTPUT_BODY_PRIM_PATH,
-        "cfg_kwargs": {
-            **normalized_physics["body_properties"],
-            **normalized_physics["cooking_properties"],
-        },
+        "cfg_kwargs": normalized_physics["body_properties"],
     }
     material_arguments = {
         "prim_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
@@ -1576,6 +1592,8 @@ def materialize_native_deformable_asset_preparation_plan(
                 "owner_symbol": DEFORMABLE_AUTHORING_API,
                 "legacy_external_cooking_symbol_not_required": DEFORMABLE_COOKING_API,
                 "direct_cooking_call_forbidden": True,
+                "body_cfg_constructor_receives_cooking_fields": False,
+                "source_cooking_properties_recorded_not_constructor_kwargs": True,
                 "pinned_authoring_return": None,
             },
             "api_calls_in_order": [
@@ -1634,7 +1652,7 @@ def materialize_native_deformable_asset_preparation_plan(
                 ),
             },
             "authoring_root_prim_path": OUTPUT_BODY_PRIM_PATH,
-            "deformable_schema_prim_path": OUTPUT_VISUAL_PRIM_PATH,
+            "deformable_schema_prim_path": OUTPUT_BODY_PRIM_PATH,
             "body_api_schemas": sorted(DEFORMABLE_BODY_SCHEMAS),
             "physics_material": {
                 "prim_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
@@ -2017,10 +2035,7 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
     }
     body_arguments = {
         "prim_path": OUTPUT_BODY_PRIM_PATH,
-        "cfg_kwargs": {
-            **physics.get("body_properties", {}),
-            **physics.get("cooking_properties", {}),
-        },
+        "cfg_kwargs": physics.get("body_properties", {}),
     }
     physics_binding_arguments = {
         "prim_path": OUTPUT_VISUAL_PRIM_PATH,
@@ -2061,6 +2076,8 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
             "owner_symbol": DEFORMABLE_AUTHORING_API,
             "legacy_external_cooking_symbol_not_required": DEFORMABLE_COOKING_API,
             "direct_cooking_call_forbidden": True,
+            "body_cfg_constructor_receives_cooking_fields": False,
+            "source_cooking_properties_recorded_not_constructor_kwargs": True,
             "pinned_authoring_return": None,
         },
         "api_calls_in_order": expected_calls,
@@ -2162,7 +2179,7 @@ def _verify_plan(value: Mapping[str, Any], *, expected_plan_digest: str) -> dict
             ),
         },
         "authoring_root_prim_path": OUTPUT_BODY_PRIM_PATH,
-        "deformable_schema_prim_path": OUTPUT_VISUAL_PRIM_PATH,
+        "deformable_schema_prim_path": OUTPUT_BODY_PRIM_PATH,
         "body_api_schemas": sorted(DEFORMABLE_BODY_SCHEMAS),
         "physics_material": {
             "prim_path": OUTPUT_PHYSICS_MATERIAL_PRIM_PATH,
@@ -2553,7 +2570,10 @@ def execute_native_deformable_asset_preparation(
         )
         stage_api.record_native_configuration(
             stage=stage,
-            body_and_cooking_properties=authoring_row["arguments"]["cfg_kwargs"],
+            body_and_cooking_properties={
+                **normalized["physics_configuration"]["body_properties"],
+                **normalized["physics_configuration"]["cooking_properties"],
+            },
             material_properties=material_row["arguments"]["cfg_kwargs"],
         )
         stage_api.save_stage(stage=stage)
@@ -2563,7 +2583,7 @@ def execute_native_deformable_asset_preparation(
             stage_api.readback_prepared_stage(
                 stage=stage,
                 output_authoring_root_prim_path=rebuild["output_default_prim_path"],
-                output_deformable_schema_prim_path=rebuild["output_visual_prim_path"],
+                output_deformable_schema_prim_path=rebuild["output_default_prim_path"],
                 output_visual_prim_path=rebuild["output_visual_prim_path"],
             ),
             error="native_deformable_preparation_readback_not_json",

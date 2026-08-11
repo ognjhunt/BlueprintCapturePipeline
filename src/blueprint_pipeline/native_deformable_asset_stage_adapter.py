@@ -39,9 +39,9 @@ _PROVIDER_ATTRIBUTE_PREFIXES = (
     "newton:",
 )
 _BODY_SCHEMA_NAMES = {
+    "OmniPhysicsDeformableBodyAPI": "pxr.PhysxSchema.OmniPhysicsDeformableBodyAPI",
+    "PhysxBaseDeformableBodyAPI": "pxr.PhysxSchema.PhysxBaseDeformableBodyAPI",
     "PhysxCollisionAPI": "pxr.PhysxSchema.PhysxCollisionAPI",
-    "PhysxDeformableAPI": "pxr.PhysxSchema.PhysxDeformableAPI",
-    "PhysxDeformableBodyAPI": "pxr.PhysxSchema.PhysxDeformableBodyAPI",
 }
 _MATERIAL_SCHEMA_NAMES = {
     "PhysxDeformableBodyMaterialAPI": ("pxr.PhysxSchema.PhysxDeformableBodyMaterialAPI")
@@ -56,6 +56,8 @@ _COOKING_FIELDS = frozenset(
         "simulation_hexahedral_resolution",
     }
 )
+_OMNIPHYSICS_BODY_FIELDS = frozenset({"deformable_body_enabled", "kinematic_enabled", "mass"})
+_PHYSX_COLLISION_BODY_FIELDS = frozenset({"contact_offset", "rest_offset"})
 _MAX_SOURCE_USD_BYTES = 64 * 1024 * 1024
 _MAX_TEXTURE_BYTES = 64 * 1024 * 1024
 _MAX_TEXTURE_TOTAL_BYTES = 256 * 1024 * 1024
@@ -1551,18 +1553,19 @@ class OpenUsdNativeDeformableStageAdapter:
             errors.append(mismatch)
             return None
 
-        for group in ("body_properties", "cooking_properties"):
-            for field, expected in configuration[group].items():
-                namespace = (
-                    "physxCollision"
-                    if field in {"contact_offset", "rest_offset"}
-                    else "physxDeformable"
-                )
-                attribute = schema_prim.GetAttribute(f"{namespace}:{_camel_case(field)}")
-                mismatch = f"native_deformable_stage_body_readback_mismatch:{field}"
-                actual_configuration[group][field] = normalized_actual(
-                    attribute, expected, mismatch=mismatch
-                )
+        for field, expected in configuration["body_properties"].items():
+            if field in _OMNIPHYSICS_BODY_FIELDS:
+                namespace = "omniphysics"
+            elif field in _PHYSX_COLLISION_BODY_FIELDS:
+                namespace = "physxCollision"
+            else:
+                namespace = "physxDeformableBody"
+            attribute = schema_prim.GetAttribute(f"{namespace}:{_camel_case(field)}")
+            mismatch = f"native_deformable_stage_body_readback_mismatch:{field}"
+            actual_configuration["body_properties"][field] = normalized_actual(
+                attribute, expected, mismatch=mismatch
+            )
+        actual_configuration["cooking_properties"] = dict(configuration["cooking_properties"])
         for field, expected in configuration["material_properties"].items():
             attribute = physics_material_prim.GetAttribute(
                 f"physxDeformableBodyMaterial:{_camel_case(field)}"
@@ -1592,18 +1595,20 @@ class OpenUsdNativeDeformableStageAdapter:
             surface is None
             or material is None
             or output_authoring_root_prim_path != entry["default_prim_path"]
-            or output_deformable_schema_prim_path != output_visual_prim_path
+            or output_deformable_schema_prim_path != output_authoring_root_prim_path
             or output_visual_prim_path != surface["output_prim_path"]
         ):
             raise NativeDeformableAssetStageAdapterError(
                 ["native_deformable_stage_readback_join_invalid"]
             )
         schema_prim = stage.GetPrimAtPath(output_deformable_schema_prim_path)
+        visual_prim = stage.GetPrimAtPath(output_visual_prim_path)
         physics_material_path = f"{output_authoring_root_prim_path}/PhysicsMaterial"
         physics_material_prim = stage.GetPrimAtPath(physics_material_path)
         if (
             not schema_prim.IsValid()
-            or not schema_prim.IsA(UsdGeom.Mesh)
+            or not visual_prim.IsValid()
+            or not visual_prim.IsA(UsdGeom.Mesh)
             or not physics_material_prim.IsValid()
             or not physics_material_prim.IsA(UsdShade.Material)
         ):
@@ -1634,13 +1639,13 @@ class OpenUsdNativeDeformableStageAdapter:
             error="native_deformable_stage_native_schema_readback_invalid",
         )
 
-        live_mesh = UsdGeom.Mesh(schema_prim)
+        live_mesh = UsdGeom.Mesh(visual_prim)
         if (
             live_mesh.GetPointsAttr().ValueMightBeTimeVarying()
             or live_mesh.GetPointsAttr().GetNumTimeSamples()
             or live_mesh.GetNormalsAttr().ValueMightBeTimeVarying()
             or live_mesh.GetNormalsAttr().GetNumTimeSamples()
-            or _xform_chain_is_time_varying(schema_prim, usd_geom=UsdGeom)
+            or _xform_chain_is_time_varying(visual_prim, usd_geom=UsdGeom)
             or list(live_mesh.GetHoleIndicesAttr().Get() or [])
             or (live_mesh.GetSubdivisionSchemeAttr().Get() or UsdGeom.Tokens.none)
             != UsdGeom.Tokens.none
@@ -1651,7 +1656,7 @@ class OpenUsdNativeDeformableStageAdapter:
                 ["native_deformable_stage_visual_mesh_readback_mismatch"]
             )
         live_transform = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(
-            schema_prim
+            visual_prim
         )
         identity = Gf.Matrix4d(1.0)
         if not _matrix_is_finite(live_transform) or any(
@@ -1711,20 +1716,14 @@ class OpenUsdNativeDeformableStageAdapter:
                     ["native_deformable_stage_visual_normal_readback_mismatch"]
                 )
 
-        topology_attributes = {
-            "simulation": (
-                "physxDeformable:simulationPoints",
-                "physxDeformable:simulationIndices",
-            ),
-            "collision": (
-                "physxDeformable:collisionPoints",
-                "physxDeformable:collisionIndices",
-            ),
-        }
         topology_measurements: dict[str, dict[str, Any]] = {}
-        for label, (points_name, indices_name) in topology_attributes.items():
-            points_attribute = schema_prim.GetAttribute(points_name)
-            indices_attribute = schema_prim.GetAttribute(indices_name)
+        sim_mesh_prim = stage.GetPrimAtPath(f"{output_authoring_root_prim_path}/sim_mesh")
+
+        def topology_from_attrs(label: str, prim: object) -> dict[str, Any] | None:
+            points_name = f"physxDeformable:{label}Points"
+            indices_name = f"physxDeformable:{label}Indices"
+            points_attribute = prim.GetAttribute(points_name)
+            indices_attribute = prim.GetAttribute(indices_name)
             if (
                 not points_attribute
                 or not indices_attribute
@@ -1733,14 +1732,42 @@ class OpenUsdNativeDeformableStageAdapter:
                 or points_attribute.ValueMightBeTimeVarying()
                 or indices_attribute.ValueMightBeTimeVarying()
             ):
-                raise NativeDeformableAssetStageAdapterError(
-                    ["native_deformable_stage_cooked_topology_missing"]
-                )
-            topology_measurements[label] = _tet_topology_measurements(
+                return None
+            return _tet_topology_measurements(
                 list(points_attribute.Get() or []),
                 list(indices_attribute.Get() or []),
                 label=label,
             )
+
+        def topology_from_tetmesh(label: str) -> dict[str, Any] | None:
+            if not sim_mesh_prim.IsValid() or str(sim_mesh_prim.GetTypeName()) != "TetMesh":
+                return None
+            tet_mesh = UsdGeom.TetMesh(sim_mesh_prim)
+            points_attribute = tet_mesh.GetPointsAttr()
+            indices_attribute = tet_mesh.GetTetVertexIndicesAttr()
+            if (
+                not points_attribute
+                or not indices_attribute
+                or points_attribute.ValueMightBeTimeVarying()
+                or indices_attribute.ValueMightBeTimeVarying()
+            ):
+                return None
+            return _tet_topology_measurements(
+                list(points_attribute.Get() or []),
+                [component for item in list(indices_attribute.Get() or []) for component in item],
+                label=label,
+            )
+
+        for label in ("simulation", "collision"):
+            topology_measurements[label] = (
+                topology_from_tetmesh(label)
+                or topology_from_attrs(label, schema_prim)
+                or topology_from_attrs(label, visual_prim)
+            )
+            if topology_measurements[label] is None:
+                raise NativeDeformableAssetStageAdapterError(
+                    ["native_deformable_stage_cooked_topology_missing"]
+                )
         simulation_volume_error = (
             abs(topology_measurements["simulation"]["volume_m3"] - live_visual["closed_volume_m3"])
             / live_visual["closed_volume_m3"]
@@ -1758,10 +1785,10 @@ class OpenUsdNativeDeformableStageAdapter:
                 ["native_deformable_stage_material_network_readback_mismatch"]
             )
         render_bound, render_relationship = UsdShade.MaterialBindingAPI(
-            schema_prim
+            visual_prim
         ).ComputeBoundMaterial()
         physics_bound, physics_relationship = UsdShade.MaterialBindingAPI(
-            schema_prim
+            visual_prim
         ).ComputeBoundMaterial("physics")
         strength = (
             physics_relationship.GetMetadata("bindMaterialAs") if physics_relationship else None
@@ -1770,11 +1797,11 @@ class OpenUsdNativeDeformableStageAdapter:
             not render_bound
             or str(render_bound.GetPath()) not in material["material_prim_paths"]
             or not render_relationship
-            or render_relationship.GetPrim() != schema_prim
+            or render_relationship.GetPrim() != visual_prim
             or not physics_bound
             or str(physics_bound.GetPath()) != physics_material_path
             or not physics_relationship
-            or physics_relationship.GetPrim() != schema_prim
+            or physics_relationship.GetPrim() != visual_prim
             or str(strength or "") != "strongerThanDescendants"
         ):
             raise NativeDeformableAssetStageAdapterError(
@@ -1788,7 +1815,7 @@ class OpenUsdNativeDeformableStageAdapter:
 
         expected_root = stage.GetPrimAtPath(output_authoring_root_prim_path)
         expected_scopes: set[str] = {material["output_looks_prim_path"]}
-        current_parent = schema_prim.GetParent()
+        current_parent = visual_prim.GetParent()
         while current_parent.IsValid() and current_parent != expected_root:
             expected_scopes.add(str(current_parent.GetPath()))
             current_parent = current_parent.GetParent()
@@ -1836,8 +1863,9 @@ class OpenUsdNativeDeformableStageAdapter:
                     "MaterialBindingAPI",
                     "PhysicsCollisionAPI",
                     "PhysicsMassAPI",
-                    *_BODY_SCHEMA_NAMES,
                 }
+            elif path == output_authoring_root_prim_path:
+                allowed_schemas = set(_BODY_SCHEMA_NAMES)
             elif path == physics_material_path:
                 allowed_schemas = set(_MATERIAL_SCHEMA_NAMES)
             elif material_root is not None:
@@ -1852,8 +1880,11 @@ class OpenUsdNativeDeformableStageAdapter:
             for schema in authored_schemas:
                 schema_text = str(schema)
                 if (
-                    schema_text.casefold().startswith(_PROVIDER_SCHEMA_PREFIXES)
-                    or schema_text.split(":", 1)[0] not in allowed_schemas
+                    schema_text not in allowed_schemas
+                    and (
+                        schema_text.casefold().startswith(_PROVIDER_SCHEMA_PREFIXES)
+                        or schema_text.split(":", 1)[0] not in allowed_schemas
+                    )
                 ):
                     raise NativeDeformableAssetStageAdapterError(
                         ["native_deformable_stage_forbidden_source_content_present"]
@@ -1868,7 +1899,27 @@ class OpenUsdNativeDeformableStageAdapter:
                     raise NativeDeformableAssetStageAdapterError(
                         ["native_deformable_stage_property_limit_exceeded"]
                     )
-                if str(attribute.GetName()).casefold().startswith(_PROVIDER_ATTRIBUTE_PREFIXES):
+                attribute_name = str(attribute.GetName())
+                expected_body_attribute = (
+                    path == output_authoring_root_prim_path
+                    and any(
+                        attribute_name == f"{namespace}:{_camel_case(field)}"
+                        for field in physics_configuration["body_properties"]
+                        for namespace in (
+                            ["omniphysics"]
+                            if field in _OMNIPHYSICS_BODY_FIELDS
+                            else (
+                                ["physxCollision"]
+                                if field in _PHYSX_COLLISION_BODY_FIELDS
+                                else ["physxDeformableBody"]
+                            )
+                        )
+                    )
+                )
+                if (
+                    attribute_name.casefold().startswith(_PROVIDER_ATTRIBUTE_PREFIXES)
+                    and not expected_body_attribute
+                ):
                     raise NativeDeformableAssetStageAdapterError(
                         ["native_deformable_stage_forbidden_source_content_present"]
                     )

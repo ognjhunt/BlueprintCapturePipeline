@@ -64,11 +64,11 @@ def _write_receipt(path: Path, receipt: dict[str, Any]) -> Path:
 def _physics() -> dict[str, Any]:
     return {
         "body_properties": {
-            "deformable_enabled": True,
+            "deformable_body_enabled": True,
             "kinematic_enabled": False,
             "self_collision": True,
             "solver_position_iteration_count": 28,
-            "vertex_velocity_damping": 0.18,
+            "linear_damping": 0.18,
             "contact_offset": 0.003,
             "rest_offset": 0.001,
         },
@@ -397,9 +397,7 @@ def test_plan_bakes_metric_scale_and_rebuilds_only_allowlisted_content(
     ]
     assert plan["required_native_readback"]["body_api_schemas"] == sorted(DEFORMABLE_BODY_SCHEMAS)
     assert plan["required_native_readback"]["authoring_root_prim_path"] == "/Deformable"
-    assert plan["required_native_readback"]["deformable_schema_prim_path"] == (
-        "/Deformable/Visuals/Surface"
-    )
+    assert plan["required_native_readback"]["deformable_schema_prim_path"] == "/Deformable"
     assert plan["required_native_readback"]["physics_material_binding"] == {
         "prim_path": "/Deformable/Visuals/Surface",
         "material_prim_path": "/Deformable/PhysicsMaterial",
@@ -612,11 +610,8 @@ def test_injected_native_worker_calls_all_pinned_apis_and_verifier_stays_bounded
     assert events[3][1]["stage"] is events[8][1]["stage"]
     assert events[4][1] == _physics()["material_properties"]
     assert events[5][1]["cfg"].kwargs == _physics()["material_properties"]
-    assert events[6][1] == {
-        **_physics()["body_properties"],
-        **_physics()["cooking_properties"],
-    }
-    assert events[7][1]["cfg"].kwargs == events[6][1]
+    assert events[6][1] == _physics()["body_properties"]
+    assert events[7][1]["cfg"].kwargs == _physics()["body_properties"]
     assert events[8][1] == {
         "prim_path": "/Deformable/Visuals/Surface",
         "material_path": "/Deformable/PhysicsMaterial",
@@ -883,7 +878,7 @@ def test_exact_source_usd_path_cannot_be_a_symlink(tmp_path: Path) -> None:
         ),
         (
             lambda result: result["readback"].__setitem__(
-                "deformable_schema_prim_path", "/Deformable"
+                "deformable_schema_prim_path", "/Deformable/Visuals/Surface"
             ),
             "native_deformable_return_schema_prim_mismatch",
         ),

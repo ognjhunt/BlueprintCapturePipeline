@@ -72,11 +72,11 @@ def _source_asset(root: Path) -> tuple[Path, Path, list[float]]:
 
 def _native_configuration() -> tuple[dict[str, object], dict[str, float]]:
     body_and_cooking: dict[str, object] = {
-        "deformable_enabled": True,
+        "deformable_body_enabled": True,
         "kinematic_enabled": False,
         "self_collision": True,
         "solver_position_iteration_count": 28,
-        "vertex_velocity_damping": 0.18,
+        "linear_damping": 0.18,
         "contact_offset": 0.003,
         "rest_offset": 0.001,
         "collision_simplification": True,
@@ -101,13 +101,19 @@ def _author_native_readback(
     body_and_cooking: dict[str, object],
     material_properties: dict[str, float],
 ) -> None:
+    body = stage.GetPrimAtPath("/Deformable")
     surface = stage.GetPrimAtPath("/Deformable/Visuals/Surface")
-    for schema in ("PhysxDeformableBodyAPI", "PhysxCollisionAPI", "PhysxDeformableAPI"):
-        surface.AddAppliedSchema(schema)
+    for schema in ("OmniPhysicsDeformableBodyAPI", "PhysxBaseDeformableBodyAPI", "PhysxCollisionAPI"):
+        body.AddAppliedSchema(schema)
     for field, value in body_and_cooking.items():
-        namespace = (
-            "physxCollision" if field in {"contact_offset", "rest_offset"} else "physxDeformable"
-        )
+        if field in {"deformable_body_enabled", "kinematic_enabled", "mass"}:
+            namespace = "omniphysics"
+        elif field in {"contact_offset", "rest_offset"}:
+            namespace = "physxCollision"
+        elif field.startswith("collision_") or field == "simulation_hexahedral_resolution":
+            continue
+        else:
+            namespace = "physxDeformableBody"
         name = field.split("_")[0] + "".join(
             part[:1].upper() + part[1:] for part in field.split("_")[1:]
         )
@@ -117,7 +123,7 @@ def _author_native_readback(
             value_type = Sdf.ValueTypeNames.Int
         else:
             value_type = Sdf.ValueTypeNames.Double
-        surface.CreateAttribute(f"{namespace}:{name}", value_type).Set(value)
+        body.CreateAttribute(f"{namespace}:{name}", value_type).Set(value)
     tet_points = surface.GetAttribute("points").Get()
     surface.CreateAttribute(
         "physxDeformable:simulationPoints", Sdf.ValueTypeNames.Point3fArray
@@ -215,7 +221,7 @@ def _readback(adapter: OpenUsdNativeDeformableStageAdapter, stage: Usd.Stage) ->
         adapter.readback_prepared_stage(
             stage=stage,
             output_authoring_root_prim_path="/Deformable",
-            output_deformable_schema_prim_path="/Deformable/Visuals/Surface",
+            output_deformable_schema_prim_path="/Deformable",
             output_visual_prim_path="/Deformable/Visuals/Surface",
         )
     )
@@ -270,7 +276,7 @@ def test_clean_stage_rebuild_bakes_metric_geometry_and_replays_native_state(
     readback = adapter.readback_prepared_stage(
         stage=stage,
         output_authoring_root_prim_path="/Deformable",
-        output_deformable_schema_prim_path="/Deformable/Visuals/Surface",
+        output_deformable_schema_prim_path="/Deformable",
         output_visual_prim_path="/Deformable/Visuals/Surface",
     )
 
@@ -418,9 +424,9 @@ def test_invalid_cooked_tetrahedra_fail_closed(
     ("prim_path", "attribute_name", "expected_error"),
     [
         (
-            "/Deformable/Visuals/Surface",
-            "physxDeformable:vertexVelocityDamping",
-            "native_deformable_stage_body_readback_mismatch:vertex_velocity_damping",
+            "/Deformable",
+            "physxDeformableBody:linearDamping",
+            "native_deformable_stage_body_readback_mismatch:linear_damping",
         ),
         (
             "/Deformable/PhysicsMaterial",

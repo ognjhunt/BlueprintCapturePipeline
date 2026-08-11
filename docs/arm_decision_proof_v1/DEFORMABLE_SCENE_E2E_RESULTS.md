@@ -192,7 +192,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 
 ## Cost and provider lifecycle
 
-- Deformable Vast/GPU spend retained so far: `$0.489053`.
+- Deformable Vast/GPU spend retained so far: `$0.538966`.
 - Palatial/Newton local attempt 001: retained free null, 120 requested CPU
   frames, hard timeout at 300 seconds, `$0.00`, scratch removed, receipt file
   SHA-256 `a159530bca09fccf07cd42dc0e6a097e876621e47861e323ad6f779f647164fb`.
@@ -294,14 +294,38 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   `sha256:74d5b2efe896a01197de0372fa0e6c62695841a86841ed85cf2e0a123b03c4c6`;
   allocation input digest is
   `sha256:7dd9ac5c4867dc8b2a4b237a0640474929d3ad2f392b317c19725f03a4e4104c`.
-- Current provider state as of `2026-08-11T10:25:06Z` is not zero:
-  `vastai show instances --raw` returned external ADP-009D instance `47455676`,
-  label `blueprint-adp009d-1786443359`, machine `24733`, rate
-  `$0.5703703703703703/hr`. The deformable lane owns no live provider instance.
-  The v24 execute remains gated by the canonical single-flight/provider-zero
-  rule.
-- Deformable Vast/GPU attempts with allocation: `10`; prelaunch-blocked attempts:
-  `2`; local dry-run command-shape nulls: `2`; uploads: `8`; automatic retries:
+- Deformable native canary v24 execute was attempted after commit `dff14c289`
+  superseded the v24 bundle's immutable implementation commit `0730f8ba6`.
+  The allocator correctly blocked before any Vast allocation with
+  `native_deformable_bundle_preparation_failed:NativeDeformableAssetProviderBundleError`.
+  Cost: `$0.00`; provider mutations: `0`; no policy query. This is an
+  immutable-control-plane mismatch null, not a native scientific result.
+- Deformable native canary v25 dry-run prepared the immutable provider bundle
+  from commit `dff14c289` and source-package v3. Status: `dry_run_ready`;
+  blockers: `[]`; provider mutations: `0`; no policy query. Bundle SHA-256 is
+  `sha256:d3551f20d42256aeb4cfa3f8924daad5b5d95e8f2508fde96dced1ea5515a4ef`;
+  bundle receipt digest is
+  `sha256:90c80a9e2436643a4f29a72e540d18acb14a15c6991acc9a553f77371c00ca07`;
+  allocation input digest is
+  `sha256:b667ea471fdb1837352095ea253f1db3ee22f8351e1ae197ff1198801560d280`.
+- Deformable native canary v25 launched Vast instance `47456604` on machine
+  `24733` (`L40S`, `$0.5703703703703703/hr`), reached Isaac/Warp CUDA startup,
+  bundle download, verified runtime-source provisioning, and worker execution.
+  The worker then returned a terminal blocker `TypeError:
+  DeformableBodyPropertiesCfg.__init__() got an unexpected keyword argument
+  'collision_simplification'` before native asset qualification. Cost:
+  `$0.049913`; no policy query; teardown, object-store cleanup, final
+  validation, and provider-zero all passed. This is a stale source-package and
+  harness/pinned-PhysX body/cooking configuration mismatch, not a native
+  cook/contact capability result. The reusable fix splits constructor-applied
+  body properties from source cook provenance, aligns PhysX field names and
+  namespaces with the pinned Isaac source, and reads body schemas from the
+  authored body root instead of the visual mesh.
+- Current provider state after v25 teardown is zero:
+  `vastai show instances --raw` returned `[]`. The deformable lane owns no live
+  provider instance.
+- Deformable Vast/GPU attempts with allocation: `11`; prelaunch-blocked attempts:
+  `3`; local dry-run command-shape nulls: `2`; uploads: `9`; automatic retries:
   `0`.
 
 ## Claim table
@@ -310,7 +334,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, and v24 execution is waiting on provider-zero because external ADP-009D instance `47455676` is live |
+| Blocked/abstained | Historical rights abstention superseded. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, v22 exposed a live provider-rate cap readback gap before native execution, v23 exposed a stale `damping_scale` source-package mismatch before native asset qualification, v24 correctly blocked on immutable bundle/commit mismatch before provider allocation, and v25 exposed a stale body/cooking configuration mismatch before native asset qualification |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -340,11 +364,10 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `75d49940f` | Verify live Vast hourly rate after launch |
 | `dcaa2c5ac` | Record deformable provider gate status |
 | `0730f8ba6` | Align deformable material config with pinned PhysX |
+| `dff14c289` | Record deformable v24 dry run |
 
 Each listed commit was pushed to
-`origin/codex/adp-deformable-scene-e2e-20260810`. Commit `4716f49ce` is the
-current published implementation head before the worker-diagnostic and live
-Vast-rate follow-up commits.
+`origin/codex/adp-deformable-scene-e2e-20260810`.
 
 ## Completion and single next action
 
@@ -356,9 +379,11 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to execute the already-prepared v24 no-retry Vast
-native canary bundle after a fresh provider-zero prelaunch guard passes. If the canary qualifies
-cook/load/reset/contact/cameras, the run continues to zero-action and scripted
-controls before any learned policy. If the native backend cannot provide
-qualified rigid--deformable contact attribution, the run seals a typed native
-capability abstention and does not evaluate `pi05_droid` or `groot_n17_droid`.
+The single next action is to commit and push the reusable pinned-PhysX
+body/cooking split, regenerate the source package/bundle at that exact commit,
+and execute one no-retry v26 Vast native canary after a fresh provider-zero
+prelaunch guard passes. If the canary qualifies cook/load/reset/contact/cameras,
+the run continues to zero-action and scripted controls before any learned
+policy. If the native backend cannot provide qualified rigid--deformable contact
+attribution, the run seals a typed native capability abstention and does not
+evaluate `pi05_droid` or `groot_n17_droid`.
