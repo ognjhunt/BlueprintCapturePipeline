@@ -58,8 +58,10 @@ A Newton `--execute` request is rejected before provider mutation unless it has
 a current explicit Newton canary admission plus the canonical paid-resource
 admission, spend cap, TTL, watchdog, artifact storage, teardown, and
 provider-zero gates. The Vast transport arms a separate name- and instance-bound
-hard-TTL watchdog before object staging or compute allocation; failure to arm
-blocks both. This change does not authorize or launch a paid canary.
+hard-TTL watchdog before object staging or compute allocation, and it validates
+the current canonical paid-spend lock before even arming that watchdog. Either
+failure blocks storage and compute. This change does not authorize or launch a
+paid canary.
 
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.

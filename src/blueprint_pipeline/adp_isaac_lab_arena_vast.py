@@ -17,6 +17,12 @@ from typing import Any, Mapping
 from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
 from .adp_isaac_lab_arena_request import build_arena_worker_request
 from .common import ensure_dir, utc_now_iso, write_json
+from .paid_lane_guard import (
+    SPEND_ADMISSION_LOCK_PATH_ENV,
+    PreSpendPreflightBlocked,
+    image_contract_from_ref,
+    require_pre_spend_preflight,
+)
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .task_evaluation_artifact_manifest import (
     TaskEvaluationArtifactManifestError,
@@ -26,7 +32,11 @@ from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
 )
-from .vast_provider_adapter import run_vast_provider_adapter
+from .vast_provider_adapter import (
+    DEFAULT_VAST_API_KEY_FILE,
+    VAST_API_KEY_FILE_ENV,
+    run_vast_provider_adapter,
+)
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
@@ -99,6 +109,22 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _vast_credential_file_present() -> bool:
+    path = Path(
+        os.environ.get(VAST_API_KEY_FILE_ENV, DEFAULT_VAST_API_KEY_FILE)
+    ).expanduser()
+    try:
+        metadata = path.stat()
+    except OSError:
+        return False
+    return bool(
+        path.is_file()
+        and not path.is_symlink()
+        and metadata.st_size > 0
+        and not (stat.S_IMODE(metadata.st_mode) & (stat.S_IWGRP | stat.S_IWOTH))
+    )
 
 
 def _stage_machine_avoidlist(job: Path, machine_avoidlist_path: str | Path | None) -> Path:
@@ -396,6 +422,59 @@ def run_arena_native_control_vast(
         return result
     provider_run = attempt_root / "vast_provider_run"
     ensure_dir(provider_run)
+    vast_credential_present = _vast_credential_file_present()
+    try:
+        pre_spend_preflight = require_pre_spend_preflight(
+            lane=provider_bundle_kind,
+            provider="vast",
+            credential_present=vast_credential_present,
+            capacity_evidence={
+                "available": vast_credential_present,
+                "detail": (
+                    "credential_bound; provider adapter rechecks global inventory and "
+                    "offer capacity before allocation"
+                ),
+            },
+            image_contract=image_contract_from_ref(container_image),
+            runtime_contract={
+                "startup_marker": "vast_instance_started_or_blocked",
+                "progress_marker": "vast_provider_bundle_progress",
+                "startup_timeout_seconds": remaining_live_minutes * 60,
+                "no_progress_timeout_seconds": 1800,
+            },
+            spend_gate_open=(
+                0.0 < max_hourly_rate_usd <= hard_cap_usd
+                and remaining_live_minutes >= 30
+            ),
+            record_dir=provider_run,
+            spend_admission_lock=(
+                None
+                if str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
+                else {}
+            ),
+        )
+    except PreSpendPreflightBlocked as exc:
+        result = {
+            "schema_version": result_schema_version,
+            "generated_at": generated,
+            "status": "blocked",
+            "attempt_number": attempt_number,
+            "attempt_root": str(attempt_root),
+            "provider_mutations_performed": 0,
+            "pre_spend_preflight": exc.preflight,
+            "blockers": sorted(
+                {
+                    f"{blocker_prefix}_pre_spend_preflight_not_passed",
+                    *(
+                        str(item)
+                        for item in exc.preflight.get("blockers") or []
+                        if str(item)
+                    ),
+                }
+            ),
+        }
+        _write_run_result(job, attempt_root, result)
+        return result
     watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
         job_dir=provider_run,
         max_live_minutes=remaining_live_minutes,
@@ -596,6 +675,7 @@ def run_arena_native_control_vast(
         "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
         "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),
         "artifact_manifest_path": str(artifact_manifest_path),
+        "pre_spend_preflight": pre_spend_preflight,
         "independent_watchdog_handoff": watchdog_handoff,
         "independent_watchdog_close": watchdog_close,
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),

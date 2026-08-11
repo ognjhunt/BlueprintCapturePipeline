@@ -246,6 +246,11 @@ def test_live_transport_emits_allocator_artifact_manifest(
         arena, "cleanup_staged_wam_provider_objects", lambda _path: {"all_objects_absent": True}
     )
     monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        arena,
+        "require_pre_spend_preflight",
+        lambda **_kwargs: {"status": "PASS", "blockers": []},
+    )
     monkeypatch.setattr(arena, "arm_independent_vast_watchdog", fake_arm)
     monkeypatch.setattr(arena, "close_independent_vast_watchdog", fake_close)
     monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
@@ -307,6 +312,11 @@ def test_live_transport_blocks_before_storage_or_compute_when_watchdog_is_not_ar
 
     monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", fake_stage)
     monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        arena,
+        "require_pre_spend_preflight",
+        lambda **_kwargs: {"status": "PASS", "blockers": []},
+    )
     monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
     monkeypatch.setattr(
         arena,
@@ -335,6 +345,62 @@ def test_live_transport_blocks_before_storage_or_compute_when_watchdog_is_not_ar
     assert result["blockers"] == ["independent_vast_watchdog_not_armed"]
     assert stage_called is False
     assert adapter_called is False
+
+
+def test_live_transport_blocks_before_watchdog_storage_or_compute_on_spend_lock_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    prepared_bundle = {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": arena._file_sha256(bundle_path),
+    }
+    calls: list[str] = []
+    failed_preflight = {
+        "status": "FAIL",
+        "blockers": ["spend_admission:spend_admission_lock_missing_or_symlink"],
+    }
+
+    def fail_pre_spend(**_kwargs):
+        raise arena.PreSpendPreflightBlocked(failed_preflight)
+
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", fail_pre_spend)
+    monkeypatch.setattr(
+        arena,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: calls.append("watchdog"),
+    )
+    monkeypatch.setattr(
+        arena,
+        "stage_wam_provider_bundle_object_store",
+        lambda **_kwargs: calls.append("storage"),
+    )
+    monkeypatch.setattr(
+        arena,
+        "run_vast_provider_adapter",
+        lambda **_kwargs: calls.append("compute"),
+    )
+    monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
+
+    result = arena.run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=prepared_bundle,
+        hard_cap_usd=1.0,
+        hard_ttl_seconds=3600,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert calls == []
+    assert result["blockers"] == [
+        "adp_arena_pre_spend_preflight_not_passed",
+        "spend_admission:spend_admission_lock_missing_or_symlink",
+    ]
 
 
 def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:
