@@ -38,6 +38,30 @@ def _source_repo(tmp_path: Path) -> tuple[Path, str, str]:
     return repo, first, second
 
 
+def test_git_argv_scopes_safe_directory_to_the_requested_checkout(tmp_path: Path) -> None:
+    checkout = tmp_path / "source"
+    checkout.mkdir()
+
+    assert releases._git_argv(checkout, "status", "--porcelain") == [
+        "git",
+        "-c",
+        f"safe.directory={checkout.resolve()}",
+        "-C",
+        str(checkout.resolve()),
+        "status",
+        "--porcelain",
+    ]
+
+
+def test_run_git_accepts_explicitly_trusted_different_owner_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _first, second = _source_repo(tmp_path)
+    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+
+    assert releases._run_git(source, "rev-parse", "HEAD") == second
+
+
 def test_stages_clean_protected_main_ancestor_then_activates_atomically(tmp_path: Path) -> None:
     source, first, second = _source_repo(tmp_path)
     release_root = tmp_path / "releases"
