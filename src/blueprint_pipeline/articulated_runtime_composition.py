@@ -46,6 +46,7 @@ def plan_articulated_runtime_composition(
     scene_collision_filename: str,
     appearance_filename: str | None = None,
     twin_position_world_m: Sequence[float] | None = None,
+    twin_object_type: str | None = None,
 ) -> dict[str, Any]:
     """Resolve spawn types, visibility, and the joint binding for one task."""
 
@@ -71,6 +72,13 @@ def plan_articulated_runtime_composition(
                 errors.append("articulated_runtime_composition_twin_position_invalid")
 
     articulated = task_kind == TASK_KIND_ARTICULATED
+    resolved_object_type = twin_object_type or (
+        "ARTICULATION" if articulated else "RIGID"
+    )
+    if resolved_object_type not in {"RIGID", "ARTICULATION"}:
+        errors.append("articulated_runtime_composition_twin_object_type_invalid")
+    if articulated and resolved_object_type != "ARTICULATION":
+        errors.append("articulated_runtime_composition_articulated_spawn_required")
     reset_positions = task_spec.get("joint_reset_positions_rad")
     scorer_joint_ids: set[str] = set()
     if reset_positions is not None:
@@ -189,7 +197,7 @@ def plan_articulated_runtime_composition(
             "name": "task_object",
             "semantic_role": "task_object",
             # An articulated twin spawned rigid has frozen joints and no error.
-            "object_type": "ARTICULATION" if articulated else "RIGID",
+            "object_type": resolved_object_type,
             "usd_filename": str(twin_usd_filename),
             "visible": True,
             "initial_position_world_m": position,

@@ -106,6 +106,27 @@ def test_a_rigid_task_never_produces_an_articulation() -> None:
     assert plan["task_sample_binding"]["joint_ids"] == []
 
 
+def test_rigid_task_may_bind_an_explicit_locked_articulated_asset() -> None:
+    plan = _plan(
+        task_spec={"task_kind": "rigid_pick_place"},
+        task_joint_bindings=[],
+        twin_object_type="ARTICULATION",
+    )
+
+    twin = next(row for row in plan["objects"] if row["semantic_role"] == "task_object")
+    assert twin["object_type"] == "ARTICULATION"
+    assert plan["task_sample_binding"]["joint_ids"] == []
+
+
+def test_articulated_task_rejects_rigid_spawn_override() -> None:
+    with pytest.raises(ArticulatedRuntimeCompositionError) as excinfo:
+        _plan(twin_object_type="RIGID")
+
+    assert "articulated_runtime_composition_articulated_spawn_required" in (
+        excinfo.value.errors
+    )
+
+
 def test_an_articulated_task_with_no_joints_fails_closed() -> None:
     """An articulated task whose spec lists no joints cannot be scored at all."""
 

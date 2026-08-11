@@ -9,6 +9,7 @@ simulator import, contact, physical equivalence, or policy readiness.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any, Mapping, Sequence
 import cv2
 import numpy as np
 
+from .articulation_graph_contract import validate_articulation_graph
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .public_scene_gaussian_excision_heldout import (
     derive_alpha_from_background_pair,
@@ -24,6 +26,8 @@ from .public_scene_gaussian_excision_heldout import (
 
 
 DEPTH_SWEEP_SCHEMA = "adp009b_articulated_usd_depth_sweep.v1"
+GENERAL_DEPTH_SWEEP_REQUEST_SCHEMA = "replacement_usd_depth_sweep_request.v2"
+GENERAL_DEPTH_SWEEP_SCHEMA = "replacement_usd_depth_sweep.v2"
 SOURCE_COVERAGE_AUDIT_SCHEMA = "adp009b_source_layer_replacement_coverage_audit.v1"
 REFERENCE_HYBRID_REVIEW_SCHEMA = "adp009b_reference_hybrid_review.v1"
 TARGET_CORE_COVERAGE_AUDIT_SCHEMA = "articulated_excision_coverage.v1"
@@ -45,6 +49,15 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _is_sha256_digest(value: Any) -> bool:
+    text = str(value or "")
+    return bool(
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
+    )
+
+
 def _record(path: Path, root: Path) -> dict[str, Any]:
     return {
         "relative_path": path.relative_to(root).as_posix(),
@@ -63,12 +76,67 @@ def _read_object(path: Path, code: str) -> dict[str, Any]:
     return value
 
 
+def _qualified_depth_manifest(value: Mapping[str, Any]) -> bool:
+    schema = value.get("schema_version")
+    return bool(
+        schema in {DEPTH_SWEEP_SCHEMA, GENERAL_DEPTH_SWEEP_SCHEMA}
+        and value.get("manifest_digest")
+        == canonical_digest(dict(value), digest_field="manifest_digest")
+        and value.get("caller_supplied_coverage_mask") is False
+        and (
+            (
+                schema == DEPTH_SWEEP_SCHEMA
+                and value.get("actual_mesh_depth_rasterized") is True
+            )
+            or (
+                schema == GENERAL_DEPTH_SWEEP_SCHEMA
+                and value.get("actual_usd_geometry_depth_rasterized") is True
+            )
+        )
+    )
+
+
+def _cell_state_fields(cell: Mapping[str, Any]) -> dict[str, Any]:
+    if "cell_id" in cell:
+        return {
+            "state_cell_id": str(cell["cell_id"]),
+            "joint_positions": json.loads(json.dumps(cell.get("joint_positions") or {})),
+            "T_world_asset": json.loads(json.dumps(cell.get("T_world_asset"))),
+            "T_world_task_scoring": json.loads(
+                json.dumps(cell.get("T_world_task_scoring"))
+            ),
+            "task_scoring_frame_id": str(cell.get("task_scoring_frame_id") or ""),
+        }
+    return {
+        "commanded_door_angle_deg": float(cell["commanded_door_angle_deg"]),
+        "readback_door_angle_deg": float(cell["readback_door_angle_deg"]),
+    }
+
+
+def _cell_label(cell: Mapping[str, Any]) -> str:
+    if "cell_id" in cell:
+        return f"state={cell['cell_id']}"
+    return f"door={float(cell['commanded_door_angle_deg']):g}deg"
+
+
 def _matrix(value: Any, code: str) -> np.ndarray:
     matrix = np.asarray(value, dtype=np.float64)
     if (
         matrix.shape != (4, 4)
         or not np.isfinite(matrix).all()
         or not np.allclose(matrix[3], [0.0, 0.0, 0.0, 1.0], atol=1e-9, rtol=0.0)
+    ):
+        raise ArticulatedUsdDepthSweepError([code])
+    return matrix
+
+
+def _rigid_matrix(value: Any, code: str) -> np.ndarray:
+    matrix = _matrix(value, code)
+    rotation = matrix[:3, :3]
+    if not np.allclose(
+        rotation.T @ rotation, np.eye(3), atol=1e-8, rtol=0.0
+    ) or not math.isclose(
+        float(np.linalg.det(rotation)), 1.0, abs_tol=1e-8, rel_tol=0.0
     ):
         raise ArticulatedUsdDepthSweepError([code])
     return matrix
@@ -89,6 +157,112 @@ def _triangulate(counts: np.ndarray, indices: np.ndarray) -> np.ndarray:
     if offset != len(indices) or not triangles:
         raise ArticulatedUsdDepthSweepError(["articulated_depth_face_indices_invalid"])
     return np.asarray(triangles, dtype=np.int64)
+
+
+def _primitive_points_and_faces(prim: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Return deterministic triangles in a supported Gprim's local frame."""
+
+    from pxr import UsdGeom
+
+    if prim.IsA(UsdGeom.Mesh):
+        mesh = UsdGeom.Mesh(prim)
+        points = np.asarray(mesh.GetPointsAttr().Get(), dtype=np.float64)
+        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get(), dtype=np.int64)
+        indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int64)
+        if points.ndim != 2 or points.shape[1] != 3 or not len(points):
+            raise ArticulatedUsdDepthSweepError(
+                ["articulated_depth_mesh_points_invalid"]
+            )
+        return points, _triangulate(counts, indices)
+    if prim.IsA(UsdGeom.Cube):
+        size = float(UsdGeom.Cube(prim).GetSizeAttr().Get())
+        half = size / 2.0
+        points = np.asarray(
+            list(itertools.product((-half, half), repeat=3)), dtype=np.float64
+        )
+        # The point ordering is binary xyz: 000, 001, 010, ...
+        faces = np.asarray(
+            [
+                (0, 1, 3), (0, 3, 2),
+                (4, 6, 7), (4, 7, 5),
+                (0, 4, 5), (0, 5, 1),
+                (2, 3, 7), (2, 7, 6),
+                (0, 2, 6), (0, 6, 4),
+                (1, 5, 7), (1, 7, 3),
+            ],
+            dtype=np.int64,
+        )
+        return points, faces
+    if prim.IsA(UsdGeom.Cylinder):
+        cylinder = UsdGeom.Cylinder(prim)
+        axis = str(cylinder.GetAxisAttr().Get()).upper()
+        if axis not in {"X", "Y", "Z"}:
+            raise ArticulatedUsdDepthSweepError(
+                ["articulated_depth_cylinder_axis_unsupported"]
+            )
+        radius = float(cylinder.GetRadiusAttr().Get())
+        half = float(cylinder.GetHeightAttr().Get()) / 2.0
+        segments = 64
+        ring = [
+            (radius * math.cos(2.0 * math.pi * index / segments),
+             radius * math.sin(2.0 * math.pi * index / segments))
+            for index in range(segments)
+        ]
+        def point(axis_value: float, first: float, second: float) -> tuple[float, float, float]:
+            if axis == "X":
+                return (axis_value, first, second)
+            if axis == "Y":
+                return (first, axis_value, second)
+            return (first, second, axis_value)
+
+        points = np.asarray(
+            [point(-half, first, second) for first, second in ring]
+            + [point(half, first, second) for first, second in ring]
+            + [point(-half, 0.0, 0.0), point(half, 0.0, 0.0)],
+            dtype=np.float64,
+        )
+        left_center = 2 * segments
+        right_center = left_center + 1
+        faces: list[tuple[int, int, int]] = []
+        for index in range(segments):
+            nxt = (index + 1) % segments
+            left = index
+            left_next = nxt
+            right = segments + index
+            right_next = segments + nxt
+            faces.extend(
+                [
+                    (left, right, right_next),
+                    (left, right_next, left_next),
+                    (left_center, left_next, left),
+                    (right_center, right, right_next),
+                ]
+            )
+        return points, np.asarray(faces, dtype=np.int64)
+    raise ArticulatedUsdDepthSweepError(
+        [f"articulated_depth_geometry_type_unsupported:{prim.GetTypeName()}"]
+    )
+
+
+def _column_transform(matrix: Any) -> np.ndarray:
+    return np.asarray(matrix, dtype=np.float64).T
+
+
+def _transform_points(points: np.ndarray, transform: np.ndarray) -> np.ndarray:
+    homogeneous = np.column_stack((points, np.ones(len(points), dtype=np.float64)))
+    return (transform @ homogeneous.T).T[:, :3]
+
+
+def _render_authorized_gprim(prim: Any) -> bool:
+    """Admit only computed-visible default/render-purpose appearance geometry."""
+
+    from pxr import UsdGeom
+
+    imageable = UsdGeom.Imageable(prim)
+    return (
+        str(imageable.ComputeVisibility()).lower() != "invisible"
+        and str(imageable.ComputePurpose()).lower() in {"default", "render"}
+    )
 
 
 def load_articulated_usd_triangles(
@@ -115,21 +289,30 @@ def load_articulated_usd_triangles(
     moving = stage.GetPrimAtPath(moving_link_path)
     if not moving.IsValid():
         raise ArticulatedUsdDepthSweepError(["articulated_depth_moving_link_missing"])
+    asset = stage.GetDefaultPrim()
+    if not asset.IsValid():
+        raise ArticulatedUsdDepthSweepError(["articulated_depth_asset_root_missing"])
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    world_from_asset = _column_transform(cache.GetLocalToWorldTransform(asset))
+    asset_from_world = np.linalg.inv(world_from_asset)
     groups: dict[str, list[np.ndarray]] = {"static": [], "moving": []}
     for prim in stage.Traverse():
-        mesh = UsdGeom.Mesh(prim)
-        if not mesh or not prim.IsActive() or not prim.IsLoaded():
+        if (
+            not prim.IsActive()
+            or not prim.IsLoaded()
+            or not (
+                prim.IsA(UsdGeom.Mesh)
+                or prim.IsA(UsdGeom.Cube)
+                or prim.IsA(UsdGeom.Cylinder)
+            )
+            or not _render_authorized_gprim(prim)
+        ):
             continue
-        points = np.asarray(mesh.GetPointsAttr().Get(), dtype=np.float64)
-        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get(), dtype=np.int64)
-        indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int64)
-        if points.ndim != 2 or points.shape[1] != 3 or not len(points):
-            raise ArticulatedUsdDepthSweepError(["articulated_depth_mesh_points_invalid"])
-        faces = _triangulate(counts, indices)
-        transform = np.asarray(cache.GetLocalToWorldTransform(prim), dtype=np.float64).T
-        homogeneous = np.column_stack((points, np.ones(len(points), dtype=np.float64)))
-        asset_points = (transform @ homogeneous.T).T[:, :3]
+        points, faces = _primitive_points_and_faces(prim)
+        world_from_prim = _column_transform(cache.GetLocalToWorldTransform(prim))
+        asset_points = _transform_points(
+            points, asset_from_world @ world_from_prim
+        )
         triangles = asset_points[faces]
         under_moving = prim.GetPath().HasPrefix(moving.GetPath())
         groups["moving" if under_moving else "static"].append(triangles)
@@ -265,6 +448,703 @@ def rasterize_triangle_depth(
     return depth
 
 
+def seal_replacement_usd_depth_sweep_request(
+    *,
+    asset_id: str,
+    task_kind: str,
+    task_freeze_digest: str,
+    replacement_usd_sha256: str,
+    replacement_usd_size_bytes: int,
+    articulation_graph: Mapping[str, Any],
+    link_paths: Mapping[str, str],
+    joint_paths: Mapping[str, str],
+    task_scoring_frame: Mapping[str, Any],
+    camera_contract_digest: str,
+    cameras: Sequence[Mapping[str, Any]],
+    joint_state_cells: Sequence[Mapping[str, Any]],
+    asset_prim_path: str = "/Asset",
+    resolution_scale: float = 0.25,
+) -> dict[str, Any]:
+    """Seal the generic articulated/rigid replacement depth-cell contract."""
+
+    graph = validate_articulation_graph(
+        articulation_graph,
+        require_target_joint=task_kind == "articulated_interaction",
+    )
+    value: dict[str, Any] = {
+        "schema_version": GENERAL_DEPTH_SWEEP_REQUEST_SCHEMA,
+        "asset_id": asset_id,
+        "task_kind": task_kind,
+        "task_freeze_digest": task_freeze_digest,
+        "replacement_usd_sha256": replacement_usd_sha256,
+        "replacement_usd_size_bytes": replacement_usd_size_bytes,
+        "asset_prim_path": asset_prim_path,
+        "articulation_graph": graph,
+        "articulation_graph_digest": canonical_digest(graph),
+        "link_paths": dict(link_paths),
+        "joint_paths": dict(joint_paths),
+        "task_scoring_frame": json.loads(json.dumps(task_scoring_frame)),
+        "camera_contract_digest": camera_contract_digest,
+        "cameras": [json.loads(json.dumps(row)) for row in cameras],
+        "camera_rows_digest": canonical_digest({"cameras": list(cameras)}),
+        "joint_state_cells": [
+            json.loads(json.dumps(row)) for row in joint_state_cells
+        ],
+        "geometry_visibility_policy": {
+            "computed_visibility": "visible_only",
+            "admitted_purposes": ["default", "render"],
+        },
+        "resolution_scale": float(resolution_scale),
+        "request_digest": "",
+    }
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    return validate_replacement_usd_depth_sweep_request(value)
+
+
+def validate_replacement_usd_depth_sweep_request(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate exact cameras, object poses, and complete graph joint states."""
+
+    try:
+        payload = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_request_not_json"]
+        ) from exc
+    errors: list[str] = []
+    task_kind = str(payload.get("task_kind") or "")
+    if payload.get("schema_version") != GENERAL_DEPTH_SWEEP_REQUEST_SCHEMA:
+        errors.append("replacement_depth_request_schema_invalid")
+    if task_kind not in {"articulated_interaction", "rigid_object_manipulation"}:
+        errors.append("replacement_depth_task_kind_invalid")
+    asset_id = str(payload.get("asset_id") or "")
+    if not asset_id or not asset_id.replace("_", "a").replace("-", "a").isalnum():
+        errors.append("replacement_depth_asset_id_invalid")
+    if not _is_sha256_digest(payload.get("task_freeze_digest")):
+        errors.append("replacement_depth_task_freeze_digest_invalid")
+    digest = str(payload.get("replacement_usd_sha256") or "")
+    if not _is_sha256_digest(digest):
+        errors.append("replacement_depth_usd_digest_invalid")
+    size_bytes = payload.get("replacement_usd_size_bytes")
+    if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes <= 0:
+        errors.append("replacement_depth_usd_size_invalid")
+    asset_path = str(payload.get("asset_prim_path") or "")
+    if not asset_path.startswith("/"):
+        errors.append("replacement_depth_asset_prim_path_invalid")
+    try:
+        graph = validate_articulation_graph(
+            payload.get("articulation_graph") or {},
+            require_target_joint=task_kind == "articulated_interaction",
+        )
+    except ValueError as exc:
+        errors.extend(str(exc).split(";"))
+        graph = {"links": [], "joints": []}
+    if payload.get("articulation_graph_digest") != canonical_digest(graph):
+        errors.append("replacement_depth_articulation_graph_digest_invalid")
+    link_ids = {row["link_id"] for row in graph.get("links", [])}
+    joint_ids = {row["joint_id"] for row in graph.get("joints", [])}
+    link_paths = payload.get("link_paths")
+    joint_paths = payload.get("joint_paths")
+    if (
+        not isinstance(link_paths, Mapping)
+        or set(link_paths) != link_ids
+        or len(set(str(path) for path in link_paths.values())) != len(link_ids)
+        or any(not str(path).startswith(asset_path + "/") for path in link_paths.values())
+    ):
+        errors.append("replacement_depth_link_paths_invalid")
+    if (
+        not isinstance(joint_paths, Mapping)
+        or set(joint_paths) != joint_ids
+        or len(set(str(path) for path in joint_paths.values())) != len(joint_ids)
+        or any(not str(path).startswith(asset_path + "/") for path in joint_paths.values())
+    ):
+        errors.append("replacement_depth_joint_paths_invalid")
+    scoring_frame = payload.get("task_scoring_frame")
+    if not isinstance(scoring_frame, Mapping) or not str(
+        scoring_frame.get("frame_id") or ""
+    ):
+        errors.append("replacement_depth_task_scoring_frame_invalid")
+    else:
+        try:
+            _rigid_matrix(
+                scoring_frame.get("T_asset_task_scoring"),
+                "replacement_depth_task_scoring_frame_invalid",
+            )
+        except ArticulatedUsdDepthSweepError:
+            errors.append("replacement_depth_task_scoring_frame_invalid")
+    cameras = payload.get("cameras")
+    if payload.get("geometry_visibility_policy") != {
+        "computed_visibility": "visible_only",
+        "admitted_purposes": ["default", "render"],
+    }:
+        errors.append("replacement_depth_geometry_visibility_policy_invalid")
+    if not _is_sha256_digest(payload.get("camera_contract_digest")):
+        errors.append("replacement_depth_camera_contract_digest_invalid")
+    if not isinstance(cameras, list) or not cameras:
+        errors.append("replacement_depth_cameras_invalid")
+        cameras = []
+    camera_ids: list[str] = []
+    for index, camera in enumerate(cameras):
+        if not isinstance(camera, Mapping):
+            errors.append(f"replacement_depth_camera_invalid:{index}")
+            continue
+        camera_id = str(camera.get("camera_id") or "")
+        camera_ids.append(camera_id)
+        try:
+            _rigid_matrix(
+                camera.get("T_world_camera_opencv"),
+                f"replacement_depth_camera_transform_invalid:{index}",
+            )
+        except ArticulatedUsdDepthSweepError:
+            errors.append(f"replacement_depth_camera_transform_invalid:{index}")
+        try:
+            intrinsics = camera["intrinsics"]
+            numeric = [
+                float(intrinsics[field]) for field in ("fx", "fy", "cx", "cy")
+            ]
+            dimensions = [int(intrinsics[field]) for field in ("width", "height")]
+            if min(numeric[:2]) <= 0.0 or min(dimensions) <= 0:
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"replacement_depth_camera_invalid:{index}")
+    if any(not camera_id for camera_id in camera_ids) or len(camera_ids) != len(
+        set(camera_ids)
+    ):
+        errors.append("replacement_depth_camera_ids_invalid")
+    if payload.get("camera_rows_digest") != canonical_digest({"cameras": cameras}):
+        errors.append("replacement_depth_camera_rows_digest_invalid")
+    cells = payload.get("joint_state_cells")
+    if not isinstance(cells, list) or len(cells) < 2:
+        errors.append("replacement_depth_joint_state_cells_invalid")
+        cells = []
+    cell_ids: list[str] = []
+    joint_by_id = {row["joint_id"]: row for row in graph.get("joints", [])}
+    transforms: list[list[list[float]]] = []
+    target_states: list[tuple[float, ...]] = []
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, Mapping):
+            errors.append(f"replacement_depth_joint_state_cell_invalid:{index}")
+            continue
+        cell_id = str(cell.get("cell_id") or "")
+        cell_ids.append(cell_id)
+        try:
+            transform = _rigid_matrix(
+                cell.get("T_world_task_scoring"),
+                f"replacement_depth_cell_transform_invalid:{index}",
+            )
+            transforms.append(transform.tolist())
+        except ArticulatedUsdDepthSweepError:
+            errors.append(f"replacement_depth_cell_transform_invalid:{index}")
+        positions = cell.get("joint_positions")
+        if not isinstance(positions, Mapping) or set(positions) != joint_ids:
+            errors.append(f"replacement_depth_cell_joint_set_invalid:{index}")
+            continue
+        normalized: dict[str, float] = {}
+        for joint_id, joint in joint_by_id.items():
+            try:
+                position = float(positions[joint_id])
+            except (TypeError, ValueError):
+                errors.append(
+                    f"replacement_depth_cell_joint_position_invalid:{index}:{joint_id}"
+                )
+                continue
+            if not math.isfinite(position) or not (
+                float(joint["limits"][0]) <= position <= float(joint["limits"][1])
+            ):
+                errors.append(
+                    f"replacement_depth_cell_joint_position_invalid:{index}:{joint_id}"
+                )
+            normalized[joint_id] = position
+            if joint["role"] == "locked" and abs(
+                position - float(joint["reset_position"])
+            ) > float(joint["reset_tolerance"]):
+                errors.append(
+                    f"replacement_depth_cell_locked_joint_changed:{index}:{joint_id}"
+                )
+        for joint_id, joint in joint_by_id.items():
+            dependency = joint["dependency"]
+            if dependency is None or joint_id not in normalized:
+                continue
+            driver = dependency["driver_joint_id"]
+            if driver not in normalized:
+                errors.append(
+                    f"replacement_depth_cell_dependency_driver_invalid:{index}:{joint_id}"
+                )
+                continue
+            expected = (
+                float(dependency["multiplier"]) * normalized[driver]
+                + float(dependency["offset"])
+            )
+            if abs(normalized[joint_id] - expected) > float(dependency["tolerance"]):
+                errors.append(
+                    f"replacement_depth_cell_dependency_invalid:{index}:{joint_id}"
+                )
+        target_states.append(
+            tuple(
+                normalized.get(joint_id, math.nan)
+                for joint_id in sorted(joint_ids)
+            )
+        )
+    if any(not cell_id for cell_id in cell_ids) or len(cell_ids) != len(set(cell_ids)):
+        errors.append("replacement_depth_cell_ids_invalid")
+    if task_kind == "rigid_object_manipulation":
+        if transforms and all(
+            np.allclose(transforms[0], transform, atol=1e-12, rtol=0.0)
+            for transform in transforms[1:]
+        ):
+            errors.append("replacement_depth_rigid_pose_range_missing")
+    else:
+        target_ids = sorted(
+            joint_id
+            for joint_id, joint in joint_by_id.items()
+            if joint["role"] == "target"
+        )
+        if target_ids and len(
+            {
+                tuple(state[sorted(joint_ids).index(joint_id)] for joint_id in target_ids)
+                for state in target_states
+            }
+        ) < 2:
+            errors.append("replacement_depth_articulated_target_sweep_missing")
+    scale = payload.get("resolution_scale")
+    if (
+        isinstance(scale, bool)
+        or not isinstance(scale, (int, float))
+        or not math.isfinite(float(scale))
+        or not 0.0 < float(scale) <= 1.0
+    ):
+        errors.append("replacement_depth_resolution_scale_invalid")
+    expected_digest = canonical_digest(payload, digest_field="request_digest")
+    if payload.get("request_digest") != expected_digest:
+        errors.append("replacement_depth_request_digest_invalid")
+    if errors:
+        raise ArticulatedUsdDepthSweepError(errors)
+    return payload
+
+
+def load_usd_link_triangles(
+    usd_path: str | Path,
+    *,
+    asset_prim_path: str,
+    link_paths: Mapping[str, str],
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, int]]:
+    """Load Mesh/Cube/Cylinder triangles in each rigid link's local frame."""
+
+    try:
+        from pxr import Sdf, Usd, UsdGeom
+    except ImportError as exc:  # pragma: no cover
+        raise ArticulatedUsdDepthSweepError(
+            ["articulated_depth_openusd_runtime_missing"]
+        ) from exc
+    path = Path(usd_path).expanduser().resolve()
+    stage = Usd.Stage.Open(str(path), load=Usd.Stage.LoadAll)
+    if stage is None:
+        raise ArticulatedUsdDepthSweepError(["articulated_depth_usd_unreadable"])
+    if float(UsdGeom.GetStageMetersPerUnit(stage)) != 1.0 or str(
+        UsdGeom.GetStageUpAxis(stage)
+    ).upper() != "Z":
+        raise ArticulatedUsdDepthSweepError(["articulated_depth_usd_frame_invalid"])
+    asset = stage.GetPrimAtPath(asset_prim_path)
+    if not asset.IsValid():
+        raise ArticulatedUsdDepthSweepError(["articulated_depth_asset_root_missing"])
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    world_from_asset = _column_transform(cache.GetLocalToWorldTransform(asset))
+    asset_from_world = np.linalg.inv(world_from_asset)
+    link_prims = {
+        link_id: stage.GetPrimAtPath(path_value)
+        for link_id, path_value in link_paths.items()
+    }
+    if any(not prim.IsValid() for prim in link_prims.values()):
+        raise ArticulatedUsdDepthSweepError(["replacement_depth_link_prim_missing"])
+    rest = {
+        link_id: asset_from_world
+        @ _column_transform(cache.GetLocalToWorldTransform(prim))
+        for link_id, prim in link_prims.items()
+    }
+    groups: dict[str, list[np.ndarray]] = {link_id: [] for link_id in link_paths}
+    type_counts: dict[str, int] = {}
+    sorted_links = sorted(
+        link_paths.items(), key=lambda item: len(item[1]), reverse=True
+    )
+    for prim in stage.Traverse():
+        if (
+            not prim.IsActive()
+            or not prim.IsLoaded()
+            or not (
+                prim.IsA(UsdGeom.Mesh)
+                or prim.IsA(UsdGeom.Cube)
+                or prim.IsA(UsdGeom.Cylinder)
+            )
+            or not _render_authorized_gprim(prim)
+        ):
+            continue
+        owner = next(
+            (
+                link_id
+                for link_id, link_path in sorted_links
+                if prim.GetPath().HasPrefix(Sdf.Path(link_path))
+            ),
+            None,
+        )
+        if owner is None:
+            continue
+        points, faces = _primitive_points_and_faces(prim)
+        world_from_prim = _column_transform(cache.GetLocalToWorldTransform(prim))
+        link_from_world = np.linalg.inv(
+            _column_transform(cache.GetLocalToWorldTransform(link_prims[owner]))
+        )
+        local_points = _transform_points(points, link_from_world @ world_from_prim)
+        groups[owner].append(local_points[faces])
+        type_name = str(prim.GetTypeName())
+        type_counts[type_name] = type_counts.get(type_name, 0) + 1
+    if any(not rows for rows in groups.values()):
+        missing = sorted(link_id for link_id, rows in groups.items() if not rows)
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_link_geometry_missing:" + ",".join(missing)]
+        )
+    return (
+        {link_id: np.concatenate(rows) for link_id, rows in groups.items()},
+        rest,
+        type_counts,
+    )
+
+
+def _pose_matrix(position: Any, orientation: Any) -> np.ndarray:
+    x, y, z, w = (float(value) for value in orientation)
+    rotation = np.asarray(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+    result = np.eye(4, dtype=np.float64)
+    result[:3, :3] = rotation
+    result[:3, 3] = np.asarray(position, dtype=np.float64)
+    return result
+
+
+def _joint_delta_matrix(
+    joint_type: str, delta: float, axis_local: Sequence[float]
+) -> np.ndarray:
+    result = np.eye(4, dtype=np.float64)
+    axis = np.asarray(axis_local, dtype=np.float64)
+    norm = float(np.linalg.norm(axis))
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_joint_axis_invalid"]
+        )
+    axis /= norm
+    if joint_type in {"revolute", "continuous"}:
+        cosine = math.cos(float(delta))
+        sine = math.sin(float(delta))
+        cross = np.asarray(
+            [
+                [0.0, -axis[2], axis[1]],
+                [axis[2], 0.0, -axis[0]],
+                [-axis[1], axis[0], 0.0],
+            ],
+            dtype=np.float64,
+        )
+        result[:3, :3] = (
+            np.eye(3, dtype=np.float64) * cosine
+            + (1.0 - cosine) * np.outer(axis, axis)
+            + sine * cross
+        )
+    elif joint_type == "prismatic":
+        result[:3, 3] = axis * float(delta)
+    return result
+
+
+def _usd_joint_axis_local(prim: Any, joint_type: str) -> np.ndarray:
+    from pxr import UsdPhysics
+
+    if joint_type in {"revolute", "continuous"}:
+        if not prim.IsA(UsdPhysics.RevoluteJoint):
+            raise ArticulatedUsdDepthSweepError(
+                ["replacement_depth_joint_type_mismatch"]
+            )
+        token = str(UsdPhysics.RevoluteJoint(prim).GetAxisAttr().Get() or "")
+    elif joint_type == "prismatic":
+        if not prim.IsA(UsdPhysics.PrismaticJoint):
+            raise ArticulatedUsdDepthSweepError(
+                ["replacement_depth_joint_type_mismatch"]
+            )
+        token = str(UsdPhysics.PrismaticJoint(prim).GetAxisAttr().Get() or "")
+    elif joint_type == "fixed":
+        if not prim.IsA(UsdPhysics.FixedJoint):
+            raise ArticulatedUsdDepthSweepError(
+                ["replacement_depth_joint_type_mismatch"]
+            )
+        return np.asarray([1.0, 0.0, 0.0], dtype=np.float64)
+    else:  # pragma: no cover - articulation graph validation rejects this first
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_joint_type_mismatch"]
+        )
+    try:
+        index = {"X": 0, "Y": 1, "Z": 2}[token.upper()]
+    except KeyError as exc:
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_joint_axis_invalid"]
+        ) from exc
+    axis = np.zeros(3, dtype=np.float64)
+    axis[index] = 1.0
+    return axis
+
+
+def _link_transforms_for_state(
+    *,
+    stage: Any,
+    graph: Mapping[str, Any],
+    link_paths: Mapping[str, str],
+    joint_paths: Mapping[str, str],
+    rest: Mapping[str, np.ndarray],
+    joint_positions: Mapping[str, Any],
+) -> dict[str, np.ndarray]:
+    from pxr import UsdPhysics
+
+    root_id = next(row["link_id"] for row in graph["links"] if row["is_root"])
+    current = {root_id: np.asarray(rest[root_id], dtype=np.float64)}
+    remaining = list(graph["joints"])
+    while remaining:
+        progress = False
+        for joint in list(remaining):
+            parent = joint["parent_link_id"]
+            child = joint["child_link_id"]
+            if parent not in current:
+                continue
+            prim = stage.GetPrimAtPath(joint_paths[joint["joint_id"]])
+            if not prim.IsValid():
+                raise ArticulatedUsdDepthSweepError(
+                    [f"replacement_depth_joint_prim_missing:{joint['joint_id']}"]
+                )
+            authored = UsdPhysics.Joint(prim)
+            body0 = authored.GetBody0Rel().GetTargets()
+            body1 = authored.GetBody1Rel().GetTargets()
+            if (
+                len(body0) != 1
+                or len(body1) != 1
+                or str(body0[0]) != link_paths[parent]
+                or str(body1[0]) != link_paths[child]
+            ):
+                raise ArticulatedUsdDepthSweepError(
+                    [f"replacement_depth_joint_body_binding_mismatch:{joint['joint_id']}"]
+                )
+            parent_frame = _pose_matrix(
+                authored.GetLocalPos0Attr().Get(),
+                _quat_from_gf(authored.GetLocalRot0Attr().Get()),
+            )
+            child_frame = _pose_matrix(
+                authored.GetLocalPos1Attr().Get(),
+                _quat_from_gf(authored.GetLocalRot1Attr().Get()),
+            )
+            axis_local = _usd_joint_axis_local(prim, joint["joint_type"])
+            parent_joint_asset = rest[parent] @ parent_frame
+            child_joint_asset = rest[child] @ child_frame
+            reset_position = float(joint["reset_position"])
+            reset_joint_asset = (
+                parent_joint_asset
+                @ _joint_delta_matrix(
+                    joint["joint_type"], -reset_position, axis_local
+                )
+            )
+            if not np.allclose(
+                reset_joint_asset, child_joint_asset, atol=1.0e-5, rtol=0.0
+            ):
+                raise ArticulatedUsdDepthSweepError(
+                    [f"replacement_depth_joint_reset_frame_mismatch:{joint['joint_id']}"]
+                )
+            if joint["joint_type"] != "fixed":
+                expected_axis = np.asarray(joint["axis"], dtype=np.float64)
+                expected_axis /= np.linalg.norm(expected_axis)
+                for role, frame in (
+                    ("parent", parent_joint_asset),
+                    ("child", child_joint_asset),
+                ):
+                    authored_axis = frame[:3, :3] @ axis_local
+                    if float(np.dot(authored_axis, expected_axis)) < 1.0 - 1.0e-6:
+                        raise ArticulatedUsdDepthSweepError(
+                            [
+                                "replacement_depth_joint_axis_binding_mismatch:"
+                                f"{joint['joint_id']}:{role}"
+                            ]
+                        )
+            delta = float(joint_positions[joint["joint_id"]]) - float(
+                joint["reset_position"]
+            )
+            relative_rest = np.linalg.inv(rest[parent]) @ rest[child]
+            pivot_delta = (
+                parent_frame
+                @ _joint_delta_matrix(joint["joint_type"], -delta, axis_local)
+                @ np.linalg.inv(parent_frame)
+            )
+            current[child] = current[parent] @ pivot_delta @ relative_rest
+            remaining.remove(joint)
+            progress = True
+        if not progress:
+            raise ArticulatedUsdDepthSweepError(
+                ["replacement_depth_joint_graph_not_traversable"]
+            )
+    return current
+
+
+def _quat_from_gf(value: Any) -> list[float]:
+    imaginary = value.GetImaginary()
+    return [
+        float(imaginary[0]),
+        float(imaginary[1]),
+        float(imaginary[2]),
+        float(value.GetReal()),
+    ]
+
+
+def materialize_replacement_usd_depth_sweep(
+    *,
+    usd_path: str | Path,
+    request: Mapping[str, Any],
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Rasterize generic graph states or rigid pose cells from exact USD bytes."""
+
+    try:
+        from pxr import Usd
+    except ImportError as exc:  # pragma: no cover
+        raise ArticulatedUsdDepthSweepError(
+            ["articulated_depth_openusd_runtime_missing"]
+        ) from exc
+    admitted = validate_replacement_usd_depth_sweep_request(request)
+    usd = Path(usd_path).expanduser().resolve()
+    if (
+        not usd.is_file()
+        or usd.is_symlink()
+        or usd.stat().st_size != admitted["replacement_usd_size_bytes"]
+        or _sha256(usd) != admitted["replacement_usd_sha256"]
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_usd_bytes_changed"]
+        )
+    output = Path(output_root).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ArticulatedUsdDepthSweepError(["articulated_depth_output_not_empty"])
+    output.mkdir(parents=True, exist_ok=True)
+    stage = Usd.Stage.Open(str(usd), load=Usd.Stage.LoadAll)
+    if stage is None:
+        raise ArticulatedUsdDepthSweepError(["articulated_depth_usd_unreadable"])
+    local_triangles, rest, type_counts = load_usd_link_triangles(
+        usd,
+        asset_prim_path=admitted["asset_prim_path"],
+        link_paths=admitted["link_paths"],
+    )
+    depths: list[np.ndarray] = []
+    cells: list[dict[str, Any]] = []
+    graph = admitted["articulation_graph"]
+    for camera in admitted["cameras"]:
+        for state in admitted["joint_state_cells"]:
+            transforms = _link_transforms_for_state(
+                stage=stage,
+                graph=graph,
+                link_paths=admitted["link_paths"],
+                joint_paths=admitted["joint_paths"],
+                rest=rest,
+                joint_positions=state["joint_positions"],
+            )
+            asset_triangles = np.concatenate(
+                [
+                    _transform_triangles(local_triangles[link_id], transforms[link_id])
+                    for link_id in sorted(local_triangles)
+                ]
+            )
+            world_from_asset = _rigid_matrix(
+                state["T_world_task_scoring"],
+                "replacement_depth_cell_transform_invalid",
+            ) @ np.linalg.inv(
+                _rigid_matrix(
+                    admitted["task_scoring_frame"]["T_asset_task_scoring"],
+                    "replacement_depth_task_scoring_frame_invalid",
+                )
+            )
+            world_triangles = _transform_triangles(
+                asset_triangles, world_from_asset
+            )
+            depths.append(
+                rasterize_triangle_depth(
+                    world_triangles,
+                    T_world_camera_opencv=camera["T_world_camera_opencv"],
+                    intrinsics=camera["intrinsics"],
+                    resolution_scale=float(admitted["resolution_scale"]),
+                )
+            )
+            cells.append(
+                {
+                    "camera_id": camera["camera_id"],
+                    "cell_id": state["cell_id"],
+                    "task_scoring_frame_id": admitted["task_scoring_frame"]["frame_id"],
+                    "T_world_task_scoring": state["T_world_task_scoring"],
+                    "T_world_asset": world_from_asset.tolist(),
+                    "joint_positions": state["joint_positions"],
+                }
+            )
+    depth_array = np.stack(depths).astype(np.float32)
+    arrays_path = output / "replacement_depth_sweep.npy"
+    np.save(arrays_path, depth_array, allow_pickle=False)
+    manifest: dict[str, Any] = {
+        "schema_version": GENERAL_DEPTH_SWEEP_SCHEMA,
+        "status": "actual_usd_geometry_depth_rasterized",
+        "request_digest": admitted["request_digest"],
+        "asset_id": admitted["asset_id"],
+        "task_kind": admitted["task_kind"],
+        "task_freeze_digest": admitted["task_freeze_digest"],
+        "camera_contract_digest": admitted["camera_contract_digest"],
+        "camera_rows_digest": admitted["camera_rows_digest"],
+        "actual_usd_geometry_depth_rasterized": True,
+        "actual_mesh_depth_rasterized": type_counts.get("Mesh", 0) > 0,
+        "caller_supplied_coverage_mask": False,
+        "replacement_usd": {
+            "path": str(usd),
+            "size_bytes": usd.stat().st_size,
+            "sha256": _sha256(usd),
+        },
+        "asset_prim_path": admitted["asset_prim_path"],
+        "task_scoring_frame": admitted["task_scoring_frame"],
+        "geometry_visibility_policy": admitted["geometry_visibility_policy"],
+        "asset_root_authored_transform_removed_before_placement": True,
+        "T_world_asset_applied_exactly_once_per_cell": True,
+        "articulation_graph_digest": admitted["articulation_graph_digest"],
+        "geometry_type_counts": type_counts,
+        "primitive_tessellation": {
+            "Cube": "exact_triangular_faces",
+            "Cylinder": "64_segment_inscribed_conservative_coverage",
+        },
+        "cells": cells,
+        "camera_count": len(admitted["cameras"]),
+        "state_cell_count": len(admitted["joint_state_cells"]),
+        "resolution_scale": float(admitted["resolution_scale"]),
+        "depth_dimensions": [int(depth_array.shape[2]), int(depth_array.shape[1])],
+        "finite_depth_pixel_count_by_cell": [
+            int(np.isfinite(depth).sum()) for depth in depth_array
+        ],
+        "arrays": _record(arrays_path, output),
+        "renderer": {
+            "name": "blueprint_numpy_perspective_correct_triangle_depth.v2",
+            "pixel_sample": "integer_opencv_pixel_centers",
+            "two_sided": True,
+            "near_plane_clipping": "triangles_crossing_near_plane_rejected",
+        },
+        "native_simulator_readback": False,
+        "physical_equivalence_proven": False,
+        "claim_ceiling": "construction_candidate_actual_usd_geometry_depth_only",
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    (output / f"{GENERAL_DEPTH_SWEEP_SCHEMA}.json").write_text(
+        canonical_json(manifest) + "\n", encoding="utf-8"
+    )
+    return manifest
+
+
 def materialize_articulated_usd_depth_sweep(
     *,
     usd_path: str | Path,
@@ -277,7 +1157,7 @@ def materialize_articulated_usd_depth_sweep(
     output_root: str | Path,
     resolution_scale: float = 0.25,
 ) -> dict[str, Any]:
-    """Materialize actual USD depth over the camera by articulation matrix."""
+    """840796-compatible adapter for a legacy one-moving-link door sweep."""
 
     usd = Path(usd_path).expanduser().resolve()
     output = Path(output_root).expanduser().resolve()
@@ -295,6 +1175,13 @@ def materialize_articulated_usd_depth_sweep(
         raise ArticulatedUsdDepthSweepError(["articulated_depth_sweep_cells_invalid"])
     static_asset, moving_asset = load_articulated_usd_triangles(
         usd, moving_link_path=moving_link_path
+    )
+    from pxr import Usd, UsdGeom
+
+    inspection_stage = Usd.Stage.Open(str(usd), load=Usd.Stage.LoadAll)
+    actual_mesh_depth = bool(
+        inspection_stage
+        and any(prim.IsA(UsdGeom.Mesh) for prim in inspection_stage.Traverse())
     )
     static_world = _transform_triangles(static_asset, asset_to_world)
     moving_world_by_angle = {
@@ -342,13 +1229,17 @@ def materialize_articulated_usd_depth_sweep(
     manifest: dict[str, Any] = {
         "schema_version": DEPTH_SWEEP_SCHEMA,
         "status": "actual_usd_mesh_depth_rasterized",
-        "actual_mesh_depth_rasterized": True,
+        "actual_usd_geometry_depth_rasterized": True,
+        "actual_mesh_depth_rasterized": actual_mesh_depth,
         "caller_supplied_coverage_mask": False,
         "replacement_usd": {"path": str(usd), "sha256": _sha256(usd)},
         "moving_link_path": moving_link_path,
         "hinge_origin_asset_m": [float(value) for value in hinge_origin_asset_m],
         "hinge_axis_asset": [float(value) for value in hinge_axis_asset],
         "T_world_asset": asset_to_world.tolist(),
+        "asset_root_authored_transform_removed_before_placement": True,
+        "T_world_asset_applied_exactly_once": True,
+        "legacy_single_moving_link_compatibility_adapter": True,
         "cells": cells,
         "camera_count": len(cameras),
         "door_state_count": len(door_angles_deg),
@@ -507,10 +1398,7 @@ def evaluate_source_alpha_coverage(
             {
                 "cell_index": cell_index,
                 "camera_id": camera_id,
-                "commanded_door_angle_deg": float(
-                    cell["commanded_door_angle_deg"]
-                ),
-                "readback_door_angle_deg": float(cell["readback_door_angle_deg"]),
+                **_cell_state_fields(cell),
                 "source_significant_pixel_count": int(significant.sum()),
                 "uncovered_significant_pixel_count": int(
                     (significant & uncovered).sum()
@@ -561,13 +1449,7 @@ def materialize_source_layer_replacement_coverage_audit(
     depth_manifest = _read_object(
         depth_path, "source_coverage_depth_manifest_unreadable"
     )
-    if (
-        depth_manifest.get("schema_version") != DEPTH_SWEEP_SCHEMA
-        or depth_manifest.get("manifest_digest")
-        != canonical_digest(depth_manifest, digest_field="manifest_digest")
-        or depth_manifest.get("actual_mesh_depth_rasterized") is not True
-        or depth_manifest.get("caller_supplied_coverage_mask") is not False
-    ):
+    if not _qualified_depth_manifest(depth_manifest):
         raise ArticulatedUsdDepthSweepError(
             ["source_coverage_depth_manifest_invalid"]
         )
@@ -665,7 +1547,12 @@ def materialize_source_layer_replacement_coverage_audit(
                 **_record(seam_path, output),
                 "camera_id": camera_id,
                 "pixel_count": int(uncovered_union.sum()),
-                "derived_from_all_door_cells": len(cell_indices),
+                "derived_from_all_state_cells": len(cell_indices),
+                **(
+                    {"derived_from_all_door_cells": len(cell_indices)}
+                    if depth_manifest.get("schema_version") == DEPTH_SWEEP_SCHEMA
+                    else {}
+                ),
             }
         )
         base = black_by_camera[camera_id].astype(np.float32)
@@ -681,10 +1568,10 @@ def materialize_source_layer_replacement_coverage_audit(
             panel[uncovered] = (
                 0.25 * panel[uncovered] + 0.75 * np.array([0, 0, 255])
             ).astype(np.uint8)
-            angle = float(cells[cell_index]["commanded_door_angle_deg"])
+            label = _cell_label(cells[cell_index])
             cv2.putText(
                 panel,
-                f"{camera_id}  door={angle:g}deg  red=uncovered",
+                f"{camera_id}  {label}  red=uncovered",
                 (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.52,
@@ -694,7 +1581,7 @@ def materialize_source_layer_replacement_coverage_audit(
             )
             cv2.putText(
                 panel,
-                f"{camera_id}  door={angle:g}deg  red=uncovered",
+                f"{camera_id}  {label}  red=uncovered",
                 (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.52,
@@ -803,13 +1690,7 @@ def materialize_target_core_replacement_coverage_audit(
     depth_manifest = _read_object(
         depth_path, "target_core_coverage_depth_manifest_unreadable"
     )
-    if (
-        depth_manifest.get("schema_version") != DEPTH_SWEEP_SCHEMA
-        or depth_manifest.get("manifest_digest")
-        != canonical_digest(depth_manifest, digest_field="manifest_digest")
-        or depth_manifest.get("actual_mesh_depth_rasterized") is not True
-        or depth_manifest.get("caller_supplied_coverage_mask") is not False
-    ):
+    if not _qualified_depth_manifest(depth_manifest):
         raise ArticulatedUsdDepthSweepError(
             ["target_core_coverage_depth_manifest_invalid"]
         )
@@ -889,8 +1770,7 @@ def materialize_target_core_replacement_coverage_audit(
     for index, cell in enumerate(cells):
         camera_id = str(cell.get("camera_id") or "")
         try:
-            commanded = float(cell["commanded_door_angle_deg"])
-            readback = float(cell["readback_door_angle_deg"])
+            state_fields = _cell_state_fields(cell)
         except (KeyError, TypeError, ValueError) as exc:
             raise ArticulatedUsdDepthSweepError(
                 ["target_core_coverage_depth_cells_invalid"]
@@ -913,8 +1793,19 @@ def materialize_target_core_replacement_coverage_audit(
             {
                 "cell_index": index,
                 "camera_id": camera_id,
-                "door_state_angle_degrees": commanded,
-                "readback_door_state_angle_degrees": readback,
+                **state_fields,
+                **(
+                    {
+                        "door_state_angle_degrees": state_fields[
+                            "commanded_door_angle_deg"
+                        ],
+                        "readback_door_state_angle_degrees": state_fields[
+                            "readback_door_angle_deg"
+                        ],
+                    }
+                    if "commanded_door_angle_deg" in state_fields
+                    else {}
+                ),
                 "target_core_pixel_count": int(target.sum()),
                 "replacement_covered_target_core_pixel_count": int(
                     (target & covered).sum()
@@ -944,8 +1835,18 @@ def materialize_target_core_replacement_coverage_audit(
                 **_record(seam_path, output),
                 "camera_id": camera_id,
                 "pixel_count": int(residual_by_camera[camera_id].sum()),
-                "derived_from_all_door_cells": sum(
+                "derived_from_all_state_cells": sum(
                     str(cell.get("camera_id") or "") == camera_id for cell in cells
+                ),
+                **(
+                    {
+                        "derived_from_all_door_cells": sum(
+                            str(cell.get("camera_id") or "") == camera_id
+                            for cell in cells
+                        )
+                    }
+                    if depth_manifest.get("schema_version") == DEPTH_SWEEP_SCHEMA
+                    else {}
                 ),
             }
         )
@@ -958,8 +1859,17 @@ def materialize_target_core_replacement_coverage_audit(
         worst_fraction <= float(maximum_uncovered_fraction)
         and worst_component <= maximum_component_pixels
     )
-    door_states = list(
-        dict.fromkeys(float(cell["commanded_door_angle_deg"]) for cell in cells)
+    door_states = (
+        list(
+            dict.fromkeys(
+                float(cell["commanded_door_angle_deg"]) for cell in cells
+            )
+        )
+        if depth_manifest.get("schema_version") == DEPTH_SWEEP_SCHEMA
+        else []
+    )
+    state_ids = list(
+        dict.fromkeys(str(cell.get("cell_id") or "") for cell in cells if cell.get("cell_id"))
     )
     manifest: dict[str, Any] = {
         "schema_version": TARGET_CORE_COVERAGE_AUDIT_SCHEMA,
@@ -971,7 +1881,12 @@ def materialize_target_core_replacement_coverage_audit(
             "replacement_usd": depth_manifest.get("replacement_usd"),
         },
         "camera_ids": camera_ids,
-        "door_state_angles_degrees": door_states,
+        "state_cell_ids": state_ids,
+        **(
+            {"door_state_angles_degrees": door_states}
+            if depth_manifest.get("schema_version") == DEPTH_SWEEP_SCHEMA
+            else {}
+        ),
         "target_core_masks": mask_records,
         "coverage_margin_pixels": coverage_margin_pixels,
         "maximum_uncovered_fraction": float(maximum_uncovered_fraction),
@@ -1048,13 +1963,7 @@ def materialize_reference_hybrid_review(
     depth_manifest = _read_object(
         depth_manifest_path, "reference_hybrid_depth_manifest_unreadable"
     )
-    if (
-        depth_manifest.get("schema_version") != DEPTH_SWEEP_SCHEMA
-        or depth_manifest.get("manifest_digest")
-        != canonical_digest(depth_manifest, digest_field="manifest_digest")
-        or depth_manifest.get("actual_mesh_depth_rasterized") is not True
-        or depth_manifest.get("caller_supplied_coverage_mask") is not False
-    ):
+    if not _qualified_depth_manifest(depth_manifest):
         raise ArticulatedUsdDepthSweepError(
             ["reference_hybrid_depth_manifest_invalid"]
         )
@@ -1105,7 +2014,7 @@ def materialize_reference_hybrid_review(
         )
 
     frame_records: list[dict[str, Any]] = []
-    contact_panels: dict[str, list[tuple[float, Path]]] = {
+    contact_panels: dict[str, list[tuple[str, Path]]] = {
         camera_id: [] for camera_id in camera_ids
     }
     # OpenCV stores BGR.  The public contract remains RGB.
@@ -1113,16 +2022,12 @@ def materialize_reference_hybrid_review(
     for index, cell in enumerate(cells):
         camera_id = str(cell.get("camera_id") or "")
         try:
-            angle = float(cell["commanded_door_angle_deg"])
-            readback = float(cell["readback_door_angle_deg"])
+            state_fields = _cell_state_fields(cell)
+            label = _cell_label(cell)
         except (KeyError, TypeError, ValueError) as exc:
             raise ArticulatedUsdDepthSweepError(
                 ["reference_hybrid_depth_cells_invalid"]
             ) from exc
-        if not math.isfinite(angle) or not math.isfinite(readback):
-            raise ArticulatedUsdDepthSweepError(
-                ["reference_hybrid_depth_cells_invalid"]
-            )
         finite = np.isfinite(depth[index]) & (depth[index] > 0.0)
         frame = retained_by_camera[camera_id].copy()
         if np.any(finite):
@@ -1136,8 +2041,11 @@ def materialize_reference_hybrid_review(
                 finite.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)
             ).astype(bool) & finite
             frame[boundary] = np.asarray([45, 210, 255], dtype=np.uint8)
-        angle_token = f"{angle:07.3f}".replace("-", "m").replace(".", "p")
-        frame_path = frames_root / f"{camera_id}__door_{angle_token}.png"
+        state_token = str(cell.get("cell_id") or "")
+        if not state_token:
+            angle = float(cell["commanded_door_angle_deg"])
+            state_token = f"door_{angle:07.3f}".replace("-", "m").replace(".", "p")
+        frame_path = frames_root / f"{camera_id}__{state_token}.png"
         if not cv2.imwrite(str(frame_path), frame):
             raise ArticulatedUsdDepthSweepError(
                 ["reference_hybrid_frame_write_failed"]
@@ -1146,12 +2054,11 @@ def materialize_reference_hybrid_review(
             {
                 **_record(frame_path, output),
                 "camera_id": camera_id,
-                "commanded_door_angle_deg": angle,
-                "readback_door_angle_deg": readback,
+                **state_fields,
                 "replacement_covered_pixel_count": int(finite.sum()),
             }
         )
-        contact_panels[camera_id].append((angle, frame_path))
+        contact_panels[camera_id].append((label, frame_path))
 
     sheets_root = output / "contact_sheets"
     sheets_root.mkdir()
@@ -1160,7 +2067,7 @@ def materialize_reference_hybrid_review(
         selected_indices = sorted({0, len(candidates) // 2, len(candidates) - 1})
         panels = []
         for selected_index in selected_indices:
-            angle, frame_path = candidates[selected_index]
+            label, frame_path = candidates[selected_index]
             panel = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
             if panel is None:
                 raise ArticulatedUsdDepthSweepError(
@@ -1168,7 +2075,7 @@ def materialize_reference_hybrid_review(
                 )
             cv2.putText(
                 panel,
-                f"{camera_id}  door={angle:g}deg  neutral=USD silhouette",
+                f"{camera_id}  {label}  neutral=USD silhouette",
                 (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
@@ -1178,7 +2085,7 @@ def materialize_reference_hybrid_review(
             )
             cv2.putText(
                 panel,
-                f"{camera_id}  door={angle:g}deg  neutral=USD silhouette",
+                f"{camera_id}  {label}  neutral=USD silhouette",
                 (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
@@ -1234,16 +2141,22 @@ def materialize_reference_hybrid_review(
 __all__ = [
     "ArticulatedUsdDepthSweepError",
     "DEPTH_SWEEP_SCHEMA",
+    "GENERAL_DEPTH_SWEEP_REQUEST_SCHEMA",
+    "GENERAL_DEPTH_SWEEP_SCHEMA",
     "REFERENCE_HYBRID_REVIEW_SCHEMA",
     "SOURCE_COVERAGE_AUDIT_SCHEMA",
     "TARGET_CORE_COVERAGE_AUDIT_SCHEMA",
     "conservative_max_pool_alpha",
     "evaluate_source_alpha_coverage",
     "load_articulated_usd_triangles",
+    "load_usd_link_triangles",
     "materialize_articulated_usd_depth_sweep",
+    "materialize_replacement_usd_depth_sweep",
     "materialize_reference_hybrid_review",
     "materialize_source_layer_replacement_coverage_audit",
     "materialize_target_core_replacement_coverage_audit",
     "rasterize_triangle_depth",
     "rotate_triangles_about_axis",
+    "seal_replacement_usd_depth_sweep_request",
+    "validate_replacement_usd_depth_sweep_request",
 ]

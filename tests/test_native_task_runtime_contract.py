@@ -338,6 +338,24 @@ def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() ->
     )
 
 
+def test_rigid_manipulation_preserves_locked_articulated_subject_spawn_type() -> None:
+    rigid = _rigid_fixture()
+    assets = _dual_replacement_assets()
+    subject = next(row for row in assets if row.get("asset_id") == "rigid_b")
+    subject["object_type"] = "ARTICULATION"
+    subject["reset_state"] = {"joint_positions": {"display_hinge": 0.0}}
+    rigid["assets"] = assets
+    rigid["task_spec"]["subject_asset_id"] = "rigid_b"
+    rigid["construction_bindings"] = _construction_bindings()
+    rigid["task_freeze_digest"] = _sha("8")
+
+    contract = materialize_native_task_runtime_contract(**rigid)
+
+    planned = next(row for row in contract["objects"] if row["task_subject"])
+    assert planned["object_type"] == "ARTICULATION"
+    assert planned["reset_state"]["joint_positions"] == {"display_hinge": 0.0}
+
+
 def test_dual_replacement_contract_rejects_shared_mask_or_swapped_asset() -> None:
     fixture = _articulated_fixture()
     fixture["assets"] = _dual_replacement_assets()

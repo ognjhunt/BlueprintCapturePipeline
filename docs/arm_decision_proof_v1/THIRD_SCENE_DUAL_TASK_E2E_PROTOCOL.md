@@ -125,6 +125,11 @@ cousin, and held-out-composed families. Both candidates receive identical cells,
 seeds, resets, observations, actions, and scorers. Native applied-parameter
 readback is mandatory.
 
+An admitted-object-cousin family name is not admission by itself. Its cell must
+bind exact asset identity, bytes, rights, and a natively supported
+resolver/readback target. If any are unavailable, the family remains frozen as
+a typed, unscheduled blocker; a placeholder index is not executable evidence.
+
 Initial execution is limited to:
 
 1. Task A canonical, then Task A external-camera diagnostic.

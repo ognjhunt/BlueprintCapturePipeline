@@ -10,6 +10,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_scene_plan import (
     NativeTaskArenaScenePlanError,
+    _articulation_plan,
     materialize_native_task_arena_scene_plan,
 )
 from blueprint_pipeline.native_task_runtime_contract import (
@@ -323,6 +324,101 @@ def test_original_and_second_scene_compile_through_one_arena_plan(
         assert motion["scripted_sweep_angle_degrees"] == pytest.approx(50.0)
     else:
         assert plan["articulation"]["contact_sensors"] == []
+
+
+def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
+    tmp_path: Path,
+) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    task_path = tmp_path / "rigid_task.usda"
+    task_stage = Usd.Stage.CreateNew(str(task_path))
+    task_root = UsdGeom.Xform.Define(task_stage, "/Asset")
+    task_stage.SetDefaultPrim(task_root.GetPrim())
+    body = UsdGeom.Xform.Define(task_stage, "/Asset/body").GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(body)
+    collision = UsdGeom.Cube.Define(task_stage, "/Asset/body/collider").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(collision)
+    task_stage.GetRootLayer().Save()
+
+    scene_path = tmp_path / "scene_collision.usda"
+    scene_stage = Usd.Stage.CreateNew(str(scene_path))
+    scene_root = UsdGeom.Xform.Define(scene_stage, "/Scene")
+    scene_stage.SetDefaultPrim(scene_root.GetPrim())
+    floor = UsdGeom.Cube.Define(scene_stage, "/Scene/floor").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(floor)
+    scene_stage.GetRootLayer().Save()
+
+    affordance = {
+        "allowed_contact_prim_paths": ["/Asset/body"],
+        "intended_support_prim_paths": ["/Scene/floor"],
+        "affordance_digest": "",
+    }
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    contract = {
+        "task_kind": "rigid_pick_place",
+        "task_spec": {
+            "task_contact_minimum_force_n": 0.5,
+            "collision_failure_minimum_force_n": 1.0,
+            "reset_translation_tolerance_m": 0.001,
+            "reset_orientation_tolerance_rad": 0.01,
+            "interaction_affordance": affordance,
+        },
+        "robot": {"robot_id": "franka_panda"},
+        "objects": [
+            {
+                "task_subject": True,
+                "object_type": "RIGID",
+                "reset_state": {"joint_positions": {}},
+            }
+        ],
+    }
+
+    topology = _articulation_plan(
+        contract,
+        task_object_asset_path=task_path,
+        scene_collision_asset_path=scene_path,
+    )
+
+    assert topology["task_contact_body_paths"] == [
+        "{ENV_REGEX_NS}/task_object/body"
+    ]
+    assert Counter(
+        row["logical_sensor_id"] for row in topology["contact_sensors"]
+    ) == {
+        "task_robot_contact": 1,
+        "task_support_contact": 1,
+        "robot_scene_contact": 18,
+    }
+
+    contract["objects"][0]["object_type"] = "ARTICULATION"
+    contract["objects"][0]["reset_state"] = {
+        "joint_positions": {"display_hinge": 0.0}
+    }
+    topology = _articulation_plan(
+        contract,
+        task_object_asset_path=task_path,
+        scene_collision_asset_path=scene_path,
+    )
+    assert topology["task_joint_reset_positions_rad"] == {
+        "display_hinge": 0.0
+    }
+
+    affordance["allowed_contact_prim_paths"] = ["/Asset/body/collider"]
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    with pytest.raises(NativeTaskArenaScenePlanError) as excinfo:
+        _articulation_plan(
+            contract,
+            task_object_asset_path=task_path,
+            scene_collision_asset_path=scene_path,
+        )
+    assert excinfo.value.errors == (
+        "native_task_arena_rigid_contact_body_paths_invalid",
+    )
 
 
 def test_staged_asset_digest_mismatch_fails_before_isaac(tmp_path: Path) -> None:

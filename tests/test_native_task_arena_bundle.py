@@ -307,12 +307,18 @@ def test_bound_runtime_inputs_are_immutable_and_scene_neutral(
 def _articulated_packet(root: Path) -> tuple[Path, dict]:
     packet = _packet(root, scene_id="840796")
     motion = {
+        "schema_version": "native_articulated_motion_geometry.v1",
+        "target_joint_id": "fixture_hinge",
         "hinge_point_world_m": [0.0, 0.0, 1.0],
         "hinge_axis_world_unit": [0.0, 0.0, 1.0],
         "handle_grasp_point_closed_world_m": [0.5, 0.0, 1.0],
         "authored_limits_degrees": [0.0, 90.0],
         "scripted_sweep_angle_degrees": 50.0,
+        "motion_geometry_digest": "",
     }
+    motion["motion_geometry_digest"] = canonical_digest(
+        motion, digest_field="motion_geometry_digest"
+    )
     scene = {
         "schema_version": "native_task_arena_scene_plan.v1",
         "task_id": "fixture_articulated_task",
@@ -376,6 +382,39 @@ def _qualified_construction(root: Path, scene: dict) -> Path:
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return path
+
+
+def test_executable_construction_bundle_freezes_local_phase_plan(
+    tmp_path: Path,
+) -> None:
+    packet, _scene = _articulated_packet(tmp_path)
+    receipt = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "construction-with-phase-plan",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="9" * 40,
+        generated_at="fixed",
+    )
+
+    assert [row["relative_path"] for row in receipt["bound_runtime_inputs"]] == [
+        "runtime_inputs/native_task_construction_phase_plan.v1.json"
+    ]
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        frozen = json.loads(
+            archive.read(
+                "provider_runtime/runtime_inputs/"
+                "native_task_construction_phase_plan.v1.json"
+            )
+        )
+    assert frozen["execution_parameters"] == {
+        "arrival_tolerance_m": 0.02,
+        "stable_samples": 2,
+        "maximum_steps_per_phase": 64,
+        "articulated_waypoint_count": 8,
+    }
+    assert frozen["plan_digest"] == canonical_digest(
+        frozen, digest_field="plan_digest"
+    )
 
 
 def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:

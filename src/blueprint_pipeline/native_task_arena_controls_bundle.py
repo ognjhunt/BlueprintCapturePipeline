@@ -10,10 +10,8 @@ from typing import Any
 
 from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .decision_evidence_contracts import canonical_digest
-from .native_articulated_control_plan import (
-    materialize_native_articulated_control_plan,
-)
 from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_control_plan import materialize_native_task_control_plan
 
 
 PROBE_KIND = "native-task-arena-controls"
@@ -86,7 +84,7 @@ def build_native_task_arena_controls_bundle(
         construction_path,
         error="native_task_controls_construction_result_invalid",
     )
-    control_plan = materialize_native_articulated_control_plan(
+    control_plan = materialize_native_task_control_plan(
         scene_plan=scene_plan,
         construction_result=construction,
     )

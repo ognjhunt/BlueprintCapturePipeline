@@ -793,8 +793,22 @@ def score_rigid_task_episode(
         row[field] for row in normalized for field in safety_fields
     )
     moved = max(translation) > spec["movement_epsilon_m"]
-    translated = max(translation) >= spec["minimum_translation_m"]
-    lifted = max(lift) >= spec["minimum_lift_m"]
+    # Simulator state is floating-point readback. Treat a value that differs
+    # from an exact preregistered boundary only by round-off as on the
+    # boundary; this is not a task tolerance and must remain far below any
+    # physical/scoring tolerance in the task contract.
+    translated = max(translation) >= spec["minimum_translation_m"] or math.isclose(
+        max(translation),
+        spec["minimum_translation_m"],
+        rel_tol=0.0,
+        abs_tol=1.0e-12,
+    )
+    lifted = max(lift) >= spec["minimum_lift_m"] or math.isclose(
+        max(lift),
+        spec["minimum_lift_m"],
+        rel_tol=0.0,
+        abs_tol=1.0e-12,
+    )
     succeeded = (
         destination_inside
         and orientation_ok

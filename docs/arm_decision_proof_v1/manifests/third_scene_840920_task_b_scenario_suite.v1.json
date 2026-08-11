@@ -143,19 +143,13 @@
       "cell_id": "840920_task_b_cousin",
       "family": "admitted_object_cousin",
       "seed": 3202,
-      "resolved_parameters": {
-        "object_cousin_index": 1
+      "resolved_parameters": {},
+      "factor_records": [],
+      "execution_admission": {
+        "status": "blocked",
+        "blocker_code": "admitted_object_cousin_identity_rights_and_bytes_unresolved",
+        "cousin_asset": null
       },
-      "factor_records": [
-        {
-          "parameter_id": "object_cousin_index",
-          "runtime_target": "AssetResolver.admitted_object_cousin.index",
-          "unit": "index",
-          "nominal_value": 0,
-          "resolved_value": 1,
-          "application_tolerance": 0.1
-        }
-      ],
       "candidate_ids": [
         "pi05_droid",
         "groot_n17_droid"
@@ -163,7 +157,7 @@
       "controls_required_before_candidates": true,
       "powered_diagnostic": false,
       "scheduled_initially": false,
-      "applied_parameter_readback_required": true
+      "applied_parameter_readback_required": false
     },
     {
       "cell_id": "840920_task_b_held_out",
@@ -201,5 +195,5 @@
       "applied_parameter_readback_required": true
     }
   ],
-  "suite_digest": "sha256:b9e79b2bc3ddb9a24b066567ae4404f7289a707f27032424971624adecba86e4"
+  "suite_digest": "sha256:e80d2d16ca7c7aaf7cae0117cdc3cf0162e7b1506bb95e72e9bbbd1574ae85bf"
 }

@@ -547,6 +547,46 @@ def test_builder_keeps_inactive_articulated_replacement_and_its_reset(
     assert inactive.reset_event_cfg.params["reset_joints"] is True
 
 
+def test_rigid_task_keeps_locked_articulation_and_separate_support_collision_channels(
+    monkeypatch,
+) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["task_kind"] = "rigid_pick_place"
+    plan["articulation"]["contact_sensors"][1].update(
+        sensor_instance_id="task_support_contact__rigid_00",
+        logical_sensor_id="task_support_contact",
+    )
+    plan["articulation"]["contact_sensors"].insert(
+        2,
+        {
+            "sensor_instance_id": "task_scene_collision__rigid_00",
+            "logical_sensor_id": "task_scene_collision",
+            "prim_path": "{ENV_REGEX_NS}/task_object/upper_door",
+            "filter_prim_paths_expr": ["{ENV_REGEX_NS}/scene_collision/wall"],
+        },
+    )
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    built = build_native_task_arena_environment(plan)
+
+    task_object = next(
+        asset for asset in _ArenaBuilder.last.arena_env.scene.assets
+        if asset.name == "task_object"
+    )
+    assert task_object.object_type is _ObjectType.ARTICULATION
+    assert task_object.object_cfg.init_state.joint_pos == {
+        "upper_door_hinge": 0.0,
+        "lower_door_hinge": 0.0,
+    }
+    assert built.contact_sensor_names["task_support_contact"] == (
+        "task_support_contact__rigid_00",
+    )
+    assert built.contact_sensor_names["task_scene_collision"] == (
+        "task_scene_collision__rigid_00",
+    )
+
+
 def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> None:
     _install_fake_native_runtime(monkeypatch)
     plan = _sealed_scene_plan()

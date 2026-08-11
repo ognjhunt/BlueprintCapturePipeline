@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_construction_plan import (
+    materialize_native_task_construction_phase_plan,
+)
 
 
 PROBE_KIND = "native-task-arena-construction"
@@ -32,6 +36,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_articulated_construction_plan.py",
     "native_articulated_motion_geometry.py",
     "native_articulated_task_state.py",
+    "native_task_construction_plan.py",
     "native_franka_pose_servo.py",
     "native_franka_action_math.py",
     "native_pose_transforms.py",
@@ -63,17 +68,46 @@ def build_native_task_arena_construction_bundle(
     """Package one sealed task packet for the native Panda construction worker."""
 
     package = Path(__file__).resolve().parent
-    return build_native_task_arena_bundle(
-        job_dir=job_dir,
-        packet_dir=packet_dir,
-        runtime_source_packet_receipt=runtime_source_packet_receipt,
-        worker_source=package / "native_task_arena_construction_worker.py",
-        runtime_module_sources=construction_runtime_sources(),
-        implementation_commit=implementation_commit,
-        execution_mode="construction_canary",
-        container_image=QUALIFIED_ADP_IMAGE,
-        generated_at=generated_at,
+    packet = Path(packet_dir).expanduser().resolve()
+    scene_plan = json.loads(
+        (packet / "native_task_arena_scene_plan.v1.json").read_text(
+            encoding="utf-8"
+        )
     )
+    # Historical transport-only fixtures intentionally carry no executable
+    # scene-plan schema. Every real native packet must freeze this local plan
+    # before a provider can be allocated.
+    if scene_plan.get("schema_version") != "native_task_arena_scene_plan.v1":
+        return build_native_task_arena_bundle(
+            job_dir=job_dir,
+            packet_dir=packet,
+            runtime_source_packet_receipt=runtime_source_packet_receipt,
+            worker_source=package / "native_task_arena_construction_worker.py",
+            runtime_module_sources=construction_runtime_sources(),
+            implementation_commit=implementation_commit,
+            execution_mode="construction_canary",
+            container_image=QUALIFIED_ADP_IMAGE,
+            generated_at=generated_at,
+        )
+    frozen = materialize_native_task_construction_phase_plan(scene_plan)
+    with tempfile.TemporaryDirectory(prefix="blueprint-native-construction-plan-") as raw:
+        phase_path = Path(raw) / "native_task_construction_phase_plan.v1.json"
+        phase_path.write_text(
+            json.dumps(frozen, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return build_native_task_arena_bundle(
+            job_dir=job_dir,
+            packet_dir=packet,
+            runtime_source_packet_receipt=runtime_source_packet_receipt,
+            worker_source=package / "native_task_arena_construction_worker.py",
+            runtime_module_sources=construction_runtime_sources(),
+            implementation_commit=implementation_commit,
+            execution_mode="construction_canary",
+            container_image=QUALIFIED_ADP_IMAGE,
+            bound_runtime_inputs={phase_path.name: phase_path},
+            generated_at=generated_at,
+        )
 
 
 def load_verified_native_task_arena_construction_bundle(

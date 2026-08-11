@@ -195,7 +195,7 @@ def _graph_spec() -> dict:
             "reset_tolerance": 0.0001,
             "drive": {
                 "drive_type": "none" if role == "passive" else "force",
-                "stiffness": 0.0 if role == "passive" else 20.0,
+                "stiffness": 0.0 if role in {"target", "passive"} else 20.0,
                 "damping": 0.1,
                 "maximum_force": 0.0 if role == "passive" else 100.0,
             },
@@ -374,6 +374,28 @@ def test_scene_neutral_rigid_task_scores_pose_volume_release_and_settle() -> Non
     assert report["outcome"] == "placed_and_settled"
     assert report["task_succeeded"] is True
     assert report["subject_asset_id"] == "notebook_replacement"
+
+
+def test_scene_neutral_rigid_thresholds_accept_machine_roundoff_at_boundary() -> None:
+    task_spec = _rigid_v2_spec()
+    task_spec["minimum_lift_m"] = 0.08
+    task_spec["minimum_translation_m"] = 0.15
+
+    report = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=[
+            _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+            _rigid_v2_sample(1, [1.0, 2.0, 0.88]),
+            _rigid_v2_sample(2, [1.15, 2.0, 0.88]),
+            _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+        ],
+    )
+
+    assert report["measurements"]["maximum_lift_m"] < 0.08
+    assert report["measurements"]["maximum_translation_m"] < 0.15
+    assert report["task_succeeded"] is True
 
 
 def test_scene_neutral_rigid_task_abstains_without_native_safety_readback() -> None:

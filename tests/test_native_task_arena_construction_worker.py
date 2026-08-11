@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_construction_worker import (
     DEPENDENCY_IMPORTS,
+    _initial_contact_blocked,
     _load_and_verify_manifest,
     _requested_arm_reset,
+    _task_joint_reset_passed,
+    _verified_construction_phase_plan_path,
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
@@ -126,3 +130,65 @@ def test_reset_readback_uses_semantic_joint_order_not_json_key_order() -> None:
     )
 
     assert result == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+
+
+def test_worker_does_not_require_articulated_joint_tolerance_for_rigid_task() -> None:
+    assert _task_joint_reset_passed(
+        absolute_errors_rad={},
+        task_spec={"task_kind": "rigid_pick_place"},
+    ) is True
+
+
+def test_worker_reverifies_frozen_construction_plan_before_native_startup(
+    tmp_path: Path,
+) -> None:
+    runtime_inputs = tmp_path / "runtime_inputs"
+    runtime_inputs.mkdir()
+    plan = runtime_inputs / "native_task_construction_phase_plan.v1.json"
+    plan.write_text('{"plan_digest":"sha256:fixture"}\n', encoding="utf-8")
+    manifest = {
+        "bound_runtime_inputs": [
+            {
+                "relative_path": (
+                    "runtime_inputs/native_task_construction_phase_plan.v1.json"
+                ),
+                "size_bytes": plan.stat().st_size,
+                "sha256": "sha256:"
+                + hashlib.sha256(plan.read_bytes()).hexdigest(),
+            }
+        ]
+    }
+
+    assert _verified_construction_phase_plan_path(tmp_path, manifest) == plan
+    plan.write_text("tampered\n", encoding="utf-8")
+    try:
+        _verified_construction_phase_plan_path(tmp_path, manifest)
+    except RuntimeError as exc:
+        assert str(exc) == "native_task_construction_phase_plan_identity_mismatch"
+    else:
+        raise AssertionError("tampered construction phase plan was accepted")
+
+
+def test_rigid_initial_support_force_is_not_misclassified_as_penetration() -> None:
+    sample = {
+        "task_robot_contact_peak_force_n": 0.0,
+        "task_support_contact_peak_force_n": 20.0,
+        "task_scene_collision_peak_force_n": 0.0,
+        "robot_scene_contact_peak_force_n": 0.0,
+    }
+
+    assert _initial_contact_blocked(
+        task_kind="rigid_pick_place",
+        sample=sample,
+        collision_threshold_n=1.0,
+    ) is False
+    sample["task_scene_collision_peak_force_n"] = 2.0
+    assert _initial_contact_blocked(
+        task_kind="rigid_pick_place",
+        sample=sample,
+        collision_threshold_n=1.0,
+    ) is True
+    assert _task_joint_reset_passed(
+        absolute_errors_rad={"hinge": 5.0e-5},
+        task_spec={"reset_tolerance_rad": 1.0e-4},
+    ) is True

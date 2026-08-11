@@ -2,24 +2,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.articulated_usd_depth_sweep import (
     ArticulatedUsdDepthSweepError,
+    _primitive_points_and_faces,
     conservative_max_pool_alpha,
     evaluate_source_alpha_coverage,
     load_articulated_usd_triangles,
+    load_usd_link_triangles,
     materialize_articulated_usd_depth_sweep,
+    materialize_replacement_usd_depth_sweep,
     materialize_reference_hybrid_review,
     materialize_source_layer_replacement_coverage_audit,
     materialize_target_core_replacement_coverage_audit,
     rasterize_triangle_depth,
     rotate_triangles_about_axis,
+    seal_replacement_usd_depth_sweep_request,
+    validate_replacement_usd_depth_sweep_request,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -43,6 +49,112 @@ def _fixture_usd(path: Path) -> Path:
     _triangle(stage, "/Asset/door/triangle", [(0, -1, 2), (1, -1, 2), (0, 1, 2)])
     stage.GetRootLayer().Save()
     return path
+
+
+def _primitive_graph_fixture_usd(path: Path) -> Path:
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    root = UsdGeom.Xform.Define(stage, "/Asset")
+    root.AddTranslateOp().Set(Gf.Vec3d(10.0, 0.0, 0.0))
+    stage.SetDefaultPrim(root.GetPrim())
+    links = {
+        "root": ([0.0, 0.0, 4.0], "cube"),
+        "door": ([0.45, 0.5, 4.0], "cube"),
+        "latch": ([0.8, 0.5, 4.0], "cylinder"),
+    }
+    for link_id, (position, kind) in links.items():
+        link = UsdGeom.Xform.Define(stage, f"/Asset/links/{link_id}")
+        link.AddTranslateOp().Set(Gf.Vec3d(*position))
+        if kind == "cube":
+            geometry = UsdGeom.Cube.Define(
+                stage, f"/Asset/links/{link_id}/geometry/shape"
+            )
+            geometry.CreateSizeAttr(0.35)
+        else:
+            geometry = UsdGeom.Cylinder.Define(
+                stage, f"/Asset/links/{link_id}/geometry/shape"
+            )
+            geometry.CreateAxisAttr("X")
+            geometry.CreateRadiusAttr(0.14)
+            geometry.CreateHeightAttr(0.28)
+    for joint_id, parent, child, parent_position in (
+        ("hinge", "root", "door", [0.45, 0.5, 0.0]),
+        ("coupler", "door", "latch", [0.35, 0.0, 0.0]),
+    ):
+        joint = UsdPhysics.RevoluteJoint.Define(stage, f"/Asset/joints/{joint_id}")
+        joint.CreateAxisAttr("X")
+        joint.CreateBody0Rel().SetTargets([Sdf.Path(f"/Asset/links/{parent}")])
+        joint.CreateBody1Rel().SetTargets([Sdf.Path(f"/Asset/links/{child}")])
+        joint.CreateLocalPos0Attr(Gf.Vec3f(*parent_position))
+        joint.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr(Gf.Quatf(1.0))
+        joint.CreateLocalRot1Attr(Gf.Quatf(1.0))
+    stage.GetRootLayer().Save()
+    return path
+
+
+def _primitive_graph() -> dict:
+    return {
+        "schema_version": "adp_articulation_graph.v1",
+        "links": [
+            {"link_id": "root", "is_root": True, "semantic_role": "root"},
+            {"link_id": "door", "is_root": False, "semantic_role": "target"},
+            {"link_id": "latch", "is_root": False, "semantic_role": "dependent"},
+        ],
+        "joints": [
+            {
+                "joint_id": "hinge",
+                "parent_link_id": "root",
+                "child_link_id": "door",
+                "joint_type": "revolute",
+                "role": "target",
+                "axis": [1.0, 0.0, 0.0],
+                "limits": [0.0, 1.0],
+                "reset_position": 0.0,
+                "reset_tolerance": 0.001,
+                "drive": {
+                    "drive_type": "force",
+                    "stiffness": 0.0,
+                    "damping": 1.0,
+                    "maximum_force": 10.0,
+                },
+                "dependency": None,
+            },
+            {
+                "joint_id": "coupler",
+                "parent_link_id": "door",
+                "child_link_id": "latch",
+                "joint_type": "revolute",
+                "role": "dependent",
+                "axis": [1.0, 0.0, 0.0],
+                "limits": [0.0, 0.2],
+                "reset_position": 0.0,
+                "reset_tolerance": 0.001,
+                "drive": {
+                    "drive_type": "force",
+                    "stiffness": 1.0,
+                    "damping": 1.0,
+                    "maximum_force": 10.0,
+                },
+                "dependency": {
+                    "driver_joint_id": "hinge",
+                    "multiplier": 0.2,
+                    "offset": 0.0,
+                    "tolerance": 0.001,
+                },
+            },
+        ],
+        "collision_pairs": [
+            {"link_a": "root", "link_b": "door", "collision_enabled": True},
+            {"link_a": "root", "link_b": "latch", "collision_enabled": True},
+            {"link_a": "door", "link_b": "latch", "collision_enabled": False},
+        ],
+        "success_predicate": {
+            "combination": "all",
+            "joint_intervals": {"hinge": [0.5, 0.8]},
+        },
+    }
 
 
 def _camera() -> dict[str, object]:
@@ -148,6 +260,686 @@ def test_depth_sweep_rejects_missing_moving_link(tmp_path: Path) -> None:
     with pytest.raises(ArticulatedUsdDepthSweepError) as exc:
         load_articulated_usd_triangles(usd, moving_link_path="/Asset/missing")
     assert exc.value.codes == ("articulated_depth_moving_link_missing",)
+
+
+def test_general_depth_sweep_supports_primitives_and_complete_joint_state_cells(
+    tmp_path: Path,
+) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "primitive_graph.usda")
+    graph = _primitive_graph()
+    link_paths = {
+        link_id: f"/Asset/links/{link_id}" for link_id in ("root", "door", "latch")
+    }
+    joint_paths = {
+        joint_id: f"/Asset/joints/{joint_id}" for joint_id in ("hinge", "coupler")
+    }
+    local, _rest, type_counts = load_usd_link_triangles(
+        usd, asset_prim_path="/Asset", link_paths=link_paths
+    )
+    assert set(local) == {"root", "door", "latch"}
+    assert type_counts == {"Cube": 2, "Cylinder": 1}
+    identity = np.eye(4).tolist()
+    request = seal_replacement_usd_depth_sweep_request(
+        asset_id="fixture_articulated_asset",
+        task_kind="articulated_interaction",
+        task_freeze_digest="sha256:" + "a" * 64,
+        replacement_usd_sha256=_sha256(usd),
+        replacement_usd_size_bytes=usd.stat().st_size,
+        articulation_graph=graph,
+        link_paths=link_paths,
+        joint_paths=joint_paths,
+        task_scoring_frame={
+            "frame_id": "asset_root",
+            "T_asset_task_scoring": identity,
+        },
+        camera_contract_digest="sha256:" + "b" * 64,
+        cameras=[_camera()],
+        joint_state_cells=[
+            {
+                "cell_id": "reset",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.0, "coupler": 0.0},
+            },
+            {
+                "cell_id": "open",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.7, "coupler": 0.14},
+            },
+        ],
+        resolution_scale=0.5,
+    )
+    result = materialize_replacement_usd_depth_sweep(
+        usd_path=usd,
+        request=request,
+        output_root=tmp_path / "general_depth",
+    )
+
+    assert result["schema_version"] == "replacement_usd_depth_sweep.v2"
+    assert result["asset_id"] == "fixture_articulated_asset"
+    assert result["task_freeze_digest"] == "sha256:" + "a" * 64
+    assert result["camera_contract_digest"] == "sha256:" + "b" * 64
+    assert result["replacement_usd"]["size_bytes"] == usd.stat().st_size
+    assert result["actual_usd_geometry_depth_rasterized"] is True
+    assert result["actual_mesh_depth_rasterized"] is False
+    assert result["geometry_type_counts"] == {"Cube": 2, "Cylinder": 1}
+    assert result["asset_root_authored_transform_removed_before_placement"] is True
+    assert result["T_world_asset_applied_exactly_once_per_cell"] is True
+    assert result["finite_depth_pixel_count_by_cell"] != [0, 0]
+    depths = np.load(tmp_path / "general_depth/replacement_depth_sweep.npy")
+    assert depths.shape == (2, 24, 32)
+    assert not np.array_equal(depths[0], depths[1])
+    common_coverage = np.all(np.isfinite(depths) & (depths > 0.0), axis=0)
+    mask = tmp_path / "target_core.png"
+    assert cv2.imwrite(str(mask), common_coverage.astype(np.uint8) * 255)
+    coverage = materialize_target_core_replacement_coverage_audit(
+        target_core_mask_paths={"external": mask},
+        depth_sweep_manifest_path=tmp_path
+        / "general_depth/replacement_usd_depth_sweep.v2.json",
+        output_root=tmp_path / "general_coverage",
+        maximum_uncovered_fraction=0.1,
+    )
+    assert coverage["coverage_qualified"] is True
+    assert coverage["state_cell_ids"] == ["reset", "open"]
+    assert "door_state_angles_degrees" not in coverage
+    assert "derived_from_all_door_cells" not in coverage[
+        "residual_target_core_seam_masks"
+    ][0]
+
+
+def test_general_depth_excludes_hidden_proxy_and_guide_geometry(tmp_path: Path) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "visibility.usda")
+    stage = Usd.Stage.Open(str(usd))
+    hidden = UsdGeom.Cube.Define(stage, "/Asset/links/root/geometry/hidden")
+    hidden.CreateSizeAttr(100.0)
+    hidden.CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+    proxy = UsdGeom.Cube.Define(stage, "/Asset/links/root/geometry/proxy")
+    proxy.CreateSizeAttr(100.0)
+    proxy.CreatePurposeAttr(UsdGeom.Tokens.proxy)
+    guide = UsdGeom.Cube.Define(stage, "/Asset/links/root/geometry/guide")
+    guide.CreateSizeAttr(100.0)
+    guide.CreatePurposeAttr(UsdGeom.Tokens.guide)
+    stage.GetRootLayer().Save()
+
+    _triangles, _rest, type_counts = load_usd_link_triangles(
+        usd,
+        asset_prim_path="/Asset",
+        link_paths={
+            link_id: f"/Asset/links/{link_id}"
+            for link_id in ("root", "door", "latch")
+        },
+    )
+
+    assert type_counts == {"Cube": 2, "Cylinder": 1}
+
+
+@pytest.mark.parametrize("axis", ["X", "Y", "Z"])
+def test_cylinder_tessellation_supports_all_openusd_axes(
+    tmp_path: Path, axis: str
+) -> None:
+    stage = Usd.Stage.CreateNew(str(tmp_path / f"cylinder_{axis}.usda"))
+    cylinder = UsdGeom.Cylinder.Define(stage, "/Cylinder")
+    cylinder.CreateAxisAttr(axis)
+    cylinder.CreateRadiusAttr(0.25)
+    cylinder.CreateHeightAttr(0.8)
+    stage.GetRootLayer().Save()
+
+    points, faces = _primitive_points_and_faces(cylinder.GetPrim())
+
+    assert points.shape == (130, 3)
+    assert faces.shape == (256, 3)
+    axis_index = {"X": 0, "Y": 1, "Z": 2}[axis]
+    assert points[:, axis_index].min() == pytest.approx(-0.4)
+    assert points[:, axis_index].max() == pytest.approx(0.4)
+
+
+def test_legacy_840796_single_moving_link_adapter_accepts_primitives_and_one_placement(
+    tmp_path: Path,
+) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "legacy_graph.usda")
+    manifest = materialize_articulated_usd_depth_sweep(
+        usd_path=usd,
+        cameras=[_camera()],
+        door_angles_deg=[0.0, 30.0],
+        moving_link_path="/Asset/links/door",
+        hinge_origin_asset_m=[0.0, 0.0, 4.0],
+        hinge_axis_asset=[1.0, 0.0, 0.0],
+        T_world_asset=np.eye(4).tolist(),
+        output_root=tmp_path / "legacy_depth",
+        resolution_scale=0.5,
+    )
+
+    assert manifest["schema_version"] == "adp009b_articulated_usd_depth_sweep.v1"
+    assert manifest["door_state_count"] == 2
+    assert manifest["actual_usd_geometry_depth_rasterized"] is True
+    assert manifest["actual_mesh_depth_rasterized"] is False
+    assert manifest["legacy_single_moving_link_compatibility_adapter"] is True
+    assert min(manifest["finite_depth_pixel_count_by_cell"]) > 0
+
+
+def test_rigid_pose_cells_bind_nonidentity_task_scoring_frame_without_double_placement(
+    tmp_path: Path,
+) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "primitive_graph.usda")
+    graph = _primitive_graph()
+    graph["links"] = graph["links"][:2]
+    graph["joints"] = graph["joints"][:1]
+    graph["joints"][0]["role"] = "locked"
+    graph["joints"][0]["drive"]["stiffness"] = 10.0
+    graph["collision_pairs"] = graph["collision_pairs"][:1]
+    graph["success_predicate"]["joint_intervals"] = {}
+    scoring_offset = np.eye(4)
+    scoring_offset[2, 3] = 0.5
+    first_scoring_pose = scoring_offset.copy()
+    second_scoring_pose = scoring_offset.copy()
+    second_scoring_pose[0, 3] = 0.2
+    request = seal_replacement_usd_depth_sweep_request(
+        asset_id="fixture_rigid_asset",
+        task_kind="rigid_object_manipulation",
+        task_freeze_digest="sha256:" + "c" * 64,
+        replacement_usd_sha256=_sha256(usd),
+        replacement_usd_size_bytes=usd.stat().st_size,
+        articulation_graph=graph,
+        link_paths={"root": "/Asset/links/root", "door": "/Asset/links/door"},
+        joint_paths={"hinge": "/Asset/joints/hinge"},
+        task_scoring_frame={
+            "frame_id": "observed_object_center",
+            "T_asset_task_scoring": scoring_offset.tolist(),
+        },
+        camera_contract_digest="sha256:" + "d" * 64,
+        cameras=[_camera()],
+        joint_state_cells=[
+            {
+                "cell_id": "source_pose",
+                "T_world_task_scoring": first_scoring_pose.tolist(),
+                "joint_positions": {"hinge": 0.0},
+            },
+            {
+                "cell_id": "destination_pose",
+                "T_world_task_scoring": second_scoring_pose.tolist(),
+                "joint_positions": {"hinge": 0.0},
+            },
+        ],
+        resolution_scale=0.5,
+    )
+    result = materialize_replacement_usd_depth_sweep(
+        usd_path=usd,
+        request=request,
+        output_root=tmp_path / "rigid_depth",
+    )
+
+    assert np.allclose(result["cells"][0]["T_world_asset"], np.eye(4))
+    assert result["cells"][1]["T_world_asset"][0][3] == pytest.approx(0.2)
+    # The authored /Asset translation of +10m is stripped; otherwise this
+    # camera would see no geometry at either requested scoring pose.
+    assert min(result["finite_depth_pixel_count_by_cell"]) > 0
+
+
+def test_general_depth_request_rejects_incomplete_or_inconsistent_state_cells(
+    tmp_path: Path,
+) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "primitive_graph.usda")
+    graph = _primitive_graph()
+    identity = np.eye(4).tolist()
+    request = seal_replacement_usd_depth_sweep_request(
+        asset_id="fixture_invalid_state_asset",
+        task_kind="articulated_interaction",
+        task_freeze_digest="sha256:" + "e" * 64,
+        replacement_usd_sha256=_sha256(usd),
+        replacement_usd_size_bytes=usd.stat().st_size,
+        articulation_graph=graph,
+        link_paths={
+            link_id: f"/Asset/links/{link_id}"
+            for link_id in ("root", "door", "latch")
+        },
+        joint_paths={
+            joint_id: f"/Asset/joints/{joint_id}"
+            for joint_id in ("hinge", "coupler")
+        },
+        task_scoring_frame={
+            "frame_id": "asset_root",
+            "T_asset_task_scoring": identity,
+        },
+        camera_contract_digest="sha256:" + "f" * 64,
+        cameras=[_camera()],
+        joint_state_cells=[
+            {
+                "cell_id": "reset",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.0, "coupler": 0.0},
+            },
+            {
+                "cell_id": "open",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.7, "coupler": 0.14},
+            },
+        ],
+    )
+    request["joint_state_cells"][1]["joint_positions"] = {
+        "hinge": 0.7,
+        "coupler": 0.0,
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="replacement_depth_cell_dependency_invalid:1:coupler",
+    ):
+        validate_replacement_usd_depth_sweep_request(request)
+
+    request["joint_state_cells"][1]["joint_positions"]["coupler"] = 0.14
+    request["camera_contract_digest"] = "not-a-digest"
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="replacement_depth_camera_contract_digest_invalid",
+    ):
+        validate_replacement_usd_depth_sweep_request(request)
+
+
+def test_general_depth_rejects_affine_camera_and_types_missing_dependency_driver(
+    tmp_path: Path,
+) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "primitive_graph.usda")
+    graph = _primitive_graph()
+    identity = np.eye(4).tolist()
+    request = seal_replacement_usd_depth_sweep_request(
+        asset_id="fixture_invalid_calibration_asset",
+        task_kind="articulated_interaction",
+        task_freeze_digest="sha256:" + "5" * 64,
+        replacement_usd_sha256=_sha256(usd),
+        replacement_usd_size_bytes=usd.stat().st_size,
+        articulation_graph=graph,
+        link_paths={
+            link_id: f"/Asset/links/{link_id}"
+            for link_id in ("root", "door", "latch")
+        },
+        joint_paths={
+            joint_id: f"/Asset/joints/{joint_id}"
+            for joint_id in ("hinge", "coupler")
+        },
+        task_scoring_frame={
+            "frame_id": "asset_root",
+            "T_asset_task_scoring": identity,
+        },
+        camera_contract_digest="sha256:" + "6" * 64,
+        cameras=[_camera()],
+        joint_state_cells=[
+            {
+                "cell_id": "reset",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.0, "coupler": 0.0},
+            },
+            {
+                "cell_id": "open",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.7, "coupler": 0.14},
+            },
+        ],
+    )
+    request["cameras"][0]["T_world_camera_opencv"][0][0] = 2.0
+    request["camera_rows_digest"] = canonical_digest(
+        {"cameras": request["cameras"]}
+    )
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="replacement_depth_camera_transform_invalid:0",
+    ):
+        validate_replacement_usd_depth_sweep_request(request)
+
+    request["cameras"] = [_camera()]
+    request["camera_rows_digest"] = canonical_digest(
+        {"cameras": request["cameras"]}
+    )
+    request["joint_state_cells"][1]["joint_positions"]["hinge"] = "invalid"
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    with pytest.raises(ArticulatedUsdDepthSweepError) as excinfo:
+        validate_replacement_usd_depth_sweep_request(request)
+    assert "replacement_depth_cell_joint_position_invalid:1:hinge" in excinfo.value.codes
+    assert (
+        "replacement_depth_cell_dependency_driver_invalid:1:coupler"
+        in excinfo.value.codes
+    )
+
+
+def test_general_depth_rejects_graph_axis_that_disagrees_with_usd_joint_frame(
+    tmp_path: Path,
+) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "primitive_graph.usda")
+    graph = _primitive_graph()
+    graph["joints"][0]["axis"] = [0.0, 0.0, 1.0]
+    identity = np.eye(4).tolist()
+    request = seal_replacement_usd_depth_sweep_request(
+        asset_id="fixture_axis_mismatch_asset",
+        task_kind="articulated_interaction",
+        task_freeze_digest="sha256:" + "3" * 64,
+        replacement_usd_sha256=_sha256(usd),
+        replacement_usd_size_bytes=usd.stat().st_size,
+        articulation_graph=graph,
+        link_paths={
+            link_id: f"/Asset/links/{link_id}"
+            for link_id in ("root", "door", "latch")
+        },
+        joint_paths={
+            joint_id: f"/Asset/joints/{joint_id}"
+            for joint_id in ("hinge", "coupler")
+        },
+        task_scoring_frame={
+            "frame_id": "asset_root",
+            "T_asset_task_scoring": identity,
+        },
+        camera_contract_digest="sha256:" + "4" * 64,
+        cameras=[_camera()],
+        joint_state_cells=[
+            {
+                "cell_id": "reset",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.0, "coupler": 0.0},
+            },
+            {
+                "cell_id": "open",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.7, "coupler": 0.14},
+            },
+        ],
+    )
+
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="replacement_depth_joint_axis_binding_mismatch:hinge:parent",
+    ):
+        materialize_replacement_usd_depth_sweep(
+            usd_path=usd,
+            request=request,
+            output_root=tmp_path / "axis_mismatch",
+        )
+
+
+def test_general_depth_joins_joint_axis_and_reset_frames_through_link_rest_poses(
+    tmp_path: Path,
+) -> None:
+    usd = tmp_path / "rotated_links.usda"
+    stage = Usd.Stage.CreateNew(str(usd))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    root = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(root.GetPrim())
+    for link_id in ("base", "door"):
+        link = UsdGeom.Xform.Define(stage, f"/Asset/links/{link_id}")
+        link.AddRotateYOp().Set(-90.0)
+        cube = UsdGeom.Cube.Define(
+            stage, f"/Asset/links/{link_id}/geometry/cube"
+        )
+        cube.CreateSizeAttr(0.25)
+    joint = UsdPhysics.RevoluteJoint.Define(stage, "/Asset/joints/hinge")
+    joint.CreateAxisAttr("X")
+    joint.CreateBody0Rel().SetTargets([Sdf.Path("/Asset/links/base")])
+    joint.CreateBody1Rel().SetTargets([Sdf.Path("/Asset/links/door")])
+    joint.CreateLocalPos0Attr(Gf.Vec3f(0.0))
+    joint.CreateLocalPos1Attr(Gf.Vec3f(0.0))
+    joint.CreateLocalRot0Attr(Gf.Quatf(1.0))
+    joint.CreateLocalRot1Attr(Gf.Quatf(1.0))
+    stage.GetRootLayer().Save()
+    graph = {
+        "schema_version": "adp_articulation_graph.v1",
+        "links": [
+            {"link_id": "base", "is_root": True, "semantic_role": "root"},
+            {"link_id": "door", "is_root": False, "semantic_role": "target"},
+        ],
+        "joints": [
+            {
+                "joint_id": "hinge",
+                "parent_link_id": "base",
+                "child_link_id": "door",
+                "joint_type": "revolute",
+                "role": "target",
+                "axis": [0.0, 0.0, 1.0],
+                "limits": [0.0, 1.0],
+                "reset_position": 0.0,
+                "reset_tolerance": 0.001,
+                "drive": {
+                    "drive_type": "force",
+                    "stiffness": 0.0,
+                    "damping": 1.0,
+                    "maximum_force": 10.0,
+                },
+                "dependency": None,
+            }
+        ],
+        "collision_pairs": [
+            {"link_a": "base", "link_b": "door", "collision_enabled": True}
+        ],
+        "success_predicate": {
+            "combination": "all",
+            "joint_intervals": {"hinge": [0.5, 0.8]},
+        },
+    }
+    identity = np.eye(4).tolist()
+
+    def request() -> dict:
+        return seal_replacement_usd_depth_sweep_request(
+            asset_id="rotated_rest_fixture",
+            task_kind="articulated_interaction",
+            task_freeze_digest="sha256:" + "7" * 64,
+            replacement_usd_sha256=_sha256(usd),
+            replacement_usd_size_bytes=usd.stat().st_size,
+            articulation_graph=graph,
+            link_paths={
+                "base": "/Asset/links/base",
+                "door": "/Asset/links/door",
+            },
+            joint_paths={"hinge": "/Asset/joints/hinge"},
+            task_scoring_frame={
+                "frame_id": "asset_root",
+                "T_asset_task_scoring": identity,
+            },
+            camera_contract_digest="sha256:" + "8" * 64,
+            cameras=[_camera()],
+            joint_state_cells=[
+                {
+                    "cell_id": "reset",
+                    "T_world_task_scoring": identity,
+                    "joint_positions": {"hinge": 0.0},
+                },
+                {
+                    "cell_id": "open",
+                    "T_world_task_scoring": identity,
+                    "joint_positions": {"hinge": 0.7},
+                },
+            ],
+        )
+
+    result = materialize_replacement_usd_depth_sweep(
+        usd_path=usd,
+        request=request(),
+        output_root=tmp_path / "rotated_rest",
+    )
+    assert result["finite_depth_pixel_count_by_cell"] != [0, 0]
+
+    stage = Usd.Stage.Open(str(usd))
+    authored = UsdPhysics.Joint(stage.GetPrimAtPath("/Asset/joints/hinge"))
+    authored.GetLocalPos1Attr().Set(Gf.Vec3f(0.1, 0.0, 0.0))
+    stage.GetRootLayer().Save()
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="replacement_depth_joint_reset_frame_mismatch:hinge",
+    ):
+        materialize_replacement_usd_depth_sweep(
+            usd_path=usd,
+            request=request(),
+            output_root=tmp_path / "reset_frame_mismatch",
+        )
+
+
+def test_general_depth_joint_frames_honor_nonzero_reset_coordinate(
+    tmp_path: Path,
+) -> None:
+    reset = 0.4
+    usd = tmp_path / "nonzero_reset.usda"
+    stage = Usd.Stage.CreateNew(str(usd))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    root = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(root.GetPrim())
+    base = UsdGeom.Xform.Define(stage, "/Asset/links/base")
+    base.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 4.0))
+    UsdGeom.Cube.Define(stage, "/Asset/links/base/geometry/cube").CreateSizeAttr(
+        0.2
+    )
+    door = UsdGeom.Xform.Define(stage, "/Asset/links/door")
+    door.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 4.0))
+    door.AddRotateXOp().Set(-math.degrees(reset))
+    door_geometry = UsdGeom.Cube.Define(
+        stage, "/Asset/links/door/geometry/cube"
+    )
+    door_geometry.CreateSizeAttr(0.2)
+    door_geometry.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.35, 0.0))
+    joint = UsdPhysics.RevoluteJoint.Define(stage, "/Asset/joints/hinge")
+    joint.CreateAxisAttr("X")
+    joint.CreateBody0Rel().SetTargets([Sdf.Path("/Asset/links/base")])
+    joint.CreateBody1Rel().SetTargets([Sdf.Path("/Asset/links/door")])
+    joint.CreateLocalPos0Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+    joint.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+    joint.CreateLocalRot0Attr(Gf.Quatf(1.0))
+    joint.CreateLocalRot1Attr(Gf.Quatf(1.0))
+    stage.GetRootLayer().Save()
+    graph = {
+        "schema_version": "adp_articulation_graph.v1",
+        "links": [
+            {"link_id": "base", "is_root": True, "semantic_role": "root"},
+            {"link_id": "door", "is_root": False, "semantic_role": "target"},
+        ],
+        "joints": [
+            {
+                "joint_id": "hinge",
+                "parent_link_id": "base",
+                "child_link_id": "door",
+                "joint_type": "revolute",
+                "role": "target",
+                "axis": [1.0, 0.0, 0.0],
+                "limits": [0.0, 1.0],
+                "reset_position": reset,
+                "reset_tolerance": 0.001,
+                "drive": {
+                    "drive_type": "force",
+                    "stiffness": 0.0,
+                    "damping": 1.0,
+                    "maximum_force": 10.0,
+                },
+                "dependency": None,
+            }
+        ],
+        "collision_pairs": [
+            {"link_a": "base", "link_b": "door", "collision_enabled": True}
+        ],
+        "success_predicate": {
+            "combination": "all",
+            "joint_intervals": {"hinge": [0.6, 0.8]},
+        },
+    }
+    identity = np.eye(4).tolist()
+    request = seal_replacement_usd_depth_sweep_request(
+        asset_id="nonzero_reset_fixture",
+        task_kind="articulated_interaction",
+        task_freeze_digest="sha256:" + "9" * 64,
+        replacement_usd_sha256=_sha256(usd),
+        replacement_usd_size_bytes=usd.stat().st_size,
+        articulation_graph=graph,
+        link_paths={"base": "/Asset/links/base", "door": "/Asset/links/door"},
+        joint_paths={"hinge": "/Asset/joints/hinge"},
+        task_scoring_frame={
+            "frame_id": "asset_root",
+            "T_asset_task_scoring": identity,
+        },
+        camera_contract_digest="sha256:" + "a" * 64,
+        cameras=[_camera()],
+        joint_state_cells=[
+            {
+                "cell_id": "reset",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": reset},
+            },
+            {
+                "cell_id": "moved",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.7},
+            },
+        ],
+    )
+
+    result = materialize_replacement_usd_depth_sweep(
+        usd_path=usd,
+        request=request,
+        output_root=tmp_path / "nonzero_reset_depth",
+    )
+
+    depth = np.load(tmp_path / "nonzero_reset_depth/replacement_depth_sweep.npy")
+    assert result["finite_depth_pixel_count_by_cell"] != [0, 0]
+    assert not np.array_equal(depth[0], depth[1])
+
+
+def test_general_depth_materializer_rejects_digest_bound_usd_size_mismatch(
+    tmp_path: Path,
+) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "primitive_graph.usda")
+    graph = _primitive_graph()
+    identity = np.eye(4).tolist()
+    request = seal_replacement_usd_depth_sweep_request(
+        asset_id="fixture_size_binding_asset",
+        task_kind="articulated_interaction",
+        task_freeze_digest="sha256:" + "1" * 64,
+        replacement_usd_sha256=_sha256(usd),
+        replacement_usd_size_bytes=usd.stat().st_size,
+        articulation_graph=graph,
+        link_paths={
+            link_id: f"/Asset/links/{link_id}"
+            for link_id in ("root", "door", "latch")
+        },
+        joint_paths={
+            joint_id: f"/Asset/joints/{joint_id}"
+            for joint_id in ("hinge", "coupler")
+        },
+        task_scoring_frame={
+            "frame_id": "asset_root",
+            "T_asset_task_scoring": identity,
+        },
+        camera_contract_digest="sha256:" + "2" * 64,
+        cameras=[_camera()],
+        joint_state_cells=[
+            {
+                "cell_id": "reset",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.0, "coupler": 0.0},
+            },
+            {
+                "cell_id": "open",
+                "T_world_task_scoring": identity,
+                "joint_positions": {"hinge": 0.7, "coupler": 0.14},
+            },
+        ],
+    )
+    request["replacement_usd_size_bytes"] += 1
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError,
+        match="replacement_depth_usd_bytes_changed",
+    ):
+        materialize_replacement_usd_depth_sweep(
+            usd_path=usd,
+            request=request,
+            output_root=tmp_path / "blocked",
+        )
 
 
 def test_source_alpha_coverage_is_conservative_and_scene_neutral() -> None:

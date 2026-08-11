@@ -478,7 +478,7 @@ def build_native_task_arena_environment(
             obj.object_cfg.init_state = obj.object_cfg.init_state.replace(
                 joint_pos=reset_positions
             )
-        if task_subject and row["object_type"] == "ARTICULATION":
+        if task_subject:
             task_object = obj
         assets.append(obj)
         scene_asset_names[runtime_name] = runtime_name
@@ -501,6 +501,8 @@ def build_native_task_arena_environment(
             not in {
                 "task_robot_contact",
                 "task_scene_contact",
+                "task_support_contact",
+                "task_scene_collision",
                 "robot_scene_contact",
             }
             or not sensor_instance_id
@@ -515,7 +517,7 @@ def build_native_task_arena_environment(
         seen_sensor_instances.add(sensor_instance_id)
         if index == 0 and task_object is None:
             raise NativeTaskArenaRuntimeError(
-                ["native_task_arena_articulated_object_missing"]
+                ["native_task_arena_task_object_missing"]
             )
         assets.append(
             ConfigAsset(
@@ -529,13 +531,15 @@ def build_native_task_arena_environment(
         contact_sensor_names_mutable.setdefault(logical_sensor_id, []).append(
             sensor_instance_id
         )
-    expected_contact_channels = {
-        "task_robot_contact",
-        "task_scene_contact",
-        "robot_scene_contact",
-    }
-    if plan["task_kind"] == "articulated_open_close" and (
-        set(contact_sensor_names_mutable) != expected_contact_channels
+    required_contact_channels = (
+        {"task_robot_contact", "task_scene_contact", "robot_scene_contact"}
+        if plan["task_kind"] == "articulated_open_close"
+        else {"task_robot_contact", "task_support_contact", "robot_scene_contact"}
+    )
+    if plan["articulation"]["contact_sensors"] and not (
+        required_contact_channels.issubset(contact_sensor_names_mutable)
+        and set(contact_sensor_names_mutable)
+        <= required_contact_channels.union({"task_scene_collision"})
     ):
         raise NativeTaskArenaRuntimeError(
             ["native_task_arena_contact_sensor_channels_incomplete"]

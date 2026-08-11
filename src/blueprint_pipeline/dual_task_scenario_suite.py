@@ -7,7 +7,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .native_task_runtime_contract import FROZEN_CANDIDATES
+from .native_task_runtime_contract import (
+    FROZEN_CANDIDATES,
+    SUPPORTED_SCENARIO_RUNTIME_TARGETS,
+)
 
 
 SCHEMA_VERSION = "third_scene_task_scenario_suite.v1"
@@ -22,6 +25,9 @@ REQUIRED_FAMILIES = frozenset(
         "held_out_composed",
     }
 )
+COUSIN_FAMILY = "admitted_object_cousin"
+COUSIN_BLOCKER = "admitted_object_cousin_identity_rights_and_bytes_unresolved"
+COUSIN_RUNTIME_TARGET = "AssetResolver.task_subject_asset_id"
 
 
 class DualTaskScenarioSuiteError(ValueError):
@@ -97,6 +103,48 @@ def validate_dual_task_scenario_suite(value: Mapping[str, Any]) -> dict[str, Any
             diagnostic.append(cell_id)
             if family == "canonical" or not cell.get("factor_records"):
                 errors.append("dual_task_scenario_diagnostic_invalid")
+        if family == COUSIN_FAMILY:
+            admission = cell.get("execution_admission")
+            if not isinstance(admission, Mapping):
+                errors.append("dual_task_scenario_cousin_admission_missing")
+            elif admission.get("status") == "blocked":
+                if (
+                    admission.get("blocker_code") != COUSIN_BLOCKER
+                    or admission.get("cousin_asset") is not None
+                    or cell.get("resolved_parameters") != {}
+                    or cell.get("factor_records") != []
+                    or cell.get("applied_parameter_readback_required") is not False
+                    or cell.get("scheduled_initially") is not False
+                    or cell.get("powered_diagnostic") is not False
+                ):
+                    errors.append("dual_task_scenario_cousin_blocker_invalid")
+            elif admission.get("status") == "admitted":
+                asset = admission.get("cousin_asset")
+                factor_records = cell.get("factor_records")
+                factor = (
+                    factor_records[0]
+                    if isinstance(factor_records, list)
+                    and len(factor_records) == 1
+                    and isinstance(factor_records[0], Mapping)
+                    else {}
+                )
+                if (
+                    not isinstance(asset, Mapping)
+                    or not str(asset.get("asset_id") or "")
+                    or not _digest(asset.get("sha256"))
+                    or isinstance(asset.get("size_bytes"), bool)
+                    or not isinstance(asset.get("size_bytes"), int)
+                    or asset.get("size_bytes", 0) <= 0
+                    or not _digest(asset.get("rights_receipt_digest"))
+                    or not factor
+                    or factor.get("runtime_target") != COUSIN_RUNTIME_TARGET
+                    or COUSIN_RUNTIME_TARGET not in SUPPORTED_SCENARIO_RUNTIME_TARGETS
+                ):
+                    errors.append("dual_task_scenario_cousin_asset_invalid")
+            else:
+                errors.append("dual_task_scenario_cousin_admission_invalid")
+        elif "execution_admission" in cell:
+            errors.append("dual_task_scenario_admission_unexpected")
         if cell.get("scheduled_initially") is True and not (
             family == "canonical" or cell.get("powered_diagnostic") is True
         ):
@@ -119,6 +167,9 @@ def validate_dual_task_scenario_suite(value: Mapping[str, Any]) -> dict[str, Any
 
 
 __all__ = [
+    "COUSIN_BLOCKER",
+    "COUSIN_FAMILY",
+    "COUSIN_RUNTIME_TARGET",
     "DualTaskScenarioSuiteError",
     "REQUIRED_FAMILIES",
     "SCHEMA_VERSION",

@@ -676,6 +676,10 @@ def materialize_native_task_runtime_contract(
                 twin_position_world_m=(
                     by_asset_role["task_object"].get("pose_world") or {}
                 ).get("position_world_m"),
+                twin_object_type=(
+                    str(by_asset_role["task_object"].get("object_type") or "")
+                    or None
+                ),
             )
         except ValueError as exc:
             errors.append(f"native_task_runtime_composition_invalid:{exc}")

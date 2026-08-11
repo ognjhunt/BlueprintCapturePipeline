@@ -240,6 +240,27 @@ def _load_and_verify_manifest(runtime: Path) -> dict[str, Any]:
     return manifest
 
 
+def _verified_construction_phase_plan_path(
+    runtime: Path, manifest: Mapping[str, Any]
+) -> Path:
+    rows = manifest.get("bound_runtime_inputs")
+    if not isinstance(rows, list) or len(rows) != 1:
+        raise RuntimeError("native_task_construction_runtime_inputs_invalid")
+    row = rows[0]
+    if not isinstance(row, Mapping):
+        raise RuntimeError("native_task_construction_runtime_inputs_invalid")
+    relative = str(row.get("relative_path") or "")
+    path = runtime / relative
+    if (
+        relative != "runtime_inputs/native_task_construction_phase_plan.v1.json"
+        or not path.is_file()
+        or path.stat().st_size != row.get("size_bytes")
+        or _sha256(path) != row.get("sha256")
+    ):
+        raise RuntimeError("native_task_construction_phase_plan_identity_mismatch")
+    return path
+
+
 def _finger_separation(robot: Any, *, torch: Any) -> float:
     names = list(robot.data.body_names)
     indices = [names.index(name) for name in ("left_inner_finger", "right_inner_finger")]
@@ -252,6 +273,41 @@ def _requested_arm_reset(
 ) -> list[float]:
     resets = plan["robot"]["joint_reset_positions_rad"]
     return [float(resets[name]) for name in servo_binding["arm_joint_names"]]
+
+
+def _task_joint_reset_passed(
+    *, absolute_errors_rad: Mapping[str, float], task_spec: Mapping[str, Any]
+) -> bool:
+    """Apply a joint tolerance only when the task scorer declares joint resets."""
+
+    if not absolute_errors_rad:
+        return True
+    try:
+        tolerance = float(task_spec["reset_tolerance_rad"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("native_task_joint_reset_tolerance_missing") from exc
+    if not math.isfinite(tolerance) or tolerance < 0.0:
+        raise RuntimeError("native_task_joint_reset_tolerance_invalid")
+    return max(float(value) for value in absolute_errors_rad.values()) <= tolerance
+
+
+def _initial_contact_blocked(
+    *, task_kind: str, sample: Mapping[str, Any], collision_threshold_n: float
+) -> bool:
+    channels = [
+        float(sample["task_robot_contact_peak_force_n"]),
+        float(sample["robot_scene_contact_peak_force_n"]),
+    ]
+    channels.append(
+        float(
+            sample[
+                "task_scene_contact_peak_force_n"
+                if task_kind == "articulated_open_close"
+                else "task_scene_collision_peak_force_n"
+            ]
+        )
+    )
+    return max(channels) >= float(collision_threshold_n)
 
 
 def _gripper_convention_probe(*, env: Any, robot: Any, seed: int, torch: Any) -> dict[str, Any]:
@@ -393,6 +449,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["packet_receipt_digest"] = receipt["receipt_digest"]
         result["scene_plan_digest"] = plan["plan_digest"]
         result["scenario"] = plan["scenario"]
+        from blueprint_pipeline.native_task_construction_plan import (
+            evaluate_rigid_construction_gates,
+            materialize_native_task_construction_phase_plan,
+        )
+
+        frozen_phase_path = _verified_construction_phase_plan_path(runtime, manifest)
+        frozen_phase_plan = json.loads(
+            frozen_phase_path.read_text(encoding="utf-8")
+        )
+        recomputed_phase_plan = materialize_native_task_construction_phase_plan(plan)
+        if frozen_phase_plan != recomputed_phase_plan:
+            raise RuntimeError("native_task_construction_phase_plan_binding_mismatch")
+        phase_plan = frozen_phase_plan
+        result["construction_phase_plan"] = phase_plan
         result["phase_reached"] = "packet_verified"
         _announce("packet_verification", "completed")
 
@@ -419,14 +489,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         import torch
 
-        from blueprint_pipeline.native_articulated_construction_plan import (
-            materialize_articulated_construction_phase_plan,
-        )
         from blueprint_pipeline.native_franka_pose_servo import (
             NativeFrankaDifferentialIkServo,
         )
         from blueprint_pipeline.native_task_arena_readback import (
             NativeArticulatedTaskArenaReadback,
+            NativeRigidTaskArenaReadback,
             read_native_task_arena_object_reset_state,
             read_native_task_arena_scenario_parameters,
         )
@@ -470,7 +538,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         scene = env.unwrapped.scene
         robot = scene["robot"]
         task_object = scene[built.scene_asset_names["task_object"]]
-        readback = NativeArticulatedTaskArenaReadback(built)
+        task_kind = str(plan["task_kind"])
+        readback = (
+            NativeArticulatedTaskArenaReadback(built)
+            if task_kind == "articulated_open_close"
+            else NativeRigidTaskArenaReadback(built)
+        )
         result["native_isaac_executed"] = True
         result["phase_reached"] = "environment_built"
         _announce("environment_build", "completed")
@@ -487,22 +560,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             "robot_joint_names": list(robot.joint_names),
             "robot_joint_positions_rad": _jsonable(robot.data.joint_pos)[0],
             "robot_body_names": list(robot.data.body_names),
-            "task_joint_names": list(task_object.joint_names),
+            "task_joint_names": list(getattr(task_object, "joint_names", ()) or ()),
             "task_sample": initial_sample,
             "scene_asset_names": dict(built.scene_asset_names),
             "contact_sensor_names": dict(built.contact_sensor_names),
             "camera_scene_names": dict(built.camera_scene_names),
         }
-        initial_native = initial_sample["native_readback"]
+        initial_native = initial_sample.get("native_readback") or initial_sample
         collision_threshold = float(
-            plan["articulation"]["state_thresholds"][
-                "collision_failure_minimum_force_n"
-            ]
+            (
+                plan["articulation"]["state_thresholds"]
+                if task_kind == "articulated_open_close"
+                else phase_plan["thresholds"]
+            )["collision_failure_minimum_force_n"]
         )
-        if (
-            initial_native["task_robot_contact_peak_force_n"] >= collision_threshold
-            or initial_native["task_scene_contact_peak_force_n"] >= collision_threshold
-            or initial_native["robot_scene_contact_peak_force_n"] >= collision_threshold
+        if _initial_contact_blocked(
+            task_kind=task_kind,
+            sample=initial_native,
+            collision_threshold_n=collision_threshold,
         ):
             result["blockers"].append("native_task_initial_penetration_or_contact")
 
@@ -521,10 +596,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
         result["franka_pose_binding"] = servo.binding
         reset_body_pose = servo.current_body_pose_world()
-        phase_plan = materialize_articulated_construction_phase_plan(
-            plan, clearance_m=0.025, waypoint_count=8
-        )
-        result["construction_phase_plan"] = phase_plan
         snapshots = []
         for _ in range(8):
             current = servo.read_arm_joint_positions()
@@ -547,17 +618,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         phase_results = []
         total_steps = 0
         max_total_steps = int(plan["cadence"]["maximum_action_steps"])
+        execution_parameters = phase_plan["execution_parameters"]
+        arrival_tolerance = float(execution_parameters["arrival_tolerance_m"])
+        stable_samples = int(execution_parameters["stable_samples"])
+        maximum_steps_per_phase = int(
+            execution_parameters["maximum_steps_per_phase"]
+        )
         for phase in phase_plan["phases"]:
             _announce(f"phase_{phase['phase_id']}")
             servo.reset_command_state()
             stable = 0
             diagnostics = []
             start_position = servo.current_grasp_frame_position_world()
-            while total_steps < max_total_steps and len(diagnostics) < 35:
+            gripper_command = float(
+                gripper[
+                    "closed_command"
+                    if phase.get("gripper_state") == "closed"
+                    else "open_command"
+                ]
+            )
+            task_samples = []
+            while (
+                total_steps < max_total_steps
+                and len(diagnostics) < maximum_steps_per_phase
+            ):
                 action, diagnostic = servo.action_for_grasp_target(
                     target_position_world_m=phase["position_world_m"],
-                    target_body_quaternion_world_xyzw=reset_body_pose[3:7],
-                    gripper_command=float(gripper["open_command"]),
+                    target_body_quaternion_world_xyzw=phase.get(
+                        "orientation_world_xyzw", reset_body_pose[3:7]
+                    ),
+                    gripper_command=gripper_command,
                 )
                 env.step(
                     torch.tensor(
@@ -569,11 +659,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 total_steps += 1
                 achieved = servo.current_grasp_frame_position_world()
                 error = math.dist(achieved, phase["position_world_m"])
-                stable = stable + 1 if error <= 0.02 else 0
+                stable = stable + 1 if error <= arrival_tolerance else 0
                 diagnostic["step_index"] = total_steps
                 diagnostic["position_error_m"] = error
                 diagnostics.append(diagnostic)
-                if stable >= 2:
+                if task_kind == "rigid_pick_place":
+                    task_samples.append(readback.read_task_sample())
+                required_stable = (
+                    int(phase_plan["settle_window_samples"])
+                    if phase.get("phase_id") == "settle_observe"
+                    else stable_samples
+                )
+                if stable >= required_stable:
                     break
             terminal = servo.current_grasp_frame_position_world()
             terminal_error = math.dist(terminal, phase["position_world_m"])
@@ -584,11 +681,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "start_position_world_m": start_position,
                 "terminal_position_world_m": terminal,
                 "terminal_position_error_m": terminal_error,
-                "arrival_tolerance_m": 0.02,
-                "target_reached": terminal_error <= 0.02 and stable >= 2,
+                "arrival_tolerance_m": arrival_tolerance,
+                "target_reached": (
+                    terminal_error <= arrival_tolerance and stable >= required_stable
+                ),
+                "gripper_state": phase.get("gripper_state", "open"),
+                "gripper_command": gripper_command,
+                "gate_ids": list(phase.get("gate_ids") or []),
                 "steps": len(diagnostics),
                 "diagnostics": diagnostics[:4] + diagnostics[-2:],
                 "task_sample": sample,
+                "task_samples": task_samples,
             }
             phase_results.append(row)
             snapshots.append(
@@ -648,20 +751,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             abs(actual - expected)
             for actual, expected in zip(reset_arm, requested_reset, strict=True)
         ]
+        task_joint_resets = dict(
+            plan["task_spec"].get("joint_reset_positions_rad", {})
+        )
         task_reset_errors = {
             joint_id: abs(
                 float(reset_sample["joint_positions_rad"][joint_id])
                 - float(expected)
             )
-            for joint_id, expected in plan["task_spec"][
-                "joint_reset_positions_rad"
-            ].items()
+            for joint_id, expected in task_joint_resets.items()
         }
         object_reset_readback = read_native_task_arena_object_reset_state(built)
+        task_joint_reset_passed = _task_joint_reset_passed(
+            absolute_errors_rad=task_reset_errors,
+            task_spec=plan["task_spec"],
+        )
         reset_passed = (
             max(reset_errors, default=0.0) <= 1.0e-4
-            and max(task_reset_errors.values(), default=0.0)
-            <= float(plan["task_spec"]["reset_tolerance_rad"])
+            and task_joint_reset_passed
             and object_reset_readback["passed"]
         )
         result["reset_replay"] = {
@@ -677,6 +784,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["blockers"].append(
                 "native_task_object_reset_replay_mismatch"
             )
+        if task_kind == "rigid_pick_place":
+            rigid_gates = evaluate_rigid_construction_gates(
+                phase_plan=phase_plan,
+                phase_results=phase_results,
+                reset_replay=result["reset_replay"],
+            )
+            result["rigid_construction_gates"] = rigid_gates
+            result["blockers"].extend(rigid_gates["blockers"])
         _announce("reset_replay", "completed" if reset_passed else "blocked")
 
         result["blockers"] = sorted(set(result["blockers"]))

@@ -100,6 +100,42 @@ def _quaternion_rotate_xyzw(
     ]
 
 
+def _quaternion_product_xyzw(
+    a: Sequence[float], b: Sequence[float]
+) -> list[float]:
+    ax, ay, az, aw = (float(item) for item in a)
+    bx, by, bz, bw = (float(item) for item in b)
+    result = [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+    norm = math.sqrt(sum(item * item for item in result))
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_quaternion_invalid"]
+        )
+    return [item / norm for item in result]
+
+
+def _compose_pose_xyzw(
+    parent_pose: Sequence[float], child_pose: Sequence[float]
+) -> list[float]:
+    if len(parent_pose) != 7 or len(child_pose) != 7:
+        raise NativeTaskArenaReadbackError(
+            ["native_task_arena_scoring_frame_transform_invalid"]
+        )
+    offset = _quaternion_rotate_xyzw(parent_pose[3:], child_pose[:3])
+    return [
+        *[
+            float(parent_pose[index]) + offset[index]
+            for index in range(3)
+        ],
+        *_quaternion_product_xyzw(parent_pose[3:], child_pose[3:]),
+    ]
+
+
 def _body_position(
     asset: Any, *, body_name: str, error: str
 ) -> tuple[list[float], list[float]]:
@@ -170,12 +206,16 @@ def read_native_task_arena_object_reset_state(
         raise NativeTaskArenaReadbackError(
             ["native_task_arena_scene_readback_missing"]
         )
+    state_binding = built.plan.get("task_state_binding") or {}
+    task_spec = built.plan.get("task_spec") or {}
     try:
         translation_tolerance = float(
-            built.plan["task_state_binding"]["root_translation_tolerance_m"]
+            state_binding.get("root_translation_tolerance_m")
+            or task_spec["reset_translation_tolerance_m"]
         )
         orientation_tolerance = float(
-            built.plan["task_state_binding"]["root_orientation_tolerance_rad"]
+            state_binding.get("root_orientation_tolerance_rad")
+            or task_spec["reset_orientation_tolerance_rad"]
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise NativeTaskArenaReadbackError(
@@ -500,8 +540,146 @@ class NativeArticulatedTaskArenaReadback:
         )
 
 
+class NativeRigidTaskArenaReadback:
+    """Read rigid root pose and exact contact channels from one Arena build."""
+
+    def __init__(self, built: NativeTaskArenaEnvironment):
+        self._built = built
+        if built.plan.get("task_kind") != "rigid_pick_place":
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_readback_task_kind_invalid"]
+            )
+
+    def read_task_sample(self) -> dict[str, Any]:
+        env = getattr(self._built.env, "unwrapped", self._built.env)
+        scene = getattr(env, "scene", None)
+        if scene is None:
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_scene_readback_missing"]
+            )
+        try:
+            task_object = scene[self._built.scene_asset_names["task_object"]]
+            robot = scene["robot"]
+        except (KeyError, TypeError) as exc:
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_scene_readback_missing"]
+            ) from exc
+        native_pose = _first_environment(
+            getattr(getattr(task_object, "data", None), "root_pose_w", None),
+            error="native_task_arena_task_root_pose_missing",
+        )
+        if len(native_pose) < 7:
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_task_root_pose_missing"]
+            )
+        contact_peaks: dict[str, float] = {}
+        for logical_sensor_id in (
+            "task_robot_contact",
+            "task_support_contact",
+            "task_scene_collision",
+            "robot_scene_contact",
+        ):
+            scene_names = self._built.contact_sensor_names.get(logical_sensor_id)
+            if (
+                logical_sensor_id == "task_scene_collision"
+                and not scene_names
+                and not self._built.plan["articulation"].get(
+                    "non_support_scene_contact_body_paths"
+                )
+            ):
+                contact_peaks[logical_sensor_id] = 0.0
+                continue
+            if isinstance(scene_names, str) or not scene_names:
+                raise NativeTaskArenaReadbackError(
+                    [f"native_task_arena_contact_sensor_missing:{logical_sensor_id}"]
+                )
+            vectors: list[list[float]] = []
+            for scene_name in scene_names:
+                try:
+                    sensor = scene[scene_name]
+                except (KeyError, TypeError) as exc:
+                    raise NativeTaskArenaReadbackError(
+                        [
+                            "native_task_arena_contact_sensor_missing:"
+                            f"{logical_sensor_id}:{scene_name}"
+                        ]
+                    ) from exc
+                vectors.extend(
+                    _force_vectors(
+                        getattr(getattr(sensor, "data", None), "force_matrix_w", None),
+                        sensor_id=f"{logical_sensor_id}:{scene_name}",
+                    )
+                )
+            contact_peaks[logical_sensor_id] = max(
+                math.sqrt(sum(component * component for component in vector))
+                for vector in vectors
+            )
+        grasp_frame = self._built.plan["robot"]["grasp_frame"]
+        finger_positions = [
+            _body_position(
+                robot,
+                body_name=body_name,
+                error="native_task_arena_grasp_body_missing",
+            )[0]
+            for body_name in grasp_frame.get("body_names") or []
+        ]
+        if len(finger_positions) != 2:
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_grasp_frame_invalid"]
+            )
+        asset_root_pose = [
+                *[float(value) for value in native_pose[:3]],
+                *_native_wxyz_to_xyzw(native_pose[3:7]),
+            ]
+        affordance = (self._built.plan.get("task_spec") or {}).get(
+            "interaction_affordance"
+        )
+        transform = (
+            affordance.get("asset_root_from_scoring_frame")
+            if isinstance(affordance, dict)
+            else None
+        )
+        if not isinstance(transform, dict):
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_scoring_frame_transform_missing"]
+            )
+        scoring_pose = _compose_pose_xyzw(
+            asset_root_pose,
+            [
+                *[float(value) for value in transform.get("position_m") or []],
+                *[
+                    float(value)
+                    for value in transform.get("orientation_xyzw") or []
+                ],
+            ],
+        )
+        return {
+            "asset_root_pose_world": asset_root_pose,
+            "task_scoring_pose_world": scoring_pose,
+            # The shared rigid scorer consumes this compatibility key.  It is
+            # populated only after the explicit asset-root -> scoring-frame
+            # transform above succeeds.
+            "task_object_pose_world": scoring_pose,
+            "grasp_frame_position_world_m": [
+                (finger_positions[0][axis] + finger_positions[1][axis]) / 2.0
+                for axis in range(3)
+            ],
+            "finger_separation_m": math.dist(finger_positions[0], finger_positions[1]),
+            "task_robot_contact_peak_force_n": contact_peaks["task_robot_contact"],
+            "task_support_contact_peak_force_n": contact_peaks[
+                "task_support_contact"
+            ],
+            "task_scene_collision_peak_force_n": contact_peaks[
+                "task_scene_collision"
+            ],
+            "robot_scene_contact_peak_force_n": contact_peaks["robot_scene_contact"],
+            "measurement_authority": "native_rigid_root_pose_and_filtered_contact_sensors",
+        }
+
+
 __all__ = [
     "NativeArticulatedTaskArenaReadback",
+    "NativeRigidTaskArenaReadback",
     "NativeTaskArenaReadbackError",
     "read_native_task_arena_object_reset_state",
     "read_native_task_arena_scenario_parameters",

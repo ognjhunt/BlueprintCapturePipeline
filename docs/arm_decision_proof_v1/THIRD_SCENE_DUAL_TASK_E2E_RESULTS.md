@@ -19,7 +19,8 @@ learned policies were therefore not admitted. This is not a policy result.
   `3537430662cb5914977b04ebeb6164aa077cba3e`. Latest preceding provider-runtime
   implementation commit: `dd893aaed0adb3ecc5c58e558a7cf639fca09a7c`.
   Latest reusable construction-gate hardening commit:
-  `84268ee16881673aed5de44f79b285538e9381e1`.
+  `84268ee16881673aed5de44f79b285538e9381e1`. Latest static asset/evidence-index
+  follow-up commit: `09b4c1c739322e49c61f9a50115ad66f9ebb8fce`.
   Both are pushed on `codex/adp-third-scene-dual-task-20260810`.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
@@ -102,7 +103,7 @@ an evaluation-authorized renderer qualification.
 | Source instance | `165` | `385` |
 | Collider subtree | `/Root/ZFAVSKZVAJTGUPTUKM888888` | `/Root/ZFUHSLMTQ3RUOPTUKM888888` |
 | Task-freeze digest | `sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152` | `sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6` |
-| Scenario-suite digest | `sha256:3dc59d61a659131921e6e279315d36765348eceb2a70d87d4c0733572124035a` | `sha256:b9e79b2bc3ddb9a24b066567ae4404f7289a707f27032424971624adecba86e4` |
+| Scenario-suite digest | `sha256:2d173dc264a57a8db72a3216017112d1c5cfa0f29e2c535ffcf901918fb155ce` | `sha256:e80d2d16ca7c7aaf7cae0117cdc3cf0162e7b1506bb95e72e9bbbd1574ae85bf` |
 | Initial cells | canonical, external-camera dx | canonical, object-start y |
 
 Shared scene-freeze digest:
@@ -110,8 +111,11 @@ Shared scene-freeze digest:
 Dual-task join digest:
 `sha256:d9ab18e48c2962f0fc4ba963000cad8bb3deafbd1a250468f278c907ff6fe0bb`.
 Both suites freeze exactly `pi05_droid` and `groot_n17_droid`, all seven required
-families, identical per-candidate cells/seeds, controls-first admission, and
-native applied-parameter readback. No learned outcome influenced either freeze.
+family slots, identical per-candidate cells/seeds, controls-first admission, and
+native applied-parameter readback. Each cousin slot is unscheduled and typed
+blocked because no exact cousin asset, rights receipt, byte digest, or supported
+resolver/readback target exists; the former integer-only placeholder is not an
+executable cell. No learned outcome influenced either freeze.
 
 ## Construction and evaluation outcomes
 
@@ -260,9 +264,18 @@ forks:
 - `84268ee1`: single-use paid-attempt lineage, atomic authority consumption,
   static graph-asset qualification, authored transform/drive corrections, and
   digest-verified evidence refresh foundations.
-- Current follow-up: complete collision-pair normalization and opt-in atomic
-  refresh of an already-valid portable evidence index. Both are scene-neutral;
-  task-specific values remain in checked-in manifests.
+- Current follow-up: scene-neutral replacement-depth v2 contracts now bind the
+  complete joint-state or rigid-pose range, render-authorized USD purpose,
+  calibrated SE(3) cameras, explicit scoring-frame transforms, primitive
+  geometry, and reset-aware OpenUSD joint frames while retaining the 840796 v1
+  adapter. A shared construction dispatcher now separates articulated and
+  rigid phase/gate contracts, preserves locked articulations, binds exact
+  contact/support bodies, and verifies scoring-frame readback. A shared control
+  dispatcher admits rigid tasks only from a qualified construction receipt and
+  replays the same action, reset, camera, readback, and deterministic-scoring
+  seams used by later policies. No 840920 depth, construction, or control
+  qualification is claimed because its evaluation cameras, source removals,
+  native asset imports, and construction packets remain unavailable.
 
 Hermetic regressions preserve the 840313 rigid fixture, 840796 articulated
 fixture, and dual-task shared-asset fixture. Scene-specific values remain in
@@ -314,16 +327,21 @@ rights-bounded dataset-derived bytes.
 Before the final reusable-code commit:
 
 - `PYTHONPATH="$PWD/src" .venv/bin/pytest tests/ -q -k "adp009d or droid or episode or nurec or aura"`
-  — `1138 passed, 9819 deselected` before this evidence-refresh commit.
+  — `1151 passed, 9851 deselected`.
 - `.venv/bin/ruff check src/ tests/` — passed.
 - Focused Gaussian-excision, watchdog, allocator, and closure regressions —
   `103 passed`.
+- Focused depth, scenario, construction, readback, control, and scoring
+  regressions for the current follow-up — `157 passed` across the focused run
+  and one isolated rerun. The aggregate invocation's only failure was host
+  `ENOSPC` while Git wrote a temporary fixture index; the exact affected test
+  passed when rerun after deleting this lane's disposable pytest directory.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring; complete collision-pair normalization; static authored-structure qualification; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; generic rigid scoring/state; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring; complete collision-pair normalization; static authored-structure qualification; multi-replacement shared scenes; per-object resets; independent collider deletion and file-backed construction bindings; registered variable-camera excision evidence; authorized-render receipts; typed scenario application/readback; exact cousin admission or typed abstention; graph/rigid replacement-depth contracts; task-neutral articulated/rigid construction and controls dispatch; generic rigid scoring/state with round-off-safe exact-boundary predicates; task-neutral native policy lane; single-use paid-attempt authority; provider/OpenCV camera normalization; offline provider dependency closure; concurrent-lane exact-ID teardown; atomically refreshable portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Two exact Gaussian removals, replacement depth/appearance/native import qualifications, occlusion/inpainting decisions, native placement/camera/control gates, and both candidate matrices. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |
@@ -332,7 +350,8 @@ Before the final reusable-code commit:
 
 Independent metric/handedness qualification, Gaussian ownership/removal,
 replacement depth coverage, native reach/contact, asset dynamics/appearance,
-and all episode evidence remain unknown.
+the Task A graph-articulation interaction-affordance/control compiler, and all
+episode evidence remain unknown.
 
 **Single next action:** grant fresh explicit one-attempt, zero-retry authority for
 the two independently sealed repaired contribution bundles. If either attempt

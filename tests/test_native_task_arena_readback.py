@@ -6,6 +6,7 @@ import pytest
 
 from blueprint_pipeline.native_task_arena_readback import (
     NativeArticulatedTaskArenaReadback,
+    NativeRigidTaskArenaReadback,
     NativeTaskArenaReadbackError,
     read_native_task_arena_object_reset_state,
     read_native_task_arena_scenario_parameters,
@@ -177,6 +178,56 @@ def test_multiple_native_sensor_instances_aggregate_into_one_logical_channel() -
     assert sample["robot_collision_failure"] is True
     assert sample["native_readback"]["robot_scene_contact_peak_force_n"] == (
         pytest.approx(2.0)
+    )
+
+
+def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
+    built = _built()
+    built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_spec"] = {
+        "task_kind": "rigid_pick_place",
+        "interaction_affordance": {
+            "asset_root_from_scoring_frame": {
+                "position_m": [0.1, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+        },
+    }
+    built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
+    built.contact_sensor_names["task_support_contact"] = (
+        "task_scene_contact",
+    )
+    del built.contact_sensor_names["task_scene_contact"]
+
+    sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+
+    assert sample["asset_root_pose_world"] == pytest.approx(
+        [1.9742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0]
+    )
+    assert sample["task_scoring_pose_world"] == pytest.approx(
+        [2.0742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0]
+    )
+    assert sample["task_object_pose_world"] == sample["task_scoring_pose_world"]
+    assert sample["measurement_authority"] == (
+        "native_rigid_root_pose_and_filtered_contact_sensors"
+    )
+
+
+def test_rigid_readback_never_invents_missing_scoring_frame() -> None:
+    built = _built()
+    built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_spec"] = {"task_kind": "rigid_pick_place"}
+    built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
+    built.contact_sensor_names["task_support_contact"] = (
+        "task_scene_contact",
+    )
+    del built.contact_sensor_names["task_scene_contact"]
+
+    with pytest.raises(NativeTaskArenaReadbackError) as excinfo:
+        NativeRigidTaskArenaReadback(built).read_task_sample()
+
+    assert excinfo.value.errors == (
+        "native_task_arena_scoring_frame_transform_missing",
     )
 
 
