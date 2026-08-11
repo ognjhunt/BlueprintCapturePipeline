@@ -20,6 +20,43 @@ from blueprint_pipeline.replacement_construction_bindings import (
 )
 
 
+def _sha(character: str) -> str:
+    return "sha256:" + character * 64
+
+
+def _evidence_record(name: str, digest: str) -> dict:
+    return {
+        "path": f"/fixture/{name}.json",
+        "size_bytes": 1,
+        "sha256": _sha("f"),
+        "schema_version": f"{name}.v1",
+        "canonical_digest": digest,
+    }
+
+
+def _construction_row_with_evidence(row: dict) -> dict:
+    row = json.loads(json.dumps(row))
+    row["evidence_receipts"] = {
+        "task_freeze": _evidence_record("task_freeze", row["task_freeze_digest"]),
+        "mask_set": _evidence_record("mask_set", row["mask_set_receipt_digest"]),
+        "gaussian_removal": _evidence_record(
+            "gaussian_removal", row["source_removal_receipt_digest"]
+        ),
+        "source_collider_deletion": {
+            "selected_deletion_id": row["collider_deletion_id"],
+            "independent": _evidence_record(
+                "source_collider_deletion",
+                row["collider_deletion_receipt_digest"],
+            ),
+        },
+        "replacement_qualification": _evidence_record(
+            "replacement_qualification",
+            row["replacement_qualification_receipt_digest"],
+        ),
+    }
+    return row
+
+
 def _pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
     return {
         "position_world_m": [x, y, z],
@@ -353,7 +390,8 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
         scene_freeze_digest="sha256:" + "3" * 64,
         task_freeze_join_digest="sha256:" + "4" * 64,
         bindings=[
-            {
+            _construction_row_with_evidence(
+                {
                 "task_id": "articulated_fixture",
                 "asset_id": "articulated_a",
                 "task_freeze_digest": articulated_freeze_digest,
@@ -371,8 +409,10 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
                 "replacement_qualification_receipt_digest": "sha256:" + "8" * 64,
                 "replacement_asset_sha256": task_asset["source"]["sha256"],
                 "replacement_simulator_import_qualified": True,
-            },
-            {
+                }
+            ),
+            _construction_row_with_evidence(
+                {
                 "task_id": "rigid_task_b",
                 "asset_id": "rigid_b",
                 "task_freeze_digest": rigid_freeze_digest,
@@ -392,7 +432,8 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
                     "source"
                 ]["sha256"],
                 "replacement_simulator_import_qualified": True,
-            },
+                }
+            ),
         ],
     )
     articulated_request["construction_bindings"] = shared_construction

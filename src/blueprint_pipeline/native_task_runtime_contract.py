@@ -118,6 +118,72 @@ def _pose(value: Any, *, error: str, errors: list[str]) -> dict[str, Any]:
     }
 
 
+def _evidence_file_record_valid(record: Any, *, expected_digest: str) -> bool:
+    return (
+        isinstance(record, Mapping)
+        and isinstance(record.get("path"), str)
+        and bool(str(record.get("path") or "").strip())
+        and isinstance(record.get("size_bytes"), int)
+        and not isinstance(record.get("size_bytes"), bool)
+        and int(record.get("size_bytes")) > 0
+        and _digest(record.get("sha256"))
+        and record.get("canonical_digest") == expected_digest
+        and isinstance(record.get("schema_version"), str)
+        and bool(str(record.get("schema_version") or "").strip())
+    )
+
+
+def _replacement_construction_evidence_bound(
+    *,
+    binding_rows: Sequence[Mapping[str, Any]],
+    errors: list[str],
+) -> None:
+    """Require file-backed evidence receipts before native construction launch."""
+
+    required_receipts = {
+        "task_freeze": "task_freeze_digest",
+        "mask_set": "mask_set_receipt_digest",
+        "gaussian_removal": "source_removal_receipt_digest",
+        "replacement_qualification": "replacement_qualification_receipt_digest",
+    }
+    for index, row in enumerate(binding_rows):
+        evidence = row.get("evidence_receipts")
+        if not isinstance(evidence, Mapping):
+            errors.append(
+                f"native_task_runtime_construction_evidence_receipts_missing:{index}"
+            )
+            continue
+        for receipt_id, digest_field in required_receipts.items():
+            if not _evidence_file_record_valid(
+                evidence.get(receipt_id),
+                expected_digest=str(row.get(digest_field) or ""),
+            ):
+                errors.append(
+                    "native_task_runtime_construction_evidence_receipt_invalid:"
+                    f"{index}:{receipt_id}"
+                )
+        collider = evidence.get("source_collider_deletion")
+        independent = (
+            collider.get("independent") if isinstance(collider, Mapping) else None
+        )
+        if not _evidence_file_record_valid(
+            independent,
+            expected_digest=str(row.get("collider_deletion_receipt_digest") or ""),
+        ):
+            errors.append(
+                "native_task_runtime_construction_evidence_receipt_invalid:"
+                f"{index}:source_collider_deletion"
+            )
+        if (
+            isinstance(collider, Mapping)
+            and collider.get("selected_deletion_id") != row.get("collider_deletion_id")
+        ):
+            errors.append(
+                "native_task_runtime_construction_collider_evidence_mismatch:"
+                f"{index}"
+            )
+
+
 def _asset_rows(
     assets: Sequence[Mapping[str, Any]],
     *,
@@ -715,6 +781,10 @@ def materialize_native_task_runtime_contract(
             errors.append("native_task_runtime_task_freeze_digest_invalid")
         if qualified_construction is not None:
             binding_rows = qualified_construction["bindings"]
+            _replacement_construction_evidence_bound(
+                binding_rows=binding_rows,
+                errors=errors,
+            )
             expected_asset_ids = {row["asset_id"] for row in replacement_rows}
             observed_asset_ids = {row["asset_id"] for row in binding_rows}
             if expected_asset_ids != observed_asset_ids:

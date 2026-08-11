@@ -22,6 +22,39 @@ def _sha(character: str) -> str:
     return "sha256:" + character * 64
 
 
+def _evidence_record(name: str, digest: str) -> dict:
+    return {
+        "path": f"/fixture/{name}.json",
+        "size_bytes": 1,
+        "sha256": _sha("a"),
+        "schema_version": f"{name}.v1",
+        "canonical_digest": digest,
+    }
+
+
+def _construction_row_with_evidence(row: dict) -> dict:
+    row = json.loads(json.dumps(row))
+    row["evidence_receipts"] = {
+        "task_freeze": _evidence_record("task_freeze", row["task_freeze_digest"]),
+        "mask_set": _evidence_record("mask_set", row["mask_set_receipt_digest"]),
+        "gaussian_removal": _evidence_record(
+            "gaussian_removal", row["source_removal_receipt_digest"]
+        ),
+        "source_collider_deletion": {
+            "selected_deletion_id": row["collider_deletion_id"],
+            "independent": _evidence_record(
+                "source_collider_deletion",
+                row["collider_deletion_receipt_digest"],
+            ),
+        },
+        "replacement_qualification": _evidence_record(
+            "replacement_qualification",
+            row["replacement_qualification_receipt_digest"],
+        ),
+    }
+    return row
+
+
 def _pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
     return {
         "position_world_m": [x, y, z],
@@ -282,49 +315,50 @@ def _dual_replacement_assets() -> list[dict]:
 
 
 def _construction_bindings() -> dict:
+    rows = [
+        {
+            "task_id": "840796_refrigerator_upper_door_open_v1",
+            "asset_id": "articulated_a",
+            "task_freeze_digest": _sha("3"),
+            "source_object_instance_id": "source_a",
+            "removal_id": "removal_a",
+            "mask_set_id": "masks_a",
+            "mask_set_receipt_digest": _sha("4"),
+            "source_removal_receipt_digest": _sha("5"),
+            "source_removal_qualified": True,
+            "collider_deletion_id": "collider_delete_a",
+            "source_collider_prim_path": "/Root/source_a",
+            "collider_deletion_receipt_digest": _sha("6"),
+            "collider_deletion_qualified": True,
+            "replacement_qualification_id": "replacement_qualification_a",
+            "replacement_qualification_receipt_digest": _sha("7"),
+            "replacement_asset_sha256": _sha("c"),
+            "replacement_simulator_import_qualified": True,
+        },
+        {
+            "task_id": "840313_canned_beverage_pick_place_v1",
+            "asset_id": "rigid_b",
+            "task_freeze_digest": _sha("8"),
+            "source_object_instance_id": "source_b",
+            "removal_id": "removal_b",
+            "mask_set_id": "masks_b",
+            "mask_set_receipt_digest": _sha("9"),
+            "source_removal_receipt_digest": _sha("f"),
+            "source_removal_qualified": True,
+            "collider_deletion_id": "collider_delete_b",
+            "source_collider_prim_path": "/Root/source_b",
+            "collider_deletion_receipt_digest": _sha("0"),
+            "collider_deletion_qualified": True,
+            "replacement_qualification_id": "replacement_qualification_b",
+            "replacement_qualification_receipt_digest": _sha("b"),
+            "replacement_asset_sha256": _sha("e"),
+            "replacement_simulator_import_qualified": True,
+        },
+    ]
     return seal_replacement_construction_bindings(
         scene_freeze_digest=_sha("1"),
         task_freeze_join_digest=_sha("2"),
-        bindings=[
-            {
-                "task_id": "840796_refrigerator_upper_door_open_v1",
-                "asset_id": "articulated_a",
-                "task_freeze_digest": _sha("3"),
-                "source_object_instance_id": "source_a",
-                "removal_id": "removal_a",
-                "mask_set_id": "masks_a",
-                "mask_set_receipt_digest": _sha("4"),
-                "source_removal_receipt_digest": _sha("5"),
-                "source_removal_qualified": True,
-                "collider_deletion_id": "collider_delete_a",
-                "source_collider_prim_path": "/Root/source_a",
-                "collider_deletion_receipt_digest": _sha("6"),
-                "collider_deletion_qualified": True,
-                "replacement_qualification_id": "replacement_qualification_a",
-                "replacement_qualification_receipt_digest": _sha("7"),
-                "replacement_asset_sha256": _sha("c"),
-                "replacement_simulator_import_qualified": True,
-            },
-            {
-                "task_id": "840313_canned_beverage_pick_place_v1",
-                "asset_id": "rigid_b",
-                "task_freeze_digest": _sha("8"),
-                "source_object_instance_id": "source_b",
-                "removal_id": "removal_b",
-                "mask_set_id": "masks_b",
-                "mask_set_receipt_digest": _sha("9"),
-                "source_removal_receipt_digest": _sha("f"),
-                "source_removal_qualified": True,
-                "collider_deletion_id": "collider_delete_b",
-                "source_collider_prim_path": "/Root/source_b",
-                "collider_deletion_receipt_digest": _sha("0"),
-                "collider_deletion_qualified": True,
-                "replacement_qualification_id": "replacement_qualification_b",
-                "replacement_qualification_receipt_digest": _sha("b"),
-                "replacement_asset_sha256": _sha("e"),
-                "replacement_simulator_import_qualified": True,
-            },
-        ],
+        bindings=[_construction_row_with_evidence(row) for row in rows],
     )
 
 
@@ -455,26 +489,32 @@ def _five_replacement_fixture() -> dict:
             fixture["task_id"] if index == 0 else f"inactive_task_{index}"
         )
         binding_rows.append(
-            {
-                "task_id": task_id,
-                "asset_id": asset_id,
-                "task_freeze_digest": "sha256:" + f"{200 + index:064x}",
-                "source_object_instance_id": f"source_{index}",
-                "removal_id": f"removal_{index}",
-                "mask_set_id": f"masks_{index}",
-                "mask_set_receipt_digest": "sha256:" + f"{300 + index:064x}",
-                "source_removal_receipt_digest": "sha256:" + f"{400 + index:064x}",
-                "source_removal_qualified": True,
-                "collider_deletion_id": f"collider_delete_{index}",
-                "source_collider_prim_path": f"/Root/source_{index}",
-                "collider_deletion_receipt_digest": "sha256:" + f"{500 + index:064x}",
-                "collider_deletion_qualified": True,
-                "replacement_qualification_id": f"replacement_qualification_{index}",
-                "replacement_qualification_receipt_digest": "sha256:"
-                + f"{600 + index:064x}",
-                "replacement_asset_sha256": asset_sha,
-                "replacement_simulator_import_qualified": True,
-            }
+            _construction_row_with_evidence(
+                {
+                    "task_id": task_id,
+                    "asset_id": asset_id,
+                    "task_freeze_digest": "sha256:" + f"{200 + index:064x}",
+                    "source_object_instance_id": f"source_{index}",
+                    "removal_id": f"removal_{index}",
+                    "mask_set_id": f"masks_{index}",
+                    "mask_set_receipt_digest": "sha256:" + f"{300 + index:064x}",
+                    "source_removal_receipt_digest": "sha256:"
+                    + f"{400 + index:064x}",
+                    "source_removal_qualified": True,
+                    "collider_deletion_id": f"collider_delete_{index}",
+                    "source_collider_prim_path": f"/Root/source_{index}",
+                    "collider_deletion_receipt_digest": "sha256:"
+                    + f"{500 + index:064x}",
+                    "collider_deletion_qualified": True,
+                    "replacement_qualification_id": (
+                        f"replacement_qualification_{index}"
+                    ),
+                    "replacement_qualification_receipt_digest": "sha256:"
+                    + f"{600 + index:064x}",
+                    "replacement_asset_sha256": asset_sha,
+                    "replacement_simulator_import_qualified": True,
+                }
+            )
         )
     fixture["assets"] = [*scene_assets, *replacement_assets]
     fixture["task_spec"]["subject_asset_id"] = "replacement_0"
@@ -599,6 +639,30 @@ def test_dual_replacement_contract_rejects_shared_mask_or_swapped_asset() -> Non
         materialize_native_task_runtime_contract(**fixture)
     assert (
         "native_task_runtime_replacement_qualification_asset_mismatch:articulated_a"
+        in excinfo.value.errors
+    )
+
+
+def test_native_runtime_rejects_caller_authored_construction_without_evidence() -> None:
+    fixture = _five_replacement_fixture()
+    caller_rows = []
+    for row in fixture["construction_bindings"]["bindings"]:
+        caller_row = dict(row)
+        caller_row.pop("evidence_receipts", None)
+        caller_rows.append(caller_row)
+    fixture["construction_bindings"] = seal_replacement_construction_bindings(
+        scene_freeze_digest=fixture["construction_bindings"]["scene_freeze_digest"],
+        task_freeze_set_digest=fixture["construction_bindings"][
+            "task_freeze_set_digest"
+        ],
+        bindings=caller_rows,
+    )
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+
+    assert (
+        "native_task_runtime_construction_evidence_receipts_missing:0"
         in excinfo.value.errors
     )
 
