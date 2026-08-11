@@ -183,6 +183,51 @@ def test_passed_guard_with_no_blockers_stays_clean_in_snapshot(
     assert snapshot["admissible_profile_ids"] == ["interiorgs-sage-franka-001"]
 
 
+def test_supervisor_snapshot_exposes_unmatched_webapp_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile, _ = _snapshot(tmp_path)
+    run_root = tmp_path / "state" / "historical-launch"
+    receipt = {
+        "launch_id": "historical-launch",
+        "request_digest": "sha256:" + "c" * 64,
+        "status": "blocked",
+        "provider_mutation_attempted": False,
+    }
+    _write(run_root / "launch_receipt.json", receipt)
+    _write(
+        run_root / "webapp_sync_terminal_unmatched.json",
+        {
+            "status": "terminal_unmatched",
+            "webapp_record_bound": False,
+            "website_trigger_proven": False,
+            "blockers": ["webapp_launch_record_missing"],
+        },
+    )
+
+    snapshot = build_supervisor_snapshot(
+        profile_dir=tmp_path / "profiles",
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "guard.json",
+    )
+
+    assert profile["profile_id"] in snapshot["admissible_profile_ids"]
+    assert snapshot["terminal_launches"] == [{
+        "launch_id": "historical-launch",
+        "status": "blocked",
+        "request_digest": "sha256:" + "c" * 64,
+        "blockers": [],
+        "provider_mutation_attempted": False,
+        "terminal_evidence_status": None,
+        "webapp_sync_status": "terminal_unmatched",
+        "webapp_record_bound": False,
+        "website_trigger_proven": False,
+        "webapp_sync_blockers": ["webapp_launch_record_missing"],
+    }]
+
+
 def test_missing_guard_fails_closed_without_becoming_agent_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

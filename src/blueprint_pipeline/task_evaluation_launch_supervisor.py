@@ -164,18 +164,35 @@ def build_supervisor_snapshot(
             receipt = _read(path)
         except (OSError, json.JSONDecodeError):
             continue
-        terminal_rows.append(
-            {
-                "launch_id": receipt.get("launch_id"),
-                "status": receipt.get("status"),
-                "request_digest": receipt.get("request_digest"),
-                "blockers": receipt.get("blockers") or [],
-                "provider_mutation_attempted": receipt.get("provider_mutation_attempted") is True,
-                "terminal_evidence_status": (receipt.get("terminal_evidence") or {}).get("status")
-                if isinstance(receipt.get("terminal_evidence"), Mapping)
-                else None,
-            }
-        )
+        terminal_row = {
+            "launch_id": receipt.get("launch_id"),
+            "status": receipt.get("status"),
+            "request_digest": receipt.get("request_digest"),
+            "blockers": receipt.get("blockers") or [],
+            "provider_mutation_attempted": receipt.get("provider_mutation_attempted") is True,
+            "terminal_evidence_status": (receipt.get("terminal_evidence") or {}).get("status")
+            if isinstance(receipt.get("terminal_evidence"), Mapping)
+            else None,
+        }
+        terminal_unmatched_path = path.with_name("webapp_sync_terminal_unmatched.json")
+        if terminal_unmatched_path.is_file():
+            try:
+                terminal_unmatched = _read(terminal_unmatched_path)
+            except (OSError, json.JSONDecodeError):
+                terminal_row["webapp_sync_status"] = "terminal_unmatched_invalid"
+                terminal_row["webapp_sync_blockers"] = [
+                    "webapp_sync_terminal_unmatched_invalid"
+                ]
+            else:
+                terminal_row["webapp_sync_status"] = terminal_unmatched.get("status")
+                terminal_row["webapp_record_bound"] = (
+                    terminal_unmatched.get("webapp_record_bound") is True
+                )
+                terminal_row["website_trigger_proven"] = (
+                    terminal_unmatched.get("website_trigger_proven") is True
+                )
+                terminal_row["webapp_sync_blockers"] = terminal_unmatched.get("blockers") or []
+        terminal_rows.append(terminal_row)
     snapshot = {
         "schema_version": "task_evaluation_launch_supervisor_snapshot.v1",
         "profiles": profiles,

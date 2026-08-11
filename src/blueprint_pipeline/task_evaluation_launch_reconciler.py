@@ -27,6 +27,10 @@ from .task_evaluation_launch_dispatcher import (
 
 RECONCILIATION_SCHEMA_VERSION = "task_evaluation_launch_reconciliation.v1"
 ORPHAN_RECOVERY_SCHEMA_VERSION = "task_evaluation_launch_orphan_recovery.v1"
+WEBAPP_SYNC_TERMINAL_UNMATCHED_SCHEMA_VERSION = (
+    "task_evaluation_launch_webapp_sync_terminal_unmatched.v1"
+)
+WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME = "webapp_sync_terminal_unmatched.json"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -55,6 +59,15 @@ def _timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed.astimezone(timezone.utc)
+
+
+def _is_sha256_digest(value: Any) -> bool:
+    text = str(value or "")
+    return (
+        text.startswith("sha256:")
+        and len(text) == len("sha256:") + 64
+        and all(character in "0123456789abcdef" for character in text[7:])
+    )
 
 
 def _guard_provider_zero(
@@ -107,6 +120,104 @@ def _queue_destination(queue_root: Path, status: str) -> Path:
     return queue_root / (
         "completed" if status in {"completed", "dry_run_completed"} else "blocked"
     )
+
+
+def _terminal_unmatched_webapp_sync_receipt(
+    *,
+    receipt: Mapping[str, Any],
+    attempt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind an irrecoverable WebApp 404 to the exact terminal receipt.
+
+    A 404 means the WebApp has no durable, website-created launch record for
+    this identity.  It must remain visible as evidence, but retrying it cannot
+    create that missing provenance and must never become a launch retry.
+    """
+
+    unmatched = {
+        "schema_version": WEBAPP_SYNC_TERMINAL_UNMATCHED_SCHEMA_VERSION,
+        "status": "terminal_unmatched",
+        "launch_id": receipt.get("launch_id"),
+        "run_id": receipt.get("run_id"),
+        "request_digest": receipt.get("request_digest"),
+        "receipt_digest": receipt.get("receipt_digest"),
+        "sync_result_digest": attempt.get("sync_result_digest"),
+        "attempt_number": attempt.get("attempt_number"),
+        "detected_at": attempt.get("attempted_at"),
+        "reason": "http_error:404",
+        "webapp_record_bound": False,
+        "website_trigger_proven": False,
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_performed": False,
+        "blockers": ["webapp_launch_record_missing"],
+    }
+    unmatched["terminal_unmatched_digest"] = canonical_digest(
+        unmatched, digest_field="terminal_unmatched_digest"
+    )
+    return unmatched
+
+
+def _validated_terminal_unmatched_webapp_sync_row(
+    *,
+    run_root: Path,
+    receipt: Mapping[str, Any],
+    unmatched: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the retained row only when it is bound to this receipt."""
+
+    sync_result_digest = unmatched.get("sync_result_digest")
+    if (
+        unmatched.get("schema_version")
+        != WEBAPP_SYNC_TERMINAL_UNMATCHED_SCHEMA_VERSION
+        or unmatched.get("status") != "terminal_unmatched"
+        or unmatched.get("reason") != "http_error:404"
+        or unmatched.get("webapp_record_bound") is not False
+        or unmatched.get("website_trigger_proven") is not False
+        or unmatched.get("provider_mutation_performed") is not False
+        or unmatched.get("allocator_invoked") is not False
+        or unmatched.get("automatic_retry_performed") is not False
+        or unmatched.get("blockers") != ["webapp_launch_record_missing"]
+        or unmatched.get("terminal_unmatched_digest")
+        != canonical_digest(unmatched, digest_field="terminal_unmatched_digest")
+        or not _is_sha256_digest(sync_result_digest)
+        or any(
+            unmatched.get(field) != receipt.get(field)
+            for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
+        )
+        or not isinstance(unmatched.get("attempt_number"), int)
+        or isinstance(unmatched.get("attempt_number"), bool)
+        or unmatched["attempt_number"] < 1
+    ):
+        raise TaskEvaluationLaunchError("webapp_sync_terminal_unmatched_invalid")
+    attempt_path = run_root / "webapp_sync_attempts" / f"{str(sync_result_digest)[7:]}.json"
+    attempt = _read(attempt_path)
+    if (
+        attempt.get("sync_result_digest") != sync_result_digest
+        or attempt.get("sync_result_digest")
+        != canonical_digest(attempt, digest_field="sync_result_digest")
+        or attempt.get("status") != "failed"
+        or attempt.get("reason") != "http_error:404"
+        or attempt.get("attempt_number") != unmatched["attempt_number"]
+        or attempt.get("attempted_at") != unmatched.get("detected_at")
+        or _timestamp(attempt.get("attempted_at")) is None
+        or any(
+            attempt.get(field) != receipt.get(field)
+            for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
+        )
+    ):
+        raise TaskEvaluationLaunchError("webapp_sync_terminal_unmatched_attempt_invalid")
+    return {
+        "launch_id": receipt.get("launch_id"),
+        "status": "webapp_sync_terminal_unmatched",
+        "attempts": unmatched["attempt_number"],
+        "blockers": ["webapp_launch_record_missing"],
+        "webapp_record_bound": False,
+        "website_trigger_proven": False,
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_performed": False,
+    }
 
 
 def reconcile_launches(
@@ -271,6 +382,16 @@ def reconcile_launches(
             continue
         try:
             receipt = _read(receipt_path)
+            terminal_unmatched_path = run_root / WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME
+            if terminal_unmatched_path.is_file():
+                sync_rows.append(
+                    _validated_terminal_unmatched_webapp_sync_row(
+                        run_root=run_root,
+                        receipt=receipt,
+                        unmatched=_read(terminal_unmatched_path),
+                    )
+                )
+                continue
             profile = _read(run_root / "launch_profile.json")
             sync_policy = profile.get("webapp_sync")
             sync_policy = sync_policy if isinstance(sync_policy, Mapping) else {}
@@ -312,12 +433,29 @@ def reconcile_launches(
             )
             if sync_result.get("status") == "succeeded":
                 _write_immutable(run_root / "webapp_sync_succeeded.json", attempt)
-            sync_rows.append({
-                "launch_id": receipt.get("launch_id"),
-                "status": f"webapp_sync_{sync_result.get('status')}",
-                "attempts": attempt["attempt_number"],
-                "provider_mutation_performed": False,
-            })
+            if (
+                sync_result.get("status") == "failed"
+                and sync_result.get("reason") == "http_error:404"
+            ):
+                unmatched = _terminal_unmatched_webapp_sync_receipt(
+                    receipt=receipt,
+                    attempt=attempt,
+                )
+                _write_immutable(run_root / WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME, unmatched)
+                sync_rows.append(
+                    _validated_terminal_unmatched_webapp_sync_row(
+                        run_root=run_root,
+                        receipt=receipt,
+                        unmatched=unmatched,
+                    )
+                )
+            else:
+                sync_rows.append({
+                    "launch_id": receipt.get("launch_id"),
+                    "status": f"webapp_sync_{sync_result.get('status')}",
+                    "attempts": attempt["attempt_number"],
+                    "provider_mutation_performed": False,
+                })
         except (OSError, ValueError, json.JSONDecodeError, TaskEvaluationLaunchError) as exc:
             sync_rows.append({
                 "launch_id": run_root.name,

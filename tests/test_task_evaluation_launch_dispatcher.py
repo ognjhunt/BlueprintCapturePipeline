@@ -672,6 +672,136 @@ def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
     assert succeeded["provider_mutation_performed"] is False
 
 
+def test_reconciler_retains_unmatched_webapp_404_without_retrying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    run_root = tmp_path / "state" / request["launch_id"]
+    receipt = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": "dry_run_completed",
+        "launch_id": request["launch_id"],
+        "run_id": request["run_id"],
+        "request_digest": request["request_digest"],
+        "receipt_digest": "sha256:" + "f" * 64,
+        "execute_requested": False,
+        "provider_mutation_attempted": False,
+    }
+    _write(run_root / "launch_profile.json", profile)
+    _write(run_root / "launch_receipt.json", receipt)
+    sync_calls: list[dict] = []
+
+    def sync_receipt(*, receipt: dict) -> dict:
+        sync_calls.append(receipt)
+        return {
+            "schema_version": "task_evaluation_launch_webapp_sync_result.v1",
+            "status": "failed",
+            "reason": "http_error:404",
+            "launch_id": receipt["launch_id"],
+            "run_id": receipt["run_id"],
+            "request_digest": receipt["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+        }
+
+    monkeypatch.setattr(webapp_sync_module, "sync_launch_receipt_to_webapp", sync_receipt)
+
+    first = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "missing-guard.json",
+    )
+    second = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "missing-guard.json",
+    )
+
+    expected_row = {
+        "launch_id": request["launch_id"],
+        "status": "webapp_sync_terminal_unmatched",
+        "attempts": 1,
+        "blockers": ["webapp_launch_record_missing"],
+        "webapp_record_bound": False,
+        "website_trigger_proven": False,
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_performed": False,
+    }
+    assert sync_calls == [receipt]
+    assert first["status"] == "passed"
+    assert second["status"] == "passed"
+    assert first["webapp_sync"] == [expected_row]
+    assert second["webapp_sync"] == [expected_row]
+    assert first["allocator_invoked"] is False
+    assert first["automatic_retry_performed"] is False
+    unmatched = json.loads(
+        (run_root / "webapp_sync_terminal_unmatched.json").read_text()
+    )
+    assert unmatched["receipt_digest"] == receipt["receipt_digest"]
+    assert unmatched["sync_result_digest"].startswith("sha256:")
+    assert unmatched["website_trigger_proven"] is False
+    assert len(list((run_root / "webapp_sync_attempts").glob("*.json"))) == 1
+
+
+def test_reconciler_rejects_unmatched_webapp_marker_without_bound_attempt(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    run_root = tmp_path / "state" / request["launch_id"]
+    receipt = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": "dry_run_completed",
+        "launch_id": request["launch_id"],
+        "run_id": request["run_id"],
+        "request_digest": request["request_digest"],
+        "receipt_digest": "sha256:" + "d" * 64,
+        "execute_requested": False,
+        "provider_mutation_attempted": False,
+    }
+    unmatched = {
+        "schema_version": "task_evaluation_launch_webapp_sync_terminal_unmatched.v1",
+        "status": "terminal_unmatched",
+        "launch_id": receipt["launch_id"],
+        "run_id": receipt["run_id"],
+        "request_digest": receipt["request_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+        "sync_result_digest": "sha256:" + "e" * 64,
+        "attempt_number": 1,
+        "detected_at": "2026-08-11T00:00:00+00:00",
+        "reason": "http_error:404",
+        "webapp_record_bound": False,
+        "website_trigger_proven": False,
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_performed": False,
+        "blockers": ["webapp_launch_record_missing"],
+    }
+    unmatched["terminal_unmatched_digest"] = canonical_digest(
+        unmatched, digest_field="terminal_unmatched_digest"
+    )
+    _write(run_root / "launch_profile.json", profile)
+    _write(run_root / "launch_receipt.json", receipt)
+    _write(run_root / "webapp_sync_terminal_unmatched.json", unmatched)
+
+    result = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "missing-guard.json",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["webapp_sync"] == [{
+        "launch_id": request["launch_id"],
+        "status": "webapp_sync_reconciliation_blocked",
+        "blockers": ["webapp_sync_reconciliation_input_invalid"],
+        "error_type": "FileNotFoundError",
+        "provider_mutation_performed": False,
+    }]
+
+
 def test_profile_publisher_emits_webapp_descriptor_without_allocator_arguments(
     tmp_path: Path,
 ) -> None:
