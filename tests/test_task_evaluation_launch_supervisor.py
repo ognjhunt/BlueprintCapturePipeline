@@ -8,6 +8,7 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     SECRET_PROFILE_ID_ENV,
     canonical_digest,
+    public_launch_profile_descriptor,
 )
 from blueprint_pipeline.task_evaluation_launch_supervisor import (
     DEFAULT_SUPERVISOR_SNAPSHOT_MAX_BYTES,
@@ -187,6 +188,64 @@ def test_passed_guard_with_no_blockers_stays_clean_in_snapshot(
     assert snapshot["guard"]["blockers"] == []
     assert snapshot["guard"]["provider_zero_verified"] is True
     assert snapshot["admissible_profile_ids"] == ["interiorgs-sage-franka-001"]
+
+
+def test_supervisor_considers_only_profiles_in_the_published_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile, _ = _snapshot(tmp_path)
+    shadow = json.loads(json.dumps(profile))
+    shadow["profile_id"] = "interiorgs-sage-franka-unpublished"
+    shadow["profile_digest"] = canonical_digest(shadow, digest_field="profile_digest")
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{shadow['profile_id']}.json", shadow)
+    catalog_path = tmp_path / "published-catalog.json"
+    catalog_path.write_text(
+        json.dumps([public_launch_profile_descriptor(profile)], sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = build_supervisor_snapshot(
+        profile_dir=profile_dir,
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "guard.json",
+        public_catalog_path=catalog_path,
+    )
+
+    assert snapshot["profile_catalog"] == {
+        "status": "verified",
+        "published_profile_count": 1,
+        "blockers": [],
+    }
+    assert [row["profile_id"] for row in snapshot["profiles"]] == [profile["profile_id"]]
+    assert snapshot["admissible_profile_ids"] == [profile["profile_id"]]
+
+
+def test_supervisor_fails_closed_when_the_configured_catalog_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    _, _snapshot_value = _snapshot(tmp_path)
+    catalog_path = tmp_path / "invalid-published-catalog.json"
+    catalog_path.write_text("{}\n", encoding="utf-8")
+
+    snapshot = build_supervisor_snapshot(
+        profile_dir=tmp_path / "profiles",
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "guard.json",
+        public_catalog_path=catalog_path,
+    )
+
+    assert snapshot["profile_catalog"] == {
+        "status": "blocked",
+        "published_profile_count": 0,
+        "blockers": ["launch_profile_public_catalog_invalid"],
+    }
+    assert snapshot["profiles"] == []
+    assert snapshot["admissible_profile_ids"] == []
 
 
 def test_supervisor_blocks_a_guard_that_explicitly_reports_nonzero_provider_state(

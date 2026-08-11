@@ -19,7 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .task_evaluation_launch_dispatcher import (
     SECRET_PROFILE_ID_ENV,
+    TaskEvaluationLaunchError,
     canonical_digest,
+    load_public_launch_profile_catalog,
     validate_launch_profile,
 )
 from .task_evaluation_supervisor.agents_sdk import (
@@ -113,6 +115,7 @@ def build_supervisor_snapshot(
     queue_root: str | Path,
     state_root: str | Path,
     guard_report_path: str | Path,
+    public_catalog_path: str | Path | None = None,
     max_snapshot_bytes: int = DEFAULT_SUPERVISOR_SNAPSHOT_MAX_BYTES,
 ) -> dict[str, Any]:
     if not isinstance(max_snapshot_bytes, int) or max_snapshot_bytes <= 0:
@@ -136,11 +139,47 @@ def build_supervisor_snapshot(
     }
     spend_admission = guard.get("spend_admission_lock")
     spend_admission = spend_admission if isinstance(spend_admission, Mapping) else {}
+    published_profile_keys: set[tuple[str, str]] | None = None
+    published_descriptors: dict[tuple[str, str], dict[str, Any]] = {}
+    profile_catalog: dict[str, Any] = {
+        "status": "not_configured",
+        "published_profile_count": None,
+        "blockers": [],
+    }
+    if public_catalog_path is not None:
+        try:
+            catalog = load_public_launch_profile_catalog(public_catalog_path)
+        except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+            published_profile_keys = set()
+            profile_catalog = {
+                "status": "blocked",
+                "published_profile_count": 0,
+                "blockers": ["launch_profile_public_catalog_invalid"],
+            }
+        else:
+            published_descriptors = {
+                (str(row["profile_id"]), str(row["profile_digest"])): dict(row)
+                for row in catalog["profiles"]
+            }
+            published_profile_keys = set(published_descriptors)
+            profile_catalog = {
+                "status": "verified",
+                "published_profile_count": len(published_descriptors),
+                "blockers": [],
+            }
+
+    materialized_profiles: dict[tuple[str, str], dict[str, Any]] = {}
     for path in sorted(Path(profile_dir).expanduser().resolve().glob("*.json")):
         try:
             profile = _read(path)
         except (OSError, json.JSONDecodeError):
             continue
+        key = (str(profile.get("profile_id") or ""), str(profile.get("profile_digest") or ""))
+        if published_profile_keys is not None and key not in published_profile_keys:
+            continue
+        materialized_profiles.setdefault(key, profile)
+
+    for profile in materialized_profiles.values():
         blockers = validate_launch_profile(profile)
         execution_admission = profile.get("execution_admission")
         execution_admission = (
@@ -186,6 +225,38 @@ def build_supervisor_snapshot(
                 "blockers": sorted(set(blockers)),
             }
         )
+
+    # The website can select only entries in the publisher-generated catalog.
+    # A descriptor that is published but not materialized locally must remain a
+    # visible, typed blocker rather than disappearing into a wider historical
+    # profile directory or being recommended by the advisory agent.
+    for key, descriptor in published_descriptors.items():
+        if key in materialized_profiles:
+            continue
+        execution_admission = descriptor.get("execution_admission")
+        execution_admission = (
+            execution_admission if isinstance(execution_admission, Mapping) else {}
+        )
+        authorization = descriptor.get("required_authorization")
+        authorization = authorization if isinstance(authorization, Mapping) else {}
+        source_bundle = descriptor.get("source_bundle")
+        source_bundle = source_bundle if isinstance(source_bundle, Mapping) else {}
+        profiles.append(
+            {
+                "profile_id": descriptor.get("profile_id"),
+                "profile_digest": descriptor.get("profile_digest"),
+                "source_kind": source_bundle.get("source_kind"),
+                "claim_ceiling": descriptor.get("claim_ceiling"),
+                "max_spend_usd": authorization.get("max_spend_usd"),
+                "hard_ttl_seconds": authorization.get("hard_ttl_seconds"),
+                "required_providers": [],
+                "live_enabled": execution_admission.get("live_enabled") is True,
+                "readiness_blockers": execution_admission.get("blockers") or [],
+                "admissible": False,
+                "blockers": ["published_profile_not_materialized"],
+            }
+        )
+    profiles.sort(key=lambda row: (str(row["profile_id"]), str(row["profile_digest"])))
 
     queue = Path(queue_root).expanduser().resolve()
     queue_counts = {
@@ -250,6 +321,7 @@ def build_supervisor_snapshot(
         return {
             "schema_version": "task_evaluation_launch_supervisor_snapshot.v1",
             "profiles": profiles,
+            "profile_catalog": profile_catalog,
             "admissible_profile_ids": sorted(
                 str(row["profile_id"]) for row in profiles if row["admissible"]
             ),
@@ -429,6 +501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--queue-root", required=True)
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--guard-report", required=True)
+    parser.add_argument("--public-catalog")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--latest-out", required=True)
     args = parser.parse_args(argv)
@@ -437,6 +510,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         queue_root=args.queue_root,
         state_root=args.state_root,
         guard_report_path=args.guard_report,
+        public_catalog_path=args.public_catalog,
     )
     result = run_launch_supervisor(snapshot=snapshot, output_dir=args.output_dir)
     latest = Path(args.latest_out).expanduser().resolve()
