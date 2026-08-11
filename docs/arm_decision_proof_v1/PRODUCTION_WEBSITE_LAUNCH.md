@@ -101,6 +101,33 @@ the production secret integration. The dispatcher, not the profile, appends
 `--execute` after validating a current signed spend envelope and the production
 execute gate.
 
+## Optional bounded prelaunch skills
+
+A new scene profile may include a `prelaunch_skill_plan` only when that exact
+plan file is also named as the `prelaunch_skill_plan` entry in the profile's
+`immutable_inputs`. The dispatcher verifies both file digests, binds the plan
+to the profile's source-bundle ID and digest, executes it before the canonical
+allocator, and retains `prelaunch_skills/execution.json` plus digest-bound step
+artifacts beneath that launch's run root. A failed plan blocks before any
+allocator or provider call; it has no automatic retry.
+
+The currently supported production adapters are deliberately narrow:
+
+- `interiorgs_room_survey` invokes the maintained deterministic whole-room
+  survey only with profile-bound structure and labels inputs. Its survey is
+  retained selection evidence, not an evaluation image or a source of
+  unobserved geometry.
+- `earthtojake_step_inspection` invokes the maintained STEP-first inspection
+  adapter only with a profile-bound STEP artifact and an immutable config that
+  pins the approved Earth-to-Jake repository, commit, tree, interpreter, and
+  timeout. It inspects an already admitted candidate; it does not generate CAD
+  geometry or promote that candidate to measured truth.
+
+Plans cannot contain a shell command, arbitrary argv, URL, provider choice,
+secret, spend authority, or agent-selected tool. The optional Agents SDK
+supervisor may explain a failed plan or recommend an already admissible
+profile, but cannot add or alter a plan at launch time.
+
 ## Required production configuration
 
 Pipeline host:
