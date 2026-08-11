@@ -76,10 +76,31 @@ def _read_exact_receipt(path: Path) -> dict[str, Any]:
     return receipt
 
 
+def _git_argv(repo: Path, *args: str) -> list[str]:
+    """Build a Git command that trusts only the intended immutable checkout.
+
+    The production promoter may run as a service account while the source
+    checkout is owned by a deployment account.  Git otherwise rejects that
+    normal split as a dubious-ownership repository before the identity checks
+    can run.  Scope the exception to this one resolved checkout instead of
+    changing a user's global Git configuration.
+    """
+
+    checkout = repo.resolve()
+    return [
+        "git",
+        "-c",
+        f"safe.directory={checkout}",
+        "-C",
+        str(checkout),
+        *args,
+    ]
+
+
 def _run_git(repo: Path, *args: str) -> str:
     try:
         completed = subprocess.run(  # nosec B603 - fixed Git executable and argv
-            ["git", "-C", str(repo), *args],
+            _git_argv(repo, *args),
             check=False,
             capture_output=True,
             text=True,
@@ -112,7 +133,7 @@ def _absolute_path(value: str | Path, *, field: str) -> Path:
 def _is_ancestor(repo: Path, commit: str, ref: str) -> bool:
     try:
         completed = subprocess.run(  # nosec B603 - fixed Git executable and argv
-            ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, ref],
+            _git_argv(repo, "merge-base", "--is-ancestor", commit, ref),
             check=False,
             capture_output=True,
             text=True,
@@ -174,16 +195,14 @@ def _create_release_checkout(*, source_repo: Path, release_path: Path, source_co
     release_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         completed = subprocess.run(  # nosec B603 - fixed Git executable and argv
-            [
-                "git",
-                "-C",
-                str(source_repo),
+            _git_argv(
+                source_repo,
                 "worktree",
                 "add",
                 "--detach",
                 str(release_path),
                 source_commit,
-            ],
+            ),
             check=False,
             capture_output=True,
             text=True,
