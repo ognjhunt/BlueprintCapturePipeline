@@ -1,9 +1,25 @@
 {
   "claim_ceiling": "digest_bound_receipt_mirror_only; no source-removal, simulator, physical, or publication-rights claim",
   "raw_dataset_bytes_copied": false,
-  "receipt_count": 10,
-  "receipt_mirror_digest": "sha256:8f48e46b21a4c7b69f6ee3fdbc18c420206a76040fc085e541745ba75ecf6981",
+  "receipt_count": 14,
+  "receipt_mirror_digest": "sha256:b6586a3c6fe9ccb33c08040f5e7b6aaca955e60c0573dcfa1053a021774afa5d",
   "receipts": [
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:ee94073b0138bed4b31def0e3cb447ea0bc8a01aeec7daa0a3fea66026f1c954",
+      "relative_path": "task_a/earthtojake_cad_v1/content_agents_codex_advisory_v1/adp_content_agents_codex_advisory_review.json",
+      "schema_version": "adp_content_agents_codex_advisory_review.v1",
+      "sha256": "sha256:23c20893c1d1d3fb490ad19379a32514418543cb39af398f4ab9bd1755b979df",
+      "size_bytes": 6636
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:deb2646560a5e36642ca25b8f30c7eaf792260a83bffa5f1f4dfbac49860ccc1",
+      "relative_path": "task_a/multi_agent_cad_codex_v1/content_agents_codex_advisory_v1/adp_content_agents_codex_advisory_review.json",
+      "schema_version": "adp_content_agents_codex_advisory_review.v1",
+      "sha256": "sha256:a040feb3c2ec1b3c1e56bbc8ecef39ae675965f3378e934f2ebdf3cf474a759d",
+      "size_bytes": 7097
+    },
     {
       "digest_field": "receipt_digest",
       "receipt_digest": "sha256:1b007b1922c4324232b319bc0eb74cd4dcccc2f96fe02bfb9b528256fcc464ee",
@@ -43,6 +59,22 @@
       "schema_version": "adp_task_evaluation_run_abstention.v1",
       "sha256": "sha256:65bdfebe093a354d7090ed64f33472547d6261f1e0c0955a6eb04181a3074f14",
       "size_bytes": 2130
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:28fd12a43d237ba67b5d978816b2dee2fa2543bd12678e579159b84865741b91",
+      "relative_path": "task_b/earthtojake_cad_v1/content_agents_codex_advisory_v1/adp_content_agents_codex_advisory_review.json",
+      "schema_version": "adp_content_agents_codex_advisory_review.v1",
+      "sha256": "sha256:1769268c812e706dca9d1e50140d5396c9e79d4deb2ef7deaecb05240345ff91",
+      "size_bytes": 6698
+    },
+    {
+      "digest_field": "receipt_digest",
+      "receipt_digest": "sha256:b7f7a47fd58c34296b678ea885e9132a35327db87f2fca98172872bb59bbd9b0",
+      "relative_path": "task_b/multi_agent_cad_codex_v1/content_agents_codex_advisory_v1/adp_content_agents_codex_advisory_review.json",
+      "schema_version": "adp_content_agents_codex_advisory_review.v1",
+      "sha256": "sha256:f65715669aec9fc15c6012652b72b16fb5b21055d2fb57e0471a7f7763fab25c",
+      "size_bytes": 7070
     },
     {
       "digest_field": "receipt_digest",

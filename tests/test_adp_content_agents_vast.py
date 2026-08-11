@@ -1031,6 +1031,79 @@ def test_codex_advisory_review_is_metadata_only_and_cannot_upgrade_claims(
         "physical_equivalence": False,
     }
 
+    second_receipt_path = tmp_path / "codex-review-second.json"
+    second_receipt = codex_advisory.run_content_agents_codex_advisory_review(
+        bundle_matrix=matrix,
+        replacement_slot=1,
+        cad_agent_backend_id="pan_chera_multi_agent_cad",
+        output_path=second_receipt_path,
+        generated_at="fixed-second",
+        live_codex_host_oauth_authorized=True,
+        codex_command_prefix=("fixture-codex",),
+        runner=fake_runner,
+        version_probe=fake_version,
+    )
+    advisory_matrix = codex_advisory.materialize_content_agents_codex_advisory_matrix(
+        bundle_matrix=matrix,
+        review_receipt_paths=[tmp_path / "codex-review.json", second_receipt_path],
+        output_path=tmp_path / "codex-review-matrix.json",
+        generated_at="fixed-matrix",
+    )
+    assert advisory_matrix["schema_version"] == codex_advisory.MATRIX_SCHEMA_VERSION
+    assert advisory_matrix["candidate_count"] == 2
+    assert advisory_matrix["items"][1]["review_receipt"]["receipt_digest"] == second_receipt[
+        "receipt_digest"
+    ]
+    assert codex_advisory.validate_content_agents_codex_advisory_matrix(
+        advisory_matrix
+    ) == advisory_matrix
+
+
+def test_codex_advisory_review_blocks_before_operator_without_host_oauth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Codex-first route cannot silently fall back to an API-backed runner."""
+
+    source = _fake_source(tmp_path, monkeypatch)
+    legacy_matrix = _agent_cad_content_bundle_matrix(
+        tmp_path=tmp_path,
+        source=source,
+    )
+    matrix = content_matrix.materialize_agent_cad_content_agents_bundle_matrix(
+        bundle_receipt_paths=[
+            Path(str(item["bundle_receipt"]["path"]))
+            for item in legacy_matrix["items"]
+        ],
+        output_path=tmp_path / "matrix-v2.json",
+        generated_at="fixed",
+    )
+
+    def unexpected_runner(_config):
+        raise AssertionError("runner must not be called without host OAuth")
+
+    def unexpected_version(_prefix):
+        raise AssertionError("version probe must not run without host OAuth")
+
+    receipt = codex_advisory.run_content_agents_codex_advisory_review(
+        bundle_matrix=matrix,
+        replacement_slot=1,
+        cad_agent_backend_id="earthtojake_text_to_cad",
+        output_path=tmp_path / "blocked-codex-review.json",
+        generated_at="fixed",
+        live_codex_host_oauth_authorized=False,
+        codex_command_prefix=("fixture-codex",),
+        runner=unexpected_runner,
+        version_probe=unexpected_version,
+    )
+
+    assert receipt["status"] == "blocked_before_metadata_only_advisory_review"
+    assert receipt["blockers"] == [
+        "content_agents_codex_host_oauth_authorization_missing"
+    ]
+    assert receipt["codex_operator"]["api_key_forwarded"] is False
+    assert receipt["claim_boundary"]["codex_advisory_review_completed"] is False
+
 
 def _bundle_receipt_from_item(item: Mapping[str, object]) -> tuple[Path, dict]:
     record = item["bundle_receipt"]

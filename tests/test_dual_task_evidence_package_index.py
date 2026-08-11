@@ -248,6 +248,18 @@ def test_checked_in_package_index_exposes_cad_visual_comparison_binding() -> Non
     assert any(
         row["schema_version"] == "adp_portable_evidence_receipt_mirror.v1"
         and row["receipt_digest"]
-        == "sha256:8f48e46b21a4c7b69f6ee3fdbc18c420206a76040fc085e541745ba75ecf6981"
+        == "sha256:b6586a3c6fe9ccb33c08040f5e7b6aaca955e60c0573dcfa1053a021774afa5d"
+        for row in receipt["shared_manifests"]
+    )
+    assert any(
+        row["schema_version"] == "adp_agent_cad_content_agents_bundle_matrix.v2"
+        and row["receipt_digest"]
+        == "sha256:12c5a9a6dd62a2dbe5b23158cbdb67acda8aebf29fade09efa47fa4f7bb8c559"
+        for row in receipt["shared_manifests"]
+    )
+    assert any(
+        row["schema_version"] == "adp_content_agents_codex_advisory_matrix.v1"
+        and row["receipt_digest"]
+        == "sha256:43d668964162584323722ca4cc6afb26392d7fd8c5411eb5c4ceaf3024c23e81"
         for row in receipt["shared_manifests"]
     )

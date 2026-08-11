@@ -33,6 +33,7 @@ from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 
 
 SCHEMA_VERSION = "adp_content_agents_codex_advisory_review.v1"
+MATRIX_SCHEMA_VERSION = "adp_content_agents_codex_advisory_matrix.v1"
 DEFAULT_CODEX_COMMAND_PREFIX = ("npx", "--yes", "@openai/codex@0.147.0")
 _MAX_OUTPUT_CHARACTERS = 16_000
 
@@ -50,6 +51,14 @@ def _text(value: Any) -> str:
 
 def _sha256_text(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def _expected_backend(value: Any) -> str:
@@ -328,10 +337,250 @@ def run_content_agents_codex_advisory_review(
     return receipt
 
 
+def _review_file_record(path_value: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    path = Path(path_value).expanduser().resolve()
+    if not path.is_file() or path.is_symlink():
+        raise ContentAgentsCodexAdvisoryReviewError(
+            "content_agents_codex_advisory_matrix_review_file_invalid"
+        )
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise ContentAgentsCodexAdvisoryReviewError(
+            "content_agents_codex_advisory_matrix_review_file_invalid"
+        ) from exc
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("schema_version") != SCHEMA_VERSION
+        or receipt.get("status") != "completed_metadata_only_advisory_review"
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+    ):
+        raise ContentAgentsCodexAdvisoryReviewError(
+            "content_agents_codex_advisory_matrix_review_receipt_invalid"
+        )
+    return (
+        {
+            "path": str(path),
+            "sha256": _sha256_file(path),
+            "size_bytes": path.stat().st_size,
+            "receipt_digest": receipt["receipt_digest"],
+        },
+        dict(receipt),
+    )
+
+
+def _review_matrix_expected(
+    *,
+    bundle_matrix: Mapping[str, Any],
+    review_receipt_paths: Sequence[str | Path],
+    generated_at: str,
+) -> dict[str, Any]:
+    matrix = validate_agent_cad_content_agents_bundle_matrix(bundle_matrix)
+    if (
+        not isinstance(review_receipt_paths, Sequence)
+        or isinstance(review_receipt_paths, (str, bytes))
+        or len(review_receipt_paths) != matrix["candidate_count"]
+    ):
+        raise ContentAgentsCodexAdvisoryReviewError(
+            "content_agents_codex_advisory_matrix_review_count_invalid"
+        )
+    expected_by_key = {
+        (item["replacement_slot"], item["cad_agent_backend_id"]): item
+        for item in matrix["items"]
+    }
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for path_value in review_receipt_paths:
+        record, review = _review_file_record(path_value)
+        request = review.get("request")
+        candidate = request.get("candidate") if isinstance(request, Mapping) else None
+        route = request.get("route") if isinstance(request, Mapping) else None
+        if not isinstance(candidate, Mapping) or not isinstance(route, Mapping):
+            raise ContentAgentsCodexAdvisoryReviewError(
+                "content_agents_codex_advisory_matrix_review_binding_invalid"
+            )
+        key = (candidate.get("replacement_slot"), candidate.get("cad_agent_backend_id"))
+        if not isinstance(key[0], int) or isinstance(key[0], bool) or key in seen:
+            raise ContentAgentsCodexAdvisoryReviewError(
+                "content_agents_codex_advisory_matrix_review_binding_invalid"
+            )
+        expected = expected_by_key.get(key)
+        if expected is None:
+            raise ContentAgentsCodexAdvisoryReviewError(
+                "content_agents_codex_advisory_matrix_review_binding_invalid"
+            )
+        candidate_fields = (
+            "replacement_slot",
+            "task_id",
+            "asset_id",
+            "cad_agent_backend_id",
+            "cad_agent_output_receipt_digest",
+            "cad_agent_request_digest",
+            "cad_agent_reference_manifest_object_digest",
+            "mesh_projection_receipt_digest",
+            "mesh_packet_digest",
+            "candidate_step_sha256",
+            "mesh_count",
+        )
+        if any(candidate.get(field) != expected[field] for field in candidate_fields) or (
+            request.get("bundle_matrix_digest") != matrix["receipt_digest"]
+            or route.get("route_digest")
+            != expected["content_agents_execution_route"]["route_digest"]
+            or review.get("claim_boundary")
+            != {
+                "codex_advisory_review_completed": True,
+                "content_agents_executed": False,
+                "simready_qualified": False,
+                "native_simulator_import_qualified": False,
+                "appearance_materially_qualified": False,
+                "physical_equivalence": False,
+            }
+        ):
+            raise ContentAgentsCodexAdvisoryReviewError(
+                "content_agents_codex_advisory_matrix_review_binding_invalid"
+            )
+        seen.add(key)
+        rows.append(
+            {
+                key: expected[key]
+                for key in (
+                    "replacement_slot",
+                    "task_id",
+                    "asset_id",
+                    "cad_agent_backend_id",
+                )
+            }
+            | {"review_receipt": record}
+        )
+    if set(seen) != set(expected_by_key):
+        raise ContentAgentsCodexAdvisoryReviewError(
+            "content_agents_codex_advisory_matrix_review_coverage_invalid"
+        )
+    return {
+        "schema_version": MATRIX_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "all_candidates_metadata_only_advisory_reviewed",
+        "bundle_matrix_digest": matrix["receipt_digest"],
+        "candidate_count": matrix["candidate_count"],
+        "replacement_object_capacity": dict(matrix["replacement_object_capacity"]),
+        "items": sorted(
+            rows,
+            key=lambda row: (row["replacement_slot"], row["cad_agent_backend_id"]),
+        ),
+        "claim_boundary": {
+            "codex_advisory_reviews_completed": True,
+            "content_agents_executed": False,
+            "simready_qualified": False,
+            "native_simulator_import_qualified": False,
+            "appearance_materially_qualified": False,
+            "physical_equivalence": False,
+        },
+    }
+
+
+def validate_content_agents_codex_advisory_matrix(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Re-open every review receipt and reject relabelled receipt drift."""
+
+    if not isinstance(value, Mapping):
+        raise ContentAgentsCodexAdvisoryReviewError(
+            "content_agents_codex_advisory_matrix_not_mapping"
+        )
+    matrix = json.loads(json.dumps(value))
+    if (
+        matrix.get("schema_version") != MATRIX_SCHEMA_VERSION
+        or not _text(matrix.get("generated_at"))
+        or matrix.get("receipt_digest")
+        != canonical_digest(matrix, digest_field="receipt_digest")
+    ):
+        raise ContentAgentsCodexAdvisoryReviewError(
+            "content_agents_codex_advisory_matrix_schema_invalid"
+        )
+    capacity = matrix.get("replacement_object_capacity")
+    items = matrix.get("items")
+    if (
+        not isinstance(capacity, Mapping)
+        or capacity.get("minimum") != 1
+        or not isinstance(capacity.get("maximum"), int)
+        or not isinstance(capacity.get("sealed_slots"), int)
+        or not isinstance(items, list)
+        or matrix.get("candidate_count") != len(items)
+    ):
+        raise ContentAgentsCodexAdvisoryReviewError(
+            "content_agents_codex_advisory_matrix_content_invalid"
+        )
+    seen: set[tuple[int, str]] = set()
+    for row in items:
+        if not isinstance(row, Mapping):
+            raise ContentAgentsCodexAdvisoryReviewError(
+                "content_agents_codex_advisory_matrix_content_invalid"
+            )
+        slot = row.get("replacement_slot")
+        backend = _text(row.get("cad_agent_backend_id"))
+        review_record = row.get("review_receipt")
+        if (
+            not isinstance(slot, int)
+            or isinstance(slot, bool)
+            or not backend
+            or (slot, backend) in seen
+            or not isinstance(review_record, Mapping)
+        ):
+            raise ContentAgentsCodexAdvisoryReviewError(
+                "content_agents_codex_advisory_matrix_content_invalid"
+            )
+        review_file_record, review = _review_file_record(
+            _text(review_record.get("path"))
+        )
+        if (
+            dict(review_record) != review_file_record
+            or not isinstance(review.get("request"), Mapping)
+            or not isinstance((review["request"]).get("candidate"), Mapping)
+            or any(
+                (review["request"]["candidate"]).get(key) != row.get(key)
+                for key in (
+                    "replacement_slot",
+                    "task_id",
+                    "asset_id",
+                    "cad_agent_backend_id",
+                )
+            )
+        ):
+            raise ContentAgentsCodexAdvisoryReviewError(
+                "content_agents_codex_advisory_matrix_content_invalid"
+            )
+        seen.add((slot, backend))
+    return matrix
+
+
+def materialize_content_agents_codex_advisory_matrix(
+    *,
+    bundle_matrix: Mapping[str, Any],
+    review_receipt_paths: Sequence[str | Path],
+    output_path: str | Path,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Seal complete 1--5-slot Codex advisory coverage from review receipts."""
+
+    timestamp = _text(generated_at) or utc_now_iso()
+    matrix = _review_matrix_expected(
+        bundle_matrix=bundle_matrix,
+        review_receipt_paths=review_receipt_paths,
+        generated_at=timestamp,
+    )
+    matrix["receipt_digest"] = canonical_digest(matrix, digest_field="receipt_digest")
+    write_json(output_path, matrix)
+    return matrix
+
+
 __all__ = [
     "ContentAgentsCodexAdvisoryReviewError",
     "DEFAULT_CODEX_COMMAND_PREFIX",
+    "MATRIX_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "build_content_agents_codex_advisory_request",
+    "materialize_content_agents_codex_advisory_matrix",
     "run_content_agents_codex_advisory_review",
+    "validate_content_agents_codex_advisory_matrix",
 ]

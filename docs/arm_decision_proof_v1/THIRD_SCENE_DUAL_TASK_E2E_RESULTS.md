@@ -74,6 +74,12 @@ result.
   pipeline remains selected only for its complete released
   material/texture/physics/validation capability; Codex is not represented as
   an NVIDIA Content Agents execution.
+- Latest Codex-execution follow-up commit:
+  `ee82d807a90d4c13cc6b34ad642885814f3ff41d`. It adds a general 1..5-slot
+  receipt-derived Content Agents bundle matrix and a host-OAuth Codex advisory
+  review contract. The contract binds an isolated Codex CLI command prefix and
+  rejects missing explicit host-OAuth authority; Codex receives only digest-bound
+  metadata, never raw scene, CAD, mesh, or secret bytes.
 - Starting worktree: clean; work took place in the dedicated third-scene
   worktree.
 - External 840796 worktrees and evidence roots were not modified.
@@ -421,6 +427,44 @@ No-paid Docker/network-disabled Content Agents local dry-run receipts:
 | Task B notebook | Earth-to-Jake | `sha256:d1b7e1c679caf667f38369bc695bdb5f0d50c597a564b67e2838dd0de50a5937` | `content_agents_paid_model_access_preflight_missing` |
 | Task B notebook | Pan-Chera Multi-Agent-CAD | `sha256:f47668336889447504dd3e1060c7ed0d2eed0c438d36695f2bad09c34e82a192` | `content_agents_paid_model_access_preflight_missing` |
 
+### Codex-first refresh (current)
+
+The preceding v1 matrix/readiness records are retained as historical evidence;
+they do not describe the current route. The current v2 matrix was derived from
+four fresh bundle receipts, rather than reusing a hand-authored inventory:
+`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v2.json`,
+digest `sha256:12c5a9a6dd62a2dbe5b23158cbdb67acda8aebf29fade09efa47fa4f7bb8c559`.
+It is a general one-to-five-replacement-slot contract; both admitted CAD
+backends must be present for each sealed slot, and every candidate has an exact
+object-specific Codex-first route binding.
+
+The host default `codex-cli 0.141.0` rejected `gpt-5.6-luna`, so the current
+contract binds isolated `npx @openai/codex@0.147.0` rather than silently
+downgrading the model or substituting an API key. All four live reviews completed
+through host OAuth with the requested `gpt-5.6-luna` model. The review worktree
+was empty and the prompt contained digest-bound metadata only: no raw InteriorGS
+bytes, scene-derived image bytes, STEP/USD/mesh bytes, secrets, or provider
+uploads. This is deliberately an advisory review, not a substitute for an
+NVIDIA Content Agents execution.
+
+| Task | Backend | Fresh bundle | Static preflight | Codex advisory receipt |
+|---|---|---|---|---|
+| Task A washer | Earth-to-Jake | `sha256:179ac49ef72255d8eb9fbf89bc8e40131c71cc005cbd3cca4ab96cb2110996bb` | `sha256:5277392ab8788718cec58053efdc633866cd269a7838876ed4f623a873ecee2e` | `sha256:ee94073b0138bed4b31def0e3cb447ea0bc8a01aeec7daa0a3fea66026f1c954` |
+| Task A washer | Pan-Chera Multi-Agent-CAD | `sha256:74c85720226e09e6849de8c0cf0052d67d7f8cf8ffcee897b16d47a836acec7a` | `sha256:89e4d7eded0f6543e78cbce7820d060f469388d1538df4f85fc671bbcba6f4a5` | `sha256:deb2646560a5e36642ca25b8f30c7eaf792260a83bffa5f1f4dfbac49860ccc1` |
+| Task B notebook | Earth-to-Jake | `sha256:b6016a7dca337491848fe193b5a0825aa753b129ff0f0610c9e2da074dcc0a24` | `sha256:af30ae0f65231d2259bd773dd0df08b667cce37206caeaf2c14acd3d5e996859` | `sha256:28fd12a43d237ba67b5d978816b2dee2fa2543bd12678e579159b84865741b91` |
+| Task B notebook | Pan-Chera Multi-Agent-CAD | `sha256:d3cb576ec5b967004b68c4775fd877355a90e441deb44ab07c8d979a6c7c3446` | `sha256:c1e0ca553fe10c85e26a12c9fd19d612481f02e36b6251553dc9dec91e9c0567` | `sha256:b7f7a47fd58c34296b678ea885e9132a35327db87f2fca98172872bb59bbd9b0` |
+
+The complete four-candidate advisory join is
+`third_scene_840920_dual_task_content_agents_codex_advisory_matrix.v1.json`,
+digest `sha256:43d668964162584323722ca4cc6afb26392d7fd8c5411eb5c4ceaf3024c23e81`.
+Every row remains `content_agents_executed=false`, `simready_qualified=false`,
+`native_simulator_import_qualified=false`, and
+`physical_equivalence=false`. The residual NVIDIA capability is still only its
+released material/texture/physics validation pipeline, which was not run.
+Most importantly, neither route changes the independently failed held-out
+Gaussian ownership gate: no Gaussian record was deleted and no inpainting,
+native construction, control, or policy run is admitted.
+
 A local human-review-only visual comparison was materialized from the
 manifest-bound original reference frames and CAD snapshots. Receipt:
 `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.v1.json`,
@@ -565,6 +609,13 @@ forks:
   the exact residual NVIDIA pipeline capability. This
   optimization remains advisory and cannot change any source-removal,
   simulator, or physical-evidence boolean.
+- The Codex-first route is now exercised, not merely planned. An isolated
+  `codex-cli 0.147.0` host-OAuth run completed a metadata-only review for every
+  CAD candidate using `gpt-5.6-luna`; the installed `0.141.0` CLI was rejected
+  as too old rather than silently falling back. The review runner uses an empty
+  read-only worktree and exposes only digest-bound metadata. Its output is
+  sealed as advisory text and cannot set a Content Agents, SimReady, native
+  import, physics, appearance, or physical-evidence boolean.
 - Content Agents paid execution now has its own single-use attempt-authority
   contract. Allocator dry-runs remain mutation-free and do not require the
   grant; `--execute` requires an exact bundle/config-preflight authority and
@@ -733,12 +784,22 @@ Recent reusable-code and manifest commits:
   prove that a Codex-only item cannot create a provider bundle and that a
   hybrid route is digest-bound to its exact task, slot, asset, and CAD-output
   receipt before any NVIDIA bundle is materialized.
+- Focused Content Agents matrix/advisory-review/evidence-index regressions for
+  `ee82d807a` — `78 passed in 16.09s`; required precommit selector — `1168
+  passed, 9999 deselected in 67.86s`; `.venv/bin/ruff check src/ tests/`
+  passed. Four live metadata-only Codex reviews then completed against the
+  pushed commit: Task A/Earth-to-Jake `ee94073b`, Task A/Pan-Chera `deb26465`,
+  Task B/Earth-to-Jake `28fd12a4`, and Task B/Pan-Chera `b7f7a47f` (full
+  digests are in the advisory matrix). These are host-OAuth Codex CLI calls,
+  not API calls: observed provider/GPU/object-store spend is `$0.00`; no
+  per-call subscription-cost export exists, so no fictional agent-cost number
+  is reported. All four have `provider_upload_performed=false`.
 
 ## Claim table
 
 | Claim class | Result |
 |---|---|
-| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, and held-out ownership audit; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; a receipt-only portable mirror that excludes all raw dataset bytes; two-backend agent-CAD comparison contracts with deterministic CAD rejected; a Codex-first 1..5-object Content Agents route that prevents Codex-only review work from making provider/API bundles; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
+| Implemented | General articulation graphs and graph-driven USD authoring for collision/scoring only; bounded 1..5 replacement shared scenes; independent source-collider deletion; independent released-code contribution accumulation, conservative three-way ownership aggregation, byte-exact replay, and held-out ownership audit; a typed-abstention/index path that retains completed contribution, ownership, replay, audit, CAD-review, and blocked-episode receipts without implying deletion; a receipt-only portable mirror that excludes all raw dataset bytes; two-backend agent-CAD comparison contracts with deterministic CAD rejected; a Codex-first 1..5-object Content Agents route plus four completed metadata-only `gpt-5.6-luna` host-OAuth reviews that use no API key or artifact bytes; registered variable-camera excision evidence; task-neutral construction/control/policy contracts; provider/OpenCV camera normalization; offline provider dependency closure; exact-ID teardown; and a portable evidence index. |
 | Simulator-qualified | No scene-840920 task, asset, control, or policy episode. Local contract behavior only. |
 | Blocked/abstained | Both released-code contribution runs completed, but both exact source-removal lanes abstained at `calibrated_gaussian_ownership_separation_without_protected_scene_deletion`. No source Gaussian deletion, replacement-depth coverage, occlusion/inpainting decision, native placement/camera/control gate, or candidate matrix is admitted. Content Agents enrichment remains advisory and not a replacement for source-removal evidence. |
 | Physically unresolved | Partner capture, real-site fidelity, deployment readiness, physical manipulation, customer value, sim-to-real, and unseen generated mechanism truth. |

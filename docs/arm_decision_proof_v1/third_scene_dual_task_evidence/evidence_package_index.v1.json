@@ -1,10 +1,10 @@
 {
   "blocker_summary": "Both independently frozen Gaussian ownership lanes completed released contribution evidence, then failed their held-out ownership-separation gates. No source deletion, replacement-depth coverage, inpainting decision, control, or policy episode is qualified.",
-  "cad_summary": "Two agent-CAD backends were retained for each object; their review media are candidate evidence only and do not overcome the Gaussian ownership abstentions.",
+  "cad_summary": "Two agent-CAD backends were retained for each object; all four received metadata-only Codex reviews and local static bundle preflights. These candidate artifacts do not overcome the Gaussian ownership abstentions.",
   "overview_review_only": true,
-  "package_index_digest": "sha256:be2bd3ded6af2ffc91096b91fa0ca928fd6ecc45a7204826876018430085c7c7",
+  "package_index_digest": "sha256:8da4ef1062e4546f774b25ae3bcc72965518df8fac8816eba26ff185570c2f2b",
   "schema_version": "adp_dual_task_evidence_package_index.v1",
-  "shared_manifest_count": 7,
+  "shared_manifest_count": 9,
   "shared_manifests": [
     {
       "digest_field": "matrix_digest",
@@ -70,11 +70,31 @@
       "digest_field": "receipt_mirror_digest",
       "html_link": "shared_scene/terminal_receipt_mirror.v1.json",
       "label": "Receipt-only terminal evidence mirror",
-      "receipt_digest": "sha256:8f48e46b21a4c7b69f6ee3fdbc18c420206a76040fc085e541745ba75ecf6981",
+      "receipt_digest": "sha256:b6586a3c6fe9ccb33c08040f5e7b6aaca955e60c0573dcfa1053a021774afa5d",
       "relative_path": "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/shared_scene/terminal_receipt_mirror.v1.json",
       "schema_version": "adp_portable_evidence_receipt_mirror.v1",
-      "sha256": "sha256:0f25dc258d40e0932cc8abe9b5aab23648823407d8d5d55997e3802c7b6d925d",
-      "size_bytes": 4889
+      "sha256": "sha256:892ed92fe371b55d6923ddd6aa8480cd0d6c67cc4d59295943659196bae5ba07",
+      "size_bytes": 6781
+    },
+    {
+      "digest_field": "receipt_digest",
+      "html_link": "../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v2.json",
+      "label": "Codex-first four-candidate Content Agents bundle matrix",
+      "receipt_digest": "sha256:12c5a9a6dd62a2dbe5b23158cbdb67acda8aebf29fade09efa47fa4f7bb8c559",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v2.json",
+      "schema_version": "adp_agent_cad_content_agents_bundle_matrix.v2",
+      "sha256": "sha256:a146aecc4c8234a7cd14aa3d6ec2bb3e2b2d850089d7f416f86f8bdaa4cdc9a8",
+      "size_bytes": 11866
+    },
+    {
+      "digest_field": "receipt_digest",
+      "html_link": "../manifests/third_scene_840920_dual_task_content_agents_codex_advisory_matrix.v1.json",
+      "label": "Four-candidate metadata-only Codex advisory-review matrix",
+      "receipt_digest": "sha256:43d668964162584323722ca4cc6afb26392d7fd8c5411eb5c4ceaf3024c23e81",
+      "relative_path": "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_content_agents_codex_advisory_matrix.v1.json",
+      "schema_version": "adp_content_agents_codex_advisory_matrix.v1",
+      "sha256": "sha256:862f0431587e4054007b37a87724f23158d3cde79a2de122959c374e47bd3ec4",
+      "size_bytes": 3534
     }
   ],
   "simulator_artifacts_are_not_physical_truth": true,

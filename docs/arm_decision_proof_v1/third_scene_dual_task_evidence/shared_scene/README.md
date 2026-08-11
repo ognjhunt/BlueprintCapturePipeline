@@ -32,7 +32,7 @@ export.
 
 The receipt-only terminal mirror is
 [`terminal_receipt_mirror.v1.json`](terminal_receipt_mirror.v1.json), digest
-`sha256:8f48e46b21a4c7b69f6ee3fdbc18c420206a76040fc085e541745ba75ecf6981`.
+`sha256:b6586a3c6fe9ccb33c08040f5e7b6aaca955e60c0573dcfa1053a021774afa5d`.
 It copies only digest-verified JSON receipts: no source splats, masks, frames,
 media, USD, or other dataset-derived bytes are copied.
 
@@ -58,6 +58,8 @@ Checked-in digest-bound manifests:
 - [`third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json`](../../manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json), binding digest `sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d`
 - [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json)
 - [`third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json), readiness digest `sha256:6a0b26246e60c8379ea2f7bd839e3d136cd0ce48939ebcee0923fb285413e160`
+- [`third_scene_840920_dual_task_agent_cad_content_agents_bundles.v2.json`](../../manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v2.json), Codex-first matrix digest `sha256:12c5a9a6dd62a2dbe5b23158cbdb67acda8aebf29fade09efa47fa4f7bb8c559`
+- [`third_scene_840920_dual_task_content_agents_codex_advisory_matrix.v1.json`](../../manifests/third_scene_840920_dual_task_content_agents_codex_advisory_matrix.v1.json), completed-review matrix digest `sha256:43d668964162584323722ca4cc6afb26392d7fd8c5411eb5c4ceaf3024c23e81`
 
 Local human-review-only visual comparison receipt:
 
@@ -65,16 +67,21 @@ Local human-review-only visual comparison receipt:
 - Original observed references plus Earth-to-Jake and Pan-Chera CAD candidates: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/cad_agent_visual_comparison.png`, image digest `sha256:6d21505f6f6e04f3f6d502f5dd6c25a6752208f085452caf0a7b316289758f94`
 - Finder/browser review HTML: `/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/cad_agent_visual_comparison_v1/OPEN_ME_cad_agent_visual_comparison.html`, digest `sha256:0014fdb0b497480eaf2206a9485f70ed884fd8daa7c115b9ba2943d278f15219`
 
-The readiness receipt includes Dockerless static bundle/config/input-USD
-preflight receipts for all four Content Agents bundles. The reusable
-Codex-first routing contract sends local packet/scope/configuration/review work
-to host-authenticated Codex without an API key or provider bundle. It rejects a
-Codex-only request before a provider-bundle directory can be created; every new
-agent-CAD Content Agents bundle must carry that explicit route. NVIDIA Content
-Agents remain advisory for the one residual capability their released runtime
-actually owns: the complete material/texture/physics/validation pipeline.
-Neither route can repair the independently failed
-Gaussian-ownership gate.
+The historical v1 readiness receipt remains an audit record, not current launch
+authority. The v2 matrix was materialized from four fresh local-only bundles,
+each with an object-specific Codex-first route. Each bundle also passed a new
+Dockerless static config/input-USD preflight, and each received a live
+metadata-only Codex host-OAuth review using `gpt-5.6-luna` through isolated
+Codex CLI `0.147.0`. The review prompt contained only digest-bound metadata:
+no raw InteriorGS bytes, scene-derived images, STEP/USD/mesh bytes, secrets, or
+provider upload. The four review JSON receipts are copied by the terminal
+receipt mirror; still no source media or geometry bytes are copied.
+
+Codex owns local packet/scope/configuration/preflight/output-receipt review.
+It is not represented as an NVIDIA Content Agents execution. NVIDIA Content
+Agents remain the residual released-code capability for the complete
+material/texture/physics validation pipeline; that pipeline was not run. Neither
+route can repair the independently failed Gaussian-ownership gate.
 
 Claim boundary: these are CAD candidates and Content Agents bundle/readiness
 receipts only. Content Agents have not been executed in this goal state; no

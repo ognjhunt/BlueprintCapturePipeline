@@ -1,0 +1,122 @@
+{
+  "schema_version": "adp_content_agents_codex_advisory_review.v1",
+  "generated_at": "2026-08-11T17:33:00Z",
+  "status": "completed_metadata_only_advisory_review",
+  "request": {
+    "schema_version": "adp_content_agents_codex_advisory_request.v1",
+    "purpose": "content_agents_codex_first_metadata_only_advisory_review",
+    "bundle_matrix_digest": "sha256:12c5a9a6dd62a2dbe5b23158cbdb67acda8aebf29fade09efa47fa4f7bb8c559",
+    "candidate": {
+      "replacement_slot": 2,
+      "task_id": "task_b_notebook_relocation",
+      "asset_id": "840920_simready_notebook_candidate",
+      "cad_agent_backend_id": "earthtojake_text_to_cad",
+      "cad_agent_output_receipt_digest": "sha256:abe0feb7f0e805838312ad0f1902aa4e43cff7b6ba111b764937ed47d9bdc707",
+      "cad_agent_request_digest": "sha256:fecd936d1a55ced69f9a50ee961eab68542d7b2afe0f74c85c3788c017f1b0fb",
+      "cad_agent_reference_manifest_object_digest": "sha256:39febb04e78770c6556837c93a14d77846eca5b206448cbd4fbecfc88a1ca454",
+      "mesh_projection_receipt_digest": "sha256:36fcb32e67764c7f14c4f346d5193fb0b1db30e8cd38788d1516a9d716d0d348",
+      "mesh_packet_digest": "sha256:fbc05fc2ea99ea2535e8edc0f17689f22870178164407ecd71a7057ca3bade80",
+      "candidate_step_sha256": "sha256:563f7febb0b1fc600661b077001e8772b8a1c665efe817709093a32b6fd70a6c",
+      "mesh_count": 79
+    },
+    "route": {
+      "route_digest": "sha256:ad3acf0091b5b13c656a1fb05801d5f7e205446740b32f7cf107883a380c0b85",
+      "codex_local_capabilities": [
+        "appearance_scope_review",
+        "bundle_preflight_review",
+        "configuration_review",
+        "input_packet_review",
+        "material_group_proposal",
+        "output_receipt_review",
+        "physics_scope_review"
+      ],
+      "nvidia_content_agents_capabilities": [
+        "released_material_texture_physics_validation_pipeline"
+      ]
+    },
+    "disclosure": {
+      "prompt_contains_only": "digest_bound_metadata",
+      "raw_interiorgs_bytes_disclosed": false,
+      "scene_derived_image_bytes_disclosed": false,
+      "cad_step_or_usd_bytes_disclosed": false,
+      "mesh_bytes_disclosed": false,
+      "secrets_or_api_keys_disclosed": false,
+      "provider_upload_performed": false
+    },
+    "required_review_rules": [
+      "Review only the declared Codex-local capabilities.",
+      "Do not infer geometry, appearance, physics, contact, or source truth from digests.",
+      "Do not treat Codex as an NVIDIA Content Agents execution.",
+      "Do not claim SimReady, native import, dynamics, physical equivalence, or policy success.",
+      "Identify the residual released NVIDIA capability without proposing an unbound provider call."
+    ],
+    "request_digest": "sha256:2891a8d84d7f8787927d757f35bc1b05d6592ebe59552a16c8d423eaaf2faf46"
+  },
+  "codex_operator": {
+    "transport": "codex_cli_host_oauth",
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "xhigh",
+    "command_prefix": [
+      "npx",
+      "--yes",
+      "@openai/codex@0.147.0"
+    ],
+    "cli_version": "codex-cli 0.147.0",
+    "sandbox": "read-only",
+    "ephemeral": true,
+    "user_config_ignored": true,
+    "api_key_forwarded": false,
+    "workspace_contains_disclosed_artifacts": false,
+    "live_codex_host_oauth_authorized": true
+  },
+  "operator_ledger": {
+    "generated_at": "2026-08-11T17:37:25.991681+00:00",
+    "operator_mode": "live_operator",
+    "decisions": [
+      {
+        "decision": "live_operator_completed",
+        "owned_by": "content_agents_codex_metadata_advisory_reviewer",
+        "summary": "{\n  \"summary\": \"Metadata-only advisory review completed; digests establish references, not content.\",\n  \"codex_local_work\": [\n    \"Review appearance, bundle preflight, configuration, input packet, materials, output receipts, and physics scope.\",\n    \"Assess declared routing and disclosure controls.\"\n  ],\n  \"residual_nvidia_work\": \"Released material, texture, and physics validation pipeline capability remains with NVIDIA Content Agents.\",\n  \"claim_boundary\": \"No claims about geometry, appearance, simulation, physics, visuals, source truth, import, dynamics, physical equivalence, or policy success.\"\n}",
+        "proof_effect": "none_direct"
+      }
+    ],
+    "tool_call_summaries": [
+      {
+        "tool_name": "codex_exec",
+        "transport": "codex_cli_host_oauth",
+        "exit_code": 0
+      }
+    ],
+    "commands_chosen": [
+      "codex exec"
+    ],
+    "refusals": [],
+    "blockers": [],
+    "final_output": "{\n  \"summary\": \"Metadata-only advisory review completed; digests establish references, not content.\",\n  \"codex_local_work\": [\n    \"Review appearance, bundle preflight, configuration, input packet, materials, output receipts, and physics scope.\",\n    \"Assess declared routing and disclosure controls.\"\n  ],\n  \"residual_nvidia_work\": \"Released material, texture, and physics validation pipeline capability remains with NVIDIA Content Agents.\",\n  \"claim_boundary\": \"No claims about geometry, appearance, simulation, physics, visuals, source truth, import, dynamics, physical equivalence, or policy success.\"\n}",
+    "raw_result_type": "codex_cli_exec",
+    "proof_effect": {
+      "summary": "no_direct_proof_boolean_changes",
+      "proof_booleans_mutable_by_agent": false,
+      "direct_proof_booleans_set_true": [],
+      "requires_deterministic_accepted_artifacts": true,
+      "deterministic_artifacts_required": [
+        "deterministically accepted Content Agents artifacts"
+      ]
+    }
+  },
+  "model_output": {
+    "text": "{\n  \"summary\": \"Metadata-only advisory review completed; digests establish references, not content.\",\n  \"codex_local_work\": [\n    \"Review appearance, bundle preflight, configuration, input packet, materials, output receipts, and physics scope.\",\n    \"Assess declared routing and disclosure controls.\"\n  ],\n  \"residual_nvidia_work\": \"Released material, texture, and physics validation pipeline capability remains with NVIDIA Content Agents.\",\n  \"claim_boundary\": \"No claims about geometry, appearance, simulation, physics, visuals, source truth, import, dynamics, physical equivalence, or policy success.\"\n}",
+    "sha256": "sha256:b9e2262a030bcf0a319fe72f6738e33ff225f43684709d5979752c12c18db400",
+    "interpreted_as_deterministic_evidence": false
+  },
+  "blockers": [],
+  "claim_boundary": {
+    "codex_advisory_review_completed": true,
+    "content_agents_executed": false,
+    "simready_qualified": false,
+    "native_simulator_import_qualified": false,
+    "appearance_materially_qualified": false,
+    "physical_equivalence": false
+  },
+  "receipt_digest": "sha256:28fd12a43d237ba67b5d978816b2dee2fa2543bd12678e579159b84865741b91"
+}
