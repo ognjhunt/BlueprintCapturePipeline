@@ -41,6 +41,7 @@ def _paid_attempt_authority(
     hard_cap_usd: float = 3.0,
     max_hourly_rate_usd: float = 1.0,
     hard_ttl_seconds: int = 10_800,
+    external_instance_allowlist: list[int] | None = None,
 ) -> dict:
     authority = {
         "schema_version": runtime.PAID_ATTEMPT_AUTHORITY_SCHEMA,
@@ -65,6 +66,7 @@ def _paid_attempt_authority(
         "native_simulator_import_probe_only": True,
         "physical_success_established": False,
         "candidate_policy_queried": False,
+        "external_instance_allowlist": external_instance_allowlist or [],
         "authorization_digest": "",
     }
     authority["authorization_digest"] = canonical_digest(
@@ -300,6 +302,33 @@ def test_live_run_consumes_paid_attempt_authority_once_before_staging(
     assert second["provider_mutations_performed"] == 0
     assert "simready_isaac_paid_attempt_authority_consumed" in second["blockers"]
     assert stage_calls == 1
+
+
+def test_simready_authority_binds_external_instance_allowlist(tmp_path: Path) -> None:
+    prepared_bundle = _bundle(tmp_path)
+    authority = _paid_attempt_authority(
+        prepared_bundle, external_instance_allowlist=[31]
+    )
+
+    runtime.validate_simready_isaac_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared_bundle,
+        bundle_receipt_sha256="sha256:" + "c" * 64,
+        max_hourly_rate_usd=1.0,
+        hard_cap_usd=3.0,
+        hard_ttl_seconds=10_800,
+        allowed_active_instance_ids=[31],
+    )
+    with pytest.raises(ValueError, match="external_instance_allowlist_mismatch"):
+        runtime.validate_simready_isaac_paid_attempt_authority(
+            authority,
+            prepared_bundle=prepared_bundle,
+            bundle_receipt_sha256="sha256:" + "c" * 64,
+            max_hourly_rate_usd=1.0,
+            hard_cap_usd=3.0,
+            hard_ttl_seconds=10_800,
+            allowed_active_instance_ids=[],
+        )
 
 
 def _allocator_args(tmp_path: Path, receipt: Path) -> list[str]:

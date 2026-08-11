@@ -1912,6 +1912,7 @@ def _content_agents_attempt_authority(
     max_hourly_rate_usd: float = 0.75,
     hard_cap_usd: float = 2.0,
     hard_ttl_seconds: int = 7200,
+    external_instance_allowlist: list[int] | None = None,
 ) -> dict[str, object]:
     authority: dict[str, object] = {
         "schema_version": content_agents.PAID_ATTEMPT_AUTHORITY_SCHEMA,
@@ -1940,6 +1941,7 @@ def _content_agents_attempt_authority(
         "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
         "agent_output_is_simready_authority": False,
         "native_simulator_import_qualified": False,
+        "external_instance_allowlist": external_instance_allowlist or [],
     }
     authority["authorization_digest"] = canonical_digest(
         authority, digest_field="authorization_digest"
@@ -2078,6 +2080,48 @@ def test_content_agents_paid_attempt_authority_is_single_use(
         "status": "blocked",
         "blockers": ["adp_content_agents_paid_attempt_authority_consumed"],
     }
+
+
+def test_content_agents_authority_binds_external_instance_allowlist(
+    tmp_path: Path,
+) -> None:
+    receipt, receipt_value = _allocator_bundle(tmp_path)
+    preflight = _passing_config_preflight(tmp_path, receipt_value)
+    preflight_value = json.loads(preflight.read_text(encoding="utf-8"))
+    authority = _content_agents_attempt_authority(
+        receipt=receipt,
+        receipt_value=receipt_value,
+        preflight=preflight,
+        preflight_value=preflight_value,
+        external_instance_allowlist=[23],
+    )
+
+    content_agents.validate_content_agents_paid_attempt_authority(
+        authority,
+        prepared_bundle=receipt_value,
+        bundle_receipt_sha256="sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        config_preflight=preflight_value,
+        config_preflight_receipt_sha256="sha256:"
+        + hashlib.sha256(preflight.read_bytes()).hexdigest(),
+        max_hourly_rate_usd=0.75,
+        hard_cap_usd=2.0,
+        hard_ttl_seconds=7200,
+        allowed_active_instance_ids=[23],
+    )
+    with pytest.raises(ValueError, match="external_instance_allowlist_mismatch"):
+        content_agents.validate_content_agents_paid_attempt_authority(
+            authority,
+            prepared_bundle=receipt_value,
+            bundle_receipt_sha256="sha256:"
+            + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+            config_preflight=preflight_value,
+            config_preflight_receipt_sha256="sha256:"
+            + hashlib.sha256(preflight.read_bytes()).hexdigest(),
+            max_hourly_rate_usd=0.75,
+            hard_cap_usd=2.0,
+            hard_ttl_seconds=7200,
+            allowed_active_instance_ids=[],
+        )
 
 
 def test_content_agents_execute_requires_paid_attempt_authority(

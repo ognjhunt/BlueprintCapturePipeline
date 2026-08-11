@@ -1633,6 +1633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         paid_attempt_authority,
                         prepared_bundle=prepared_bundle,
                         previous_attempt_receipt=previous_attempt_receipt,
+                        allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                     )
                 except ValueError as exc:
                     blockers.append(str(exc))
@@ -2576,6 +2577,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                         hard_cap_usd=args.adp_max_spend_usd,
                         hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                        allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                     )
                 except ValueError as exc:
                     blockers.append(str(exc))
@@ -2604,6 +2606,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
                 "retry_cap": 0,
             }
             allocation_binding_digest = (
@@ -2720,6 +2725,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     public_image=ADP_CONTENT_AGENTS_IMAGE,
+                    allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
@@ -2799,6 +2805,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                         hard_cap_usd=args.adp_max_spend_usd,
                         hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                        allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                     )
                 except ValueError:
                     blockers.append("simready_isaac_paid_attempt_authority_invalid")
@@ -2829,6 +2836,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
                 "machine_avoidlist_sha256": avoidlist_sha256,
                 "retry_cap": 0,
                 "paid_attempt_authority_digest": (
@@ -2906,6 +2916,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

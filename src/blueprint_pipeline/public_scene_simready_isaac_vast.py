@@ -9,11 +9,12 @@ import math
 import os
 from pathlib import Path
 import shutil
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 import zipfile
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .paid_attempt_authority import normalize_external_instance_allowlist
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .public_scene_simready_isaac_bundle import DEFAULT_IMAGE
 from .vast_provider_adapter import run_vast_provider_adapter
@@ -263,11 +264,18 @@ def validate_simready_isaac_paid_attempt_authority(
     max_hourly_rate_usd: float,
     hard_cap_usd: float,
     hard_ttl_seconds: int,
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Bind one explicit paid native-import probe attempt to exact bundle bytes."""
 
     value = dict(authority)
     errors: list[str] = []
+    authority_allowlist = normalize_external_instance_allowlist(
+        value.get("external_instance_allowlist")
+    )
+    expected_allowlist = normalize_external_instance_allowlist(
+        allowed_active_instance_ids
+    )
     if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA:
         errors.append("schema_invalid")
     if value.get("authority_kind") != "explicit_user_direction_in_current_goal":
@@ -312,6 +320,12 @@ def validate_simready_isaac_paid_attempt_authority(
         errors.append("physical_claim_boundary_invalid")
     if value.get("candidate_policy_queried") is not False:
         errors.append("candidate_policy_query_claim_invalid")
+    if authority_allowlist is None:
+        errors.append("external_instance_allowlist_invalid")
+    elif expected_allowlist is None:
+        errors.append("allowed_active_instance_ids_invalid")
+    elif authority_allowlist != expected_allowlist:
+        errors.append("external_instance_allowlist_mismatch")
     if value.get("authorization_digest") != canonical_digest(
         value, digest_field="authorization_digest"
     ):
@@ -405,6 +419,7 @@ def run_simready_isaac_vast(
     execute: bool,
     machine_avoidlist_path: str | Path | None = None,
     expected_probe_names: frozenset[str] | None = None,
+    allowed_active_instance_ids: Sequence[int] = (),
     max_hourly_rate_usd: float = 1.0,
     hard_cap_usd: float = 3.0,
     hard_ttl_seconds: int = 10_800,
@@ -445,6 +460,7 @@ def run_simready_isaac_vast(
         max_hourly_rate_usd=max_hourly_rate_usd,
         hard_cap_usd=hard_cap_usd,
         hard_ttl_seconds=hard_ttl_seconds,
+        allowed_active_instance_ids=allowed_active_instance_ids,
     )
     blueprint_commit = str(
         bundle.get("source_commit_sha")
@@ -563,6 +579,7 @@ def run_simready_isaac_vast(
                 require_known_supported_isaac_driver=True,
                 preferred_gpu_keywords=("L40S", "RTX 4090", "RTX A6000", "RTX A5000"),
                 prefer_isaac_rt=True,
+                allowed_active_instance_ids=allowed_active_instance_ids,
                 machine_avoidlist_path=local_avoidlist,
                 instance_label_prefix="blueprint-adp009b-simready-",
                 forward_hf_token=False,

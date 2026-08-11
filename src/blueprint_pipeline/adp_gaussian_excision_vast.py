@@ -21,6 +21,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .paid_attempt_authority import normalize_external_instance_allowlist
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .provider_bundle_rehearsal import (
     provider_bundle_rehearsal_blockers,
@@ -146,6 +147,7 @@ def validate_gaussian_excision_paid_attempt_authority(
     *,
     prepared_bundle: Mapping[str, Any],
     previous_attempt_receipt: Mapping[str, Any] | None,
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Bind one explicit paid-attempt grant to its bundle and prior receipt.
 
@@ -160,6 +162,12 @@ def validate_gaussian_excision_paid_attempt_authority(
     reference = value.get("authority_reference")
     authorized_by = value.get("authorized_by")
     authorized_on = value.get("authorized_on")
+    authority_allowlist = normalize_external_instance_allowlist(
+        value.get("external_instance_allowlist")
+    )
+    expected_allowlist = normalize_external_instance_allowlist(
+        allowed_active_instance_ids
+    )
     errors: list[str] = []
     if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA:
         errors.append("schema_invalid")
@@ -205,6 +213,12 @@ def validate_gaussian_excision_paid_attempt_authority(
         "hard_ttl_seconds"
     ):
         errors.append("maximum_single_resource_ttl_mismatch")
+    if authority_allowlist is None:
+        errors.append("external_instance_allowlist_invalid")
+    elif expected_allowlist is None:
+        errors.append("allowed_active_instance_ids_invalid")
+    elif authority_allowlist != expected_allowlist:
+        errors.append("external_instance_allowlist_mismatch")
     if value.get("authorization_digest") != canonical_digest(
         value, digest_field="authorization_digest"
     ):
@@ -1239,6 +1253,7 @@ def run_gaussian_excision_vast(
         paid_attempt_authority,
         prepared_bundle=bundle,
         previous_attempt_receipt=previous_attempt_receipt,
+        allowed_active_instance_ids=allowed_active_instance_ids,
     )
     remaining_minutes = _remaining_minutes(
         job=job,

@@ -458,6 +458,7 @@ def _paid_attempt_authority(
     *,
     ordinal: int = 1,
     previous_attempt_receipt_digest: str | None = None,
+    external_instance_allowlist: list[int] | None = None,
 ) -> dict[str, object]:
     authority: dict[str, object] = {
         "schema_version": excision_vast.PAID_ATTEMPT_AUTHORITY_SCHEMA,
@@ -479,11 +480,37 @@ def _paid_attempt_authority(
         "automatic_paid_retry_authorized": False,
         "hard_attempt_spend_cap_usd": bundle["hard_cap_usd"],
         "maximum_single_resource_ttl_seconds": bundle["hard_ttl_seconds"],
+        "external_instance_allowlist": external_instance_allowlist or [],
     }
     authority["authorization_digest"] = canonical_digest(
         authority, digest_field="authorization_digest"
     )
     return authority
+
+
+def test_paid_attempt_authority_binds_the_exact_external_instance_allowlist(
+    tmp_path: Path,
+) -> None:
+    bundle = _prepared_excision_bundle(tmp_path)
+    authority = _paid_attempt_authority(
+        bundle, external_instance_allowlist=[17, 23]
+    )
+
+    validated = excision_vast.validate_gaussian_excision_paid_attempt_authority(
+        authority,
+        prepared_bundle=bundle,
+        previous_attempt_receipt=None,
+        allowed_active_instance_ids=[23, 17],
+    )
+    assert validated["external_instance_allowlist"] == [17, 23]
+
+    with pytest.raises(ValueError, match="external_instance_allowlist_mismatch"):
+        excision_vast.validate_gaussian_excision_paid_attempt_authority(
+            authority,
+            prepared_bundle=bundle,
+            previous_attempt_receipt=None,
+            allowed_active_instance_ids=[17],
+        )
 
 
 def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None:

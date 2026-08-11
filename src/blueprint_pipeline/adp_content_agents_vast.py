@@ -23,6 +23,7 @@ from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
 )
 from .decision_evidence_contracts import canonical_digest
+from .paid_attempt_authority import normalize_external_instance_allowlist
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .openai_successor_models import (
     OPENAI_IMAGE_MODEL,
@@ -539,6 +540,7 @@ def validate_content_agents_paid_attempt_authority(
     max_hourly_rate_usd: float,
     hard_cap_usd: float,
     hard_ttl_seconds: int,
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Bind one explicit paid Content Agents attempt to exact local receipts.
 
@@ -549,6 +551,12 @@ def validate_content_agents_paid_attempt_authority(
 
     value = dict(authority)
     errors: list[str] = []
+    authority_allowlist = normalize_external_instance_allowlist(
+        value.get("external_instance_allowlist")
+    )
+    expected_allowlist = normalize_external_instance_allowlist(
+        allowed_active_instance_ids
+    )
     if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA:
         errors.append("schema_invalid")
     if value.get("authority_kind") != "explicit_user_direction_in_current_goal":
@@ -599,6 +607,12 @@ def validate_content_agents_paid_attempt_authority(
         errors.append("agent_output_authority_claim_invalid")
     if value.get("native_simulator_import_qualified") is not False:
         errors.append("native_simulator_import_claim_invalid")
+    if authority_allowlist is None:
+        errors.append("external_instance_allowlist_invalid")
+    elif expected_allowlist is None:
+        errors.append("allowed_active_instance_ids_invalid")
+    elif authority_allowlist != expected_allowlist:
+        errors.append("external_instance_allowlist_mismatch")
     if value.get("authorization_digest") != canonical_digest(
         value, digest_field="authorization_digest"
     ):
@@ -1864,6 +1878,7 @@ def run_content_agents_vast(
     hard_cap_usd: float = 3.0,
     hard_ttl_seconds: int = 7200,
     public_image: str = DEFAULT_IMAGE,
+    allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Run one Content Agents attempt and always require provider-zero afterward."""
 
@@ -1968,6 +1983,7 @@ def run_content_agents_vast(
                 require_known_supported_isaac_driver=False,
                 preferred_gpu_keywords=("RTX 4090", "RTX A6000", "L40S", "A100"),
                 prefer_isaac_rt=False,
+                allowed_active_instance_ids=allowed_active_instance_ids,
                 instance_label_prefix="blueprint-adp-content-agents-",
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
