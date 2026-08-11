@@ -48,7 +48,7 @@ except ModuleNotFoundError:  # repository package
     )
 
 
-CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v4"
+CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v5"
 CONTROL_EPISODE_SCHEMA_VERSION = "adp009d_control_episode.v2"
 CONTROL_PAIR_SCHEMA_VERSION = "adp009d_control_pair.v1"
 SCENARIO_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
@@ -69,6 +69,13 @@ CONTROLLED_BODY_QUATERNION_WORLD_XYZW = [1.0, 0.0, 0.0, 0.0]
 PREGRASP_CLEARANCE_ABOVE_SUPPORT_M = 0.42
 MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
+# The DROID Robotiq 2F-85 is the frozen ADP-009D embodiment.  A generic pose
+# tolerance is not enough before descending around an object: the tool can be
+# "at" pregrasp while one open finger is already over the object.  Preserve a
+# small geometric clearance on each side and derive the admissible alignment
+# error from the sealed object's radius.
+GRIPPER_FULL_OPENING_M = 0.085
+OPEN_JAW_SAFETY_CLEARANCE_M = 0.003
 MOTION_PHASE_MINIMUM_STEPS = 1
 MOTION_PHASE_MAXIMUM_STEPS = 240
 GRIPPER_DWELL_MINIMUM_STEPS = 30
@@ -169,8 +176,22 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
     start = _position(parameters, "object_start")
     target = _position(parameters, "target")
     object_height = _finite(parameters.get("object_height_m"))
+    if "object_radius_m" not in parameters:
+        raise ControlEpisodeError(["control_plan_object_radius_missing"])
+    object_radius = _finite(parameters.get("object_radius_m"))
     if object_height <= 0.0:
         raise ControlEpisodeError(["control_plan_object_height_invalid"])
+    if object_radius <= 0.0:
+        raise ControlEpisodeError(["control_plan_object_radius_invalid"])
+    open_jaw_radial_clearance = GRIPPER_FULL_OPENING_M / 2.0 - object_radius
+    if open_jaw_radial_clearance <= OPEN_JAW_SAFETY_CLEARANCE_M:
+        raise ControlEpisodeError(
+            ["control_plan_object_open_jaw_clearance_insufficient"]
+        )
+    aperture_safe_arrival_tolerance = min(
+        PHASE_ARRIVAL_TOLERANCE_M,
+        open_jaw_radial_clearance - OPEN_JAW_SAFETY_CLEARANCE_M,
+    )
     grasp_frame_z = start[2] + object_height / 2.0
     place_frame_z = target[2] + object_height / 2.0
     phases = [
@@ -269,7 +290,14 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
             phase["target_quaternion_world_xyzw"] = list(
                 CONTROLLED_BODY_QUATERNION_WORLD_XYZW
             )
-            phase["arrival_tolerance_m"] = PHASE_ARRIVAL_TOLERANCE_M
+            if phase["phase_id"] in {"pregrasp", "descend", "grasp"}:
+                phase["arrival_tolerance_m"] = aperture_safe_arrival_tolerance
+                phase["arrival_tolerance_basis"] = (
+                    "open_jaw_radial_clearance_minus_safety_clearance"
+                )
+            else:
+                phase["arrival_tolerance_m"] = PHASE_ARRIVAL_TOLERANCE_M
+                phase["arrival_tolerance_basis"] = "generic_pose_tolerance"
             phase["arrival_stability_steps"] = PHASE_ARRIVAL_STABILITY_STEPS
         phase["max_joint_delta_rad"] = MAX_JOINT_DELTA_PER_STEP_RAD
 
@@ -284,6 +312,16 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_start_position_world_m": start,
         "resolved_destination_position_world_m": target,
         "object_height_m": object_height,
+        "object_radius_m": object_radius,
+        "open_gripper_geometry": {
+            "full_opening_m": GRIPPER_FULL_OPENING_M,
+            "object_diameter_m": object_radius * 2.0,
+            "radial_clearance_m": open_jaw_radial_clearance,
+            "safety_clearance_m": OPEN_JAW_SAFETY_CLEARANCE_M,
+            "aperture_safe_arrival_tolerance_m": (
+                aperture_safe_arrival_tolerance
+            ),
+        },
         "grasp_target_frame": GRASP_TARGET_FRAME,
         "controlled_body_orientation_strategy": CONTROLLED_BODY_ORIENTATION_STRATEGY,
         "controlled_body_quaternion_world_xyzw": list(
@@ -331,6 +369,7 @@ def _phase_arrival(
     ]
     tolerance = float(phase["arrival_tolerance_m"])
     error = math.dist(achieved, target)
+    lateral_error = math.dist(achieved[:2], target[:2])
     stability_steps_required = int(phase["arrival_stability_steps"])
     return {
         "phase_id": str(phase["phase_id"]),
@@ -339,7 +378,9 @@ def _phase_arrival(
         "start_position_world_m": start,
         "achieved_position_world_m": achieved,
         "terminal_position_error_m": error,
+        "terminal_lateral_error_m": lateral_error,
         "arrival_tolerance_m": tolerance,
+        "arrival_tolerance_basis": str(phase["arrival_tolerance_basis"]),
         "terminal_within_tolerance": error <= tolerance,
         "minimum_steps": int(phase["minimum_steps"]),
         "maximum_steps": int(phase["maximum_steps"]),
@@ -561,6 +602,9 @@ def run_control_episode(
                 phase_execution_blocker = (
                     f"{BLOCKER_PHASE_NOT_REACHED}:{phase['phase_id']}:"
                     f"error_m={arrival['terminal_position_error_m']:.6f}:"
+                    "lateral_error_m="
+                    f"{arrival['terminal_lateral_error_m']:.6f}:"
+                    f"tolerance_m={arrival['arrival_tolerance_m']:.6f}:"
                     "stability_steps="
                     f"{arrival['arrival_stability_steps_observed']}/"
                     f"{arrival['arrival_stability_steps_required']}"
@@ -703,7 +747,7 @@ def run_required_controls(
         ):
             raise ControlEpisodeError(["control_plan_bundle_binding_mismatch"])
     output = Path(output_dir).expanduser().resolve()
-    _write_json(output / "adp009d_control_plan.v4.json", plan)
+    _write_json(output / "adp009d_control_plan.v5.json", plan)
     controls: list[dict[str, Any]] = []
     for control_id in REQUIRED_CONTROLS:
         receipt = run_control_episode(

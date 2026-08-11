@@ -51,6 +51,7 @@ def _instance() -> dict:
             "target_y_m": TARGET[1],
             "target_z_m": TARGET[2],
             "object_height_m": 0.1694279937744141,
+            "object_radius_m": 0.031094726014345042,
         },
         "factor_records": [],
         "required_controls": [
@@ -228,6 +229,19 @@ class _TransientArrivalEnvironment(_ControlEnvironment):
             self.grasp_frame = list(START)
 
 
+class _LegacyToleranceStallEnvironment(_ControlEnvironment):
+    """Replay the paid canary's unsafe pregrasp residual without GPU imports."""
+
+    def step(self, isaac_action):
+        super().step(isaac_action)
+        if self.pending_target is not None:
+            self.grasp_frame = [
+                self.pending_target[0],
+                self.pending_target[1] - 0.01585,
+                self.pending_target[2],
+            ]
+
+
 def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> None:
     instance = _instance()
 
@@ -256,7 +270,30 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
     )
     assert grasp["target_frame"] == "probe_calibrated_finger_midpoint"
     assert grasp["target_quaternion_world_xyzw"] == [1.0, 0.0, 0.0, 0.0]
-    assert grasp["arrival_tolerance_m"] == 0.02
+    assert grasp["arrival_tolerance_m"] == pytest.approx(
+        0.085 / 2.0
+        - instance["resolved_parameters"]["object_radius_m"]
+        - 0.003
+    )
+    assert grasp["arrival_tolerance_basis"] == (
+        "open_jaw_radial_clearance_minus_safety_clearance"
+    )
+    assert first["open_gripper_geometry"] == {
+        "full_opening_m": 0.085,
+        "object_diameter_m": pytest.approx(
+            instance["resolved_parameters"]["object_radius_m"] * 2.0
+        ),
+        "radial_clearance_m": pytest.approx(
+            0.085 / 2.0
+            - instance["resolved_parameters"]["object_radius_m"]
+        ),
+        "safety_clearance_m": 0.003,
+        "aperture_safe_arrival_tolerance_m": pytest.approx(
+            0.085 / 2.0
+            - instance["resolved_parameters"]["object_radius_m"]
+            - 0.003
+        ),
+    }
     assert grasp["minimum_steps"] == 30
     assert grasp["maximum_steps"] == 120
     assert grasp["arrival_stability_steps"] == 3
@@ -347,7 +384,7 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         for row in positive["phase_arrivals"]
         if row["phase_id"] in {"grasp", "release"}
     } == {"grasp": 30, "release": 30}
-    assert (tmp_path / "adp009d_control_plan.v4.json").is_file()
+    assert (tmp_path / "adp009d_control_plan.v5.json").is_file()
     assert negative["action_trace"][0]["isaac_action"][:7] == negative[
         "action_trace"
     ][0]["observed_joint_position_before_rad"]
@@ -412,7 +449,15 @@ def test_nonconverging_phase_aborts_before_grasp_and_retains_typed_evidence(
             "start_position_world_m": START,
             "achieved_position_world_m": START,
             "terminal_position_error_m": pytest.approx(0.42),
-            "arrival_tolerance_m": 0.02,
+            "terminal_lateral_error_m": 0.0,
+            "arrival_tolerance_m": pytest.approx(
+                0.085 / 2.0
+                - _instance()["resolved_parameters"]["object_radius_m"]
+                - 0.003
+            ),
+            "arrival_tolerance_basis": (
+                "open_jaw_radial_clearance_minus_safety_clearance"
+            ),
             "terminal_within_tolerance": False,
             "minimum_steps": 1,
             "maximum_steps": 240,
@@ -424,6 +469,59 @@ def test_nonconverging_phase_aborts_before_grasp_and_retains_typed_evidence(
         }
     ]
     assert {row["phase_id"] for row in positive["action_trace"]} == {"pregrasp"}
+
+
+def test_control_plan_rejects_object_that_cannot_clear_open_jaws() -> None:
+    instance = _instance()
+    instance["resolved_parameters"]["object_radius_m"] = 0.041
+    instance["instance_digest"] = canonical_digest(
+        instance, digest_field="instance_digest"
+    )
+
+    with pytest.raises(ControlEpisodeError) as excinfo:
+        materialize_control_plan(instance)
+
+    assert "control_plan_object_open_jaw_clearance_insufficient" in (
+        excinfo.value.errors
+    )
+
+
+def test_control_plan_requires_observed_object_radius() -> None:
+    instance = _instance()
+    del instance["resolved_parameters"]["object_radius_m"]
+    instance["instance_digest"] = canonical_digest(
+        instance, digest_field="instance_digest"
+    )
+
+    with pytest.raises(ControlEpisodeError) as excinfo:
+        materialize_control_plan(instance)
+
+    assert "control_plan_object_radius_missing" in excinfo.value.errors
+
+
+def test_paid_canary_legacy_pregrasp_residual_is_not_admitted(
+    tmp_path: Path,
+) -> None:
+    plan = materialize_control_plan(_instance())
+    plan["scripted_positive_phases"] = [plan["scripted_positive_phases"][0]]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    receipt = run_control_episode(
+        environment=_LegacyToleranceStallEnvironment(positive_moves_object=False),
+        plan=plan,
+        control_id=SCRIPTED_POSITIVE,
+        gripper_open_command=1.0,
+        gripper_closed_command=0.0,
+        media_output_dir=tmp_path,
+        episode_id="paid-canary-pregrasp-residual",
+    )
+
+    arrival = receipt["phase_arrivals"][0]
+    assert arrival["terminal_position_error_m"] == pytest.approx(0.01585)
+    assert arrival["terminal_lateral_error_m"] == pytest.approx(0.01585)
+    assert arrival["arrival_tolerance_m"] == pytest.approx(0.00840527398565496)
+    assert arrival["target_reached"] is False
+    assert "lateral_error_m=0.015850" in receipt["phase_execution_blocker"]
 
 
 def test_slowly_converging_phase_runs_past_legacy_budget_then_stops_early(
