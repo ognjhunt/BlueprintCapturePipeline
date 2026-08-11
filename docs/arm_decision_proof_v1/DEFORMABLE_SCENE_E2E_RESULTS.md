@@ -192,7 +192,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 
 ## Cost and provider lifecycle
 
-- Deformable Vast/GPU spend retained so far: `$0.412122`.
+- Deformable Vast/GPU spend retained so far: `$0.438586`.
 - Palatial/Newton local attempt 001: retained free null, 120 requested CPU
   frames, hard timeout at 300 seconds, `$0.00`, scratch removed, receipt file
   SHA-256 `a159530bca09fccf07cd42dc0e6a097e876621e47861e323ad6f779f647164fb`.
@@ -262,11 +262,20 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
   teardown, object-store cleanup, final validation, and provider-zero all passed.
   The reusable evidence gap was that the worker terminal retained only exception
   type, not message or traceback; the diagnostic fix is implemented for v22.
-- Current provider state is zero as of the latest live refresh after v21 teardown:
+- Deformable native canary v22 launched Vast instance `47453236`, but live
+  provider readback reported `dph_total=$0.841481/hr`, exceeding the explicit
+  `$0.80/hr` command ceiling even though the retained prelaunch all-in binding
+  used `$0.705185/hr`. I manually stopped only that exact instance as a
+  cap-violation safety stop. The allocator then wrote `vast_heartbeat_instance_exited`,
+  teardown completed, final validation passed, and provider-zero was confirmed.
+  Cost: `$0.026464`; no policy query; no native scientific result. The reusable
+  fix is to flatten live `/instances/{id}/` provider rows before all-in cost
+  binding so post-create `dph_total` can fail closed.
+- Current provider state is zero as of the latest live refresh after v22 teardown:
   `vastai show instances --raw` returned `[]`. The deformable lane owns no live
   provider instance.
-- Deformable Vast/GPU attempts with allocation: `8`; prelaunch-blocked attempts:
-  `2`; local dry-run command-shape nulls: `2`; uploads: `6`; automatic retries:
+- Deformable Vast/GPU attempts with allocation: `9`; prelaunch-blocked attempts:
+  `2`; local dry-run command-shape nulls: `2`; uploads: `7`; automatic retries:
   `0`.
 
 ## Claim table
@@ -275,7 +284,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | --- | --- |
 | Implemented | Multi-entity contracts, paired placement, scoring/control, camera, trust, external-asset ingest, clean PhysX preparation, native adapter, canary packaging, abstention sealing, and portable evidence indexing are published with hermetic fixtures |
 | Simulator-qualified | Static source inspection and deterministic metric reconstruction only; neither the inserted towel nor engineered basket is natively simulator-qualified |
-| Blocked/abstained | Historical rights abstention superseded. Provider-zero is currently true after v21 teardown. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, now fixed locally for the next canary |
+| Blocked/abstained | Historical rights abstention superseded. Provider-zero is currently true after v22 teardown. Native cook/contact qualification remains unproven; v21 reached native worker execution and exposed an under-instrumented TypeError terminal, and v22 exposed a live provider-rate cap readback gap before native execution |
 | Physically unresolved | Towel material equivalence, hidden source-basket interior/thickness, real Franka behavior, site fidelity, and sim-to-real transfer |
 
 ## Landed commits and publication
@@ -301,6 +310,7 @@ No `never_moved`, failure, success, tie, or ranking claim exists yet.
 | `86ae08f53` | Recognize deformable asset Vast results |
 | `4716f49ce` | Drop stale deformable cook symbol requirement |
 | `0fa6271a4` | Preserve Vast machine avoidlist updates |
+| `8f7268bfe` | Retain deformable worker exception diagnostics |
 
 Each listed commit was pushed to
 `origin/codex/adp-deformable-scene-e2e-20260810`. Commit `4716f49ce` is the
@@ -316,9 +326,9 @@ prepared towel asset. The portable Finder index is
 It contains zero episode rows because no control or learned-policy episode was
 executed; that absence is evidence, not a policy null.
 
-The single next action is to commit the worker exception-diagnostic repair, then
-run exactly one fresh no-retry Vast native canary from the current implementation
-and regenerated source package v2 in a new evidence root. If the canary qualifies
+The single next action is to commit the live Vast rate-readback guard, then run
+exactly one fresh no-retry Vast native canary from the current implementation and
+regenerated source package v2 in a new evidence root. If the canary qualifies
 cook/load/reset/contact/cameras, the run continues to zero-action and scripted
 controls before any learned policy. If the native backend cannot provide
 qualified rigid--deformable contact attribution, the run seals a typed native

@@ -5666,6 +5666,32 @@ def test_vast_adapter_missing_grant_dominates_provider_create(
     assert "vast_provider_shared_admission_missing_or_invalid" in result["blockers"]
 
 
+def test_vast_adapter_poll_instance_returns_nested_live_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nested_live_rate_payload = {
+        "instances": {
+            "actual_status": "running",
+            "cur_state": "running",
+            "dph_total": 0.91,
+            "storage_total_cost": 0.11,
+        }
+    }
+    monkeypatch.setattr(vpa, "_api_json", lambda **_: (200, nested_live_rate_payload))
+
+    status, observations, live_payload = vpa._poll_instance(
+        instance_id=22,
+        api_key="k",
+        timeout_seconds=10,
+        poll_interval_seconds=0,
+    )
+
+    assert status == "running"
+    assert observations[0]["actual_status"] == "running"
+    assert live_payload["dph_total"] == 0.91
+    assert live_payload["storage_total_cost"] == 0.11
+
+
 def test_vast_adapter_live_error_paths_are_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5858,6 +5884,54 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     assert failed_instance["blockers"] == ["vast_instance_not_running:failed"]
     startup = _read_json(tmp_path / "failed-instance" / "vast_startup_probe_manifest.json")
     assert startup["blockers"] == ["vast_instance_status:failed"]
+
+    def live_rate_over_cap_api(**kwargs):  # type: ignore[no-untyped-def]
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": []}
+        if kwargs["method"] == "POST":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 31,
+                        "ask_contract_id": 31,
+                        "gpu_name": "RTX 4090",
+                        "dph_total": 0.70,
+                        "driver_version": "580.95.05",
+                    }
+                ]
+            }
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/asks/31/":
+            return 200, {"new_contract": 310}
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/310/":
+            return 200, {
+                "instances": {
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "dph_total": 0.84,
+                    "storage_total_cost": 0.14,
+                }
+            }
+        if kwargs["method"] == "DELETE":
+            return 200, {"success": True}
+        raise AssertionError(kwargs)
+
+    monkeypatch.setattr(vpa, "_api_json", live_rate_over_cap_api)
+    live_rate_blocked = run_vast_provider_adapter(
+        job_dir=tmp_path / "live-rate-over-cap",
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        max_hourly_rate=0.80,
+        session_max_live_minutes=None,
+    )
+    assert live_rate_blocked["status"] == "failed"
+    assert live_rate_blocked["blockers"] == [
+        "created_instance_all_in_hourly_rate_exceeds_max_hourly"
+    ]
+    binding = _read_json(tmp_path / "live-rate-over-cap" / "vast_all_in_cost_binding.json")
+    assert binding["all_in_hourly_rate_usd"] == pytest.approx(0.84)
+    assert binding["all_in_hourly_rate_under_max_hourly"] is False
 
     def http_error_api(**kwargs):  # type: ignore[no-untyped-def]
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":

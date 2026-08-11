@@ -4570,6 +4570,11 @@ def _poll_instance(
     deadline = time.monotonic() + timeout_seconds
     observations: list[dict[str, Any]] = []
     last_payload: dict[str, Any] = {}
+
+    def instance_row(payload: Mapping[str, Any]) -> dict[str, Any]:
+        instances = payload.get("instances")
+        return dict(instances) if isinstance(instances, Mapping) else dict(payload)
+
     while time.monotonic() < deadline:
         status_code, payload = _api_json(
             method="GET",
@@ -4599,9 +4604,9 @@ def _poll_instance(
             "stopped_before_start",
             "failed",
         }:
-            return status, observations, last_payload
+            return status, observations, instance_row(last_payload)
         time.sleep(poll_interval_seconds)
-    return _instance_status(last_payload), observations, last_payload
+    return _instance_status(last_payload), observations, instance_row(last_payload)
 
 
 def _execute_and_fetch(
