@@ -1338,7 +1338,7 @@ def materialize_direct_evidence_expansion_set(
             )
             candidate_path = _ownership_output_path(
                 ownership_path=ownership_path,
-                record=outputs.get("historical_obb_source_indices"),
+                record=outputs.get("historical_obb_indices"),
                 code=f"direct_expansion_set_candidate_indices_invalid:{task_id}",
             )
             protected_path = _ownership_output_path(

@@ -190,7 +190,7 @@ def _coverage_cutout_inputs(
         "owned_indices": ownership_root / "owned.npy",
         "ambiguous_indices": ownership_root / "ambiguous.npy",
         "retained_indices": ownership_root / "retained.npy",
-        "historical_obb_source_indices": ownership_root / "historical_obb.npy",
+        "historical_obb_indices": ownership_root / "historical_obb.npy",
         "protected_camera_count": ownership_root / "protected_camera_count.npy",
         "core_camera_count": ownership_root / "core_camera_count.npy",
         "core_fraction": ownership_root / "core_fraction.npy",
@@ -212,7 +212,7 @@ def _coverage_cutout_inputs(
         allow_pickle=False,
     )
     np.save(
-        array_paths["historical_obb_source_indices"],
+        array_paths["historical_obb_indices"],
         np.asarray(sorted(selected), dtype=np.int64),
         allow_pickle=False,
     )
