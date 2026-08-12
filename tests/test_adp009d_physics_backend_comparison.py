@@ -26,6 +26,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     build_comparison_receipt,
     build_newton_canary_admission,
     build_newton_canary_terminal_receipt,
+    build_newton_actuator_limit_mapping_contract,
     build_newton_robot_inertial_overlay_contract,
     normalize_physics_backend,
     validate_backend_probe,
@@ -34,6 +35,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     validate_comparison_design_contract,
     validate_newton_canary_admission,
 )
+from blueprint_pipeline.adp009d_provider_zero import build_provider_zero_receipt
 from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.spend_admission_lock import build_spend_admission_lock
@@ -49,6 +51,19 @@ COMMITTED_DESIGN = (
 
 def _newton_terminal_inputs() -> dict[str, dict]:
     profile = build_backend_profile("newton")
+    provider_inventory = build_provider_zero_receipt(
+        {
+            provider: {
+                "provider": provider,
+                "status": "observed",
+                "api_confirmed": True,
+                "resources": [],
+                "blockers": [],
+            }
+            for provider in ("runpod", "vast", "digitalocean")
+        },
+        now=datetime(2026, 8, 11, 18, 0, tzinfo=timezone.utc),
+    )
     inputs = {
         "admission": {
             "schema_version": CANARY_ADMISSION_SCHEMA_VERSION,
@@ -100,6 +115,7 @@ def _newton_terminal_inputs() -> dict[str, dict]:
             "observed_roles": ["provider_runtime_evidence", "teardown_manifest"],
         },
         "teardown_manifest": {
+            "generated_at": "2026-08-11T17:59:00+00:00",
             "status": "completed",
             "vast_instance_ids": [123],
             "runner_gpu_teardown_completed": True,
@@ -112,23 +128,7 @@ def _newton_terminal_inputs() -> dict[str, dict]:
                 }
             ],
         },
-        "provider_inventory": {
-            "schema_version": "gpu_spend_guard.v1",
-            "generated_at": "2026-08-11T17:59:10+00:00",
-            "live_instance_count": 0,
-            "instances": [],
-            "blockers": [],
-            "inventory_results": [
-                {
-                    "provider": provider,
-                    "required": True,
-                    "status": "succeeded",
-                    "row_count": 0,
-                    "blockers": [],
-                }
-                for provider in ("runpod", "vast", "digitalocean")
-            ],
-        },
+        "provider_inventory": provider_inventory,
         "vast_charge": {
             "type": "instance",
             "source": "instance-123",
@@ -218,6 +218,32 @@ def test_newton_pre_runtime_failure_retains_terminal_receipt_without_fake_native
     assert receipt["policy_verdict"] is None
 
 
+def test_newton_terminal_receipt_preserves_a_prior_immutable_backend_profile() -> None:
+    inputs = _newton_terminal_inputs()
+    executed_profile = deepcopy(build_backend_profile("newton"))
+    executed_profile["required_capabilities"].pop("newton_actuator_limit_mapping")
+    executed_profile.pop("actuator_limit_mapping")
+    executed_profile["profile_digest"] = canonical_digest(
+        executed_profile, digest_field="profile_digest"
+    )
+    inputs["admission"]["backend_profile_digest"] = executed_profile["profile_digest"]
+    inputs["admission"]["admission_digest"] = canonical_digest(
+        inputs["admission"], digest_field="admission_digest"
+    )
+    inputs["bundle_receipt"]["physics_backend_profile_digest"] = executed_profile[
+        "profile_digest"
+    ]
+
+    receipt = build_newton_canary_terminal_receipt(
+        **inputs, backend_profile=executed_profile
+    )
+
+    assert receipt["backend_profile_digest"] == executed_profile["profile_digest"]
+    assert receipt["evidence_input_digests"]["backend_profile"] == canonical_digest(
+        executed_profile
+    )
+
+
 def test_newton_pre_runtime_terminal_receipt_rejects_ambiguous_missing_runtime() -> None:
     inputs = _newton_terminal_inputs()
     inputs["native_result"] = None
@@ -238,6 +264,20 @@ def test_newton_pre_runtime_terminal_receipt_rejects_ambiguous_missing_runtime()
 def test_newton_terminal_receipt_rejects_nonzero_provider_inventory() -> None:
     inputs = _newton_terminal_inputs()
     inputs["provider_inventory"]["live_instance_count"] = 1
+
+    with pytest.raises(
+        PhysicsBackendContractError,
+        match="adp009d_newton_terminal_provider_zero_invalid",
+    ):
+        build_newton_canary_terminal_receipt(**inputs)
+
+
+def test_newton_terminal_receipt_rejects_provider_zero_from_before_teardown() -> None:
+    inputs = _newton_terminal_inputs()
+    inputs["provider_inventory"]["generated_at"] = "2026-08-11T17:58:59+00:00"
+    inputs["provider_inventory"]["receipt_digest"] = canonical_digest(
+        inputs["provider_inventory"], digest_field="receipt_digest"
+    )
 
     with pytest.raises(
         PhysicsBackendContractError,
@@ -355,6 +395,21 @@ def _probe(profile: dict) -> dict:
             ),
             "robot_source_mutated": (
                 False if profile["physics_backend"] == "newton" else None
+            ),
+            "newton_actuator_limit_mapping_contract_digest": (
+                profile["actuator_limit_mapping"]["mapping_digest"]
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
+            "newton_actuator_limit_mapping_status": (
+                "applied_and_verified"
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
+            "newton_actuator_limit_mapping_receipt_digest": (
+                "sha256:" + "c" * 64
+                if profile["physics_backend"] == "newton"
+                else None
             ),
         },
         "contact_buffer": {"nconmax": 1024, "overflow_observed": False},
@@ -549,6 +604,19 @@ def test_committed_design_is_canonical_and_provider_free() -> None:
     assert committed["default_physics_backend"] == "physx"
     assert committed["provider_mutation_performed"] is False
     assert committed["status"] == "validated_without_provider_launch"
+
+
+def test_newton_actuator_limit_mapping_is_exact_and_non_retuning() -> None:
+    mapping = build_newton_actuator_limit_mapping_contract()
+
+    assert mapping["physics_backend"] == "newton"
+    assert mapping["legacy_fields_must_be_cleared"] is True
+    assert mapping["retune_or_fidelity_claimed"] is False
+    assert mapping["actuators"]["panda_shoulder"]["effort_limit_sim"] == 87.0
+    assert mapping["actuators"]["panda_forearm"]["velocity_limit_sim"] == 2.61
+    assert mapping["mapping_digest"] == canonical_digest(
+        mapping, digest_field="mapping_digest"
+    )
 
 
 def test_backend_plans_share_semantics_but_not_contact_configuration() -> None:

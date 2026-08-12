@@ -127,6 +127,27 @@ PHYSX_ONLY_FIELD_NAMES = frozenset(
     }
 )
 
+NEWTON_ACTUATOR_LIMITS = {
+    "panda_shoulder": {
+        "legacy_effort_limit": 87.0,
+        "legacy_velocity_limit": 2.175,
+        "effort_limit_sim": 87.0,
+        "velocity_limit_sim": 2.175,
+    },
+    "panda_forearm": {
+        "legacy_effort_limit": 12.0,
+        "legacy_velocity_limit": 2.61,
+        "effort_limit_sim": 12.0,
+        "velocity_limit_sim": 2.61,
+    },
+    "gripper": {
+        "legacy_effort_limit": None,
+        "legacy_velocity_limit": 1.0,
+        "effort_limit_sim": None,
+        "velocity_limit_sim": 1.0,
+    },
+}
+
 COMPARABILITY_BINDINGS = (
     "source_bundle_digest",
     "sealed_scene_digest",
@@ -277,6 +298,30 @@ def build_newton_robot_inertial_overlay_contract() -> dict[str, Any]:
     return contract
 
 
+def build_newton_actuator_limit_mapping_contract() -> dict[str, Any]:
+    """Bind Newton's active implicit-actuator limits to Arena's source values.
+
+    Isaac Lab accepts the legacy ``effort_limit`` and ``velocity_limit`` fields
+    for backwards compatibility, but Newton does not use them.  Copying the
+    existing values to their explicitly simulated counterparts is a compatibility
+    mapping, not an actuator retune or an independent fidelity claim.
+    """
+
+    contract: dict[str, Any] = {
+        "schema_version": "adp009d_newton_actuator_limit_mapping.v1",
+        "physics_backend": "newton",
+        "mode": "copy_exact_arena_legacy_limits_to_newton_sim_fields",
+        "actuators": NEWTON_ACTUATOR_LIMITS,
+        "legacy_fields_must_be_cleared": True,
+        "retune_or_fidelity_claimed": False,
+        "mapping_digest": "",
+    }
+    contract["mapping_digest"] = canonical_digest(
+        contract, digest_field="mapping_digest"
+    )
+    return contract
+
+
 def build_backend_profile(physics_backend: str) -> dict[str, Any]:
     """Build the immutable provider-free profile for one backend."""
 
@@ -380,6 +425,9 @@ def build_backend_profile(physics_backend: str) -> dict[str, Any]:
                     "use_mujoco_cpu": False,
                     "use_cuda_graph": True,
                 },
+                "actuator_limit_mapping": (
+                    build_newton_actuator_limit_mapping_contract()
+                ),
                 "contact_model": {
                     "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
                     "contact_generation": "mujoco_warp_from_generic_usd_import",
@@ -404,6 +452,7 @@ def build_backend_profile(physics_backend: str) -> dict[str, Any]:
                 },
             }
         )
+        common["required_capabilities"]["newton_actuator_limit_mapping"] = True
     common["profile_digest"] = canonical_digest(common, digest_field="profile_digest")
     return common
 
@@ -590,6 +639,21 @@ def validate_backend_probe(
             or value.get("contact_buffer", {}).get("overflow_observed") is not False
         ):
             blockers.append("adp009d_newton_probe_contact_model_invalid")
+        actuator_mapping = dict(profile.get("actuator_limit_mapping") or {})
+        if (
+            conversion_row.get("newton_actuator_limit_mapping_contract_digest")
+            != actuator_mapping.get("mapping_digest")
+            or conversion_row.get("newton_actuator_limit_mapping_status")
+            != "applied_and_verified"
+            or not isinstance(
+                conversion_row.get("newton_actuator_limit_mapping_receipt_digest"),
+                str,
+            )
+            or not str(
+                conversion_row.get("newton_actuator_limit_mapping_receipt_digest")
+            ).startswith("sha256:")
+        ):
+            blockers.append("adp009d_newton_probe_actuator_limit_mapping_invalid")
     if (
         value.get("policy_query_count") != 0
         or value.get("candidate_outcomes_accessed") is not False
@@ -829,10 +893,27 @@ def build_newton_canary_terminal_receipt(
     teardown_manifest: Mapping[str, Any],
     provider_inventory: Mapping[str, Any],
     vast_charge: Mapping[str, Any],
+    backend_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal a paid Newton canary's terminal evidence without a verdict."""
 
-    profile = build_backend_profile("newton")
+    profile = (
+        dict(backend_profile)
+        if isinstance(backend_profile, Mapping)
+        else build_backend_profile("newton")
+    )
+    if (
+        profile.get("physics_backend") != "newton"
+        or profile.get("controls_only") is not True
+        or profile.get("policy_query_allowed") is not False
+        or profile.get("candidate_outcome_access_allowed") is not False
+        or profile.get("mid_run_backend_switch_allowed") is not False
+        or not isinstance(profile.get("runtime_identity"), Mapping)
+        or not isinstance(profile.get("source_bindings"), Mapping)
+        or profile.get("profile_digest")
+        != canonical_digest(profile, digest_field="profile_digest")
+    ):
+        raise PhysicsBackendContractError("adp009d_newton_terminal_profile_invalid")
     if (
         admission.get("schema_version") != CANARY_ADMISSION_SCHEMA_VERSION
         or admission.get("status") != "passed"
@@ -947,9 +1028,14 @@ def build_newton_canary_terminal_receipt(
     }
     if (
         provider_inventory.get("schema_version") != "gpu_spend_guard.v1"
+        or provider_inventory.get("status") != "passed"
         or provider_inventory.get("live_instance_count") != 0
         or provider_inventory.get("instances") != []
         or provider_inventory.get("blockers") != []
+        or provider_inventory.get("provider_zero_verified") is not True
+        or provider_inventory.get("provider_zero", {}).get("status") != "verified"
+        or provider_inventory.get("receipt_digest")
+        != canonical_digest(provider_inventory, digest_field="receipt_digest")
         or set(required_inventory) != {"runpod", "vast", "digitalocean"}
         or any(
             row.get("status") != "succeeded"
@@ -957,6 +1043,10 @@ def build_newton_canary_terminal_receipt(
             or row.get("blockers") != []
             for row in required_inventory.values()
         )
+        or _parse_time(provider_inventory.get("generated_at")) is None
+        or _parse_time(teardown_manifest.get("generated_at")) is None
+        or _parse_time(provider_inventory.get("generated_at"))
+        < _parse_time(teardown_manifest.get("generated_at"))
     ):
         raise PhysicsBackendContractError(
             "adp009d_newton_terminal_provider_zero_invalid"
@@ -1023,6 +1113,8 @@ def build_newton_canary_terminal_receipt(
     }
     if native_evidence_observed:
         evidence_input_digests["native_result"] = canonical_digest(native_result)
+    if backend_profile is not None:
+        evidence_input_digests["backend_profile"] = canonical_digest(profile)
     receipt: dict[str, Any] = {
         "schema_version": CANARY_TERMINAL_SCHEMA_VERSION,
         "status": native_status,

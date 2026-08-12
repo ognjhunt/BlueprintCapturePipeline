@@ -230,6 +230,37 @@ every other authored PhysX value before model import; Arena's PhysX solver
 iteration/depenetration overrides and `PhysxContactReportAPI` activation are
 disabled for Newton. PhysX does not use this overlay.
 
+On 2026-08-11, the ninth bounded Newton controls-only canary ran at clean
+implementation commit `ab416507f25afbf604cf1f3d42196082cdacda0b` on Vast
+instance `47501029` (L40S). It completed native environment construction, two
+resets, zero-action delivery, and all 40 camera-warmup frames with the corrected
+Franka inertia overlay. It then failed the canonical post-warmup arm hold, before
+any scripted control, policy query, candidate outcome access, or task verdict:
+`canonical_hold_arm_pose_drift:maximum_error_rad=0.853033662`. The retained
+telemetry identifies the largest deviation at `panda_joint4` (requested
+`-2.513274193`, observed `-1.660240531` radians). The exact settled Vast charge
+is `$0.194`; the instance was successfully destroyed and its independent
+watchdog observed provider absence.
+
+The native log also records that Isaac Lab ignored Arena's legacy implicit
+actuator `effort_limit` and `velocity_limit` fields. The next provider-free
+profile therefore binds an exact Newton-only mapping of those already-authored
+limits to `effort_limit_sim` and `velocity_limit_sim`, clears the ignored legacy
+fields, and retains an application receipt. It is a compatibility mapping, not
+an actuator retune or a fidelity claim. The revised Newton profile digest is
+`sha256:8f46f2c5e68cffb0d5a7b36b9b7b54b49e4d0e1c5e6e3caeb45cbdaf6a12290f` and
+the revised provider-free comparison-design digest is
+`sha256:f86ea6e006a2a7abf1820696714b976d2a447f1cfa32c06d926b5a367a9e18d0`.
+
+No terminal canary receipt is compiled for this ninth run yet. A fresh,
+read-only global post-teardown inventory correctly found two pre-existing active
+DigitalOcean production/control-plane droplets, even though Vast and RunPod were
+zero. The terminal compiler now requires a digest-bound, API-confirmed global
+provider-zero receipt generated after teardown, so it refuses to treat the
+earlier pre-launch inventory as closure evidence. Those droplets are outside
+this Newton allocation and have not been altered. No replacement GPU may be
+admitted until an authorized operator resolves that global provider-zero gate.
+
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.
 Even then, the receipt only makes a promotion review eligible; it never promotes

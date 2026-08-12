@@ -1,58 +1,231 @@
 {
-  "backend_contact_configurations": {
-    "newton": {
-      "actual_contact_onset_and_clearance_measurement_required": true,
-      "backend_profile_digest": "sha256:5a3b3f5c346501b239c84543b998202a9100ad7873db53d3a6b1e1e3027fdc57",
-      "configuration_digest": "sha256:79222ad04e05d6631afa3c016e1697e42b4db21d920658b27fb204bbe8d03ea0",
-      "contact_model": {
-        "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
-        "contact_buffer_limit": {
-          "field": "nconmax",
-          "value": 1024
-        },
-        "contact_generation": "mujoco_warp_from_generic_usd_import",
-        "friction_cone": "pyramidal",
-        "physx_sdf_overlay_allowed": false,
-        "physx_sdf_semantics_inherited": false,
-        "unsupported_or_ignored_setting_policy": "block"
-      },
-      "physics_backend": "newton",
-      "planner_contact_allowance_m": 0.0,
-      "planner_contact_allowance_source": "generic_surface_geometry_only_no_physx_standoff_assumed",
-      "schema_version": "adp009d_backend_contact_configuration.v1"
-    },
+  "schema_version": "adp009d_physics_backend_comparison.v1",
+  "contract_kind": "provider_free_design",
+  "status": "validated_without_provider_launch",
+  "program_id": "arm-decision-proof-v1",
+  "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
+  "default_physics_backend": "physx",
+  "one_backend_per_run": true,
+  "mid_run_backend_switch_allowed": false,
+  "required_backends": [
+    "physx",
+    "newton"
+  ],
+  "backend_profiles": {
     "physx": {
-      "actual_contact_onset_and_clearance_measurement_required": true,
-      "backend_profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c",
-      "configuration_digest": "sha256:b1b66e9b5f5ebc995d09a5f82bdcdc9434be6d1becb737b7ac57e7c5841b3484",
+      "schema_version": "adp009d_physics_backend_profile.v1",
+      "profile_id": "adp009d-840313-physx-controls-v1",
+      "program_id": "arm-decision-proof-v1",
+      "physics_backend": "physx",
+      "backend_selected_at_simulation_construction": true,
+      "mid_run_backend_switch_allowed": false,
+      "controls_only": true,
+      "policy_query_allowed": false,
+      "candidate_outcome_access_allowed": false,
+      "runtime_identity": {
+        "container_image": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
+        "isaac_sim_version": "6.0.0-dev2",
+        "isaac_lab_arena": {
+          "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+          "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
+        },
+        "isaac_lab": {
+          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+          "tree": "454115265327a80acabd07cbd36e10071fc0c065",
+          "core_version": "4.5.24"
+        }
+      },
+      "source_bindings": {
+        "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba",
+        "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
+        "approved_can_digest": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+        "sage_collision_digest": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+        "droid_franka_robotiq_usd_digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25"
+      },
+      "required_capabilities": {
+        "franka_import": true,
+        "robotiq_import": true,
+        "eight_dimensional_actuation_roundtrip": true,
+        "lossless_camera_frame_retention": true,
+        "contact_force_vector_readback": true,
+        "contact_partner_readback": true,
+        "joint_torque_and_limit_readback": true,
+        "closest_geometric_clearance_measurement": true
+      },
+      "claim_ceiling": "controls_comparison_evidence_only",
+      "maturity": "production_baseline",
+      "backend_runtime": {
+        "package": "isaaclab_physx",
+        "version": "0.5.13"
+      },
+      "solver_configuration": {
+        "configuration_schema": "adp009d_physx_tgs_solver.v1",
+        "solver": "TGS",
+        "dt_seconds": 0.008333333333333333,
+        "decimation": 8,
+        "enable_enhanced_determinism": true,
+        "gpu_max_rigid_contact_count": 8388608,
+        "gpu_max_rigid_patch_count": 32768
+      },
       "contact_model": {
-        "approximation": "sdf",
         "configuration_schema": "adp009d_physx_sdf_contact_model.v1",
-        "effective_contact_envelope_m": 0.01,
-        "finger_contact_offset_m": 0.005,
+        "source": "approved_can_physx_sdf_adapter.usda",
+        "approximation": "sdf",
         "sdf_margin_m": 0.0025,
         "sdf_narrow_band_thickness_m": 0.0025,
         "sdf_resolution": 256,
         "sdf_subgrid_resolution": 6,
-        "semantics": "physx_specific_not_portable",
-        "source": "approved_can_physx_sdf_adapter.usda"
+        "finger_contact_offset_m": 0.005,
+        "effective_contact_envelope_m": 0.01,
+        "semantics": "physx_specific_not_portable"
       },
-      "physics_backend": "physx",
-      "planner_contact_allowance_m": 0.01,
-      "planner_contact_allowance_source": "physx_sdf_margin_plus_narrow_band_plus_finger_contact_offset",
-      "schema_version": "adp009d_backend_contact_configuration.v1"
-    }
-  },
-  "backend_profiles": {
-    "newton": {
       "asset_conversion": {
-        "adapter": "approved_can_newton_generic_adapter.usda",
-        "franka_robotiq_conversion_probe_required": true,
+        "mode": "physx_sdf_overlay",
+        "source_usd_mutated": false,
+        "conversion_receipt_required": true
+      },
+      "profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c"
+    },
+    "newton": {
+      "schema_version": "adp009d_physics_backend_profile.v1",
+      "profile_id": "adp009d-840313-newton-controls-v1",
+      "program_id": "arm-decision-proof-v1",
+      "physics_backend": "newton",
+      "backend_selected_at_simulation_construction": true,
+      "mid_run_backend_switch_allowed": false,
+      "controls_only": true,
+      "policy_query_allowed": false,
+      "candidate_outcome_access_allowed": false,
+      "runtime_identity": {
+        "container_image": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
+        "isaac_sim_version": "6.0.0-dev2",
+        "isaac_lab_arena": {
+          "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+          "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
+        },
+        "isaac_lab": {
+          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
+          "tree": "454115265327a80acabd07cbd36e10071fc0c065",
+          "core_version": "4.5.24"
+        }
+      },
+      "source_bindings": {
+        "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba",
+        "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
+        "approved_can_digest": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
+        "sage_collision_digest": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
+        "droid_franka_robotiq_usd_digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25"
+      },
+      "required_capabilities": {
+        "franka_import": true,
+        "robotiq_import": true,
+        "eight_dimensional_actuation_roundtrip": true,
+        "lossless_camera_frame_retention": true,
+        "contact_force_vector_readback": true,
+        "contact_partner_readback": true,
+        "joint_torque_and_limit_readback": true,
+        "closest_geometric_clearance_measurement": true,
+        "newton_actuator_limit_mapping": true
+      },
+      "claim_ceiling": "controls_comparison_evidence_only",
+      "maturity": "experimental_comparison_candidate",
+      "backend_runtime": {
+        "package": "isaaclab_newton",
+        "version": "0.5.9",
+        "newton": {
+          "revision": "2684d75bfa4bb8b058a93b81c458a74b7701c997",
+          "tree": "46bd29c9b0027cc31116f60250b61f2ac20b7aaa",
+          "package_version": "1.1.0.dev0"
+        },
+        "warp_version": "1.12.0",
+        "mujoco_version": "3.5.0",
+        "mujoco_warp_version": "3.5.0.2"
+      },
+      "solver_configuration": {
+        "configuration_schema": "adp009d_newton_mjwarp_solver.v1",
+        "solver": "mujoco_warp",
+        "integrator": "implicitfast",
+        "solver_algorithm": "newton",
+        "cone": "pyramidal",
+        "dt_seconds": 0.008333333333333333,
+        "decimation": 8,
+        "num_substeps": 1,
+        "iterations": 100,
+        "line_search_iterations": 20,
+        "njmax": 2048,
+        "nconmax": 1024,
+        "use_mujoco_contacts": true,
+        "use_mujoco_cpu": false,
+        "use_cuda_graph": true
+      },
+      "actuator_limit_mapping": {
+        "schema_version": "adp009d_newton_actuator_limit_mapping.v1",
+        "physics_backend": "newton",
+        "mode": "copy_exact_arena_legacy_limits_to_newton_sim_fields",
+        "actuators": {
+          "panda_shoulder": {
+            "legacy_effort_limit": 87.0,
+            "legacy_velocity_limit": 2.175,
+            "effort_limit_sim": 87.0,
+            "velocity_limit_sim": 2.175
+          },
+          "panda_forearm": {
+            "legacy_effort_limit": 12.0,
+            "legacy_velocity_limit": 2.61,
+            "effort_limit_sim": 12.0,
+            "velocity_limit_sim": 2.61
+          },
+          "gripper": {
+            "legacy_effort_limit": null,
+            "legacy_velocity_limit": 1.0,
+            "effort_limit_sim": null,
+            "velocity_limit_sim": 1.0
+          }
+        },
+        "legacy_fields_must_be_cleared": true,
+        "retune_or_fidelity_claimed": false,
+        "mapping_digest": "sha256:76b1c9ee7cd7500fb34afb447fe3320c1ec145951836cd995185c43b303c1de9"
+      },
+      "contact_model": {
+        "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
+        "contact_generation": "mujoco_warp_from_generic_usd_import",
+        "friction_cone": "pyramidal",
+        "contact_buffer_limit": {
+          "field": "nconmax",
+          "value": 1024
+        },
+        "physx_sdf_overlay_allowed": false,
+        "physx_sdf_semantics_inherited": false,
+        "unsupported_or_ignored_setting_policy": "block"
+      },
+      "asset_conversion": {
         "mode": "generic_usd_overlay_then_newton_model_builder",
+        "source_usd_mutated": false,
+        "source_approximation_token": "sdf",
+        "source_approximation_token_blocked_by_overlay": true,
+        "adapter": "approved_can_newton_generic_adapter.usda",
+        "source_approximation_semantics_assumed": false,
+        "runtime_conversion_receipt_required": true,
+        "franka_robotiq_conversion_probe_required": true,
         "robot_inertial_overlay": {
-          "arbitrary_minimum_mass_or_inertia_clamp_allowed": false,
-          "authored_center_of_mass_allowed": false,
-          "authored_principal_axes_allowed": false,
+          "schema_version": "adp009d_newton_robot_inertial_overlay.v2",
+          "mode": "robotiq_mass_and_franka_inertia_unit_correction_session_layer_before_newton_model_finalize",
+          "physics_backend": "newton",
+          "source_robot_asset": {
+            "uri": "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/IsaacLab/Arena/assets/robot_library/droid/franka_robotiq_2f_85_flattened.usd",
+            "digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25",
+            "source_mutated": false
+          },
+          "mass_source": {
+            "repository": "https://github.com/a-price/robotiq_arg85_description.git",
+            "revision": "a65190bdbb0666609fe7e8c3bb17341e09e81625",
+            "path": "robots/robotiq_arg85_description.URDF",
+            "digest": "sha256:ac7ac559cfbf89033ed00d370a3375aae45eee31c7b4b28c361ad31198d1832b",
+            "license": "BSD",
+            "link_name_mapping": {
+              "base_link": "robotiq_85_base_link"
+            }
+          },
           "body_masses_kg": {
             "base_link": 0.30915,
             "left_inner_finger": 0.00724255346165745,
@@ -64,61 +237,13 @@
             "right_outer_finger": 0.0273093985570947,
             "right_outer_knuckle": 0.00684838849401352
           },
-          "center_of_mass_resolution": "newton_usd_compute_mass_properties_from_target_collision_geometry",
           "expected_source_body_count": 9,
           "expected_source_mass_api_applied": false,
-          "franka_exact_unit_corrected_diagonal_inertia_required": true,
+          "minimum_collision_shapes_per_body": 1,
           "franka_inertia_unit_conversion": {
-            "arbitrary_minimum_inertia_clamp_allowed": false,
             "body_count": 8,
-            "corrected_diagonal_inertia_kg_m2": {
-              "panda_link0": [
-                0.012988696999999999,
-                0.016535528,
-                0.020331163
-              ],
-              "panda_link1": [
-                0.018686387999999998,
-                0.014378986,
-                0.009068119999999999
-              ],
-              "panda_link2": [
-                0.019038872000000002,
-                0.0091429115,
-                0.014697537
-              ],
-              "panda_link3": [
-                0.012930018,
-                0.015024211,
-                0.01427346
-              ],
-              "panda_link4": [
-                0.013387461,
-                0.014514325,
-                0.015517554
-              ],
-              "panda_link5": [
-                0.03255657,
-                0.027066045999999996,
-                0.011502337000000001
-              ],
-              "panda_link6": [
-                0.0026052564,
-                0.0039897228,
-                0.004704859
-              ],
-              "panda_link7": [
-                0.0006316591,
-                0.0006319639,
-                0.0010607721
-              ]
-            },
-            "corrected_value_absolute_tolerance": 1e-08,
-            "correction_factor": 10000.0,
             "expected_stage_meters_per_unit": 1.0,
-            "formula": "source_diagonal_inertia / source_mesh_scale_squared",
-            "mesh_scale_absolute_tolerance": 1e-09,
-            "source_center_of_mass_preserved": true,
+            "source_mesh_scale": 0.01,
             "source_diagonal_inertia_kg_m2": {
               "panda_link0": [
                 1.2988697e-06,
@@ -161,30 +286,67 @@
                 1.0607721e-07
               ]
             },
-            "source_mass_preserved": true,
-            "source_mesh_scale": 0.01,
-            "source_principal_axes_preserved": true,
-            "source_value_absolute_tolerance": 1e-12
-          },
-          "inertia_resolution": "newton_target_collision_geometry_uniform_density_scaled_to_authored_mass",
-          "mass_source": {
-            "digest": "sha256:ac7ac559cfbf89033ed00d370a3375aae45eee31c7b4b28c361ad31198d1832b",
-            "license": "BSD",
-            "link_name_mapping": {
-              "base_link": "robotiq_85_base_link"
+            "correction_factor": 10000.0,
+            "corrected_diagonal_inertia_kg_m2": {
+              "panda_link0": [
+                0.012988696999999999,
+                0.016535528,
+                0.020331163
+              ],
+              "panda_link1": [
+                0.018686387999999998,
+                0.014378986,
+                0.009068119999999999
+              ],
+              "panda_link2": [
+                0.019038872000000002,
+                0.0091429115,
+                0.014697537
+              ],
+              "panda_link3": [
+                0.012930018,
+                0.015024211,
+                0.01427346
+              ],
+              "panda_link4": [
+                0.013387461,
+                0.014514325,
+                0.015517554
+              ],
+              "panda_link5": [
+                0.03255657,
+                0.027066045999999996,
+                0.011502337000000001
+              ],
+              "panda_link6": [
+                0.0026052564,
+                0.0039897228,
+                0.004704859
+              ],
+              "panda_link7": [
+                0.0006316591,
+                0.0006319639,
+                0.0010607721
+              ]
             },
-            "path": "robots/robotiq_arg85_description.URDF",
-            "repository": "https://github.com/a-price/robotiq_arg85_description.git",
-            "revision": "a65190bdbb0666609fe7e8c3bb17341e09e81625"
+            "formula": "source_diagonal_inertia / source_mesh_scale_squared",
+            "source_center_of_mass_preserved": true,
+            "source_mass_preserved": true,
+            "source_principal_axes_preserved": true,
+            "arbitrary_minimum_inertia_clamp_allowed": false,
+            "mesh_scale_absolute_tolerance": 1e-09,
+            "source_value_absolute_tolerance": 1e-12,
+            "corrected_value_absolute_tolerance": 1e-08
           },
-          "minimum_collision_shapes_per_body": 1,
-          "mode": "robotiq_mass_and_franka_inertia_unit_correction_session_layer_before_newton_model_finalize",
-          "newton_importer_revision": "2684d75bfa4bb8b058a93b81c458a74b7701c997",
-          "overlay_digest": "sha256:e98dfe0accdf19d5daf139468e5af40b64cb3eb5a9bcc3599ba672159ae7b0d1",
-          "physics_backend": "newton",
+          "center_of_mass_resolution": "newton_usd_compute_mass_properties_from_target_collision_geometry",
+          "inertia_resolution": "newton_target_collision_geometry_uniform_density_scaled_to_authored_mass",
+          "authored_center_of_mass_allowed": false,
+          "robotiq_authored_diagonal_inertia_allowed": false,
+          "franka_exact_unit_corrected_diagonal_inertia_required": true,
+          "authored_principal_axes_allowed": false,
+          "arbitrary_minimum_mass_or_inertia_clamp_allowed": false,
+          "usd_float32_mass_roundtrip_tolerance_kg": 2e-08,
           "physx_property_admission": {
-            "arena_max_depenetration_velocity_override_authored": false,
-            "arena_solver_iteration_overrides_authored": false,
             "mapped_property_names": [
               "physxArticulation:enabledSelfCollisions",
               "physxCollision:contactOffset",
@@ -202,187 +364,64 @@
               "physxLimit:",
               "physxMimicJoint:"
             ],
+            "unmapped_authored_property_policy": "block_value_before_newton_model_import",
             "physx_contact_report_api_activation": false,
-            "runtime_receipt_required": true,
-            "unmapped_authored_property_policy": "block_value_before_newton_model_import"
+            "arena_solver_iteration_overrides_authored": false,
+            "arena_max_depenetration_velocity_override_authored": false,
+            "runtime_receipt_required": true
           },
-          "robotiq_authored_diagonal_inertia_allowed": false,
+          "newton_importer_revision": "2684d75bfa4bb8b058a93b81c458a74b7701c997",
           "runtime_receipt_required": true,
-          "schema_version": "adp009d_newton_robot_inertial_overlay.v2",
-          "source_robot_asset": {
-            "digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25",
-            "source_mutated": false,
-            "uri": "https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/IsaacLab/Arena/assets/robot_library/droid/franka_robotiq_2f_85_flattened.usd"
-          },
-          "usd_float32_mass_roundtrip_tolerance_kg": 2e-08
-        },
-        "runtime_conversion_receipt_required": true,
-        "source_approximation_semantics_assumed": false,
-        "source_approximation_token": "sdf",
-        "source_approximation_token_blocked_by_overlay": true,
-        "source_usd_mutated": false
+          "overlay_digest": "sha256:e98dfe0accdf19d5daf139468e5af40b64cb3eb5a9bcc3599ba672159ae7b0d1"
+        }
       },
-      "backend_runtime": {
-        "mujoco_version": "3.5.0",
-        "mujoco_warp_version": "3.5.0.2",
-        "newton": {
-          "package_version": "1.1.0.dev0",
-          "revision": "2684d75bfa4bb8b058a93b81c458a74b7701c997",
-          "tree": "46bd29c9b0027cc31116f60250b61f2ac20b7aaa"
-        },
-        "package": "isaaclab_newton",
-        "version": "0.5.9",
-        "warp_version": "1.12.0"
-      },
-      "backend_selected_at_simulation_construction": true,
-      "candidate_outcome_access_allowed": false,
-      "claim_ceiling": "controls_comparison_evidence_only",
-      "contact_model": {
-        "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
-        "contact_buffer_limit": {
-          "field": "nconmax",
-          "value": 1024
-        },
-        "contact_generation": "mujoco_warp_from_generic_usd_import",
-        "friction_cone": "pyramidal",
-        "physx_sdf_overlay_allowed": false,
-        "physx_sdf_semantics_inherited": false,
-        "unsupported_or_ignored_setting_policy": "block"
-      },
-      "controls_only": true,
-      "maturity": "experimental_comparison_candidate",
-      "mid_run_backend_switch_allowed": false,
-      "physics_backend": "newton",
-      "policy_query_allowed": false,
-      "profile_digest": "sha256:5a3b3f5c346501b239c84543b998202a9100ad7873db53d3a6b1e1e3027fdc57",
-      "profile_id": "adp009d-840313-newton-controls-v1",
-      "program_id": "arm-decision-proof-v1",
-      "required_capabilities": {
-        "closest_geometric_clearance_measurement": true,
-        "contact_force_vector_readback": true,
-        "contact_partner_readback": true,
-        "eight_dimensional_actuation_roundtrip": true,
-        "franka_import": true,
-        "joint_torque_and_limit_readback": true,
-        "lossless_camera_frame_retention": true,
-        "robotiq_import": true
-      },
-      "runtime_identity": {
-        "container_image": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
-        "isaac_lab": {
-          "core_version": "4.5.24",
-          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
-          "tree": "454115265327a80acabd07cbd36e10071fc0c065"
-        },
-        "isaac_lab_arena": {
-          "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
-          "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
-        },
-        "isaac_sim_version": "6.0.0-dev2"
-      },
-      "schema_version": "adp009d_physics_backend_profile.v1",
-      "solver_configuration": {
-        "cone": "pyramidal",
-        "configuration_schema": "adp009d_newton_mjwarp_solver.v1",
-        "decimation": 8,
-        "dt_seconds": 0.008333333333333333,
-        "integrator": "implicitfast",
-        "iterations": 100,
-        "line_search_iterations": 20,
-        "nconmax": 1024,
-        "njmax": 2048,
-        "num_substeps": 1,
-        "solver": "mujoco_warp",
-        "solver_algorithm": "newton",
-        "use_cuda_graph": true,
-        "use_mujoco_contacts": true,
-        "use_mujoco_cpu": false
-      },
-      "source_bindings": {
-        "approved_can_digest": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
-        "droid_franka_robotiq_usd_digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25",
-        "sage_collision_digest": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
-        "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
-        "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
-      }
-    },
+      "profile_digest": "sha256:8f46f2c5e68cffb0d5a7b36b9b7b54b49e4d0e1c5e6e3caeb45cbdaf6a12290f"
+    }
+  },
+  "backend_contact_configurations": {
     "physx": {
-      "asset_conversion": {
-        "conversion_receipt_required": true,
-        "mode": "physx_sdf_overlay",
-        "source_usd_mutated": false
-      },
-      "backend_runtime": {
-        "package": "isaaclab_physx",
-        "version": "0.5.13"
-      },
-      "backend_selected_at_simulation_construction": true,
-      "candidate_outcome_access_allowed": false,
-      "claim_ceiling": "controls_comparison_evidence_only",
+      "schema_version": "adp009d_backend_contact_configuration.v1",
+      "physics_backend": "physx",
+      "backend_profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c",
       "contact_model": {
-        "approximation": "sdf",
         "configuration_schema": "adp009d_physx_sdf_contact_model.v1",
-        "effective_contact_envelope_m": 0.01,
-        "finger_contact_offset_m": 0.005,
+        "source": "approved_can_physx_sdf_adapter.usda",
+        "approximation": "sdf",
         "sdf_margin_m": 0.0025,
         "sdf_narrow_band_thickness_m": 0.0025,
         "sdf_resolution": 256,
         "sdf_subgrid_resolution": 6,
-        "semantics": "physx_specific_not_portable",
-        "source": "approved_can_physx_sdf_adapter.usda"
+        "finger_contact_offset_m": 0.005,
+        "effective_contact_envelope_m": 0.01,
+        "semantics": "physx_specific_not_portable"
       },
-      "controls_only": true,
-      "maturity": "production_baseline",
-      "mid_run_backend_switch_allowed": false,
-      "physics_backend": "physx",
-      "policy_query_allowed": false,
-      "profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c",
-      "profile_id": "adp009d-840313-physx-controls-v1",
-      "program_id": "arm-decision-proof-v1",
-      "required_capabilities": {
-        "closest_geometric_clearance_measurement": true,
-        "contact_force_vector_readback": true,
-        "contact_partner_readback": true,
-        "eight_dimensional_actuation_roundtrip": true,
-        "franka_import": true,
-        "joint_torque_and_limit_readback": true,
-        "lossless_camera_frame_retention": true,
-        "robotiq_import": true
-      },
-      "runtime_identity": {
-        "container_image": "nvcr.io/nvidia/isaac-sim:6.0.0-dev2@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9",
-        "isaac_lab": {
-          "core_version": "4.5.24",
-          "revision": "e57379c634b42db5a0fe9f754341be6e2a7c7c43",
-          "tree": "454115265327a80acabd07cbd36e10071fc0c065"
+      "planner_contact_allowance_m": 0.01,
+      "planner_contact_allowance_source": "physx_sdf_margin_plus_narrow_band_plus_finger_contact_offset",
+      "actual_contact_onset_and_clearance_measurement_required": true,
+      "configuration_digest": "sha256:b1b66e9b5f5ebc995d09a5f82bdcdc9434be6d1becb737b7ac57e7c5841b3484"
+    },
+    "newton": {
+      "schema_version": "adp009d_backend_contact_configuration.v1",
+      "physics_backend": "newton",
+      "backend_profile_digest": "sha256:8f46f2c5e68cffb0d5a7b36b9b7b54b49e4d0e1c5e6e3caeb45cbdaf6a12290f",
+      "contact_model": {
+        "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
+        "contact_generation": "mujoco_warp_from_generic_usd_import",
+        "friction_cone": "pyramidal",
+        "contact_buffer_limit": {
+          "field": "nconmax",
+          "value": 1024
         },
-        "isaac_lab_arena": {
-          "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
-          "tree": "03f31f3dd56c56d00f24dbfb09711ec0ab345de8"
-        },
-        "isaac_sim_version": "6.0.0-dev2"
+        "physx_sdf_overlay_allowed": false,
+        "physx_sdf_semantics_inherited": false,
+        "unsupported_or_ignored_setting_policy": "block"
       },
-      "schema_version": "adp009d_physics_backend_profile.v1",
-      "solver_configuration": {
-        "configuration_schema": "adp009d_physx_tgs_solver.v1",
-        "decimation": 8,
-        "dt_seconds": 0.008333333333333333,
-        "enable_enhanced_determinism": true,
-        "gpu_max_rigid_contact_count": 8388608,
-        "gpu_max_rigid_patch_count": 32768,
-        "solver": "TGS"
-      },
-      "source_bindings": {
-        "approved_can_digest": "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec",
-        "droid_franka_robotiq_usd_digest": "sha256:ec25cdb085679e1a51cfe8b7ed513a5c816600804d174b3337c65cd420e22d25",
-        "sage_collision_digest": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
-        "scenario_instance_digest": "sha256:243c0e62697da0298081a53c6530cee16cf94cde5a73df08f3773629b52c3001",
-        "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
-      }
+      "planner_contact_allowance_m": 0.0,
+      "planner_contact_allowance_source": "generic_surface_geometry_only_no_physx_standoff_assumed",
+      "actual_contact_onset_and_clearance_measurement_required": true,
+      "configuration_digest": "sha256:c331cc100d995a7f044e08c676961d9d8cd35c39053dea1acd1b901d928d3a09"
     }
   },
-  "backend_specific_contact_configuration_required": true,
-  "claim_ceiling": "controls_comparison_design_only",
   "common_comparability_bindings": [
     "source_bundle_digest",
     "sealed_scene_digest",
@@ -394,54 +433,7 @@
     "intended_grasp_geometry_digest",
     "controls_plan_semantic_digest"
   ],
-  "comparison_acceptance": {
-    "automatic_engine_promotion_allowed": false,
-    "evidence_parity_required": true,
-    "independently_meaningful_fidelity_result_required": true,
-    "physical_verdict_allowed": false,
-    "policy_verdict_allowed": false,
-    "task_success_verdict_allowed": false
-  },
-  "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
-  "contract_kind": "provider_free_design",
-  "default_physics_backend": "physx",
-  "design_digest": "sha256:a8e8cad55de9be3857927060059dd5dc47b28f0f1db7c04928ca8c5f16630a2d",
-  "mid_run_backend_switch_allowed": false,
-  "newton_canary_admission": {
-    "artifact_storage_required": true,
-    "canonical_spend_admission_required": true,
-    "concurrent_instance_ids_must_be_explicitly_authorized": true,
-    "explicit_paid_run_authorization_required": true,
-    "provider_zero_or_exact_allowed_concurrency_precheck_required": true,
-    "retry_cap": 0,
-    "schema_version": "adp009d_newton_canary_admission.v1",
-    "teardown_required": true,
-    "unapproved_live_instance_count_required": 0,
-    "watchdog_required": true
-  },
-  "newton_canary_terminal_receipt": {
-    "actual_provider_charge_required": true,
-    "all_evidence_inputs_digest_bound_required": true,
-    "api_confirmed_provider_zero_required": true,
-    "artifact_manifest_required": true,
-    "claim_ceiling": "controls_comparison_evidence_only",
-    "engine_promotion_allowed": false,
-    "policy_verdict_allowed": false,
-    "pre_controls_failure_requires_typed_media_gap": true,
-    "schema_version": "adp009d_newton_canary_terminal.v1",
-    "teardown_required": true
-  },
-  "one_backend_per_run": true,
-  "program_id": "arm-decision-proof-v1",
-  "provider_mutation_performed": false,
-  "required_backends": [
-    "physx",
-    "newton"
-  ],
-  "required_controls": [
-    "zero_action_negative",
-    "deterministic_scripted_positive"
-  ],
+  "backend_specific_contact_configuration_required": true,
   "required_measurements_per_backend": [
     "initialization_reset",
     "target_robot_pose",
@@ -456,6 +448,43 @@
     "spend",
     "provider_zero"
   ],
-  "schema_version": "adp009d_physics_backend_comparison.v1",
-  "status": "validated_without_provider_launch"
+  "required_controls": [
+    "zero_action_negative",
+    "deterministic_scripted_positive"
+  ],
+  "newton_canary_admission": {
+    "schema_version": "adp009d_newton_canary_admission.v1",
+    "explicit_paid_run_authorization_required": true,
+    "canonical_spend_admission_required": true,
+    "watchdog_required": true,
+    "artifact_storage_required": true,
+    "teardown_required": true,
+    "provider_zero_or_exact_allowed_concurrency_precheck_required": true,
+    "unapproved_live_instance_count_required": 0,
+    "concurrent_instance_ids_must_be_explicitly_authorized": true,
+    "retry_cap": 0
+  },
+  "newton_canary_terminal_receipt": {
+    "schema_version": "adp009d_newton_canary_terminal.v1",
+    "actual_provider_charge_required": true,
+    "artifact_manifest_required": true,
+    "all_evidence_inputs_digest_bound_required": true,
+    "teardown_required": true,
+    "api_confirmed_provider_zero_required": true,
+    "pre_controls_failure_requires_typed_media_gap": true,
+    "claim_ceiling": "controls_comparison_evidence_only",
+    "policy_verdict_allowed": false,
+    "engine_promotion_allowed": false
+  },
+  "comparison_acceptance": {
+    "evidence_parity_required": true,
+    "independently_meaningful_fidelity_result_required": true,
+    "automatic_engine_promotion_allowed": false,
+    "policy_verdict_allowed": false,
+    "task_success_verdict_allowed": false,
+    "physical_verdict_allowed": false
+  },
+  "provider_mutation_performed": false,
+  "claim_ceiling": "controls_comparison_design_only",
+  "design_digest": "sha256:f86ea6e006a2a7abf1820696714b976d2a447f1cfa32c06d926b5a367a9e18d0"
 }

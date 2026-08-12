@@ -94,6 +94,7 @@ try:  # flat provider-bundle layout, where this file runs as a script
         ROBOTIQ_BODY_MASSES_KG,
         build_backend_contact_configuration,
         build_backend_profile,
+        build_newton_actuator_limit_mapping_contract,
         build_newton_robot_inertial_overlay_contract,
         normalize_physics_backend,
         validate_backend_probe,
@@ -111,6 +112,7 @@ except ModuleNotFoundError:  # imported as part of the repository package
         ROBOTIQ_BODY_MASSES_KG,
         build_backend_contact_configuration,
         build_backend_profile,
+        build_newton_actuator_limit_mapping_contract,
         build_newton_robot_inertial_overlay_contract,
         normalize_physics_backend,
         validate_backend_probe,
@@ -1244,6 +1246,52 @@ def _configure_newton_robot_inertial_overlay(
     spawn_cfg.func = clone_spawner(spawn_with_inertial_overlay)
 
 
+def _configure_newton_actuator_limit_mapping(
+    embodiment: Any, *, backend_profile: dict[str, Any]
+) -> dict[str, Any]:
+    """Move the exact Arena actuator limits into Newton's active fields."""
+
+    expected = build_newton_actuator_limit_mapping_contract()
+    contract = backend_profile.get("actuator_limit_mapping")
+    if contract != expected:
+        raise RuntimeError("adp009d_newton_actuator_limit_mapping_contract_invalid")
+    actuators = embodiment.scene_config.robot.actuators
+    expected_actuators = expected["actuators"]
+    if not isinstance(actuators, dict) or set(actuators) != set(expected_actuators):
+        raise RuntimeError("adp009d_newton_actuator_set_invalid")
+    observed: dict[str, dict[str, float | None]] = {}
+    for name, values in expected_actuators.items():
+        actuator = actuators[name]
+        if (
+            actuator.effort_limit != values["legacy_effort_limit"]
+            or actuator.velocity_limit != values["legacy_velocity_limit"]
+            or actuator.effort_limit_sim is not None
+            or actuator.velocity_limit_sim is not None
+        ):
+            raise RuntimeError(f"adp009d_newton_actuator_source_limits_invalid:{name}")
+        actuator.effort_limit = None
+        actuator.velocity_limit = None
+        actuator.effort_limit_sim = values["effort_limit_sim"]
+        actuator.velocity_limit_sim = values["velocity_limit_sim"]
+        observed[name] = {
+            "effort_limit_sim": actuator.effort_limit_sim,
+            "velocity_limit_sim": actuator.velocity_limit_sim,
+        }
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009d_newton_actuator_limit_mapping_receipt.v1",
+        "status": "applied_and_verified",
+        "physics_backend": "newton",
+        "contract_digest": expected["mapping_digest"],
+        "observed_sim_limits": observed,
+        "legacy_fields_cleared": True,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = _canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
 def _resolve_newton_underlying_usd_spawn(
     configured_spawn: Any, *, string_to_callable: Any
 ) -> Any:
@@ -2070,6 +2118,12 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
             embodiment,
             output_dir=Path(args.output_dir).resolve(),
         )
+        newton_actuator_limit_mapping = _configure_newton_actuator_limit_mapping(
+            embodiment,
+            backend_profile=build_backend_profile("newton"),
+        )
+    else:
+        newton_actuator_limit_mapping = None
     render_width, render_height = _camera_resolution()
     print(f"BLUEPRINT_ADP009D_CAMERA_RESOLUTION:{render_width}x{render_height}", flush=True)
     for camera_name in ("external_camera", "wrist_camera", "external_camera_2"):
@@ -2368,7 +2422,14 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     _phase("manager_based_environment_construction")
     env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
     _phase("manager_based_environment_construction", "completed")
-    return env, cfg, torch, external_task_camera_plan, overview_camera_plan
+    return (
+        env,
+        cfg,
+        torch,
+        external_task_camera_plan,
+        overview_camera_plan,
+        newton_actuator_limit_mapping,
+    )
 
 
 def _preflight_environment_imports(physics_backend: str = "physx") -> dict[str, str]:
@@ -2602,6 +2663,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 torch,
                 external_task_camera_plan,
                 overview_camera_plan,
+                newton_actuator_limit_mapping,
             ) = _build_environment(runtime, args)
         except Exception as exc:
             if backend == "newton":
@@ -3955,6 +4017,23 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         "robot_source_mutated": (
                             False if backend == "newton" else None
                         ),
+                        "newton_actuator_limit_mapping_contract_digest": (
+                            backend_profile["actuator_limit_mapping"]["mapping_digest"]
+                            if backend == "newton"
+                            else None
+                        ),
+                        "newton_actuator_limit_mapping_status": (
+                            newton_actuator_limit_mapping["status"]
+                            if backend == "newton"
+                            and newton_actuator_limit_mapping is not None
+                            else None
+                        ),
+                        "newton_actuator_limit_mapping_receipt_digest": (
+                            newton_actuator_limit_mapping["receipt_digest"]
+                            if backend == "newton"
+                            and newton_actuator_limit_mapping is not None
+                            else None
+                        ),
                     },
                     "contact_buffer": {
                         "nconmax": 1024 if backend == "newton" else None,
@@ -4230,6 +4309,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "newton_robot_inertial_overlay": (
                     newton_robot_inertial_overlay_receipt
                 ),
+                "newton_actuator_limit_mapping": newton_actuator_limit_mapping,
                 "static_sage_collision_validation": static_sage_collision,
                 "live_sage_collision_validation": live_sage_collision,
                 "sage_task_collision_derivative": task_collision_manifest,

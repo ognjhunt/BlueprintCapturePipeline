@@ -35,6 +35,13 @@ def main() -> int:
     ):
         parser.add_argument("--" + name.replace("_", "-"), required=True)
     parser.add_argument("--native-result")
+    parser.add_argument(
+        "--provider-manifest",
+        help=(
+            "Retained provider-runtime manifest. Its immutable physics_backend_profile "
+            "is used to compile a historical canary under its executed profile."
+        ),
+    )
     args = parser.parse_args()
     teardown = _read(args.teardown_manifest)
     instance_ids = teardown.get("vast_instance_ids")
@@ -49,6 +56,13 @@ def main() -> int:
     ]
     if len(matches) != 1:
         raise ValueError("exact_vast_instance_charge_not_found")
+    backend_profile = None
+    if args.provider_manifest:
+        manifest = _read(args.provider_manifest)
+        candidate = manifest.get("physics_backend_profile")
+        if not isinstance(candidate, dict):
+            raise ValueError("provider_manifest_physics_backend_profile_missing")
+        backend_profile = candidate
     receipt = build_newton_canary_terminal_receipt(
         admission=_read(args.admission),
         bundle_receipt=_read(args.bundle_receipt),
@@ -58,6 +72,7 @@ def main() -> int:
         teardown_manifest=teardown,
         provider_inventory=_read(args.provider_inventory),
         vast_charge=matches[0],
+        backend_profile=backend_profile,
     )
     write_json(Path(args.output), receipt)
     print(json.dumps(receipt, sort_keys=True))

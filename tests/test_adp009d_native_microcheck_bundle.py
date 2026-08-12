@@ -42,6 +42,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     FRANKA_SOURCE_MESH_SCALE,
     ROBOTIQ_BODY_MASSES_KG,
     build_backend_profile,
+    build_newton_actuator_limit_mapping_contract,
     build_newton_robot_inertial_overlay_contract,
 )
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
@@ -655,6 +656,50 @@ def test_runtime_binds_and_verifies_canonical_reset_pose() -> None:
     assert "_assert_canonical_object_stability(" in source
     assert '"canonical_hold_object_stability": object_stability' in source
     assert "approved_can_support_loss_after_zero_action" not in source
+
+
+def test_runtime_maps_newton_legacy_actuator_limits_to_active_sim_fields() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+    mapping = build_newton_actuator_limit_mapping_contract()
+
+    assert "_configure_newton_actuator_limit_mapping(" in source
+    assert "actuator.effort_limit_sim = values[\"effort_limit_sim\"]" in source
+    assert "actuator.velocity_limit_sim = values[\"velocity_limit_sim\"]" in source
+    assert "actuator.effort_limit = None" in source
+    assert "actuator.velocity_limit = None" in source
+    assert mapping["actuators"]["panda_shoulder"]["effort_limit_sim"] == 87.0
+
+
+def test_runtime_applies_newton_actuator_mapping_without_retuning() -> None:
+    class FakeActuator:
+        def __init__(self, *, effort: float | None, velocity: float | None) -> None:
+            self.effort_limit = effort
+            self.velocity_limit = velocity
+            self.effort_limit_sim = None
+            self.velocity_limit_sim = None
+
+    class FakeEmbodiment:
+        def __init__(self) -> None:
+            self.scene_config = type("Scene", (), {})()
+            self.scene_config.robot = type("Robot", (), {})()
+            self.scene_config.robot.actuators = {
+                "panda_shoulder": FakeActuator(effort=87.0, velocity=2.175),
+                "panda_forearm": FakeActuator(effort=12.0, velocity=2.61),
+                "gripper": FakeActuator(effort=None, velocity=1.0),
+            }
+
+    embodiment = FakeEmbodiment()
+    receipt = isaac_runtime._configure_newton_actuator_limit_mapping(
+        embodiment,
+        backend_profile=build_backend_profile("newton"),
+    )
+
+    assert receipt["status"] == "applied_and_verified"
+    assert receipt["legacy_fields_cleared"] is True
+    assert embodiment.scene_config.robot.actuators["panda_shoulder"].effort_limit is None
+    assert embodiment.scene_config.robot.actuators["panda_shoulder"].effort_limit_sim == 87.0
+    assert embodiment.scene_config.robot.actuators["panda_forearm"].velocity_limit is None
+    assert embodiment.scene_config.robot.actuators["panda_forearm"].velocity_limit_sim == 2.61
 
 
 def test_canonical_reset_uses_official_arena_droid_safe_pose() -> None:
