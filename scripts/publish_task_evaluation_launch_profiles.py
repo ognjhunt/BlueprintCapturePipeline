@@ -14,9 +14,9 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
-    public_launch_profile_descriptor,
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
@@ -48,7 +48,6 @@ def publish_profiles(
     webapp_catalog_out: str | Path,
 ) -> dict[str, Any]:
     published: list[dict[str, Any]] = []
-    descriptors: list[dict[str, Any]] = []
     target_root = Path(profile_dir).expanduser().resolve()
     for source_value in profile_paths:
         source_input = Path(source_value).expanduser()
@@ -81,28 +80,12 @@ def publish_profiles(
     # lookup, and the profile directory looked correct while the catalog listed
     # a single stale entry. Enumerating the directory makes the catalog a
     # function of published state instead of of a command line.
-    for path in sorted(target_root.glob("*.json")):
-        if path.is_symlink():
-            raise TaskEvaluationLaunchError(f"launch_profile_source_invalid:{path}")
-        catalog_profile = _read(path)
-        blockers = validate_launch_profile(catalog_profile)
-        blockers.extend(verify_profile_immutable_inputs(catalog_profile))
-        if blockers:
-            # A published directory holding an invalid profile is a real fault:
-            # refuse rather than emit a catalog that silently omits it.
-            raise TaskEvaluationLaunchError(
-                f"published_profile_invalid:{path.name}:" + ",".join(sorted(set(blockers)))
-            )
-        descriptors.append(public_launch_profile_descriptor(catalog_profile))
-
-    catalog_payload = (
-        json.dumps(
-            sorted(descriptors, key=lambda row: str(row["profile_id"])),
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode()
+    #
+    # The projection is shared with the start-up reconciler so the artifact
+    # written here and the one repaired there cannot disagree about what the
+    # catalog *is* -- fixing this writer did nothing for the catalogs already on
+    # disk, which is how a stale one stayed in service after the fix deployed.
+    catalog_payload = build_catalog_payload(target_root)
     catalog_path = Path(webapp_catalog_out).expanduser().resolve()
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_path.write_bytes(catalog_payload)

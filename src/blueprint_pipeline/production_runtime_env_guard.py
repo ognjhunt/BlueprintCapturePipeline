@@ -16,6 +16,10 @@ from .spend_authority_ledger_migration import (
     SpendAuthorityLedgerError,
     reconcile_spend_authority_ledger,
 )
+from .task_evaluation_launch_catalog import LaunchCatalogError, reconcile_public_catalog
+
+LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
+LAUNCH_PUBLIC_CATALOG_PATH_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
 
 SCHEMA_VERSION = "blueprint.production_runtime_env_guard.v1"
 
@@ -120,10 +124,55 @@ def _check_spend_authority_ledger(
     return (receipt, [])
 
 
+def _default_catalog_reconciler(
+    source: Mapping[str, str],
+) -> Callable[[], dict[str, Any]]:
+    def _reconcile() -> dict[str, Any]:
+        profile_dir = str(source.get(LAUNCH_PROFILE_DIR_ENV) or "").strip()
+        catalog_path = str(source.get(LAUNCH_PUBLIC_CATALOG_PATH_ENV) or "").strip()
+        if not profile_dir or not catalog_path:
+            # A host that publishes no launch profiles has no catalog to keep
+            # consistent; the intake reports the missing configuration itself.
+            return {"status": "not_configured"}
+        return reconcile_public_catalog(
+            profile_dir=profile_dir, catalog_path=catalog_path
+        )
+
+    return _reconcile
+
+
+def _check_launch_profile_catalog(
+    reconcile: Callable[[], dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    """Rebuild a catalog that drifted from the published directory, or block.
+
+    The catalog is what the WebApp reads to resolve a ``profile_id``, and it is
+    derived from the profile directory. PR #454 fixed the writer, which does
+    nothing for the catalogs already on disk: observed live afterwards with
+    seven profiles published and four served, the other three unreachable by any
+    launch. Repairing it here makes the drift self-correcting instead of a
+    manual publish someone has to remember after a host rebuild.
+    """
+    try:
+        receipt = reconcile()
+    except LaunchCatalogError as exc:
+        return (
+            {"status": "blocked", "error": str(exc)},
+            [f"launch_profile_catalog_not_reconciled:{exc}"],
+        )
+    except OSError as exc:
+        return (
+            {"status": "blocked", "error": str(exc)},
+            ["launch_profile_catalog_not_reconciled:unreadable"],
+        )
+    return (receipt, [])
+
+
 def build_production_runtime_env_guard(
     env: Mapping[str, str] | None = None,
     import_module: Callable[[str], Any] | None = None,
     reconcile_spend_authority: Callable[[], dict[str, Any]] | None = None,
+    reconcile_launch_catalog: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = os.environ if env is None else env
     blockers: list[str] = []
@@ -154,6 +203,13 @@ def build_production_runtime_env_guard(
     )
     blockers.extend(ledger_blockers)
 
+    catalog, catalog_blockers = _check_launch_profile_catalog(
+        _default_catalog_reconciler(source)
+        if reconcile_launch_catalog is None
+        else reconcile_launch_catalog
+    )
+    blockers.extend(catalog_blockers)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -163,10 +219,12 @@ def build_production_runtime_env_guard(
         "required_true_flags": flag_status,
         "control_plane_entrypoints": entrypoints,
         "spend_authority_ledger": ledger,
+        "launch_profile_catalog": catalog,
         "claim_boundary": (
             "This guard verifies production fail-closed runtime posture, that "
-            "every control-plane entrypoint imports, and that no spend-authority "
-            "ledger is stranded at a previous root. It is not proof of "
+            "every control-plane entrypoint imports, that no spend-authority "
+            "ledger is stranded at a previous root, and that the served launch "
+            "catalog matches the published profile directory. It is not proof of "
             "deployed health, Pub/Sub message consumption, WebApp forwarding, "
             "buyer delivery, simulator execution, or live provider success."
         ),
