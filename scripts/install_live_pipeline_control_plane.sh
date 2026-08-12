@@ -115,6 +115,11 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launches/completed" \
   "${STATE_DIR}/task-evaluation-launches/blocked" \
   "${STATE_DIR}/task-evaluation-launch-runs" \
+  "${STATE_DIR}/task-evaluation-terminal-resource-releases/pending" \
+  "${STATE_DIR}/task-evaluation-terminal-resource-releases/processing" \
+  "${STATE_DIR}/task-evaluation-terminal-resource-releases/completed" \
+  "${STATE_DIR}/task-evaluation-terminal-resource-releases/blocked" \
+  "${STATE_DIR}/task-evaluation-terminal-resource-releases-state" \
   "${STATE_DIR}/task-evaluation-control-plane-releases" \
   "${STATE_DIR}/task-evaluation-launch-reconciliation" \
   "${STATE_DIR}/task-evaluation-launch-supervision/recommendations"
@@ -152,6 +157,12 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-dispatcher.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-dispatcher.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-terminal-resource-release.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-terminal-resource-release.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-terminal-resource-release.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-terminal-resource-release.path"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-reconciler.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-reconciler.service"
@@ -194,6 +205,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
+  systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
   systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
   echo "installed; enable timer with: systemctl enable --now blueprint-pipeline-control-plane.timer"
@@ -202,6 +214,7 @@ else
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
+  echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
   echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"
 fi

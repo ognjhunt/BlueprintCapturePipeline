@@ -176,6 +176,7 @@ from .task_evaluation_profile_preflight import (
     PROBE_KIND as TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
     run_task_evaluation_profile_preflight,
 )
+from .task_evaluation_terminal_resource_release import dispatch_terminal_resource_release
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -195,6 +196,9 @@ LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR_ENV = (
 DETACHED_GPU_CANARY_MANIFEST = "detached_gpu_canary_supervisor.json"
 DETACHED_GPU_CANARY_LOG = "detached_gpu_canary_supervisor.log"
 DETACHED_GPU_CANARY_LOCK = "detached_gpu_canary_supervisor.lock"
+TERMINAL_RESOURCE_RELEASE_WORKER_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_WORKER"
+)
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
 
 
@@ -1015,14 +1019,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     cpu_local.add_argument("--build-workdir", required=True)
     cpu_local.add_argument("--build-script", required=True)
     gpu = commands.add_parser("gpu-canary")
-    gpu.add_argument("--provider-launch-request", required=True)
-    gpu.add_argument("--release-evidence", required=True)
-    gpu.add_argument("--model-cache-evidence", required=True)
-    gpu.add_argument("--preflight-bundle", required=True)
-    gpu.add_argument("--admission-out", required=True)
-    gpu.add_argument("--bound-request-out", required=True)
-    gpu.add_argument("--adapter-output", required=True)
-    gpu.add_argument("--pod-name", required=True)
+    gpu.add_argument("--provider-launch-request")
+    gpu.add_argument("--release-evidence")
+    gpu.add_argument("--model-cache-evidence")
+    gpu.add_argument("--preflight-bundle")
+    gpu.add_argument("--admission-out")
+    gpu.add_argument("--bound-request-out")
+    gpu.add_argument("--adapter-output")
+    gpu.add_argument("--pod-name")
+    gpu.add_argument(
+        "--terminal-resource-release",
+        help="Immutable release-only request; cannot be combined with a launch profile.",
+    )
+    gpu.add_argument(
+        "--terminal-resource-release-output",
+        help="Receipt destination for an exact stopped-provider-record release.",
+    )
     gpu.add_argument("--expected-source-commit")
     gpu.add_argument(
         "--experimental-branch-diagnostic",
@@ -1369,6 +1381,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--campaign-spent-to-date-usd", type=float)
         model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
+    if args.command == "gpu-canary":
+        normal_required = (
+            "provider_launch_request", "release_evidence", "model_cache_evidence",
+            "preflight_bundle", "admission_out", "bound_request_out", "adapter_output", "pod_name",
+        )
+        if args.terminal_resource_release:
+            if not args.terminal_resource_release_output or not args.execute:
+                parser.error(
+                    "--terminal-resource-release requires --terminal-resource-release-output and --execute"
+                )
+            if str(os.getenv(TERMINAL_RESOURCE_RELEASE_WORKER_ENV) or "").strip().lower() not in {
+                "1", "true", "yes", "on"
+            }:
+                parser.error("--terminal-resource-release is restricted to the queue worker")
+            if any(getattr(args, name, None) for name in normal_required):
+                parser.error("--terminal-resource-release cannot be combined with launch arguments")
+        else:
+            missing = [name.replace("_", "-") for name in normal_required if not getattr(args, name)]
+            if missing:
+                parser.error("gpu-canary missing required arguments: " + ", ".join(missing))
     detached_exit = configure_or_launch_detached_gpu_canary(
         args.command,
         execute=bool(getattr(args, "execute", False)),
@@ -1449,6 +1481,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.terminal_resource_release:
+            output = Path(args.terminal_resource_release_output).expanduser().resolve()
+            result = dispatch_terminal_resource_release(
+                request_path=args.terminal_resource_release,
+                state_root=output.parent,
+            )
+            write_json(output, result)
+            success = result.get("status") == "completed"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND:
             control_blockers, control_identity = _control_plane_checkout_blockers()
             source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
