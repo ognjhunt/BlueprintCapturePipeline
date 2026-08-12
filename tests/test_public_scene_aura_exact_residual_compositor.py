@@ -228,6 +228,44 @@ def test_composites_raw_aura_output_inside_only_the_exact_masks(tmp_path: Path) 
     )
 
 
+def test_derives_scene_identity_from_bound_authority(tmp_path: Path) -> None:
+    packet = _packet(tmp_path, publisher_scene_id="different_public_scene")
+    preflight = tmp_path / "preflight.json"
+    materialize_aura_exact_residual_preflight(
+        input_packet_path=packet, output_path=preflight
+    )
+    raw = _raw_result(preflight)
+
+    receipt = materialize_aura_exact_residual_composite(
+        preflight_path=preflight,
+        raw_result_path=raw,
+        output_root=tmp_path / "composite",
+    )
+
+    for record in receipt["task_render_manifests"]:
+        manifest = __import__("json").loads(Path(record["manifest"]["path"]).read_text())
+        assert manifest["scene"]["publisher_scene_id"] == "different_public_scene"
+
+
+def test_rejects_scene_authority_bytes_changed_after_preflight(tmp_path: Path) -> None:
+    preflight = _preflight(tmp_path)
+    value = __import__("json").loads(preflight.read_text())
+    authority = Path(
+        value["backend_admission"]["execution_authority"]["path"]
+    )
+    authority.write_text("changed", encoding="utf-8")
+    raw = _raw_result(preflight)
+
+    with pytest.raises(
+        AuraExactResidualCompositeError, match="scene_identity_invalid"
+    ):
+        materialize_aura_exact_residual_composite(
+            preflight_path=preflight,
+            raw_result_path=raw,
+            output_root=tmp_path / "composite",
+        )
+
+
 def test_rejects_raw_result_with_a_missing_camera(tmp_path: Path) -> None:
     preflight = _preflight(tmp_path)
     raw = _raw_result(preflight)
