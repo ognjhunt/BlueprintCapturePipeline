@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -86,6 +88,68 @@ def _attestation(candidate: Path, path: Path) -> Path:
         authorized_by="fixture_user",
     )
     return path
+
+
+def _runner_module():
+    path = Path(__file__).resolve().parents[1] / "scripts/public_scene_artifixer3d_runner.py"
+    spec = importlib.util.spec_from_file_location("test_public_scene_artifixer3d_runner", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_runner_preserves_completed_task_receipt_on_later_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner_module()
+    task = {
+        "task_id": "task_a",
+        "outside_support_changed_pixels_total": 0,
+        "final_candidate_frames": [{"sha256": "sha256:" + "1" * 64}],
+    }
+    base = {
+        "runtime_request_digest": "sha256:" + "2" * 64,
+        "manifest_digest": "sha256:" + "3" * 64,
+        "candidate_input_receipt_digest": "sha256:" + "4" * 64,
+    }
+    output = tmp_path / "output"
+
+    def fail_after_first_task(**_kwargs):
+        runner._write(
+            output / runner.TASK_PROGRESS_FILENAME,
+            runner._task_progress(base=base, tasks=[task], expected_task_count=2),
+        )
+        raise RuntimeError("task_b_failed")
+
+    monkeypatch.setattr(runner, "execute", fail_after_first_task)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "public_scene_artifixer3d_runner.py",
+            "--bundle-root",
+            str(tmp_path / "bundle"),
+            "--output-root",
+            str(output),
+        ],
+    )
+    assert runner.main() == 2
+    result = json.loads(
+        (output / "public_scene_artifixer3d_runtime_result.json").read_text()
+    )
+    assert result["status"] == "blocked"
+    assert result["tasks"] == [task]
+    assert result["completed_task_ids"] == ["task_a"]
+    assert result["partial_task_evidence_preserved"] is True
+    assert result["task_progress_digest"].startswith("sha256:")
+
+    progress = json.loads(
+        (output / runner.TASK_PROGRESS_FILENAME).read_text(encoding="utf-8")
+    )
+    progress["completed_task_count"] = 2
+    runner._write(output / runner.TASK_PROGRESS_FILENAME, progress)
+    assert runner._read_task_progress(output / runner.TASK_PROGRESS_FILENAME) is None
 
 
 def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(

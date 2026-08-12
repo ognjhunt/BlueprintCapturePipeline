@@ -18,6 +18,8 @@ from typing import Any, Mapping, Sequence
 MANIFEST_SCHEMA = "public_scene_artifixer3d_bundle.v1"
 REQUEST_SCHEMA = "public_scene_artifixer3d_runtime_request.v1"
 RESULT_SCHEMA = "public_scene_artifixer3d_runtime_result.v1"
+TASK_PROGRESS_SCHEMA = "public_scene_artifixer3d_task_progress.v1"
+TASK_PROGRESS_FILENAME = "public_scene_artifixer3d_task_progress.json"
 INPUT_SCHEMA = "public_scene_artifixer3d_candidate_inputs.v3"
 
 
@@ -52,6 +54,67 @@ def _read(path: Path, code: str) -> dict[str, Any]:
 def _write(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_canonical_json(value) + "\n", encoding="utf-8")
+
+
+def _task_progress(
+    *,
+    base: Mapping[str, Any],
+    tasks: Sequence[Mapping[str, Any]],
+    expected_task_count: int,
+) -> dict[str, Any]:
+    completed_task_ids = [str(task["task_id"]) for task in tasks]
+    result: dict[str, Any] = {
+        "schema_version": TASK_PROGRESS_SCHEMA,
+        "status": (
+            "all_tasks_completed_unreviewed"
+            if len(tasks) == expected_task_count
+            else "partial_tasks_completed_unreviewed"
+        ),
+        "runtime_request_digest": base["runtime_request_digest"],
+        "manifest_digest": base["manifest_digest"],
+        "candidate_input_receipt_digest": base["candidate_input_receipt_digest"],
+        "expected_task_count": expected_task_count,
+        "completed_task_count": len(tasks),
+        "completed_task_ids": completed_task_ids,
+        "tasks": list(tasks),
+        "semantic_object_free_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "physical_or_deployment_evidence": False,
+        "claim_boundary": "completed_task_outputs_are_unreviewed_generated_candidates",
+    }
+    result["progress_digest"] = _canonical_digest(result, "progress_digest")
+    return result
+
+
+def _read_task_progress(path: Path) -> dict[str, Any] | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        result = _read(path, "artifixer3d_task_progress_unreadable")
+    except ValueError:
+        return None
+    tasks = result.get("tasks")
+    completed_task_ids = result.get("completed_task_ids")
+    if (
+        result.get("schema_version") != TASK_PROGRESS_SCHEMA
+        or result.get("progress_digest")
+        != _canonical_digest(result, "progress_digest")
+        or not isinstance(tasks, list)
+        or not isinstance(completed_task_ids, list)
+        or result.get("completed_task_count") != len(tasks)
+        or completed_task_ids
+        != [str(task.get("task_id")) for task in tasks if isinstance(task, Mapping)]
+        or any(
+            not isinstance(task, Mapping)
+            or task.get("outside_support_changed_pixels_total") != 0
+            for task in tasks
+        )
+        or result.get("semantic_object_free_review_passed") is not False
+        or result.get("multiview_consistency_review_passed") is not False
+        or result.get("physical_or_deployment_evidence") is not False
+    ):
+        return None
+    return result
 
 
 def _bound(root: Path, record: Any, code: str) -> Path:
@@ -505,8 +568,10 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     source_root = bundle_root / "provider_runtime" / "ArtiFixer_official"
     input_root = bundle_root / "provider_runtime" / "input"
-    tasks = [
-        _task_runtime(
+    tasks: list[dict[str, Any]] = []
+    expected_task_count = len(candidate["tasks"])
+    for task in candidate["tasks"]:
+        completed = _task_runtime(
             task=task,
             input_root=input_root,
             source_root=source_root,
@@ -515,8 +580,15 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
             wan_root=wan_root,
             request=request,
         )
-        for task in candidate["tasks"]
-    ]
+        tasks.append(completed)
+        _write(
+            output_root / TASK_PROGRESS_FILENAME,
+            _task_progress(
+                base=base,
+                tasks=tasks,
+                expected_task_count=expected_task_count,
+            ),
+        )
     if any(task["outside_support_changed_pixels_total"] != 0 for task in tasks):
         raise ValueError("artifixer3d_outside_support_change")
     return {
@@ -557,10 +629,18 @@ def main() -> int:
             rehearsal=args.rehearsal,
         )
     except Exception as exc:  # preserve the typed terminal runtime failure
+        progress = _read_task_progress(output / TASK_PROGRESS_FILENAME)
+        completed_tasks = list(progress["tasks"]) if progress is not None else []
         result = {
             "schema_version": RESULT_SCHEMA,
             "status": "blocked",
-            "tasks": [],
+            "tasks": completed_tasks,
+            "completed_task_count": len(completed_tasks),
+            "completed_task_ids": [task["task_id"] for task in completed_tasks],
+            "partial_task_evidence_preserved": bool(completed_tasks),
+            "task_progress_digest": (
+                progress["progress_digest"] if progress is not None else None
+            ),
             "model_loaded": False,
             "artifixer_direct_inference_executed": False,
             "artifixer3d_distillation_executed": False,
