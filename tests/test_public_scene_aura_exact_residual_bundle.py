@@ -325,6 +325,22 @@ def test_vast_bundle_validator_reads_the_packet_not_digest_shaped_paths(
         output_root=tmp_path / "bundle",
         repo_root=Path(__file__).resolve().parents[1],
     )
-    with pytest.raises(ValueError, match="execution_authority"):
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_aura_exact_residual_vast._authority",
+        lambda *_args, **_kwargs: (
+            {"authority_digest": "sha256:" + "a" * 64, "paid_compute": {"external_instance_allowlist": [47373597]}},
+            tmp_path / "authority.json",
+        ),
+    )
+    validated = validate_aura_exact_residual_bundle(
+        tmp_path / "bundle" / "aura_exact_residual_bundle_receipt.json"
+    )
+    assert validated["bundle_sha256"] == receipt["bundle_sha256"]
+    assert validated["preflight_digest"] == receipt["preflight_digest"]
+    assert validated["replacement_object_count"] == 2
+    receipt_path = tmp_path / "bundle" / "aura_exact_residual_bundle_receipt.json"
+    value = json.loads(receipt_path.read_text())
+    request_path = Path(value["runtime_request"]["path"])
+    request_path.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime_request"):
         validate_aura_exact_residual_bundle(tmp_path / "bundle" / "aura_exact_residual_bundle_receipt.json")
-    assert receipt["bundle_sha256"]
