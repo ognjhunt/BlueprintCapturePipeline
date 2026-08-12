@@ -12,6 +12,7 @@ import hashlib
 import itertools
 import json
 import math
+import shutil
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -1234,6 +1235,157 @@ def materialize_replacement_usd_depth_sweep(
         canonical_json(manifest) + "\n", encoding="utf-8"
     )
     return manifest
+
+
+def attest_legacy_default_subject_depth_sweep(
+    *,
+    source_manifest_path: str | Path,
+    source_request_path: str | Path,
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Make a file-backed subject-role attestation for a legacy full-depth sweep.
+
+    Versions of the generic depth sweep before co-present composition recorded
+    ``task_subject`` only as the implicit request default.  This narrow bridge
+    permits such a sweep to participate in a new shared-scene composition only
+    after reopening its request, USD, manifest, and depth array.  It never
+    re-rasterizes or changes the depth values: the copied array must be exactly
+    the source file, and an explicit role is added only for the legacy default.
+    """
+
+    source_manifest_file = Path(source_manifest_path).expanduser().resolve()
+    source_request_file = Path(source_request_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    if (
+        not source_manifest_file.is_file()
+        or source_manifest_file.is_symlink()
+        or not source_request_file.is_file()
+        or source_request_file.is_symlink()
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_source_missing"]
+        )
+    if output.exists() and any(output.iterdir()):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_output_not_empty"]
+        )
+    manifest = _read_object(
+        source_manifest_file, "replacement_depth_legacy_subject_manifest_invalid"
+    )
+    request = _read_object(
+        source_request_file, "replacement_depth_legacy_subject_request_invalid"
+    )
+    if "scene_state_role" in request or "scene_state_role" in manifest:
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_role_not_implicit"]
+        )
+    admitted = validate_replacement_usd_depth_sweep_request(request)
+    if (
+        manifest.get("schema_version") != GENERAL_DEPTH_SWEEP_SCHEMA
+        or manifest.get("status") != "actual_usd_geometry_depth_rasterized"
+        or manifest.get("manifest_digest")
+        != canonical_digest(manifest, digest_field="manifest_digest")
+        or manifest.get("request_digest") != admitted["request_digest"]
+        or manifest.get("asset_id") != admitted["asset_id"]
+        or manifest.get("task_kind") != admitted["task_kind"]
+        or manifest.get("task_freeze_digest") != admitted["task_freeze_digest"]
+        or manifest.get("camera_contract_digest")
+        != admitted["camera_contract_digest"]
+        or manifest.get("camera_rows_digest") != admitted["camera_rows_digest"]
+        or manifest.get("resolution_scale") != admitted["resolution_scale"]
+        or manifest.get("actual_usd_geometry_depth_rasterized") is not True
+        or manifest.get("caller_supplied_coverage_mask") is not False
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_manifest_invalid"]
+        )
+    usd_record = manifest.get("replacement_usd")
+    usd = Path(str(usd_record.get("path") or "")).expanduser().resolve() if isinstance(usd_record, Mapping) else None
+    if (
+        usd is None
+        or not usd.is_file()
+        or usd.is_symlink()
+        or usd.stat().st_size != admitted["replacement_usd_size_bytes"]
+        or _sha256(usd) != admitted["replacement_usd_sha256"]
+        or usd_record.get("size_bytes") != usd.stat().st_size
+        or usd_record.get("sha256") != _sha256(usd)
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_usd_changed"]
+        )
+    array_record = manifest.get("arrays")
+    if not isinstance(array_record, Mapping):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_array_invalid"]
+        )
+    relative = str(array_record.get("relative_path") or "")
+    array = (source_manifest_file.parent / relative).resolve()
+    if (
+        not relative
+        or relative.startswith("/")
+        or ".." in Path(relative).parts
+        or not array.is_relative_to(source_manifest_file.parent)
+        or not array.is_file()
+        or array.is_symlink()
+        or array.stat().st_size != array_record.get("size_bytes")
+        or _sha256(array) != array_record.get("sha256")
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_array_invalid"]
+        )
+    try:
+        depth = np.asarray(np.load(array, allow_pickle=False), dtype=np.float32)
+    except (OSError, ValueError) as exc:
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_array_invalid"]
+        ) from exc
+    if (
+        depth.ndim != 3
+        or depth.shape[0] != len(manifest.get("cells") or [])
+        or manifest.get("depth_dimensions")
+        != [int(depth.shape[2]), int(depth.shape[1])]
+        or manifest.get("finite_depth_pixel_count_by_cell")
+        != [int(np.isfinite(row).sum()) for row in depth]
+        or np.isnan(depth).any()
+        or np.isneginf(depth).any()
+        or np.any(np.isfinite(depth) & (depth <= 0.0))
+    ):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_array_invalid"]
+        )
+    output.mkdir(parents=True, exist_ok=True)
+    destination_array = output / "replacement_depth_sweep.npy"
+    shutil.copyfile(array, destination_array)
+    if _sha256(destination_array) != _sha256(array):
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_array_copy_invalid"]
+        )
+    upgraded = json.loads(json.dumps(manifest, allow_nan=False))
+    upgraded["scene_state_role"] = "task_subject"
+    upgraded["arrays"] = _record(destination_array, output)
+    upgraded["legacy_subject_role_attestation"] = {
+        "source_manifest": {
+            "path": str(source_manifest_file),
+            "size_bytes": source_manifest_file.stat().st_size,
+            "sha256": _sha256(source_manifest_file),
+            "manifest_digest": manifest["manifest_digest"],
+        },
+        "source_request": {
+            "path": str(source_request_file),
+            "size_bytes": source_request_file.stat().st_size,
+            "sha256": _sha256(source_request_file),
+            "request_digest": admitted["request_digest"],
+        },
+        "source_role": "implicit_legacy_default_task_subject",
+        "copied_depth_array_byte_exact": True,
+    }
+    upgraded["manifest_digest"] = canonical_digest(
+        upgraded, digest_field="manifest_digest"
+    )
+    (output / f"{GENERAL_DEPTH_SWEEP_SCHEMA}.json").write_text(
+        canonical_json(upgraded) + "\n", encoding="utf-8"
+    )
+    return upgraded
 
 
 def materialize_articulated_usd_depth_sweep(
@@ -2583,6 +2735,7 @@ def materialize_reference_hybrid_review(
 
 __all__ = [
     "ArticulatedUsdDepthSweepError",
+    "attest_legacy_default_subject_depth_sweep",
     "DEPTH_SWEEP_SCHEMA",
     "GENERAL_DEPTH_SWEEP_REQUEST_SCHEMA",
     "GENERAL_DEPTH_SWEEP_SCHEMA",

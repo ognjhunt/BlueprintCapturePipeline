@@ -12,6 +12,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.articulated_usd_depth_sweep import (
     ArticulatedUsdDepthSweepError,
+    attest_legacy_default_subject_depth_sweep,
     _primitive_points_and_faces,
     conservative_max_pool_alpha,
     evaluate_source_alpha_coverage,
@@ -370,6 +371,66 @@ def test_general_depth_sweep_supports_primitives_and_complete_joint_state_cells(
     assert "derived_from_all_door_cells" not in coverage[
         "residual_target_core_seam_masks"
     ][0]
+
+
+def test_legacy_implicit_subject_depth_sweep_requires_file_backed_attestation(
+    tmp_path: Path,
+) -> None:
+    usd = _primitive_graph_fixture_usd(tmp_path / "legacy.usda")
+    graph = _primitive_graph()
+    identity = np.eye(4).tolist()
+    request = seal_replacement_usd_depth_sweep_request(
+        asset_id="legacy_subject_asset",
+        task_kind="articulated_interaction",
+        task_freeze_digest="sha256:" + "c" * 64,
+        replacement_usd_sha256=_sha256(usd),
+        replacement_usd_size_bytes=usd.stat().st_size,
+        articulation_graph=graph,
+        link_paths={
+            link_id: f"/Asset/links/{link_id}"
+            for link_id in ("root", "door", "latch")
+        },
+        joint_paths={
+            joint_id: f"/Asset/joints/{joint_id}"
+            for joint_id in ("hinge", "coupler")
+        },
+        task_scoring_frame={"frame_id": "asset_root", "T_asset_task_scoring": identity},
+        camera_contract_digest="sha256:" + "d" * 64,
+        cameras=[_camera()],
+        joint_state_cells=[
+            {"cell_id": "reset", "T_world_task_scoring": identity, "joint_positions": {"hinge": 0.0, "coupler": 0.0}},
+            {"cell_id": "open", "T_world_task_scoring": identity, "joint_positions": {"hinge": 0.7, "coupler": 0.14}},
+        ],
+        resolution_scale=0.5,
+    )
+    request.pop("scene_state_role")
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path = tmp_path / "legacy-request.json"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    source_root = tmp_path / "legacy-source"
+    materialize_replacement_usd_depth_sweep(
+        usd_path=usd, request=request, output_root=source_root
+    )
+    source_manifest_path = source_root / "replacement_usd_depth_sweep.v2.json"
+    source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+    source_manifest.pop("scene_state_role")
+    source_manifest["manifest_digest"] = canonical_digest(
+        source_manifest, digest_field="manifest_digest"
+    )
+    source_manifest_path.write_text(json.dumps(source_manifest), encoding="utf-8")
+
+    result = attest_legacy_default_subject_depth_sweep(
+        source_manifest_path=source_manifest_path,
+        source_request_path=request_path,
+        output_root=tmp_path / "attested",
+    )
+
+    assert result["scene_state_role"] == "task_subject"
+    assert result["legacy_subject_role_attestation"]["copied_depth_array_byte_exact"] is True
+    assert (
+        (tmp_path / "attested" / "replacement_depth_sweep.npy").read_bytes()
+        == (source_root / "replacement_depth_sweep.npy").read_bytes()
+    )
 
 
 def test_general_depth_excludes_hidden_proxy_and_guide_geometry(tmp_path: Path) -> None:
