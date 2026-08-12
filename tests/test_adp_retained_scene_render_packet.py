@@ -278,6 +278,35 @@ def test_retained_scene_render_runtime_result_is_recognized_by_provider_inspecti
     ]
 
 
+def test_egl_renderer_uses_angle_gl_egl_without_software_fallback() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node unavailable")
+    renderer = Path(__file__).resolve().parents[1] / "tools/splat_render/render_splat.mjs"
+    completed = subprocess.run(
+        [
+            node,
+            str(renderer),
+            "--graphics-backend",
+            "egl",
+            "--print-graphics-args",
+            "--out",
+            str(Path.cwd()),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(completed.stdout) == [
+        "--use-gl=angle",
+        "--use-angle=gl-egl",
+        "--ignore-gpu-blocklist",
+        "--disable-software-rasterizer",
+        "--enable-webgl",
+    ]
+
+
 def _task_freeze(task_id: str, slot: int) -> dict[str, object]:
     value: dict[str, object] = {
         "schema_version": "dual_task_task_freeze.v1",

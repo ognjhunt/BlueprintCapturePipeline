@@ -43,6 +43,35 @@ if (!["swiftshader", "metal", "egl"].includes(graphicsBackend)) {
   process.exit(2);
 }
 
+function graphicsArguments(backend) {
+  if (backend === "metal") {
+    return ["--use-gl=angle", "--use-angle=metal", "--ignore-gpu-blocklist"];
+  }
+  if (backend === "egl") {
+    // Chromium's hardware EGL route is an ANGLE backend.  ``--use-gl=egl``
+    // itself can leave WebGL disabled in headless Chromium, including a
+    // container that otherwise exposes an NVIDIA GPU through nvidia-smi.
+    return [
+      "--use-gl=angle",
+      "--use-angle=gl-egl",
+      "--ignore-gpu-blocklist",
+      "--disable-software-rasterizer",
+      "--enable-webgl",
+    ];
+  }
+  return [
+    "--use-gl=angle",
+    "--use-angle=swiftshader",
+    "--ignore-gpu-blocklist",
+    "--enable-unsafe-swiftshader",
+  ];
+}
+
+if (process.argv.includes("--print-graphics-args")) {
+  process.stdout.write(`${JSON.stringify(graphicsArguments(graphicsBackend))}\n`);
+  process.exit(0);
+}
+
 if ((!splatPath && !compositionArg) || (splatPath && compositionArg) || !outDir) {
   console.error("usage: node render_splat.mjs (--splat <file> | --composition <json>) --out <dir> [--cameras <json>] [--width N --height N]");
   process.exit(2);
@@ -176,21 +205,7 @@ async function main() {
   const port = server.address().port;
   const base = `http://127.0.0.1:${port}`;
 
-  const graphicsArgs = graphicsBackend === "metal"
-    ? ["--use-gl=angle", "--use-angle=metal", "--ignore-gpu-blocklist"]
-    : graphicsBackend === "egl"
-    ? [
-        "--use-gl=egl",
-        "--ignore-gpu-blocklist",
-        "--disable-software-rasterizer",
-        "--enable-webgl",
-      ]
-    : [
-        "--use-gl=angle",
-        "--use-angle=swiftshader",
-        "--ignore-gpu-blocklist",
-        "--enable-unsafe-swiftshader",
-      ];
+  const graphicsArgs = graphicsArguments(graphicsBackend);
   const browser = await chromium.launch({
     headless: true,
     args: [
