@@ -1494,10 +1494,6 @@ def _machine_id_set(values: Iterable[Any]) -> set[int]:
     return result
 
 
-def _version_tuple(value: Any) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", _string(value)))
-
-
 def _version_at_least(value: Any, minimum: str) -> bool:
     if not minimum:
         return True
@@ -4567,7 +4563,9 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
 
     try:
         _status_code, payload = _api_json(
-            method="GET", path="/instances/", api_key=api_key, timeout_seconds=30
+            # Query the specific allocation. A broad listing can be paginated
+            # or eventually consistent, so its omission is not death evidence.
+            method="GET", path=f"/instances/{instance_id}/", api_key=api_key, timeout_seconds=30
         )
     except Exception as exc:  # pragma: no cover - live network dependent.
         # Same shape on every path: a caller must never have to know that the
@@ -4579,8 +4577,32 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
             "exited": False,
         }
     rows = _instance_list_rows(payload)
+    if not rows:
+        if isinstance(payload.get("instances"), list):
+            # A well-formed inventory that contains no row for the specific
+            # allocation is positive destruction evidence. This differs from
+            # an arbitrary successful JSON body, which remains unrecognized.
+            return {
+                "probe_error": None,
+                "observed": True,
+                "status": "absent",
+                "exited": True,
+            }
+        # A successful response with no recognizable status is not an exit.
+        # Let the bounded watchdogs retain and name this provider-shape fault.
+        return {
+            "probe_error": "provider_instance_listing_unrecognized",
+            "observed": False,
+            "status": "unknown",
+            "exited": False,
+        }
     for row in rows:
-        if _number(row.get("id")) == float(int(instance_id)):
+        row_instance_id = _number(
+            row.get("id") or row.get("instance_id") or row.get("contract_id")
+        )
+        # The provider's per-instance endpoint is allowed to omit the id; the
+        # endpoint identity then binds this row to ``instance_id``.
+        if row_instance_id is None or row_instance_id == float(int(instance_id)):
             status = _instance_status(row).lower()
             return {
                 "observed": True,
@@ -4588,8 +4610,14 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
                 "exited": status in {"exited", "stopped_before_start"},
                 "probe_error": None,
             }
-    # Absent from the listing entirely: destroyed out from under this run.
-    return {"observed": True, "status": "absent", "exited": True, "probe_error": None}
+    # A different id at the per-instance endpoint is an API-shape fault, not
+    # evidence that the allocation was destroyed.
+    return {
+        "probe_error": "provider_instance_identity_mismatch",
+        "observed": False,
+        "status": "unknown",
+        "exited": False,
+    }
 
 
 def _instance_list_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -4961,6 +4989,24 @@ def _request_logs_and_fetch(
             and not last_instance_liveness.get("exited")
         )
         deadline_reached = time.monotonic() >= deadline
+        if (
+            no_progress_timeout_reached
+            and last_instance_liveness.get("exited")
+            and instance_exited_count < 2
+        ):
+            # Confirm a provider-reported exit immediately. This is deliberately
+            # a status-only read: a dead worker cannot create scientific log
+            # progress, and another log request would spend more time merely to
+            # observe the same symptom.
+            confirmed_liveness = _instance_liveness(instance_id=instance_id, api_key=api_key)
+            last_instance_liveness = confirmed_liveness
+            if confirmed_liveness.get("exited"):
+                instance_exited_count += 1
+            elif confirmed_liveness.get("observed"):
+                instance_exited_count = 0
+            attempts[-1]["instance_status"] = confirmed_liveness.get("status")
+            attempts[-1]["instance_exited_observed_count"] = instance_exited_count
+            attempts[-1]["instance_liveness_probe_error"] = confirmed_liveness.get("probe_error")
         instance_exited = instance_exited_count >= 2
         if marker_found:
             break_reason = "success_marker_found"

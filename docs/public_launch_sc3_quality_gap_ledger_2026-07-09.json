@@ -900,7 +900,7 @@
             {
               "artifact_id": "REL-05-AC-01-EV-02",
               "path": "uv.lock",
-              "sha256": "sha256:cd14f34392083311eccd928a2f760bbd419781e1828ccfb9143c237e62a3795b",
+              "sha256": "sha256:f679c4c4c6b88fe1b5047193bd286231c6ee0f3e497e89921dabac52c6967a56",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2210,7 +2210,7 @@
             {
               "artifact_id": "DATA-08-AC-01-EV-02",
               "path": "tests/test_post_training_data_package.py",
-              "sha256": "sha256:6971588fa8f14ece052267d357e56647cbcb4cf7ff9cd367a7868f89f983c605",
+              "sha256": "sha256:030ef62ae00b4fc445c3ce78ac3d6c926713cd65f832d5930a05814c384a089e",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4855,7 +4855,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_job_orchestrator.py",
-              "sha256": "sha256:82bd9a2132060fd27853ee337d9f373ac8a4fbb797fd37fca91c22075cf2deef",
+              "sha256": "sha256:549833c284c9a7e1f8909033d83fe693ea824e643f08d58149b904c8da7f5af2",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5299,7 +5299,7 @@
             {
               "artifact_id": "RUN-07-AC-01-EV-01",
               "path": "scripts/gpu_spend_guard.py",
-              "sha256": "sha256:ee6037018fd563302a4d70f05bbcb63bbe206f0a8570cb187b359ff4b447f519",
+              "sha256": "sha256:cbb7bb3f96442631c715762ab46cd5d9bed027ce2408bf3ba498b17bce4766d6",
               "role": "executable_control",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5315,7 +5315,7 @@
             {
               "artifact_id": "RUN-07-AC-01-EV-02",
               "path": "tests/test_gpu_spend_guard.py",
-              "sha256": "sha256:0888002903985bb4d6ceaa252d8a2bd2d2914c3c9e6f124c7d2cb55a3eba6b35",
+              "sha256": "sha256:53062698489b4f40d686a232dc3c78a3863ccca4218cd8d1fbcebe927da400e2",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5989,7 +5989,7 @@
             {
               "artifact_id": "REL-06-AC-01-EV-01",
               "path": "uv.lock",
-              "sha256": "sha256:cd14f34392083311eccd928a2f760bbd419781e1828ccfb9143c237e62a3795b",
+              "sha256": "sha256:f679c4c4c6b88fe1b5047193bd286231c6ee0f3e497e89921dabac52c6967a56",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8513,7 +8513,7 @@
             {
               "artifact_id": "DATA-17-AC-01-EV-03",
               "path": "tests/test_post_training_data_package.py",
-              "sha256": "sha256:6971588fa8f14ece052267d357e56647cbcb4cf7ff9cd367a7868f89f983c605",
+              "sha256": "sha256:030ef62ae00b4fc445c3ce78ac3d6c926713cd65f832d5930a05814c384a089e",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8642,7 +8642,7 @@
             {
               "artifact_id": "DATA-18-AC-01-EV-02",
               "path": "tests/test_post_training_data_package.py",
-              "sha256": "sha256:6971588fa8f14ece052267d357e56647cbcb4cf7ff9cd367a7868f89f983c605",
+              "sha256": "sha256:030ef62ae00b4fc445c3ce78ac3d6c926713cd65f832d5930a05814c384a089e",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11385,7 +11385,7 @@
             {
               "artifact_id": "RUN-13-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:375c3a3ab4ad1df3978e185696c43f2119a63e13f0a67a53890441189e34c053",
+              "sha256": "sha256:89c50a64da6d6bbed25b5d3d7fc5dc9c0df4b9dc911e1a4661b7c83b68f8728f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11515,7 +11515,7 @@
             {
               "artifact_id": "RUN-14-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:375c3a3ab4ad1df3978e185696c43f2119a63e13f0a67a53890441189e34c053",
+              "sha256": "sha256:89c50a64da6d6bbed25b5d3d7fc5dc9c0df4b9dc911e1a4661b7c83b68f8728f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11645,7 +11645,7 @@
             {
               "artifact_id": "RUN-15-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:375c3a3ab4ad1df3978e185696c43f2119a63e13f0a67a53890441189e34c053",
+              "sha256": "sha256:89c50a64da6d6bbed25b5d3d7fc5dc9c0df4b9dc911e1a4661b7c83b68f8728f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13050,7 +13050,7 @@
             {
               "artifact_id": "P2-01-AC-01-EV-02",
               "path": "requirements.txt",
-              "sha256": "sha256:698031a445ad39a7ec33af58005c69af983d453577aea5bef5b5f41a06e8d2dd",
+              "sha256": "sha256:0ff2f12374f5fa804e111eef7891ccfab1f2d11b5fbd3cba4353a57d79bf2705",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13066,7 +13066,7 @@
             {
               "artifact_id": "P2-01-AC-01-EV-03",
               "path": "requirements-geometry.txt",
-              "sha256": "sha256:9e91d7776311e61a2b5e92ff1a3311b33117f3920163d694159dd560c226bd3c",
+              "sha256": "sha256:114695ea427ddcae4dae0f8da3e13846316f2533fc4ebd97b5c671d5ee6be831",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13214,7 +13214,7 @@
             {
               "artifact_id": "P2-02-AC-01-EV-02",
               "path": "uv.lock",
-              "sha256": "sha256:cd14f34392083311eccd928a2f760bbd419781e1828ccfb9143c237e62a3795b",
+              "sha256": "sha256:f679c4c4c6b88fe1b5047193bd286231c6ee0f3e497e89921dabac52c6967a56",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:a9d14c36b0014dcb79cc6edd72bf1127950e4f0d9957125652361ed5b73c4829",
+              "sha256": "sha256:fa15815a432338ca61c26d4c1b7b6727b8903d9ddc62efe58909a1eab1e5a8e1",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
