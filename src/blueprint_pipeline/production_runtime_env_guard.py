@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,13 +22,74 @@ REQUIRED_TRUE_FLAGS = (
     "RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO",
 )
 
+# Every module a control-plane host executes. An entrypoint that cannot be
+# imported cannot allocate, release, reconcile, or guard spend, and a base
+# install without the `runtime` extra is enough to break one: the allocator
+# reaches `cv2` transitively through the excision audit.
+#
+# `paid_resource_allocator` is here even though no unit runs it directly -- the
+# dispatcher and release worker invoke it as a subprocess, which is exactly how
+# its missing dependency stayed invisible until a stranded provider record
+# needed releasing. A test pins this tuple against `deploy/systemd/*.service`
+# so a new unit cannot ship an unchecked entrypoint.
+CONTROL_PLANE_ENTRYPOINTS = (
+    "blueprint_pipeline.paid_resource_allocator",
+    "blueprint_pipeline.live_pipeline_control_plane",
+    "blueprint_pipeline.live_pipeline_intake_service",
+    "blueprint_pipeline.live_pipeline_manifest_alert",
+    "blueprint_pipeline.production_gpu_campaign_control_plane",
+    "blueprint_pipeline.production_gpu_worker_agent",
+    "blueprint_pipeline.production_gpu_worker_pool",
+    "blueprint_pipeline.production_runtime_env_guard",
+    "blueprint_pipeline.provider_billing_reconciler",
+    "blueprint_pipeline.pubsub_handoff_listener",
+    "blueprint_pipeline.task_evaluation_launch_dispatcher",
+    "blueprint_pipeline.task_evaluation_launch_reconciler",
+    "blueprint_pipeline.task_evaluation_launch_supervisor",
+    "blueprint_pipeline.task_evaluation_terminal_resource_release",
+)
+
+ENTRYPOINT_REMEDIATION = (
+    "Install the control-plane dependency set from the deployed checkout: "
+    'pip install -e ".[runtime]"'
+)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _check_control_plane_entrypoints(
+    import_module: Callable[[str], Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Import every control-plane entrypoint and report all failures.
+
+    Every module is attempted even after one fails, so a single missing
+    dependency does not hide the rest behind it.
+    """
+    failed: list[dict[str, Any]] = []
+    for module in CONTROL_PLANE_ENTRYPOINTS:
+        try:
+            import_module(module)
+        except BaseException as exc:  # noqa: BLE001 - any import failure blocks
+            failed.append({
+                "module": module,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            })
+    detail = {
+        "checked": list(CONTROL_PLANE_ENTRYPOINTS),
+        "importable": not failed,
+        "failed": failed,
+        "remediation": ENTRYPOINT_REMEDIATION,
+    }
+    blockers = [f"control_plane_entrypoint_not_importable:{item['module']}" for item in failed]
+    return detail, blockers
+
+
 def build_production_runtime_env_guard(
     env: Mapping[str, str] | None = None,
+    import_module: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     source = os.environ if env is None else env
     blockers: list[str] = []
@@ -46,6 +108,11 @@ def build_production_runtime_env_guard(
         if not enabled:
             blockers.append(f"missing_or_false_{name}")
 
+    entrypoints, entrypoint_blockers = _check_control_plane_entrypoints(
+        importlib.import_module if import_module is None else import_module
+    )
+    blockers.extend(entrypoint_blockers)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -53,11 +120,12 @@ def build_production_runtime_env_guard(
         "blockers": blockers,
         "launch_proof_mode": mode or None,
         "required_true_flags": flag_status,
+        "control_plane_entrypoints": entrypoints,
         "claim_boundary": (
-            "This guard verifies production fail-closed runtime posture only. "
-            "It is not proof of deployed health, Pub/Sub message consumption, "
-            "WebApp forwarding, buyer delivery, simulator execution, or live "
-            "provider success."
+            "This guard verifies production fail-closed runtime posture and "
+            "that every control-plane entrypoint imports. It is not proof of "
+            "deployed health, Pub/Sub message consumption, WebApp forwarding, "
+            "buyer delivery, simulator execution, or live provider success."
         ),
     }
 

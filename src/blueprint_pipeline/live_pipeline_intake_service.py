@@ -139,6 +139,9 @@ TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIG
 TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT"
 )
+TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT"
+)
 TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT"
 )
@@ -212,6 +215,21 @@ def _task_evaluation_terminal_resource_release_queue_root(manifest_path: Path) -
     if configured:
         return Path(configured).expanduser().resolve()
     return _work_dir(manifest_path).expanduser().resolve() / "task_evaluation_terminal_resource_releases"
+
+
+def _task_evaluation_terminal_resource_release_state_root(manifest_path: Path) -> Path:
+    """Where the release worker retains each outcome receipt.
+
+    Supplying this to the staging contract is what lets an explicit operator
+    re-submit re-arm a release that blocked before the provider was contacted.
+    Without it the contract stays strictly idempotent and such a release can
+    never be retried, stranding the resource it names.
+    """
+    configured = _string(os.getenv(TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT_ENV))
+    if configured:
+        return Path(configured).expanduser().resolve()
+    queue_root = _task_evaluation_terminal_resource_release_queue_root(manifest_path)
+    return queue_root.parent / f"{queue_root.name}-state"
 
 
 def _safe_stem(value: str) -> str:
@@ -2262,6 +2280,7 @@ def create_app() -> FastAPI:
             queued = stage_terminal_resource_release_request(
                 value=payload,
                 queue_root=_task_evaluation_terminal_resource_release_queue_root(manifest_path),
+                state_root=_task_evaluation_terminal_resource_release_state_root(manifest_path),
             )
         except TerminalResourceReleaseError as exc:
             raise HTTPException(

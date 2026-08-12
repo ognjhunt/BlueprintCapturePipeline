@@ -21,6 +21,7 @@ from .common import utc_now_iso, write_json
 from .gpu_render_providers import get_render_provider
 from .task_evaluation_terminal_resource_release_contract import (
     QUEUE_RUN_SCHEMA_VERSION,
+    RECEIPT_FILENAME,
     RECEIPT_SCHEMA_VERSION,
     TerminalResourceReleaseError,
     canonical_digest,
@@ -233,6 +234,23 @@ def _dispatch_through_canonical_allocator(*, request_path: Path, state_root: Pat
     return receipt
 
 
+def _retain_release_receipt(
+    *, state_root: Path, release_id: str, receipt: Mapping[str, Any]
+) -> None:
+    """Persist the outcome receipt beside the release's other evidence.
+
+    Retention must never mask the outcome it records, so a write failure is
+    swallowed rather than replacing a real terminal receipt with an unrelated
+    I/O error.
+    """
+    try:
+        destination = state_root / release_id
+        destination.mkdir(parents=True, exist_ok=True)
+        write_json(destination / RECEIPT_FILENAME, dict(receipt))
+    except OSError:
+        return
+
+
 def process_terminal_resource_release_queue(
     *, queue_root: str | Path, state_root: str | Path, max_messages: int = 1,
     dispatcher: Callable[..., dict[str, Any]] | None = None,
@@ -260,6 +278,15 @@ def process_terminal_resource_release_queue(
                 "error_type": type(exc).__name__,
                 "raw_secret_values_recorded": False,
             }
+        # Retain the outcome for every terminal state, not just success. A
+        # blocked release that keeps no receipt can never be shown to have
+        # stopped before touching the provider, so it can never be safely
+        # re-armed and the resource it names stays stranded.
+        _retain_release_receipt(
+            state_root=Path(state_root).expanduser().resolve(),
+            release_id=_string(receipt.get("release_id")) or claimed.stem,
+            receipt=receipt,
+        )
         destination = queue / ("completed" if receipt.get("status") == "completed" else "blocked")
         destination.mkdir(parents=True, exist_ok=True)
         claimed.replace(destination / claimed.name)

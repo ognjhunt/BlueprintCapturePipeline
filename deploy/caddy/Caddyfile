@@ -1,0 +1,29 @@
+# Blueprint Pipeline control-plane edge.
+#
+# The intake service binds loopback only (127.0.0.1:8765). This is the sole
+# public listener on the control-plane host: it terminates TLS for the Pipeline
+# hostname and forwards ONLY the live-pipeline API surface. Every other path
+# answers with a static string so a rebuilt host never exposes a second surface.
+#
+# The hostname is supplied by BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME rather than
+# baked in, because a rebuilt droplet gets a new address. Set one or more
+# comma-separated names, for example:
+#
+#   BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME="paperclip.tryblueprint.io"
+#
+# During a DNS repoint it is safe to serve the canonical name alongside a
+# temporary address-derived name; Caddy issues each certificate independently
+# and the canonical one is obtained automatically once its record resolves here.
+#
+# Rendered to /etc/caddy/Caddyfile by
+# scripts/install_live_pipeline_control_plane.sh.
+
+{$BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME} {
+	handle /api/live-pipeline/* {
+		reverse_proxy 127.0.0.1:8765
+	}
+
+	handle {
+		respond "blueprint-pipeline-control-plane" 200
+	}
+}
