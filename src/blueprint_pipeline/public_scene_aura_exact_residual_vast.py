@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import zipfile
 from contextlib import contextmanager
@@ -38,6 +39,9 @@ PROVIDER_BUNDLE_KIND = "adp_aura_exact_residual"
 RESULT_SCHEMA_VERSION = "public_scene_aura_exact_residual_vast_run.v1"
 RAW_RESULT_SCHEMA_VERSION = "public_scene_aura_exact_residual_raw_result.v1"
 RUNTIME_ABSTENTION_SCHEMA_VERSION = "public_scene_aura_exact_residual_runtime_abstention.v1"
+CAMPAIGN_ABSTENTION_SCHEMA_VERSION = (
+    "public_scene_aura_exact_residual_provider_runtime_campaign_abstention.v1"
+)
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/aura-exact-residual"
 MAX_TTL_SECONDS = 14_400
 MIN_TTL_SECONDS = 7_200
@@ -667,6 +671,17 @@ def materialize_aura_exact_residual_runtime_abstention(
         raise ValueError("aura_exact_residual_runtime_abstention_machine_avoidlist_missing")
     cleanup = _read(cleanup_path)
     avoidlist = _read(avoidlist_path)
+    budget_path = root / "vast_provider_run" / "vast_budget_ledger.json"
+    artifacts = adapter.get("artifacts")
+    if (
+        not budget_path.is_file()
+        or budget_path.is_symlink()
+        or not isinstance(artifacts, Mapping)
+        or Path(str(artifacts.get("vast_budget_ledger") or "")).expanduser().resolve()
+        != budget_path.resolve()
+    ):
+        raise ValueError("aura_exact_residual_runtime_abstention_budget_missing")
+    budget = _read(budget_path)
     entries = avoidlist.get("entries")
     if (
         cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
@@ -684,6 +699,18 @@ def materialize_aura_exact_residual_runtime_abstention(
             == "exclude_persistently_across_sibling_jobs_until_manual_review"
             for entry in entries
         )
+        or budget.get("schema_version") != "vast_budget_ledger.v1"
+        or budget.get("status") != "completed"
+        or budget.get("continuing_spend_from_this_run") is not False
+        or budget.get("vast_instance_ids") != instance_ids
+        or isinstance(budget.get("estimated_cost_usd"), bool)
+        or not isinstance(budget.get("estimated_cost_usd"), (int, float))
+        or not math.isfinite(float(budget["estimated_cost_usd"]))
+        or float(budget["estimated_cost_usd"]) < 0
+        or budget.get("estimated_cost_usd") != adapter.get("estimated_cost_usd")
+        or isinstance(result.get("hard_cap_usd"), bool)
+        or not isinstance(result.get("hard_cap_usd"), (int, float))
+        or float(budget["estimated_cost_usd"]) > float(result["hard_cap_usd"])
     ):
         raise ValueError("aura_exact_residual_runtime_abstention_closeout_invalid")
 
@@ -703,7 +730,12 @@ def materialize_aura_exact_residual_runtime_abstention(
         "independent_watchdog": _record(watchdog_path),
         "object_store_cleanup": _record(cleanup_path),
         "machine_avoidlist": _record(avoidlist_path),
+        "provider_budget_ledger": _record(budget_path),
         "provider_instance_id": instance_ids[0],
+        "estimated_cost_usd": float(budget["estimated_cost_usd"]),
+        "actual_live_runtime_seconds_observed_by_adapter": budget.get(
+            "actual_live_runtime_seconds_observed_by_adapter"
+        ),
         "aura_inpainting_executed": False,
         "provider_bundle_started": False,
         "provider_entrypoint_started": False,
@@ -735,13 +767,232 @@ def materialize_aura_exact_residual_runtime_abstention(
     return receipt
 
 
+def materialize_aura_exact_residual_provider_runtime_campaign_abstention(
+    *,
+    runtime_abstention_paths: list[str | Path],
+    bundle_receipt_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal two distinct provider-null attempts without inventing Aura results.
+
+    This is deliberately a campaign closeout, not a retry controller.  It can
+    only describe exactly two independently zero-closed attempts against one
+    sealed 1--5 replacement packet.  Any future provider mutation needs a new
+    explicit authority path; this materializer performs no mutation itself.
+    """
+
+    if len(runtime_abstention_paths) != 2:
+        raise ValueError("aura_exact_residual_campaign_requires_exactly_two_attempts")
+    bundle = validate_aura_exact_residual_bundle(bundle_receipt_path)
+    bundle_receipt = Path(bundle["receipt_path"]).resolve()
+    rows: list[dict[str, Any]] = []
+    seen_receipts: set[Path] = set()
+    for value in runtime_abstention_paths:
+        receipt_path = Path(value).expanduser().resolve()
+        if (
+            receipt_path in seen_receipts
+            or not receipt_path.is_file()
+            or receipt_path.is_symlink()
+        ):
+            raise ValueError("aura_exact_residual_campaign_runtime_abstention_path_invalid")
+        seen_receipts.add(receipt_path)
+        abstention = _read(receipt_path)
+        if (
+            abstention.get("schema_version") != RUNTIME_ABSTENTION_SCHEMA_VERSION
+            or abstention.get("status")
+            != "abstained_provider_runtime_before_aura_entrypoint"
+            or abstention.get("receipt_digest")
+            != canonical_digest(abstention, digest_field="receipt_digest")
+            or abstention.get("bundle_sha256") != bundle["bundle_sha256"]
+            or abstention.get("preflight_digest") != bundle["preflight_digest"]
+            or abstention.get("replacement_object_count")
+            != bundle["replacement_object_count"]
+            or abstention.get("shared_camera_count") != bundle["shared_camera_count"]
+            or abstention.get("task_count") != bundle["task_count"]
+            or abstention.get("aura_inpainting_executed") is not False
+            or abstention.get("provider_bundle_started") is not False
+            or abstention.get("provider_entrypoint_started") is not False
+            or abstention.get("provider_output_returned") is not False
+            or abstention.get("automatic_paid_retry_allowed") is not False
+            or abstention.get("automatic_paid_retry_executed") is not False
+            or abstention.get("continuing_spend_from_this_run") is not False
+            or abstention.get("provider_zero_confirmed") is not True
+        ):
+            raise ValueError("aura_exact_residual_campaign_runtime_abstention_invalid")
+        bound_bundle = _bound(
+            abstention.get("bundle_receipt"),
+            code="aura_exact_residual_campaign_bundle_receipt_unbound",
+        )
+        execution_result = _bound(
+            abstention.get("execution_result"),
+            code="aura_exact_residual_campaign_execution_result_unbound",
+        )
+        adapter_path = _bound(
+            abstention.get("provider_adapter"),
+            code="aura_exact_residual_campaign_adapter_unbound",
+        )
+        teardown_path = _bound(
+            abstention.get("teardown"),
+            code="aura_exact_residual_campaign_teardown_unbound",
+        )
+        watchdog_path = _bound(
+            abstention.get("independent_watchdog"),
+            code="aura_exact_residual_campaign_watchdog_unbound",
+        )
+        cleanup_path = _bound(
+            abstention.get("object_store_cleanup"),
+            code="aura_exact_residual_campaign_cleanup_unbound",
+        )
+        avoidlist_path = _bound(
+            abstention.get("machine_avoidlist"),
+            code="aura_exact_residual_campaign_avoidlist_unbound",
+        )
+        budget_path = _bound(
+            abstention.get("provider_budget_ledger"),
+            code="aura_exact_residual_campaign_budget_unbound",
+        )
+        root = execution_result.parent.resolve()
+        if (
+            bound_bundle != bundle_receipt
+            or execution_result.name != "public_scene_aura_exact_residual_vast_result.json"
+            or adapter_path != root / "vast_provider_run" / "vast_provider_adapter_result.json"
+            or teardown_path != root / "vast_provider_run" / "vast_teardown_manifest.json"
+            or watchdog_path
+            != root / "independent_vast_watchdog" / WATCHDOG_EVIDENCE_NAME
+            or cleanup_path
+            != root / "object_store_staging" / "wam_provider_object_store_cleanup.json"
+            or budget_path != root / "vast_provider_run" / "vast_budget_ledger.json"
+            or avoidlist_path.name != "vast_machine_avoidlist.json"
+            # The second sealed attempt may deliberately inherit its sibling's
+            # avoidlist.  It must still be within the same shared-scene parent,
+            # never an arbitrary caller-selected file.
+            or (
+                root not in avoidlist_path.parents
+                and root.parent not in avoidlist_path.parents
+            )
+        ):
+            raise ValueError("aura_exact_residual_campaign_artifact_layout_invalid")
+        adapter = _read(adapter_path)
+        teardown = _read(teardown_path)
+        watchdog = _read(watchdog_path)
+        cleanup = _read(cleanup_path)
+        budget = _read(budget_path)
+        instance_id = abstention.get("provider_instance_id")
+        session_attempts = (adapter.get("session_budget_summary") or {}).get("attempts")
+        matching_attempts = [
+            item
+            for item in session_attempts or []
+            if isinstance(item, Mapping) and item.get("vast_instance_ids") == [instance_id]
+        ]
+        if (
+            not isinstance(instance_id, int)
+            or instance_id <= 0
+            or adapter.get("status") != "failed"
+            or adapter.get("reason") != "vast_probe_failed"
+            or adapter.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
+            or (adapter.get("provider_attempt_classification") or {}).get("classification")
+            != "pre_execution_provider_null"
+            or adapter.get("vast_instance_ids") != [instance_id]
+            or adapter.get("continuing_spend_from_this_run") is not False
+            or teardown.get("status") != "completed"
+            or teardown.get("continuing_spend_from_this_run") is not False
+            or teardown.get("vast_instance_ids") != [instance_id]
+            or watchdog.get("status") != "provider_terminal"
+            or watchdog.get("provider_absence_confirmed") is not True
+            or (watchdog.get("recorded_vast_instance") or {}).get("instance_id")
+            != str(instance_id)
+            or cleanup.get("all_objects_absent") is not True
+            or budget.get("status") != "completed"
+            or budget.get("continuing_spend_from_this_run") is not False
+            or budget.get("vast_instance_ids") != [instance_id]
+            or budget.get("estimated_cost_usd") != abstention.get("estimated_cost_usd")
+            or not isinstance(matching_attempts, list)
+            or len(matching_attempts) != 1
+            or not isinstance(matching_attempts[0].get("machine_id"), int)
+            or matching_attempts[0]["machine_id"] <= 0
+        ):
+            raise ValueError("aura_exact_residual_campaign_attempt_evidence_invalid")
+        estimated_cost = budget.get("estimated_cost_usd")
+        if (
+            isinstance(estimated_cost, bool)
+            or not isinstance(estimated_cost, (int, float))
+            or not math.isfinite(float(estimated_cost))
+            or float(estimated_cost) < 0
+        ):
+            raise ValueError("aura_exact_residual_campaign_attempt_cost_invalid")
+        rows.append(
+            {
+                "runtime_abstention": _record(receipt_path),
+                "provider_instance_id": instance_id,
+                "machine_id": matching_attempts[0]["machine_id"],
+                "estimated_cost_usd": float(estimated_cost),
+                "actual_live_runtime_seconds_observed_by_adapter": budget.get(
+                    "actual_live_runtime_seconds_observed_by_adapter"
+                ),
+                "provider_adapter": _record(adapter_path),
+                "teardown": _record(teardown_path),
+                "independent_watchdog": _record(watchdog_path),
+                "object_store_cleanup": _record(cleanup_path),
+                "machine_avoidlist": _record(avoidlist_path),
+                "provider_budget_ledger": _record(budget_path),
+            }
+        )
+    if (
+        len({row["provider_instance_id"] for row in rows}) != 2
+        or len({row["machine_id"] for row in rows}) != 2
+    ):
+        raise ValueError("aura_exact_residual_campaign_attempts_not_independent")
+    receipt: dict[str, Any] = {
+        "schema_version": CAMPAIGN_ABSTENTION_SCHEMA_VERSION,
+        "status": "abstained_shared_provider_runtime_before_aura_entrypoint",
+        "bundle_receipt": _record(bundle_receipt),
+        "bundle_sha256": bundle["bundle_sha256"],
+        "preflight_digest": bundle["preflight_digest"],
+        "replacement_object_count": bundle["replacement_object_count"],
+        "shared_camera_count": bundle["shared_camera_count"],
+        "task_count": bundle["task_count"],
+        "attempt_count": 2,
+        "attempts": rows,
+        "total_estimated_cost_usd": round(
+            sum(row["estimated_cost_usd"] for row in rows), 6
+        ),
+        "aura_inpainting_executed": False,
+        "native_aura_frames_exist": False,
+        "automatic_paid_retry_executed": False,
+        "provider_zero_confirmed_all": True,
+        "smallest_missing_capability": (
+            "rights_admitted_gpu_provider_runtime_that_reaches_the_sealed_Aura_exact_"
+            "residual_container_entrypoint"
+        ),
+        "blockers": [
+            "aura_exact_residual_provider_runtime_pre_entrypoint_null_on_two_distinct_vast_hosts"
+        ],
+        "claim_boundary": {
+            "two_provider_nulls_are_not_aura_execution": True,
+            "inpainting_output_exists": False,
+            "outside_mask_locality_measured": False,
+            "multi_view_consistency_measured": False,
+            "simready_or_policy_gate_unlocked": False,
+            "further_paid_mutation_requires_new_explicit_authority": True,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_json(output, receipt)
+    return receipt
+
+
 __all__ = [
     "DEFAULT_IMAGE",
+    "CAMPAIGN_ABSTENTION_SCHEMA_VERSION",
     "MAX_HARD_CAP_USD",
     "MAX_TTL_SECONDS",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "RUNTIME_ABSTENTION_SCHEMA_VERSION",
+    "materialize_aura_exact_residual_provider_runtime_campaign_abstention",
     "materialize_aura_exact_residual_runtime_abstention",
     "run_aura_exact_residual_vast",
     "validate_aura_exact_residual_bundle",
