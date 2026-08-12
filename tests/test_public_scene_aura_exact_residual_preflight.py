@@ -124,6 +124,11 @@ def test_prepares_one_shared_direct_aura_plan_for_five_replacements(tmp_path: Pa
     assert receipt["reference_completion"]["backend_provenance"][
         "stock_inpaint360gs_code_or_author_data_used"
     ] is False
+    assert [
+        (row["task_id"], row["camera_id"])
+        for row in receipt["reference_completion"]["references"]
+    ] == [("task_1", "camera_1"), ("task_2", "camera_2"), ("task_3", "camera_3"),
+          ("task_4", "camera_4"), ("task_5", "camera_5")]
     assert receipt["required_result_checks"]["outside_mask_pixel_delta_required"] == 0
     assert receipt["execution"]["provider_mutations_performed"] == 0
     assert receipt["preflight_digest"] == canonical_digest(

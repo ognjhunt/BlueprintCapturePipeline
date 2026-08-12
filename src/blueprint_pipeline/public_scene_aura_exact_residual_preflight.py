@@ -238,7 +238,7 @@ def _big_lama_reference_completion(
         raise AuraExactResidualPreflightError(["aura_exact_residual_big_lama_archive_invalid"])
     return {
         "backend": "Big-LaMa",
-        "role": "single_exact_mask_reference_completion_for_Aura_only",
+        "role": "one_exact_mask_reference_completion_per_task_for_Aura_only",
         "checkpoint": {**_record(archive), "artifact_id": BIG_LAMA_ARTIFACT_ID},
         "rights_authority": {
             "authority_id": BIG_LAMA_RIGHTS_AUTHORITY_ID,
@@ -515,10 +515,26 @@ def materialize_aura_exact_residual_preflight(
             cameras.append({"task_id": lane["task_id"], **camera})
     if not cameras:
         raise AuraExactResidualPreflightError(["aura_exact_residual_camera_set_mismatch"])
-    selected = sorted(
-        cameras,
-        key=lambda row: (-int(row["exact_residual_mask"]["pixel_count"]), row["task_id"], row["camera_id"]),
-    )[0]
+    references = [
+        {
+            "task_id": task_id,
+            "camera_id": selected["camera_id"],
+            "input_before": selected["retained_scene_before"],
+            "input_exact_mask": selected["exact_residual_mask"],
+        }
+        for task_id, selected in sorted(
+            {
+                task_id: sorted(
+                    (camera for camera in cameras if camera["task_id"] == task_id),
+                    key=lambda camera: (
+                        -int(camera["exact_residual_mask"]["pixel_count"]),
+                        camera["camera_id"],
+                    ),
+                )[0]
+                for task_id in {str(camera["task_id"]) for camera in cameras}
+            }.items()
+        )
+    ]
     preflight: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "prepared_no_upload_no_execution",
@@ -534,11 +550,10 @@ def materialize_aura_exact_residual_preflight(
         "lanes": lanes,
         "camera_inputs": cameras,
         "reference_completion": {
-            "reference_selection": "largest_exact_residual_mask_pixel_count_then_task_and_camera_id",
-            "selected_task_id": selected["task_id"],
-            "selected_camera_id": selected["camera_id"],
-            "input_before": selected["retained_scene_before"],
-            "input_exact_mask": selected["exact_residual_mask"],
+            "reference_selection": (
+                "one_per_task_largest_exact_residual_mask_pixel_count_then_camera_id"
+            ),
+            "references": references,
             "required_backend": big_lama["backend"],
             "backend_provenance": big_lama,
             "stock_inpaint360gs_not_invoked": True,
