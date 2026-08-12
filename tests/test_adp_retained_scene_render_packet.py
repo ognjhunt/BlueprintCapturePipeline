@@ -79,22 +79,29 @@ def test_retained_scene_render_authority_environment_restores_retry_setting(
     assert os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] == "caller-retry"
 
 
+@pytest.mark.parametrize(
+    ("layer", "source_role"),
+    [
+        ("shared_deleted_source_layer", "shared_deleted_source_union"),
+        ("task_deleted_source_layer", "task_deleted_source_layer"),
+    ],
+)
 def test_output_relocation_rebinds_container_manifest_paths_to_verified_local_files(
-    tmp_path: Path,
+    tmp_path: Path, layer: str, source_role: str
 ) -> None:
     output = tmp_path / "immutable-extraction"
     manifest_path = (
         output
         / "renders"
         / "task_a"
-        / "task_a_shared_deleted_source_layer_black"
+        / f"task_a_{layer}_black"
         / "sealed_camera_render_manifest.v1.json"
     )
     manifest_path.parent.mkdir(parents=True)
     manifest: dict[str, object] = {
         "schema_version": "sealed_camera_render_manifest.v1",
         "status": "rendered_exact_cameras",
-        "source_layer_role": "shared_deleted_source_union",
+        "source_layer_role": source_role,
         "render_settings": {"background_rgb": "#000000"},
         "sealed_camera_render_manifest_digest": "",
     }
@@ -107,7 +114,7 @@ def test_output_relocation_rebinds_container_manifest_paths_to_verified_local_fi
         "render_manifests": [
             {
                 "task_id": "task_a",
-                "layer": "shared_deleted_source_layer",
+                "layer": layer,
                 "background_rgb": "#000000",
                 "manifest_path": "/workspace/provider/output/manifest.json",
                 "manifest_digest": manifest["sealed_camera_render_manifest_digest"],
@@ -251,7 +258,7 @@ def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
     )
     request = {
         "shared_deleted_source_layer": {**_relative_record(runtime, source), "gaussian_count": 1},
-        "shared_retained_scene": _relative_record(runtime, retained),
+        "shared_retained_scene": {**_relative_record(runtime, retained), "gaussian_count": 1},
         "shared_retained_gaussian_count": 1,
         "candidate_set": _relative_record(runtime, candidate),
         "execution_authority": _relative_record(runtime, authority),
@@ -263,9 +270,17 @@ def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
                 "task_id": "task",
                 "camera_contract": _relative_record(runtime, camera),
                 "task_freeze": _relative_record(runtime, freeze),
+                "task_deleted_source_layer": {
+                    **_relative_record(runtime, source),
+                    "gaussian_count": 1,
+                },
+                "task_retained_scene": {
+                    **_relative_record(runtime, retained),
+                    "gaussian_count": 1,
+                },
                 "dimensions": {"width": 2, "height": 2},
                 "render_variants": [
-                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"}
+                    {"layer": "task_deleted_source_layer", "background_rgb": "#000000"}
                 ],
             }
         ],
@@ -360,7 +375,7 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
     )
     request = {
         "shared_deleted_source_layer": {**_relative_record(runtime, source), "gaussian_count": 1},
-        "shared_retained_scene": _relative_record(runtime, retained),
+        "shared_retained_scene": {**_relative_record(runtime, retained), "gaussian_count": 1},
         "shared_retained_gaussian_count": 1,
         "candidate_set": _relative_record(runtime, candidate),
         "execution_authority": _relative_record(runtime, authority),
@@ -372,9 +387,17 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
                 "task_id": "task",
                 "camera_contract": _relative_record(runtime, camera),
                 "task_freeze": _relative_record(runtime, freeze),
+                "task_deleted_source_layer": {
+                    **_relative_record(runtime, source),
+                    "gaussian_count": 1,
+                },
+                "task_retained_scene": {
+                    **_relative_record(runtime, retained),
+                    "gaussian_count": 1,
+                },
                 "dimensions": {"width": 2, "height": 2},
                 "render_variants": [
-                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"}
+                    {"layer": "task_deleted_source_layer", "background_rgb": "#000000"}
                 ],
             }
         ],
@@ -402,7 +425,7 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
     assert result["status"] == "completed"
     manifest_path = Path(result["render_manifests"][0]["manifest_path"])
     manifest = json.loads(manifest_path.read_text())
-    assert manifest["source_layer_role"] == "shared_deleted_source_union"
+    assert manifest["source_layer_role"] == "task_deleted_source_layer"
     assert manifest["splat_digest"] == _sha256(source)
     assert manifest["renders"] == [
         {
@@ -759,15 +782,48 @@ def _inputs(
         _write_json(freeze, task)
         removal = task["removal_plan"]
         assert isinstance(removal, dict)
-        tasks.append(
-            {
+        task_row: dict[str, object] = {
                 "task_id": task["task_id"],
                 "task_freeze_digest": task["task_freeze_digest"],
                 "removal_id": removal["removal_id"],
                 "mask_set_id": removal["mask_set_id"],
                 "task_freeze": _absolute_record(freeze),
-            }
-        )
+        }
+        if candidate_schema == "adp009d_segment_contribution_cutout_set.v1":
+            task_root = root / f"task_{slot}"
+            task_root.mkdir()
+            task_deleted_indices = np.array([deleted[slot - 1]], dtype=np.int64)
+            task_retained_indices = np.setdiff1d(
+                np.arange(10, dtype=np.int64), task_deleted_indices, assume_unique=True
+            )
+            np.save(
+                task_root / "deleted_source_indices.npy",
+                task_deleted_indices,
+                allow_pickle=False,
+            )
+            task_deleted = write_standard_3dgs_ply_subset_exact(
+                source,
+                task_root / "deleted_source_gaussians.ply",
+                task_deleted_indices,
+            )
+            task_retained = write_standard_3dgs_ply_subset_exact(
+                source,
+                task_root / "retained_scene_gaussians.ply",
+                task_retained_indices,
+            )
+            task_row.update(
+                {
+                    "counts": {"source": 10, "deleted_total": 1, "retained_total": 9},
+                    "outputs": {
+                        "deleted_source_indices": _relative_record(
+                            root, task_root / "deleted_source_indices.npy"
+                        ),
+                        "deleted_source_gaussians": _relative_record(root, task_deleted),
+                        "retained_scene_gaussians": _relative_record(root, task_retained),
+                    },
+                }
+            )
+        tasks.append(task_row)
         camera = _camera_contract(tmp_path / "cameras" / f"task_{slot}.json", f"camera_{slot}")
         lanes.append({"task_id": task["task_id"], "camera_contract_path": str(camera)})
     candidate: dict[str, object] = {
@@ -958,6 +1014,104 @@ def test_seals_broad_ownership_coverage_cutout_for_repair_render(
     assert receipt["shared_deleted_source_layer"]["deleted_gaussian_count"] == 2
     assert receipt["shared_retained_scene"]["retained_gaussian_count"] == 8
     assert receipt["exact_bundle_entrypoint_rehearsal"]["status"] == "passed"
+
+
+def test_seals_task_isolated_segment_contribution_layers(tmp_path: Path) -> None:
+    candidate, inputs = _inputs(
+        tmp_path,
+        candidate_schema="adp009d_segment_contribution_cutout_set.v1",
+    )
+    repo, vendor = _repo(tmp_path)
+    authority = _authority(tmp_path / "authority.json")
+    request = build_retained_scene_gpu_render_request(
+        {
+            "schema_version": "adp009d_retained_scene_gpu_render_request.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009D",
+            "frozen_before_render_execution": True,
+            "learned_policy_outcomes_accessed": False,
+            "render_scope": "task_isolated",
+            "candidate_set_path": str(candidate),
+            "execution_authority_path": str(authority),
+            "renderer_vendor_root": str(vendor),
+            "task_lanes": inputs["lanes"],
+            "private_upload_policy": {
+                "raw_dataset_bytes_upload": False,
+                "private_derived_upload": True,
+                "provider_training": False,
+                "publication": False,
+                "retention": "bounded_to_goal_then_provider_zero",
+            },
+        }
+    )
+    request_path = tmp_path / "request.json"
+    _write_json(request_path, request)
+
+    receipt = build_retained_scene_gpu_render_bundle(
+        request_path=request_path,
+        repo_root=repo,
+        job_dir=tmp_path / "job",
+    )
+
+    assert receipt["render_scope"] == "task_isolated"
+    assert receipt["task_isolated_source_pair_per_task"] is True
+    for lane in receipt["task_lanes"]:
+        assert lane["task_deleted_source_layer"]["gaussian_count"] == 1
+        assert lane["task_retained_scene"]["gaussian_count"] == 9
+        assert lane["render_variants"] == [
+            {"layer": "task_deleted_source_layer", "background_rgb": "#000000"},
+            {"layer": "task_deleted_source_layer", "background_rgb": "#ffffff"},
+            {"layer": "task_retained_scene", "background_rgb": "#000000"},
+        ]
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    for slot in (1, 2):
+        assert f"provider_runtime/input/task_layers/task_{slot}/deleted_source_layer.ply" in names
+        assert f"provider_runtime/input/task_layers/task_{slot}/retained_scene.ply" in names
+    assert validate_retained_scene_render_bundle(receipt)["bundle_sha256"] == receipt[
+        "bundle_sha256"
+    ]
+
+
+def test_rejects_task_isolated_render_when_candidate_has_no_per_task_layers(
+    tmp_path: Path,
+) -> None:
+    candidate, inputs = _inputs(tmp_path)
+    repo, vendor = _repo(tmp_path)
+    authority = _authority(tmp_path / "authority.json")
+    request = build_retained_scene_gpu_render_request(
+        {
+            "schema_version": "adp009d_retained_scene_gpu_render_request.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009D",
+            "frozen_before_render_execution": True,
+            "learned_policy_outcomes_accessed": False,
+            "render_scope": "task_isolated",
+            "candidate_set_path": str(candidate),
+            "execution_authority_path": str(authority),
+            "renderer_vendor_root": str(vendor),
+            "task_lanes": inputs["lanes"],
+            "private_upload_policy": {
+                "raw_dataset_bytes_upload": False,
+                "private_derived_upload": True,
+                "provider_training": False,
+                "publication": False,
+                "retention": "bounded_to_goal_then_provider_zero",
+            },
+        }
+    )
+    request_path = tmp_path / "request.json"
+    _write_json(request_path, request)
+
+    with pytest.raises(
+        RetainedSceneRenderPacketError,
+        match="retained_scene_render_task_isolated_layers_unavailable",
+    ):
+        build_retained_scene_gpu_render_bundle(
+            request_path=request_path,
+            repo_root=repo,
+            job_dir=tmp_path / "job",
+        )
 
 
 def test_rejects_more_than_five_task_lanes() -> None:

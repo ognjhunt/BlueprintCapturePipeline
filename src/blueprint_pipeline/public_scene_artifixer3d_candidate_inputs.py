@@ -34,6 +34,9 @@ from .gaussian_splat_decode import read_standard_3dgs_ply
 from .public_scene_aura_exact_residual_preflight import (
     SCHEMA_VERSION as CALIBRATED_RESIDUAL_PREFLIGHT_SCHEMA,
 )
+from .public_scene_segment_mask_repair_preflight import (
+    SCHEMA_VERSION as CALIBRATED_SEGMENT_REPAIR_PREFLIGHT_SCHEMA,
+)
 
 
 SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v3"
@@ -108,7 +111,11 @@ def _validated_preflight(path: Path) -> dict[str, Any]:
     value = _read(path, code="artifixer3d_calibrated_preflight_unreadable")
     count = value.get("replacement_object_count")
     if (
-        value.get("schema_version") != CALIBRATED_RESIDUAL_PREFLIGHT_SCHEMA
+        value.get("schema_version")
+        not in {
+            CALIBRATED_RESIDUAL_PREFLIGHT_SCHEMA,
+            CALIBRATED_SEGMENT_REPAIR_PREFLIGHT_SCHEMA,
+        }
         or value.get("status") != "prepared_no_upload_no_execution"
         or value.get("preflight_digest")
         != canonical_digest(value, digest_field="preflight_digest")
