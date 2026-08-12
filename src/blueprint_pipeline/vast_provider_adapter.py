@@ -1323,9 +1323,7 @@ def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
     return None
 
 
-def _offer_storage_hourly_rate(
-    offer: Mapping[str, Any], *, disk_gb: int = 0
-) -> float | None:
+def _offer_storage_hourly_rate(offer: Mapping[str, Any], *, disk_gb: int = 0) -> float | None:
     direct = _number(offer.get("storage_total_cost"))
     if direct is not None and direct >= 0:
         return direct
@@ -1507,9 +1505,7 @@ def _version_at_least(value: Any, minimum: str) -> bool:
     if not observed or not required:
         return False
     width = max(len(observed), len(required))
-    return observed + (0,) * (width - len(observed)) >= required + (0,) * (
-        width - len(required)
-    )
+    return observed + (0,) * (width - len(observed)) >= required + (0,) * (width - len(required))
 
 
 def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
@@ -2220,6 +2216,16 @@ def _blueprint_bundle_preflight(
         "input/cameras.v1.json",
         "freeze/adp009b_gaussian_excision_audit_freeze.v1.json",
     }
+    adp_retained_scene_render_required_entries = {
+        "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh",
+        "provider_runtime/adp_retained_scene_render_provider_runner.mjs",
+        "provider_runtime/adp_retained_scene_gpu_render_manifest.json",
+        "provider_runtime/render_request.json",
+        "provider_runtime/execution_authority.json",
+        "provider_runtime/input/source_standard.ply",
+        "provider_runtime/input/shared_retained_scene.ply",
+        "provider_runtime/renderer/render_splat.mjs",
+    }
     if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:
         required_entries = isaac_required_entries
         entrypoint_member = "provider_runtime/run_isaac_realistic_runtime.sh"
@@ -2257,9 +2263,7 @@ def _blueprint_bundle_preflight(
         readiness_name = "adp009d_ovrtx_provider_manifest.json"
     elif provider_bundle_kind == "adp009d_aura_native":
         required_entries = adp009d_aura_native_required_entries
-        entrypoint_member = (
-            "provider_runtime/run_adp009d_aura_native_provider_runtime.sh"
-        )
+        entrypoint_member = "provider_runtime/run_adp009d_aura_native_provider_runtime.sh"
         runner_member = "provider_runtime/adp009d_aura_native_provider_runner.py"
         readiness_name = "adp009d_aura_native_provider_manifest.json"
     elif provider_bundle_kind == "adp_content_agents":
@@ -2287,6 +2291,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_inpaint360_interiorgs_provider_runtime.sh"
         runner_member = "provider_runtime/adp_inpaint360_interiorgs_provider_runner.py"
         readiness_name = "adp_inpaint360_interiorgs_provider_manifest.json"
+    elif provider_bundle_kind == "adp_retained_scene_render":
+        required_entries = adp_retained_scene_render_required_entries
+        entrypoint_member = "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_retained_scene_render_provider_runner.mjs"
+        readiness_name = "adp_retained_scene_gpu_render_bundle_receipt.json"
     elif provider_bundle_kind == "adp_gaussian_excision":
         required_entries = adp_gaussian_excision_required_entries
         entrypoint_member = "run_adp_gaussian_excision_provider_runtime.sh"
@@ -2343,6 +2352,7 @@ def _blueprint_bundle_preflight(
             "adp_aura_smoke",
             "adp_aura_interiorgs",
             "adp_inpaint360_interiorgs",
+            "adp_retained_scene_render",
             "adp_gaussian_excision",
         }
         and not readiness_path.is_file()
@@ -2391,19 +2401,21 @@ def _blueprint_bundle_preflight(
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
                     if provider_bundle_kind == "adp009d_ovrtx":
-                        manifest_member = (
-                            "provider_runtime/adp009d_ovrtx_provider_manifest.json"
-                        )
+                        manifest_member = "provider_runtime/adp009d_ovrtx_provider_manifest.json"
                         try:
                             manifest_payload = json.loads(
                                 archive.read(manifest_member).decode("utf-8")
                             )
                             camera_rows = manifest_payload.get("camera_configs")
-                            camera_ids = [
-                                str(row.get("camera_id") or "")
-                                for row in camera_rows
-                                if isinstance(row, Mapping)
-                            ] if isinstance(camera_rows, list) else []
+                            camera_ids = (
+                                [
+                                    str(row.get("camera_id") or "")
+                                    for row in camera_rows
+                                    if isinstance(row, Mapping)
+                                ]
+                                if isinstance(camera_rows, list)
+                                else []
+                            )
                             valid_camera_ids = (
                                 2 <= len(camera_ids) <= 8
                                 and len(camera_ids) == len(set(camera_ids))
@@ -2413,14 +2425,11 @@ def _blueprint_bundle_preflight(
                                 )
                             )
                             if not valid_camera_ids:
-                                blockers.append(
-                                    "adp009d_ovrtx_camera_manifest_invalid"
-                                )
+                                blockers.append("adp009d_ovrtx_camera_manifest_invalid")
                             else:
                                 required_entries.update(
                                     {
-                                        "provider_runtime/configs/"
-                                        f"{camera_id}.ovrtx.json"
+                                        f"provider_runtime/configs/{camera_id}.ovrtx.json"
                                         for camera_id in camera_ids
                                     }
                                 )
@@ -2428,8 +2437,7 @@ def _blueprint_bundle_preflight(
                             blockers.append("adp009d_ovrtx_camera_manifest_invalid")
                     if provider_bundle_kind == "adp009d_aura_native":
                         manifest_member = (
-                            "provider_runtime/"
-                            "adp009d_aura_native_provider_manifest.json"
+                            "provider_runtime/adp009d_aura_native_provider_manifest.json"
                         )
                         try:
                             manifest_payload = json.loads(
@@ -2449,21 +2457,16 @@ def _blueprint_bundle_preflight(
                                 2 <= len(camera_ids) <= 8
                                 and len(camera_ids) == len(set(camera_ids))
                                 and all(
-                                    re.fullmatch(
-                                        r"[a-z][a-z0-9_]{0,63}", camera_id
-                                    )
+                                    re.fullmatch(r"[a-z][a-z0-9_]{0,63}", camera_id)
                                     for camera_id in camera_ids
                                 )
                             )
                             if not valid_camera_ids:
-                                blockers.append(
-                                    "adp009d_aura_native_camera_manifest_invalid"
-                                )
+                                blockers.append("adp009d_aura_native_camera_manifest_invalid")
                             else:
                                 required_entries.update(
                                     {
-                                        "provider_runtime/camera_configs/"
-                                        f"{camera_id}.json"
+                                        f"provider_runtime/camera_configs/{camera_id}.json"
                                         for camera_id in camera_ids
                                     }
                                 )
@@ -2473,23 +2476,14 @@ def _blueprint_bundle_preflight(
                             ValueError,
                             json.JSONDecodeError,
                         ):
-                            blockers.append(
-                                "adp009d_aura_native_camera_manifest_invalid"
-                            )
+                            blockers.append("adp009d_aura_native_camera_manifest_invalid")
                     if provider_bundle_kind == "adp_gaussian_excision":
-                        freeze_member = (
-                            "freeze/"
-                            "adp009b_gaussian_excision_audit_freeze.v1.json"
-                        )
+                        freeze_member = "freeze/adp009b_gaussian_excision_audit_freeze.v1.json"
                         try:
-                            freeze_payload = json.loads(
-                                archive.read(freeze_member).decode("utf-8")
-                            )
+                            freeze_payload = json.loads(archive.read(freeze_member).decode("utf-8"))
                             camera_split = _mapping(freeze_payload.get("camera_split"))
                             camera_ids = [
-                                *_string_list(
-                                    camera_split.get("calibration_camera_ids")
-                                ),
+                                *_string_list(camera_split.get("calibration_camera_ids")),
                                 *_string_list(camera_split.get("heldout_camera_ids")),
                             ]
                             valid_camera_ids = (
@@ -2501,9 +2495,7 @@ def _blueprint_bundle_preflight(
                                 )
                             )
                             if not valid_camera_ids:
-                                blockers.append(
-                                    "adp_gaussian_excision_camera_split_invalid"
-                                )
+                                blockers.append("adp_gaussian_excision_camera_split_invalid")
                             else:
                                 required_entries.update(
                                     {
@@ -2522,38 +2514,28 @@ def _blueprint_bundle_preflight(
                             ValueError,
                             json.JSONDecodeError,
                         ):
-                            blockers.append(
-                                "adp_gaussian_excision_camera_split_invalid"
-                            )
+                            blockers.append("adp_gaussian_excision_camera_split_invalid")
                         try:
                             dependency_manifest = json.loads(
-                                archive.read(
-                                    "dependency_wheelhouse_manifest.json"
-                                ).decode("utf-8")
+                                archive.read("dependency_wheelhouse_manifest.json").decode("utf-8")
                             )
                             dependency_rows = dependency_manifest.get("wheels")
                             if (
                                 dependency_manifest.get("schema_version")
                                 != "adp_gaussian_excision_dependency_wheelhouse.v1"
                                 or dependency_manifest.get("status") != "ready"
-                                or dependency_manifest.get(
-                                    "provider_network_install_required"
-                                )
+                                or dependency_manifest.get("provider_network_install_required")
                                 is not False
                                 or not isinstance(dependency_rows, list)
                                 or not dependency_rows
                             ):
-                                raise ValueError(
-                                    "gaussian_excision_dependency_manifest_invalid"
-                                )
+                                raise ValueError("gaussian_excision_dependency_manifest_invalid")
                             for dependency_row in dependency_rows:
                                 if not isinstance(dependency_row, Mapping):
                                     raise ValueError(
                                         "gaussian_excision_dependency_manifest_invalid"
                                     )
-                                filename = str(
-                                    dependency_row.get("filename") or ""
-                                )
+                                filename = str(dependency_row.get("filename") or "")
                                 member = f"dependency_wheelhouse/{filename}"
                                 body = archive.read(member)
                                 if (
@@ -2572,9 +2554,7 @@ def _blueprint_bundle_preflight(
                             ValueError,
                             json.JSONDecodeError,
                         ):
-                            blockers.append(
-                                "adp_gaussian_excision_dependency_wheelhouse_invalid"
-                            )
+                            blockers.append("adp_gaussian_excision_dependency_wheelhouse_invalid")
                     if (
                         provider_bundle_kind in {"isaac", "adp_simready_isaac"}
                         and "provider_runtime/isaac_provider_eval_manifest.json" in zip_entries
@@ -2601,14 +2581,12 @@ def _blueprint_bundle_preflight(
                 input_usds = [
                     entry
                     for entry in zip_entries
-                    if entry.startswith("provider_runtime/input/")
-                    and entry.endswith(".usda")
+                    if entry.startswith("provider_runtime/input/") and entry.endswith(".usda")
                 ]
                 input_references = [
                     entry
                     for entry in zip_entries
-                    if entry.startswith("provider_runtime/input/")
-                    and entry.endswith(".png")
+                    if entry.startswith("provider_runtime/input/") and entry.endswith(".png")
                 ]
                 if len(input_usds) != 1 or len(input_references) != 1:
                     missing_entries = sorted(
@@ -3093,6 +3071,7 @@ def _resolve_launch_mode(
             "adp_aura_smoke",
             "adp_aura_interiorgs",
             "adp_inpaint360_interiorgs",
+            "adp_retained_scene_render",
         }:
             return "ssh_direct"
         return "args" if enable_isaac_smoke else "ssh_direct"
@@ -3408,8 +3387,7 @@ def _probe_shell_script(
     # transient HTTP status codes and timeouts, so it would not have retried
     # this failure.
     curl_download_protocol = (
-        "--http1.1 --retry 5 --retry-delay 3 --retry-all-errors "
-        "--connect-timeout 30 "
+        "--http1.1 --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 30 "
     )
     script = (
         "set +e; WORK_DIR=/workspace; "
@@ -3474,9 +3452,9 @@ def _probe_shell_script(
         "return $?; "
         "fi; "
         f'if command -v curl >/dev/null 2>&1; then curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
-        'echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; fi; '
+        "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; fi; "
         'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src" && return 0; '
-        'echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:wget; fi; '
+        "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:wget; fi; "
         'blueprint_download_py="${PY_NET:-${RUNTIME_PY:-}}"; '
         'if [ -n "$blueprint_download_py" ]; then '
         'BLUEPRINT_DOWNLOAD_URL="$blueprint_download_src" BLUEPRINT_DOWNLOAD_PATH="$blueprint_download_dst" "$blueprint_download_py" - <<\'PY\'\n'
@@ -3538,6 +3516,11 @@ def _probe_shell_script(
         script += (
             "cuda_runtime_rc=1; echo BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP; "
         )
+    elif enable_blueprint_bundle and provider_bundle_kind == "adp_retained_scene_render":
+        # The pinned Playwright image carries its browser/runtime closure.  The
+        # bundle's Node runner independently rejects software WebGL after the
+        # preflight nvidia-smi check; apt would violate its zero-install term.
+        script += "cuda_runtime_rc=0; echo BLUEPRINT_VAST_CUDA_RUNTIME_OK:node_webgl_runtime; "
     else:
         script += cuda_runtime_probe_shell_fragment(required=enable_blueprint_bundle)
     script += 'echo BLUEPRINT_VAST_DF_START; df -h "$WORK_DIR"; '
@@ -4087,6 +4070,51 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
                 "fi; fi; fi; fi; "
             )
+        elif provider_bundle_kind == "adp_retained_scene_render":
+            script += (
+                common_start + "RUNTIME_PY=''; "
+                "if command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); "
+                "elif command -v python >/dev/null 2>&1; then RUNTIME_PY=$(command -v python); fi; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/adp_retained_scene_render_provider_bundle" "$WORK_DIR/adp_retained_scene_render_provider_runtime_bundle.zip" "$WORK_DIR/adp_retained_scene_render_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp_retained_scene_render_provider_runtime_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_retained_scene_render_provider_runtime_bundle.zip" "$WORK_DIR/adp_retained_scene_render_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/adp_retained_scene_render_provider_bundle/provider_runtime/run_adp_retained_scene_render_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_ADP_RETAINED_SCENE_RENDER_OUTPUT_DIR="$WORK_DIR/adp_retained_scene_render_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_ADP_RETAINED_SCENE_RENDER_OUTPUT_DIR"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$WORK_DIR/adp_retained_scene_render_provider_bundle/provider_runtime/run_adp_retained_scene_render_provider_runtime.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_ADP_RETAINED_SCENE_RENDER_OUTPUT_DIR', '/workspace/adp_retained_scene_render_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'adp_retained_scene_render_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file():\n"
+                "                archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_retained_scene_render_provider_runtime_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
         elif provider_bundle_kind == "adp_gaussian_excision":
             script += (
                 common_start + "RUNTIME_PY=''; "
@@ -4583,9 +4611,7 @@ def _prelaunch_inventory_guard(
             break
     allowed_ids = _machine_id_set(allowed_active_instance_ids)
     unexpected_active_instances = [
-        row
-        for row in active_instances
-        if int(_number(row.get("id")) or -1) not in allowed_ids
+        row for row in active_instances if int(_number(row.get("id")) or -1) not in allowed_ids
     ]
     if unexpected_active_instances:
         blockers.append("active_vast_instances_detected_before_new_launch")
@@ -4773,9 +4799,7 @@ def _request_logs_and_fetch(
         # or the outer TTL fires during a later poll, the last scientific worker phases
         # must survive teardown instead of disappearing with the provider instance.
         ensure_dir(output_log_path.parent)
-        output_log_path.write_text(
-            _redact_text(output_text, secret_values), encoding="utf-8"
-        )
+        output_log_path.write_text(_redact_text(output_text, secret_values), encoding="utf-8")
         last_instance_liveness = _instance_liveness(instance_id=instance_id, api_key=api_key)
         if last_instance_liveness.get("exited"):
             instance_exited_count += 1
@@ -4797,9 +4821,7 @@ def _request_logs_and_fetch(
         # Once a worker has emitted structured phase markers, only a new phase marker
         # is scientific progress.  Benign container noise (for example, sshd session
         # lines produced by a read-only diagnostic) must not keep a paid run alive.
-        structured_phase_tracking_active = bool(
-            runtime_phase_count or previous_runtime_phase_count
-        )
+        structured_phase_tracking_active = bool(runtime_phase_count or previous_runtime_phase_count)
         progress_observed = bool(attempt_text.strip()) and (
             runtime_phase_progress
             if structured_phase_tracking_active
@@ -4854,8 +4876,7 @@ def _request_logs_and_fetch(
         # no-progress watchdog remain the bounded authorities.
         terminal_container_missing = (
             container_missing
-            and container_missing_count
-            >= max(1, int(container_missing_retry_attempts))
+            and container_missing_count >= max(1, int(container_missing_retry_attempts))
             and not instance_still_starting
             and not last_instance_liveness.get("exited")
         )
@@ -5479,9 +5500,7 @@ def run_vast_provider_adapter(
         _string(item) for item in preferred_gpu_keywords if _string(item)
     ] or _env_csv(VAST_PREFERRED_GPU_KEYWORDS_ENV)
     resolved_minimum_driver_version = _string(minimum_driver_version)
-    if resolved_minimum_driver_version and not _version_tuple(
-        resolved_minimum_driver_version
-    ):
+    if resolved_minimum_driver_version and not _version_tuple(resolved_minimum_driver_version):
         raise ValueError("invalid_vast_minimum_driver_version")
     resolved_preferred_geolocation_regex = _string(
         preferred_geolocation_regex or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
@@ -7848,9 +7867,7 @@ def run_vast_provider_adapter(
         current_blockers = _string_list(base_result.get("blockers"))
         provider_attempt = classify_provider_attempt(
             provider_command=_mapping(
-                _read_mapping_json(
-                    resolved_job_dir / "vast_provider_command_result.json"
-                )
+                _read_mapping_json(resolved_job_dir / "vast_provider_command_result.json")
             ),
             blockers=current_blockers,
         )

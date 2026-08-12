@@ -28,6 +28,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_aura_interiorgs",
     "adp_inpaint360_interiorgs",
     "adp_gaussian_excision",
+    "adp_retained_scene_render",
 )
 
 
@@ -168,8 +169,7 @@ def provider_runtime_contract_blockers(
         runner_blocker = "provider_runner_missing_adp009d_isaac_runtime_contract"
     elif provider_bundle_kind == "adp009d_articulated_native":
         entrypoint_valid = (
-            "articulated_native_runner_failed_without_runtime_result"
-            in entrypoint_text
+            "articulated_native_runner_failed_without_runtime_result" in entrypoint_text
             and "adp009d_native_microcheck.json" in entrypoint_text
             and "write_articulated_native_missing_result" in entrypoint_text
         )
@@ -184,13 +184,10 @@ def provider_runtime_contract_blockers(
                 "reset_readback_degrees",
             )
         )
-        runner_blocker = (
-            "provider_runner_missing_adp009d_articulated_native_runtime_contract"
-        )
+        runner_blocker = "provider_runner_missing_adp009d_articulated_native_runtime_contract"
     elif provider_bundle_kind == "native_task_arena":
         entrypoint_valid = (
-            "native_task_arena_worker_failed_without_runtime_result"
-            in entrypoint_text
+            "native_task_arena_worker_failed_without_runtime_result" in entrypoint_text
             and "native_task_arena_construction_result.v1.json" in entrypoint_text
             and "native_task_arena_process_exited_without_result" in entrypoint_text
         )
@@ -271,7 +268,7 @@ def provider_runtime_contract_blockers(
             and "blocked_adp_joint_agent_process_exited_without_result" in entrypoint_text
             and "apps/ovrtx_rendering_api" in entrypoint_text
             and "gpu_initialized" in entrypoint_text
-            and 'export WU_SO_PACKAGE_DIR=' in entrypoint_text
+            and "export WU_SO_PACKAGE_DIR=" in entrypoint_text
             and "joint_agent_scene_optimizer_core_missing" in entrypoint_text
             and "ovrtx_daemon_probe.log" in entrypoint_text
             and "joint_agent_ovrtx_daemon_probe_failed" in entrypoint_text
@@ -352,12 +349,27 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp_inpaint360_runtime_contract"
+    elif provider_bundle_kind == "adp_retained_scene_render":
+        entrypoint_valid = (
+            "adp_retained_scene_render_provider_runner.mjs" in entrypoint_text
+            and "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL" in entrypoint_text
+            and "BLUEPRINT_ADP_RETAINED_SCENE_RENDER_OUTPUT_DIR" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "adp009d_retained_scene_gpu_render_result.v1",
+                "nvidia-smi",
+                "retained_scene_render_runtime_software_renderer_rejected",
+                "rendered_exact_cameras",
+                "provider_mutations_performed",
+            )
+        )
+        runner_blocker = "provider_runner_missing_retained_scene_render_contract"
     elif provider_bundle_kind == "adp_gaussian_excision":
         entrypoint_valid = (
-            "gaussian_excision_runner_failed_without_runtime_result"
-            in entrypoint_text
-            and "blocked_gaussian_excision_process_exited_without_result"
-            in entrypoint_text
+            "gaussian_excision_runner_failed_without_runtime_result" in entrypoint_text
+            and "blocked_gaussian_excision_process_exited_without_result" in entrypoint_text
             and 'torch.__version__.split("+")[0] == "2.5.1"' in entrypoint_text
             and "PIP_NO_INDEX=1" in entrypoint_text
             and "dependency_wheelhouse" in entrypoint_text

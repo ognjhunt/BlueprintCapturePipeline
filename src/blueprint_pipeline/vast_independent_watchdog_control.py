@@ -58,12 +58,16 @@ def arm_independent_vast_watchdog(
     generated_at: str,
     startup_wait_seconds: float = 10.0,
     allowed_active_instance_ids: Sequence[int] = (),
+    pod_name_prefix: str = "blueprint-groot-oscar-canary-vast-wam-",
 ) -> tuple[dict[str, Any], VastWatchdogHandle | None]:
     """Start a detached name-bound watchdog and prove it is armed before create."""
 
     out_dir = job_dir / WATCHDOG_DIR_NAME
     ensure_dir(out_dir)
-    prefix = f"blueprint-groot-oscar-canary-vast-wam-{_safe_suffix(generated_at)}-"
+    prefix_base = str(pod_name_prefix or "").strip()
+    if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
+        raise ValueError("independent_vast_watchdog_prefix_invalid")
+    prefix = f"{prefix_base}{_safe_suffix(generated_at)}-"
     if int(max_live_minutes) < 2:
         blocked = {
             "schema_version": HANDOFF_SCHEMA,

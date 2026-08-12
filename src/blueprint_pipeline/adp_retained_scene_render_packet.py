@@ -35,7 +35,10 @@ REQUEST_SCHEMA = "adp009d_retained_scene_gpu_render_request.v1"
 BUNDLE_SCHEMA = "adp009d_retained_scene_gpu_render_bundle.v1"
 PROBE_KIND = "adp-retained-scene-gpu-render"
 ENTRYPOINT = "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh"
-DEFAULT_IMAGE = "mcr.microsoft.com/playwright:v1.61.1-jammy"
+DEFAULT_IMAGE = (
+    "mcr.microsoft.com/playwright:v1.61.1-jammy@"
+    "sha256:e4f20543d7da3faeddbce0176b447331ad652f0ca8c669dc7e7b205f2067677e"
+)
 _VENDOR_PACKAGES = (
     "@sparkjsdev/spark",
     "fflate",

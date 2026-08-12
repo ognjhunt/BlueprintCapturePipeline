@@ -15,10 +15,19 @@ from blueprint_pipeline.adp_retained_scene_render_packet import (
     build_retained_scene_gpu_render_request,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
+from blueprint_pipeline.adp_retained_scene_render_vast import (
+    run_retained_scene_render_vast,
+    validate_retained_scene_render_bundle,
+    validate_retained_scene_render_paid_attempt_authority,
+)
 from blueprint_pipeline.gaussian_splat_decode import (
     SplatData,
     write_standard_3dgs_ply,
     write_standard_3dgs_ply_subset_exact,
+)
+from blueprint_pipeline.vast_provider_adapter import (
+    _blueprint_bundle_preflight,
+    _probe_shell_script,
 )
 
 
@@ -185,7 +194,10 @@ def _repo(root: Path) -> tuple[Path, Path]:
     ):
         target = renderer / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("fixture\n", encoding="utf-8")
+        target.write_text(
+            "{}\n" if target.suffix == ".json" else "fixture\n",
+            encoding="utf-8",
+        )
     scripts = repo / "scripts"
     scripts.mkdir()
     checkout = Path(__file__).resolve().parents[1]
@@ -323,6 +335,66 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     assert source_shell.stat().st_ino != bundled_shell.stat().st_ino
     assert source_shell.stat().st_mode & 0o111 == 0
     assert bundled_shell.stat().st_mode & 0o111
+    assert (
+        validate_retained_scene_render_bundle(receipt)["bundle_sha256"] == receipt["bundle_sha256"]
+    )
+    dry_run = run_retained_scene_render_vast(
+        job_dir=tmp_path / "vast_dry_run",
+        paid_resource_admission_grant=None,
+        execute=False,
+        prepared_bundle=receipt,
+    )
+    assert dry_run["status"] == "dry_run_ready"
+    assert dry_run["provider_mutations_performed"] == 0
+    attempt_authority: dict[str, object] = {
+        "schema_version": "adp009d_retained_scene_gpu_render_paid_attempt_authority.v1",
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "purpose": "exact_retained_scene_gpu_render",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "parent_execution_authority_digest": receipt["execution_authority"]["authority_digest"],
+        "bundle_sha256": receipt["bundle_sha256"],
+        "blueprint_commit": receipt["blueprint_commit"],
+        "maximum_paid_attempts": 1,
+        "maximum_automatic_retries": 0,
+        "automatic_paid_retry_authorized": False,
+        "hard_attempt_spend_cap_usd": 12.0,
+        "maximum_single_resource_ttl_seconds": 10_800,
+        "maximum_hourly_rate_usd": 2.0,
+        "external_active_instance_allowlist": [47373597],
+        "authorization_digest": "",
+    }
+    attempt_authority["authorization_digest"] = canonical_digest(
+        attempt_authority, digest_field="authorization_digest"
+    )
+    assert (
+        validate_retained_scene_render_paid_attempt_authority(
+            attempt_authority,
+            prepared_bundle=receipt,
+            max_hourly_rate_usd=2.0,
+            hard_ttl_seconds=10_800,
+            allowed_active_instance_ids=[47373597],
+        )["authorization_digest"]
+        == attempt_authority["authorization_digest"]
+    )
+    preflight = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "vast_preflight",
+        generated_at="2026-08-11T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_retained_scene_render",
+        bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://example.test/bundle",
+        provider_output_put_url="https://example.test/output",
+    )
+    assert preflight["status"] == "passed", preflight
+    probe = _probe_shell_script(
+        "https://example.test/heartbeat",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="adp_retained_scene_render",
+    )
+    assert "adp_retained_scene_render_provider_bundle" in probe
+    assert "apt-get" not in probe
 
 
 def test_rejects_more_than_five_task_lanes() -> None:
