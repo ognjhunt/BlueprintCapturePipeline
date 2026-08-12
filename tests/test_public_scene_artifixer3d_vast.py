@@ -25,6 +25,7 @@ from blueprint_pipeline.public_scene_artifixer3d_vast import (
     inspect_artifixer3d_container_image,
     materialize_artifixer3d_paid_attempt_authority,
     materialize_artifixer3d_postblocked_provider_zero,
+    materialize_artifixer3d_supplemental_spend_reconciliation,
     run_artifixer3d_vast,
     validate_artifixer3d_bundle,
     validate_artifixer3d_paid_attempt_authority,
@@ -427,6 +428,98 @@ def test_paid_authority_chains_prior_spend_and_is_one_shot(
         "status": "blocked",
         "blockers": ["artifixer3d_paid_attempt_authority_consumed"],
     }
+
+
+def test_paid_authority_adds_terminal_supplemental_gpu_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path, _ = _bundle(tmp_path, monkeypatch)
+    bundle = validate_artifixer3d_bundle(receipt_path)
+    prior_path, terminal_path = _prior_chain(tmp_path)
+    inventory_path = tmp_path / "supplemental/provider_inventory.json"
+    _write(
+        inventory_path,
+        {
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
+    )
+    closeout: dict[str, object] = {
+        "schema_version": "adp_gaussian_excision_provider_closeout.v1",
+        "status": "lane_owned_provider_zero",
+        "combined_estimated_cost_usd": 0.1,
+        "continuing_lane_owned_spend": False,
+        "global_provider_zero_claimed": True,
+        "external_live_instances": [],
+        "provider_inventory": {
+            "relative_path": "provider_inventory.json",
+            "size_bytes": inventory_path.stat().st_size,
+            "sha256": _record(inventory_path)["sha256"],
+        },
+        "receipt_digest": "",
+    }
+    closeout["receipt_digest"] = canonical_digest(closeout, digest_field="receipt_digest")
+    closeout_path = tmp_path / "supplemental/excision_closeout.json"
+    _write(closeout_path, closeout)
+    render: dict[str, object] = {
+        "schema_version": "adp009d_retained_scene_gpu_render_vast_run.v1",
+        "status": "completed",
+        "estimated_cost_usd": 0.2,
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "independent_watchdog": {"provider_absence_confirmed": True},
+        "receipt_digest": "",
+    }
+    render["receipt_digest"] = canonical_digest(render, digest_field="receipt_digest")
+    render_path = tmp_path / "supplemental/render_result.json"
+    _write(render_path, render)
+    cleanup_path = tmp_path / "supplemental/cleanup.json"
+    _write(
+        cleanup_path,
+        {
+            "schema_version": "wam_provider_object_store_cleanup.v1",
+            "all_objects_absent": True,
+            "signed_url_files_removed": True,
+        },
+    )
+    reconciliation_path = tmp_path / "supplemental/reconciliation.json"
+    reconciliation = materialize_artifixer3d_supplemental_spend_reconciliation(
+        gaussian_excision_closeouts=[
+            {
+                "closeout_path": closeout_path,
+                "provider_inventory_path": inventory_path,
+            }
+        ],
+        retained_scene_render_attempts=[
+            {
+                "result_path": render_path,
+                "cleanup_path": cleanup_path,
+                "provider_inventory_path": inventory_path,
+            }
+        ],
+        output_path=reconciliation_path,
+    )
+    assert reconciliation["total_cost_usd"] == 0.3
+
+    authority = materialize_artifixer3d_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_aura_authority_path=prior_path,
+        prior_terminal_result_path=terminal_path,
+        supplemental_prior_spend_reconciliation_path=reconciliation_path,
+        authorization_reference="fixture-supplemental-one-shot",
+        authorized_by="fixture_user",
+        authorized_on="2026-08-12",
+        blueprint_commit=bundle["blueprint_source_identity"]["commit"],
+        max_hourly_rate_usd=1.5,
+        hard_cap_usd=9.0,
+        hard_ttl_seconds=21_600,
+        output_path=tmp_path / "supplemental_authority.json",
+    )
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 2.0
+    assert authority["supplemental_prior_spend_reconciliation"]["total_cost_usd"] == 0.3
 
 
 def test_dry_run_is_mutation_free(

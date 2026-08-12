@@ -54,6 +54,9 @@ RAW_RESULT_SCHEMA_VERSION = "public_scene_artifixer3d_raw_result.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION = (
     "public_scene_artifixer3d_paid_attempt_authority.v1"
 )
+SUPPLEMENTAL_SPEND_SCHEMA_VERSION = (
+    "artifixer3d_supplemental_prior_spend_reconciliation.v1"
+)
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/artifixer3d-exact-support"
 INSTANCE_LABEL_PREFIX = "blueprint-groot-oscar-canary-adp-artifixer3d-"
 MIN_TTL_SECONDS = 7_200
@@ -166,6 +169,185 @@ def _bound(record: Any, *, code: str) -> Path:
     ):
         raise ValueError(code)
     return path
+
+
+def _provider_zero_inventory(path: Path) -> None:
+    value = _read(path, code="artifixer3d_supplemental_provider_inventory_unreadable")
+    if (
+        value.get("provider") != "vast"
+        or value.get("api_confirmed") is not True
+        or value.get("live_resource_count") != 0
+        or value.get("resources") != []
+    ):
+        raise ValueError("artifixer3d_supplemental_provider_inventory_invalid")
+
+
+def _gaussian_excision_spend_entry(
+    *, closeout_path: Path, inventory_path: Path
+) -> dict[str, Any]:
+    closeout = _read(
+        closeout_path, code="artifixer3d_supplemental_excision_closeout_unreadable"
+    )
+    _provider_zero_inventory(inventory_path)
+    inventory_record = closeout.get("provider_inventory")
+    cost = closeout.get("combined_estimated_cost_usd")
+    if (
+        closeout.get("schema_version") != "adp_gaussian_excision_provider_closeout.v1"
+        or closeout.get("status") != "lane_owned_provider_zero"
+        or closeout.get("receipt_digest")
+        != canonical_digest(closeout, digest_field="receipt_digest")
+        or closeout.get("continuing_lane_owned_spend") is not False
+        or closeout.get("global_provider_zero_claimed") is not True
+        or closeout.get("external_live_instances") != []
+        or not isinstance(inventory_record, Mapping)
+        or inventory_record.get("size_bytes") != inventory_path.stat().st_size
+        or inventory_record.get("sha256") != _sha256(inventory_path)
+        or isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(float(cost))
+        or float(cost) < 0
+    ):
+        raise ValueError("artifixer3d_supplemental_excision_closeout_invalid")
+    return {
+        "kind": "gaussian_excision_provider_closeout",
+        "terminal_receipt": _record(closeout_path),
+        "terminal_receipt_digest": closeout["receipt_digest"],
+        "provider_zero_inventory": _record(inventory_path),
+        "cost_usd": round(float(cost), 6),
+    }
+
+
+def _retained_render_spend_entry(
+    *, result_path: Path, cleanup_path: Path, inventory_path: Path
+) -> dict[str, Any]:
+    result = _read(result_path, code="artifixer3d_supplemental_render_result_unreadable")
+    cleanup = _read(cleanup_path, code="artifixer3d_supplemental_render_cleanup_unreadable")
+    _provider_zero_inventory(inventory_path)
+    watchdog = result.get("independent_watchdog")
+    cost = result.get("estimated_cost_usd")
+    if (
+        result.get("schema_version") != "adp009d_retained_scene_gpu_render_vast_run.v1"
+        or result.get("status") != "completed"
+        or result.get("receipt_digest")
+        != canonical_digest(result, digest_field="receipt_digest")
+        or result.get("retry_cap") != 0
+        or result.get("continuing_spend_from_this_run") is not False
+        or result.get("all_staged_objects_absent") is not True
+        or not isinstance(watchdog, Mapping)
+        or watchdog.get("provider_absence_confirmed") is not True
+        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(float(cost))
+        or float(cost) < 0
+    ):
+        raise ValueError("artifixer3d_supplemental_render_result_invalid")
+    return {
+        "kind": "retained_scene_gpu_render_closeout",
+        "terminal_receipt": _record(result_path),
+        "terminal_receipt_digest": result["receipt_digest"],
+        "object_store_cleanup": _record(cleanup_path),
+        "provider_zero_inventory": _record(inventory_path),
+        "cost_usd": round(float(cost), 6),
+    }
+
+
+def materialize_artifixer3d_supplemental_spend_reconciliation(
+    *,
+    gaussian_excision_closeouts: Sequence[Mapping[str, str | Path]],
+    retained_scene_render_attempts: Sequence[Mapping[str, str | Path]],
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Bind paid closeouts executed after the predecessor ArtiFixer authority."""
+
+    entries = [
+        _gaussian_excision_spend_entry(
+            closeout_path=Path(row["closeout_path"]).expanduser().resolve(),
+            inventory_path=Path(row["provider_inventory_path"]).expanduser().resolve(),
+        )
+        for row in gaussian_excision_closeouts
+    ]
+    entries.extend(
+        _retained_render_spend_entry(
+            result_path=Path(row["result_path"]).expanduser().resolve(),
+            cleanup_path=Path(row["cleanup_path"]).expanduser().resolve(),
+            inventory_path=Path(row["provider_inventory_path"]).expanduser().resolve(),
+        )
+        for row in retained_scene_render_attempts
+    )
+    digests = [str(row["terminal_receipt_digest"]) for row in entries]
+    if not entries or len(digests) != len(set(digests)):
+        raise ValueError("artifixer3d_supplemental_spend_entries_invalid")
+    value: dict[str, Any] = {
+        "schema_version": SUPPLEMENTAL_SPEND_SCHEMA_VERSION,
+        "status": "all_supplemental_spend_terminal_and_provider_zero",
+        "entries": entries,
+        "total_cost_usd": round(sum(float(row["cost_usd"]) for row in entries), 6),
+        "continuing_spend": False,
+        "provider_zero_confirmed_for_every_entry": True,
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    if output.exists():
+        raise ValueError("artifixer3d_supplemental_spend_output_exists")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_json(output, value)
+    return value
+
+
+def _validate_supplemental_spend_reconciliation(
+    path: Path,
+) -> tuple[dict[str, Any], float]:
+    value = _read(path, code="artifixer3d_supplemental_spend_unreadable")
+    entries = value.get("entries")
+    if (
+        value.get("schema_version") != SUPPLEMENTAL_SPEND_SCHEMA_VERSION
+        or value.get("status") != "all_supplemental_spend_terminal_and_provider_zero"
+        or value.get("receipt_digest")
+        != canonical_digest(value, digest_field="receipt_digest")
+        or value.get("continuing_spend") is not False
+        or value.get("provider_zero_confirmed_for_every_entry") is not True
+        or not isinstance(entries, list)
+        or not entries
+    ):
+        raise ValueError("artifixer3d_supplemental_spend_invalid")
+    validated: list[dict[str, Any]] = []
+    for row in entries:
+        if not isinstance(row, Mapping):
+            raise ValueError("artifixer3d_supplemental_spend_invalid")
+        receipt_path = _bound(
+            row.get("terminal_receipt"), code="artifixer3d_supplemental_terminal_unbound"
+        )
+        inventory_path = _bound(
+            row.get("provider_zero_inventory"),
+            code="artifixer3d_supplemental_inventory_unbound",
+        )
+        if row.get("kind") == "gaussian_excision_provider_closeout":
+            expected = _gaussian_excision_spend_entry(
+                closeout_path=receipt_path, inventory_path=inventory_path
+            )
+        elif row.get("kind") == "retained_scene_gpu_render_closeout":
+            cleanup_path = _bound(
+                row.get("object_store_cleanup"),
+                code="artifixer3d_supplemental_cleanup_unbound",
+            )
+            expected = _retained_render_spend_entry(
+                result_path=receipt_path,
+                cleanup_path=cleanup_path,
+                inventory_path=inventory_path,
+            )
+        else:
+            raise ValueError("artifixer3d_supplemental_spend_kind_invalid")
+        if dict(row) != expected:
+            raise ValueError("artifixer3d_supplemental_spend_entry_mismatch")
+        validated.append(expected)
+    total = round(sum(float(row["cost_usd"]) for row in validated), 6)
+    if total != value.get("total_cost_usd"):
+        raise ValueError("artifixer3d_supplemental_spend_total_mismatch")
+    return value, total
 
 
 def _zip_json(archive: zipfile.ZipFile, name: str, *, code: str) -> dict[str, Any]:
@@ -613,6 +795,7 @@ def materialize_artifixer3d_paid_attempt_authority(
     prior_artifixer_result_path: str | Path | None = None,
     prior_artifixer_cleanup_path: str | Path | None = None,
     prior_artifixer_provider_zero_path: str | Path | None = None,
+    supplemental_prior_spend_reconciliation_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Seal one zero-retry authority chained through all previous scene spend."""
 
@@ -656,10 +839,23 @@ def materialize_artifixer3d_paid_attempt_authority(
             "terminal_cost_usd": predecessor_attempt_cost,
             "lineage_cost_usd": predecessor_cost,
         }
+    supplemental: dict[str, Any] | None = None
+    supplemental_cost = 0.0
+    if supplemental_prior_spend_reconciliation_path is not None:
+        supplemental_path = Path(supplemental_prior_spend_reconciliation_path).expanduser().resolve()
+        supplemental_receipt, supplemental_cost = (
+            _validate_supplemental_spend_reconciliation(supplemental_path)
+        )
+        supplemental = {
+            **_record(supplemental_path),
+            "receipt_digest": supplemental_receipt["receipt_digest"],
+            "total_cost_usd": supplemental_cost,
+        }
     prior_spend = round(
         float(prior_authority["prior_goal_spend_usd"])
         + latest_cost
-        + predecessor_cost,
+        + predecessor_cost
+        + supplemental_cost,
         6,
     )
     aggregate_cap = float(bundle["aggregate_goal_spend_cap_usd"])
@@ -711,6 +907,7 @@ def materialize_artifixer3d_paid_attempt_authority(
         "prior_terminal_result": _record(terminal_path),
         "prior_terminal_cost_usd": latest_cost,
         "prior_artifixer_attempt": predecessor,
+        "supplemental_prior_spend_reconciliation": supplemental,
         "external_active_instance_allowlist": bundle["allowed_active_instance_ids"],
         "forbidden_external_instance_ids": bundle[
             "forbidden_external_instance_ids"
@@ -853,10 +1050,29 @@ def validate_artifixer3d_paid_attempt_authority(
             or predecessor.get("lineage_cost_usd") != predecessor_cost
         ):
             raise ValueError("artifixer3d_authority_predecessor_mismatch")
+    supplemental_cost = 0.0
+    supplemental = value.get("supplemental_prior_spend_reconciliation")
+    if supplemental is not None:
+        if not isinstance(supplemental, Mapping):
+            raise ValueError("artifixer3d_authority_supplemental_spend_invalid")
+        supplemental_path = _bound(
+            supplemental,
+            code="artifixer3d_authority_supplemental_spend_unbound",
+        )
+        supplemental_receipt, supplemental_cost = (
+            _validate_supplemental_spend_reconciliation(supplemental_path)
+        )
+        if (
+            supplemental.get("receipt_digest")
+            != supplemental_receipt.get("receipt_digest")
+            or supplemental.get("total_cost_usd") != supplemental_cost
+        ):
+            raise ValueError("artifixer3d_authority_supplemental_spend_mismatch")
     prior_spend = round(
         float(prior["prior_goal_spend_usd"])
         + terminal_cost
-        + predecessor_cost,
+        + predecessor_cost
+        + supplemental_cost,
         6,
     )
     if (
