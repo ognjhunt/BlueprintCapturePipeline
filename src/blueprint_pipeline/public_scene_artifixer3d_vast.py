@@ -436,6 +436,34 @@ def _validate_prior_artifixer_attempt(
     )
     inventory = provider_zero.get("inventory")
     cost = result.get("estimated_cost_usd")
+    result_mutations = result.get("provider_mutations_performed")
+    if result_mutations is None and provider_zero.get(
+        "provider_mutations_performed_by_attempt"
+    ) == 1:
+        adapter_path = _bound(
+            provider_zero.get("provider_adapter"),
+            code="artifixer3d_predecessor_adapter_unbound",
+        )
+        adapter = _read(
+            adapter_path, code="artifixer3d_predecessor_adapter_unreadable"
+        )
+        classification = adapter.get("provider_attempt_classification")
+        if (
+            adapter.get("schema_version") != "vast_provider_adapter_result.v1"
+            or adapter.get("status") != "failed"
+            or adapter.get("provider_create_attempted") is not True
+            or adapter.get("api_call_performed") is not True
+            or adapter.get("continuing_spend_from_this_run") is not False
+            or not adapter.get("vast_instance_ids")
+            or adapter.get("estimated_cost_usd") != cost
+            or not isinstance(classification, Mapping)
+            or classification.get("classification") != "pre_execution_provider_null"
+            or classification.get("provider_bundle_started") is not False
+            or classification.get("provider_entrypoint_started") is not False
+            or classification.get("provider_output_returned") is not False
+        ):
+            raise ValueError("artifixer3d_predecessor_adapter_invalid")
+        result_mutations = 1
     if cost is None and result.get("provider_mutations_performed") == 0:
         cost = 0.0
     if (
@@ -463,7 +491,7 @@ def _validate_prior_artifixer_attempt(
         or provider_zero.get("attempt_authority_digest")
         != authority.get("authorization_digest")
         or provider_zero.get("provider_mutations_performed_by_attempt")
-        != result.get("provider_mutations_performed")
+        != result_mutations
         or provider_zero.get("provider_zero_confirmed") is not True
         or not isinstance(inventory, Mapping)
         or inventory.get("api_confirmed") is not True
@@ -1181,6 +1209,9 @@ def run_artifixer3d_vast(
         "watchdog_receipt": _record(watchdog_path) if watchdog_path.is_file() else None,
         "object_store_cleanup": _record(cleanup_path) if cleanup_path.is_file() else None,
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
+        "provider_mutations_performed": (
+            1 if adapter.get("provider_create_attempted") is True else 0
+        ),
         "provider_zero_confirmed": watchdog.get("status") == "provider_terminal",
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
     }

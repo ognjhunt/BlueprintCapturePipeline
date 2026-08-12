@@ -350,11 +350,30 @@ def test_paid_authority_chains_prior_spend_and_is_one_shot(
             "schema_version": "public_scene_artifixer3d_vast_run.v1",
             "status": "blocked",
             "retry_cap": 0,
-            "provider_mutations_performed": 0,
+            "estimated_cost_usd": 0.2,
             "all_staged_objects_absent": True,
             "authorization_consumption": {
                 "status": "consumed",
                 "authorization_digest": successor["authorization_digest"],
+            },
+        },
+    )
+    successor_adapter = tmp_path / "successor/adapter.json"
+    _write(
+        successor_adapter,
+        {
+            "schema_version": "vast_provider_adapter_result.v1",
+            "status": "failed",
+            "provider_create_attempted": True,
+            "api_call_performed": True,
+            "continuing_spend_from_this_run": False,
+            "vast_instance_ids": [123],
+            "estimated_cost_usd": 0.2,
+            "provider_attempt_classification": {
+                "classification": "pre_execution_provider_null",
+                "provider_bundle_started": False,
+                "provider_entrypoint_started": False,
+                "provider_output_returned": False,
             },
         },
     )
@@ -364,7 +383,8 @@ def test_paid_authority_chains_prior_spend_and_is_one_shot(
         {
             "schema_version": "artifixer3d_postblocked_provider_zero.v1",
             "attempt_authority_digest": successor["authorization_digest"],
-            "provider_mutations_performed_by_attempt": 0,
+            "provider_mutations_performed_by_attempt": 1,
+            "provider_adapter": _record(successor_adapter),
             "provider_zero_confirmed": True,
             "inventory": {"api_confirmed": True, "live_resource_count": 0},
         },
@@ -386,7 +406,9 @@ def test_paid_authority_chains_prior_spend_and_is_one_shot(
         hard_ttl_seconds=21_600,
         output_path=tmp_path / "third_authority.json",
     )
-    assert third["prior_artifixer_attempt"]["lineage_cost_usd"] == 0.0
+    assert third["prior_artifixer_attempt"]["terminal_cost_usd"] == 0.2
+    assert third["prior_artifixer_attempt"]["lineage_cost_usd"] == 0.2
+    assert third["aggregate_goal_spend_before_attempt_usd"] == 1.9
 
     import blueprint_pipeline.public_scene_artifixer3d_vast as subject
 
