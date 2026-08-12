@@ -29,6 +29,10 @@ from blueprint_pipeline.articulated_usd_depth_sweep import (
     validate_replacement_usd_depth_sweep_request,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.public_scene_replacement_depth_composition import (
+    REQUEST_SCHEMA as DEPTH_COMPOSITION_REQUEST_SCHEMA,
+    materialize_replacement_depth_composition,
+)
 
 
 def _triangle(stage: Usd.Stage, path: str, points: list[tuple[float, float, float]]) -> None:
@@ -551,6 +555,34 @@ def test_rigid_pose_cells_bind_nonidentity_task_scoring_frame_without_double_pla
     # The authored /Asset translation of +10m is stripped; otherwise this
     # camera would see no geometry at either requested scoring pose.
     assert min(result["finite_depth_pixel_count_by_cell"]) > 0
+
+    passive = json.loads(json.dumps(request))
+    passive["scene_state_role"] = "co_present_passive"
+    passive["joint_state_cells"][1]["T_world_task_scoring"] = first_scoring_pose.tolist()
+    passive["request_digest"] = canonical_digest(passive, digest_field="request_digest")
+    passive_result = materialize_replacement_usd_depth_sweep(
+        usd_path=usd,
+        request=passive,
+        output_root=tmp_path / "passive_rigid_depth",
+    )
+
+    assert passive_result["scene_state_role"] == "co_present_passive"
+
+    passive_moved = json.loads(json.dumps(passive))
+    moved_pose = np.asarray(first_scoring_pose, dtype=float)
+    moved_pose[0, 3] += 0.2
+    passive_moved["joint_state_cells"][1]["T_world_task_scoring"] = moved_pose.tolist()
+    passive_moved["request_digest"] = canonical_digest(
+        passive_moved, digest_field="request_digest"
+    )
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError, match="passive_pose_not_reset"
+    ):
+        materialize_replacement_usd_depth_sweep(
+            usd_path=usd,
+            request=passive_moved,
+            output_root=tmp_path / "passive_rigid_depth_moved",
+        )
 
 
 def test_general_depth_request_rejects_incomplete_or_inconsistent_state_cells(
@@ -1268,35 +1300,64 @@ def test_source_coverage_binds_co_present_depth_composition_identity(
         output_root=depth_root,
         resolution_scale=1.0,
     )
-    composition_root = tmp_path / "composition"
-    composition_root.mkdir()
     depth_array = np.load(depth_root / str(depth["arrays"]["relative_path"]), allow_pickle=False)
-    composition_array = composition_root / "replacement_depth_composition.npy"
-    np.save(composition_array, depth_array, allow_pickle=False)
-    composition: dict[str, object] = {
-        "schema_version": "public_scene_replacement_depth_composition.v1",
-        "status": "co_present_replacement_depth_rasterized",
+    composition_root = tmp_path / "composition"
+    input_paths = []
+    for asset_id, role in (
+        ("fixture_asset_a", "task_subject"),
+        ("fixture_asset_b", "co_present_passive"),
+    ):
+        input_root = composition_root / asset_id
+        input_root.mkdir(parents=True)
+        array_path = input_root / "depth.npy"
+        np.save(array_path, depth_array, allow_pickle=False)
+        sweep: dict[str, object] = {
+            "schema_version": "replacement_usd_depth_sweep.v2",
+            "status": "actual_usd_geometry_depth_rasterized",
+            "asset_id": asset_id,
+            "task_freeze_digest": (
+                "sha256:" + "1" * 64
+                if asset_id == "fixture_asset_a"
+                else "sha256:" + "2" * 64
+            ),
+            "camera_contract_digest": "sha256:" + "3" * 64,
+            "camera_rows_digest": "sha256:" + "4" * 64,
+            "scene_state_role": role,
+            "actual_usd_geometry_depth_rasterized": True,
+            "caller_supplied_coverage_mask": False,
+            "resolution_scale": 1.0,
+            "cells": [{"camera_id": "external", "cell_id": "reset"}],
+            "depth_dimensions": [64, 48],
+            "arrays": {
+                "relative_path": array_path.name,
+                "size_bytes": array_path.stat().st_size,
+                "sha256": _sha256(array_path),
+            },
+            "manifest_digest": "",
+        }
+        sweep["manifest_digest"] = canonical_digest(sweep, digest_field="manifest_digest")
+        sweep_path = input_root / "sweep.json"
+        sweep_path.write_text(json.dumps(sweep), encoding="utf-8")
+        input_paths.append(sweep_path)
+    request: dict[str, object] = {
+        "schema_version": DEPTH_COMPOSITION_REQUEST_SCHEMA,
         "task_id": "fixture_task",
         "task_freeze_digest": "sha256:" + "1" * 64,
         "scored_task_asset_id": "fixture_asset_a",
-        "replacement_asset_ids": ["fixture_asset_a", "fixture_asset_b"],
-        "cells": depth["cells"],
-        "arrays": {
-            "relative_path": composition_array.name,
-            "size_bytes": composition_array.stat().st_size,
-            "sha256": "sha256:" + hashlib.sha256(composition_array.read_bytes()).hexdigest(),
-        },
-        "resolution_scale": 1.0,
-        "actual_usd_geometry_depth_rasterized": True,
-        "actual_composed_depth_rasterized": True,
-        "caller_supplied_coverage_mask": False,
-        "receipt_digest": "",
+        "frozen_before_removal_execution": True,
+        "learned_policy_outcomes_accessed": False,
+        "input_sweep_manifest_paths": [str(path) for path in input_paths],
+        "request_digest": "",
     }
-    composition["receipt_digest"] = canonical_digest(
-        composition, digest_field="receipt_digest"
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path = composition_root / "request.json"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    composition = materialize_replacement_depth_composition(
+        request_path=request_path, output_root=composition_root / "receipt"
     )
-    composition_path = composition_root / "composition.json"
-    composition_path.write_text(json.dumps(composition), encoding="utf-8")
+    composition_path = (
+        composition_root / "receipt" / "public_scene_replacement_depth_composition.v1.json"
+    )
     image = np.full((48, 64, 3), 96, dtype=np.uint8)
     black_manifest = _render_manifest(
         tmp_path / "black",

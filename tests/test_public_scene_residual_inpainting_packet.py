@@ -245,6 +245,11 @@ def _make_composition(
             ),
             "camera_contract_digest": _digest("a"),
             "camera_rows_digest": _digest("b"),
+            "scene_state_role": (
+                "task_subject"
+                if asset_id == task["removal_plan"]["replacement_asset_id"]
+                else "co_present_passive"
+            ),
             "actual_usd_geometry_depth_rasterized": True,
             "caller_supplied_coverage_mask": False,
             "resolution_scale": 1.0,

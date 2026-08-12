@@ -29,6 +29,7 @@ DEPTH_SWEEP_SCHEMA = "adp009b_articulated_usd_depth_sweep.v1"
 GENERAL_DEPTH_SWEEP_REQUEST_SCHEMA = "replacement_usd_depth_sweep_request.v2"
 GENERAL_DEPTH_SWEEP_SCHEMA = "replacement_usd_depth_sweep.v2"
 COMPOSED_DEPTH_SWEEP_SCHEMA = "public_scene_replacement_depth_composition.v1"
+SCENE_STATE_ROLES = frozenset({"task_subject", "co_present_passive"})
 SOURCE_COVERAGE_AUDIT_SCHEMA = "adp009b_source_layer_replacement_coverage_audit.v1"
 REFERENCE_HYBRID_REVIEW_SCHEMA = "adp009b_reference_hybrid_review.v1"
 TARGET_CORE_COVERAGE_AUDIT_SCHEMA = "articulated_excision_coverage.v1"
@@ -529,6 +530,7 @@ def seal_replacement_usd_depth_sweep_request(
     joint_state_cells: Sequence[Mapping[str, Any]],
     asset_prim_path: str = "/Asset",
     resolution_scale: float = 0.25,
+    scene_state_role: str = "task_subject",
 ) -> dict[str, Any]:
     """Seal the generic articulated/rigid replacement depth-cell contract."""
 
@@ -555,6 +557,7 @@ def seal_replacement_usd_depth_sweep_request(
         "joint_state_cells": [
             json.loads(json.dumps(row)) for row in joint_state_cells
         ],
+        "scene_state_role": scene_state_role,
         "geometry_visibility_policy": {
             "computed_visibility": "visible_only",
             "admitted_purposes": ["default", "render"],
@@ -585,6 +588,9 @@ def validate_replacement_usd_depth_sweep_request(
         errors.append("replacement_depth_request_schema_invalid")
     if task_kind not in {"articulated_interaction", "rigid_object_manipulation"}:
         errors.append("replacement_depth_task_kind_invalid")
+    scene_state_role = str(payload.get("scene_state_role") or "task_subject")
+    if scene_state_role not in SCENE_STATE_ROLES:
+        errors.append("replacement_depth_scene_state_role_invalid")
     asset_id = str(payload.get("asset_id") or "")
     if not asset_id or not asset_id.replace("_", "a").replace("-", "a").isalnum():
         errors.append("replacement_depth_asset_id_invalid")
@@ -757,7 +763,22 @@ def validate_replacement_usd_depth_sweep_request(
         )
     if any(not cell_id for cell_id in cell_ids) or len(cell_ids) != len(set(cell_ids)):
         errors.append("replacement_depth_cell_ids_invalid")
-    if task_kind == "rigid_object_manipulation":
+    if scene_state_role == "co_present_passive":
+        # A passive replacement represents the other, co-present task object
+        # at its reset state.  It must participate in every subject cell's
+        # depth composition, but it cannot silently follow the subject's
+        # motion or articulation sweep.
+        if transforms and not all(
+            np.allclose(transforms[0], transform, atol=1e-12, rtol=0.0)
+            for transform in transforms[1:]
+        ):
+            errors.append("replacement_depth_passive_pose_not_reset")
+        if target_states and not all(
+            np.allclose(target_states[0], state, atol=1e-12, rtol=0.0, equal_nan=True)
+            for state in target_states[1:]
+        ):
+            errors.append("replacement_depth_passive_joint_state_not_reset")
+    elif task_kind == "rigid_object_manipulation":
         if transforms and all(
             np.allclose(transforms[0], transform, atol=1e-12, rtol=0.0)
             for transform in transforms[1:]
@@ -1177,6 +1198,7 @@ def materialize_replacement_usd_depth_sweep(
         },
         "asset_prim_path": admitted["asset_prim_path"],
         "task_scoring_frame": admitted["task_scoring_frame"],
+        "scene_state_role": admitted.get("scene_state_role", "task_subject"),
         "geometry_visibility_policy": admitted["geometry_visibility_policy"],
         "asset_root_authored_transform_removed_before_placement": True,
         "T_world_asset_applied_exactly_once_per_cell": True,
@@ -1591,6 +1613,23 @@ def materialize_source_layer_replacement_coverage_audit(
         raise ArticulatedUsdDepthSweepError(
             ["source_coverage_depth_manifest_invalid"]
         )
+    if depth_manifest.get("schema_version") == COMPOSED_DEPTH_SWEEP_SCHEMA:
+        # A composition receipt is not a caller assertion: reopen every
+        # constituent USD sweep and recompute the nearest-depth array before
+        # using it as the source-coverage boundary.
+        from .public_scene_replacement_depth_composition import (
+            ReplacementDepthCompositionError,
+            validate_replacement_depth_composition,
+        )
+
+        try:
+            validate_replacement_depth_composition(
+                depth_manifest, receipt_path=depth_path
+            )
+        except ReplacementDepthCompositionError as exc:
+            raise ArticulatedUsdDepthSweepError(
+                ["source_coverage_composed_depth_receipt_invalid", *exc.codes]
+            ) from exc
     arrays_record = depth_manifest.get("arrays") or {}
     depth_array_path = depth_path.parent / str(arrays_record.get("relative_path") or "")
     if (

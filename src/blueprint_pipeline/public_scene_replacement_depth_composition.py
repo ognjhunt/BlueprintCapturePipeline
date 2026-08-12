@@ -183,11 +183,15 @@ def _load_sweep(path: Path) -> tuple[dict[str, Any], np.ndarray, dict[str, Any]]
         != canonical_digest(manifest, digest_field="manifest_digest")
         or manifest.get("actual_usd_geometry_depth_rasterized") is not True
         or manifest.get("caller_supplied_coverage_mask") is not False
-        or manifest.get("resolution_scale") != 1.0
+        or isinstance(manifest.get("resolution_scale"), bool)
+        or not isinstance(manifest.get("resolution_scale"), (int, float))
+        or not 0.0 < float(manifest["resolution_scale"]) <= 1.0
         or not str(manifest.get("asset_id") or "")
         or not _digest(manifest.get("task_freeze_digest"))
         or not _digest(manifest.get("camera_contract_digest"))
         or not _digest(manifest.get("camera_rows_digest"))
+        or manifest.get("scene_state_role")
+        not in {"task_subject", "co_present_passive"}
     ):
         raise ReplacementDepthCompositionError(
             ["replacement_depth_composition_input_manifest_invalid"]
@@ -264,16 +268,29 @@ def materialize_replacement_depth_composition(
         raise ReplacementDepthCompositionError(
             ["replacement_depth_composition_scored_task_freeze_mismatch"]
         )
+    if (
+        scored[0].get("scene_state_role") != "task_subject"
+        or any(
+            manifest.get("scene_state_role") != "co_present_passive"
+            for manifest, _depth, _record in loaded
+            if manifest["asset_id"] != request["scored_task_asset_id"]
+        )
+    ):
+        raise ReplacementDepthCompositionError(
+            ["replacement_depth_composition_scene_state_roles_invalid"]
+        )
     reference_manifest, reference_depth, _reference_record = loaded[0]
     reference_cells = _cells_key(reference_manifest["cells"])
     reference_camera_contract = reference_manifest["camera_contract_digest"]
     reference_camera_rows = reference_manifest["camera_rows_digest"]
+    reference_resolution_scale = float(reference_manifest["resolution_scale"])
     for manifest, depth, _record_value in loaded[1:]:
         if (
             _cells_key(manifest["cells"]) != reference_cells
             or depth.shape != reference_depth.shape
             or manifest["camera_contract_digest"] != reference_camera_contract
             or manifest["camera_rows_digest"] != reference_camera_rows
+            or float(manifest["resolution_scale"]) != reference_resolution_scale
         ):
             raise ReplacementDepthCompositionError(
                 ["replacement_depth_composition_input_cell_or_camera_mismatch"]
@@ -299,6 +316,10 @@ def materialize_replacement_depth_composition(
                 **record,
                 "asset_id": manifest["asset_id"],
                 "task_freeze_digest": manifest["task_freeze_digest"],
+                "finite_depth_pixel_count_by_cell": [
+                    int(np.isfinite(cell_depth).sum()) for cell_depth in depth
+                ],
+                "visible_in_any_composed_camera": bool(np.isfinite(depth).any()),
             }
             for manifest, _depth, record in loaded
         ],
@@ -307,7 +328,7 @@ def materialize_replacement_depth_composition(
         "cells": scored_manifest["cells"],
         "state_cell_count": len(reference_cells),
         "camera_count": len({camera_id for camera_id, _cell_id in reference_cells}),
-        "resolution_scale": 1.0,
+        "resolution_scale": reference_resolution_scale,
         "depth_dimensions": [int(composed.shape[2]), int(composed.shape[1])],
         "finite_depth_pixel_count_by_cell": [
             int(np.isfinite(depth).sum()) for depth in composed
@@ -350,7 +371,9 @@ def validate_replacement_depth_composition(
         or receipt.get("actual_usd_geometry_depth_rasterized") is not True
         or receipt.get("actual_composed_depth_rasterized") is not True
         or receipt.get("caller_supplied_coverage_mask") is not False
-        or receipt.get("resolution_scale") != 1.0
+        or isinstance(receipt.get("resolution_scale"), bool)
+        or not isinstance(receipt.get("resolution_scale"), (int, float))
+        or not 0.0 < float(receipt["resolution_scale"]) <= 1.0
         or not str(receipt.get("task_id") or "")
         or not _digest(receipt.get("task_freeze_digest"))
         or not str(receipt.get("scored_task_asset_id") or "")
@@ -388,6 +411,10 @@ def validate_replacement_depth_composition(
             row.get("manifest_digest") != manifest["manifest_digest"]
             or row.get("asset_id") != manifest["asset_id"]
             or row.get("task_freeze_digest") != manifest["task_freeze_digest"]
+            or row.get("finite_depth_pixel_count_by_cell")
+            != [int(np.isfinite(cell_depth).sum()) for cell_depth in depth]
+            or row.get("visible_in_any_composed_camera")
+            is not bool(np.isfinite(depth).any())
         ):
             raise ReplacementDepthCompositionError(
                 ["replacement_depth_composition_input_record_join_invalid"]
@@ -411,6 +438,20 @@ def validate_replacement_depth_composition(
         raise ReplacementDepthCompositionError(
             ["replacement_depth_composition_asset_join_invalid"]
         )
+    scored = next(
+        item for item in loaded if item[0]["asset_id"] == receipt["scored_task_asset_id"]
+    )
+    if (
+        scored[0].get("scene_state_role") != "task_subject"
+        or any(
+            manifest.get("scene_state_role") != "co_present_passive"
+            for manifest, _depth, _record in loaded
+            if manifest["asset_id"] != receipt["scored_task_asset_id"]
+        )
+    ):
+        raise ReplacementDepthCompositionError(
+            ["replacement_depth_composition_scene_state_roles_invalid"]
+        )
     reference_manifest, reference_depth, _reference_record = loaded[0]
     reference_cells = _cells_key(reference_manifest["cells"])
     for manifest, depth, _record_value in loaded[1:]:
@@ -419,19 +460,20 @@ def validate_replacement_depth_composition(
             or depth.shape != reference_depth.shape
             or manifest["camera_contract_digest"] != reference_manifest["camera_contract_digest"]
             or manifest["camera_rows_digest"] != reference_manifest["camera_rows_digest"]
+            or float(manifest["resolution_scale"])
+            != float(reference_manifest["resolution_scale"])
         ):
             raise ReplacementDepthCompositionError(
                 ["replacement_depth_composition_input_cell_or_camera_mismatch"]
             )
-    scored = next(
-        item for item in loaded if item[0]["asset_id"] == receipt["scored_task_asset_id"]
-    )
     if (
         scored[0]["task_freeze_digest"] != receipt["task_freeze_digest"]
         or receipt.get("cells") != scored[0].get("cells")
         or receipt.get("camera_contract_digest")
         != reference_manifest.get("camera_contract_digest")
         or receipt.get("camera_rows_digest") != reference_manifest.get("camera_rows_digest")
+        or float(receipt["resolution_scale"])
+        != float(reference_manifest["resolution_scale"])
     ):
         raise ReplacementDepthCompositionError(
             ["replacement_depth_composition_receipt_join_invalid"]
