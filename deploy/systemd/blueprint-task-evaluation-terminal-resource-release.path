@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the durable Blueprint terminal resource release queue
+
+[Path]
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases/pending/*.json
+Unit=blueprint-task-evaluation-terminal-resource-release.service
+
+[Install]
+WantedBy=multi-user.target

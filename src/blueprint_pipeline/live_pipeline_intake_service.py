@@ -96,6 +96,11 @@ from .task_evaluation_launch_dispatcher import (
     validate_launch_request,
     validate_launch_request_against_public_catalog,
 )
+from .task_evaluation_terminal_resource_release import (
+    TerminalResourceReleaseError,
+    stage_terminal_resource_release_request,
+    validate_terminal_resource_release_request,
+)
 
 
 DEFAULT_MANIFEST_PATH = (
@@ -131,6 +136,15 @@ TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV = (
 )
 TASK_EVALUATION_LAUNCH_EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
 TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_MODE"
+TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT"
+)
+TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT"
+)
+TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_ALLOW_TRIGGER_ENV = (
+    "BLUEPRINT_ALLOW_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER"
+)
 INTAKE_MAX_BODY_BYTES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_BODY_BYTES"
 INTAKE_MAX_JSON_DEPTH_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_JSON_DEPTH"
 INTAKE_MAX_JSON_ITEMS_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_JSON_ITEMS"
@@ -191,6 +205,13 @@ def _task_evaluation_launch_queue_root(manifest_path: Path) -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return _work_dir(manifest_path).expanduser().resolve() / "task_evaluation_launches"
+
+
+def _task_evaluation_terminal_resource_release_queue_root(manifest_path: Path) -> Path:
+    configured = _string(os.getenv(TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT_ENV))
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return _work_dir(manifest_path).expanduser().resolve() / "task_evaluation_terminal_resource_releases"
 
 
 def _safe_stem(value: str) -> str:
@@ -1468,6 +1489,43 @@ def _trigger_task_evaluation_launch_dispatcher() -> Dict[str, Any]:
     }
 
 
+def _trigger_task_evaluation_terminal_resource_release_dispatcher() -> Dict[str, Any]:
+    """Start the independent release-only worker; no provider work occurs in HTTP."""
+
+    unit = _string(os.getenv(TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV))
+    allowed = _truthy(os.getenv(TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_ALLOW_TRIGGER_ENV))
+    if not unit:
+        return {
+            "status": "blocked", "performed": False, "allowed": allowed,
+            "blockers": [f"missing_env_{TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV}"],
+        }
+    if not allowed:
+        return {
+            "status": "blocked", "performed": False, "allowed": False,
+            "blockers": [f"missing_env_{TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_ALLOW_TRIGGER_ENV}"],
+        }
+    if not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit):
+        return {
+            "status": "blocked", "performed": False, "allowed": True,
+            "blockers": ["terminal_resource_release_trigger_systemd_unit_invalid"],
+        }
+    command_argv = ["systemctl", "start", "--no-block", unit]
+    completed = subprocess.run(  # nosec B603 - fixed executable and strict unit allowlist
+        command_argv, shell=False, check=False, capture_output=True, text=True, timeout=60,
+    )
+    return {
+        "status": "triggered" if completed.returncode == 0 else "failed",
+        "performed": completed.returncode == 0,
+        "allowed": True,
+        "systemd_unit": unit,
+        "command_argv_count": len(command_argv),
+        "returncode": completed.returncode,
+        "stdout_tail": completed.stdout[-2000:],
+        "stderr_tail": completed.stderr[-2000:],
+        "provider_mutation_performed": False,
+    }
+
+
 async def _require_token(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -2182,6 +2240,47 @@ def create_app() -> FastAPI:
             "dispatcher_trigger": trigger,
             "provider_mutation_performed_inside_http_request": False,
             "canonical_allocator_required": True,
+        }
+        return JSONResponse(status_code=202, content=response)
+
+    @app.post(
+        "/api/live-pipeline/task-evaluation-terminal-resource-releases",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def intake_task_evaluation_terminal_resource_release(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        manifest_path = _manifest_path().resolve()
+        try:
+            blockers = validate_terminal_resource_release_request(payload)
+            if blockers:
+                raise TerminalResourceReleaseError(",".join(blockers))
+            queued = stage_terminal_resource_release_request(
+                value=payload,
+                queue_root=_task_evaluation_terminal_resource_release_queue_root(manifest_path),
+            )
+        except TerminalResourceReleaseError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "task_evaluation_terminal_resource_release_request_invalid",
+                    "blockers": [item for item in str(exc).split(",") if item],
+                },
+            ) from exc
+        trigger = _trigger_task_evaluation_terminal_resource_release_dispatcher()
+        response = {
+            "schema_version": "task_evaluation_terminal_resource_release_intake_receipt.v1",
+            "status": "accepted" if trigger.get("performed") else "queued_dispatch_blocked",
+            "accepted": True,
+            "queue": queued,
+            "dispatcher_trigger": trigger,
+            "provider_mutation_performed_inside_http_request": False,
+            "canonical_allocator_required": True,
+            "automatic_retry_performed": False,
         }
         return JSONResponse(status_code=202, content=response)
 
