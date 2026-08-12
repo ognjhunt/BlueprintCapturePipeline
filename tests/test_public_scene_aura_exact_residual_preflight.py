@@ -133,11 +133,35 @@ def test_prepares_one_shared_direct_aura_plan_for_five_replacements(tmp_path: Pa
     assert receipt["status"] == "prepared_no_upload_no_execution"
     assert receipt["replacement_object_count"] == 5
     assert len(receipt["lanes"]) == 5
-    assert receipt["aura_workflow"]["excluded_stock_stages"] == [
+    assert receipt["aura_workflow"]["released_entrypoints"] == [
         "train.py",
         "remove.py",
-        "utils/sam2_utils.py",
+        "inpaint.py",
     ]
+    assert receipt["aura_workflow"]["shared_retained_scene_is_not_direct_aura_2dgs_input"] is True
+    assert receipt["aura_workflow"]["excluded_stock_stages"] == [
+        "utils/sam2_utils.py",
+        "utils/LeftRefill/sdedit_utils.py",
+    ]
+    assert receipt["aura_workflow"]["workflow_stages"][0] == {
+        "stage": "train_retained_scene_aura_2dgs",
+        "entrypoint": "train.py",
+        "input_frames": "sealed_retained_scene_before_frames",
+        "input_masks": "exact_residual_masks_only",
+        "mask_dilation_pixels": 0,
+        "train_dilate_mask_kernel_size": 1,
+        "train_dilate_mask_iter": 0,
+    }
+    assert receipt["aura_workflow"]["workflow_stages"][1][
+        "remove_exports_generated_unseen_masks"
+    ] is False
+    assert receipt["aura_workflow"]["workflow_stages"][1][
+        "convex_hull_expansion_performed"
+    ] is True
+    assert receipt["required_result_checks"][
+        "aura_remove_convex_hull_expansion_evidence_required"
+    ] is True
+    assert receipt["aura_workflow"]["workflow_stages"][2]["transforms_performed"] is False
     assert receipt["aura_workflow"]["inpaint_dilate_mask_iter"] == 0
     assert receipt["reference_completion"]["backend_provenance"]["rights_authority"][
         "license_id"

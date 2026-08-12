@@ -7,9 +7,12 @@ layer and the exact per-camera residual masks are the only edit authority.
 
 This module turns a 1--5 replacement residual packet into one *shared* Aura
 preflight.  It deliberately emits a plan only: no model is loaded, no upload
-is made, and no image is edited.  A future executor must consume this plan,
-run a separately admitted exact-mask 2-D reference completion, invoke only
-Aura's ``inpaint.py`` stage, and retain both native and exact-mask-composited
+is made, and no image is edited.  Aura's released inpainting stage consumes an
+Aura 2-D Gaussian-surflet checkpoint, while the shared retained scene is a
+standard 3-DGS PLY.  The executor must therefore train that checkpoint from
+the sealed retained frames, remove only its exact-mask-associated contribution,
+then run a separately admitted exact-mask 2-D reference completion and
+Aura's ``inpaint.py``.  It must retain both native and exact-mask-composited
 outputs for independent checks.
 """
 
@@ -600,9 +603,50 @@ def materialize_aura_exact_residual_preflight(
             "output_must_be_exact_mask_composited": True,
         },
         "aura_workflow": {
-            "released_entrypoint": "inpaint.py",
-            "initial_shared_gaussian_iteration": "shared_retained",
-            "excluded_stock_stages": ["train.py", "remove.py", "utils/sam2_utils.py"],
+            "released_entrypoints": ["train.py", "remove.py", "inpaint.py"],
+            "shared_retained_scene_is_not_direct_aura_2dgs_input": True,
+            "initial_aura_2dgs_checkpoint": (
+                "trained_from_sealed_shared_retained_frames_and_exact_residual_masks"
+            ),
+            "workflow_stages": [
+                {
+                    "stage": "train_retained_scene_aura_2dgs",
+                    "entrypoint": "train.py",
+                    "input_frames": "sealed_retained_scene_before_frames",
+                    "input_masks": "exact_residual_masks_only",
+                    "mask_dilation_pixels": 0,
+                    "train_dilate_mask_kernel_size": 1,
+                    "train_dilate_mask_iter": 0,
+                },
+                {
+                    "stage": "remove_exact_mask_associated_aura_2dgs",
+                    "entrypoint": "remove.py",
+                    "input_checkpoint": "trained_aura_2dgs_iteration_30000",
+                    "input_masks": "exact_residual_masks_only",
+                    "removal_threshold": 0.3,
+                    "convex_hull_expansion_performed": True,
+                    "convex_hull_expansion_is_constrained_by_exact_2d_mask_authority": False,
+                    "remove_exports_generated_unseen_masks": False,
+                    "remove_skip_train": True,
+                    "remove_skip_test": True,
+                    "remove_skip_mesh": True,
+                    "remove_render_path": False,
+                },
+                {
+                    "stage": "materialize_exact_unseen_masks",
+                    "entrypoint": "blueprint_exact_mask_materializer",
+                    "source": "packet_exact_residual_masks",
+                    "transforms_performed": False,
+                },
+                {
+                    "stage": "inpaint_exact_residual",
+                    "entrypoint": "inpaint.py",
+                    "input_checkpoint": "aura_2dgs_iteration_30000_object_removal",
+                    "input_masks": "materialized_exact_unseen_masks",
+                    "reference_completion": "one_big_lama_exact_mask_completion_per_task",
+                },
+            ],
+            "excluded_stock_stages": ["utils/sam2_utils.py", "utils/LeftRefill/sdedit_utils.py"],
             "exact_mask_materialization": "hardlink_or_byte_verified_copy_only",
             "inpaint_dilate_mask_iter": 0,
             "inpaint_dilate_mask_kernel_size": 1,
@@ -611,12 +655,14 @@ def materialize_aura_exact_residual_preflight(
             "inpaint_init_finetune_iteration": -1,
             "multiview_scene_camera_count": len(cameras),
         },
-        "required_result_checks": {
+            "required_result_checks": {
             "raw_native_aura_frames_retained": True,
             "exact_mask_composited_frames_retained": True,
             "outside_mask_pixel_delta_required": 0,
             "locality_mask_dilation_pixels": 0,
             "multi_view_consistency_required": True,
+            "aura_remove_convex_hull_expansion_evidence_required": True,
+            "aura_remove_convex_hull_expansion_result_is_not_mask_authority": True,
             "native_output_is_not_automatically_a_qualified_shared_scene": True,
         },
         "execution": {
