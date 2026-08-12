@@ -1,0 +1,47 @@
+[Unit]
+Description=Release one terminal Blueprint Task Evaluation Vast record through the canonical allocator
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+TasksMax=128
+LimitNOFILE=65536
+MemoryMax=1G
+CPUQuota=100%
+TimeoutStartSec=5m
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases
+Environment=BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
+Environment=BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_WORKER=true
+Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
+Environment=BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_terminal_resource_release --queue-root "$${BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT}" --state-root "$${BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT}" --max-messages 1'
