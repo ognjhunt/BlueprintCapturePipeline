@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -20,24 +19,25 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .common import utc_now_iso, write_json
 from .gpu_render_providers import get_render_provider
-from .task_evaluation_launch_dispatcher import canonical_digest
-from .vast_provider_adapter import VAST_TERMINAL_INSTANCE_STATUSES
+from .task_evaluation_terminal_resource_release_contract import (
+    QUEUE_RUN_SCHEMA_VERSION,
+    RECEIPT_SCHEMA_VERSION,
+    TerminalResourceReleaseError,
+    canonical_digest,
+    validate_terminal_resource_release_request,
+)
+
+# Compatibility export for the provider-worker module; the HTTP intake imports
+# this pure contract directly and therefore never reaches the hot provider lane.
+from .task_evaluation_terminal_resource_release_contract import (  # noqa: F401
+    stage_terminal_resource_release_request,
+)
 
 
-REQUEST_SCHEMA_VERSION = "task_evaluation_terminal_resource_release_request.v1"
-QUEUE_RECEIPT_SCHEMA_VERSION = "task_evaluation_terminal_resource_release_queue_receipt.v1"
-RECEIPT_SCHEMA_VERSION = "task_evaluation_terminal_resource_release_receipt.v1"
-QUEUE_RUN_SCHEMA_VERSION = "task_evaluation_terminal_resource_release_queue_run.v1"
-_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$")
-_INSTANCE_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
-_LABEL_RE = re.compile(r"^blueprint-adp009d-[1-9][0-9]{9,}$")
-_TERMINAL_STATUSES = frozenset(str(value).lower() for value in VAST_TERMINAL_INSTANCE_STATUSES)
+_TERMINAL_STATUSES = frozenset(
+    {"stopped", "exited", "failed", "destroyed", "deleted", "inactive", "completed"}
+)
 _REQUIRED_PROVIDERS = ("runpod", "vast", "digitalocean")
-
-
-class TerminalResourceReleaseError(ValueError):
-    """A release-only request failed a fail-closed contract."""
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -46,90 +46,6 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 def _string(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _is_digest(value: Any) -> bool:
-    return bool(_DIGEST_RE.fullmatch(_string(value)))
-
-
-def _is_identifier(value: Any) -> bool:
-    return bool(_IDENTIFIER_RE.fullmatch(_string(value)))
-
-
-def validate_terminal_resource_release_request(value: Mapping[str, Any]) -> list[str]:
-    """Validate the immutable, zero-spend Website recovery capability."""
-
-    request = _mapping(value)
-    blockers: list[str] = []
-    if request.get("schema_version") != REQUEST_SCHEMA_VERSION:
-        blockers.append("terminal_resource_release_schema_version_mismatch")
-    for field in ("release_id", "launch_id", "run_id"):
-        if not _is_identifier(request.get(field)):
-            blockers.append(f"terminal_resource_release_{field}_invalid")
-    if not _is_digest(request.get("request_digest")):
-        blockers.append("terminal_resource_release_launch_request_digest_invalid")
-    if request.get("provider") != "vast":
-        blockers.append("terminal_resource_release_provider_must_be_vast")
-    if not _INSTANCE_ID_RE.fullmatch(_string(request.get("instance_id"))):
-        blockers.append("terminal_resource_release_instance_id_invalid")
-    if not _LABEL_RE.fullmatch(_string(request.get("expected_label"))):
-        blockers.append("terminal_resource_release_expected_label_invalid")
-    blocker = _mapping(request.get("control_plane_terminal_blocker"))
-    expected_blocker = {
-        "schema_version": "task_evaluation_launch_control_plane_blocker.v1",
-        "status": "blocked",
-        "code": "control_plane_terminal_receipt_missing_after_spend_authority_expiry",
-        "pipeline_terminal_receipt_observed": False,
-        "provider_mutation_performed_by_webapp": False,
-        "paid_execution_retry_performed": False,
-        "execution_result": "not_observed",
-        "scripted_positive_controls_result": "not_observed",
-        "learned_policy_result": "not_observed",
-    }
-    for field, expected in expected_blocker.items():
-        if blocker.get(field) != expected:
-            blockers.append(f"terminal_resource_release_blocker_mismatch:{field}")
-    for field in ("launch_id", "run_id", "request_digest"):
-        if blocker.get(field) != request.get(field):
-            blockers.append(f"terminal_resource_release_blocker_binding_mismatch:{field}")
-    authorization = _mapping(request.get("authorization"))
-    actor = _mapping(authorization.get("actor"))
-    if authorization.get("action") != "terminal_provider_record_release":
-        blockers.append("terminal_resource_release_action_invalid")
-    if authorization.get("approved") is not True:
-        blockers.append("terminal_resource_release_authority_missing")
-    if authorization.get("max_additional_spend_usd") != 0:
-        blockers.append("terminal_resource_release_spend_must_be_zero")
-    if authorization.get("retry_cap") != 0:
-        blockers.append("terminal_resource_release_retry_cap_must_be_zero")
-    if actor.get("role") not in {"admin", "ops"} or not _is_identifier(actor.get("id")):
-        blockers.append("terminal_resource_release_actor_invalid")
-    if not _string(authorization.get("authorized_at")):
-        blockers.append("terminal_resource_release_authorized_at_missing")
-    if request.get("provider_mutation_performed_inside_web_request") is not False:
-        blockers.append("terminal_resource_release_webapp_mutation_forbidden")
-    if request.get("automatic_retry_performed") is not False:
-        blockers.append("terminal_resource_release_automatic_retry_forbidden")
-    if request.get("claim_ceiling") != "operational_resource_release_only":
-        blockers.append("terminal_resource_release_claim_ceiling_invalid")
-    if request.get("terminal_resource_release_digest") != canonical_digest(
-        request, digest_field="terminal_resource_release_digest"
-    ):
-        blockers.append("terminal_resource_release_digest_mismatch")
-    return sorted(set(blockers))
-
-
-def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
-    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("xb") as stream:
-            stream.write(payload)
-        return True
-    except FileExistsError:
-        if path.read_bytes() != payload:
-            raise TerminalResourceReleaseError(f"immutable_terminal_resource_release_conflict:{path.name}")
-        return False
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -144,36 +60,6 @@ def _artifact(path: Path) -> dict[str, Any]:
     if path.is_file():
         digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     return {"path": str(path), "exists": path.is_file(), "digest": digest}
-
-
-def stage_terminal_resource_release_request(
-    *, value: Mapping[str, Any], queue_root: str | Path
-) -> dict[str, Any]:
-    request = dict(value)
-    blockers = validate_terminal_resource_release_request(request)
-    if blockers:
-        raise TerminalResourceReleaseError(",".join(blockers))
-    queue = Path(queue_root).expanduser().resolve()
-    digest = _string(request["terminal_resource_release_digest"])
-    filename = f"{request['release_id']}-{digest[7:23]}.json"
-    existing: Path | None = None
-    for state in ("pending", "processing", "completed", "blocked"):
-        candidate = queue / state / filename
-        if candidate.exists():
-            if existing is not None:
-                raise TerminalResourceReleaseError(f"duplicate_terminal_resource_release_queue_state:{filename}")
-            existing = candidate
-    path = existing or queue / "pending" / filename
-    created = _write_immutable(path, request)
-    return {
-        "schema_version": QUEUE_RECEIPT_SCHEMA_VERSION,
-        "status": "queued" if created else path.parent.name,
-        "already_exists": not created,
-        "release_id": request["release_id"],
-        "launch_id": request["launch_id"],
-        "terminal_resource_release_digest": digest,
-        "provider_mutation_performed": False,
-    }
 
 
 def _safe_inspect(value: Mapping[str, Any]) -> dict[str, Any]:

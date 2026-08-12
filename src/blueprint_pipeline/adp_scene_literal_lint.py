@@ -16,6 +16,8 @@ HISTORICAL_FIRST_FIXTURE_IMPLEMENTATIONS = frozenset(
         "adp009d_isaac_runtime.py",
         "adp009d_native_microcheck_bundle.py",
         "adp009d_sage_franka_placement.py",
+        "adp009d_840313_runtime_bundle.py",
+        "adp009d_live_readiness.py",
         "adp_content_agents_bundle_preflight.py",
         "adp_content_agents_vast.py",
         "adp_inpaint360_interiorgs_vast.py",

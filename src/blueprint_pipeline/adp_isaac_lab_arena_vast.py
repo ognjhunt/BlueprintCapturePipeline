@@ -18,6 +18,10 @@ from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder
 from .adp_isaac_lab_arena_request import build_arena_worker_request
 from .common import ensure_dir, utc_now_iso, write_json
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .task_evaluation_artifact_manifest import (
+    TaskEvaluationArtifactManifestError,
+    build_task_evaluation_artifact_manifest,
+)
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
@@ -488,6 +492,36 @@ def run_arena_native_control_vast(
         blockers.append(f"{blocker_prefix}_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
         blockers.append(f"{blocker_prefix}_object_store_provider_zero_not_proven")
+    artifact_manifest_path = attempt_root / "artifact_manifest.json"
+    try:
+        artifact_manifest = build_task_evaluation_artifact_manifest(
+            attempt_root=attempt_root,
+            artifact_roots={
+                "provider_runtime_evidence": attempt_root / "immutable_execution",
+                "allocator_adapter_result": (
+                    provider_run / "vast_provider_adapter_result.json"
+                ),
+                "teardown_manifest": provider_run / "vast_teardown_manifest.json",
+            },
+            required_roles=(
+                "provider_runtime_evidence",
+                "allocator_adapter_result",
+                "teardown_manifest",
+            ),
+            binding={
+                "allocator_lane": provider_bundle_kind,
+                "attempt_number": attempt_number,
+                "bundle_sha256": bundle.get("bundle_sha256"),
+                "protocol_digest": bundle.get("protocol_digest"),
+                "provider": "vast",
+                "result_schema_version": result_schema_version,
+                "retry_cap": 0,
+            },
+            output_path=artifact_manifest_path,
+        )
+        blockers.extend(artifact_manifest.get("blockers") or [])
+    except (OSError, TaskEvaluationArtifactManifestError) as exc:
+        blockers.append(f"{blocker_prefix}_artifact_manifest_failed:{type(exc).__name__}")
     result = {
         "schema_version": result_schema_version,
         "generated_at": generated,
@@ -499,6 +533,7 @@ def run_arena_native_control_vast(
         "native_control_result_path": extracted.get("result_path"),
         "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
         "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),
+        "artifact_manifest_path": str(artifact_manifest_path),
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,

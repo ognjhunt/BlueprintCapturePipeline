@@ -96,7 +96,7 @@ from .task_evaluation_launch_dispatcher import (
     validate_launch_request,
     validate_launch_request_against_public_catalog,
 )
-from .task_evaluation_terminal_resource_release import (
+from .task_evaluation_terminal_resource_release_contract import (
     TerminalResourceReleaseError,
     stage_terminal_resource_release_request,
     validate_terminal_resource_release_request,
