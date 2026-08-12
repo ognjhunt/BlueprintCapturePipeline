@@ -946,6 +946,56 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     assert "apt-get" not in probe
 
 
+@pytest.mark.parametrize(
+    "candidate_schema",
+    [
+        "adp009b_ownership_coverage_cutout_set.v1",
+        "adp009d_segment_contribution_cutout_set.v1",
+    ],
+)
+def test_seals_broad_ownership_coverage_cutout_for_repair_render(
+    tmp_path: Path, candidate_schema: str
+) -> None:
+    candidate, inputs = _inputs(
+        tmp_path,
+        candidate_schema=candidate_schema,
+    )
+    repo, vendor = _repo(tmp_path)
+    authority = _authority(tmp_path / "authority.json")
+    request = build_retained_scene_gpu_render_request(
+        {
+            "schema_version": "adp009d_retained_scene_gpu_render_request.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009D",
+            "frozen_before_render_execution": True,
+            "learned_policy_outcomes_accessed": False,
+            "candidate_set_path": str(candidate),
+            "execution_authority_path": str(authority),
+            "renderer_vendor_root": str(vendor),
+            "task_lanes": inputs["lanes"],
+            "private_upload_policy": {
+                "raw_dataset_bytes_upload": False,
+                "private_derived_upload": True,
+                "provider_training": False,
+                "publication": False,
+                "retention": "bounded_to_goal_then_provider_zero",
+            },
+        }
+    )
+    request_path = tmp_path / "request.json"
+    _write_json(request_path, request)
+
+    receipt = build_retained_scene_gpu_render_bundle(
+        request_path=request_path,
+        repo_root=repo,
+        job_dir=tmp_path / "job",
+    )
+
+    assert receipt["status"] == "ready"
+    assert receipt["shared_deleted_source_layer"]["deleted_gaussian_count"] == 2
+    assert receipt["shared_retained_scene"]["retained_gaussian_count"] == 8
+    assert receipt["exact_bundle_entrypoint_rehearsal"]["status"] == "passed"
+
 def test_rejects_more_than_five_task_lanes() -> None:
     request = {
         "schema_version": "adp009d_retained_scene_gpu_render_request.v1",

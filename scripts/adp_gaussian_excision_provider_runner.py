@@ -247,9 +247,16 @@ def execute(*, runtime_dir: Path, source_dir: Path, output_dir: Path) -> dict[st
     cameras_by_id = {
         str(row["camera_id"]): row for row in cameras_value if isinstance(row, Mapping)
     }
-    calibration = list(freeze["camera_split"]["calibration_camera_ids"])
-    heldout = set(freeze["camera_split"]["heldout_camera_ids"])
-    if heldout.intersection(calibration) or len(calibration) != 6:
+    camera_split = freeze["camera_split"]
+    calibration = list(camera_split["calibration_camera_ids"])
+    heldout = set(camera_split["heldout_camera_ids"])
+    camera_count = int(camera_split.get("camera_count") or 0)
+    if (
+        heldout.intersection(calibration)
+        or len(calibration) < 2
+        or len(calibration) + len(heldout) != camera_count
+        or set(calibration).union(heldout) != set(cameras_by_id)
+    ):
         raise ValueError("gaussian_excision_camera_split_invalid")
     model = GaussianModel(3)
     model.load_ply(str(scene_path))

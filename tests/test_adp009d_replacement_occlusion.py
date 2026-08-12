@@ -33,6 +33,12 @@ from blueprint_pipeline.public_scene_replacement_occlusion import (
     materialize_replacement_occlusion_cutout,
     select_direct_calibration_evidence_expansion,
 )
+from blueprint_pipeline.public_scene_segment_contribution_cutout import (
+    CUTOUT_SET_SCHEMA as SEGMENT_CONTRIBUTION_CUTOUT_SET_SCHEMA,
+    SWEEP_KIND as SEGMENT_CONTRIBUTION_SWEEP_KIND,
+    SegmentContributionCutoutError,
+    materialize_segment_contribution_cutout_set,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -853,3 +859,146 @@ def test_direct_evidence_successor_set_rejects_shared_deletion_before_write(
         )
 
     assert not output.exists()
+
+
+def _segment_contribution_inputs(
+    tmp_path: Path, *, source: Path, task_id: str, slot: int
+) -> tuple[Path, Path, Path, list[int]]:
+    task = _coverage_task_freeze(task_id, slot)
+    task_path = tmp_path / "segment-tasks" / f"{task_id}.json"
+    _write_json(task_path, task)
+    camera_ids = [f"view_{slot}_a", f"view_{slot}_b"]
+    sweep: dict[str, object] = {
+        "schema_version": "adp009b_gaussian_excision_audit_freeze.v1",
+        "status": "frozen_before_excision_execution",
+        "source_standard_splat": {
+            "path": str(source),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha256(source),
+        },
+        "scene": {
+            "task_id": task_id,
+            "target_instance_id": task["source_object"]["instance_id"],
+            "removal_id": task["removal_plan"]["removal_id"],
+            "mask_set_id": task["removal_plan"]["mask_set_id"],
+        },
+        "camera_split": {
+            "camera_count": 2,
+            "calibration_camera_count": 2,
+            "calibration_camera_ids": camera_ids,
+            "heldout_camera_count": 0,
+            "heldout_camera_ids": [],
+        },
+        "policy": {
+            "contribution_quantization_decimals": 6,
+            "minimum_per_view_contribution": 1.0 / 255.0,
+        },
+        "segment_contribution_sweep": {
+            "kind": SEGMENT_CONTRIBUTION_SWEEP_KIND,
+            "selection_classes": ["target_core", "uncertain"],
+            "all_frozen_cameras_included": True,
+        },
+        "freeze_digest": "",
+    }
+    sweep["freeze_digest"] = canonical_digest(sweep, digest_field="freeze_digest")
+    sweep_path = tmp_path / "segment-sweeps" / f"{task_id}.json"
+    _write_json(sweep_path, sweep)
+
+    source_count = read_standard_3dgs_ply(source).count
+    selected = [slot, slot + 1]
+    array = np.zeros((2, 3, source_count), dtype=np.float32)
+    array[0, 1, selected[0]] = 0.01
+    array[1, 2, selected[1]] = 0.02
+    array[0, 0, selected[0]] = 0.03
+    manifest_root = tmp_path / "segment-contributions" / task_id
+    manifest_root.mkdir(parents=True)
+    repetition_rows = []
+    for repetition in range(2):
+        path = manifest_root / f"contribution_repetition_{repetition}.npz"
+        np.savez_compressed(path, per_view_class_contribution=array)
+        repetition_rows.append(_record(path, manifest_root))
+    manifest: dict[str, object] = {
+        "schema_version": "adp009b_gaussian_excision_contribution_evidence.v1",
+        "freeze_digest": sweep["freeze_digest"],
+        "class_order": ["protected", "target_core", "uncertain"],
+        "camera_ids": camera_ids,
+        "method": {"released_code_executed": True},
+        "repetitions": repetition_rows,
+        "heldout_cameras_accessed_for_classification": False,
+        "manifest_digest": "",
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    manifest_path = manifest_root / "manifest.json"
+    _write_json(manifest_path, manifest)
+    return task_path, sweep_path, manifest_path, selected
+
+
+@pytest.mark.parametrize("task_count", [1, 2, 5])
+def test_segment_contribution_cutout_scales_to_one_through_five_objects(
+    tmp_path: Path, task_count: int
+) -> None:
+    source = _source_splat(tmp_path / "source.ply", count=10)
+    task_paths = []
+    sweeps = {}
+    manifests = {}
+    expected_union: set[int] = set()
+    for slot in range(task_count):
+        task_id = f"task_{slot}"
+        task, sweep, manifest, selected = _segment_contribution_inputs(
+            tmp_path, source=source, task_id=task_id, slot=slot
+        )
+        task_paths.append(task)
+        sweeps[task_id] = sweep
+        manifests[task_id] = manifest
+        expected_union.update(selected)
+
+    receipt = materialize_segment_contribution_cutout_set(
+        source_standard_splat_path=source,
+        task_freeze_paths=task_paths,
+        sweep_freeze_paths_by_task=sweeps,
+        contribution_manifest_paths_by_task=manifests,
+        output_root=tmp_path / "segment-cutout",
+    )
+
+    assert receipt["schema_version"] == SEGMENT_CONTRIBUTION_CUTOUT_SET_SCHEMA
+    assert receipt["task_set"]["task_count"] == task_count
+    assert receipt["shared_scene_union"]["counts"] == {
+        "source": 10,
+        "deleted_total": len(expected_union),
+        "retained_total": 10 - len(expected_union),
+    }
+    assert receipt["shared_scene_union"]["preservation"]["retained_rows_byte_exact"] is True
+    assert receipt["selection"]["task_overlap_allowed_and_recorded"] is True
+    assert all(
+        row["selection"]["protected_coupled_selected_count"] == 1
+        for row in receipt["task_candidates"]
+    )
+    assert np.load(
+        tmp_path / "segment-cutout/shared_scene_union/deleted_source_indices.npy"
+    ).tolist() == sorted(expected_union)
+
+
+def test_segment_contribution_cutout_rejects_sixth_object(tmp_path: Path) -> None:
+    source = _source_splat(tmp_path / "source.ply", count=10)
+    task_paths = []
+    sweeps = {}
+    manifests = {}
+    for slot in range(6):
+        task_id = f"task_{slot}"
+        task, sweep, manifest, _selected = _segment_contribution_inputs(
+            tmp_path, source=source, task_id=task_id, slot=slot
+        )
+        task_paths.append(task)
+        sweeps[task_id] = sweep
+        manifests[task_id] = manifest
+
+    with pytest.raises(SegmentContributionCutoutError):
+        materialize_segment_contribution_cutout_set(
+            source_standard_splat_path=source,
+            task_freeze_paths=task_paths,
+            sweep_freeze_paths_by_task=sweeps,
+            contribution_manifest_paths_by_task=manifests,
+            output_root=tmp_path / "blocked-sixth",
+        )
