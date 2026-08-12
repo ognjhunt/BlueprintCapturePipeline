@@ -186,6 +186,56 @@ def validate_retained_scene_render_paid_attempt_authority(
         value, digest_field="authorization_digest"
     ):
         errors.append("authorization_digest_invalid")
+    prior_attempts = value.get("prior_terminal_attempts", [])
+    prior_spend_usd = 0.0
+    if not isinstance(prior_attempts, list):
+        errors.append("prior_terminal_attempts_invalid")
+    else:
+        if prior_attempts and value.get("manual_reissue_after_prior_terminal_attempt") is not True:
+            errors.append("prior_terminal_attempt_manual_reissue_missing")
+        seen_receipts: set[str] = set()
+        for row in prior_attempts:
+            if not isinstance(row, Mapping):
+                errors.append("prior_terminal_attempts_invalid")
+                continue
+            result_path = Path(str(row.get("result_path") or "")).expanduser().resolve()
+            expected_sha256 = str(row.get("result_sha256") or "")
+            expected_digest = str(row.get("receipt_digest") or "")
+            expected_cost = row.get("estimated_cost_usd")
+            if (
+                not result_path.is_file()
+                or result_path.is_symlink()
+                or expected_sha256 != _sha256(result_path)
+                or expected_digest in seen_receipts
+                or isinstance(expected_cost, bool)
+                or not isinstance(expected_cost, (int, float))
+                or float(expected_cost) < 0.0
+            ):
+                errors.append("prior_terminal_attempt_receipt_invalid")
+                continue
+            seen_receipts.add(expected_digest)
+            try:
+                result = _read(result_path)
+            except ValueError:
+                errors.append("prior_terminal_attempt_receipt_invalid")
+                continue
+            if (
+                result.get("schema_version") != RESULT_SCHEMA
+                or result.get("status") not in {"completed", "blocked"}
+                or result.get("receipt_digest")
+                != canonical_digest(result, digest_field="receipt_digest")
+                or result.get("receipt_digest") != expected_digest
+                or result.get("continuing_spend_from_this_run") is not False
+                or result.get("all_staged_objects_absent") is not True
+                or result.get("estimated_cost_usd") != expected_cost
+            ):
+                errors.append("prior_terminal_attempt_receipt_invalid")
+                continue
+            prior_spend_usd += float(expected_cost)
+    if prior_spend_usd + max_hourly_rate_usd * hard_ttl_seconds / 3600.0 > float(
+        prepared_bundle.get("hard_total_spend_cap_usd") or 0.0
+    ):
+        errors.append("aggregate_spend_cap_exceeded")
     if errors:
         raise ValueError(
             "retained_scene_render_paid_attempt_authority_invalid:" + ",".join(sorted(set(errors)))

@@ -278,6 +278,96 @@ def test_retained_scene_render_runtime_result_is_recognized_by_provider_inspecti
     ]
 
 
+def test_retained_scene_render_reissue_binds_prior_terminal_spend(
+    tmp_path: Path,
+) -> None:
+    result: dict[str, object] = {
+        "schema_version": "adp009d_retained_scene_gpu_render_vast_run.v1",
+        "status": "blocked",
+        "estimated_cost_usd": 0.008791,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "receipt_digest": "",
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    prior = tmp_path / "prior_terminal_attempt.json"
+    _write_json(prior, result)
+    bundle = {
+        "execution_authority": {"authority_digest": _digest("a")},
+        "bundle_sha256": _digest("b"),
+        "blueprint_commit": "fixture-commit",
+        "hard_total_spend_cap_usd": 12.0,
+    }
+    authority: dict[str, object] = {
+        "schema_version": "adp009d_retained_scene_gpu_render_paid_attempt_authority.v1",
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "purpose": "exact_retained_scene_gpu_render",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "parent_execution_authority_digest": bundle["execution_authority"]["authority_digest"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "blueprint_commit": bundle["blueprint_commit"],
+        "maximum_paid_attempts": 1,
+        "maximum_automatic_retries": 0,
+        "automatic_paid_retry_authorized": False,
+        "hard_attempt_spend_cap_usd": 12.0,
+        "maximum_single_resource_ttl_seconds": 10_800,
+        "maximum_hourly_rate_usd": 2.0,
+        "external_active_instance_allowlist": [47373597],
+        "manual_reissue_after_prior_terminal_attempt": True,
+        "prior_terminal_attempts": [
+            {
+                "result_path": str(prior),
+                "result_sha256": _sha256(prior),
+                "receipt_digest": result["receipt_digest"],
+                "estimated_cost_usd": 0.008791,
+            }
+        ],
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    assert (
+        validate_retained_scene_render_paid_attempt_authority(
+            authority,
+            prepared_bundle=bundle,
+            max_hourly_rate_usd=2.0,
+            hard_ttl_seconds=10_800,
+            allowed_active_instance_ids=[47373597],
+        )["authorization_digest"]
+        == authority["authorization_digest"]
+    )
+
+    exceeded_result = {**result, "estimated_cost_usd": 7.0, "receipt_digest": ""}
+    exceeded_result["receipt_digest"] = canonical_digest(
+        exceeded_result, digest_field="receipt_digest"
+    )
+    exceeded_path = tmp_path / "prior_terminal_attempt_exceeded.json"
+    _write_json(exceeded_path, exceeded_result)
+    exceeded = dict(authority)
+    exceeded["prior_terminal_attempts"] = [
+        {
+            "result_path": str(exceeded_path),
+            "result_sha256": _sha256(exceeded_path),
+            "receipt_digest": exceeded_result["receipt_digest"],
+            "estimated_cost_usd": 7.0,
+        }
+    ]
+    exceeded["authorization_digest"] = canonical_digest(
+        exceeded, digest_field="authorization_digest"
+    )
+    with pytest.raises(ValueError, match="aggregate_spend_cap_exceeded"):
+        validate_retained_scene_render_paid_attempt_authority(
+            exceeded,
+            prepared_bundle=bundle,
+            max_hourly_rate_usd=2.0,
+            hard_ttl_seconds=10_800,
+            allowed_active_instance_ids=[47373597],
+        )
+
+
 def test_egl_renderer_uses_angle_gl_egl_without_software_fallback() -> None:
     node = shutil.which("node")
     if node is None:
