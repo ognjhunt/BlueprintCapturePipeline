@@ -72,6 +72,7 @@ def test_runtime_abstention_reopens_file_backed_bundle_and_closeout(
             "api_call_performed": True,
             "provider_create_attempted": True,
             "continuing_spend_from_this_run": False,
+            "machine_avoidlist_path": str(tmp_path / "vast_machine_avoidlist.json"),
             "vast_instance_ids": [47533282],
             "blockers": ["vast_heartbeat_instance_exited"],
             "provider_attempt_classification": {

@@ -651,10 +651,19 @@ def materialize_aura_exact_residual_runtime_abstention(
         raise ValueError("aura_exact_residual_runtime_abstention_provider_evidence_invalid")
 
     cleanup_path = root / "object_store_staging" / "wam_provider_object_store_cleanup.json"
-    avoidlist_path = root / "vast_machine_avoidlist.json"
+    # A deliberate later attempt may reuse the prior attempt's immutable
+    # avoidlist so its failed machine cannot be reselected. Bind exactly the
+    # path the adapter recorded, while keeping it inside this shared-scene
+    # execution parent and refusing an arbitrary caller-supplied path.
+    avoidlist_path = Path(str(adapter.get("machine_avoidlist_path") or "")).expanduser().resolve()
     if not cleanup_path.is_file() or cleanup_path.is_symlink():
         raise ValueError("aura_exact_residual_runtime_abstention_object_store_cleanup_missing")
-    if not avoidlist_path.is_file() or avoidlist_path.is_symlink():
+    if (
+        avoidlist_path.name != "vast_machine_avoidlist.json"
+        or (root not in avoidlist_path.parents and root.parent not in avoidlist_path.parents)
+        or not avoidlist_path.is_file()
+        or avoidlist_path.is_symlink()
+    ):
         raise ValueError("aura_exact_residual_runtime_abstention_machine_avoidlist_missing")
     cleanup = _read(cleanup_path)
     avoidlist = _read(avoidlist_path)
