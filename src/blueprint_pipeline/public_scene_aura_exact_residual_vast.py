@@ -20,7 +20,10 @@ from typing import Any, Mapping
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
-from .paid_resource_admission import PaidResourceAdmissionGrant
+from .paid_resource_admission import (
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 from .public_scene_aura_exact_residual_bundle import DEFAULT_IMAGE, SCHEMA_VERSION as BUNDLE_SCHEMA
 from .vast_independent_watchdog_control import (
     EVIDENCE_NAME as WATCHDOG_EVIDENCE_NAME,
@@ -38,6 +41,9 @@ PROBE_KIND = "adp-aurafusion360-exact-residual"
 PROVIDER_BUNDLE_KIND = "adp_aura_exact_residual"
 RESULT_SCHEMA_VERSION = "public_scene_aura_exact_residual_vast_run.v1"
 RAW_RESULT_SCHEMA_VERSION = "public_scene_aura_exact_residual_raw_result.v1"
+PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION = (
+    "public_scene_aura_exact_residual_paid_attempt_authority.v1"
+)
 RUNTIME_ABSTENTION_SCHEMA_VERSION = "public_scene_aura_exact_residual_runtime_abstention.v1"
 CAMPAIGN_ABSTENTION_SCHEMA_VERSION = (
     "public_scene_aura_exact_residual_provider_runtime_campaign_abstention.v1"
@@ -58,6 +64,7 @@ GPU_SELECTION_POLICY = {
 }
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 
 
 def _sha256(path: Path) -> str:
@@ -94,6 +101,369 @@ def _bound(record: Any, *, code: str) -> Path:
     ):
         raise ValueError(code)
     return path
+
+
+def _bound_json(record: Any, *, code: str) -> tuple[Path, dict[str, Any]]:
+    """Open a file-backed authority dependency; digest-shaped paths never suffice."""
+
+    path = _bound(record, code=code)
+    return path, _read(path)
+
+
+def _record_existing_file(value: str | Path, *, code: str) -> dict[str, Any]:
+    """Create a receipt from a local file instead of trusting caller digests."""
+
+    path = Path(value).expanduser().resolve()
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(code)
+    return _record(path)
+
+
+def validate_aura_exact_residual_paid_attempt_authority(
+    authority: Mapping[str, Any],
+    *,
+    prepared_bundle: Mapping[str, Any],
+    max_hourly_rate_usd: float,
+    hard_cap_usd: float,
+    hard_ttl_seconds: int,
+    allowed_active_instance_ids: tuple[int, ...] | list[int] = (),
+) -> dict[str, Any]:
+    """Validate one human-directed, corrected Aura execution before staging.
+
+    A terminal failed run is not an automatic retry.  The authority must bind
+    the prior zero-closed receipts and the exact corrected bundle that will be
+    launched; it is then consumed atomically immediately before a provider
+    mutation.
+    """
+
+    value = dict(authority)
+    errors: list[str] = []
+    try:
+        expected_allowed = tuple(sorted({int(item) for item in allowed_active_instance_ids}))
+    except (TypeError, ValueError):
+        expected_allowed = ()
+        errors.append("allowed_active_instance_ids_invalid")
+    observed_allowed = value.get("external_active_instance_allowlist")
+    if (
+        isinstance(observed_allowed, (str, bytes))
+        or not isinstance(observed_allowed, list)
+        or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in observed_allowed)
+        or len(set(observed_allowed)) != len(observed_allowed)
+        or tuple(sorted(observed_allowed)) != expected_allowed
+    ):
+        errors.append("external_active_instance_allowlist_mismatch")
+    if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION:
+        errors.append("schema_invalid")
+    if value.get("authority_kind") != "explicit_user_direction_in_current_goal":
+        errors.append("authority_kind_invalid")
+    if not isinstance(value.get("authority_reference"), str) or not value["authority_reference"].strip():
+        errors.append("authority_reference_invalid")
+    if not isinstance(value.get("authorized_by"), str) or not value["authorized_by"].strip():
+        errors.append("authorized_by_invalid")
+    if not isinstance(value.get("authorized_on"), str) or not value["authorized_on"].strip():
+        errors.append("authorized_on_invalid")
+    if value.get("purpose") != "manual_corrected_aura_exact_residual_execution":
+        errors.append("purpose_invalid")
+    if value.get("provider") != "vast" or value.get("paid_compute_authorized") is not True:
+        errors.append("provider_or_paid_authority_invalid")
+    if value.get("manual_corrected_reissue_after_terminal_attempt") is not True:
+        errors.append("manual_reissue_missing")
+    if value.get("automatic_paid_retry_authorized") is not False or value.get("maximum_automatic_retries") != 0:
+        errors.append("automatic_retry_contract_invalid")
+    if value.get("maximum_paid_attempts") != 1 or value.get("zero_retry") is not True:
+        errors.append("single_attempt_contract_invalid")
+    if value.get("parent_execution_authority_digest") != prepared_bundle.get("execution_authority_digest"):
+        errors.append("parent_execution_authority_digest_mismatch")
+    if value.get("bundle_receipt_sha256") != prepared_bundle.get("receipt_sha256"):
+        errors.append("bundle_receipt_sha256_mismatch")
+    if value.get("bundle_sha256") != prepared_bundle.get("bundle_sha256"):
+        errors.append("bundle_sha256_mismatch")
+    if value.get("preflight_digest") != prepared_bundle.get("preflight_digest"):
+        errors.append("preflight_digest_mismatch")
+    if value.get("hard_attempt_spend_cap_usd") != hard_cap_usd:
+        errors.append("hard_attempt_spend_cap_mismatch")
+    if value.get("maximum_hourly_rate_usd") != max_hourly_rate_usd:
+        errors.append("maximum_hourly_rate_mismatch")
+    if value.get("maximum_single_resource_ttl_seconds") != hard_ttl_seconds:
+        errors.append("maximum_single_resource_ttl_mismatch")
+    if value.get("private_derived_upload_only") is not True or value.get("raw_interiorgs_upload_authorized") is not False:
+        errors.append("upload_scope_invalid")
+    if value.get("provider_training_authorized") is not False or value.get("publication_authorized") is not False:
+        errors.append("retention_or_training_scope_invalid")
+    if value.get("exact_mask_only_edits_required") is not True:
+        errors.append("exact_mask_scope_invalid")
+    if value.get("authorization_digest") != canonical_digest(value, digest_field="authorization_digest"):
+        errors.append("authorization_digest_invalid")
+
+    prior_cost = 0.0
+    try:
+        _, previous = _bound_json(
+            value.get("previous_terminal_execution_result"),
+            code="previous_terminal_execution_result_unbound",
+        )
+        _, prior_runtime = _bound_json(
+            value.get("previous_runtime_result"), code="previous_runtime_result_unbound"
+        )
+        _, prior_teardown = _bound_json(
+            value.get("previous_teardown"), code="previous_teardown_unbound"
+        )
+        _, prior_watchdog = _bound_json(
+            value.get("previous_watchdog"), code="previous_watchdog_unbound"
+        )
+        _, prior_cleanup = _bound_json(
+            value.get("previous_object_store_cleanup"), code="previous_object_store_cleanup_unbound"
+        )
+    except ValueError:
+        errors.append("previous_terminal_evidence_unbound")
+    else:
+        prior_cost_value = previous.get("estimated_cost_usd")
+        if isinstance(prior_cost_value, bool) or not isinstance(prior_cost_value, (int, float)):
+            errors.append("previous_terminal_cost_invalid")
+        else:
+            prior_cost = float(prior_cost_value)
+        if (
+            previous.get("schema_version") != RESULT_SCHEMA_VERSION
+            or previous.get("status") != "blocked"
+            or previous.get("retry_cap") != 0
+            or previous.get("raw_result_path") is not None
+            or previous.get("continuing_spend_from_this_run") is not False
+            or previous.get("all_staged_objects_absent") is not True
+            or previous.get("bundle_sha256") != value.get("previous_bundle_sha256")
+            or previous.get("preflight_digest") != prepared_bundle.get("preflight_digest")
+        ):
+            errors.append("previous_terminal_execution_invalid")
+        if (
+            prior_runtime.get("schema_version")
+            != "public_scene_aura_exact_residual_runtime_result.v1"
+            or prior_runtime.get("status") != "blocked"
+            or prior_runtime.get("aura_inpainting_executed") is not False
+            or "aura_exact_residual_runtime_wonderworld_bytes_changed"
+            not in (prior_runtime.get("blockers") or [])
+        ):
+            errors.append("previous_runtime_failure_binding_invalid")
+        if (
+            prior_teardown.get("status") != "completed"
+            or prior_teardown.get("continuing_spend_from_this_run") is not False
+            or prior_watchdog.get("status") != "provider_terminal"
+            or prior_watchdog.get("provider_absence_confirmed") is not True
+            or (prior_watchdog.get("final_inventory") or {}).get("live_resource_count") != 0
+            or prior_cleanup.get("status") != "completed"
+            or prior_cleanup.get("all_objects_absent") is not True
+        ):
+            errors.append("previous_terminal_zero_close_invalid")
+
+    try:
+        _, campaign = _bound_json(
+            value.get("prior_provider_runtime_campaign"),
+            code="prior_provider_runtime_campaign_unbound",
+        )
+    except ValueError:
+        errors.append("prior_provider_runtime_campaign_unbound")
+    else:
+        campaign_cost = campaign.get("total_estimated_cost_usd")
+        if (
+            campaign.get("schema_version") != CAMPAIGN_ABSTENTION_SCHEMA_VERSION
+            or campaign.get("preflight_digest") != prepared_bundle.get("preflight_digest")
+            or campaign.get("provider_zero_confirmed_all") is not True
+            or campaign.get("aura_inpainting_executed") is not False
+            or isinstance(campaign_cost, bool)
+            or not isinstance(campaign_cost, (int, float))
+        ):
+            errors.append("prior_provider_runtime_campaign_invalid")
+        else:
+            prior_cost += float(campaign_cost)
+    # Provider ledgers and campaign receipts are sealed to six decimal places.
+    # Reconcile at that same evidence precision, not binary-float accident.
+    prior_cost = round(prior_cost, 6)
+    if value.get("prior_goal_spend_usd") != prior_cost:
+        errors.append("prior_goal_spend_mismatch")
+    aggregate = prior_cost + hard_cap_usd
+    total_cap = value.get("aggregate_goal_spend_cap_usd")
+    if (
+        isinstance(total_cap, bool)
+        or not isinstance(total_cap, (int, float))
+        or total_cap < aggregate
+        or total_cap > MAX_HARD_CAP_USD
+    ):
+        errors.append("aggregate_goal_spend_cap_invalid")
+    if errors:
+        raise ValueError(
+            "aura_exact_residual_paid_attempt_authority_invalid:" + ",".join(sorted(set(errors)))
+        )
+    return value
+
+
+def consume_aura_exact_residual_paid_attempt_authority_once(
+    authority: Mapping[str, Any], *, blueprint_commit: str
+) -> dict[str, Any]:
+    """Atomically consume the one corrected execution before staging provider bytes."""
+
+    digest = str(authority.get("authorization_digest") or "")
+    if not digest.startswith("sha256:") or len(digest) != 71:
+        return {"status": "blocked", "blockers": ["aura_exact_residual_authority_identity_invalid"]}
+    identity = digest.removeprefix("sha256:")
+    try:
+        AUTHORIZATION_CONSUMPTION_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = AUTHORIZATION_CONSUMPTION_ROOT.stat()
+        if (
+            AUTHORIZATION_CONSUMPTION_ROOT.is_symlink()
+            or root_stat.st_uid != os.getuid()
+            or root_stat.st_mode & 0o077
+        ):
+            raise PermissionError
+        destination = AUTHORIZATION_CONSUMPTION_ROOT / f"aura-exact-residual-{identity}.json"
+        record = {
+            "schema_version": "aura_exact_residual_paid_attempt_consumption.v1",
+            "authorization_digest": digest,
+            "bundle_sha256": authority.get("bundle_sha256"),
+            "blueprint_commit": blueprint_commit,
+            "maximum_provider_allocations": 1,
+            "consumed_at": utc_now_iso(),
+        }
+        raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        temporary = AUTHORIZATION_CONSUMPTION_ROOT / f".{identity}.{os.getpid()}.tmp"
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, destination)
+            directory_descriptor = os.open(AUTHORIZATION_CONSUMPTION_ROOT, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except FileExistsError:
+        return {"status": "blocked", "blockers": ["aura_exact_residual_paid_attempt_authority_consumed"]}
+    except (OSError, PermissionError):
+        return {"status": "blocked", "blockers": ["aura_exact_residual_authority_consumption_write_failed"]}
+    return {
+        "status": "consumed",
+        "authorization_digest": digest,
+        "consumption_record_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "record_location_disclosed": False,
+    }
+
+
+def materialize_aura_exact_residual_paid_attempt_authority(
+    *,
+    bundle_receipt_path: str | Path,
+    previous_terminal_execution_result_path: str | Path,
+    previous_runtime_result_path: str | Path,
+    previous_teardown_path: str | Path,
+    previous_watchdog_path: str | Path,
+    previous_object_store_cleanup_path: str | Path,
+    prior_provider_runtime_campaign_path: str | Path,
+    authorization_reference: str,
+    authorized_by: str,
+    authorized_on: str,
+    corrective_blueprint_commit: str,
+    max_hourly_rate_usd: float,
+    hard_cap_usd: float,
+    hard_ttl_seconds: int,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Materialize one manual corrected-attempt authority from file receipts.
+
+    This performs no provider mutation.  It makes the user's current explicit
+    continuation authority reviewable and validates the generated authority
+    against the exact previous terminal run before it can reach an allocator.
+    """
+
+    bundle = validate_aura_exact_residual_bundle(bundle_receipt_path)
+    record_paths = {
+        "previous_terminal_execution_result": previous_terminal_execution_result_path,
+        "previous_runtime_result": previous_runtime_result_path,
+        "previous_teardown": previous_teardown_path,
+        "previous_watchdog": previous_watchdog_path,
+        "previous_object_store_cleanup": previous_object_store_cleanup_path,
+        "prior_provider_runtime_campaign": prior_provider_runtime_campaign_path,
+    }
+    records = {
+        key: _record_existing_file(value, code=f"{key}_unbound")
+        for key, value in record_paths.items()
+    }
+    previous = _read(Path(previous_terminal_execution_result_path).expanduser().resolve())
+    campaign = _read(Path(prior_provider_runtime_campaign_path).expanduser().resolve())
+    previous_cost = previous.get("estimated_cost_usd")
+    campaign_cost = campaign.get("total_estimated_cost_usd")
+    if (
+        isinstance(previous_cost, bool)
+        or not isinstance(previous_cost, (int, float))
+        or isinstance(campaign_cost, bool)
+        or not isinstance(campaign_cost, (int, float))
+        or not isinstance(authorization_reference, str)
+        or not authorization_reference.strip()
+        or not isinstance(authorized_by, str)
+        or not authorized_by.strip()
+        or not isinstance(authorized_on, str)
+        or not authorized_on.strip()
+        or len(corrective_blueprint_commit) != 40
+        or any(character not in "0123456789abcdef" for character in corrective_blueprint_commit)
+    ):
+        raise ValueError("aura_exact_residual_paid_attempt_authority_materialization_invalid")
+    parent = _read(Path(bundle["execution_authority_path"]).expanduser().resolve())
+    aggregate_cap = (parent.get("paid_compute") or {}).get("hard_total_spend_cap_usd")
+    if (
+        isinstance(aggregate_cap, bool)
+        or not isinstance(aggregate_cap, (int, float))
+        or aggregate_cap > MAX_HARD_CAP_USD
+    ):
+        raise ValueError("aura_exact_residual_paid_attempt_authority_parent_cap_invalid")
+    authority: dict[str, Any] = {
+        "schema_version": PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION,
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authority_reference": authorization_reference,
+        "authorized_by": authorized_by,
+        "authorized_on": authorized_on,
+        "purpose": "manual_corrected_aura_exact_residual_execution",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "manual_corrected_reissue_after_terminal_attempt": True,
+        "automatic_paid_retry_authorized": False,
+        "maximum_automatic_retries": 0,
+        "maximum_paid_attempts": 1,
+        "zero_retry": True,
+        "parent_execution_authority_digest": bundle["execution_authority_digest"],
+        "bundle_receipt_sha256": bundle["receipt_sha256"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "preflight_digest": bundle["preflight_digest"],
+        "hard_attempt_spend_cap_usd": hard_cap_usd,
+        "maximum_hourly_rate_usd": max_hourly_rate_usd,
+        "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
+        "external_active_instance_allowlist": list(bundle["allowed_active_instance_ids"]),
+        "private_derived_upload_only": True,
+        "raw_interiorgs_upload_authorized": False,
+        "provider_training_authorized": False,
+        "publication_authorized": False,
+        "exact_mask_only_edits_required": True,
+        "previous_bundle_sha256": previous.get("bundle_sha256"),
+        **records,
+        "prior_goal_spend_usd": round(float(previous_cost) + float(campaign_cost), 6),
+        "aggregate_goal_spend_cap_usd": aggregate_cap,
+        "corrective_blueprint_commit": corrective_blueprint_commit,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    validate_aura_exact_residual_paid_attempt_authority(
+        authority,
+        prepared_bundle=bundle,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        allowed_active_instance_ids=list(bundle["allowed_active_instance_ids"]),
+    )
+    output = Path(output_path).expanduser().resolve()
+    if output.exists():
+        raise ValueError("aura_exact_residual_paid_attempt_authority_output_exists")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_json(output, authority)
+    return authority
 
 
 def _zip_member_bytes(
@@ -390,6 +760,7 @@ def run_aura_exact_residual_vast(
     execute: bool, prepared_bundle: Mapping[str, Any], max_hourly_rate_usd: float = 1.5,
     hard_cap_usd: float = 6.0, hard_ttl_seconds: int = MAX_TTL_SECONDS,
     machine_avoidlist_path: str | Path | None = None,
+    paid_attempt_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute once. The only paid path is through the canonical allocator."""
 
@@ -410,6 +781,37 @@ def run_aura_exact_residual_vast(
         return result
     if paid_resource_admission_grant is None:
         raise ValueError("aura_exact_residual_paid_resource_admission_grant_missing")
+    require_paid_resource_admission_grant(
+        paid_resource_admission_grant,
+        resource_class="vast_provider_adapter",
+        require_allocation_binding=True,
+    )
+    if paid_attempt_authority is None:
+        raise ValueError("aura_exact_residual_paid_attempt_authority_missing")
+    validated_attempt_authority = validate_aura_exact_residual_paid_attempt_authority(
+        paid_attempt_authority,
+        prepared_bundle=bundle,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        allowed_active_instance_ids=list(bundle["allowed_active_instance_ids"]),
+    )
+    authorization_consumption = consume_aura_exact_residual_paid_attempt_authority_once(
+        validated_attempt_authority,
+        blueprint_commit=str(validated_attempt_authority.get("corrective_blueprint_commit") or ""),
+    )
+    if authorization_consumption.get("status") != "consumed":
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": authorization_consumption,
+            "blockers": list(authorization_consumption.get("blockers") or []),
+        }
+        write_json(job / "public_scene_aura_exact_residual_vast_result.json", result)
+        return result
     bundle_path = Path(str(bundle["bundle_path"])).resolve()
     staging_dir = job / "object_store_staging"
     staging = stage_wam_provider_bundle_object_store(
@@ -545,6 +947,7 @@ def run_aura_exact_residual_vast(
               "hard_ttl_seconds": hard_ttl_seconds, "retry_cap": 0,
               "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
               "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+              "authorization_consumption": authorization_consumption,
               "independent_watchdog": watchdog, "blockers": sorted(set(str(item) for item in blockers if str(item))),
               "raw_secret_values_recorded": False}
     write_json(job / "public_scene_aura_exact_residual_vast_result.json", result)
@@ -994,9 +1397,13 @@ __all__ = [
     "MAX_TTL_SECONDS",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
+    "PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION",
     "RUNTIME_ABSTENTION_SCHEMA_VERSION",
+    "consume_aura_exact_residual_paid_attempt_authority_once",
+    "materialize_aura_exact_residual_paid_attempt_authority",
     "materialize_aura_exact_residual_provider_runtime_campaign_abstention",
     "materialize_aura_exact_residual_runtime_abstention",
     "run_aura_exact_residual_vast",
+    "validate_aura_exact_residual_paid_attempt_authority",
     "validate_aura_exact_residual_bundle",
 ]

@@ -229,6 +229,7 @@ from .public_scene_aura_exact_residual_vast import (
     MAX_TTL_SECONDS as AURA_EXACT_RESIDUAL_MAX_TTL_SECONDS,
     PROBE_KIND as ADP_AURA_EXACT_RESIDUAL_PROBE_KIND,
     run_aura_exact_residual_vast,
+    validate_aura_exact_residual_paid_attempt_authority,
     validate_aura_exact_residual_bundle,
 )
 from .public_scene_execution_authority import (
@@ -2795,6 +2796,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
                 blockers.append("aura_exact_residual_allowed_active_vast_instance_id_invalid")
             prepared_bundle: dict[str, Any] | None = None
+            paid_attempt_authority: dict[str, Any] | None = None
+            paid_attempt_authority_path: Path | None = None
+            paid_attempt_authority_sha256: str | None = None
             if args.adp_aura_exact_residual_bundle_receipt:
                 try:
                     prepared_bundle = validate_aura_exact_residual_bundle(
@@ -2807,6 +2811,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 observed_allowed = sorted(set(args.adp_allowed_active_vast_instance_id))
                 if observed_allowed != expected_allowed:
                     blockers.append("aura_exact_residual_external_instance_allowlist_mismatch")
+            if args.execute:
+                if not args.adp_aura_attempt_authority:
+                    blockers.append("aura_exact_residual_paid_attempt_authority_missing")
+                elif prepared_bundle is None:
+                    blockers.append("aura_exact_residual_paid_attempt_authority_bundle_missing")
+                else:
+                    paid_attempt_authority_path = (
+                        Path(args.adp_aura_attempt_authority).expanduser().resolve()
+                    )
+                    try:
+                        raw_authority = _load(paid_attempt_authority_path)
+                        paid_attempt_authority = (
+                            validate_aura_exact_residual_paid_attempt_authority(
+                                raw_authority,
+                                prepared_bundle=prepared_bundle,
+                                max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                                hard_cap_usd=args.adp_max_spend_usd,
+                                hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                                allowed_active_instance_ids=expected_allowed,
+                            )
+                        )
+                        paid_attempt_authority_sha256 = (
+                            "sha256:"
+                            + hashlib.sha256(paid_attempt_authority_path.read_bytes()).hexdigest()
+                        )
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        blockers.append("aura_exact_residual_paid_attempt_authority_invalid")
             avoidlist_path: Path | None = None
             avoidlist_sha256: str | None = None
             if args.adp_machine_avoidlist:
@@ -2835,6 +2866,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "bundle_sha256": prepared_bundle.get("bundle_sha256") if prepared_bundle else None,
                 "preflight_digest": prepared_bundle.get("preflight_digest") if prepared_bundle else None,
                 "execution_authority_digest": prepared_bundle.get("execution_authority_digest") if prepared_bundle else None,
+                "paid_attempt_authority_digest": (
+                    paid_attempt_authority.get("authorization_digest") if paid_attempt_authority else None
+                ),
+                "paid_attempt_authority_file_sha256": paid_attempt_authority_sha256,
                 "container_image": prepared_bundle.get("container_image") if prepared_bundle else None,
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
@@ -2893,6 +2928,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     machine_avoidlist_path=avoidlist_path,
+                    paid_attempt_authority=paid_attempt_authority,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

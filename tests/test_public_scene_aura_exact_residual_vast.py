@@ -1,17 +1,148 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.public_scene_aura_exact_residual_vast import (
     GPU_SELECTION_POLICY,
+    PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
+    consume_aura_exact_residual_paid_attempt_authority_once,
     materialize_aura_exact_residual_provider_runtime_campaign_abstention,
+    materialize_aura_exact_residual_paid_attempt_authority,
     materialize_aura_exact_residual_runtime_abstention,
     run_aura_exact_residual_vast,
+    validate_aura_exact_residual_paid_attempt_authority,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+
+def _record(path: Path) -> dict[str, object]:
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+def _write(path: Path, value: dict[str, object]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _corrected_attempt_authority(tmp_path: Path) -> tuple[dict[str, object], dict[str, object]]:
+    """Build file-backed, zero-closed evidence for a manual corrected attempt."""
+
+    previous = _write(
+        tmp_path / "prior" / "execution.json",
+        {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "retry_cap": 0,
+            "raw_result_path": None,
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+            "bundle_sha256": "sha256:" + "a" * 64,
+            "preflight_digest": "sha256:" + "b" * 64,
+            "estimated_cost_usd": 0.03428,
+        },
+    )
+    runtime = _write(
+        tmp_path / "prior" / "runtime.json",
+        {
+            "schema_version": "public_scene_aura_exact_residual_runtime_result.v1",
+            "status": "blocked",
+            "aura_inpainting_executed": False,
+            "blockers": ["aura_exact_residual_runtime_wonderworld_bytes_changed"],
+        },
+    )
+    teardown = _write(
+        tmp_path / "prior" / "teardown.json",
+        {"status": "completed", "continuing_spend_from_this_run": False},
+    )
+    watchdog = _write(
+        tmp_path / "prior" / "watchdog.json",
+        {
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+            "final_inventory": {"live_resource_count": 0},
+        },
+    )
+    cleanup = _write(
+        tmp_path / "prior" / "cleanup.json",
+        {"status": "completed", "all_objects_absent": True},
+    )
+    campaign: dict[str, object] = {
+        "schema_version": "public_scene_aura_exact_residual_provider_runtime_campaign_abstention.v1",
+        "status": "abstained_shared_provider_runtime_before_aura_entrypoint",
+        "preflight_digest": "sha256:" + "b" * 64,
+        "provider_zero_confirmed_all": True,
+        "aura_inpainting_executed": False,
+        "total_estimated_cost_usd": 0.127344,
+        "receipt_digest": "",
+    }
+    campaign["receipt_digest"] = canonical_digest(campaign, digest_field="receipt_digest")
+    campaign_path = _write(tmp_path / "prior" / "campaign.json", campaign)
+    parent_authority = _write(
+        tmp_path / "parent-authority.json",
+        {"paid_compute": {"hard_total_spend_cap_usd": 12.0}},
+    )
+    bundle = {
+        "receipt_sha256": "sha256:" + "c" * 64,
+        "bundle_sha256": "sha256:" + "d" * 64,
+        "preflight_digest": "sha256:" + "b" * 64,
+        "execution_authority_digest": "sha256:" + "e" * 64,
+        "execution_authority_path": str(parent_authority),
+        "allowed_active_instance_ids": [47373597],
+    }
+    authority: dict[str, object] = {
+        "schema_version": PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION,
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authority_reference": "fixture-manual-corrected-aura-attempt",
+        "authorized_by": "fixture-user",
+        "authorized_on": "2026-08-12",
+        "purpose": "manual_corrected_aura_exact_residual_execution",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "manual_corrected_reissue_after_terminal_attempt": True,
+        "automatic_paid_retry_authorized": False,
+        "maximum_automatic_retries": 0,
+        "maximum_paid_attempts": 1,
+        "zero_retry": True,
+        "parent_execution_authority_digest": bundle["execution_authority_digest"],
+        "bundle_receipt_sha256": bundle["receipt_sha256"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "preflight_digest": bundle["preflight_digest"],
+        "hard_attempt_spend_cap_usd": 6.0,
+        "maximum_hourly_rate_usd": 3.0,
+        "maximum_single_resource_ttl_seconds": 7200,
+        "external_active_instance_allowlist": [47373597],
+        "private_derived_upload_only": True,
+        "raw_interiorgs_upload_authorized": False,
+        "provider_training_authorized": False,
+        "publication_authorized": False,
+        "exact_mask_only_edits_required": True,
+        "previous_bundle_sha256": "sha256:" + "a" * 64,
+        "previous_terminal_execution_result": _record(previous),
+        "previous_runtime_result": _record(runtime),
+        "previous_teardown": _record(teardown),
+        "previous_watchdog": _record(watchdog),
+        "previous_object_store_cleanup": _record(cleanup),
+        "prior_provider_runtime_campaign": _record(campaign_path),
+        "prior_goal_spend_usd": 0.161624,
+        "aggregate_goal_spend_cap_usd": 12.0,
+        "corrective_blueprint_commit": "f" * 40,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    return authority, bundle
 
 
 def test_exact_residual_uses_only_previously_observed_aura_gpu_classes() -> None:
@@ -49,6 +180,174 @@ def test_exact_residual_vast_dry_run_has_no_provider_mutation(tmp_path: Path) ->
         (tmp_path / "public_scene_aura_exact_residual_vast_result.json").read_text()
     )
     assert retained == result
+
+
+def test_manual_corrected_attempt_binds_zero_closed_history_and_is_single_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority, bundle = _corrected_attempt_authority(tmp_path)
+    validated = validate_aura_exact_residual_paid_attempt_authority(
+        authority,
+        prepared_bundle=bundle,
+        max_hourly_rate_usd=3.0,
+        hard_cap_usd=6.0,
+        hard_ttl_seconds=7200,
+        allowed_active_instance_ids=[47373597],
+    )
+    assert validated["prior_goal_spend_usd"] == 0.161624
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_aura_exact_residual_vast.AUTHORIZATION_CONSUMPTION_ROOT",
+        tmp_path / "consumed",
+    )
+    first = consume_aura_exact_residual_paid_attempt_authority_once(
+        validated, blueprint_commit="f" * 40
+    )
+    second = consume_aura_exact_residual_paid_attempt_authority_once(
+        validated, blueprint_commit="f" * 40
+    )
+    assert first["status"] == "consumed"
+    assert second == {
+        "status": "blocked",
+        "blockers": ["aura_exact_residual_paid_attempt_authority_consumed"],
+    }
+
+
+def test_manual_corrected_attempt_rejects_digest_shaped_prior_history(tmp_path: Path) -> None:
+    authority, bundle = _corrected_attempt_authority(tmp_path)
+    authority["previous_runtime_result"] = {
+        "path": "/not/file-backed.json",
+        "size_bytes": 1,
+        "sha256": "sha256:" + "0" * 64,
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    with pytest.raises(ValueError, match="previous_terminal_evidence_unbound"):
+        validate_aura_exact_residual_paid_attempt_authority(
+            authority,
+            prepared_bundle=bundle,
+            max_hourly_rate_usd=3.0,
+            hard_cap_usd=6.0,
+            hard_ttl_seconds=7200,
+            allowed_active_instance_ids=[47373597],
+        )
+
+
+def test_materializes_manual_corrected_attempt_from_file_backed_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority, bundle = _corrected_attempt_authority(tmp_path)
+    bundle_receipt = _write(
+        tmp_path / "bundle-receipt.json",
+        {"untrusted": "bundle bytes opened by mocked validator"},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_aura_exact_residual_vast.validate_aura_exact_residual_bundle",
+        lambda _path: {**bundle, "receipt_path": str(bundle_receipt)},
+    )
+    materialized = materialize_aura_exact_residual_paid_attempt_authority(
+        bundle_receipt_path=bundle_receipt,
+        previous_terminal_execution_result_path=authority["previous_terminal_execution_result"]["path"],
+        previous_runtime_result_path=authority["previous_runtime_result"]["path"],
+        previous_teardown_path=authority["previous_teardown"]["path"],
+        previous_watchdog_path=authority["previous_watchdog"]["path"],
+        previous_object_store_cleanup_path=authority["previous_object_store_cleanup"]["path"],
+        prior_provider_runtime_campaign_path=authority["prior_provider_runtime_campaign"]["path"],
+        authorization_reference="fixture-manual-corrected-aura-attempt",
+        authorized_by="fixture-user",
+        authorized_on="2026-08-12",
+        corrective_blueprint_commit="f" * 40,
+        max_hourly_rate_usd=3.0,
+        hard_cap_usd=6.0,
+        hard_ttl_seconds=7200,
+        output_path=tmp_path / "authority.json",
+    )
+    assert materialized["authorization_digest"]
+    assert materialized["prior_goal_spend_usd"] == 0.161624
+    assert materialized["previous_runtime_result"] == authority["previous_runtime_result"]
+
+
+def _allocator_args(
+    tmp_path: Path, *, bundle_receipt: Path, attempt_authority: Path | None = None
+) -> list[str]:
+    """Canonical allocator arguments for the exact residual specialization."""
+
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        "adp-aurafusion360-exact-residual",
+        "--provider",
+        "vast",
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--adapter-output",
+        str(tmp_path / "adapter.json"),
+        "--expected-source-commit",
+        "f" * 40,
+        "--experimental-branch-diagnostic",
+        "--adp-aura-exact-residual-bundle-receipt",
+        str(bundle_receipt),
+        "--adp-job-dir",
+        str(tmp_path / "job"),
+        "--adp-max-hourly-rate-usd",
+        "3.0",
+        "--adp-max-spend-usd",
+        "6.0",
+        "--adp-hard-ttl-seconds",
+        "7200",
+        "--adp-allowed-active-vast-instance-id",
+        "47373597",
+        "--execute",
+    ]
+    if attempt_authority is not None:
+        args.extend(["--adp-aura-attempt-authority", str(attempt_authority)])
+    return args
+
+
+def test_canonical_allocator_requires_and_binds_manual_corrected_attempt_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The only paid branch passes the exact authority to the provider adapter."""
+
+    authority, bundle = _corrected_attempt_authority(tmp_path)
+    receipt = _write(tmp_path / "bundle-receipt.json", {"fixture": "bound by validator"})
+    authority_path = _write(tmp_path / "attempt-authority.json", authority)
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "f" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(allocator, "validate_aura_exact_residual_bundle", lambda _path: bundle)
+    granted = object()
+    monkeypatch.setattr(allocator, "require_paid_resource_admission", lambda *_args, **_kwargs: granted)
+    observed: dict[str, object] = {}
+
+    def fake_run(**kwargs: object) -> dict[str, str]:
+        observed.update(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_aura_exact_residual_vast", fake_run)
+
+    assert allocator.main(_allocator_args(tmp_path, bundle_receipt=receipt)) == 2
+    blocked = json.loads((tmp_path / "adapter.json").read_text(encoding="utf-8"))
+    assert "aura_exact_residual_paid_attempt_authority_missing" in blocked["blockers"]
+
+    assert (
+        allocator.main(
+            _allocator_args(
+                tmp_path, bundle_receipt=receipt, attempt_authority=authority_path
+            )
+        )
+        == 0
+    )
+    assert observed["execute"] is True
+    assert observed["paid_resource_admission_grant"] is granted
+    assert observed["paid_attempt_authority"] == authority
+    admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
+    binding = admission["allocation_binding"]
+    assert binding["paid_attempt_authority_digest"] == authority["authorization_digest"]
+    assert binding["paid_attempt_authority_file_sha256"] == _record(authority_path)["sha256"]
 
 
 def test_runtime_abstention_reopens_file_backed_bundle_and_closeout(
