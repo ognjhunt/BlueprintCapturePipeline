@@ -17,6 +17,7 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     materialize_artifixer3d_use_attestation,
 )
 from blueprint_pipeline.public_scene_artifixer3d_vast import (
+    INSTANCE_LABEL_PREFIX,
     PROBE_KIND,
     _materialize_raw_result,
     consume_artifixer3d_paid_attempt_authority_once,
@@ -318,6 +319,11 @@ def test_dry_run_is_mutation_free(
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
     assert result["retry_cap"] == 0
+
+
+def test_paid_wrapper_uses_canary_scoped_watchdog_and_instance_labels() -> None:
+    assert INSTANCE_LABEL_PREFIX == "blueprint-adp-artifixer3d-canary-"
+    assert "canary" in INSTANCE_LABEL_PREFIX
 
 
 def test_raw_result_uses_sealed_per_task_camera_count(tmp_path: Path) -> None:

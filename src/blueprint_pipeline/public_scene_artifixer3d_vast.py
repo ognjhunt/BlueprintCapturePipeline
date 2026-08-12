@@ -54,6 +54,7 @@ PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION = (
     "public_scene_artifixer3d_paid_attempt_authority.v1"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/artifixer3d-exact-support"
+INSTANCE_LABEL_PREFIX = "blueprint-adp-artifixer3d-canary-"
 MIN_TTL_SECONDS = 7_200
 MAX_TTL_SECONDS = 21_600
 MAX_HARD_CAP_USD = 10.0
@@ -895,7 +896,7 @@ def run_artifixer3d_vast(
         max_live_minutes=hard_ttl_seconds // 60,
         generated_at=utc_now_iso(),
         allowed_active_instance_ids=allowed,
-        pod_name_prefix="blueprint-adp-artifixer3d-",
+        pod_name_prefix=INSTANCE_LABEL_PREFIX,
     )
     if handle is None:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
@@ -955,7 +956,7 @@ def run_artifixer3d_vast(
                 machine_avoidlist_path=machine_avoidlist_path,
                 allowed_active_instance_ids=allowed,
                 vast_launch_lock_file=job.parent / "artifixer3d_paid_launch.lock",
-                instance_label_prefix="blueprint-adp-artifixer3d-",
+                instance_label_prefix=INSTANCE_LABEL_PREFIX,
                 started_instance_id_path=handle.started_instance_id_path,
                 forward_hf_token=True,
                 paid_resource_admission_grant=paid_resource_admission_grant,
