@@ -108,7 +108,19 @@ def test_masks_references_and_builds_exact_inverse_opacity(tmp_path: Path) -> No
     assert np.count_nonzero(reference[mask]) == 0
     assert np.all(opacity[~mask] == 255)
     assert np.all(opacity[mask] == 0)
+    assert frame["repair_pixel_count"] == int(np.count_nonzero(mask))
+    assert frame["image_pixel_count"] == int(mask.size)
+    assert frame["repair_support_fraction"] == pytest.approx(mask.mean())
     assert frame["outside_support_changed_pixels"] == 0
+    assert task["repair_support_coverage"] == {
+        "minimum_fraction": pytest.approx(mask.mean()),
+        "mean_fraction": pytest.approx(mask.mean()),
+        "maximum_fraction": pytest.approx(mask.mean()),
+        "interpretation": (
+            "pre_execution_large_hole_risk_metric_not_method_"
+            "quality_or_qualification_verdict"
+        ),
+    }
 
     transforms = json.loads(Path(task["transforms"]["path"]).read_text())
     source = json.loads(preflight.read_text())

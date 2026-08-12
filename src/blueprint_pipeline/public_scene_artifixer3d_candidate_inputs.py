@@ -464,6 +464,7 @@ def materialize_artifixer3d_candidate_inputs(
             [row for row in normalized if row["task_id"] == task_id]
         )
         frame_rows: list[dict[str, Any]] = []
+        repair_support_fractions: list[float] = []
         transforms_frames: list[dict[str, Any]] = []
         for index, row in enumerate(task_rows):
             filename = f"{index:05d}.png"
@@ -487,6 +488,10 @@ def materialize_artifixer3d_candidate_inputs(
                 raise ArtiFixer3DCandidateInputError(
                     ["artifixer3d_exact_support_transform_invalid"]
                 )
+            repair_pixel_count = int(np.count_nonzero(repair))
+            image_pixel_count = int(repair.size)
+            repair_support_fraction = repair_pixel_count / image_pixel_count
+            repair_support_fractions.append(repair_support_fraction)
             intrinsics = row["intrinsics"]
             transforms_frames.append(
                 {
@@ -508,7 +513,9 @@ def materialize_artifixer3d_candidate_inputs(
                         opacity_path, root=task_root
                     ),
                     "exact_repair_mask": _record(mask_path, root=task_root),
-                    "repair_pixel_count": int(np.count_nonzero(repair)),
+                    "repair_pixel_count": repair_pixel_count,
+                    "image_pixel_count": image_pixel_count,
+                    "repair_support_fraction": repair_support_fraction,
                     "outside_support_changed_pixels": outside_changes,
                 }
             )
@@ -585,6 +592,16 @@ def materialize_artifixer3d_candidate_inputs(
                 "scene_directory": str(task_root),
                 "camera_count": len(frame_rows),
                 "frames": frame_rows,
+                "repair_support_coverage": {
+                    "minimum_fraction": min(repair_support_fractions),
+                    "mean_fraction": sum(repair_support_fractions)
+                    / len(repair_support_fractions),
+                    "maximum_fraction": max(repair_support_fractions),
+                    "interpretation": (
+                        "pre_execution_large_hole_risk_metric_not_method_"
+                        "quality_or_qualification_verdict"
+                    ),
+                },
                 "transforms": _record(transforms_path),
                 "selected_indices": _record(selected_path),
                 "target_indices": _record(target_path)
