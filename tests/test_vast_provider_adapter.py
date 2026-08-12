@@ -7073,3 +7073,161 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     assert ngc_missing["status"] == "completed"
     isaac = _read_json(tmp_path / "ngc-missing" / "vast_isaac_smoke_result.json")
     assert "ngc_api_key_file_missing_or_empty_for_required_ngc_login" in isaac["blockers"]
+
+
+def _running_liveness(**_kwargs):  # type: ignore[no-untyped-def]
+    return {"observed": True, "status": "running", "exited": False, "probe_error": None}
+
+
+@pytest.fixture
+def _no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The poll loop sleeps a floor of one second plus five before each fetch."""
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_a, **_k: None)
+
+
+def test_request_logs_aborts_when_the_log_channel_never_works(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """A log transport that never once succeeded is not a silent workload.
+
+    Observed on a live paid run: 34 consecutive polls returned HTTP 200 from the
+    Vast API with a result_url, and every fetch of that URL returned 403. The
+    instance reported ``running`` for the entire twenty-minute window, so the
+    workload was never shown to have failed -- but the run was torn down and
+    reported as ``vast_probe_failed``, which named the workload.
+    """
+    fetches = {"count": 0}
+
+    def fake_fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        fetches["count"] += 1
+        raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch)
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=999,
+        no_progress_seconds=1200,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=6,
+    )
+
+    assert result["break_reason"] == "log_transport_unavailable"
+    assert result["log_bytes_ever_read"] is False
+    assert result["log_transport_failure_streak"] == 6
+    assert "403" in str(result["last_log_transport_error"])
+    # Six polls, not the full no-progress window: the paid instance is torn down
+    # in about a minute instead of twenty.
+    assert fetches["count"] == 6
+
+
+def test_request_logs_tolerates_a_transient_transport_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """One API glitch must not kill a run whose logs are otherwise readable."""
+    texts = iter(["", "", "BLUEPRINT_VAST_ONSTART_DONE"])
+
+    def fake_fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        value = next(texts)
+        if value == "":
+            raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+        return value
+
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch)
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=6,
+    )
+
+    assert result["break_reason"] == "success_marker_found"
+
+
+def test_request_logs_does_not_abort_on_a_readable_but_empty_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """A working channel over a quiet workload is the no-progress watchdog's job."""
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_a, **_k: "")
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=30,
+        no_progress_seconds=1,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=6,
+    )
+
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["log_transport_failure_streak"] == 0
+
+
+def test_request_logs_streak_resets_once_bytes_are_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """After a successful read the channel is proven; later 403s are not fatal."""
+    steps = iter(["BLUEPRINT_WAM_RUNTIME_PHASE: start", None, None, None, None, None, None, None])
+
+    def fake_fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        value = next(steps)
+        if value is None:
+            raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+        return value
+
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch)
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=30,
+        no_progress_seconds=1,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=6,
+    )
+
+    assert result["log_bytes_ever_read"] is True
+    assert result["break_reason"] == "no_log_progress_timeout"
