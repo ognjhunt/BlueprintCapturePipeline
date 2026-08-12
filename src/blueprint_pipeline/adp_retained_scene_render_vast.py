@@ -343,7 +343,7 @@ def run_retained_scene_render_vast(
         max_live_minutes=hard_ttl_seconds // 60,
         generated_at=utc_now_iso(),
         allowed_active_instance_ids=allowed_active_instance_ids,
-        pod_name_prefix="blueprint-adp-retained-render-",
+        pod_name_prefix="blueprint-groot-oscar-canary-adp-retained-render-",
     )
     if watchdog is None:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)

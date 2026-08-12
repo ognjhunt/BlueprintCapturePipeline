@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -73,6 +74,77 @@ def test_retained_scene_render_authority_environment_restores_retry_setting(
     assert os.environ["BLUEPRINT_ALLOW_VAST_API_CALLS"] == "caller-api"
     assert os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "caller-launch"
     assert os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] == "caller-retry"
+
+
+def test_retained_scene_render_uses_a_watchdog_canary_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import blueprint_pipeline.adp_retained_scene_render_vast as retained_vast
+
+    captured: dict[str, object] = {}
+
+    def fake_arm(**kwargs: object) -> tuple[dict[str, object], SimpleNamespace]:
+        captured.update(kwargs)
+        return (
+            {"status": "armed", "blockers": []},
+            SimpleNamespace(
+                started_instance_id_path=tmp_path / "started_vast_instance_id.txt",
+                pod_name_prefix=kwargs["pod_name_prefix"],
+            ),
+        )
+
+    monkeypatch.setattr(retained_vast, "arm_independent_vast_watchdog", fake_arm)
+    receipt = {
+        "bundle_path": str(tmp_path / "missing.zip"),
+        "blueprint_commit": "fixture-commit",
+        "status": "ready",
+    }
+    monkeypatch.setattr(
+        retained_vast,
+        "validate_retained_scene_render_bundle",
+        lambda _bundle: receipt,
+    )
+    monkeypatch.setattr(
+        retained_vast,
+        "validate_retained_scene_render_paid_attempt_authority",
+        lambda authority, **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        retained_vast,
+        "stage_wam_provider_bundle_object_store",
+        lambda **_kwargs: {"status": "completed", "blockers": []},
+    )
+    monkeypatch.setattr(
+        retained_vast,
+        "consume_retained_scene_render_paid_attempt_authority_once",
+        lambda *_args, **_kwargs: {"status": "blocked", "blockers": ["synthetic"]},
+    )
+    monkeypatch.setattr(
+        retained_vast,
+        "cleanup_staged_wam_provider_objects",
+        lambda *_args, **_kwargs: {"all_objects_absent": True},
+    )
+    monkeypatch.setattr(
+        retained_vast,
+        "close_independent_vast_watchdog",
+        lambda **_kwargs: {"status": "cancelled_no_allocation"},
+    )
+    monkeypatch.setattr(
+        retained_vast,
+        "require_paid_resource_admission_grant",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = run_retained_scene_render_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),
+        execute=True,
+        prepared_bundle=receipt,
+        paid_attempt_authority={"authorization_digest": "sha256:" + "a" * 64},
+    )
+
+    assert result["status"] == "blocked"
+    assert captured["pod_name_prefix"] == "blueprint-groot-oscar-canary-adp-retained-render-"
 
 
 def _task_freeze(task_id: str, slot: int) -> dict[str, object]:
