@@ -1495,6 +1495,56 @@ def test_main_json_report_persists_snapshot_on_dry_run(patched_guard, capsys) ->
     assert "va-super-secret" not in out
 
 
+def test_provider_zero_ignores_destroyed_vast_history_but_retains_row_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A deleted Vast record is audit context, not a live provider allocation."""
+
+    report_path = tmp_path / "provider-zero.json"
+    monkeypatch.setattr(
+        guard,
+        "_read_secret",
+        lambda name, **_kw: {
+            "runpod_api_key": "rp-test-secret",
+            "vast_api_key": "vast-test-secret",
+            "digitalocean_api_token": "do-test-secret",
+        }.get(name),
+    )
+    monkeypatch.setattr(guard, "fetch_runpod_pods", lambda *_args, **_kw: [])
+    monkeypatch.setattr(
+        guard,
+        "fetch_vast_instances",
+        lambda *_args, **_kw: [
+            {"id": 47501029, "actual_status": "destroyed", "cur_state": "destroyed"}
+        ],
+    )
+    monkeypatch.setattr(guard, "fetch_do_droplets", lambda *_args, **_kw: [])
+    monkeypatch.setattr(guard, "list_process_cmdlines", lambda: [])
+
+    assert guard.main(
+        [
+            "--require-provider",
+            "runpod",
+            "--require-provider",
+            "vast",
+            "--require-provider",
+            "digitalocean",
+            "--json-report",
+            str(report_path),
+        ]
+    ) == 0
+
+    snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+    vast = next(
+        row for row in snapshot["inventory_results"] if row["provider"] == "vast"
+    )
+    assert vast["returned_row_count"] == 1
+    assert vast["row_count"] == 0
+    assert snapshot["live_instance_count"] == 0
+    assert snapshot["provider_zero_verified"] is True
+    assert snapshot["provider_zero"]["status"] == "verified"
+
+
 def test_main_json_report_records_reap_results(patched_guard) -> None:
     import json as _json
 

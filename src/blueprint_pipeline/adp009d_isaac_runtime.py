@@ -83,6 +83,22 @@ except ModuleNotFoundError:  # imported as part of the repository package
         contact_envelope_from_physx_sdf_settings,
     )
 try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_hold_trace import (
+        HOLD_TRACE_SCHEMA_VERSION,
+        HoldTraceError,
+        classify_arm_hold_trace,
+        extract_arm_effort_limits,
+        extract_arm_sample,
+    )
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_hold_trace import (
+        HOLD_TRACE_SCHEMA_VERSION,
+        HoldTraceError,
+        classify_arm_hold_trace,
+        extract_arm_effort_limits,
+        extract_arm_sample,
+    )
+try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_physics_backend_comparison import (
         DROID_FRANKA_ROBOTIQ_USD_DIGEST,
         DROID_FRANKA_ROBOTIQ_USD_URI,
@@ -1365,6 +1381,7 @@ def _assert_arm_pose(
     *,
     tolerance_rad: float,
     blocker: str,
+    hold_trace: dict[str, Any] | None = None,
 ) -> float:
     """Fail closed when the canonical seven-joint arm pose is not reached."""
 
@@ -1382,6 +1399,11 @@ def _assert_arm_pose(
             maximum_error=maximum_error,
             tolerance_rad=tolerance_rad,
         )
+        if hold_trace is not None:
+            # Without the trace this blocker is a single number that cannot
+            # separate an arm still falling from one parked at a stable wrong
+            # pose, and the run that produced it is already paid for.
+            diagnostics["hold_trace"] = hold_trace
         raise CanonicalPoseError(blocker, diagnostics)
     return maximum_error
 
@@ -2880,8 +2902,15 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         print(f"BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES:{warmup_frames}", flush=True)
         phase_started = time.monotonic()
         marker_every = max(1, warmup_frames // 4)
+        hold_effort_limits = extract_arm_effort_limits(robot, to_list=_jsonable)
+        hold_samples: list[dict[str, Any]] = []
         for warmup_index in range(warmup_frames):
             observation, reward, terminated, truncated, info = env.step(hold_action)
+            hold_sample = extract_arm_sample(
+                robot, step_index=warmup_index, to_list=_jsonable
+            )
+            if hold_sample is not None:
+                hold_samples.append(hold_sample)
             if (warmup_index + 1) % marker_every == 0:
                 log.flush()
                 fail_on_backend_collision_logs()
@@ -2889,11 +2918,29 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         timings_seconds[f"camera_warmup_{warmup_frames}_frames"] = round(
             time.monotonic() - phase_started, 6
         )
+        hold_trace = None
+        if hold_samples:
+            try:
+                hold_trace = classify_arm_hold_trace(
+                hold_samples,
+                requested_joint_positions_rad=RESET_JOINTS,
+                tolerance_rad=HOLD_ARM_TOLERANCE_RAD,
+                effort_limits_nm=hold_effort_limits,
+            )
+            except HoldTraceError as exc:
+                # Diagnostics must not replace the canonical pose blocker.  A
+                # malformed backend readback is retained as a typed trace gap.
+                hold_trace = {
+                    "schema_version": HOLD_TRACE_SCHEMA_VERSION,
+                    "status": "unavailable",
+                    "typed_blocker": str(exc),
+                }
         hold_arm_maximum_error_rad = _assert_arm_pose(
             _to_torch(env.unwrapped.scene["robot"].data.joint_pos)[0],
             RESET_JOINTS,
             tolerance_rad=HOLD_ARM_TOLERANCE_RAD,
             blocker="canonical_hold_arm_pose_drift",
+            hold_trace=hold_trace,
         )
         camera_retention_started = time.monotonic()
         camera_rows = []
@@ -4326,6 +4373,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             },
             "post_warmup_robot_joint_pos": _jsonable(_to_torch(robot.data.joint_pos)[0]),
             "post_warmup_arm_maximum_error_rad": hold_arm_maximum_error_rad,
+            # Retained on the passing path too: a backend comparison needs the
+            # torque the winner spent, not only that it stayed inside tolerance.
+            "canonical_hold_trace": hold_trace,
             "post_warmup_approved_can_root_pose_world": _jsonable(can_pose),
             "canonical_hold_object_stability": object_stability,
             "camera_frames": camera_rows,
