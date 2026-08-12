@@ -282,6 +282,18 @@ def build_aura_residual_backend_admission_request(value: Mapping[str, Any]) -> d
     return request
 
 
+def materialize_aura_residual_backend_admission_request(
+    *, value: Mapping[str, Any], output_path: str | Path
+) -> dict[str, Any]:
+    """Validate and seal a caller's intended backend admission request."""
+
+    request = build_aura_residual_backend_admission_request(value)
+    output = Path(output_path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(canonical_json(request) + "\n", encoding="utf-8")
+    return request
+
+
 def materialize_aura_residual_backend_admission(
     *, request_path: str | Path, output_path: str | Path
 ) -> dict[str, Any]:
@@ -381,5 +393,6 @@ __all__ = [
     "RECEIPT_SCHEMA",
     "REQUEST_SCHEMA",
     "build_aura_residual_backend_admission_request",
+    "materialize_aura_residual_backend_admission_request",
     "materialize_aura_residual_backend_admission",
 ]

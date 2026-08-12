@@ -15,6 +15,7 @@ from blueprint_pipeline.public_scene_aura_residual_backend_admission import (
     REQUIRED_CHECKPOINTS,
     build_aura_residual_backend_admission_request,
     materialize_aura_residual_backend_admission,
+    materialize_aura_residual_backend_admission_request,
 )
 
 
@@ -136,7 +137,11 @@ def test_materializes_private_derived_aura_admission(tmp_path: Path, monkeypatch
             lock=lock,
         )
     )
-    request_path = _write_json(tmp_path / "request.json", request)
+    request_path = tmp_path / "request.json"
+    materialized_request = materialize_aura_residual_backend_admission_request(
+        value=request, output_path=request_path
+    )
+    assert materialized_request == request
 
     receipt = materialize_aura_residual_backend_admission(
         request_path=request_path, output_path=tmp_path / "receipt.json"
