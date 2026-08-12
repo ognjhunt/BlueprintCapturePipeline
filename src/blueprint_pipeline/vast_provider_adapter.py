@@ -266,6 +266,16 @@ VAST_TERMINAL_INSTANCE_STATUSES = (
     "inactive",
     "completed",
 )
+_VAST_TRANSPORT_LOG_NOISE_LINE = re.compile(
+    r"^(?:"
+    r"Warning: Permanently added '.+' \(ED25519\) to the list of known hosts\."
+    r"|Error: remote port forwarding failed for listen port [0-9]+"
+    r"|[A-Z][a-z]{2} [A-Z][a-z]{2} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} UTC [0-9]{4}"
+    r")$"
+)
+_BLUEPRINT_PROGRESS_TIMESTAMP = re.compile(
+    r":\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z(?=:|$)"
+)
 logger = logging.getLogger(__name__)
 VAST_BILLING_HOURS_PER_MONTH = 720.0
 
@@ -4835,6 +4845,27 @@ def _execute_and_fetch(
     }
 
 
+def _semantic_log_text(text: str) -> str:
+    """Remove known SSH transport chatter before measuring worker progress.
+
+    Vast's log endpoint can append a new timestamped reverse-forwarding failure
+    on every poll.  It is neither container nor scientific-worker progress and
+    must not keep a capped paid run alive.  Structured Blueprint progress lines
+    retain their payload (for example ``output_bytes``) but lose their wall-clock
+    timestamp, so a clock tick alone likewise cannot count as progress.
+    """
+
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if _VAST_TRANSPORT_LOG_NOISE_LINE.fullmatch(stripped):
+            continue
+        if stripped.startswith("BLUEPRINT_") and "_PROGRESS:" in stripped:
+            stripped = _BLUEPRINT_PROGRESS_TIMESTAMP.sub(":<timestamp>", stripped)
+        lines.append(stripped)
+    return "\n".join(lines)
+
+
 def _request_logs_and_fetch(
     *,
     instance_id: int,
@@ -4872,6 +4903,8 @@ def _request_logs_and_fetch(
     break_reason = ""
     attempt_index = 0
     container_missing_count = 0
+    previous_semantic_text: str | None = None
+    previous_structured_progress: str | None = None
     # Two consecutive readings, so a single API glitch cannot kill a healthy
     # run; still detects a dead container in about a minute rather than thirty.
     instance_exited_count = 0
@@ -4915,9 +4948,21 @@ def _request_logs_and_fetch(
             instance_exited_count = 0
         marker_found = any(marker and marker in attempt_text for marker in success_markers)
         container_missing = "No such container" in attempt_text
-        runtime_phase_count = attempt_text.count("BLUEPRINT_WAM_RUNTIME_PHASE:")
+        semantic_text = _semantic_log_text(attempt_text)
+        runtime_phase_count = semantic_text.count("BLUEPRINT_WAM_RUNTIME_PHASE:")
+        structured_progress = "\n".join(
+            line
+            for line in semantic_text.splitlines()
+            if line.startswith("BLUEPRINT_") and "_PROGRESS:" in line
+        )
         output_changed = previous_output_text is None or attempt_text != previous_output_text
+        semantic_output_changed = (
+            previous_semantic_text is None or semantic_text != previous_semantic_text
+        )
         runtime_phase_progress = runtime_phase_count > previous_runtime_phase_count
+        structured_progress_observed = bool(structured_progress) and (
+            structured_progress != previous_structured_progress
+        )
         # A container that never materializes often flickers between empty logs and a Docker
         # "No such container" / daemon error. That text changing between polls must NOT count
         # as progress, or it keeps the no-progress watchdog alive for the entire live window on
@@ -4929,15 +4974,26 @@ def _request_logs_and_fetch(
         # Once a worker has emitted structured phase markers, only a new phase marker
         # is scientific progress.  Benign container noise (for example, sshd session
         # lines produced by a read-only diagnostic) must not keep a paid run alive.
-        structured_phase_tracking_active = bool(runtime_phase_count or previous_runtime_phase_count)
-        progress_observed = bool(attempt_text.strip()) and (
-            runtime_phase_progress
+        structured_phase_tracking_active = bool(
+            runtime_phase_count
+            or previous_runtime_phase_count
+            or structured_progress
+            or previous_structured_progress
+        )
+        progress_observed = (
+            runtime_phase_progress or structured_progress_observed
             if structured_phase_tracking_active
-            else (output_changed and not container_or_daemon_error_only)
+            else (
+                bool(semantic_text.strip())
+                and semantic_output_changed
+                and not container_or_daemon_error_only
+            )
         )
         if progress_observed:
             last_progress_monotonic = time.monotonic()
         previous_output_text = attempt_text
+        previous_semantic_text = semantic_text
+        previous_structured_progress = structured_progress or previous_structured_progress
         previous_runtime_phase_count = max(previous_runtime_phase_count, runtime_phase_count)
         no_progress_elapsed_seconds = max(0.0, time.monotonic() - last_progress_monotonic)
         no_progress_timeout_reached = bool(
@@ -4954,8 +5010,10 @@ def _request_logs_and_fetch(
                 "result_url_present": bool(result_url),
                 "output_size_bytes": len(attempt_text.encode("utf-8")),
                 "output_changed": output_changed,
+                "semantic_output_changed": semantic_output_changed,
                 "runtime_phase_marker_count": runtime_phase_count,
                 "runtime_phase_progress_observed": runtime_phase_progress,
+                "structured_progress_observed": structured_progress_observed,
                 "structured_phase_tracking_active": structured_phase_tracking_active,
                 "progress_observed": progress_observed,
                 "no_progress_elapsed_seconds": round(no_progress_elapsed_seconds, 6),

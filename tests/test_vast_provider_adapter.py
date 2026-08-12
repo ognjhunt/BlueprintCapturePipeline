@@ -1431,6 +1431,76 @@ def test_request_logs_ignores_unstructured_noise_after_worker_phase(
     assert all(item["progress_observed"] is False for item in attempts[1:])
 
 
+def test_request_logs_ignores_timestamp_only_ssh_forwarding_noise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reverse-tunnel retry must not extend a capped provider run."""
+
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    snapshots = iter(
+        [
+            "Wed Aug 12 11:00:00 UTC 2026\n"
+            "Warning: Permanently added 'ssh9.vast.ai' (ED25519) to the list of known hosts.\n"
+            "Error: remote port forwarding failed for listen port 20068\n"
+            "BLUEPRINT_PUBLIC_SCENE_AURA_EXACT_RESIDUAL_PROGRESS:execute:2026-08-12T11:00:00Z:output_bytes=1024\n",
+            "Wed Aug 12 11:01:00 UTC 2026\n"
+            "Warning: Permanently added 'ssh9.vast.ai' (ED25519) to the list of known hosts.\n"
+            "Error: remote port forwarding failed for listen port 20068\n"
+            "BLUEPRINT_PUBLIC_SCENE_AURA_EXACT_RESIDUAL_PROGRESS:execute:2026-08-12T11:01:00Z:output_bytes=1024\n",
+            "Wed Aug 12 11:02:00 UTC 2026\n"
+            "Warning: Permanently added 'ssh9.vast.ai' (ED25519) to the list of known hosts.\n"
+            "Error: remote port forwarding failed for listen port 20068\n"
+            "BLUEPRINT_PUBLIC_SCENE_AURA_EXACT_RESIDUAL_PROGRESS:execute:2026-08-12T11:02:00Z:output_bytes=2048\n",
+            "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED\n",
+        ]
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(snapshots))
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_kwargs: {
+            "observed": True,
+            "status": "running",
+            "exited": False,
+            "probe_error": None,
+        },
+    )
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED"],
+        no_progress_seconds=99,
+    )
+
+    attempts = result["log_poll_attempts"]
+    assert result["break_reason"] == "success_marker_found"
+    assert attempts[0]["structured_progress_observed"] is True
+    assert attempts[1]["semantic_output_changed"] is False
+    assert attempts[1]["structured_progress_observed"] is False
+    assert attempts[1]["progress_observed"] is False
+    assert attempts[2]["structured_progress_observed"] is True
+    assert attempts[2]["progress_observed"] is True
+
+
 def test_request_logs_persists_last_redacted_snapshot_before_interruption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
