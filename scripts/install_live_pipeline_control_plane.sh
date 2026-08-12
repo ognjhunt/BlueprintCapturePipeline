@@ -12,6 +12,7 @@ STATE_DIR="${STATE_DIR:-/var/lib/blueprint/pipeline-control-plane}"
 HANDOFF_DIR="${HANDOFF_DIR:-/var/lib/blueprint/pubsub-handoffs}"
 PROVIDER_SECRETS_DIR="${PROVIDER_SECRETS_DIR:-${ENV_DIR}/provider-secrets}"
 LAUNCH_PROFILE_DIR="${LAUNCH_PROFILE_DIR:-${ENV_DIR}/task-evaluation-launch-profiles}"
+CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/Caddyfile}"
 SERVICE_USER="${SERVICE_USER:-blueprint}"
 SERVICE_GROUP="${SERVICE_GROUP:-blueprint}"
 ENABLE_NOW=false
@@ -39,8 +40,15 @@ Environment overrides:
   HANDOFF_DIR=/var/lib/blueprint/pubsub-handoffs
   PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
   LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
+  CADDY_SITE_FILE=/etc/caddy/Caddyfile
   SERVICE_USER=blueprint
   SERVICE_GROUP=blueprint
+
+The public TLS/reverse-proxy edge is rendered from deploy/caddy/Caddyfile only
+when BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME is set, for example:
+
+  BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME=pipeline.example.com \
+    scripts/install_live_pipeline_control_plane.sh
 USAGE
 }
 
@@ -191,6 +199,38 @@ else
   run chown root:"${SERVICE_GROUP}" "${ENV_FILE}"
   run chmod 0640 "${ENV_FILE}"
   echo "kept existing ${ENV_FILE}"
+fi
+
+# Record the deployed source identity.  The intake service reports
+# commit_proven=false and answers /api/live-pipeline/version with 503 until
+# BLUEPRINT_SOURCE_COMMIT names the exact deployed commit, so an otherwise
+# healthy host looks unprovable without it.  This is an identity fact, not a
+# secret, and it is refreshed on every install so it cannot drift behind the
+# checkout the services actually import.
+if SOURCE_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null)"; then
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    printf '[dry-run] record BLUEPRINT_SOURCE_COMMIT=%s\n' "${SOURCE_COMMIT}"
+  else
+    sed -i '/^BLUEPRINT_SOURCE_COMMIT=/d' "${ENV_FILE}"
+    printf 'BLUEPRINT_SOURCE_COMMIT=%s\n' "${SOURCE_COMMIT}" >> "${ENV_FILE}"
+    echo "recorded deployed source commit ${SOURCE_COMMIT}"
+  fi
+else
+  echo "WARNING: no source commit resolved; /api/live-pipeline/version stays 503" >&2
+fi
+
+# Render the public TLS/reverse-proxy edge.  The intake service binds loopback
+# only, so without this the control plane has no reachable surface at all.
+# The hostname stays operator-supplied because a rebuilt host gets a new
+# address; refusing to guess is what keeps a dead name out of the config.
+if [[ -n "${BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME:-}" ]]; then
+  run install -d -m 0755 "$(dirname "${CADDY_SITE_FILE}")"
+  run install -m 0644 "${REPO_ROOT}/deploy/caddy/Caddyfile" "${CADDY_SITE_FILE}"
+  echo "installed caddy edge config at ${CADDY_SITE_FILE}"
+  echo "  serving ${BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME}; reload with: systemctl reload caddy"
+else
+  echo "skipped caddy edge config; set BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME to render" \
+    "${REPO_ROOT}/deploy/caddy/Caddyfile"
 fi
 
 if [[ "${DRY_RUN}" == "true" ]]; then
