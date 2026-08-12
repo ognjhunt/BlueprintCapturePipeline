@@ -53,8 +53,8 @@ RUNTIME_REQUEST_SCHEMA = "public_scene_aura_exact_residual_runtime_request.v1"
 ENTRYPOINT = "provider_runtime/run_public_scene_aura_exact_residual.sh"
 AURA_RUNTIME_RUNNER = "provider_runtime/public_scene_aura_exact_residual_runner.py"
 DEFAULT_IMAGE = (
-    "nvidia/cuda:12.4.1-devel-ubuntu22.04@"
-    "sha256:4e0621612b8ec57d8aa445cbe5330a6868c383fa10fe66a2af807cc070b77c9d"
+    "docker.io/nvidia/cuda@"
+    "sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749"
 )
 LAMA_REPOSITORY = "https://github.com/advimman/lama"
 LAMA_COMMIT = "786f5936b27fb3dacd2b1ad799e4de968ea697e7"

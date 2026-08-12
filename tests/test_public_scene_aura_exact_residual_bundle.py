@@ -12,6 +12,7 @@ from blueprint_pipeline.public_scene_aura_exact_residual_bundle import (
     AURA_COMMIT,
     AURA_REPOSITORY,
     AURA_TREE,
+    DEFAULT_IMAGE,
     ENTRYPOINT,
     AuraExactResidualBundleError,
     build_aura_exact_residual_bundle,
@@ -167,6 +168,11 @@ def test_seals_shared_camera_bundle_and_rehearses_without_provider_mutation(
     assert receipt["private_derived_upload_only"] is True
     assert receipt["raw_interiorgs_bytes_included"] is False
     assert receipt["stock_inpaint360gs_code_or_author_data_included"] is False
+    assert receipt["container_image"] == DEFAULT_IMAGE
+    assert DEFAULT_IMAGE == (
+        "docker.io/nvidia/cuda@"
+        "sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749"
+    )
     rehearsal = receipt["exact_bundle_entrypoint_rehearsal"]
     assert rehearsal["status"] == "passed"
     assert rehearsal["provider_mutations_performed"] == 0
