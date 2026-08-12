@@ -43,6 +43,7 @@ SHARED_DIGEST_FIELDS_BY_SCHEMA = {
     "adp009b_direct_evidence_expansion_set.v1": "receipt_digest",
     "public_scene_aura_exact_residual_composite.v1": "composite_digest",
     "public_scene_aura_exact_residual_visual_abstention.v1": "receipt_digest",
+    "public_scene_aura_exact_residual_visual_abstention_replay.v1": "replay_digest",
 }
 
 

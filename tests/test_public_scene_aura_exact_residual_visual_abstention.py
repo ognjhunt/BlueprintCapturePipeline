@@ -10,6 +10,10 @@ from blueprint_pipeline.public_scene_aura_exact_residual_visual_abstention impor
     AuraExactResidualVisualAbstentionError,
     materialize_aura_exact_residual_visual_abstention,
 )
+from blueprint_pipeline.public_scene_aura_exact_residual_visual_abstention_replay import (
+    AuraExactResidualVisualAbstentionReplayError,
+    materialize_aura_exact_residual_visual_abstention_replay,
+)
 
 
 def _write(path: Path, value: dict) -> Path:
@@ -202,4 +206,71 @@ def test_rejects_incomplete_exact_camera_set(tmp_path: Path) -> None:
             request_path=request,
             composite_receipt_path=composite_path,
             output_path=tmp_path / "abstention.json",
+        )
+
+
+def test_rejects_symlinked_request(tmp_path: Path) -> None:
+    composite, request = _fixture(tmp_path)
+    request_link = tmp_path / "request-link.json"
+    request_link.symlink_to(request)
+    with pytest.raises(
+        AuraExactResidualVisualAbstentionError,
+        match="visual_request_missing",
+    ):
+        materialize_aura_exact_residual_visual_abstention(
+            request_path=request_link,
+            composite_receipt_path=composite,
+            output_path=tmp_path / "abstention.json",
+        )
+
+
+def test_seals_byte_exact_visual_abstention_replay(tmp_path: Path) -> None:
+    composite, request = _fixture(tmp_path)
+    sealed_path = tmp_path / "sealed.json"
+    sealed = materialize_aura_exact_residual_visual_abstention(
+        request_path=request,
+        composite_receipt_path=composite,
+        output_path=sealed_path,
+    )
+
+    replay = materialize_aura_exact_residual_visual_abstention_replay(
+        request_path=request,
+        composite_receipt_path=composite,
+        sealed_abstention_path=sealed_path,
+        output_path=tmp_path / "replay.json",
+    )
+
+    assert replay["status"] == "byte_exact_visual_abstention_replay_verified"
+    assert replay["replay_result"]["byte_exact_match"] is True
+    assert replay["replay_result"]["replayed_receipt_digest"] == sealed[
+        "receipt_digest"
+    ]
+    assert replay["automatic_paid_retry_executed"] is False
+    assert replay["claim_boundary"]["visual_candidate_admitted"] is False
+    assert replay["replay_digest"] == canonical_digest(
+        replay, digest_field="replay_digest"
+    )
+
+
+def test_replay_rejects_tampered_sealed_receipt(tmp_path: Path) -> None:
+    composite, request = _fixture(tmp_path)
+    sealed_path = tmp_path / "sealed.json"
+    materialize_aura_exact_residual_visual_abstention(
+        request_path=request,
+        composite_receipt_path=composite,
+        output_path=sealed_path,
+    )
+    sealed = json.loads(sealed_path.read_text())
+    sealed["controls_executed"] = True
+    _write(sealed_path, sealed)
+
+    with pytest.raises(
+        AuraExactResidualVisualAbstentionReplayError,
+        match="sealed_receipt_invalid",
+    ):
+        materialize_aura_exact_residual_visual_abstention_replay(
+            request_path=request,
+            composite_receipt_path=composite,
+            sealed_abstention_path=sealed_path,
+            output_path=tmp_path / "replay.json",
         )

@@ -232,6 +232,10 @@ def test_package_index_admits_receipt_only_mirror_manifest(tmp_path: Path) -> No
             "public_scene_aura_exact_residual_visual_abstention.v1",
             "receipt_digest",
         ),
+        (
+            "public_scene_aura_exact_residual_visual_abstention_replay.v1",
+            "replay_digest",
+        ),
     ],
 )
 def test_package_index_admits_shared_scene_terminal_receipts(

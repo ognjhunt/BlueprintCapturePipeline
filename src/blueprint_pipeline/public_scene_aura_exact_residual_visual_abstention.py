@@ -51,8 +51,11 @@ def _sha256(path: Path) -> str:
 
 
 def _file(value: str | Path, *, code: str) -> Path:
-    path = Path(value).expanduser().resolve()
-    if not path.is_file() or path.is_symlink():
+    unresolved = Path(value).expanduser()
+    if unresolved.is_symlink():
+        raise AuraExactResidualVisualAbstentionError([code])
+    path = unresolved.resolve()
+    if not path.is_file():
         raise AuraExactResidualVisualAbstentionError([code])
     return path
 
@@ -81,11 +84,13 @@ def _bound_relative(root: Path, value: Any, *, code: str) -> Path:
     relative = str(value.get("relative_path") or "")
     if not relative or relative.startswith("/") or ".." in Path(relative).parts:
         raise AuraExactResidualVisualAbstentionError([code])
-    path = (root / relative).resolve()
+    unresolved = root / relative
+    if unresolved.is_symlink():
+        raise AuraExactResidualVisualAbstentionError([code])
+    path = unresolved.resolve()
     if (
         (path != root and root not in path.parents)
         or not path.is_file()
-        or path.is_symlink()
         or path.stat().st_size != value.get("size_bytes")
         or _sha256(path) != value.get("sha256")
     ):
