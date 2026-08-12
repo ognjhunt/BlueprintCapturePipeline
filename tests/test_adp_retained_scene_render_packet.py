@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 import zipfile
@@ -16,6 +17,7 @@ from blueprint_pipeline.adp_retained_scene_render_packet import (
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.adp_retained_scene_render_vast import (
+    _authority_environment,
     run_retained_scene_render_vast,
     validate_retained_scene_render_bundle,
     validate_retained_scene_render_paid_attempt_authority,
@@ -54,6 +56,23 @@ def _write_json(path: Path, value: dict[str, object]) -> None:
 
 def _digest(character: str) -> str:
     return "sha256:" + character * 64
+
+
+def test_retained_scene_render_authority_environment_restores_retry_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "caller-api")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "caller-launch")
+    monkeypatch.setenv("BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS", "caller-retry")
+
+    with _authority_environment():
+        assert os.environ["BLUEPRINT_ALLOW_VAST_API_CALLS"] == "1"
+        assert os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "1"
+        assert os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] == "0"
+
+    assert os.environ["BLUEPRINT_ALLOW_VAST_API_CALLS"] == "caller-api"
+    assert os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "caller-launch"
+    assert os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] == "caller-retry"
 
 
 def _task_freeze(task_id: str, slot: int) -> dict[str, object]:

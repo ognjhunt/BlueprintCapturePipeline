@@ -40,6 +40,7 @@ PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 _VAST_MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
+_VAST_STALE_OFFER_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
 
 def _sha256(path: Path) -> str:
@@ -261,11 +262,12 @@ def _extract_provider_output(path: Path, destination: Path) -> tuple[dict[str, A
 
 @contextmanager
 def _authority_environment():
-    previous = {name: os.environ.get(name) for name in _VAST_MUTATION_ENV}
+    environment_names = (*_VAST_MUTATION_ENV, _VAST_STALE_OFFER_RETRY_ENV)
+    previous = {name: os.environ.get(name) for name in environment_names}
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] = "0"
+        os.environ[_VAST_STALE_OFFER_RETRY_ENV] = "0"
         yield
     finally:
         for name, value in previous.items():
@@ -273,7 +275,6 @@ def _authority_environment():
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
-        os.environ.pop("BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS", None)
 
 
 def run_retained_scene_render_vast(
