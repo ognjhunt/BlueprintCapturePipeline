@@ -3,7 +3,7 @@
 // frames the eval's 6 camera IDs to the splat's real bounding box, and writes per-camera PNGs.
 //
 // Usage:
-//   node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N] [--bg 0xRRGGBB] [--graphics-backend swiftshader|metal]
+//   node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N] [--bg 0xRRGGBB] [--graphics-backend swiftshader|metal|egl]
 //
 // --cameras json (optional): [{ "id": "...", "spec": { "pos":[x,y,z], "target":[x,y,z], "fov":N, "up":[x,y,z] } }, ...]
 // If omitted, six framed views are derived from the splat bounds (overhead/third_person/head_pov/torso/wrist/task_focus).
@@ -38,7 +38,7 @@ const settleFrames = parseInt(arg("settle-frames", "6"), 10);
 const settleMs = parseInt(arg("settle-ms", "100"), 10);
 const graphicsBackend = String(arg("graphics-backend", "swiftshader")).toLowerCase();
 
-if (!["swiftshader", "metal"].includes(graphicsBackend)) {
+if (!["swiftshader", "metal", "egl"].includes(graphicsBackend)) {
   console.error(`unsupported --graphics-backend: ${graphicsBackend}`);
   process.exit(2);
 }
@@ -178,6 +178,13 @@ async function main() {
 
   const graphicsArgs = graphicsBackend === "metal"
     ? ["--use-gl=angle", "--use-angle=metal", "--ignore-gpu-blocklist"]
+    : graphicsBackend === "egl"
+    ? [
+        "--use-gl=egl",
+        "--ignore-gpu-blocklist",
+        "--disable-software-rasterizer",
+        "--enable-webgl",
+      ]
     : [
         "--use-gl=angle",
         "--use-angle=swiftshader",
@@ -211,7 +218,6 @@ async function main() {
   try {
     await page.goto(`${base}/harness.html`, { waitUntil: "load", timeout: 60000 });
     await page.waitForFunction("window.__sparkReady===true", { timeout: 60000 });
-
     let bounds;
     if (composition) {
       const objects = composition.objects.map((item) => ({
@@ -257,6 +263,24 @@ async function main() {
     result.bounds = bounds;
     if (!bounds || !isFinite(bounds.radius) || bounds.radius <= 0) {
       blockers.push("splat_bounds_invalid_after_load");
+    }
+    result.graphics_diagnostics = await page.evaluate(() => {
+      const canvas = document.getElementById("c");
+      const gl = canvas && (canvas.getContext("webgl2") || canvas.getContext("webgl"));
+      if (!gl) return { webgl_available: false };
+      const debug = gl.getExtension("WEBGL_debug_renderer_info");
+      return {
+        webgl_available: true,
+        vendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : null,
+        renderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
+      };
+    });
+    if (
+      graphicsBackend === "egl" &&
+      (!result.graphics_diagnostics.webgl_available ||
+        /swiftshader|software|llvmpipe/i.test(String(result.graphics_diagnostics.renderer || "")))
+    ) {
+      blockers.push("egl_gpu_renderer_unavailable");
     }
 
     if (overlayArg) {

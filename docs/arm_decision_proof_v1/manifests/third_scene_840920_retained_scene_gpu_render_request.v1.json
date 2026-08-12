@@ -1,0 +1,28 @@
+{
+  "schema_version": "adp009d_retained_scene_gpu_render_request.v1",
+  "program_id": "arm-decision-proof-v1",
+  "adp_item": "ADP-009D",
+  "frozen_before_render_execution": true,
+  "learned_policy_outcomes_accessed": false,
+  "candidate_set_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/direct_evidence_successor_set_v2_95ce9390c/adp009b_direct_evidence_expansion_set.v1.json",
+  "execution_authority_path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_dual_task_execution_authority.v1.json",
+  "renderer_vendor_root": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/tools/splat_render/node_modules",
+  "task_lanes": [
+    {
+      "task_id": "task_a_washer_door_open",
+      "camera_contract_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/removal/edit_inputs_v2/cameras.v1.json"
+    },
+    {
+      "task_id": "task_b_notebook_relocation",
+      "camera_contract_path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_b/removal/edit_inputs_v2/cameras.v1.json"
+    }
+  ],
+  "private_upload_policy": {
+    "raw_dataset_bytes_upload": false,
+    "private_derived_upload": true,
+    "provider_training": false,
+    "publication": false,
+    "retention": "bounded_to_goal_then_provider_zero"
+  },
+  "request_digest": "sha256:2ffe95eeccd5ce3803e8feee3e403f313ba339d517f7d130c742c939d05940b0"
+}
