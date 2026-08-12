@@ -73,6 +73,8 @@ from .vast_session_budget_contract import (
 from .watchdog_owner_teardown_contract import write_owner_teardown_cancel_request
 
 
+from .spend_authority_consumption_root import consumption_root
+
 PROBE_KIND = "policy-ranking-successor-cosmos"
 FOLLOWUP_EXPERIMENT_ID = "policy_ranking_cosmos3_followup_20260728"
 SCHEMA_VERSION = "policy_ranking_successor_gpu_admission.v1"
@@ -135,7 +137,6 @@ AUTHORIZATION_IDS_BY_ALLOCATION_INDEX = {
     3: "policy-ranking-cosmos3-followup-20260728-allocation-3",
 }
 GOAL_COST_AUTHORIZATION_SHA256 = "7f2ebe7ae1d176f9eea6b97a2b2f0ce235e7c5ff6af0ddd3baaef9000ab92cc0"
-AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 EXPECTED_BUNDLE_SHA256 = "0e938e1674ff2efc043363ab9b7e2724ae2f9bc264e289895d7759a9eb8173fd"
 EXPECTED_BUNDLE_SIZE_BYTES = 301_649
 QUALIFICATION_CANARY_REQUEST_COUNT = 2
@@ -1291,7 +1292,7 @@ def _consume_authorization_once(
             "status": "blocked",
             "blockers": ["successor_compute_authorization_id_invalid"],
         }
-    root = AUTHORIZATION_CONSUMPTION_ROOT
+    root = consumption_root()
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root_mode = root.stat().st_mode

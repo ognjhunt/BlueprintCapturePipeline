@@ -2296,9 +2296,7 @@ def test_canonical_allocator_issues_grant_only_for_execute(
         return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
 
     monkeypatch.setattr(allocator, "run_content_agents_vast", fake_run)
-    monkeypatch.setattr(
-        content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
     assert (
         allocator.main(
             _allocator_args(
@@ -2382,9 +2380,7 @@ def test_content_agents_paid_attempt_authority_is_single_use(
         hard_cap_usd=2.0,
         hard_ttl_seconds=7200,
     )
-    monkeypatch.setattr(
-        content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
 
     first = content_agents.consume_content_agents_paid_attempt_authority_once(
         validated, blueprint_commit="a" * 40
@@ -2557,7 +2553,7 @@ def test_content_agents_consumed_authority_blocks_before_provider_mutation(
     authority_path = tmp_path / "content-agents-attempt-authority.json"
     write_json(authority_path, authority)
     consumed_root = tmp_path / "consumed"
-    monkeypatch.setattr(content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", consumed_root)
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((consumed_root).parent))
     content_agents.consume_content_agents_paid_attempt_authority_once(
         authority, blueprint_commit="a" * 40
     )

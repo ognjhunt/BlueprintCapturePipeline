@@ -44,6 +44,11 @@ from .vast_provider_adapter import (
 from .vast_wam_authorized_runner import run_vast_wam_authorized_runner
 
 
+from .spend_authority_consumption_root import (
+    authorizations_root,
+    consumption_root,
+)
+
 PROBE_KIND = "policy-ranking-cosmos-reasoner"
 EXPERIMENT_ID = "policy_ranking_roboarena_disjoint_reasoner_successor_20260728"
 AUTHORIZATION_SCHEMA = "policy_ranking_cosmos_reasoner_compute_authorization.v2"
@@ -51,8 +56,6 @@ PREFLIGHT_SCHEMA = "policy_ranking_cosmos_reasoner_vast_preflight.v2"
 ADMISSION_SCHEMA = "policy_ranking_cosmos_reasoner_gpu_admission.v2"
 AUTHORIZATION_ID_PREFIX = "policy-ranking-cosmos-reasoner-successor-20260728-allocation-"
 AUTHORIZATION_ID = f"{AUTHORIZATION_ID_PREFIX}1"
-AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
-EXTERNAL_AUTHORIZATION_ROOT = Path.home() / ".blueprint-spend-authority" / "authorizations"
 MAX_HOURLY_RATE_USD = 2.50
 TARGET_SPEND_USD = 1.50
 HARD_CAP_USD = 2.00
@@ -109,7 +112,7 @@ def load_external_authorization(path: str | Path) -> dict[str, Any]:
     """Load, but never mint, a user-provisioned task authorization artifact."""
 
     resolved = Path(path).expanduser().resolve()
-    authority_root = EXTERNAL_AUTHORIZATION_ROOT.expanduser().resolve()
+    authority_root = authorizations_root().expanduser().resolve()
     if not resolved.is_relative_to(authority_root):
         raise ValueError("cosmos_reasoner_authorization_not_in_external_authority_root")
     stat_result = resolved.stat()
@@ -466,7 +469,7 @@ def _consume_once(authorization: Mapping[str, Any], source_commit: str) -> dict[
             "blockers": ["cosmos_reasoner_authorization_identity_invalid"],
         }
     assert isinstance(authorization_id, str)
-    root = AUTHORIZATION_CONSUMPTION_ROOT
+    root = consumption_root()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.stat().st_mode & 0o077:
         return {"status": "blocked", "blockers": ["authorization_consumption_root_insecure"]}

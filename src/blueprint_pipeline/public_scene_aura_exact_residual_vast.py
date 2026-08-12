@@ -37,6 +37,8 @@ from .wam_provider_object_store import (
 )
 
 
+from .spend_authority_consumption_root import consumption_root
+
 PROBE_KIND = "adp-aurafusion360-exact-residual"
 PROVIDER_BUNDLE_KIND = "adp_aura_exact_residual"
 RESULT_SCHEMA_VERSION = "public_scene_aura_exact_residual_vast_run.v1"
@@ -64,7 +66,6 @@ GPU_SELECTION_POLICY = {
 }
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
-AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 
 
 def _sha256(path: Path) -> str:
@@ -412,15 +413,15 @@ def consume_aura_exact_residual_paid_attempt_authority_once(
         return {"status": "blocked", "blockers": ["aura_exact_residual_authority_identity_invalid"]}
     identity = digest.removeprefix("sha256:")
     try:
-        AUTHORIZATION_CONSUMPTION_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
-        root_stat = AUTHORIZATION_CONSUMPTION_ROOT.stat()
+        consumption_root().mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = consumption_root().stat()
         if (
-            AUTHORIZATION_CONSUMPTION_ROOT.is_symlink()
+            consumption_root().is_symlink()
             or root_stat.st_uid != os.getuid()
             or root_stat.st_mode & 0o077
         ):
             raise PermissionError
-        destination = AUTHORIZATION_CONSUMPTION_ROOT / f"aura-exact-residual-{identity}.json"
+        destination = consumption_root() / f"aura-exact-residual-{identity}.json"
         record = {
             "schema_version": "aura_exact_residual_paid_attempt_consumption.v1",
             "authorization_digest": digest,
@@ -430,7 +431,7 @@ def consume_aura_exact_residual_paid_attempt_authority_once(
             "consumed_at": utc_now_iso(),
         }
         raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        temporary = AUTHORIZATION_CONSUMPTION_ROOT / f".{identity}.{os.getpid()}.tmp"
+        temporary = consumption_root() / f".{identity}.{os.getpid()}.tmp"
         descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
             with os.fdopen(descriptor, "wb") as stream:
@@ -438,7 +439,7 @@ def consume_aura_exact_residual_paid_attempt_authority_once(
                 stream.flush()
                 os.fsync(stream.fileno())
             os.link(temporary, destination)
-            directory_descriptor = os.open(AUTHORIZATION_CONSUMPTION_ROOT, os.O_RDONLY)
+            directory_descriptor = os.open(consumption_root(), os.O_RDONLY)
             try:
                 os.fsync(directory_descriptor)
             finally:

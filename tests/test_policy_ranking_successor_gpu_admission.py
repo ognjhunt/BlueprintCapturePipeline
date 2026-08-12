@@ -10,6 +10,10 @@ from typing import Any
 
 import pytest
 
+from blueprint_pipeline.spend_authority_consumption_root import (
+    consumption_root as consumed_records_root,
+)
+
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import policy_ranking_successor_gpu_admission as admission
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
@@ -592,11 +596,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     monkeypatch.setattr(admission, "run_vast_wam_authorized_runner", fake_runner)
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", " YES ")
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "1")
-    monkeypatch.setattr(
-        admission,
-        "AUTHORIZATION_CONSUMPTION_ROOT",
-        tmp_path / "authority-consumption",
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "authority-consumption").parent))
     budget = tmp_path / "budget.json"
     budget.write_text(
         json.dumps({"attempts": [{"actual_live_runtime_seconds_observed_by_adapter": 97.485577}]}),
@@ -675,7 +675,7 @@ def test_successor_lane_does_not_consume_authorization_when_staging_blocks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     consumption_root = tmp_path / "authority-consumption"
-    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((consumption_root).parent))
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
 
@@ -723,7 +723,7 @@ def test_successor_lane_rechecks_preflight_age_before_consumption(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     consumption_root = tmp_path / "authority-consumption"
-    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((consumption_root).parent))
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
 
@@ -776,8 +776,7 @@ def test_successor_lane_rechecks_preflight_age_before_consumption(
 def test_authorization_publish_failure_leaves_no_consumed_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    consumption_root = tmp_path / "authority-consumption"
-    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str(tmp_path / "spend-authority"))
     monkeypatch.setattr(
         admission.os,
         "link",
@@ -791,18 +790,16 @@ def test_authorization_publish_failure_leaves_no_consumed_record(
 
     assert result["status"] == "blocked"
     assert result["blockers"] == ["successor_authorization_consumption_write_failed"]
-    assert list(consumption_root.iterdir()) == []
+    # A failed publish must leave no record behind, or the authorization would
+    # be permanently burned without ever funding an allocation.
+    assert sorted(consumed_records_root().glob("*.json")) == []
 
 
 def test_successor_lane_checks_provider_env_before_consuming_authorization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     consumption_root = tmp_path / "authority-consumption"
-    monkeypatch.setattr(
-        admission,
-        "AUTHORIZATION_CONSUMPTION_ROOT",
-        consumption_root,
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((consumption_root).parent))
     monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_API_CALLS", raising=False)
     monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", raising=False)
     budget = tmp_path / "budget.json"
@@ -843,7 +840,7 @@ def test_successor_lane_checks_session_budget_before_consuming_authorization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     consumption_root = tmp_path / "authority-consumption"
-    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((consumption_root).parent))
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
     monkeypatch.setattr(
@@ -884,7 +881,7 @@ def test_successor_lane_requires_existing_session_budget_before_execute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     consumption_root = tmp_path / "authority-consumption"
-    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((consumption_root).parent))
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
     monkeypatch.setattr(
