@@ -1132,9 +1132,15 @@ def _render_and_world_model_candidates() -> tuple[dict[str, Any], ...]:
             classification="provider_requiring_contract_gates",
             label="EC",
             name="Lightwheel and other SimReady asset-preparation providers",
-            protocols=("Q-SENSOR", "Q-RIGID"),
+            protocols=("Q-SENSOR", "Q-RIGID", "Q-ART"),
             ceiling="C2",
-            sources=(("vendor_page", "https://lightwheel.ai/media/simready"),),
+            sources=(
+                ("vendor_page", "https://lightwheel.ai/media/simready"),
+                (
+                    "blueprint_execution_evidence",
+                    "docs/lightwheel_simready_sink_articulation_evidence_2026-08-04.md",
+                ),
+            ),
             access={
                 "source_available": False,
                 "api_only": True,
@@ -1144,6 +1150,14 @@ def _render_and_world_model_candidates() -> tuple[dict[str, Any], ...]:
             limitations=(
                 "vendor_claims_about_measured_properties_or_sim_to_real_validity_are_not_blueprint_qualification",
                 "requires_contract_data_retention_provenance_parameter_export_and_held_out_audit",
+                "generated_convex_decomposition_collider_requests_stall_physx_cooking_session_convex_hull_override_required",
+                "generated_assets_ship_without_physics_scene_articulation_root_or_world_anchor",
+            ),
+            notes=(
+                "2026-08-04 first-party Isaac 6.0.1/PhysX canary on one generated sink asset: "
+                "authored revolute handle drive-tracked 0-120 deg within 0.002 deg and moved "
+                "93.2 deg under pure contact with sub-mm penetration; single-sample development "
+                "evidence only, physical parameters remain unvalidated estimates."
             ),
         ),
         _entry(
