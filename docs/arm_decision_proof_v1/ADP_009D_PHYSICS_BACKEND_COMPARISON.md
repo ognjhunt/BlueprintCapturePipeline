@@ -260,14 +260,26 @@ an actuator retune or a fidelity claim. The revised Newton profile digest is
 the revised provider-free comparison-design digest is
 `sha256:6ac1a23917bf009c4a6e406b4914aa18007e0d5fb2dc69ffbc69611114856ec1`.
 
-No terminal canary receipt is compiled for this ninth run yet. A fresh,
-read-only global post-teardown inventory correctly found two pre-existing active
-DigitalOcean production/control-plane droplets, even though Vast and RunPod were
-zero. The terminal compiler now requires a digest-bound, API-confirmed global
-provider-zero receipt generated after teardown, so it refuses to treat the
-earlier pre-launch inventory as closure evidence. Those droplets are outside
-this Newton allocation and have not been altered. No replacement GPU may be
-admitted until an authorized operator resolves that global provider-zero gate.
+The first dedicated post-teardown inventory correctly blocked terminal closure
+on an active DigitalOcean control droplet. Under explicit task-scope
+GPU/spend authority, the exact remaining blocker, DigitalOcean instance
+`584554642` (`blueprint-gpu-control-prod-01`), was re-confirmed and terminated.
+The fresh post-teardown, API-confirmed global provider-zero receipt covers
+DigitalOcean, RunPod, and Vast, records zero live instances and zero hourly
+burn, and has digest
+`sha256:eccceaf80391bef32c381b7110b94fa9aba7a1052c728c6c24f42c71e63d5146`.
+
+The terminal compiler now seals the retained ninth-run evidence in receipt
+`sha256:a29f546e7e38a86e04a6eb1f847b60414c7ec8c1502cc5d06af9a994351b97ef`.
+It binds the admitted profile and source bundle, the 22-file artifact manifest,
+the successful Vast teardown, the exact `$0.194` settled instance charge, and
+the API-confirmed provider-zero receipt. Its status is deliberately
+`blocked` with scientific phase `pre_controls_blocked`, zero policy queries,
+no candidate outcomes, no task or physical verdict, and an explicit media gap
+caused by the failed canonical hold. This closes the allocation lifecycle only:
+the ninth run did not reach controls, and its finite drift does not resolve the
+earlier Newton NaN result, which remains the scientific blocker requiring a
+future independently meaningful retest.
 
 Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.
