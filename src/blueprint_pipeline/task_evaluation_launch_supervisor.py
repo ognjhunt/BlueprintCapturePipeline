@@ -19,7 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .task_evaluation_launch_dispatcher import (
     SECRET_PROFILE_ID_ENV,
+    TaskEvaluationLaunchError,
     canonical_digest,
+    load_public_launch_profile_catalog,
     validate_launch_profile,
 )
 from .task_evaluation_supervisor.agents_sdk import (
@@ -38,6 +40,14 @@ SUPERVISOR_ENABLED_ENV = "BLUEPRINT_TASK_EVALUATION_AGENT_SUPERVISOR_ENABLED"
 SUPERVISOR_MODEL_ENV = "BLUEPRINT_TASK_EVALUATION_AGENT_SUPERVISOR_MODEL"
 SUPERVISOR_BUDGET_ENV = "BLUEPRINT_TASK_EVALUATION_AGENT_SUPERVISOR_BUDGET_USD"
 
+# The production supervisor reserves its entire worst-case response before an
+# SDK call.  Keep its immutable observation bounded so a growing receipt
+# history cannot silently turn a configured inference ceiling into a permanent
+# advisory outage.  At the current 2,000-token / USD 0.10 deployment envelope,
+# 24 KiB leaves a conservative reserve for the output response.
+DEFAULT_SUPERVISOR_SNAPSHOT_MAX_BYTES = 24_000
+SUPERVISOR_SNAPSHOT_INPUT_CEILING_BLOCKER = "launch_supervisor_snapshot_input_ceiling_exceeded"
+
 
 def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -46,6 +56,27 @@ def _truthy(value: Any) -> bool:
 def _read(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _snapshot_with_digest(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a deep-copied snapshot with the stable advisory-cache digest."""
+
+    value = json.loads(json.dumps(snapshot))
+    digest_basis = json.loads(json.dumps(value))
+    guard = digest_basis.get("guard")
+    if isinstance(guard, Mapping):
+        guard.pop("generated_at", None)
+    value["snapshot_digest"] = canonical_digest(
+        digest_basis,
+        digest_field="snapshot_digest",
+    )
+    return value
+
+
+def _snapshot_size_bytes(snapshot: Mapping[str, Any]) -> int:
+    """Match the exact JSON encoding passed to the production SDK invoker."""
+
+    return len(json.dumps(snapshot, sort_keys=True).encode("utf-8"))
 
 
 class LaunchSupervisorRecommendation(BaseModel):
@@ -84,7 +115,11 @@ def build_supervisor_snapshot(
     queue_root: str | Path,
     state_root: str | Path,
     guard_report_path: str | Path,
+    public_catalog_path: str | Path | None = None,
+    max_snapshot_bytes: int = DEFAULT_SUPERVISOR_SNAPSHOT_MAX_BYTES,
 ) -> dict[str, Any]:
+    if not isinstance(max_snapshot_bytes, int) or max_snapshot_bytes <= 0:
+        raise ValueError("launch_supervisor_snapshot_byte_ceiling_invalid")
     profiles: list[dict[str, Any]] = []
     guard_path = Path(guard_report_path).expanduser().resolve()
     guard = _read(guard_path) if guard_path.is_file() else {}
@@ -104,11 +139,47 @@ def build_supervisor_snapshot(
     }
     spend_admission = guard.get("spend_admission_lock")
     spend_admission = spend_admission if isinstance(spend_admission, Mapping) else {}
+    published_profile_keys: set[tuple[str, str]] | None = None
+    published_descriptors: dict[tuple[str, str], dict[str, Any]] = {}
+    profile_catalog: dict[str, Any] = {
+        "status": "not_configured",
+        "published_profile_count": None,
+        "blockers": [],
+    }
+    if public_catalog_path is not None:
+        try:
+            catalog = load_public_launch_profile_catalog(public_catalog_path)
+        except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+            published_profile_keys = set()
+            profile_catalog = {
+                "status": "blocked",
+                "published_profile_count": 0,
+                "blockers": ["launch_profile_public_catalog_invalid"],
+            }
+        else:
+            published_descriptors = {
+                (str(row["profile_id"]), str(row["profile_digest"])): dict(row)
+                for row in catalog["profiles"]
+            }
+            published_profile_keys = set(published_descriptors)
+            profile_catalog = {
+                "status": "verified",
+                "published_profile_count": len(published_descriptors),
+                "blockers": [],
+            }
+
+    materialized_profiles: dict[tuple[str, str], dict[str, Any]] = {}
     for path in sorted(Path(profile_dir).expanduser().resolve().glob("*.json")):
         try:
             profile = _read(path)
         except (OSError, json.JSONDecodeError):
             continue
+        key = (str(profile.get("profile_id") or ""), str(profile.get("profile_digest") or ""))
+        if published_profile_keys is not None and key not in published_profile_keys:
+            continue
+        materialized_profiles.setdefault(key, profile)
+
+    for profile in materialized_profiles.values():
         blockers = validate_launch_profile(profile)
         execution_admission = profile.get("execution_admission")
         execution_admission = (
@@ -155,6 +226,38 @@ def build_supervisor_snapshot(
             }
         )
 
+    # The website can select only entries in the publisher-generated catalog.
+    # A descriptor that is published but not materialized locally must remain a
+    # visible, typed blocker rather than disappearing into a wider historical
+    # profile directory or being recommended by the advisory agent.
+    for key, descriptor in published_descriptors.items():
+        if key in materialized_profiles:
+            continue
+        execution_admission = descriptor.get("execution_admission")
+        execution_admission = (
+            execution_admission if isinstance(execution_admission, Mapping) else {}
+        )
+        authorization = descriptor.get("required_authorization")
+        authorization = authorization if isinstance(authorization, Mapping) else {}
+        source_bundle = descriptor.get("source_bundle")
+        source_bundle = source_bundle if isinstance(source_bundle, Mapping) else {}
+        profiles.append(
+            {
+                "profile_id": descriptor.get("profile_id"),
+                "profile_digest": descriptor.get("profile_digest"),
+                "source_kind": source_bundle.get("source_kind"),
+                "claim_ceiling": descriptor.get("claim_ceiling"),
+                "max_spend_usd": authorization.get("max_spend_usd"),
+                "hard_ttl_seconds": authorization.get("hard_ttl_seconds"),
+                "required_providers": [],
+                "live_enabled": execution_admission.get("live_enabled") is True,
+                "readiness_blockers": execution_admission.get("blockers") or [],
+                "admissible": False,
+                "blockers": ["published_profile_not_materialized"],
+            }
+        )
+    profiles.sort(key=lambda row: (str(row["profile_id"]), str(row["profile_digest"])))
+
     queue = Path(queue_root).expanduser().resolve()
     queue_counts = {
         name: len(list((queue / name).glob("*.json")))
@@ -195,38 +298,64 @@ def build_supervisor_snapshot(
                 )
                 terminal_row["webapp_sync_blockers"] = terminal_unmatched.get("blockers") or []
         terminal_rows.append(terminal_row)
-    snapshot = {
-        "schema_version": "task_evaluation_launch_supervisor_snapshot.v1",
-        "profiles": profiles,
-        "admissible_profile_ids": sorted(
-            str(row["profile_id"]) for row in profiles if row["admissible"]
-        ),
-        "queue_counts": queue_counts,
-        "terminal_launches": terminal_rows,
-        "guard": {
-            "status": guard.get("status"),
-            "generated_at": guard.get("generated_at"),
-            "live_instance_count": guard.get("live_instance_count"),
-            "total_burn_per_hour_usd": guard.get("total_burn_per_hour_usd"),
-            "provider_zero_verified": guard.get("provider_zero_verified"),
-            "provider_zero_blockers": (guard.get("provider_zero") or {}).get("blockers")
-            if isinstance(guard.get("provider_zero"), Mapping)
-            else [],
-            "spend_admission_allowed": spend_admission.get("admission_allowed") is True,
-            "blockers": guard_blockers,
-        },
-        "authority_boundary": {
-            "agent_may_mutate_provider": False,
-            "agent_may_invoke_allocator": False,
-            "agent_may_retry": False,
-            "agent_may_approve_rights_or_spend": False,
-            "agent_may_close_teardown": False,
-        },
-    }
-    digest_basis = json.loads(json.dumps(snapshot))
-    digest_basis["guard"].pop("generated_at", None)
-    snapshot["snapshot_digest"] = canonical_digest(digest_basis, digest_field="snapshot_digest")
-    return snapshot
+    included_terminal_rows = list(terminal_rows)
+    omitted_terminal_rows: list[dict[str, Any]] = []
+
+    def snapshot_for_window(*, input_ceiling_exceeded: bool = False) -> dict[str, Any]:
+        terminal_history: dict[str, Any] = {
+            "selection": "lexicographically_latest_launch_receipts",
+            "total_count": len(terminal_rows),
+            "included_count": len(included_terminal_rows),
+            "omitted_count": len(omitted_terminal_rows),
+            "omitted_terminal_rows_digest": (
+                canonical_digest(
+                    {"terminal_launches": omitted_terminal_rows},
+                    digest_field="omitted_terminal_rows_digest",
+                )
+                if omitted_terminal_rows
+                else None
+            ),
+            "input_byte_ceiling": max_snapshot_bytes,
+            "status": "input_ceiling_exceeded" if input_ceiling_exceeded else "bounded",
+        }
+        return {
+            "schema_version": "task_evaluation_launch_supervisor_snapshot.v1",
+            "profiles": profiles,
+            "profile_catalog": profile_catalog,
+            "admissible_profile_ids": sorted(
+                str(row["profile_id"]) for row in profiles if row["admissible"]
+            ),
+            "queue_counts": queue_counts,
+            "terminal_launches": included_terminal_rows,
+            "terminal_history": terminal_history,
+            "guard": {
+                "status": guard.get("status"),
+                "generated_at": guard.get("generated_at"),
+                "live_instance_count": guard.get("live_instance_count"),
+                "total_burn_per_hour_usd": guard.get("total_burn_per_hour_usd"),
+                "provider_zero_verified": guard.get("provider_zero_verified"),
+                "provider_zero_blockers": (guard.get("provider_zero") or {}).get("blockers")
+                if isinstance(guard.get("provider_zero"), Mapping)
+                else [],
+                "spend_admission_allowed": spend_admission.get("admission_allowed") is True,
+                "blockers": guard_blockers,
+            },
+            "authority_boundary": {
+                "agent_may_mutate_provider": False,
+                "agent_may_invoke_allocator": False,
+                "agent_may_retry": False,
+                "agent_may_approve_rights_or_spend": False,
+                "agent_may_close_teardown": False,
+            },
+        }
+
+    while True:
+        snapshot = _snapshot_with_digest(snapshot_for_window())
+        if _snapshot_size_bytes(snapshot) <= max_snapshot_bytes:
+            return snapshot
+        if not included_terminal_rows:
+            return _snapshot_with_digest(snapshot_for_window(input_ceiling_exceeded=True))
+        omitted_terminal_rows.append(included_terminal_rows.pop(0))
 
 
 def run_launch_supervisor(
@@ -252,6 +381,28 @@ def run_launch_supervisor(
             "provider_mutation_performed": False,
             "automatic_retry_performed": False,
         }
+
+    terminal_history = snapshot_value.get("terminal_history")
+    if (
+        isinstance(terminal_history, Mapping)
+        and terminal_history.get("status") == "input_ceiling_exceeded"
+    ):
+        result = {
+            "schema_version": SUPERVISOR_SCHEMA_VERSION,
+            "status": "blocked",
+            "snapshot_digest": snapshot_digest,
+            "agent_invoked": False,
+            "blockers": [SUPERVISOR_SNAPSHOT_INPUT_CEILING_BLOCKER],
+            "tool_count": 0,
+            "provider_mutation_performed": False,
+            "allocator_invoked": False,
+            "automatic_retry_performed": False,
+            "authority_granted": False,
+        }
+        result["supervision_digest"] = canonical_digest(result, digest_field="supervision_digest")
+        cached_path.parent.mkdir(parents=True, exist_ok=True)
+        cached_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return result
 
     model = str(os.getenv(SUPERVISOR_MODEL_ENV) or DEFAULT_SUPERVISOR_AGENT_MODEL).strip()
     try:
@@ -350,6 +501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--queue-root", required=True)
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--guard-report", required=True)
+    parser.add_argument("--public-catalog")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--latest-out", required=True)
     args = parser.parse_args(argv)
@@ -358,6 +510,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         queue_root=args.queue_root,
         state_root=args.state_root,
         guard_report_path=args.guard_report,
+        public_catalog_path=args.public_catalog,
     )
     result = run_launch_supervisor(snapshot=snapshot, output_dir=args.output_dir)
     latest = Path(args.latest_out).expanduser().resolve()

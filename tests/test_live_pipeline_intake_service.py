@@ -1144,10 +1144,13 @@ def test_task_evaluation_launch_is_immutably_queued_before_async_dispatch(
     queue_root = tmp_path / "launch-queue"
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
+    catalog_path = tmp_path / "published-launch-profiles.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
     monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
     monkeypatch.setenv(service.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"blueprint-webapp": "token"}))
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV, str(queue_root))
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV, str(catalog_path))
     monkeypatch.setenv(
         service.TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV,
         "blueprint-task-evaluation-launch-dispatcher.service",
@@ -1199,6 +1202,9 @@ def test_task_evaluation_launch_rejects_tampering_before_trigger(
 ) -> None:
     monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
     monkeypatch.setenv(service.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"blueprint-webapp": "token"}))
+    catalog_path = tmp_path / "published-launch-profiles.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV, str(catalog_path))
     monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
     calls: list[list[str]] = []
     monkeypatch.setattr(
@@ -1223,6 +1229,96 @@ def test_task_evaluation_launch_rejects_tampering_before_trigger(
     )
     assert response.status_code == 422
     assert "launch_request_digest_mismatch" in response.text
+    assert calls == []
+
+
+def test_task_evaluation_launch_rejects_an_unpublished_signed_profile_before_trigger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "launch-queue"
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    catalog_path = tmp_path / "published-launch-profiles.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
+    monkeypatch.setenv(service.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"blueprint-webapp": "token"}))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV, str(queue_root))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV, str(catalog_path))
+    monkeypatch.setenv(
+        service.TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV,
+        "blueprint-task-evaluation-launch-dispatcher.service",
+    )
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda argv, **_kwargs: calls.append(list(argv)) or SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    )
+    payload = _task_evaluation_launch_request()
+    payload["launch_profile_id"] = "interiorgs-sage-franka-unpublished"
+    payload["launch_profile_digest"] = "sha256:" + "f" * 64
+    payload["request_digest"] = launch_digest(payload, digest_field="request_digest")
+    body = json.dumps(payload, separators=(",", ":"))
+
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launches",
+        data=body,
+        headers=_signed_intake_headers(
+            "token",
+            body,
+            nonce="task-launch-unpublished-profile-nonce",
+            client_id="blueprint-webapp",
+        ),
+    )
+
+    assert response.status_code == 422
+    assert "launch_profile_not_published" in response.text
+    assert not list((queue_root / "pending").glob("*.json"))
+    assert calls == []
+
+
+def test_task_evaluation_launch_requires_a_published_catalog_before_queueing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "launch-queue"
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
+    monkeypatch.setenv(service.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"blueprint-webapp": "token"}))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV, str(queue_root))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
+    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV, raising=False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda argv, **_kwargs: calls.append(list(argv)) or SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    )
+    payload = _task_evaluation_launch_request()
+    body = json.dumps(payload, separators=(",", ":"))
+
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launches",
+        data=body,
+        headers=_signed_intake_headers(
+            "token",
+            body,
+            nonce="task-launch-missing-catalog-nonce",
+            client_id="blueprint-webapp",
+        ),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["blockers"] == [
+        "task_evaluation_launch_public_catalog_not_configured"
+    ]
+    assert not list((queue_root / "pending").glob("*.json"))
     assert calls == []
 
 

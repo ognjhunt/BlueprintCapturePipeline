@@ -27,6 +27,7 @@ LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
 LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION = "task_evaluation_launch_profile_catalog.v1"
 CANONICAL_ALLOCATOR_ENTRYPOINT = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
 EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
+EXECUTE_LAUNCH_ID_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID"
 SECRET_PROFILE_ID_ENV = "BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID"
 LAUNCH_RUN_ROOT_PLACEHOLDER = "{launch_run_root}"
 _DIGEST_PREFIX = "sha256:"
@@ -541,6 +542,44 @@ def load_public_launch_profile_catalog(
     }
 
 
+def validate_launch_request_against_public_catalog(
+    value: Mapping[str, Any], *, catalog_path: str | Path
+) -> list[str]:
+    """Require the signed request to name one currently published profile.
+
+    The profile directory retains immutable historical profiles for evidence and
+    replay.  It is not a selector.  Only the publisher-generated catalog is
+    allowed to authorize a new Website or signed intake request.
+    """
+
+    request = _mapping(value)
+    try:
+        catalog = load_public_launch_profile_catalog(catalog_path)
+    except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+        return ["launch_profile_public_catalog_invalid"]
+    descriptor = next(
+        (
+            row
+            for row in catalog["profiles"]
+            if row["profile_id"] == request.get("launch_profile_id")
+            and row["profile_digest"] == request.get("launch_profile_digest")
+        ),
+        None,
+    )
+    if descriptor is None:
+        return ["launch_profile_not_published"]
+    blockers: list[str] = []
+    for request_field, descriptor_field in (
+        ("source_bundle", "source_bundle"),
+        ("evaluation_run_spec", "evaluation_run_spec"),
+        ("required_controls", "required_controls"),
+        ("claim_ceiling", "claim_ceiling"),
+    ):
+        if request.get(request_field) != descriptor.get(descriptor_field):
+            blockers.append(f"launch_profile_public_catalog_{request_field}_mismatch")
+    return blockers
+
+
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
     payload = (_canonical_json(value) + "\n").encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -689,11 +728,19 @@ def dispatch_launch_request(
     profile_dir: str | Path,
     state_root: str | Path,
     execute: bool = False,
+    execute_launch_id: str | None = None,
+    public_catalog_path: str | Path | None = None,
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
 ) -> dict[str, Any]:
     request_source = Path(request_path).expanduser().resolve()
     request = _read_json(request_source)
     blockers = validate_launch_request(request)
+    if public_catalog_path is not None:
+        blockers.extend(
+            validate_launch_request_against_public_catalog(
+                request, catalog_path=public_catalog_path
+            )
+        )
     profile_path = (
         Path(profile_dir).expanduser().resolve() / f"{request.get('launch_profile_id', '')}.json"
     )
@@ -733,6 +780,14 @@ def dispatch_launch_request(
                 blockers.append("launch_profile_exceeds_approved_spend")
 
     live_requested = bool(execute)
+    execution_scope_launch_id = str(execute_launch_id or "").strip()
+    if live_requested:
+        if not execution_scope_launch_id:
+            blockers.append("execute_launch_id_required")
+        elif not _is_identifier(execution_scope_launch_id):
+            blockers.append("execute_launch_id_invalid")
+        elif execution_scope_launch_id != request.get("launch_id"):
+            blockers.append("execute_launch_scope_mismatch")
     live_allowed = _is_truthy(os.getenv(EXECUTE_ENV))
     if live_requested and not live_allowed:
         blockers.append(f"missing_env_{EXECUTE_ENV}")
@@ -773,6 +828,7 @@ def dispatch_launch_request(
         "evaluation_run_spec_digest": _mapping(request.get("evaluation_run_spec")).get("digest"),
         "canonical_allocator": CANONICAL_ALLOCATOR_ENTRYPOINT,
         "execute_requested": live_requested,
+        "execute_launch_id": execution_scope_launch_id if live_requested else None,
         "execute_env_allowed": live_allowed,
         "secret_profile_id_match": secret_profile_match,
         "profile_live_enabled": execution_admission.get("live_enabled"),
@@ -923,6 +979,7 @@ def dispatch_launch_request(
         "canonical_allocator": CANONICAL_ALLOCATOR_ENTRYPOINT,
         "allocator_exit_code": allocator_exit_code,
         "execute_requested": live_requested,
+        "execute_launch_id": execution_scope_launch_id if live_requested else None,
         "provider_mutation_attempted": bool(live_requested and allocator_exit_code is not None),
         "prelaunch_skill_execution": prelaunch_skill_execution,
         "terminal_evidence": terminal,
@@ -962,6 +1019,8 @@ def process_launch_queue(
     profile_dir: str | Path,
     state_root: str | Path,
     execute: bool = False,
+    execute_launch_id: str | None = None,
+    public_catalog_path: str | Path | None = None,
     max_messages: int = 1,
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
 ) -> dict[str, Any]:
@@ -971,7 +1030,29 @@ def process_launch_queue(
     processed: list[dict[str, Any]] = []
     pending.mkdir(parents=True, exist_ok=True)
     processing.mkdir(parents=True, exist_ok=True)
-    for source in sorted(pending.glob("*.json"))[: max(0, max_messages)]:
+    execution_scope_launch_id = str(execute_launch_id or "").strip()
+    if execute and not _is_identifier(execution_scope_launch_id):
+        return {
+            "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+            "status": "blocked",
+            "processed_count": 0,
+            "receipts": [],
+            "blockers": ["execute_launch_id_required"],
+            "execute_requested": True,
+            "execute_launch_id": None,
+            "automatic_retry_performed": False,
+        }
+    sources = sorted(pending.glob("*.json"))
+    if execute:
+        # A paid dispatcher activation is deliberately scoped to a single
+        # immutable launch ID.  Do not claim, dry-run, or mutate any other
+        # pending request while the one-shot execution window is armed.
+        sources = [
+            source
+            for source in sources
+            if source.name.startswith(f"{execution_scope_launch_id}-")
+        ]
+    for source in sources[: max(0, max_messages)]:
         claimed = processing / source.name
         os.replace(source, claimed)
         try:
@@ -980,6 +1061,8 @@ def process_launch_queue(
                 profile_dir=profile_dir,
                 state_root=state_root,
                 execute=execute,
+                execute_launch_id=execution_scope_launch_id if execute else None,
+                public_catalog_path=public_catalog_path,
                 allocator_runner=allocator_runner,
             )
         except Exception as exc:  # noqa: BLE001 - the queue must retain a terminal receipt
@@ -1016,6 +1099,8 @@ def process_launch_queue(
         else "blocked",
         "processed_count": len(processed),
         "receipts": processed,
+        "execute_requested": bool(execute),
+        "execute_launch_id": execution_scope_launch_id if execute else None,
         "automatic_retry_performed": False,
     }
 
@@ -1027,12 +1112,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--max-messages", type=int, default=1)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--execute-launch-id")
+    parser.add_argument("--public-catalog")
     args = parser.parse_args(argv)
     result = process_launch_queue(
         queue_root=args.queue_root,
         profile_dir=args.profile_dir,
         state_root=args.state_root,
         execute=args.execute,
+        execute_launch_id=args.execute_launch_id,
+        public_catalog_path=args.public_catalog,
         max_messages=args.max_messages,
     )
     print(json.dumps(result, sort_keys=True))

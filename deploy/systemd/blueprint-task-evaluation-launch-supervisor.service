@@ -29,7 +29,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-supervision
-ReadOnlyPaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard /etc/blueprint/task-evaluation-launch-profiles
+ReadOnlyPaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json /etc/blueprint/task-evaluation-launch-profiles
 TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
@@ -39,9 +39,10 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-eva
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
 Environment=BLUEPRINT_GPU_SPEND_GUARD_REPORT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_SUPERVISION_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-supervision
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
-ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_supervisor --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --guard-report "$${BLUEPRINT_GPU_SPEND_GUARD_REPORT}" --output-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_SUPERVISION_ROOT}/recommendations" --latest-out "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_SUPERVISION_ROOT}/latest.json") && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_supervisor --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --public-catalog "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH}" --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --guard-report "$${BLUEPRINT_GPU_SPEND_GUARD_REPORT}" --output-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_SUPERVISION_ROOT}/recommendations" --latest-out "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_SUPERVISION_ROOT}/latest.json") && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'

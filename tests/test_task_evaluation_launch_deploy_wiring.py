@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 
@@ -6,6 +7,33 @@ REPO = Path(__file__).resolve().parents[1]
 
 def _text(relative: str) -> str:
     return (REPO / relative).read_text(encoding="utf-8")
+
+
+def _shell_script(unit: str, directive: str) -> str:
+    prefix = f"{directive}=/bin/bash -lc '"
+    line = next(line for line in unit.splitlines() if line.startswith(prefix))
+    assert line.endswith("'")
+    return line.removeprefix(prefix).removesuffix("'")
+
+
+def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
+    units_and_directives = (
+        ("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service", "ExecStart"),
+        ("deploy/systemd/blueprint-task-evaluation-launch-reconciler.service", "ExecStart"),
+        ("deploy/systemd/blueprint-task-evaluation-launch-supervisor.service", "ExecStart"),
+        ("deploy/systemd/blueprint-provider-billing-reconciler.service", "ExecStart"),
+        ("deploy/systemd/blueprint-gpu-spend-guard.service", "ExecStart"),
+        ("deploy/systemd/blueprint-gpu-spend-guard.service", "ExecStopPost"),
+    )
+
+    for relative, directive in units_and_directives:
+        completed = subprocess.run(
+            ("bash", "-n", "-c", _shell_script(_text(relative), directive)),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, f"{relative} {directive}: {completed.stderr}"
 
 
 def test_canonical_allocator_dependencies_are_in_the_production_base() -> None:
@@ -32,6 +60,15 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
 
     assert "task_evaluation_launch_dispatcher" in dispatcher
     assert "--execute" in dispatcher
+    assert "--execute-launch-id" in dispatcher
+    assert "--public-catalog" in dispatcher
+    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID" in dispatcher
+    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in dispatcher
+    assert "task-evaluation-launch-profile-catalog.json" in dispatcher
+    assert (
+        'ARGS+=(--execute --execute-launch-id '
+        '"$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}")'
+    ) in dispatcher
     assert (
         '"$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] '
         '&& [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true'
@@ -43,7 +80,12 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
         assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=" in unit
         assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=" in unit
         assert "BLUEPRINT_PIPELINE_REPO" not in unit
-        assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}"' in unit
+        assert (
+            'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" '
+            '&& export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory '
+            'GIT_CONFIG_VALUE_0="$${PWD}"'
+        ) in unit
+        assert "$$(realpath" not in unit
         assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
     for binding in (
         "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
@@ -70,8 +112,12 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "ReadOnlyPaths=" in supervisor
     assert "task-evaluation-launches" in supervisor
     assert "task-evaluation-launch-runs" in supervisor
+    assert "task-evaluation-launch-profile-catalog.json" in supervisor
+    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in supervisor
+    assert "--public-catalog" in supervisor
     assert "paid_resource_allocator" not in supervisor
     assert "provider-secrets" not in supervisor
+    assert '"$${ARGS[@]}"\'' in supervisor
 
 
 def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> None:
@@ -88,7 +134,12 @@ def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> N
             "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
         ) in unit
         assert "BLUEPRINT_PIPELINE_REPO" not in unit
-        assert 'GIT_CONFIG_VALUE_0="$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}"' in unit
+        assert (
+            'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" '
+            '&& export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory '
+            'GIT_CONFIG_VALUE_0="$${PWD}"'
+        ) in unit
+        assert "$$(realpath" not in unit
         assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
 
     assert "scripts/gpu_spend_guard.py" in guard
@@ -146,13 +197,10 @@ def test_installer_gives_the_service_account_ownership_of_the_checkout() -> None
     when the service account probes the allocator's source identity, which
     rejects a paid launch at admission. Observed in production after a root
     deploy."""
-    from pathlib import Path as _Path
-
-    script = _Path("scripts/install_live_pipeline_control_plane.sh").read_text(
-        encoding="utf-8"
-    )
+    script = _text("scripts/install_live_pipeline_control_plane.sh")
 
     assert 'chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${REPO_ROOT}"' in script
+    assert 'cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)' in script
     assert "dubious ownership" in script
 
 

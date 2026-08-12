@@ -9,6 +9,9 @@ canonical paid-resource allocator used by the maintained CLI path.
 
 1. The WebApp records an admin/ops rights, spend, and execution authority
    envelope and sends one digest-bound `task_evaluation_launch_request.v1`.
+   Both the signed intake and dispatcher independently require that request to
+   match the publisher-generated profile catalog; immutable historical profile
+   files are retained for evidence but cannot be newly queued or executed.
 2. `task_evaluation_launch_dispatcher` owns the durable pending -> processing ->
    completed/blocked state machine. Terminal or processing replays never invoke
    paid work again; the paid retry cap is zero.
@@ -17,9 +20,25 @@ canonical paid-resource allocator used by the maintained CLI path.
    secrets.
 4. The independent GPU spend guard and launch reconciler own liveness,
    provider inventory, orphan recovery, teardown closeout, and provider-zero.
+   For every provider-mutating terminal launch, the reconciler emits the
+   run-owned `post_teardown_provider_zero_receipt.json` only after the
+   digest-bound teardown manifest says continuing spend is false and a fresh
+   independent guard snapshot, generated after that teardown, confirms zero
+   across the immutable profile's required providers. The receipt retains a
+   digest-bound copy of that guard snapshot. A pending or missing receipt is a
+   typed resource-closure blocker; a confirmed receipt never upgrades a
+   scientific or policy blocker into a completed evaluation.
+   A digest-bound allocator result that explicitly rejected admission before
+   any provider call is recorded as `provider_zero_not_applicable_pre_provider_admission_blocked`,
+   rather than being misreported as an unfinished teardown. Any other missing
+   teardown artifact remains blocked.
 5. The optional OpenAI Agents SDK supervisor has no tools. It can explain
    blockers, recommend only a deterministically admissible Pipeline profile, or
-   request one human decision. The run remains safe and operable when it is off.
+   request one human decision. Its receipt history is a bounded, digest-bound
+   observation window so historical launches cannot exhaust the fixed inference
+   ceiling. It reads only the publisher-generated launch-profile catalog, never
+   extra historical profile files installed on the host. The run remains safe
+   and operable when it is off or typed-blocked.
 
 ## Publish an immutable profile
 
@@ -206,9 +225,13 @@ Pipeline host:
   while that canonical file still permits execution, set
   `BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN=true` in a runtime dispatcher
   drop-in; the service must omit `--execute` and retain a dry receipt;
-- set `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true` only after selecting a
-  profile whose `execution_admission.live_enabled` is true and separately
-  confirming current rights, execution, and spend authority.
+- set `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true` only alongside
+  `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID=<exact immutable launch_id>`,
+  after selecting a profile whose `execution_admission.live_enabled` is true
+  and separately confirming current rights, execution, and spend authority.
+  The dispatcher refuses a global execute request and only claims the named
+  pending launch; it leaves every other pending launch untouched. Clear both
+  values as soon as that launch has retained its binding.
 
 WebApp:
 
@@ -234,7 +257,8 @@ Before the first paid website trigger, retain:
 - signed WebApp queue receipt and Pipeline launch binding;
 - allocator admission and spend authority;
 - watchdog heartbeat, lossless policy media, artifact manifest, terminal
-  receipt, teardown manifest, provider-zero report, and WebApp sync receipt;
+  receipt, teardown manifest, run-owned post-teardown provider-zero receipt,
+  retained guard snapshot, and WebApp sync receipt;
 - explicit confirmation that no provider mutation occurred inside either HTTP
   request path and no automatic paid retry occurred.
 
