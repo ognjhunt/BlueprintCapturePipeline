@@ -48,6 +48,12 @@ _VENDOR_PACKAGES = (
     "playwright-core",
     "three",
 )
+_ADMITTED_CANDIDATE_SET_SCHEMAS = frozenset(
+    {
+        "adp009b_direct_evidence_expansion_set.v1",
+        "adp009b_ownership_coverage_cutout_set.v1",
+    }
+)
 
 
 class RetainedSceneRenderPacketError(ValueError):
@@ -239,7 +245,7 @@ def _validate_candidate_set(
 ]:
     candidate = _read(path, code="retained_scene_render_candidate_set_unreadable")
     if (
-        candidate.get("schema_version") != "adp009b_direct_evidence_expansion_set.v1"
+        candidate.get("schema_version") not in _ADMITTED_CANDIDATE_SET_SCHEMAS
         or candidate.get("receipt_digest")
         != canonical_digest(candidate, digest_field="receipt_digest")
         or (candidate.get("claim_boundary") or {}).get("candidate_derived_layers_only") is not True

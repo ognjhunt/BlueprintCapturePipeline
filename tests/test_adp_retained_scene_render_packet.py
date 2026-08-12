@@ -732,7 +732,11 @@ def _repo(root: Path) -> tuple[Path, Path]:
     return repo, vendor
 
 
-def _inputs(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+def _inputs(
+    tmp_path: Path,
+    *,
+    candidate_schema: str = "adp009b_direct_evidence_expansion_set.v1",
+) -> tuple[Path, dict[str, object]]:
     root = tmp_path / "direct_set"
     source = _source_ply(root / "source.ply")
     shared = root / "shared_scene_union"
@@ -767,7 +771,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         camera = _camera_contract(tmp_path / "cameras" / f"task_{slot}.json", f"camera_{slot}")
         lanes.append({"task_id": task["task_id"], "camera_contract_path": str(camera)})
     candidate: dict[str, object] = {
-        "schema_version": "adp009b_direct_evidence_expansion_set.v1",
+        "schema_version": candidate_schema,
         "task_candidates": tasks,
         "shared_scene_union": {
             "counts": {"source": 10, "deleted_total": 2, "retained_total": 8},
@@ -903,6 +907,48 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     )
     assert "adp_retained_scene_render_provider_bundle" in probe
     assert "apt-get" not in probe
+
+
+def test_seals_broad_ownership_coverage_cutout_for_repair_render(tmp_path: Path) -> None:
+    candidate, inputs = _inputs(
+        tmp_path,
+        candidate_schema="adp009b_ownership_coverage_cutout_set.v1",
+    )
+    repo, vendor = _repo(tmp_path)
+    authority = _authority(tmp_path / "authority.json")
+    request = build_retained_scene_gpu_render_request(
+        {
+            "schema_version": "adp009d_retained_scene_gpu_render_request.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009D",
+            "frozen_before_render_execution": True,
+            "learned_policy_outcomes_accessed": False,
+            "candidate_set_path": str(candidate),
+            "execution_authority_path": str(authority),
+            "renderer_vendor_root": str(vendor),
+            "task_lanes": inputs["lanes"],
+            "private_upload_policy": {
+                "raw_dataset_bytes_upload": False,
+                "private_derived_upload": True,
+                "provider_training": False,
+                "publication": False,
+                "retention": "bounded_to_goal_then_provider_zero",
+            },
+        }
+    )
+    request_path = tmp_path / "request.json"
+    _write_json(request_path, request)
+
+    receipt = build_retained_scene_gpu_render_bundle(
+        request_path=request_path,
+        repo_root=repo,
+        job_dir=tmp_path / "job",
+    )
+
+    assert receipt["status"] == "ready"
+    assert receipt["shared_deleted_source_layer"]["deleted_gaussian_count"] == 2
+    assert receipt["shared_retained_scene"]["retained_gaussian_count"] == 8
+    assert receipt["exact_bundle_entrypoint_rehearsal"]["status"] == "passed"
 
 
 def test_rejects_more_than_five_task_lanes() -> None:
