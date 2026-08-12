@@ -20,6 +20,7 @@ from blueprint_pipeline.public_scene_residual_inpainting_packet import (
     REQUEST_SCHEMA,
     ResidualInpaintingInputPacketError,
     build_residual_inpainting_input_request,
+    materialize_residual_inpainting_input_request,
     materialize_residual_inpainting_input_packet,
 )
 from blueprint_pipeline.public_scene_replacement_depth_composition import (
@@ -449,7 +450,10 @@ def _packet_inputs(tmp_path: Path, *, count: int = 2) -> tuple[Path, Path]:
     }
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     request_path = tmp_path / "request.json"
-    _write_json(request_path, request)
+    materialized = materialize_residual_inpainting_input_request(
+        value=request, output_path=request_path
+    )
+    assert materialized == request
     return request_path, candidate_path
 
 

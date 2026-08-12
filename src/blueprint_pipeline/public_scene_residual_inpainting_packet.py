@@ -218,6 +218,18 @@ def build_residual_inpainting_input_request(value: Mapping[str, Any]) -> dict[st
     return request
 
 
+def materialize_residual_inpainting_input_request(
+    *, value: Mapping[str, Any], output_path: str | Path
+) -> dict[str, Any]:
+    """Seal a validated request before resolving any candidate input artifact."""
+
+    request = build_residual_inpainting_input_request(value)
+    output = Path(output_path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(canonical_json(request) + "\n", encoding="utf-8")
+    return request
+
+
 def _validate_backend_admission(
     path: Path, *, privacy: Mapping[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -940,5 +952,6 @@ __all__ = [
     "REQUEST_SCHEMA",
     "ResidualInpaintingInputPacketError",
     "build_residual_inpainting_input_request",
+    "materialize_residual_inpainting_input_request",
     "materialize_residual_inpainting_input_packet",
 ]
