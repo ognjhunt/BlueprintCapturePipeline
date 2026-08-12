@@ -457,3 +457,44 @@ and is superseded, not merely re-labelled.
 3. **Newton run**, once `validate_newton_explicit_pd_feasibility` admits the full
    drive set rather than only the arm.
 4. **Comparison**, on the shared gravity-real physical system.
+
+## Limits of the local replica, and what it does not establish
+
+The CPU replica used above loads the exact retained `newton_converted_model.xml`
+in MuJoCo 3.11. It is authoritative for what the model *contains* — masses,
+inertias, centres of mass, drive gains, effort limits, equality constraints,
+gravity — and for analytic quantities derived from it. It is **not** a faithful
+reproduction of the paid mjwarp run: the paid Newton canary drifted `0.853` rad,
+while the replica diverges to `2.4`–`5.5` rad in every configuration except one.
+Its solver settings, contact handling and constraint treatment differ from
+mjwarp's, so it must not be used to claim that a given change would or would not
+fix Newton on the provider.
+
+What therefore stands independent of the replica:
+
+- The gravity root cause, because it is arithmetic: `20.070 N·m / kp=400 =
+  0.0502` rad against a `1.0e-2` rad gate. It is corroborated by PhysX's measured
+  `4.649e-06` rad, which is impossible for an arm carrying weight at that gain.
+- The Robotiq drive's explicit-integration ratio, also arithmetic:
+  `sqrt(5729.58 / 3.80173e-07) ≈ 1.23e+05` rad/s, giving `ω·dt ≈ 1.0e+03` at
+  `dt = 1/120` s against a limit of 2.
+- `5729.58 / (180/π) = 100.0000` exactly, so the gripper stiffness is a
+  per-degree value of 100 correctly converted to per-radian.
+
+What is **not** established, and must not be assumed:
+
+- That the Robotiq drive damping is a unit inversion. `0.0114592 × (180/π)² =
+  37.62` looked like the same duplicated-conversion signature as the Franka
+  inertias, but restoring it changes nothing in the replica. **Falsified as a
+  fix; unresolved as a provenance question.**
+- That gripper armature resolves it. Swept `1e-5` … `1e-1`; none passed.
+- That reducing gripper stiffness resolves it. Swept `5729.58` → `1.0`; none
+  passed.
+- That finer integration resolves it. Swept `dt` to `1/7680`, a 64× reduction;
+  none passed.
+
+Zeroing the gripper actuator entirely *does* let the gravity-real arm hold at
+`0.008347` rad, so the gripper is implicated — but since no physically meaningful
+gripper change reproduces that, the replica cannot say which. **The Robotiq
+resolution therefore requires the real Newton runtime, not this replica**, and no
+Newton allocation should be launched claiming a fix is in hand.
