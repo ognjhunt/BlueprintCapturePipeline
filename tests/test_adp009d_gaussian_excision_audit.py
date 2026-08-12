@@ -467,7 +467,10 @@ def _paid_attempt_authority(
         "authority_reference": "fixture-explicit-user-authority",
         "authorized_by": "fixture-user",
         "authorized_on": "2026-08-10",
-        "purpose": "released_code_gaussian_ownership_audit",
+        "purpose": str(
+            bundle.get("execution_purpose")
+            or "released_code_gaussian_ownership_audit"
+        ),
         "provider": "vast",
         "paid_compute_authorized": True,
         "parent_execution_authority_digest": bundle["execution_authority_digest"],
@@ -559,6 +562,22 @@ def test_paid_attempt_authority_binds_same_goal_concurrent_instances(
             previous_attempt_receipt=None,
             allowed_active_instance_ids=[23, 17],
         )
+
+
+def test_paid_attempt_authority_accepts_segment_contribution_sweep_purpose(
+    tmp_path: Path,
+) -> None:
+    bundle = _prepared_excision_bundle(tmp_path)
+    bundle["execution_purpose"] = "released_code_segment_contribution_sweep"
+    authority = _paid_attempt_authority(bundle)
+
+    validated = excision_vast.validate_gaussian_excision_paid_attempt_authority(
+        authority,
+        prepared_bundle=bundle,
+        previous_attempt_receipt=None,
+    )
+
+    assert validated["purpose"] == "released_code_segment_contribution_sweep"
 
 
 def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None:
