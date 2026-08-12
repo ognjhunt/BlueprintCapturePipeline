@@ -1495,6 +1495,31 @@ def test_main_json_report_persists_snapshot_on_dry_run(patched_guard, capsys) ->
     assert "va-super-secret" not in out
 
 
+def test_provider_zero_nonempty_inventory_is_not_mislabeled_live() -> None:
+    """A retained stopped resource blocks provider-zero without inventing live spend."""
+    snapshot = guard.build_json_report(
+        [],
+        protected_ids=set(),
+        max_boot_seconds=480,
+        inventory_results=[
+            {
+                "provider": "vast",
+                "required": True,
+                "status": "succeeded",
+                "row_count": 1,
+                "blockers": [],
+            }
+        ],
+    )
+
+    assert snapshot["live_instance_count"] == 0
+    assert snapshot["total_burn_per_hour_usd"] == 0.0
+    assert snapshot["provider_zero_verified"] is False
+    assert snapshot["provider_zero"]["blockers"] == [
+        "provider_zero_inventory_nonzero:vast"
+    ]
+
+
 def test_main_json_report_records_reap_results(patched_guard) -> None:
     import json as _json
 

@@ -1780,7 +1780,7 @@ def build_json_report(
             )
         elif result.get("row_count") != 0:
             provider_zero_blockers.append(
-                f"provider_zero_live_resources_observed:{provider}"
+                f"provider_zero_inventory_nonzero:{provider}"
             )
     if live:
         provider_zero_blockers.append("provider_zero_live_instances_observed")
