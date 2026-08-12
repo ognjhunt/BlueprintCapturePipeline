@@ -257,6 +257,16 @@ def validate_aura_exact_residual_bundle(receipt_path: str | Path) -> dict[str, A
         or preflight.get("replacement_object_count") != receipt.get("replacement_object_count")
         or preflight.get("execution", {}).get("provider_mutations_performed") != 0
         or preflight.get("execution", {}).get("aura_inpainting_executed") is not False
+        or preflight.get("backend_admission", {}).get("sha256")
+        != request.get("backend_admission", {}).get("sha256")
+        or preflight.get("backend_admission", {}).get("size_bytes")
+        != request.get("backend_admission", {}).get("size_bytes")
+        or preflight.get("shared_retained_scene", {}).get("sha256")
+        != request.get("shared_retained_scene", {}).get("sha256")
+        or preflight.get("shared_retained_scene", {}).get("retained_gaussian_count")
+        != request.get("shared_retained_scene", {}).get("retained_gaussian_count")
+        or len(request.get("camera_inputs") or []) != receipt.get("shared_camera_count")
+        or len(request.get("task_plans") or []) != receipt.get("task_count")
     ):
         raise ValueError("aura_exact_residual_preflight_invalid")
     authority, authority_path = _authority(preflight, backend_value=backend)
