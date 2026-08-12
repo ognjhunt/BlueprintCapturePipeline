@@ -416,9 +416,9 @@ def _write_deterministic_zip(source: Path, destination: Path) -> None:
                 path.relative_to(source).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
             )
             info.external_attr = (stat.S_IMODE(path.stat().st_mode) | stat.S_IFREG) << 16
-            archive.writestr(
-                info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9
-            )
+            info.compress_type = zipfile.ZIP_DEFLATED
+            with path.open("rb") as input_stream, archive.open(info, "w") as output_stream:
+                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
 
 
 def build_retained_scene_gpu_render_bundle(
@@ -535,7 +535,10 @@ def build_retained_scene_gpu_render_bundle(
         if not source.is_file() or source.is_symlink():
             raise RetainedSceneRenderPacketError(["retained_scene_render_provider_runner_missing"])
         target = runtime / destination_name
-        _link_or_copy(source, target)
+        # The runtime shell is chmod-ed below; copying avoids a hard-link mode
+        # mutation escaping into the sealed checkout.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
         if source.suffix == ".sh":
             target.chmod(target.stat().st_mode | stat.S_IXUSR)
     authority_copy = runtime / "execution_authority.json"

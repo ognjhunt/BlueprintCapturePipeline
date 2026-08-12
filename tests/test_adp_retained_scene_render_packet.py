@@ -316,6 +316,13 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     assert (tmp_path / "job/provider_runtime/input/source_standard.ply").stat().st_ino == (
         tmp_path / "direct_set/source.ply"
     ).stat().st_ino
+    source_shell = repo / "scripts/run_adp_retained_scene_render_provider_runtime.sh"
+    bundled_shell = (
+        tmp_path / "job/provider_runtime/run_adp_retained_scene_render_provider_runtime.sh"
+    )
+    assert source_shell.stat().st_ino != bundled_shell.stat().st_ino
+    assert source_shell.stat().st_mode & 0o111 == 0
+    assert bundled_shell.stat().st_mode & 0o111
 
 
 def test_rejects_more_than_five_task_lanes() -> None:
