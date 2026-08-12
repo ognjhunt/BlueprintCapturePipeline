@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import subprocess
 import zipfile
 from pathlib import Path
@@ -213,7 +214,26 @@ def test_seals_shared_camera_bundle_and_rehearses_without_provider_mutation(
             f"provider_runtime/runtime_dependencies/{relative}" in archive.namelist()
             for relative in WONDERWORLD_MARIGOLD_RUNTIME_FILES
         )
+        # Runtime-dependency receipts must be rooted at provider_runtime, not
+        # at the nested runtime_dependencies directory.  The runner consumes
+        # these exact records through its fail-closed file binder.
+        assert all(
+            row["relative_path"].startswith("runtime_dependencies/")
+            for row in request["wonderworld_marigold_runtime"]["files"]
+        )
         assert ENTRYPOINT in archive.namelist()
+
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        archive.extractall(extracted)
+    runner_path = extracted / "provider_runtime" / "public_scene_aura_exact_residual_runner.py"
+    spec = importlib.util.spec_from_file_location("aura_exact_residual_runner_test", runner_path)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    runtime = extracted / "provider_runtime"
+    for row in request["wonderworld_marigold_runtime"]["files"]:
+        assert runner._bound(runtime, row, code="wonderworld_path_unbound") == runtime / row["relative_path"]
 
 
 def test_rejects_a_source_release_tree_with_a_symlink(

@@ -195,7 +195,12 @@ def _copy_wonderworld_marigold_runtime(source: Path, destination: Path) -> list[
             )
         target = destination / relative
         _link_or_copy(source_path, target)
-        records.append(_record(target, root=destination))
+        # The provider runner validates every bound file relative to the
+        # provider-runtime root.  `destination` is the nested
+        # ``runtime_dependencies`` directory, so recording relative to it
+        # would create an unresolvable ``utils/...`` path at execution time.
+        # Keep the receipt path rooted at the sealed runtime instead.
+        records.append(_record(target, root=destination.parent))
     if not records:
         raise AuraExactResidualBundleError(
             ["aura_exact_residual_bundle_wonderworld_runtime_source_invalid"]
