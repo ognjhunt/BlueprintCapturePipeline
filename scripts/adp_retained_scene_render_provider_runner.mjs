@@ -127,10 +127,13 @@ function gpuIdentity() {
   return { nvidia_smi_detected: true, gpu_rows: rows };
 }
 
-function renderOne({ request, lane, variant, source, retained, gpu }) {
+function renderOne({ request, lane, variant, deleted, retained, gpu }) {
   const layer = variant.layer;
-  const splat = layer === "source_standard" ? source : retained;
-  const splatRecord = layer === "source_standard" ? request.source_standard_splat : request.shared_retained_scene;
+  const deletedSourceLayer = layer === "shared_deleted_source_layer";
+  const splat = deletedSourceLayer ? deleted : retained;
+  const splatRecord = deletedSourceLayer
+    ? request.shared_deleted_source_layer
+    : request.shared_retained_scene;
   const cameraPath = checkedFile(runtime, lane.camera_contract);
   const cameras = cameraSpecs(JSON.parse(fs.readFileSync(cameraPath, "utf8")));
   const dimensions = lane.dimensions || {};
@@ -212,9 +215,12 @@ function renderOne({ request, lane, variant, source, retained, gpu }) {
     splat_digest: splatRecord.sha256,
     source_splat: {
       digest: splatRecord.sha256,
-      retained_gaussian_count: layer === "source_standard" ? splatRecord.gaussian_count : request.shared_retained_gaussian_count,
+      retained_gaussian_count: splatRecord.gaussian_count,
       retained_count_source: "verified_standard_ply_header",
     },
+    source_layer_role: deletedSourceLayer
+      ? "shared_deleted_source_union"
+      : "shared_retained_scene",
     calibrated_camera_file: {
       digest: lane.camera_contract.sha256,
       binding: "caller_file_exact_match",
@@ -255,11 +261,11 @@ function main() {
   let request;
   try {
     request = JSON.parse(fs.readFileSync(path.join(runtime, "render_request.json"), "utf8"));
-    const source = checkedFile(runtime, request.source_standard_splat);
+    const deleted = checkedFile(runtime, request.shared_deleted_source_layer);
     const retained = checkedFile(runtime, request.shared_retained_scene);
     checkedFile(runtime, request.candidate_set);
     checkedFile(runtime, request.execution_authority);
-    if (standardPlyCount(source) !== request.source_standard_splat.gaussian_count || standardPlyCount(retained) !== request.shared_retained_gaussian_count) {
+    if (standardPlyCount(deleted) !== request.shared_deleted_source_layer.gaussian_count || standardPlyCount(retained) !== request.shared_retained_gaussian_count) {
       throw new Error("retained_scene_render_runtime_ply_count_invalid");
     }
     for (const lane of request.lanes || []) {
@@ -285,7 +291,7 @@ function main() {
     const variants = [];
     for (const lane of request.lanes || []) {
       for (const variant of lane.render_variants || []) {
-        variants.push(renderOne({ request, lane, variant, source, retained, gpu }));
+        variants.push(renderOne({ request, lane, variant, deleted, retained, gpu }));
       }
     }
     const result = {
@@ -297,6 +303,7 @@ function main() {
       provider_mutations_performed: 0,
       candidate_set_digest: request.candidate_set_digest,
       request_digest: request.request_digest,
+      shared_deleted_source_layer_digest: request.shared_deleted_source_layer.sha256,
       shared_retained_scene_digest: request.shared_retained_scene.sha256,
       render_manifests: variants,
       blockers: [],

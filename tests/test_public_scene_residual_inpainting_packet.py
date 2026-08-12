@@ -317,6 +317,9 @@ def _packet_inputs(tmp_path: Path, *, count: int = 2) -> tuple[Path, Path]:
     retained = write_standard_3dgs_ply_subset_exact(
         source, shared_root / "retained_scene_gaussians.ply", retained_indices
     )
+    deleted_splats = write_standard_3dgs_ply_subset_exact(
+        source, shared_root / "deleted_source_gaussians.ply", deleted_indices
+    )
     tasks: list[dict[str, object]] = []
     task_records: list[dict[str, object]] = []
     task_paths: list[Path] = []
@@ -343,6 +346,7 @@ def _packet_inputs(tmp_path: Path, *, count: int = 2) -> tuple[Path, Path]:
         "shared_scene_union": {
             "counts": {"source": 10, "deleted_total": 2, "retained_total": 8},
             "outputs": {
+                "deleted_source_gaussians": _relative_record(source_root, deleted_splats),
                 "deleted_source_indices": _relative_record(
                     source_root, shared_root / "deleted_source_indices.npy"
                 ),
@@ -371,7 +375,7 @@ def _packet_inputs(tmp_path: Path, *, count: int = 2) -> tuple[Path, Path]:
         coverage = _make_coverage(
             lane_root / "coverage",
             task=task,
-            shared_digest=_sha256(retained),
+            shared_digest=_sha256(deleted_splats),
             expected_asset_ids=assets,
             camera_id=f"camera_{slot}",
             composition_path=composition,
@@ -424,6 +428,7 @@ def test_materializes_exact_mask_packet_for_five_independent_replacements(tmp_pa
     assert packet["maximum_replacement_objects"] == 5
     assert packet["claim_boundary"]["released_code_inpainting_executed"] is False
     assert packet["claim_boundary"]["inpainting_result_qualified"] is False
+    assert packet["shared_deleted_source_layer"]["source_layer_role"] == "shared_deleted_source_union"
     assert len(packet["lanes"]) == 5
 
 
@@ -437,6 +442,27 @@ def test_blocks_coverage_from_a_different_retained_scene(tmp_path: Path) -> None
     _write_json(coverage_path, coverage)
 
     with pytest.raises(ResidualInpaintingInputPacketError, match="coverage_audit_invalid"):
+        materialize_residual_inpainting_input_packet(
+            request_path=request_path, output_root=tmp_path / "packet"
+        )
+
+
+def test_blocks_deleted_source_layer_that_is_not_byte_exact_to_deletion_indices(
+    tmp_path: Path,
+) -> None:
+    request_path, candidate_path = _packet_inputs(tmp_path)
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    root = candidate_path.parent
+    candidate["shared_scene_union"]["outputs"]["deleted_source_gaussians"] = _relative_record(
+        root, root / "shared_scene_union" / "retained_scene_gaussians.ply"
+    )
+    candidate["receipt_digest"] = canonical_digest(candidate, digest_field="receipt_digest")
+    _write_json(candidate_path, candidate)
+
+    with pytest.raises(
+        ResidualInpaintingInputPacketError,
+        match="shared_retained_scene_not_byte_exact",
+    ):
         materialize_residual_inpainting_input_packet(
             request_path=request_path, output_root=tmp_path / "packet"
         )

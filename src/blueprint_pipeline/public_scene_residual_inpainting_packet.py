@@ -263,7 +263,7 @@ def _validate_backend_admission(
 
 def _validate_candidate_set(
     path: Path,
-) -> tuple[dict[str, Any], dict[str, Any], Path, dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], Path, dict[str, Any], Path, dict[str, Any]]:
     candidate_set = _read_object(path, code="residual_inpainting_candidate_set_unreadable")
     digest_field = "receipt_digest" if "receipt_digest" in candidate_set else "set_digest"
     expected = canonical_digest(candidate_set, digest_field=digest_field)
@@ -294,6 +294,11 @@ def _validate_candidate_set(
         outputs.get("retained_scene_gaussians"),
         code="residual_inpainting_shared_retained_scene_invalid",
     )
+    deleted_path, deleted_record = _relative_record(
+        root,
+        outputs.get("deleted_source_gaussians"),
+        code="residual_inpainting_shared_deleted_source_layer_invalid",
+    )
     counts = union.get("counts")
     deleted_indices_path, _deleted_indices_record = _relative_record(
         root,
@@ -312,8 +317,20 @@ def _validate_candidate_set(
         raise ResidualInpaintingInputPacketError(
             ["residual_inpainting_shared_index_arrays_unreadable"]
         ) from exc
-    source_count = read_standard_3dgs_ply(source_path).count
-    retained_count = read_standard_3dgs_ply(retained_path).count
+    try:
+        source_count = read_standard_3dgs_ply(source_path).count
+        retained_count = read_standard_3dgs_ply(retained_path).count
+        deleted_count = read_standard_3dgs_ply(deleted_path).count
+        retained_byte_exact = verify_standard_3dgs_ply_subset_exact(
+            source_path, retained_path, retained_indices
+        ).get("retained_rows_byte_exact")
+        deleted_byte_exact = verify_standard_3dgs_ply_subset_exact(
+            source_path, deleted_path, deleted_indices
+        ).get("retained_rows_byte_exact")
+    except (OSError, ValueError) as exc:
+        raise ResidualInpaintingInputPacketError(
+            ["residual_inpainting_shared_retained_scene_not_byte_exact"]
+        ) from exc
     expected_source_indices = np.arange(source_count, dtype=np.int64)
     if (
         deleted_indices.ndim != 1
@@ -324,10 +341,8 @@ def _validate_candidate_set(
         or not np.array_equal(
             np.union1d(deleted_indices, retained_indices), expected_source_indices
         )
-        or verify_standard_3dgs_ply_subset_exact(
-            source_path, retained_path, retained_indices
-        ).get("retained_rows_byte_exact")
-        is not True
+        or retained_byte_exact is not True
+        or deleted_byte_exact is not True
     ):
         raise ResidualInpaintingInputPacketError(
             ["residual_inpainting_shared_retained_scene_not_byte_exact"]
@@ -337,12 +352,18 @@ def _validate_candidate_set(
         or counts.get("source") != source_count
         or counts.get("deleted_total") != int(deleted_indices.size)
         or counts.get("retained_total") != retained_count
+        or deleted_count != int(deleted_indices.size)
         or retained_count <= 0
+        or deleted_count <= 0
     ):
         raise ResidualInpaintingInputPacketError(["residual_inpainting_shared_retained_count_invalid"])
     return candidate_set, {
         **_file_record(path),
         digest_field: candidate_set[digest_field],
+    }, deleted_path, {
+        **deleted_record,
+        "deleted_gaussian_count": deleted_count,
+        "source_layer_role": "shared_deleted_source_union",
     }, retained_path, retained_record
 
 
@@ -393,7 +414,7 @@ def _validate_coverage_audit(
     *,
     lane: Mapping[str, Any],
     candidate: Mapping[str, Any],
-    shared_splat_digest: str,
+    deleted_source_splat_digest: str,
     expected_asset_ids: Sequence[str],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
     audit = _read_object(path, code="residual_inpainting_coverage_audit_unreadable")
@@ -403,7 +424,7 @@ def _validate_coverage_audit(
         or audit.get("manifest_digest")
         != canonical_digest(audit, digest_field="manifest_digest")
         or audit.get("uncovered_source_support_masks_are_inpainting_authority") is not True
-        or audit.get("source_layer_splat_digest") != shared_splat_digest
+        or audit.get("source_layer_splat_digest") != deleted_source_splat_digest
     ):
         raise ResidualInpaintingInputPacketError(["residual_inpainting_coverage_audit_invalid"])
     task_freeze = candidate["task_freeze"]
@@ -624,9 +645,14 @@ def materialize_residual_inpainting_input_packet(
     candidate_path = _path(
         request["candidate_set_path"], code="residual_inpainting_candidate_set_missing"
     )
-    candidate_set, candidate_record, shared_ply, shared_ply_record = _validate_candidate_set(
-        candidate_path
-    )
+    (
+        candidate_set,
+        candidate_record,
+        deleted_ply,
+        deleted_ply_record,
+        shared_ply,
+        shared_ply_record,
+    ) = _validate_candidate_set(candidate_path)
     candidate_tasks = _candidate_tasks(candidate_set)
     requested_ids = {str(lane["task_id"]) for lane in request["task_lanes"]}
     if requested_ids != set(candidate_tasks):
@@ -655,7 +681,7 @@ def materialize_residual_inpainting_input_packet(
             coverage_path,
             lane=lane,
             candidate=candidate,
-            shared_splat_digest=shared_digest,
+            deleted_source_splat_digest=deleted_ply_record["sha256"],
             expected_asset_ids=expected_asset_ids,
         )
         render_path = _path(
@@ -705,6 +731,11 @@ def materialize_residual_inpainting_input_packet(
             **shared_ply_record,
             "retained_gaussian_count": shared_count,
             "all_replacements_co_present": True,
+        },
+        "shared_deleted_source_layer": {
+            **deleted_ply_record,
+            "all_replacements_co_present": True,
+            "source_mask_authority_only": True,
         },
         "backend_admission": backend_record,
         "private_upload_policy": dict(privacy),

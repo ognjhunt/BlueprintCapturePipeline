@@ -159,7 +159,7 @@ def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
     output = tmp_path / "output"
     renderer = runtime / "renderer"
     renderer.mkdir(parents=True)
-    source = runtime / "input/source.ply"
+    source = runtime / "input/deleted.ply"
     retained = runtime / "input/retained.ply"
     candidate = runtime / "input/candidate.json"
     authority = runtime / "execution_authority.json"
@@ -201,7 +201,7 @@ def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
         encoding="utf-8",
     )
     request = {
-        "source_standard_splat": {**_relative_record(runtime, source), "gaussian_count": 1},
+        "shared_deleted_source_layer": {**_relative_record(runtime, source), "gaussian_count": 1},
         "shared_retained_scene": _relative_record(runtime, retained),
         "shared_retained_gaussian_count": 1,
         "candidate_set": _relative_record(runtime, candidate),
@@ -216,7 +216,7 @@ def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
                 "task_freeze": _relative_record(runtime, freeze),
                 "dimensions": {"width": 2, "height": 2},
                 "render_variants": [
-                    {"layer": "source_standard", "background_rgb": "#000000"}
+                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"}
                 ],
             }
         ],
@@ -263,7 +263,7 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
     output = tmp_path / "output"
     renderer = runtime / "renderer"
     renderer.mkdir(parents=True)
-    source = runtime / "input/source.ply"
+    source = runtime / "input/deleted.ply"
     retained = runtime / "input/retained.ply"
     candidate = runtime / "input/candidate.json"
     authority = runtime / "execution_authority.json"
@@ -310,7 +310,7 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
         encoding="utf-8",
     )
     request = {
-        "source_standard_splat": {**_relative_record(runtime, source), "gaussian_count": 1},
+        "shared_deleted_source_layer": {**_relative_record(runtime, source), "gaussian_count": 1},
         "shared_retained_scene": _relative_record(runtime, retained),
         "shared_retained_gaussian_count": 1,
         "candidate_set": _relative_record(runtime, candidate),
@@ -325,7 +325,7 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
                 "task_freeze": _relative_record(runtime, freeze),
                 "dimensions": {"width": 2, "height": 2},
                 "render_variants": [
-                    {"layer": "source_standard", "background_rgb": "#000000"}
+                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"}
                 ],
             }
         ],
@@ -353,6 +353,8 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
     assert result["status"] == "completed"
     manifest_path = Path(result["render_manifests"][0]["manifest_path"])
     manifest = json.loads(manifest_path.read_text())
+    assert manifest["source_layer_role"] == "shared_deleted_source_union"
+    assert manifest["splat_digest"] == _sha256(source)
     assert manifest["renders"] == [
         {
             "camera_id": "camera",
@@ -693,6 +695,9 @@ def _inputs(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     retained = write_standard_3dgs_ply_subset_exact(
         source, shared / "retained_scene_gaussians.ply", retained_indices
     )
+    deleted_splats = write_standard_3dgs_ply_subset_exact(
+        source, shared / "deleted_source_gaussians.ply", deleted
+    )
     tasks: list[dict[str, object]] = []
     lanes: list[dict[str, object]] = []
     for slot in (1, 2):
@@ -718,6 +723,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "shared_scene_union": {
             "counts": {"source": 10, "deleted_total": 2, "retained_total": 8},
             "outputs": {
+                "deleted_source_gaussians": _relative_record(root, deleted_splats),
                 "deleted_source_indices": _relative_record(
                     root, shared / "deleted_source_indices.npy"
                 ),
@@ -775,11 +781,11 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     assert receipt["exact_bundle_entrypoint_rehearsal"]["provider_mutations_performed"] == 0
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         names = set(archive.namelist())
-    assert "provider_runtime/input/source_standard.ply" in names
+    assert "provider_runtime/input/shared_deleted_source_layer.ply" in names
     assert "provider_runtime/input/shared_retained_scene.ply" in names
     assert "provider_runtime/input/direct_evidence_successor_set.json" in names
-    assert (tmp_path / "job/provider_runtime/input/source_standard.ply").stat().st_ino == (
-        tmp_path / "direct_set/source.ply"
+    assert (tmp_path / "job/provider_runtime/input/shared_deleted_source_layer.ply").stat().st_ino == (
+        tmp_path / "direct_set/shared_scene_union/deleted_source_gaussians.ply"
     ).stat().st_ino
     source_shell = repo / "scripts/run_adp_retained_scene_render_provider_runtime.sh"
     bundled_shell = (

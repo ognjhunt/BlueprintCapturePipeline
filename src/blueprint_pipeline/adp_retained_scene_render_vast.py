@@ -105,7 +105,14 @@ def validate_retained_scene_render_bundle(
         or value.get("automatic_paid_retry_allowed") is not False
         or value.get("provider_zero_required_after_return") is not True
         or value.get("source_pair_per_task") is not True
+        or value.get("deleted_source_layer_pair_per_task") is not True
         or value.get("retained_frame_per_task") is not True
+        or not isinstance(value.get("shared_deleted_source_layer"), Mapping)
+        or value["shared_deleted_source_layer"].get("source_layer_role")
+        != "shared_deleted_source_union"
+        or not str(value["shared_deleted_source_layer"].get("sha256") or "").startswith(
+            "sha256:"
+        )
         or value.get("maximum_replacement_objects") != 5
         or not str(value.get("candidate_set_digest") or "").startswith("sha256:")
         or not str(

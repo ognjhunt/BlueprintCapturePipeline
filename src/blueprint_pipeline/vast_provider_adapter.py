@@ -2222,7 +2222,7 @@ def _blueprint_bundle_preflight(
         "provider_runtime/adp_retained_scene_gpu_render_manifest.json",
         "provider_runtime/render_request.json",
         "provider_runtime/execution_authority.json",
-        "provider_runtime/input/source_standard.ply",
+        "provider_runtime/input/shared_deleted_source_layer.ply",
         "provider_runtime/input/shared_retained_scene.ply",
         "provider_runtime/renderer/render_splat.mjs",
     }

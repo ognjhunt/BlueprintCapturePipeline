@@ -2,9 +2,11 @@
 
 This is deliberately an input/bundle boundary, not a render result.  It lets a
 provider receive only the two derived standard PLYs needed to render the
-frozen task cameras: the immutable source conversion and the byte-exact shared
-retained scene.  Raw InteriorGS bytes, replacement generation, inpainting, and
-policy outcomes are all outside this module.
+frozen task cameras: the byte-exact deleted shared source layer for residual
+masks and the byte-exact shared retained scene for inpainting backgrounds.
+The complete source conversion stays local provenance; raw InteriorGS bytes,
+replacement generation, inpainting, and policy outcomes are all outside this
+module.
 """
 
 from __future__ import annotations
@@ -228,7 +230,13 @@ def _validate_authority(path: Path) -> dict[str, Any]:
 
 def _validate_candidate_set(
     path: Path,
-) -> tuple[dict[str, Any], Path, Path, dict[str, tuple[Path, dict[str, Any]]]]:
+) -> tuple[
+    dict[str, Any],
+    Path,
+    Path,
+    Path,
+    dict[str, tuple[Path, dict[str, Any]]],
+]:
     candidate = _read(path, code="retained_scene_render_candidate_set_unreadable")
     if (
         candidate.get("schema_version") != "adp009b_direct_evidence_expansion_set.v1"
@@ -252,6 +260,11 @@ def _validate_candidate_set(
         outputs.get("retained_scene_gaussians"),
         code="retained_scene_render_shared_retained_splat_invalid",
     )
+    deleted = _relative_record(
+        path.parent,
+        outputs.get("deleted_source_gaussians"),
+        code="retained_scene_render_shared_deleted_source_layer_invalid",
+    )
     deleted_indices_path = _relative_record(
         path.parent,
         outputs.get("deleted_source_indices"),
@@ -265,6 +278,7 @@ def _validate_candidate_set(
     counts = union.get("counts")
     try:
         source_count = read_standard_3dgs_ply(source).count
+        deleted_count = read_standard_3dgs_ply(deleted).count
         retained_count = read_standard_3dgs_ply(retained).count
     except (OSError, ValueError) as exc:
         raise RetainedSceneRenderPacketError(
@@ -280,6 +294,9 @@ def _validate_candidate_set(
         byte_exact = verify_standard_3dgs_ply_subset_exact(source, retained, retained_indices).get(
             "retained_rows_byte_exact"
         )
+        deleted_byte_exact = verify_standard_3dgs_ply_subset_exact(
+            source, deleted, deleted_indices
+        ).get("retained_rows_byte_exact")
     except (OSError, ValueError) as exc:
         raise RetainedSceneRenderPacketError(
             ["retained_scene_render_shared_indices_or_subset_unreadable"]
@@ -293,11 +310,14 @@ def _validate_candidate_set(
         or np.intersect1d(deleted_indices, retained_indices, assume_unique=True).size
         or not np.array_equal(np.union1d(deleted_indices, retained_indices), expected_indices)
         or byte_exact is not True
+        or deleted_byte_exact is not True
         or not isinstance(counts, Mapping)
         or counts.get("source") != source_count
         or counts.get("deleted_total") != int(deleted_indices.size)
         or counts.get("retained_total") != retained_count
+        or deleted_count != int(deleted_indices.size)
         or retained_count <= 0
+        or deleted_count <= 0
     ):
         raise RetainedSceneRenderPacketError(
             ["retained_scene_render_shared_retained_scene_not_byte_exact"]
@@ -324,7 +344,7 @@ def _validate_candidate_set(
         ):
             raise RetainedSceneRenderPacketError(["retained_scene_render_task_freeze_join_invalid"])
         task_paths[task_id] = (freeze_path, freeze)
-    return candidate, source, retained, task_paths
+    return candidate, source, deleted, retained, task_paths
 
 
 def _camera_contract(path: Path) -> tuple[list[dict[str, Any]], int, int]:
@@ -442,7 +462,9 @@ def build_retained_scene_gpu_render_bundle(
         request["candidate_set_path"],
         code="retained_scene_render_candidate_set_missing",
     )
-    candidate, source_ply, retained_ply, task_paths = _validate_candidate_set(candidate_path)
+    candidate, source_ply, deleted_ply, retained_ply, task_paths = _validate_candidate_set(
+        candidate_path
+    )
     authority_path = _file(
         request["execution_authority_path"],
         code="retained_scene_render_execution_authority_missing",
@@ -458,9 +480,9 @@ def build_retained_scene_gpu_render_bundle(
     runtime = job / "provider_runtime"
     input_root = runtime / "input"
     input_root.mkdir(parents=True)
-    source_copy = input_root / "source_standard.ply"
+    deleted_copy = input_root / "shared_deleted_source_layer.ply"
     retained_copy = input_root / "shared_retained_scene.ply"
-    _link_or_copy(source_ply, source_copy)
+    _link_or_copy(deleted_ply, deleted_copy)
     _link_or_copy(retained_ply, retained_copy)
     candidate_copy = input_root / "direct_evidence_successor_set.json"
     _link_or_copy(candidate_path, candidate_copy)
@@ -498,8 +520,8 @@ def build_retained_scene_gpu_render_bundle(
                 "camera_count": len(cameras),
                 "dimensions": {"width": width, "height": height},
                 "render_variants": [
-                    {"layer": "source_standard", "background_rgb": "#000000"},
-                    {"layer": "source_standard", "background_rgb": "#ffffff"},
+                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"},
+                    {"layer": "shared_deleted_source_layer", "background_rgb": "#ffffff"},
                     {"layer": "shared_retained_scene", "background_rgb": "#000000"},
                 ],
             }
@@ -560,9 +582,15 @@ def build_retained_scene_gpu_render_bundle(
         "candidate_set": _record(candidate_copy, root=runtime),
         "candidate_set_digest": candidate["receipt_digest"],
         "execution_authority": _record(authority_copy, root=runtime),
-        "source_standard_splat": {
-            **_record(source_copy, root=runtime),
+        "source_standard_splat_provenance": {
+            **_record(source_ply),
             "gaussian_count": read_standard_3dgs_ply(source_ply).count,
+            "included_in_provider_bundle": False,
+        },
+        "shared_deleted_source_layer": {
+            **_record(deleted_copy, root=runtime),
+            "gaussian_count": read_standard_3dgs_ply(deleted_ply).count,
+            "source_layer_role": "shared_deleted_source_union",
         },
         "shared_retained_scene": _record(retained_copy, root=runtime),
         "shared_retained_gaussian_count": read_standard_3dgs_ply(retained_ply).count,
@@ -595,7 +623,14 @@ def build_retained_scene_gpu_render_bundle(
             **_record(authority_path),
             "authority_digest": authority["authority_digest"],
         },
-        "source_standard_splat": render_request["source_standard_splat"],
+        "source_standard_splat_provenance": render_request[
+            "source_standard_splat_provenance"
+        ],
+        "shared_deleted_source_layer": {
+            **_record(deleted_copy, root=runtime),
+            "deleted_gaussian_count": read_standard_3dgs_ply(deleted_ply).count,
+            "source_layer_role": "shared_deleted_source_union",
+        },
         "shared_retained_scene": {
             **_record(retained_copy, root=runtime),
             "retained_gaussian_count": read_standard_3dgs_ply(retained_ply).count,
@@ -603,6 +638,7 @@ def build_retained_scene_gpu_render_bundle(
         "task_lanes": lanes,
         "maximum_replacement_objects": MAX_REPLACEMENT_OBJECTS,
         "source_pair_per_task": True,
+        "deleted_source_layer_pair_per_task": True,
         "retained_frame_per_task": True,
         "renderer_identity": renderer_identity,
         "provider_network_dependency_install_required": False,
