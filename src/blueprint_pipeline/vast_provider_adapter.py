@@ -4585,7 +4585,28 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
             "observed": False,
             "status": "unknown",
             "exited": False,
+            "ssh_host": None,
+            "ssh_port": None,
         }
+    return _instance_liveness_from_payload(payload, instance_id=instance_id)
+
+
+def _instance_liveness_from_payload(
+    payload: Mapping[str, Any], *, instance_id: int
+) -> dict[str, Any]:
+    """Read status and the workload-independent access endpoint from one record.
+
+    The endpoint matters because every other way we observe a run requires the
+    workload to cooperate: the provider log store only holds what the container
+    uploaded, the echo endpoint only carries what the workload posted, and
+    worker-endpoint discovery only completes once the runtime reports. A live
+    paid run went twenty minutes with all three silent while the provider
+    reported ``running``, so nothing could reach an instance we were paying for.
+
+    The provider hands the SSH endpoint back on the call the liveness probe
+    already makes; it was being parsed past and dropped.
+    """
+
     rows = _instance_list_rows(payload)
     if not rows:
         if isinstance(payload.get("instances"), list):
@@ -4597,6 +4618,8 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
                 "observed": True,
                 "status": "absent",
                 "exited": True,
+                "ssh_host": None,
+                "ssh_port": None,
             }
         # A successful response with no recognizable status is not an exit.
         # Let the bounded watchdogs retain and name this provider-shape fault.
@@ -4605,6 +4628,8 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
             "observed": False,
             "status": "unknown",
             "exited": False,
+            "ssh_host": None,
+            "ssh_port": None,
         }
     for row in rows:
         row_instance_id = _number(
@@ -4614,11 +4639,16 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
         # endpoint identity then binds this row to ``instance_id``.
         if row_instance_id is None or row_instance_id == float(int(instance_id)):
             status = _instance_status(row).lower()
+            ssh_port = _number(row.get("ssh_port"))
             return {
                 "observed": True,
                 "status": status,
                 "exited": status in {"exited", "stopped_before_start"},
                 "probe_error": None,
+                # Absent rather than invented: a fabricated endpoint would send
+                # a human to a host that is not there.
+                "ssh_host": _string(row.get("ssh_host")) or None,
+                "ssh_port": int(ssh_port) if ssh_port is not None else None,
             }
     # A different id at the per-instance endpoint is an API-shape fault, not
     # evidence that the allocation was destroyed.
@@ -4627,6 +4657,8 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
         "observed": False,
         "status": "unknown",
         "exited": False,
+        "ssh_host": None,
+        "ssh_port": None,
     }
 
 
@@ -5130,6 +5162,16 @@ def _request_logs_and_fetch(
         "log_transport_failure_streak": log_transport_failure_streak,
         "log_transport_failure_limit": log_transport_failure_ceiling,
         "last_log_transport_error": last_log_transport_error,
+        # When every channel is silent this is the only way back to an instance
+        # we are still paying for. Without it the forensic trail ends at "403"
+        # and the next attempt has to buy the same twenty minutes to learn the
+        # same nothing.
+        "instance_ssh_host": last_instance_liveness.get("ssh_host"),
+        "instance_ssh_port": last_instance_liveness.get("ssh_port"),
+        "workload_independent_access_recorded": bool(
+            last_instance_liveness.get("ssh_host")
+            and last_instance_liveness.get("ssh_port")
+        ),
         "break_reason": break_reason,
     }
 
@@ -7248,6 +7290,17 @@ def run_vast_provider_adapter(
             "downstream_provider_marker_seen": downstream_marker_seen,
             "heartbeat_url_kind": "public_echo_endpoint",
             "heartbeat_no_progress_timeout_seconds": resolved_heartbeat_no_progress_seconds,
+            # Retained on every run, not only failures: an operator reading
+            # this manifest after teardown needs to know whether the run was
+            # reachable at all, and a receipt that only records access when
+            # it succeeded cannot answer that.
+            "instance_ssh_host": onstart_logs.get("instance_ssh_host"),
+            "instance_ssh_port": onstart_logs.get("instance_ssh_port"),
+            "workload_independent_access_recorded": bool(
+                onstart_logs.get("workload_independent_access_recorded")
+            ),
+            "log_transport_failed": heartbeat_log_transport_failed,
+            "log_bytes_ever_read": bool(onstart_logs.get("log_bytes_ever_read")),
             "launch_mode_used": launch_mode,
             "disk_gb": resolved_disk_gb,
             "container_image": selected_container_image,

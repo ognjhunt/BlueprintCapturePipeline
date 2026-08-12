@@ -1332,6 +1332,10 @@ def test_instance_liveness_rejects_unrecognized_payload_as_exit(
         "status": "unknown",
         "exited": False,
         "probe_error": "provider_instance_listing_unrecognized",
+        # Every return path carries the same keys, so a caller never has to know
+        # which branch it came from before testing one.
+        "ssh_host": None,
+        "ssh_port": None,
     }
 
 
@@ -7231,3 +7235,122 @@ def test_request_logs_streak_resets_once_bytes_are_read(
 
     assert result["log_bytes_ever_read"] is True
     assert result["break_reason"] == "no_log_progress_timeout"
+
+
+def test_instance_liveness_retains_the_provider_ssh_endpoint() -> None:
+    """The one observation path that does not require the workload to cooperate.
+
+    A live paid run went twenty minutes with every observation channel silent --
+    log fetch 403, echo endpoint unmarked, worker endpoint discovery pending --
+    while the instance reported `running`. All three depend on the workload
+    phoning home, so a workload that never starts is unobservable and the run
+    reports a verdict about a render that may never have run.
+
+    The provider hands us an SSH endpoint on the same call the liveness probe
+    already makes. It was being discarded.
+    """
+    payload = {
+        "instances": [
+            {
+                "id": 47574163,
+                "actual_status": "running",
+                "ssh_host": "ssh5.vast.ai",
+                "ssh_port": 41234,
+            }
+        ]
+    }
+
+    liveness = vpa._instance_liveness_from_payload(payload, instance_id=47574163)
+
+    assert liveness["status"] == "running"
+    assert liveness["ssh_host"] == "ssh5.vast.ai"
+    assert liveness["ssh_port"] == 41234
+
+
+def test_instance_liveness_endpoint_is_absent_not_invented() -> None:
+    """A provider row without an endpoint must not fabricate one."""
+    payload = {"instances": [{"id": 1, "actual_status": "running"}]}
+
+    liveness = vpa._instance_liveness_from_payload(payload, instance_id=1)
+
+    assert liveness["ssh_host"] is None
+    assert liveness["ssh_port"] is None
+
+
+def test_request_logs_reports_the_endpoint_for_an_unobservable_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """When we abort on a dead log channel, hand back the way in."""
+
+    def fake_fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch)
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_k: {
+            "observed": True,
+            "status": "running",
+            "exited": False,
+            "probe_error": None,
+            "ssh_host": "ssh5.vast.ai",
+            "ssh_port": 41234,
+        },
+    )
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=47574163,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=30,
+        no_progress_seconds=1200,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=3,
+    )
+
+    assert result["break_reason"] == "log_transport_unavailable"
+    # Without this a human has no way to reach an instance we are still paying
+    # for, and the forensic trail ends at "403".
+    assert result["instance_ssh_host"] == "ssh5.vast.ai"
+    assert result["instance_ssh_port"] == 41234
+    assert result["workload_independent_access_recorded"] is True
+
+
+def test_request_logs_marks_access_unrecorded_when_the_provider_omits_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """An unobservable instance with no way in is a distinct, worse state."""
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(
+        vpa, "_fetch_text", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("403"))
+    )
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=1,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=30,
+        no_progress_seconds=1200,
+        success_markers=["done"],
+        log_transport_failure_limit=3,
+    )
+
+    assert result["workload_independent_access_recorded"] is False
+    assert result["instance_ssh_host"] is None
