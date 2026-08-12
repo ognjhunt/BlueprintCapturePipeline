@@ -125,7 +125,10 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
 RECEIPT_FILENAME = "terminal_resource_release_receipt.json"
 
 
-def release_redrive_admission(receipt: Mapping[str, Any] | None) -> dict[str, Any]:
+def release_redrive_admission(
+    receipt: Mapping[str, Any] | None,
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Decide whether a blocked release may be re-armed by an operator.
 
     The invariant that matters is that the provider was never contacted. A
@@ -134,11 +137,29 @@ def release_redrive_admission(receipt: Mapping[str, Any] | None) -> dict[str, An
     behind to reconcile, so re-running it can neither double-spend nor destroy
     an unexpected resource.
 
-    Absent evidence is not evidence of absence: a missing receipt is refused,
-    because a release whose outcome was never retained may have mutated the
-    provider before dying.
+    When no outcome was retained the question cannot be answered from evidence,
+    but for one action class it does not need to be. The release worker
+    re-inspects the provider before any mutation and proceeds only on an
+    API-confirmed exact ``instance_id``, a matching ``expected_label`` and a
+    terminal status; an instance already absent is confirmed rather than
+    touched. With zero additional spend and a zero retry cap, re-driving a
+    release-only action can neither double-spend nor destroy an unexpected
+    resource. Any other action without a retained receipt stays refused.
     """
     if not isinstance(receipt, Mapping):
+        authorization = _mapping((request or {}).get("authorization"))
+        if (
+            isinstance(request, Mapping)
+            and authorization.get("action") == "terminal_provider_record_release"
+            and authorization.get("max_additional_spend_usd") == 0
+            and authorization.get("retry_cap") == 0
+        ):
+            return {
+                "admitted": True,
+                "blockers": [],
+                "admitted_without_retained_receipt": True,
+                "evidence": "release_worker_reverifies_exact_instance_before_mutation",
+            }
         return {"admitted": False, "blockers": ["redrive_refused_no_retained_receipt"]}
 
     blockers: list[str] = []
@@ -190,7 +211,8 @@ def stage_terminal_resource_release_request(
 
     if existing is not None and existing.parent.name == "blocked" and state_root is not None:
         admission = release_redrive_admission(
-            _retained_receipt(state_root, _string(request["release_id"]))
+            _retained_receipt(state_root, _string(request["release_id"])),
+            request,
         )
         if not admission["admitted"]:
             raise TerminalResourceReleaseError(",".join(admission["blockers"]))
