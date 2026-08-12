@@ -4879,6 +4879,7 @@ def _request_logs_and_fetch(
     success_markers: Sequence[str] = (),
     container_missing_retry_attempts: int = 5,
     no_progress_seconds: int | None = None,
+    log_transport_failure_limit: int = 6,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, max_wait_seconds)
     attempts: list[dict[str, Any]] = []
@@ -4909,6 +4910,16 @@ def _request_logs_and_fetch(
     # run; still detects a dead container in about a minute rather than thirty.
     instance_exited_count = 0
     last_instance_liveness: dict[str, Any] = {}
+    # A log channel that has never once delivered bytes is a transport fault,
+    # not a silent workload.  Observed on a live paid run: 34 consecutive polls
+    # returned HTTP 200 with a result_url and every fetch of that URL returned
+    # 403, while the instance reported `running` throughout.  The run burned the
+    # full twenty-minute no-progress window and was then reported as a failed
+    # probe, which named the workload for a fault in reading its output.
+    log_bytes_ever_read = False
+    log_transport_failure_streak = 0
+    last_log_transport_error: str | None = None
+    log_transport_failure_ceiling = max(0, int(log_transport_failure_limit))
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -4936,6 +4947,15 @@ def _request_logs_and_fetch(
             except Exception as exc:  # pragma: no cover - live network dependent.
                 fetch_error = f"{type(exc).__name__}: {str(exc)[:300]}"
         output_text = attempt_text
+        if attempt_text:
+            log_bytes_ever_read = True
+        if fetch_error and not attempt_text:
+            log_transport_failure_streak += 1
+            last_log_transport_error = fetch_error
+        elif not fetch_error:
+            # A successful read proves the channel, even when the workload had
+            # nothing to say yet; later failures are then transient by evidence.
+            log_transport_failure_streak = 0
         # Persist each redacted snapshot immediately.  If the allocator is interrupted
         # or the outer TTL fires during a later poll, the last scientific worker phases
         # must survive teardown instead of disappearing with the provider instance.
@@ -5065,9 +5085,19 @@ def _request_logs_and_fetch(
             attempts[-1]["instance_status"] = confirmed_liveness.get("status")
             attempts[-1]["instance_exited_observed_count"] = instance_exited_count
             attempts[-1]["instance_liveness_probe_error"] = confirmed_liveness.get("probe_error")
+        log_transport_unavailable = bool(
+            log_transport_failure_ceiling
+            and not log_bytes_ever_read
+            and log_transport_failure_streak >= log_transport_failure_ceiling
+        )
         instance_exited = instance_exited_count >= 2
         if marker_found:
             break_reason = "success_marker_found"
+        elif log_transport_unavailable:
+            # Ahead of the no-progress watchdog, whose blocker would blame the
+            # workload for output we were never able to read.  Also stops paying
+            # for an instance we cannot observe: a minute instead of twenty.
+            break_reason = "log_transport_unavailable"
         elif instance_exited:
             # Ahead of the generic watchdogs so the reason names the exit rather
             # than blaming absent log progress, which is only its symptom.
@@ -5096,6 +5126,10 @@ def _request_logs_and_fetch(
         "no_progress_timeout_reached": no_progress_timeout_reached,
         "instance_final_status": last_instance_liveness.get("status"),
         "instance_exited_observed": instance_exited_count >= 2,
+        "log_bytes_ever_read": log_bytes_ever_read,
+        "log_transport_failure_streak": log_transport_failure_streak,
+        "log_transport_failure_limit": log_transport_failure_ceiling,
+        "last_log_transport_error": last_log_transport_error,
         "break_reason": break_reason,
     }
 
@@ -7172,14 +7206,28 @@ def run_vast_provider_adapter(
             onstart_logs.get("instance_exited_observed")
             or heartbeat_log_break_reason == "instance_exited"
         )
+        heartbeat_log_transport_failed = bool(
+            heartbeat_log_break_reason == "log_transport_unavailable"
+            or (
+                onstart_logs.get("log_bytes_ever_read") is False
+                and int(onstart_logs.get("log_transport_failure_streak") or 0) > 0
+            )
+        )
         heartbeat_blockers = []
         if not startup_probe_ok:
+            if heartbeat_log_transport_failed:
+                # Named first, and never alongside the no-progress timeout: we
+                # could not read this workload's output, so we have no evidence
+                # about the workload at all. A live run spent twenty paid
+                # minutes and reported a failed probe when every log fetch had
+                # returned 403 and the instance stayed `running` throughout.
+                heartbeat_blockers.append("vast_heartbeat_log_transport_failed")
             if heartbeat_instance_exited:
                 # Named ahead of the timeout: a frozen log is the symptom of a
                 # dead container, and reporting the symptom sent one run
                 # chasing a render bug that was really a host that died.
                 heartbeat_blockers.append("vast_heartbeat_instance_exited")
-            if heartbeat_no_progress_timeout:
+            if heartbeat_no_progress_timeout and not heartbeat_log_transport_failed:
                 heartbeat_blockers.append("vast_heartbeat_no_log_progress_timeout")
             if _log_result_has_container_missing(onstart_logs):
                 heartbeat_blockers.append("vast_heartbeat_container_missing")
