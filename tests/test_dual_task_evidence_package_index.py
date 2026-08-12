@@ -223,6 +223,57 @@ def test_package_index_admits_receipt_only_mirror_manifest(tmp_path: Path) -> No
     ]
 
 
+@pytest.mark.parametrize(
+    ("schema_version", "digest_field"),
+    [
+        ("adp009b_direct_evidence_expansion_set.v1", "receipt_digest"),
+        ("public_scene_aura_exact_residual_composite.v1", "composite_digest"),
+        (
+            "public_scene_aura_exact_residual_visual_abstention.v1",
+            "receipt_digest",
+        ),
+    ],
+)
+def test_package_index_admits_shared_scene_terminal_receipts(
+    tmp_path: Path,
+    schema_version: str,
+    digest_field: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    package = workspace / "evidence"
+    package.mkdir(parents=True)
+    _task_index(package, "task_a")
+    shared: dict[str, object] = {
+        "schema_version": schema_version,
+        "status": "fixture_terminal_status",
+        digest_field: "",
+    }
+    shared[digest_field] = canonical_digest(shared, digest_field=digest_field)
+    _write_json(workspace / "shared/terminal.json", shared)
+
+    result = materialize_dual_task_evidence_package_index(
+        workspace_root=workspace,
+        package_root=package,
+        title="Fixture package",
+        status_summary="typed abstention",
+        blocker_summary="shared scene visual candidate rejected",
+        cad_summary="CAD review media bound",
+        task_indexes=[
+            {
+                "label": "Task A",
+                "task_id": "task_a",
+                "relative_path": "task_a/episode_evidence_index.v1.json",
+            }
+        ],
+        shared_manifests=[
+            {"label": "Terminal receipt", "relative_path": "shared/terminal.json"}
+        ],
+    )
+
+    assert result["shared_manifests"][0]["schema_version"] == schema_version
+    assert result["shared_manifests"][0]["digest_field"] == digest_field
+
+
 def test_checked_in_package_index_exposes_cad_visual_comparison_binding() -> None:
     html = (PACKAGE / "index.html").read_text(encoding="utf-8")
     receipt = json.loads((PACKAGE / PACKAGE_INDEX_FILENAME).read_text(encoding="utf-8"))
