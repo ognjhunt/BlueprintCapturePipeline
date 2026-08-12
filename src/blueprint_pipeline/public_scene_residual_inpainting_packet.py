@@ -202,7 +202,12 @@ def build_residual_inpainting_input_request(value: Mapping[str, Any]) -> dict[st
         seen.add(task_id)
         if lane.get("co_present_replacements_required") is not True:
             errors.append("residual_inpainting_request_co_present_replacements_required")
-        for key in ("coverage_audit_path", "retained_render_manifest_path"):
+        for key in (
+            "coverage_audit_path",
+            "source_black_render_manifest_path",
+            "source_white_render_manifest_path",
+            "retained_render_manifest_path",
+        ):
             if not str(lane.get(key) or "").strip():
                 errors.append(f"residual_inpainting_request_lane_{key}_missing")
     if errors:
@@ -536,6 +541,157 @@ def _validate_coverage_audit(
     }, masks_by_camera, composition_record
 
 
+def _sealed_frame_record(
+    root: Path, value: Any, *, code: str
+) -> tuple[Path, dict[str, Any]]:
+    """Verify one sealed-render frame without accepting a caller-only digest.
+
+    Early sealed-camera manifests used ``digest`` while a few local fixtures
+    used ``sha256``.  Both name the same SHA-256 value; accepting either is
+    compatible, but accepting contradictory values would let a caller smuggle
+    an unverified frame into an inpainting packet.
+    """
+
+    if not isinstance(value, Mapping):
+        raise ResidualInpaintingInputPacketError([code])
+    sha256 = value.get("sha256")
+    digest = value.get("digest")
+    if sha256 is not None and digest is not None and sha256 != digest:
+        raise ResidualInpaintingInputPacketError([code])
+    expected = sha256 if sha256 is not None else digest
+    if not _digest(expected):
+        raise ResidualInpaintingInputPacketError([code])
+    relative = str(value.get("relative_path") or "")
+    if not relative or relative.startswith("/") or ".." in Path(relative).parts:
+        raise ResidualInpaintingInputPacketError([code])
+    path = _under(root / relative, root, code=code)
+    if (
+        not path.is_file()
+        or path.is_symlink()
+        or path.stat().st_size != value.get("size_bytes")
+        or _sha256(path) != expected
+    ):
+        raise ResidualInpaintingInputPacketError([code])
+    return path, {
+        "relative_path": relative,
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _validated_render_dimensions(settings: Any, *, code: str) -> tuple[int, int]:
+    dimensions = settings.get("dimensions") if isinstance(settings, Mapping) else None
+    if not isinstance(dimensions, Mapping):
+        raise ResidualInpaintingInputPacketError([code])
+    width, height = dimensions.get("width"), dimensions.get("height")
+    if (
+        isinstance(width, bool)
+        or isinstance(height, bool)
+        or not isinstance(width, int)
+        or not isinstance(height, int)
+        or width <= 0
+        or height <= 0
+    ):
+        raise ResidualInpaintingInputPacketError([code])
+    return width, height
+
+
+def _validate_source_layer_render_pair(
+    *,
+    black_path: Path,
+    white_path: Path,
+    deleted_source_splat_digest: str,
+    deleted_source_count: int,
+    masks_by_camera: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
+    """Bind the exact black/white pair that derived every residual mask."""
+
+    black = _read_object(black_path, code="residual_inpainting_source_black_unreadable")
+    white = _read_object(white_path, code="residual_inpainting_source_white_unreadable")
+    common_error = "residual_inpainting_source_render_invalid"
+    for manifest, background in ((black, "#000000"), (white, "#ffffff")):
+        source = manifest.get("source_splat")
+        if (
+            manifest.get("schema_version") != RENDER_SCHEMA
+            or manifest.get("status") != "rendered_exact_cameras"
+            or manifest.get("sealed_camera_render_manifest_digest")
+            != canonical_digest(manifest, digest_field="sealed_camera_render_manifest_digest")
+            or manifest.get("authorization_class") not in QUALIFIED_RENDER_CLASSES
+            or manifest.get("splat_digest") != deleted_source_splat_digest
+            or manifest.get("source_layer_role") != "shared_deleted_source_union"
+            or not isinstance(source, Mapping)
+            or source.get("digest") != deleted_source_splat_digest
+            or source.get("retained_gaussian_count") != deleted_source_count
+            or (manifest.get("render_settings") or {}).get("background_rgb") != background
+        ):
+            raise ResidualInpaintingInputPacketError([common_error])
+    black_dimensions = _validated_render_dimensions(
+        black.get("render_settings"), code=common_error
+    )
+    white_dimensions = _validated_render_dimensions(
+        white.get("render_settings"), code=common_error
+    )
+    if black_dimensions != white_dimensions:
+        raise ResidualInpaintingInputPacketError([common_error])
+    black_cameras = black.get("calibrated_cameras")
+    white_cameras = white.get("calibrated_cameras")
+    if (
+        not isinstance(black_cameras, list)
+        or black_cameras != white_cameras
+        or {str(row.get("id") or "") for row in black_cameras if isinstance(row, Mapping)}
+        != set(masks_by_camera)
+    ):
+        raise ResidualInpaintingInputPacketError([common_error])
+    black_rows, white_rows = black.get("renders"), white.get("renders")
+    if not isinstance(black_rows, list) or not isinstance(white_rows, list):
+        raise ResidualInpaintingInputPacketError([common_error])
+    frames: dict[str, dict[str, Any]] = {}
+    roots = ((black_path.parent, black_rows, "black"), (white_path.parent, white_rows, "white"))
+    observed: dict[str, dict[str, dict[str, Any]]] = {"black": {}, "white": {}}
+    for root, rows, background in roots:
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ResidualInpaintingInputPacketError([common_error])
+            camera_id = str(row.get("camera_id") or "")
+            if camera_id not in masks_by_camera or camera_id in observed[background]:
+                raise ResidualInpaintingInputPacketError([common_error])
+            frame, record = _sealed_frame_record(
+                root, row, code="residual_inpainting_source_frame_bytes_changed"
+            )
+            with Image.open(frame) as image:
+                if image.size != black_dimensions:
+                    raise ResidualInpaintingInputPacketError([common_error])
+            observed[background][camera_id] = record
+    if set(observed["black"]) != set(masks_by_camera) or set(observed["white"]) != set(
+        masks_by_camera
+    ):
+        raise ResidualInpaintingInputPacketError([common_error])
+    for camera_id in sorted(masks_by_camera):
+        frames[camera_id] = {
+            "camera_id": camera_id,
+            "black_background": observed["black"][camera_id],
+            "white_background": observed["white"][camera_id],
+        }
+    return (
+        black,
+        {
+            **_file_record(black_path),
+            "sealed_camera_render_manifest_digest": black[
+                "sealed_camera_render_manifest_digest"
+            ],
+        },
+        {
+            "white_manifest": {
+                **_file_record(white_path),
+                "sealed_camera_render_manifest_digest": white[
+                    "sealed_camera_render_manifest_digest"
+                ],
+            },
+            "frames": frames,
+        },
+    )
+
+
 def _validate_retained_render(
     path: Path,
     *,
@@ -558,7 +714,10 @@ def _validate_retained_render(
     settings = manifest.get("render_settings")
     if (
         not isinstance(source, Mapping)
-        or source.get("retained_gaussian_count") != shared_retained_count
+        or (
+            source.get("retained_gaussian_count") is not None
+            and source.get("retained_gaussian_count") != shared_retained_count
+        )
         or not isinstance(calibration, Mapping)
         or calibration.get("binding") != "caller_file_exact_match"
         or not isinstance(settings, Mapping)
@@ -578,27 +737,16 @@ def _validate_retained_render(
         )
     render_root = path.parent
     frames: dict[str, dict[str, Any]] = {}
-    dimensions = settings["dimensions"]
-    width = dimensions.get("width")
-    height = dimensions.get("height")
-    if (
-        isinstance(width, bool)
-        or isinstance(height, bool)
-        or not isinstance(width, int)
-        or not isinstance(height, int)
-        or width <= 0
-        or height <= 0
-    ):
-        raise ResidualInpaintingInputPacketError(
-            ["residual_inpainting_retained_render_dimensions_invalid"]
-        )
+    width, height = _validated_render_dimensions(
+        settings, code="residual_inpainting_retained_render_dimensions_invalid"
+    )
     for row in renders:
         if not isinstance(row, Mapping):
             raise ResidualInpaintingInputPacketError(["residual_inpainting_retained_frame_row_invalid"])
         camera_id = str(row.get("camera_id") or "")
         if camera_id not in masks_by_camera or camera_id in frames:
             raise ResidualInpaintingInputPacketError(["residual_inpainting_retained_frame_camera_invalid"])
-        frame_path, frame_record = _relative_record(
+        frame_path, frame_record = _sealed_frame_record(
             render_root, row, code="residual_inpainting_retained_frame_bytes_changed"
         )
         with Image.open(frame_path) as image:
@@ -666,6 +814,7 @@ def materialize_residual_inpainting_input_packet(
     backend, backend_record = _validate_backend_admission(backend_path, privacy=privacy)
     shared_digest = shared_ply_record["sha256"]
     shared_count = read_standard_3dgs_ply(shared_ply).count
+    deleted_count = read_standard_3dgs_ply(deleted_ply).count
     expected_asset_ids = sorted(
         row["replacement_asset_id"] for row in candidate_tasks.values()
     )
@@ -683,6 +832,21 @@ def materialize_residual_inpainting_input_packet(
             candidate=candidate,
             deleted_source_splat_digest=deleted_ply_record["sha256"],
             expected_asset_ids=expected_asset_ids,
+        )
+        source_black_path = _path(
+            lane["source_black_render_manifest_path"],
+            code="residual_inpainting_source_black_render_missing",
+        )
+        source_white_path = _path(
+            lane["source_white_render_manifest_path"],
+            code="residual_inpainting_source_white_render_missing",
+        )
+        _source_black, source_black_record, source_pair = _validate_source_layer_render_pair(
+            black_path=source_black_path,
+            white_path=source_white_path,
+            deleted_source_splat_digest=deleted_ply_record["sha256"],
+            deleted_source_count=deleted_count,
+            masks_by_camera=masks,
         )
         render_path = _path(
             lane["retained_render_manifest_path"],
@@ -704,6 +868,11 @@ def materialize_residual_inpainting_input_packet(
             "replacement_asset_id": candidate["replacement_asset_id"],
             "co_present_replacement_asset_ids": expected_asset_ids,
             "coverage_audit": audit_record,
+            "source_layer_black_render": source_black_record,
+            "source_layer_white_render": source_pair["white_manifest"],
+            "source_layer_black_white_frames": [
+                source_pair["frames"][camera_id] for camera_id in sorted(source_pair["frames"])
+            ],
             "retained_scene_render": render_record,
             "replacement_depth_composition": composition_record,
             "exact_residual_masks": [
@@ -720,7 +889,13 @@ def materialize_residual_inpainting_input_packet(
         lane_path = lane_root / "residual_inpainting_input_lane.v1.json"
         lane_path.write_text(canonical_json(lane_receipt) + "\n", encoding="utf-8")
         lanes.append(
-            {**_file_record(lane_path), "lane_digest": lane_receipt["lane_digest"]}
+            {
+                **_file_record(lane_path),
+                "lane_digest": lane_receipt["lane_digest"],
+                "source_layer_black_white_frames": lane_receipt[
+                    "source_layer_black_white_frames"
+                ],
+            }
         )
     packet: dict[str, Any] = {
         "schema_version": PACKET_SCHEMA,

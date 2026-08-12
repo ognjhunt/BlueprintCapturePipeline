@@ -281,7 +281,15 @@ def _make_composition(
     return path.parent / "composition_receipt" / "public_scene_replacement_depth_composition.v1.json"
 
 
-def _make_render(root: Path, *, shared_digest: str, camera_id: str) -> Path:
+def _make_render(
+    root: Path,
+    *,
+    shared_digest: str,
+    camera_id: str,
+    source_layer_role: str = "shared_retained_scene",
+    gaussian_count: int | None = 8,
+    background_rgb: str = "#000000",
+) -> Path:
     frame = root / "frames" / f"{camera_id}.png"
     frame.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(np.full((2, 2, 3), 127, dtype=np.uint8), mode="RGB").save(frame)
@@ -290,10 +298,21 @@ def _make_render(root: Path, *, shared_digest: str, camera_id: str) -> Path:
         "status": "rendered_exact_cameras",
         "authorization_class": "method_input",
         "splat_digest": shared_digest,
-        "source_splat": {"retained_gaussian_count": 8},
+        "source_splat": {
+            **({"digest": shared_digest} if source_layer_role == "shared_deleted_source_union" else {}),
+            **(
+                {"retained_gaussian_count": gaussian_count}
+                if gaussian_count is not None
+                else {}
+            ),
+        },
+        "source_layer_role": source_layer_role,
         "calibrated_camera_file": {"binding": "caller_file_exact_match"},
         "calibrated_cameras": [{"id": camera_id}],
-        "render_settings": {"dimensions": {"width": 2, "height": 2}},
+        "render_settings": {
+            "dimensions": {"width": 2, "height": 2},
+            "background_rgb": background_rgb,
+        },
         "renders": [{**_relative_record(root, frame), "camera_id": camera_id}],
         "sealed_camera_render_manifest_digest": "",
     }
@@ -383,10 +402,28 @@ def _packet_inputs(tmp_path: Path, *, count: int = 2) -> tuple[Path, Path]:
         render = _make_render(
             lane_root / "render", shared_digest=_sha256(retained), camera_id=f"camera_{slot}"
         )
+        source_black = _make_render(
+            lane_root / "source_black",
+            shared_digest=_sha256(deleted_splats),
+            camera_id=f"camera_{slot}",
+            source_layer_role="shared_deleted_source_union",
+            gaussian_count=2,
+            background_rgb="#000000",
+        )
+        source_white = _make_render(
+            lane_root / "source_white",
+            shared_digest=_sha256(deleted_splats),
+            camera_id=f"camera_{slot}",
+            source_layer_role="shared_deleted_source_union",
+            gaussian_count=2,
+            background_rgb="#ffffff",
+        )
         lanes.append(
             {
                 "task_id": task["task_id"],
                 "coverage_audit_path": str(coverage),
+                "source_black_render_manifest_path": str(source_black),
+                "source_white_render_manifest_path": str(source_white),
                 "retained_render_manifest_path": str(render),
                 "co_present_replacements_required": True,
             }
@@ -430,6 +467,7 @@ def test_materializes_exact_mask_packet_for_five_independent_replacements(tmp_pa
     assert packet["claim_boundary"]["inpainting_result_qualified"] is False
     assert packet["shared_deleted_source_layer"]["source_layer_role"] == "shared_deleted_source_union"
     assert len(packet["lanes"]) == 5
+    assert all(len(lane["source_layer_black_white_frames"]) == 1 for lane in packet["lanes"])
 
 
 def test_blocks_coverage_from_a_different_retained_scene(tmp_path: Path) -> None:
@@ -504,6 +542,47 @@ def test_blocks_reconnaissance_retained_render(tmp_path: Path) -> None:
     _write_json(render_path, render)
 
     with pytest.raises(ResidualInpaintingInputPacketError, match="retained_render_invalid"):
+        materialize_residual_inpainting_input_packet(
+            request_path=request_path, output_root=tmp_path / "packet"
+        )
+
+
+def test_blocks_source_pair_that_is_not_the_exact_deleted_shared_layer(
+    tmp_path: Path,
+) -> None:
+    request_path, _candidate = _packet_inputs(tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    source_path = Path(request["task_lanes"][0]["source_black_render_manifest_path"])
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source["source_layer_role"] = "shared_retained_scene"
+    source["sealed_camera_render_manifest_digest"] = canonical_digest(
+        source, digest_field="sealed_camera_render_manifest_digest"
+    )
+    _write_json(source_path, source)
+
+    with pytest.raises(ResidualInpaintingInputPacketError, match="source_render_invalid"):
+        materialize_residual_inpainting_input_packet(
+            request_path=request_path, output_root=tmp_path / "packet"
+        )
+
+
+def test_blocks_changed_source_pair_frame_even_when_manifest_digest_is_recomputed(
+    tmp_path: Path,
+) -> None:
+    request_path, _candidate = _packet_inputs(tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    source_path = Path(request["task_lanes"][0]["source_white_render_manifest_path"])
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    frame = source_path.parent / source["renders"][0]["relative_path"]
+    Image.fromarray(np.full((2, 2, 3), 41, dtype=np.uint8), mode="RGB").save(frame)
+    source["sealed_camera_render_manifest_digest"] = canonical_digest(
+        source, digest_field="sealed_camera_render_manifest_digest"
+    )
+    _write_json(source_path, source)
+
+    with pytest.raises(
+        ResidualInpaintingInputPacketError, match="source_frame_bytes_changed"
+    ):
         materialize_residual_inpainting_input_packet(
             request_path=request_path, output_root=tmp_path / "packet"
         )
