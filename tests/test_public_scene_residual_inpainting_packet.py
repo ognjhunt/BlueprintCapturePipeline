@@ -327,6 +327,8 @@ def _make_render(
                         "fy": 2.0,
                         "cx": 1.0,
                         "cy": 1.0,
+                        "width": 2,
+                        "height": 2,
                     },
                 },
             }

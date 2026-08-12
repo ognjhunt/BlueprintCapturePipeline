@@ -424,16 +424,22 @@ def _calibrated_cameras(
             )
             or [float(value) for value in matrix[3]] != [0.0, 0.0, 0.0, 1.0]
             or not isinstance(intrinsics, Mapping)
-            or intrinsics.get("model") != "PINHOLE"
+            # The sealed renderer manifest records the pinhole parameters but
+            # (unlike a COLMAP cameras.txt row) has no redundant model field.
+            # The adapter is therefore permitted to *encode* these exact
+            # parameters as COLMAP PINHOLE, never to estimate a camera.
+            or intrinsics.get("model", "PINHOLE") != "PINHOLE"
             or any(
                 not isinstance(intrinsics.get(field), (int, float))
                 or not math.isfinite(float(intrinsics[field]))
-                for field in ("fx", "fy", "cx", "cy")
+                for field in ("fx", "fy", "cx", "cy", "width", "height")
             )
             or float(intrinsics["fx"]) <= 0
             or float(intrinsics["fy"]) <= 0
             or float(intrinsics["cx"]) != float(dimensions["width"]) / 2.0
             or float(intrinsics["cy"]) != float(dimensions["height"]) / 2.0
+            or int(intrinsics["width"]) != dimensions["width"]
+            or int(intrinsics["height"]) != dimensions["height"]
         ):
             raise AuraExactResidualPreflightError([code])
         cameras[camera_id] = {
@@ -450,6 +456,8 @@ def _calibrated_cameras(
                     "fy": float(intrinsics["fy"]),
                     "cx": float(intrinsics["cx"]),
                     "cy": float(intrinsics["cy"]),
+                    "width": int(intrinsics["width"]),
+                    "height": int(intrinsics["height"]),
                 },
             },
         }
