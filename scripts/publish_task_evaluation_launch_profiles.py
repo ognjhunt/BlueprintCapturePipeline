@@ -73,7 +73,28 @@ def publish_profiles(
                 "created": created,
             }
         )
-        descriptors.append(public_launch_profile_descriptor(profile))
+
+    # The catalog is what the WebApp reads to resolve a profile_id, so it must
+    # describe every published profile -- not just the ones named in this
+    # invocation. Building it from the arguments meant a profile could be
+    # published and still be invisible: a launch against it was rejected at
+    # lookup, and the profile directory looked correct while the catalog listed
+    # a single stale entry. Enumerating the directory makes the catalog a
+    # function of published state instead of of a command line.
+    for path in sorted(target_root.glob("*.json")):
+        if path.is_symlink():
+            raise TaskEvaluationLaunchError(f"launch_profile_source_invalid:{path}")
+        catalog_profile = _read(path)
+        blockers = validate_launch_profile(catalog_profile)
+        blockers.extend(verify_profile_immutable_inputs(catalog_profile))
+        if blockers:
+            # A published directory holding an invalid profile is a real fault:
+            # refuse rather than emit a catalog that silently omits it.
+            raise TaskEvaluationLaunchError(
+                f"published_profile_invalid:{path.name}:" + ",".join(sorted(set(blockers)))
+            )
+        descriptors.append(public_launch_profile_descriptor(catalog_profile))
+
     catalog_payload = (
         json.dumps(
             sorted(descriptors, key=lambda row: str(row["profile_id"])),
