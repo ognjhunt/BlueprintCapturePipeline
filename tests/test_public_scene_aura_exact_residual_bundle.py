@@ -267,6 +267,42 @@ def test_runtime_stage_failure_retains_a_real_log_before_returning_nonzero(
     }
 
 
+def test_runner_binds_native_outputs_beneath_aura_configured_model_root(tmp_path: Path) -> None:
+    """Aura's released inpaint.py resolves its experiment below ``model_path``."""
+
+    runner_path = Path(__file__).resolve().parents[1] / "scripts" / "public_scene_aura_exact_residual_runner.py"
+    spec = importlib.util.spec_from_file_location("aura_exact_residual_runner_paths_test", runner_path)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    runtime = tmp_path / "provider_runtime"
+    config = runtime / "configs" / "inpaint_task.config"
+    config.parent.mkdir(parents=True)
+    config.write_text('model_path = "../work/model"\n', encoding="utf-8")
+    point_cloud, renders = runner._native_aura_output_paths(
+        runtime=runtime,
+        config=config,
+        experiment="exact_residual--task_a",
+    )
+
+    assert point_cloud == (
+        runtime
+        / "work/model/exact_residual--task_a/point_cloud/iteration_object_inpaint_init/point_cloud.ply"
+    )
+    assert renders == (
+        runtime / "work/model/exact_residual--task_a/train/ours_object_inpaint_init/renders"
+    )
+
+    config.write_text('model_path = "../../outside"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="aura_exact_residual_runtime_model_path_invalid"):
+        runner._native_aura_output_paths(
+            runtime=runtime,
+            config=config,
+            experiment="exact_residual--task_a",
+        )
+
+
 def test_rejects_a_source_release_tree_with_a_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -314,6 +314,44 @@ def _copy_exact(source: Path, destination: Path) -> None:
         raise ValueError("aura_exact_residual_runtime_copy_digest_mismatch")
 
 
+def _config_path_value(path: Path, *, key: str, code: str) -> Path:
+    """Resolve one release-authored config path without accepting caller paths."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(code) from exc
+    prefix = f"{key} = "
+    values = [line[len(prefix) :].strip().strip('"') for line in lines if line.startswith(prefix)]
+    if len(values) != 1 or not values[0]:
+        raise ValueError(code)
+    resolved = (path.parent / values[0]).resolve()
+    if resolved.is_symlink() or path.parent.parent not in resolved.parents:
+        raise ValueError(code)
+    return resolved
+
+
+def _native_aura_output_paths(
+    *, runtime: Path, config: Path, experiment: str
+) -> tuple[Path, Path]:
+    """Return the exact no-finetune paths authored by Aura's ``inpaint.py``."""
+
+    model_root = _config_path_value(
+        config,
+        key="model_path",
+        code="aura_exact_residual_runtime_model_path_invalid",
+    )
+    if not experiment or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for char in experiment):
+        raise ValueError("aura_exact_residual_runtime_experiment_invalid")
+    if runtime not in model_root.parents:
+        raise ValueError("aura_exact_residual_runtime_model_path_invalid")
+    output_root = model_root / experiment
+    return (
+        output_root / "point_cloud" / "iteration_object_inpaint_init" / "point_cloud.ply",
+        output_root / "train" / "ours_object_inpaint_init" / "renders",
+    )
+
+
 def _bind_shared_removal_checkpoint(
     *, runtime: Path, task_id: str, expected_sha256: str
 ) -> dict[str, Any]:
@@ -497,14 +535,17 @@ def run(*, runtime: Path, output: Path, rehearsal: bool) -> dict[str, Any]:
             raise ValueError("aura_exact_residual_runtime_shared_removal_checkpoint_changed")
         shared_removal_binding["shared_removal_unchanged_after_task_initialization"] = True
         task_removal_bindings.append(shared_removal_binding)
-        ply = runtime / "work" / str(plan["output_experiment"]) / "point_cloud" / "iteration_object_inpaint_init" / "point_cloud.ply"
+        ply, rendered = _native_aura_output_paths(
+            runtime=runtime,
+            config=config,
+            experiment=str(plan["output_experiment"]),
+        )
         if not ply.is_file() or ply.is_symlink() or ply.stat().st_size <= 0:
             raise ValueError("aura_exact_residual_runtime_native_point_cloud_missing")
         native = output / "native_task_outputs" / task_id / "point_cloud.ply"
         _copy_exact(ply, native)
         rows = [row for row in request["camera_inputs"] if row["task_id"] == task_id]
         native_count = _ply_vertex_count(native)
-        rendered = runtime / "work" / str(plan["output_experiment"]) / "train" / "ours_object_inpaint_init" / "renders"
         candidates = sorted(rendered.glob("*.png"))
         sorted_rows = sorted(request["camera_inputs"], key=lambda item: item["staged_name"])
         if len(candidates) != len(sorted_rows):
