@@ -54,7 +54,7 @@ PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION = (
     "public_scene_artifixer3d_paid_attempt_authority.v1"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/artifixer3d-exact-support"
-INSTANCE_LABEL_PREFIX = "blueprint-adp-artifixer3d-canary-"
+INSTANCE_LABEL_PREFIX = "blueprint-groot-oscar-canary-adp-artifixer3d-"
 MIN_TTL_SECONDS = 7_200
 MAX_TTL_SECONDS = 21_600
 MAX_HARD_CAP_USD = 10.0
@@ -376,7 +376,7 @@ def _validate_prior_authority_chain(path: Path, *, seen: set[Path] | None = None
 
 def _validate_prior_terminal_result(
     path: Path, *, prior_authority: Mapping[str, Any]
-) -> tuple[dict[str, Any], float]:
+) -> tuple[dict[str, Any], float, float]:
     result = _read(path, code="artifixer3d_prior_terminal_result_unreadable")
     cost = result.get("estimated_cost_usd")
     if (
@@ -470,7 +470,48 @@ def _validate_prior_artifixer_attempt(
         or inventory.get("live_resource_count") != 0
     ):
         raise ValueError("artifixer3d_predecessor_attempt_invalid")
-    return authority, round(float(cost), 6)
+    attempt_cost = round(float(cost), 6)
+    lineage_cost = attempt_cost
+    predecessor = authority.get("prior_artifixer_attempt")
+    if predecessor is not None:
+        if not isinstance(predecessor, Mapping):
+            raise ValueError("artifixer3d_predecessor_lineage_invalid")
+        nested_authority_path = _bound(
+            predecessor.get("authority"),
+            code="artifixer3d_predecessor_lineage_authority_unbound",
+        )
+        nested_result_path = _bound(
+            predecessor.get("terminal_result"),
+            code="artifixer3d_predecessor_lineage_result_unbound",
+        )
+        nested_cleanup_path = _bound(
+            predecessor.get("object_store_cleanup"),
+            code="artifixer3d_predecessor_lineage_cleanup_unbound",
+        )
+        nested_zero_path = _bound(
+            predecessor.get("provider_zero"),
+            code="artifixer3d_predecessor_lineage_zero_unbound",
+        )
+        nested_authority, nested_attempt_cost, nested_lineage_cost = (
+            _validate_prior_artifixer_attempt(
+                authority_path=nested_authority_path,
+                result_path=nested_result_path,
+                cleanup_path=nested_cleanup_path,
+                provider_zero_path=nested_zero_path,
+            )
+        )
+        recorded_lineage_cost = predecessor.get(
+            "lineage_cost_usd", predecessor.get("terminal_cost_usd")
+        )
+        if (
+            predecessor.get("authority_digest")
+            != nested_authority.get("authorization_digest")
+            or predecessor.get("terminal_cost_usd") != nested_attempt_cost
+            or recorded_lineage_cost != nested_lineage_cost
+        ):
+            raise ValueError("artifixer3d_predecessor_lineage_mismatch")
+        lineage_cost = round(lineage_cost + nested_lineage_cost, 6)
+    return authority, attempt_cost, lineage_cost
 
 
 def materialize_artifixer3d_paid_attempt_authority(
@@ -514,7 +555,11 @@ def materialize_artifixer3d_paid_attempt_authority(
         resolved_predecessor_paths = tuple(
             Path(str(path)).expanduser().resolve() for path in predecessor_paths
         )
-        predecessor_authority, predecessor_cost = _validate_prior_artifixer_attempt(
+        (
+            predecessor_authority,
+            predecessor_attempt_cost,
+            predecessor_cost,
+        ) = _validate_prior_artifixer_attempt(
             authority_path=resolved_predecessor_paths[0],
             result_path=resolved_predecessor_paths[1],
             cleanup_path=resolved_predecessor_paths[2],
@@ -526,7 +571,8 @@ def materialize_artifixer3d_paid_attempt_authority(
             "terminal_result": _record(resolved_predecessor_paths[1]),
             "object_store_cleanup": _record(resolved_predecessor_paths[2]),
             "provider_zero": _record(resolved_predecessor_paths[3]),
-            "terminal_cost_usd": predecessor_cost,
+            "terminal_cost_usd": predecessor_attempt_cost,
+            "lineage_cost_usd": predecessor_cost,
         }
     prior_spend = round(
         float(prior_authority["prior_goal_spend_usd"])
@@ -708,7 +754,11 @@ def validate_artifixer3d_paid_attempt_authority(
             predecessor.get("provider_zero"),
             code="artifixer3d_authority_predecessor_zero_unbound",
         )
-        predecessor_authority, predecessor_cost = _validate_prior_artifixer_attempt(
+        (
+            predecessor_authority,
+            predecessor_attempt_cost,
+            predecessor_cost,
+        ) = _validate_prior_artifixer_attempt(
             authority_path=predecessor_authority_path,
             result_path=predecessor_result_path,
             cleanup_path=predecessor_cleanup_path,
@@ -717,7 +767,8 @@ def validate_artifixer3d_paid_attempt_authority(
         if (
             predecessor.get("authority_digest")
             != predecessor_authority.get("authorization_digest")
-            or predecessor.get("terminal_cost_usd") != predecessor_cost
+            or predecessor.get("terminal_cost_usd") != predecessor_attempt_cost
+            or predecessor.get("lineage_cost_usd") != predecessor_cost
         ):
             raise ValueError("artifixer3d_authority_predecessor_mismatch")
     prior_spend = round(

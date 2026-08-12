@@ -341,7 +341,52 @@ def test_paid_authority_chains_prior_spend_and_is_one_shot(
         "authorization_digest"
     ]
     assert successor["prior_artifixer_attempt"]["terminal_cost_usd"] == 0.0
+    assert successor["prior_artifixer_attempt"]["lineage_cost_usd"] == 0.0
     assert successor["aggregate_goal_spend_before_attempt_usd"] == 1.7
+    successor_result = tmp_path / "successor/result.json"
+    _write(
+        successor_result,
+        {
+            "schema_version": "public_scene_artifixer3d_vast_run.v1",
+            "status": "blocked",
+            "retry_cap": 0,
+            "provider_mutations_performed": 0,
+            "all_staged_objects_absent": True,
+            "authorization_consumption": {
+                "status": "consumed",
+                "authorization_digest": successor["authorization_digest"],
+            },
+        },
+    )
+    successor_zero = tmp_path / "successor/provider_zero.json"
+    _write(
+        successor_zero,
+        {
+            "schema_version": "artifixer3d_postblocked_provider_zero.v1",
+            "attempt_authority_digest": successor["authorization_digest"],
+            "provider_mutations_performed_by_attempt": 0,
+            "provider_zero_confirmed": True,
+            "inventory": {"api_confirmed": True, "live_resource_count": 0},
+        },
+    )
+    third = materialize_artifixer3d_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_aura_authority_path=prior_path,
+        prior_terminal_result_path=terminal_path,
+        prior_artifixer_authority_path=tmp_path / "successor_authority.json",
+        prior_artifixer_result_path=successor_result,
+        prior_artifixer_cleanup_path=predecessor_cleanup,
+        prior_artifixer_provider_zero_path=successor_zero,
+        authorization_reference="fixture-third-one-shot",
+        authorized_by="fixture_user",
+        authorized_on="2026-08-12",
+        blueprint_commit=bundle["blueprint_source_identity"]["commit"],
+        max_hourly_rate_usd=1.5,
+        hard_cap_usd=9.0,
+        hard_ttl_seconds=21_600,
+        output_path=tmp_path / "third_authority.json",
+    )
+    assert third["prior_artifixer_attempt"]["lineage_cost_usd"] == 0.0
 
     import blueprint_pipeline.public_scene_artifixer3d_vast as subject
 
@@ -380,8 +425,8 @@ def test_dry_run_is_mutation_free(
 
 
 def test_paid_wrapper_uses_canary_scoped_watchdog_and_instance_labels() -> None:
-    assert INSTANCE_LABEL_PREFIX == "blueprint-adp-artifixer3d-canary-"
-    assert "canary" in INSTANCE_LABEL_PREFIX
+    assert INSTANCE_LABEL_PREFIX == "blueprint-groot-oscar-canary-adp-artifixer3d-"
+    assert INSTANCE_LABEL_PREFIX.startswith("blueprint-groot-oscar-canary-")
 
 
 def test_raw_result_uses_sealed_per_task_camera_count(tmp_path: Path) -> None:
