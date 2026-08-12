@@ -11,6 +11,7 @@ from blueprint_pipeline.public_scene_broad_repair_support import (
     BroadRepairSupportError,
     materialize_broad_repair_support,
 )
+from tests.test_adp_retained_scene_render_packet import _task_freeze
 
 
 def _sha256(path: Path) -> str:
@@ -101,9 +102,20 @@ def _fixture(tmp_path: Path, *, task_count: int = 5) -> tuple[Path, Path, Path]:
     deleted.write_bytes(b"deleted-derived-ply")
     retained.write_bytes(b"retained-derived-ply")
     task_ids = [f"task_{index}" for index in range(task_count)]
+    task_rows = []
+    for index, task_id in enumerate(task_ids, start=1):
+        freeze = _task_freeze(task_id, index)
+        freeze_path = _write(candidate_root / "freezes" / f"{task_id}.json", freeze)
+        task_rows.append(
+            {
+                "task_id": task_id,
+                "task_freeze_digest": freeze["task_freeze_digest"],
+                "task_freeze": _absolute_record(freeze_path),
+            }
+        )
     candidate: dict[str, object] = {
         "schema_version": "adp009b_ownership_coverage_cutout_set.v1",
-        "task_candidates": [{"task_id": task_id} for task_id in task_ids],
+        "task_candidates": task_rows,
         "shared_scene_union": {
             "counts": {"deleted_total": 2, "retained_total": 8},
             "outputs": {
