@@ -38,6 +38,14 @@ from .public_scene_aura_residual_backend_admission import (
     AURA_REPOSITORY,
     AURA_TREE,
 )
+from .adp_aura_author_smoke_vast import (
+    WONDERWORLD_MARIGOLD_LICENSE_SHA256,
+    WONDERWORLD_MARIGOLD_RUNTIME_FILES,
+    WONDERWORLD_SOURCE_COMMIT,
+    WONDERWORLD_SOURCE_REPOSITORY,
+    WONDERWORLD_SOURCE_TREE,
+    _RUNTIME_MODELS,
+)
 
 
 SCHEMA_VERSION = "public_scene_aura_exact_residual_bundle.v1"
@@ -52,6 +60,11 @@ LAMA_REPOSITORY = "https://github.com/advimman/lama"
 LAMA_COMMIT = "786f5936b27fb3dacd2b1ad799e4de968ea697e7"
 LAMA_TREE = "25f9902ca0c2ec4bf6c31c2b4427f0a4f05f2fd1"
 SH_C0 = 0.28209479177387814
+MARIGOLD_RUNTIME_MODELS = tuple(
+    dict(model)
+    for model in _RUNTIME_MODELS
+    if str(model.get("repository") or "").startswith("prs-eth/marigold")
+)
 
 
 class AuraExactResidualBundleError(ValueError):
@@ -157,6 +170,37 @@ def _copy_release_tree(source: Path, destination: Path) -> list[dict[str, Any]]:
             raise AuraExactResidualBundleError(["aura_exact_residual_release_copy_digest_mismatch"])
         files.append(_record(target, root=destination))
     return files
+
+
+def _copy_wonderworld_marigold_runtime(source: Path, destination: Path) -> list[dict[str, Any]]:
+    """Stage precisely the Apache helper modules Aura imports for Marigold.
+
+    Aura imports these helpers at module import time.  Copying them from a clean,
+    pinned source tree makes that dependency inspectable without inheriting an
+    earlier provider packet or silently widening this packet to the full project.
+    """
+
+    records: list[dict[str, Any]] = []
+    for staged_name, source_name in sorted(WONDERWORLD_MARIGOLD_RUNTIME_FILES.items()):
+        relative = Path(staged_name)
+        source_path = source / source_name
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or not source_path.is_file()
+            or source_path.is_symlink()
+        ):
+            raise AuraExactResidualBundleError(
+                ["aura_exact_residual_bundle_wonderworld_runtime_source_invalid"]
+            )
+        target = destination / relative
+        _link_or_copy(source_path, target)
+        records.append(_record(target, root=destination))
+    if not records:
+        raise AuraExactResidualBundleError(
+            ["aura_exact_residual_bundle_wonderworld_runtime_source_invalid"]
+        )
+    return records
 
 
 def _git_value(root: Path, *args: str, code: str) -> str:
@@ -415,6 +459,7 @@ def build_aura_exact_residual_bundle(
     preflight_path: str | Path,
     aura_source_directory: str | Path,
     lama_source_directory: str | Path,
+    wonderworld_source_directory: str | Path,
     output_root: str | Path,
     repo_root: str | Path,
 ) -> dict[str, Any]:
@@ -440,6 +485,26 @@ def build_aura_exact_residual_bundle(
         tree=LAMA_TREE,
         code="aura_exact_residual_bundle_lama_source_identity_invalid",
     )
+    wonderworld_identity = _verified_git_release(
+        wonderworld_source_directory,
+        repository=WONDERWORLD_SOURCE_REPOSITORY,
+        commit=WONDERWORLD_SOURCE_COMMIT,
+        tree=WONDERWORLD_SOURCE_TREE,
+        code="aura_exact_residual_bundle_wonderworld_source_identity_invalid",
+    )
+    wonderworld_license = (
+        Path(wonderworld_source_directory).expanduser().resolve()
+        / "marigold_module"
+        / "LICENSE.txt"
+    )
+    if (
+        not wonderworld_license.is_file()
+        or wonderworld_license.is_symlink()
+        or _sha256(wonderworld_license) != WONDERWORLD_MARIGOLD_LICENSE_SHA256
+    ):
+        raise AuraExactResidualBundleError(
+            ["aura_exact_residual_bundle_wonderworld_license_invalid"]
+        )
     output = Path(output_root).expanduser().resolve()
     if output.exists() and any(output.iterdir()):
         raise AuraExactResidualBundleError(["aura_exact_residual_bundle_output_not_empty"])
@@ -488,6 +553,10 @@ def build_aura_exact_residual_bundle(
     )
     staged_lama_files = _copy_release_tree(
         Path(lama_source_directory).expanduser().resolve(), runtime / "LaMa"
+    )
+    staged_wonderworld_files = _copy_wonderworld_marigold_runtime(
+        Path(wonderworld_source_directory).expanduser().resolve(),
+        runtime / "runtime_dependencies",
     )
     _link_or_copy(big_lama_archive, runtime / "big-lama.zip")
     _link_or_copy(shared_ply, runtime / "input" / "shared_retained_scene.ply")
@@ -680,6 +749,17 @@ def build_aura_exact_residual_bundle(
         },
         "aura_release": aura_identity,
         "lama_release": lama_identity,
+        "wonderworld_marigold_runtime": {
+            **wonderworld_identity,
+            "license": "Apache-2.0",
+            "license_sha256": WONDERWORLD_MARIGOLD_LICENSE_SHA256,
+            "files": staged_wonderworld_files,
+        },
+        # The provider is permitted to download this released checkpoint once
+        # from this immutable revision.  The runner hashes every selected file,
+        # writes the Hugging Face ref itself, then enables offline mode before
+        # Aura begins.  No checkpoint bytes are part of the private-scene upload.
+        "marigold_runtime_models": list(MARIGOLD_RUNTIME_MODELS),
         "big_lama_checkpoint": _record(runtime / "big-lama.zip", root=runtime),
         "camera_inputs": staged_cameras,
         "task_plans": task_plans,
@@ -719,8 +799,11 @@ def build_aura_exact_residual_bundle(
         "task_count": len(task_plans),
         "aura_release": aura_identity,
         "lama_release": lama_identity,
+        "wonderworld_marigold_runtime": request["wonderworld_marigold_runtime"],
+        "marigold_runtime_models": request["marigold_runtime_models"],
         "aura_release_files": staged_aura_files,
         "lama_release_files": staged_lama_files,
+        "wonderworld_marigold_runtime_files": staged_wonderworld_files,
         "private_derived_upload_only": True,
         "raw_interiorgs_bytes_included": False,
         "stock_inpaint360gs_code_or_author_data_included": False,

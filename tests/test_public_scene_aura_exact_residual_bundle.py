@@ -16,6 +16,9 @@ from blueprint_pipeline.public_scene_aura_exact_residual_bundle import (
     AuraExactResidualBundleError,
     build_aura_exact_residual_bundle,
 )
+from blueprint_pipeline.adp_aura_author_smoke_vast import (
+    WONDERWORLD_MARIGOLD_RUNTIME_FILES,
+)
 from blueprint_pipeline.public_scene_aura_exact_residual_preflight import (
     materialize_aura_exact_residual_preflight,
 )
@@ -46,11 +49,16 @@ def _init_release(tmp_path: Path, *, name: str, commit: str, tree: str) -> Path:
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("# release member\n", encoding="utf-8")
-    else:
+    elif name == "lama":
         path = root / "bin" / "predict.py"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# release member\n", encoding="utf-8")
         (root / "requirements.txt").write_text("\n", encoding="utf-8")
+    else:
+        for relative in WONDERWORLD_MARIGOLD_RUNTIME_FILES.values():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# {relative}\n", encoding="utf-8")
     _git(["git", "add", "."], root)
     _git(["git", "commit", "-qm", "release"], root)
     return root
@@ -103,7 +111,7 @@ def _preflight(tmp_path: Path) -> Path:
     return path
 
 
-def _fake_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fake_identity(monkeypatch: pytest.MonkeyPatch, wonderworld: Path) -> None:
     import blueprint_pipeline.public_scene_aura_exact_residual_bundle as subject
 
     original = subject._verified_git_release
@@ -121,6 +129,11 @@ def _fake_identity(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr(subject, "_verified_git_release", verified)
+    monkeypatch.setattr(
+        subject,
+        "WONDERWORLD_MARIGOLD_LICENSE_SHA256",
+        _sha256(wonderworld / "marigold_module" / "LICENSE.txt"),
+    )
     assert original is not None
 
 
@@ -130,13 +143,15 @@ def test_seals_shared_camera_bundle_and_rehearses_without_provider_mutation(
     preflight = _preflight(tmp_path)
     aura = _init_release(tmp_path, name="aura", commit="unused", tree="unused")
     lama = _init_release(tmp_path, name="lama", commit="unused", tree="unused")
+    wonderworld = _init_release(tmp_path, name="wonderworld", commit="unused", tree="unused")
     repo = Path(__file__).resolve().parents[1]
-    _fake_identity(monkeypatch)
+    _fake_identity(monkeypatch, wonderworld)
 
     receipt = build_aura_exact_residual_bundle(
         preflight_path=preflight,
         aura_source_directory=aura,
         lama_source_directory=lama,
+        wonderworld_source_directory=wonderworld,
         output_root=tmp_path / "bundle",
         repo_root=repo,
     )
@@ -177,6 +192,16 @@ def test_seals_shared_camera_bundle_and_rehearses_without_provider_mutation(
         assert request["commands"]["task_initialization_checkpoint"] == (
             "one_shared_removal_point_cloud_digest_verified_before_and_after_each_task"
         )
+        assert request["wonderworld_marigold_runtime"]["license"] == "Apache-2.0"
+        assert len(request["wonderworld_marigold_runtime"]["files"]) == 4
+        assert [model["repository"] for model in request["marigold_runtime_models"]] == [
+            "prs-eth/marigold-depth-v1-0",
+            "prs-eth/marigold-v1-0",
+        ]
+        assert all(
+            f"provider_runtime/runtime_dependencies/{relative}" in archive.namelist()
+            for relative in WONDERWORLD_MARIGOLD_RUNTIME_FILES
+        )
         assert ENTRYPOINT in archive.namelist()
 
 
@@ -186,16 +211,18 @@ def test_rejects_a_source_release_tree_with_a_symlink(
     preflight = _preflight(tmp_path)
     aura = _init_release(tmp_path, name="aura", commit="unused", tree="unused")
     lama = _init_release(tmp_path, name="lama", commit="unused", tree="unused")
+    wonderworld = _init_release(tmp_path, name="wonderworld", commit="unused", tree="unused")
     (aura / "escape").symlink_to("/etc/passwd")
     _git(["git", "add", "escape"], aura)
     _git(["git", "commit", "-qm", "tracked symlink"], aura)
-    _fake_identity(monkeypatch)
+    _fake_identity(monkeypatch, wonderworld)
 
     with pytest.raises(AuraExactResidualBundleError, match="release_symlink_forbidden"):
         build_aura_exact_residual_bundle(
             preflight_path=preflight,
             aura_source_directory=aura,
             lama_source_directory=lama,
+            wonderworld_source_directory=wonderworld,
             output_root=tmp_path / "bundle",
             repo_root=Path(__file__).resolve().parents[1],
         )
@@ -207,13 +234,15 @@ def test_excludes_untracked_release_tree_bytes(
     preflight = _preflight(tmp_path)
     aura = _init_release(tmp_path, name="aura", commit="unused", tree="unused")
     lama = _init_release(tmp_path, name="lama", commit="unused", tree="unused")
+    wonderworld = _init_release(tmp_path, name="wonderworld", commit="unused", tree="unused")
     (aura / "untracked-secret-like-scratch.txt").write_text("not a release input\n")
-    _fake_identity(monkeypatch)
+    _fake_identity(monkeypatch, wonderworld)
 
     receipt = build_aura_exact_residual_bundle(
         preflight_path=preflight,
         aura_source_directory=aura,
         lama_source_directory=lama,
+        wonderworld_source_directory=wonderworld,
         output_root=tmp_path / "bundle",
         repo_root=Path(__file__).resolve().parents[1],
     )
