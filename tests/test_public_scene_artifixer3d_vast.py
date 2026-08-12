@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import zipfile
 
 import pytest
@@ -21,7 +22,9 @@ from blueprint_pipeline.public_scene_artifixer3d_vast import (
     PROBE_KIND,
     _materialize_raw_result,
     consume_artifixer3d_paid_attempt_authority_once,
+    inspect_artifixer3d_container_image,
     materialize_artifixer3d_paid_attempt_authority,
+    materialize_artifixer3d_postblocked_provider_zero,
     run_artifixer3d_vast,
     validate_artifixer3d_bundle,
     validate_artifixer3d_paid_attempt_authority,
@@ -431,6 +434,13 @@ def test_dry_run_is_mutation_free(
 ) -> None:
     receipt_path, _ = _bundle(tmp_path, monkeypatch)
     bundle = validate_artifixer3d_bundle(receipt_path)
+    import blueprint_pipeline.public_scene_artifixer3d_vast as subject
+
+    monkeypatch.setattr(
+        subject,
+        "inspect_artifixer3d_container_image",
+        lambda **_kwargs: {"status": "completed", "blockers": []},
+    )
     result = run_artifixer3d_vast(
         job_dir=tmp_path / "job",
         paid_resource_admission_grant=None,
@@ -449,6 +459,117 @@ def test_dry_run_is_mutation_free(
 def test_paid_wrapper_uses_canary_scoped_watchdog_and_instance_labels() -> None:
     assert INSTANCE_LABEL_PREFIX == "blueprint-groot-oscar-canary-adp-artifixer3d-"
     assert INSTANCE_LABEL_PREFIX.startswith("blueprint-groot-oscar-canary-")
+
+
+def test_container_registry_preflight_fails_before_paid_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="manifest unknown"
+        ),
+    )
+    result = inspect_artifixer3d_container_image(
+        image_ref="nvcr.io/nvidia/pytorch@sha256:" + "a" * 64,
+        output_path=tmp_path / "registry.json",
+    )
+    assert result["status"] == "blocked"
+    assert result["registry_manifest_available"] is False
+    assert result["blockers"] == [
+        "artifixer3d_container_image_not_registry_resolvable"
+    ]
+
+
+def test_container_registry_preflight_accepts_exact_reachable_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                    "layers": [{"digest": "sha256:" + "b" * 64, "size": 1}],
+                }
+            ),
+            stderr="",
+        ),
+    )
+    result = inspect_artifixer3d_container_image(
+        image_ref="nvcr.io/nvidia/pytorch@sha256:" + "a" * 64,
+        output_path=tmp_path / "registry.json",
+    )
+    assert result["status"] == "completed"
+    assert result["digest_pinned"] is True
+    assert result["registry_manifest_available"] is True
+    assert result["raw_registry_manifest_recorded"] is False
+
+
+def test_materialize_postblocked_provider_zero_binds_closeout(tmp_path: Path) -> None:
+    authority: dict[str, object] = {
+        "schema_version": "public_scene_artifixer3d_paid_attempt_authority.v1",
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = tmp_path / "authority.json"
+    result_path = tmp_path / "result.json"
+    adapter_path = tmp_path / "adapter.json"
+    cleanup_path = tmp_path / "cleanup.json"
+    watchdog_path = tmp_path / "watchdog.json"
+    _write(authority_path, authority)
+    _write(
+        result_path,
+        {
+            "schema_version": "public_scene_artifixer3d_vast_run.v1",
+            "status": "blocked",
+            "authorization_consumption": {
+                "status": "consumed",
+                "authorization_digest": authority["authorization_digest"],
+            },
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    _write(
+        adapter_path,
+        {"provider_create_attempted": True, "continuing_spend_from_this_run": False},
+    )
+    _write(
+        cleanup_path,
+        {"all_objects_absent": True, "signed_url_files_removed": True},
+    )
+    _write(
+        watchdog_path,
+        {
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+            "final_global_inventory": {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+            },
+        },
+    )
+    receipt = materialize_artifixer3d_postblocked_provider_zero(
+        attempt_authority_path=authority_path,
+        result_path=result_path,
+        adapter_result_path=adapter_path,
+        cleanup_path=cleanup_path,
+        watchdog_path=watchdog_path,
+        output_path=tmp_path / "provider_zero.json",
+    )
+    assert receipt["provider_mutations_performed_by_attempt"] == 1
+    assert receipt["provider_zero_confirmed"] is True
+    assert receipt["inventory"]["live_resource_count"] == 0
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
 
 
 def test_raw_result_uses_sealed_per_task_camera_count(tmp_path: Path) -> None:
@@ -506,8 +627,14 @@ def test_canonical_allocator_dry_run_binds_exact_bundle(
     receipt_path, _ = _bundle(tmp_path, monkeypatch)
     bundle = validate_artifixer3d_bundle(receipt_path)
     commit = bundle["blueprint_source_identity"]["commit"]
+    import blueprint_pipeline.public_scene_artifixer3d_vast as vast_subject
     import blueprint_pipeline.paid_resource_allocator as allocator
 
+    monkeypatch.setattr(
+        vast_subject,
+        "inspect_artifixer3d_container_image",
+        lambda **_kwargs: {"status": "completed", "blockers": []},
+    )
     monkeypatch.setattr(
         allocator,
         "_control_plane_checkout_blockers",

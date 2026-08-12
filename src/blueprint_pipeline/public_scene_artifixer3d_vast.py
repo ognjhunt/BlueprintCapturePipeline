@@ -17,6 +17,7 @@ import json
 import math
 import os
 from pathlib import Path
+import subprocess
 import zipfile
 from typing import Any
 
@@ -72,6 +73,59 @@ GPU_SELECTION_POLICY = {
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+
+
+def inspect_artifixer3d_container_image(
+    *, image_ref: str, output_path: str | Path
+) -> dict[str, Any]:
+    """Prove the exact digest is registry-resolvable before paid allocation."""
+
+    output = Path(output_path).expanduser().resolve()
+    ensure_dir(output.parent)
+    blockers: list[str] = []
+    decoded: dict[str, Any] = {}
+    if "@sha256:" not in image_ref:
+        blockers.append("artifixer3d_container_image_not_digest_pinned")
+    try:
+        completed = subprocess.run(
+            ["docker", "manifest", "inspect", image_ref],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        completed = None
+        blockers.append(f"artifixer3d_container_registry_probe_failed:{type(exc).__name__}")
+    if completed is not None:
+        if completed.returncode != 0:
+            blockers.append("artifixer3d_container_image_not_registry_resolvable")
+        else:
+            try:
+                value = json.loads(completed.stdout)
+                decoded = dict(value) if isinstance(value, Mapping) else {}
+            except json.JSONDecodeError:
+                blockers.append("artifixer3d_container_registry_manifest_invalid")
+            if not decoded:
+                blockers.append("artifixer3d_container_registry_manifest_invalid")
+    manifest = {
+        "schema_version": "artifixer3d_container_registry_preflight.v1",
+        "generated_at": utc_now_iso(),
+        "status": "completed" if not blockers else "blocked",
+        "image_ref": image_ref,
+        "digest_pinned": "@sha256:" in image_ref,
+        "registry_manifest_available": bool(decoded),
+        "media_type": decoded.get("mediaType"),
+        "blockers": sorted(set(blockers)),
+        "raw_registry_manifest_recorded": False,
+        "raw_secret_values_recorded": False,
+        "claim_boundary": (
+            "Registry metadata reachability only; this does not prove image pull, "
+            "container startup, model execution, or scientific output."
+        ),
+    }
+    write_json(output, manifest)
+    return manifest
 
 
 def _sha256(path: Path) -> str:
@@ -869,6 +923,82 @@ def consume_artifixer3d_paid_attempt_authority_once(
     }
 
 
+def materialize_artifixer3d_postblocked_provider_zero(
+    *,
+    attempt_authority_path: str | Path,
+    result_path: str | Path,
+    adapter_result_path: str | Path,
+    cleanup_path: str | Path,
+    watchdog_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal one failed attempt's mutation count and API-confirmed zero state."""
+
+    authority_file = Path(attempt_authority_path).expanduser().resolve()
+    result_file = Path(result_path).expanduser().resolve()
+    adapter_file = Path(adapter_result_path).expanduser().resolve()
+    cleanup_file = Path(cleanup_path).expanduser().resolve()
+    watchdog_file = Path(watchdog_path).expanduser().resolve()
+    authority = _read(authority_file)
+    result = _read(result_file)
+    adapter = _read(adapter_file)
+    cleanup = _read(cleanup_file)
+    watchdog = _read(watchdog_file)
+    inventory = watchdog.get("final_global_inventory")
+    if not isinstance(inventory, Mapping):
+        inventory = {}
+    authority_digest = authority.get("authorization_digest")
+    blockers: list[str] = []
+    if (
+        authority.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION
+        or authority_digest != canonical_digest(authority, digest_field="authorization_digest")
+    ):
+        blockers.append("artifixer3d_provider_zero_authority_invalid")
+    if (
+        result.get("schema_version") != RESULT_SCHEMA_VERSION
+        or result.get("status") != "blocked"
+        or result.get("authorization_consumption", {}).get("status") != "consumed"
+        or result.get("authorization_consumption", {}).get("authorization_digest")
+        != authority_digest
+        or result.get("continuing_spend_from_this_run") is not False
+    ):
+        blockers.append("artifixer3d_provider_zero_result_invalid")
+    provider_mutations = 1 if adapter.get("provider_create_attempted") is True else 0
+    if (
+        adapter.get("continuing_spend_from_this_run") is not False
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or watchdog.get("status") != "provider_terminal"
+        or watchdog.get("provider_absence_confirmed") is not True
+        or inventory.get("api_confirmed") is not True
+        or inventory.get("live_resource_count") != 0
+    ):
+        blockers.append("artifixer3d_provider_zero_closeout_invalid")
+    if blockers:
+        raise ValueError(";".join(sorted(set(blockers))))
+    receipt: dict[str, Any] = {
+        "schema_version": "artifixer3d_postblocked_provider_zero.v1",
+        "generated_at": utc_now_iso(),
+        "attempt_authority_digest": authority_digest,
+        "provider_mutations_performed_by_attempt": provider_mutations,
+        "provider_zero_confirmed": True,
+        "inventory": dict(inventory),
+        "attempt_authority": _record(authority_file),
+        "attempt_result": _record(result_file),
+        "provider_adapter": _record(adapter_file),
+        "object_store_cleanup": _record(cleanup_file),
+        "watchdog_receipt": _record(watchdog_file),
+        "continuing_spend_from_attempt": False,
+        "all_staged_objects_absent": True,
+        "raw_secret_values_recorded": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    write_json(output, receipt)
+    return receipt
+
+
 @contextmanager
 def _authority_environment():
     previous = {name: os.environ.get(name) for name in (*_MUTATION_ENV, _RETRY_ENV)}
@@ -1034,12 +1164,31 @@ def run_artifixer3d_vast(
     ):
         raise ValueError("artifixer3d_budget_invalid")
     result_path = job / "public_scene_artifixer3d_vast_result.json"
+    image_preflight = inspect_artifixer3d_container_image(
+        image_ref=str(bundle.get("container_image") or ""),
+        output_path=job / "artifixer3d_container_registry_preflight.json",
+    )
+    if image_preflight.get("status") != "completed":
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "prepared_bundle": bundle,
+            "container_registry_preflight": image_preflight,
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "authority_consumed": False,
+            "blockers": list(image_preflight.get("blockers") or []),
+        }
+        write_json(result_path, result)
+        return result
     if not execute:
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
             "generated_at": utc_now_iso(),
             "status": "dry_run_ready",
             "prepared_bundle": bundle,
+            "container_registry_preflight": image_preflight,
             "provider_mutations_performed": 0,
             "retry_cap": 0,
             "blockers": [],
@@ -1266,6 +1415,8 @@ def run_artifixer3d_vast(
         "watchdog_receipt_path": str(watchdog_path),
         "object_store_cleanup_path": str(cleanup_path),
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
+        "provider_mutations_performed": closeout["provider_mutations_performed"],
+        "provider_closeout": closeout,
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": 0,
@@ -1289,7 +1440,9 @@ __all__ = [
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "consume_artifixer3d_paid_attempt_authority_once",
+    "inspect_artifixer3d_container_image",
     "materialize_artifixer3d_paid_attempt_authority",
+    "materialize_artifixer3d_postblocked_provider_zero",
     "run_artifixer3d_vast",
     "validate_artifixer3d_bundle",
     "validate_artifixer3d_paid_attempt_authority",
