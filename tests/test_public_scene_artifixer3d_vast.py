@@ -285,6 +285,64 @@ def test_paid_authority_chains_prior_spend_and_is_one_shot(
         allowed_active_instance_ids=[],
     )["authorization_digest"] == authority["authorization_digest"]
 
+    predecessor_result = tmp_path / "predecessor/result.json"
+    _write(
+        predecessor_result,
+        {
+            "schema_version": "public_scene_artifixer3d_vast_run.v1",
+            "status": "blocked",
+            "retry_cap": 0,
+            "provider_mutations_performed": 0,
+            "all_staged_objects_absent": True,
+            "authorization_consumption": {
+                "status": "consumed",
+                "authorization_digest": authority["authorization_digest"],
+            },
+        },
+    )
+    predecessor_cleanup = tmp_path / "predecessor/cleanup.json"
+    _write(
+        predecessor_cleanup,
+        {
+            "schema_version": "wam_provider_object_store_cleanup.v1",
+            "all_objects_absent": True,
+            "signed_url_files_removed": True,
+        },
+    )
+    predecessor_zero = tmp_path / "predecessor/provider_zero.json"
+    _write(
+        predecessor_zero,
+        {
+            "schema_version": "artifixer3d_postblocked_provider_zero.v1",
+            "attempt_authority_digest": authority["authorization_digest"],
+            "provider_mutations_performed_by_attempt": 0,
+            "provider_zero_confirmed": True,
+            "inventory": {"api_confirmed": True, "live_resource_count": 0},
+        },
+    )
+    successor = materialize_artifixer3d_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_aura_authority_path=prior_path,
+        prior_terminal_result_path=terminal_path,
+        prior_artifixer_authority_path=output,
+        prior_artifixer_result_path=predecessor_result,
+        prior_artifixer_cleanup_path=predecessor_cleanup,
+        prior_artifixer_provider_zero_path=predecessor_zero,
+        authorization_reference="fixture-successor-one-shot",
+        authorized_by="fixture_user",
+        authorized_on="2026-08-12",
+        blueprint_commit=bundle["blueprint_source_identity"]["commit"],
+        max_hourly_rate_usd=1.5,
+        hard_cap_usd=9.0,
+        hard_ttl_seconds=21_600,
+        output_path=tmp_path / "successor_authority.json",
+    )
+    assert successor["prior_artifixer_attempt"]["authority_digest"] == authority[
+        "authorization_digest"
+    ]
+    assert successor["prior_artifixer_attempt"]["terminal_cost_usd"] == 0.0
+    assert successor["aggregate_goal_spend_before_attempt_usd"] == 1.7
+
     import blueprint_pipeline.public_scene_artifixer3d_vast as subject
 
     monkeypatch.setattr(subject, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed")

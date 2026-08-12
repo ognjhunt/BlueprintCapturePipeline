@@ -417,6 +417,62 @@ def _validate_prior_terminal_result(
     return result, round(float(cost), 6)
 
 
+def _validate_prior_artifixer_attempt(
+    *,
+    authority_path: Path,
+    result_path: Path,
+    cleanup_path: Path,
+    provider_zero_path: Path,
+) -> tuple[dict[str, Any], float]:
+    """Re-open a predecessor ArtiFixer attempt, including its zero closeout."""
+
+    authority = _read(
+        authority_path, code="artifixer3d_predecessor_authority_unreadable"
+    )
+    result = _read(result_path, code="artifixer3d_predecessor_result_unreadable")
+    cleanup = _read(cleanup_path, code="artifixer3d_predecessor_cleanup_unreadable")
+    provider_zero = _read(
+        provider_zero_path, code="artifixer3d_predecessor_provider_zero_unreadable"
+    )
+    inventory = provider_zero.get("inventory")
+    cost = result.get("estimated_cost_usd")
+    if cost is None and result.get("provider_mutations_performed") == 0:
+        cost = 0.0
+    if (
+        authority.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION
+        or authority.get("authorization_digest")
+        != canonical_digest(authority, digest_field="authorization_digest")
+        or authority.get("automatic_paid_retry_authorized") is not False
+        or authority.get("maximum_paid_attempts") != 1
+        or result.get("schema_version") != RESULT_SCHEMA_VERSION
+        or result.get("status") not in {"blocked", "completed"}
+        or result.get("retry_cap") != 0
+        or result.get("authorization_consumption", {}).get("status") != "consumed"
+        or result.get("authorization_consumption", {}).get("authorization_digest")
+        != authority.get("authorization_digest")
+        or result.get("all_staged_objects_absent") is not True
+        or isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(float(cost))
+        or float(cost) < 0
+        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or provider_zero.get("schema_version")
+        != "artifixer3d_postblocked_provider_zero.v1"
+        or provider_zero.get("attempt_authority_digest")
+        != authority.get("authorization_digest")
+        or provider_zero.get("provider_mutations_performed_by_attempt")
+        != result.get("provider_mutations_performed")
+        or provider_zero.get("provider_zero_confirmed") is not True
+        or not isinstance(inventory, Mapping)
+        or inventory.get("api_confirmed") is not True
+        or inventory.get("live_resource_count") != 0
+    ):
+        raise ValueError("artifixer3d_predecessor_attempt_invalid")
+    return authority, round(float(cost), 6)
+
+
 def materialize_artifixer3d_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
@@ -430,6 +486,10 @@ def materialize_artifixer3d_paid_attempt_authority(
     hard_cap_usd: float,
     hard_ttl_seconds: int,
     output_path: str | Path,
+    prior_artifixer_authority_path: str | Path | None = None,
+    prior_artifixer_result_path: str | Path | None = None,
+    prior_artifixer_cleanup_path: str | Path | None = None,
+    prior_artifixer_provider_zero_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Seal one zero-retry authority chained through all previous scene spend."""
 
@@ -440,7 +500,40 @@ def materialize_artifixer3d_paid_attempt_authority(
     _, latest_cost = _validate_prior_terminal_result(
         terminal_path, prior_authority=prior_authority
     )
-    prior_spend = round(float(prior_authority["prior_goal_spend_usd"]) + latest_cost, 6)
+    predecessor_paths = (
+        prior_artifixer_authority_path,
+        prior_artifixer_result_path,
+        prior_artifixer_cleanup_path,
+        prior_artifixer_provider_zero_path,
+    )
+    predecessor: dict[str, Any] | None = None
+    predecessor_cost = 0.0
+    if any(path is not None for path in predecessor_paths):
+        if not all(path is not None for path in predecessor_paths):
+            raise ValueError("artifixer3d_predecessor_attempt_incomplete")
+        resolved_predecessor_paths = tuple(
+            Path(str(path)).expanduser().resolve() for path in predecessor_paths
+        )
+        predecessor_authority, predecessor_cost = _validate_prior_artifixer_attempt(
+            authority_path=resolved_predecessor_paths[0],
+            result_path=resolved_predecessor_paths[1],
+            cleanup_path=resolved_predecessor_paths[2],
+            provider_zero_path=resolved_predecessor_paths[3],
+        )
+        predecessor = {
+            "authority": _record(resolved_predecessor_paths[0]),
+            "authority_digest": predecessor_authority["authorization_digest"],
+            "terminal_result": _record(resolved_predecessor_paths[1]),
+            "object_store_cleanup": _record(resolved_predecessor_paths[2]),
+            "provider_zero": _record(resolved_predecessor_paths[3]),
+            "terminal_cost_usd": predecessor_cost,
+        }
+    prior_spend = round(
+        float(prior_authority["prior_goal_spend_usd"])
+        + latest_cost
+        + predecessor_cost,
+        6,
+    )
     aggregate_cap = float(bundle["aggregate_goal_spend_cap_usd"])
     if (
         not authorization_reference.strip()
@@ -489,6 +582,7 @@ def materialize_artifixer3d_paid_attempt_authority(
         "prior_aura_authority_digest": prior_authority["authorization_digest"],
         "prior_terminal_result": _record(terminal_path),
         "prior_terminal_cost_usd": latest_cost,
+        "prior_artifixer_attempt": predecessor,
         "external_active_instance_allowlist": bundle["allowed_active_instance_ids"],
         "forbidden_external_instance_ids": bundle[
             "forbidden_external_instance_ids"
@@ -593,7 +687,45 @@ def validate_artifixer3d_paid_attempt_authority(
     _, terminal_cost = _validate_prior_terminal_result(
         terminal_path, prior_authority=prior
     )
-    prior_spend = round(float(prior["prior_goal_spend_usd"]) + terminal_cost, 6)
+    predecessor_cost = 0.0
+    predecessor = value.get("prior_artifixer_attempt")
+    if predecessor is not None:
+        if not isinstance(predecessor, Mapping):
+            raise ValueError("artifixer3d_authority_predecessor_invalid")
+        predecessor_authority_path = _bound(
+            predecessor.get("authority"),
+            code="artifixer3d_authority_predecessor_unbound",
+        )
+        predecessor_result_path = _bound(
+            predecessor.get("terminal_result"),
+            code="artifixer3d_authority_predecessor_result_unbound",
+        )
+        predecessor_cleanup_path = _bound(
+            predecessor.get("object_store_cleanup"),
+            code="artifixer3d_authority_predecessor_cleanup_unbound",
+        )
+        predecessor_zero_path = _bound(
+            predecessor.get("provider_zero"),
+            code="artifixer3d_authority_predecessor_zero_unbound",
+        )
+        predecessor_authority, predecessor_cost = _validate_prior_artifixer_attempt(
+            authority_path=predecessor_authority_path,
+            result_path=predecessor_result_path,
+            cleanup_path=predecessor_cleanup_path,
+            provider_zero_path=predecessor_zero_path,
+        )
+        if (
+            predecessor.get("authority_digest")
+            != predecessor_authority.get("authorization_digest")
+            or predecessor.get("terminal_cost_usd") != predecessor_cost
+        ):
+            raise ValueError("artifixer3d_authority_predecessor_mismatch")
+    prior_spend = round(
+        float(prior["prior_goal_spend_usd"])
+        + terminal_cost
+        + predecessor_cost,
+        6,
+    )
     if (
         terminal_cost != value.get("prior_terminal_cost_usd")
         or prior_spend != value.get("aggregate_goal_spend_before_attempt_usd")
