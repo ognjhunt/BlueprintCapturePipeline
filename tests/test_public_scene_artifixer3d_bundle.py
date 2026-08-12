@@ -142,6 +142,15 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert 'submodule update --init --recursive' in entrypoint
     assert 'submodule status --recursive' in entrypoint
     assert "artifixer3d_nested_submodule_identity_mismatch" in entrypoint
+    assert 'pip check --python "${artifixer_python}"' in entrypoint
+    assert "public_scene_artifixer3d_runtime_preflight.v1" in entrypoint
+    assert '"model_eval.run_inference"' in entrypoint
+    assert '"data_processing.run_artifixer3d"' in entrypoint
+    assert '"data_processing.render_3dgrut_colmap"' in entrypoint
+    assert '"tiny-cuda-nn" / "include"' in entrypoint
+    assert '/ "cutlass"\n    / "include"' in entrypoint
+    assert '"ninja", "nvcc", "slangc"' in entrypoint
+    assert '"single_cuda_device_unavailable"' in entrypoint
 
 
 def test_rejects_tampered_candidate_or_dirty_source(

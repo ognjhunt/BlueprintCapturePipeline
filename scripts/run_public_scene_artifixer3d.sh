@@ -115,6 +115,110 @@ bash "${submodule_dir}/scripts/install_slangc.sh" /usr/local \
   || { write_missing_result "artifixer3d_slangc_install_failed"; exit 2; }
 "${uv_bin}" pip install --python "${artifixer_python}" -e "${submodule_dir}" \
   || { write_missing_result "artifixer3d_3dgrut_install_failed"; exit 2; }
+"${uv_bin}" pip check --python "${artifixer_python}" \
+  > "${output_dir}/artifixer3d-pip-check.txt" \
+  || { write_missing_result "artifixer3d_python_dependency_conflict"; exit 2; }
+
+# Import the exact released entrypoint graphs before downloading model weights or
+# beginning inference.  In particular, importing data_processing.artifixer3d
+# forces the 3DGRUT JIT extension to resolve its recursively pinned CUDA headers;
+# a shallow parent-only submodule checkout therefore fails here, before a long
+# direct-inference pass can hide the packaging defect.
+export PYTHONPATH="${runtime_dir}/ArtiFixer_official:${submodule_dir}${PYTHONPATH:+:${PYTHONPATH}}"
+"${artifixer_python}" - "${output_dir}/artifixer3d-runtime-preflight.json" "${submodule_dir}" <<'PY' \
+  || { write_missing_result "artifixer3d_runtime_preflight_failed"; exit 2; }
+import importlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+import torch
+
+receipt_path = Path(sys.argv[1])
+submodule_root = Path(sys.argv[2])
+required_commands = ("git", "gcc", "g++", "cmake", "ninja", "nvcc", "slangc")
+required_files = (
+    submodule_root / "thirdparty" / "tiny-cuda-nn" / "include" / "tiny-cuda-nn" / "common.h",
+    submodule_root
+    / "thirdparty"
+    / "tiny-cuda-nn"
+    / "dependencies"
+    / "cutlass"
+    / "include"
+    / "cutlass"
+    / "cutlass.h",
+)
+entrypoint_modules = (
+    "model_eval.run_inference",
+    "data_processing.run_artifixer3d",
+    "data_processing.render_3dgrut_colmap",
+)
+
+receipt = {
+    "schema_version": "public_scene_artifixer3d_runtime_preflight.v1",
+    "status": "blocked",
+    "commands": {},
+    "required_files": {},
+    "entrypoint_imports": {},
+    "nested_submodules": [],
+    "torch": {
+        "version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "cuda_available": torch.cuda.is_available(),
+        "device_count": torch.cuda.device_count(),
+    },
+    "blockers": [],
+}
+try:
+    for command in required_commands:
+        resolved = shutil.which(command)
+        receipt["commands"][command] = resolved
+        if resolved is None:
+            receipt["blockers"].append(f"missing_command:{command}")
+    for path in required_files:
+        present = path.is_file()
+        receipt["required_files"][str(path.relative_to(submodule_root))] = present
+        if not present:
+            receipt["blockers"].append(f"missing_file:{path.relative_to(submodule_root)}")
+    nested = subprocess.run(
+        ["git", "-C", str(submodule_root), "submodule", "status", "--recursive"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    receipt["nested_submodules"] = [
+        line.strip() for line in nested.stdout.splitlines() if line.strip()
+    ]
+    if any(line.startswith(("-", "+", "U")) for line in receipt["nested_submodules"]):
+        receipt["blockers"].append("nested_submodule_identity_mismatch")
+    if not receipt["torch"]["cuda_available"] or receipt["torch"]["device_count"] != 1:
+        receipt["blockers"].append("single_cuda_device_unavailable")
+    else:
+        receipt["torch"]["device_name"] = torch.cuda.get_device_name(0)
+        receipt["torch"]["device_capability"] = list(torch.cuda.get_device_capability(0))
+        receipt["torch"]["device_total_memory_bytes"] = torch.cuda.get_device_properties(0).total_memory
+    for module in entrypoint_modules:
+        try:
+            importlib.import_module(module)
+        except Exception as exc:
+            receipt["entrypoint_imports"][module] = False
+            receipt["blockers"].append(
+                f"entrypoint_import_failed:{module}:{type(exc).__name__}"
+            )
+            raise
+        else:
+            receipt["entrypoint_imports"][module] = True
+    if not receipt["blockers"]:
+        receipt["status"] = "completed"
+finally:
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+if receipt["blockers"]:
+    raise SystemExit(";".join(receipt["blockers"]))
+PY
 "${uv_bin}" pip freeze --python "${artifixer_python}" > "${output_dir}/artifixer3d-pip-freeze.txt"
 
 export HF_HOME="${bundle_root}/.hf_home"
