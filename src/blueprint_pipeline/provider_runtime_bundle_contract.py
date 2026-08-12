@@ -26,6 +26,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_joint_agent",
     "adp_aura_smoke",
     "adp_aura_interiorgs",
+    "adp_aura_exact_residual",
     "adp_inpaint360_interiorgs",
     "adp_gaussian_excision",
     "adp_retained_scene_render",
@@ -327,6 +328,30 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp_aura_interiorgs_runtime_contract"
+    elif provider_bundle_kind == "adp_aura_exact_residual":
+        # This is deliberately a distinct contract from both the historical
+        # InteriorGS adapter and Inpaint360.  Its runner must preserve the
+        # exact-mask-only boundary and the reusable 1--5 co-present task set.
+        entrypoint_valid = (
+            "aura_exact_residual_runner_failed_without_result" in entrypoint_text
+            and "BLUEPRINT_PUBLIC_SCENE_AURA_EXACT_RESIDUAL_STAGE_STARTED" in entrypoint_text
+            and "torch==2.5.1" in entrypoint_text
+            and "torch==1.8.0" in entrypoint_text
+            and "--no-build-isolation" in entrypoint_text
+            and "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL" in entrypoint_text
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "public_scene_aura_exact_residual_runtime_result.json",
+                "aura_inpainting_executed",
+                "private_derived_upload_only",
+                "provider_zero_required_after_return",
+                "aura_exact_residual_runtime_marigold_model_bytes_changed",
+                "native_aura_gaussian_count",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp_aura_exact_residual_runtime_contract"
     elif provider_bundle_kind == "adp_inpaint360_interiorgs":
         entrypoint_valid = (
             "adp_inpaint360_runner_failed_without_runtime_result" in entrypoint_text

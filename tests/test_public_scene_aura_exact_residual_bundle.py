@@ -16,12 +16,17 @@ from blueprint_pipeline.public_scene_aura_exact_residual_bundle import (
     AuraExactResidualBundleError,
     build_aura_exact_residual_bundle,
 )
+from blueprint_pipeline.public_scene_aura_exact_residual_vast import (
+    validate_aura_exact_residual_bundle,
+)
 from blueprint_pipeline.adp_aura_author_smoke_vast import (
     WONDERWORLD_MARIGOLD_RUNTIME_FILES,
 )
 from blueprint_pipeline.public_scene_aura_exact_residual_preflight import (
     materialize_aura_exact_residual_preflight,
 )
+from blueprint_pipeline.provider_runtime_bundle_contract import provider_runtime_contract_blockers
+from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
 from tests.test_public_scene_aura_exact_residual_preflight import _packet
 
 
@@ -252,3 +257,74 @@ def test_excludes_untracked_release_tree_bytes(
             "provider_runtime/AuraFusion360_official/untracked-secret-like-scratch.txt"
             not in archive.namelist()
         )
+
+
+def test_exact_residual_runtime_has_a_distinct_fail_closed_provider_contract() -> None:
+    root = Path(__file__).resolve().parents[1]
+    entrypoint = (root / "scripts/run_public_scene_aura_exact_residual.sh").read_text()
+    runner = (root / "scripts/public_scene_aura_exact_residual_runner.py").read_text()
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="adp_aura_exact_residual",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="adp_inpaint360_interiorgs",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    )
+
+
+def test_vast_preflight_accepts_only_the_exact_residual_bundle_layout(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    bundle = tmp_path / "exact-residual.zip"
+    entries = {
+        "provider_runtime/run_public_scene_aura_exact_residual.sh": (
+            root / "scripts/run_public_scene_aura_exact_residual.sh"
+        ).read_bytes(),
+        "provider_runtime/public_scene_aura_exact_residual_runner.py": (
+            root / "scripts/public_scene_aura_exact_residual_runner.py"
+        ).read_bytes(),
+        "provider_runtime/aura_exact_residual_bundle_manifest.json": b"{}",
+        "provider_runtime/aura_exact_residual_runtime_request.json": b"{}",
+        "provider_runtime/input/preflight.json": b"{}",
+        "provider_runtime/input/backend_admission.json": b"{}",
+        "provider_runtime/input/shared_retained_scene.ply": b"ply\n",
+        "provider_runtime/big-lama.zip": b"x",
+    }
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+    result = _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="2026-08-12T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_aura_exact_residual",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.invalid/bundle.zip",
+        provider_output_put_url="https://example.invalid/out.zip",
+    )
+    assert result["status"] == "passed"
+    assert result["blockers"] == []
+
+
+def test_vast_bundle_validator_reads_the_packet_not_digest_shaped_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preflight = _preflight(tmp_path)
+    aura = _init_release(tmp_path, name="aura", commit="unused", tree="unused")
+    lama = _init_release(tmp_path, name="lama", commit="unused", tree="unused")
+    wonderworld = _init_release(tmp_path, name="wonderworld", commit="unused", tree="unused")
+    _fake_identity(monkeypatch, wonderworld)
+    receipt = build_aura_exact_residual_bundle(
+        preflight_path=preflight,
+        aura_source_directory=aura,
+        lama_source_directory=lama,
+        wonderworld_source_directory=wonderworld,
+        output_root=tmp_path / "bundle",
+        repo_root=Path(__file__).resolve().parents[1],
+    )
+    with pytest.raises(ValueError, match="execution_authority"):
+        validate_aura_exact_residual_bundle(tmp_path / "bundle" / "aura_exact_residual_bundle_receipt.json")
+    assert receipt["bundle_sha256"]

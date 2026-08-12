@@ -13,6 +13,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -223,6 +224,13 @@ from .adp_aura_interiorgs_vast import (
     PROBE_KIND as ADP_AURA_INTERIORGS_PROBE_KIND,
     run_aura_interiorgs_vast,
 )
+from .public_scene_aura_exact_residual_vast import (
+    MAX_HARD_CAP_USD as AURA_EXACT_RESIDUAL_MAX_HARD_CAP_USD,
+    MAX_TTL_SECONDS as AURA_EXACT_RESIDUAL_MAX_TTL_SECONDS,
+    PROBE_KIND as ADP_AURA_EXACT_RESIDUAL_PROBE_KIND,
+    run_aura_exact_residual_vast,
+    validate_aura_exact_residual_bundle,
+)
 from .public_scene_execution_authority import (
     PublicSceneExecutionAuthorityError,
     validate_aura_retry_authority_binding,
@@ -311,32 +319,56 @@ def admit_pigey_candidate_runtime(*, runtime: Any, **kwargs: Any) -> AdmissionRe
     return admission, grant
 
 
-def _current_checkout_source_state() -> tuple[str, bool]:
-    try:
-        commit_result = subprocess.run(
-            ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD^{commit}"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        status_result = subprocess.run(
-            ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "", False
+CHECKOUT_IDENTITY_PROBE_TIMEOUT_SECONDS = 20
+CHECKOUT_IDENTITY_PROBE_ATTEMPTS = 3
+CHECKOUT_IDENTITY_PROBE_BACKOFF_SECONDS = 2.0
+
+
+def _checkout_git_command(*arguments: str) -> list[str]:
+    """Trust only the physical immutable checkout used by this allocator."""
+
+    return ["git", "-c", f"safe.directory={ROOT}", "-C", str(ROOT), *arguments]
+
+
+def _run_checkout_probe(argv: Sequence[str]) -> subprocess.CompletedProcess | None:
+    """Probe immutable checkout identity, retrying a transient Git lock."""
+
+    result: subprocess.CompletedProcess | None = None
+    for attempt in range(CHECKOUT_IDENTITY_PROBE_ATTEMPTS):
+        try:
+            result = subprocess.run(
+                list(argv), check=False, capture_output=True, text=True,
+                timeout=CHECKOUT_IDENTITY_PROBE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            result = None
+        if result is not None and result.returncode == 0:
+            return result
+        if attempt + 1 < CHECKOUT_IDENTITY_PROBE_ATTEMPTS:
+            time.sleep(CHECKOUT_IDENTITY_PROBE_BACKOFF_SECONDS)
+    return result
+
+
+def _current_checkout_source_state() -> tuple[str, bool, bool]:
+    """Separate a failed Git observation from a genuinely dirty checkout."""
+
+    commit_result = _run_checkout_probe(
+        _checkout_git_command("rev-parse", "--verify", "HEAD^{commit}")
+    )
+    status_result = _run_checkout_probe(
+        _checkout_git_command("status", "--porcelain", "--untracked-files=no")
+    )
+    if commit_result is None or status_result is None:
+        return "", False, False
+    if commit_result.returncode != 0 or status_result.returncode != 0:
+        return "", False, False
     commit = commit_result.stdout.strip().lower()
     commit_valid = bool(
-        commit_result.returncode == 0
-        and len(commit) == 40
+        len(commit) == 40
         and all(character in "0123456789abcdef" for character in commit)
     )
-    clean = bool(status_result.returncode == 0 and not status_result.stdout.strip())
-    return (commit if commit_valid else ""), clean
+    clean = not status_result.stdout.strip()
+    return (commit if commit_valid else ""), clean, True
 
 
 def _current_origin_main_commit() -> str:
@@ -1112,6 +1144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_RETAINED_SCENE_RENDER_PROBE_KIND,
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,
+            ADP_AURA_EXACT_RESIDUAL_PROBE_KIND,
             ADP_INPAINT360_INTERIORGS_PROBE_KIND,
             TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
         ),
@@ -1295,6 +1328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-retained-scene-render-hard-ttl-seconds", type=int, default=10_800)
     gpu.add_argument("--adp-aura-bundle-receipt")
     gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
+    gpu.add_argument("--adp-aura-exact-residual-bundle-receipt")
     gpu.add_argument("--adp-aura-attempt-authority")
     gpu.add_argument("--adp-inpaint360-bundle-receipt")
     gpu.add_argument(
@@ -2729,6 +2763,136 @@ def main(argv: Sequence[str] | None = None) -> int:
                     public_image=ADP_AURA_SMOKE_IMAGE,
                     machine_avoidlist_path=avoidlist_path,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == ADP_AURA_EXACT_RESIDUAL_PROBE_KIND:
+            missing = [
+                name
+                for name, value in (
+                    ("adp_aura_exact_residual_bundle_receipt", args.adp_aura_exact_residual_bundle_receipt),
+                    ("adp_job_dir", args.adp_job_dir),
+                )
+                if not value
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
+            if args.provider != "vast":
+                blockers.append("aura_exact_residual_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("aura_exact_residual_budget_invalid")
+            if args.adp_max_spend_usd > AURA_EXACT_RESIDUAL_MAX_HARD_CAP_USD:
+                blockers.append("aura_exact_residual_hard_cap_exceeds_authority")
+            if not 7200 <= args.adp_hard_ttl_seconds <= AURA_EXACT_RESIDUAL_MAX_TTL_SECONDS:
+                blockers.append("aura_exact_residual_hard_ttl_invalid")
+            if args.adp_hard_ttl_seconds * args.adp_max_hourly_rate_usd / 3600 > args.adp_max_spend_usd:
+                blockers.append("aura_exact_residual_runtime_cost_exceeds_hard_cap")
+            if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
+                blockers.append("aura_exact_residual_allowed_active_vast_instance_id_invalid")
+            prepared_bundle: dict[str, Any] | None = None
+            if args.adp_aura_exact_residual_bundle_receipt:
+                try:
+                    prepared_bundle = validate_aura_exact_residual_bundle(
+                        args.adp_aura_exact_residual_bundle_receipt
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("aura_exact_residual_bundle_binding_invalid")
+            if prepared_bundle is not None:
+                expected_allowed = prepared_bundle["allowed_active_instance_ids"]
+                observed_allowed = sorted(set(args.adp_allowed_active_vast_instance_id))
+                if observed_allowed != expected_allowed:
+                    blockers.append("aura_exact_residual_external_instance_allowlist_mismatch")
+            avoidlist_path: Path | None = None
+            avoidlist_sha256: str | None = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                try:
+                    avoidlist = _load(avoidlist_path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("aura_exact_residual_machine_avoidlist_invalid")
+                else:
+                    if (
+                        avoidlist.get("schema_version") != "vast_machine_avoidlist.v1"
+                        or not isinstance(avoidlist.get("machine_ids"), list)
+                        or any(
+                            not isinstance(machine_id, int) or machine_id <= 0
+                            for machine_id in avoidlist["machine_ids"]
+                        )
+                    ):
+                        blockers.append("aura_exact_residual_machine_avoidlist_invalid")
+                    avoidlist_sha256 = "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": args.probe_kind,
+                "orchestrator_source_commit": control_identity.get("orchestrator_source_commit"),
+                "expected_source_commit": expected_source_commit or None,
+                "bundle_receipt_sha256": prepared_bundle.get("receipt_sha256") if prepared_bundle else None,
+                "bundle_sha256": prepared_bundle.get("bundle_sha256") if prepared_bundle else None,
+                "preflight_digest": prepared_bundle.get("preflight_digest") if prepared_bundle else None,
+                "execution_authority_digest": prepared_bundle.get("execution_authority_digest") if prepared_bundle else None,
+                "container_image": prepared_bundle.get("container_image") if prepared_bundle else None,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "allowed_active_vast_instance_ids": sorted(set(args.adp_allowed_active_vast_instance_id)),
+                "machine_avoidlist_sha256": avoidlist_sha256,
+                "retry_cap": 0,
+            }
+            allocation_binding_digest = "sha256:" + hashlib.sha256(
+                json.dumps(allocation_binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=sorted(set(blockers))
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": args.probe_kind,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "private_derived_upload_only": True,
+                    "raw_interiorgs_upload_authorized": False,
+                    "provider_training_authorized": False,
+                    "inpaint360_code_or_author_data_included": False,
+                    "exact_mask_only_edits_required": True,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {"status": "blocked", "blockers": exc.blockers, "provider_mutations_performed": 0}
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if blockers or prepared_bundle is None:
+                result = {"status": "blocked", "blockers": sorted(set(blockers)), "provider_mutations_performed": 0}
+            else:
+                result = run_aura_exact_residual_vast(
+                    job_dir=args.adp_job_dir,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    prepared_bundle=prepared_bundle,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    machine_avoidlist_path=avoidlist_path,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

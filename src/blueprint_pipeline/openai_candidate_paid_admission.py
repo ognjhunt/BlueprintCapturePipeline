@@ -267,7 +267,7 @@ def prepare_openai_api_candidate_admission(
     teardown_enforced: bool,
     admission_out: str | Path,
     source_checkout_validator: Callable[..., tuple[list[str], str]],
-    checkout_state_reader: Callable[[], tuple[str, bool]],
+    checkout_state_reader: Callable[[], tuple[str, bool] | tuple[str, bool, bool]],
     execute: bool = False,
     experimental_branch_diagnostic: bool = False,
     admitted_at: str | None = None,
@@ -278,7 +278,8 @@ def prepare_openai_api_candidate_admission(
         expected_source_commit,
         allow_pushed_branch_diagnostic=experimental_branch_diagnostic,
     )
-    _observed_commit, checkout_clean = checkout_state_reader()
+    checkout_state = checkout_state_reader()
+    _observed_commit, checkout_clean = checkout_state[:2]
     admission = build_openai_api_candidate_admission(
         suite=suite,
         execution_authorization=execution_authorization,
