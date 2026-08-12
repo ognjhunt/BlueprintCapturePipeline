@@ -1285,7 +1285,9 @@ def _validate_control_run(
         or teardown.get("continuing_spend") is not False
         or provider_zero.get("api_confirmed") is not True
         or provider_zero.get("live_instance_count") != 0
+        or isinstance(spend.get("total_usd"), bool)
         or not isinstance(spend.get("total_usd"), (int, float))
+        or not math.isfinite(float(spend.get("total_usd", math.nan)))
         or float(spend.get("total_usd", -1.0)) < 0.0
     ):
         blockers.append("adp009d_backend_control_run_terminal_evidence_invalid")
@@ -1527,6 +1529,10 @@ def build_comparison_receipt(
         "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
         "physics_backends": list(ALLOWED_PHYSICS_BACKENDS),
         "comparability_bindings": physx_bindings,
+        "backend_comparability_bindings": {
+            "physx": physx_bindings,
+            "newton": newton_bindings,
+        },
         "backend_profiles": {
             backend: profile["profile_digest"] for backend, profile in profiles.items()
         },
@@ -1571,6 +1577,16 @@ def validate_comparison_receipt(value: Mapping[str, Any]) -> list[str]:
 
     try:
         bindings = dict(value["comparability_bindings"])
+        backend_bindings = dict(value["backend_comparability_bindings"])
+        if (
+            set(backend_bindings) != set(ALLOWED_PHYSICS_BACKENDS)
+            or bindings != backend_bindings.get("physx")
+            or any(
+                not isinstance(backend_bindings.get(backend), Mapping)
+                for backend in ALLOWED_PHYSICS_BACKENDS
+            )
+        ):
+            raise ValueError
         rows = dict(value["backend_runs"])
         if set(rows) != set(ALLOWED_PHYSICS_BACKENDS):
             raise ValueError
@@ -1579,7 +1595,7 @@ def validate_comparison_receipt(value: Mapping[str, Any]) -> list[str]:
             row = dict(rows[backend])
             run = build_backend_control_run_receipt(
                 physics_backend=backend,
-                comparability_bindings=bindings,
+                comparability_bindings=dict(backend_bindings[backend]),
                 backend_control_plan_digest=str(
                     row["backend_control_plan_digest"]
                 ),

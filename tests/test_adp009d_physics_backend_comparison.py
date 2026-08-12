@@ -899,6 +899,10 @@ def test_comparison_receipt_requires_exact_common_bindings() -> None:
     assert receipt["engine_promotion_performed"] is False
     assert receipt["default_backend_after_comparison"] == "physx"
     assert receipt["policy_verdict"] is None
+    assert receipt["backend_comparability_bindings"] == {
+        "physx": physx["comparability_bindings"],
+        "newton": newton["comparability_bindings"],
+    }
     assert validate_comparison_receipt(receipt) == []
 
     newton["comparability_bindings"]["seed"] = 7
@@ -911,6 +915,35 @@ def test_comparison_receipt_requires_exact_common_bindings() -> None:
     assert blocked["status"] == "blocked"
     assert blocked["promotion_review_eligible"] is False
     assert "adp009d_backend_comparison_bindings_differ" in blocked["blockers"]
+    assert blocked["backend_comparability_bindings"] == {
+        "physx": physx["comparability_bindings"],
+        "newton": newton["comparability_bindings"],
+    }
+    assert validate_comparison_receipt(blocked) == []
+
+
+def test_comparison_rejects_nonfinite_terminal_spend() -> None:
+    newton = _run("newton")
+    measurements = deepcopy(newton["measurements"])
+    measurements["spend"]["total_usd"] = float("nan")
+    newton = build_backend_control_run_receipt(
+        physics_backend="newton",
+        comparability_bindings=newton["comparability_bindings"],
+        backend_control_plan_digest=newton["backend_control_plan_digest"],
+        measurements=measurements,
+    )
+
+    receipt = build_comparison_receipt(
+        physx_run=_run("physx"),
+        newton_run=newton,
+        fidelity_result=_fidelity(),
+    )
+
+    assert receipt["status"] == "blocked"
+    assert "adp009d_backend_control_run_terminal_evidence_invalid" in receipt[
+        "blockers"
+    ]
+    assert validate_comparison_receipt(receipt) == []
 
 
 def test_comparison_recomputes_fidelity_meaning_and_nested_receipts() -> None:
