@@ -102,7 +102,8 @@ git -C "${submodule_dir}" checkout -q --detach FETCH_HEAD \
 [[ "$(git -C "${submodule_dir}" rev-parse 'HEAD^{tree}')" == "494ecc2dd0834fcf71bf0124de152940e0c6d845" ]] \
   || { write_missing_result "artifixer3d_submodule_tree_mismatch"; exit 2; }
 
-"${uv_bin}" pip install --python "${artifixer_python}" -r "${submodule_dir}/requirements.txt" \
+"${uv_bin}" pip install --python "${artifixer_python}" --no-build-isolation \
+  -r "${submodule_dir}/requirements.txt" \
   || { write_missing_result "artifixer3d_3dgrut_requirements_failed"; exit 2; }
 bash "${submodule_dir}/scripts/install_slangc.sh" /usr/local \
   || { write_missing_result "artifixer3d_slangc_install_failed"; exit 2; }

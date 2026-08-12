@@ -127,6 +127,9 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
         manifest = json.loads(
             archive.read("provider_runtime/artifixer3d_bundle_manifest.json")
         )
+        entrypoint = archive.read(
+            "provider_runtime/run_public_scene_artifixer3d.sh"
+        ).decode("utf-8")
     assert "provider_runtime/run_public_scene_artifixer3d.sh" in names
     assert "provider_runtime/public_scene_artifixer3d_runner.py" in names
     assert not any(name.endswith("artifixer-1.3b.pt") for name in names)
@@ -134,6 +137,8 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert request["outside_exact_support_changed_pixels_permitted"] == 0
     assert manifest["contains_raw_dataset_bytes"] is False
     assert manifest["contains_model_weights"] is False
+    assert 'pip install --python "${artifixer_python}" --no-build-isolation' in entrypoint
+    assert '-r "${submodule_dir}/requirements.txt"' in entrypoint
 
 
 def test_rejects_tampered_candidate_or_dirty_source(
