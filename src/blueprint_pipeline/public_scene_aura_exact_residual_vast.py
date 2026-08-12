@@ -14,6 +14,7 @@ import json
 import math
 import os
 import zipfile
+from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
@@ -65,6 +66,11 @@ GPU_SELECTION_POLICY = {
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
+CORRECTED_ATTEMPT_PURPOSE = "manual_corrected_aura_exact_residual_execution"
+SCIENTIFIC_SUCCESSOR_PURPOSE = "manual_successor_aura_exact_residual_execution"
+ADDITIONAL_TERMINAL_SPEND_SCHEMAS = frozenset(
+    {"adp009d_retained_scene_gpu_render_vast_run.v1"}
+)
 
 
 def _sha256(path: Path) -> str:
@@ -144,9 +150,124 @@ def _is_known_correctable_aura_runtime_failure(runtime: Mapping[str, Any]) -> bo
     )
 
 
+def _authority_attempt_mode(authority: Mapping[str, Any]) -> str | None:
+    """Return the explicit manual-attempt mode without inferring intent."""
+
+    scientific_successor = authority.get("scientific_input_changed_after_terminal_attempt")
+    if (
+        authority.get("purpose") == CORRECTED_ATTEMPT_PURPOSE
+        and authority.get("manual_corrected_reissue_after_terminal_attempt") is True
+        and authority.get("manual_successor_after_terminal_attempt") in (None, False)
+        and scientific_successor in (None, False)
+    ):
+        return "corrected_reissue"
+    if (
+        authority.get("purpose") == SCIENTIFIC_SUCCESSOR_PURPOSE
+        and authority.get("manual_corrected_reissue_after_terminal_attempt") is False
+        and authority.get("manual_successor_after_terminal_attempt") is True
+        and scientific_successor is True
+    ):
+        return "scientific_successor"
+    return None
+
+
+def _bound_additional_terminal_spend_receipts(
+    records: Any,
+) -> tuple[float, frozenset[str]]:
+    """Re-open independent terminal spend receipts and reject duplicates."""
+
+    if records is None:
+        records = []
+    if isinstance(records, (str, bytes)) or not isinstance(records, list):
+        raise ValueError("additional_terminal_spend_receipts_invalid")
+    total = 0.0
+    digests: set[str] = set()
+    for record in records:
+        _, receipt = _bound_json(record, code="additional_terminal_spend_receipt_unbound")
+        receipt_digest = receipt.get("receipt_digest")
+        cost = receipt.get("estimated_cost_usd")
+        if (
+            receipt.get("schema_version") not in ADDITIONAL_TERMINAL_SPEND_SCHEMAS
+            or receipt.get("status") not in {"blocked", "completed"}
+            or receipt.get("continuing_spend_from_this_run") is not False
+            or receipt.get("all_staged_objects_absent") is not True
+            or isinstance(cost, bool)
+            or not isinstance(cost, (int, float))
+            or not math.isfinite(float(cost))
+            or float(cost) < 0
+            or not isinstance(receipt_digest, str)
+            or receipt_digest != canonical_digest(receipt, digest_field="receipt_digest")
+            or receipt_digest in digests
+        ):
+            raise ValueError("additional_terminal_spend_receipt_invalid")
+        digests.add(receipt_digest)
+        total += float(cost)
+    return round(total, 6), frozenset(digests)
+
+
+def _terminal_attempt_evidence_valid(
+    *,
+    authority: Mapping[str, Any],
+    previous: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    expected_new_preflight_digest: str | None = None,
+) -> bool:
+    """Validate either a corrected failure or a completed-input successor."""
+
+    mode = _authority_attempt_mode(authority)
+    previous_preflight = previous.get("preflight_digest")
+    common = (
+        previous.get("schema_version") == RESULT_SCHEMA_VERSION
+        and previous.get("retry_cap") == 0
+        and previous.get("continuing_spend_from_this_run") is False
+        and previous.get("all_staged_objects_absent") is True
+        and previous.get("bundle_sha256") == authority.get("previous_bundle_sha256")
+        and runtime.get("schema_version")
+        == "public_scene_aura_exact_residual_runtime_result.v1"
+    )
+    if not common:
+        return False
+    if mode == "corrected_reissue":
+        return (
+            previous.get("status") == "blocked"
+            and previous.get("raw_result_path") is None
+            and (
+                expected_new_preflight_digest is None
+                or previous_preflight == expected_new_preflight_digest
+            )
+            and runtime.get("status") == "blocked"
+            and runtime.get("aura_inpainting_executed") is False
+            and _is_known_correctable_aura_runtime_failure(runtime)
+            and authority.get("previous_raw_result") is None
+        )
+    if mode == "scientific_successor":
+        try:
+            raw_path = _bound(
+                authority.get("previous_raw_result"),
+                code="previous_raw_result_unbound",
+            )
+        except ValueError:
+            return False
+        return (
+            previous.get("status") == "completed"
+            and isinstance(previous.get("raw_result_path"), str)
+            and raw_path == Path(previous["raw_result_path"]).expanduser().resolve()
+            and authority.get("previous_preflight_digest") == previous_preflight
+            and isinstance(previous_preflight, str)
+            and (
+                expected_new_preflight_digest is None
+                or previous_preflight != expected_new_preflight_digest
+            )
+            and runtime.get("status") == "completed"
+            and runtime.get("aura_inpainting_executed") is True
+            and not runtime.get("blockers")
+        )
+    return False
+
+
 def _bound_prior_manual_authority(
     record: Any, *, ancestor_paths: frozenset[Path] = frozenset()
-) -> tuple[dict[str, Any], float]:
+) -> tuple[dict[str, Any], float, frozenset[str]]:
     """Re-open a prior manual authority and its complete, acyclic spend chain."""
 
     authority_path, authority = _bound_json(
@@ -157,7 +278,7 @@ def _bound_prior_manual_authority(
     if (
         authority.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION
         or authority.get("authority_kind") != "explicit_user_direction_in_current_goal"
-        or authority.get("purpose") != "manual_corrected_aura_exact_residual_execution"
+        or _authority_attempt_mode(authority) is None
         or authority.get("automatic_paid_retry_authorized") is not False
         or authority.get("maximum_automatic_retries") != 0
         or authority.get("maximum_paid_attempts") != 1
@@ -193,16 +314,12 @@ def _bound_prior_manual_authority(
     previous_cost = previous.get("estimated_cost_usd")
     campaign_cost = campaign.get("total_estimated_cost_usd")
     if (
-        previous.get("schema_version") != RESULT_SCHEMA_VERSION
-        or previous.get("status") != "blocked"
-        or previous.get("retry_cap") != 0
-        or previous.get("raw_result_path") is not None
-        or previous.get("continuing_spend_from_this_run") is not False
-        or previous.get("all_staged_objects_absent") is not True
-        or runtime.get("schema_version") != "public_scene_aura_exact_residual_runtime_result.v1"
-        or runtime.get("status") != "blocked"
-        or runtime.get("aura_inpainting_executed") is not False
-        or not _is_known_correctable_aura_runtime_failure(runtime)
+        not _terminal_attempt_evidence_valid(
+            authority=authority,
+            previous=previous,
+            runtime=runtime,
+            expected_new_preflight_digest=authority.get("preflight_digest"),
+        )
         or teardown.get("status") != "completed"
         or teardown.get("continuing_spend_from_this_run") is not False
         or watchdog.get("status") != "provider_terminal"
@@ -219,21 +336,27 @@ def _bound_prior_manual_authority(
         or not isinstance(campaign_cost, (int, float))
     ):
         raise ValueError("prior_manual_corrected_attempt_evidence_invalid")
+    additional_cost, additional_digests = _bound_additional_terminal_spend_receipts(
+        authority.get("additional_terminal_spend_receipts")
+    )
     parent_record = authority.get("prior_manual_corrected_attempt_authority")
     if parent_record is None:
         prior_total = float(campaign_cost)
+        ancestor_additional_digests: frozenset[str] = frozenset()
     else:
-        parent, prior_total = _bound_prior_manual_authority(
+        parent, prior_total, ancestor_additional_digests = _bound_prior_manual_authority(
             parent_record, ancestor_paths=ancestor_paths | {authority_path}
         )
         if authority.get("prior_provider_runtime_campaign") != parent.get(
             "prior_provider_runtime_campaign"
         ):
             raise ValueError("prior_manual_corrected_attempt_campaign_mismatch")
-    total = round(float(previous_cost) + prior_total, 6)
+    if additional_digests & ancestor_additional_digests:
+        raise ValueError("prior_manual_corrected_attempt_spend_duplicate")
+    total = round(float(previous_cost) + prior_total + additional_cost, 6)
     if authority.get("prior_goal_spend_usd") != total:
         raise ValueError("prior_manual_corrected_attempt_spend_invalid")
-    return authority, total
+    return authority, total, additional_digests | ancestor_additional_digests
 
 
 def validate_aura_exact_residual_paid_attempt_authority(
@@ -279,12 +402,11 @@ def validate_aura_exact_residual_paid_attempt_authority(
         errors.append("authorized_by_invalid")
     if not isinstance(value.get("authorized_on"), str) or not value["authorized_on"].strip():
         errors.append("authorized_on_invalid")
-    if value.get("purpose") != "manual_corrected_aura_exact_residual_execution":
+    attempt_mode = _authority_attempt_mode(value)
+    if attempt_mode is None:
         errors.append("purpose_invalid")
     if value.get("provider") != "vast" or value.get("paid_compute_authorized") is not True:
         errors.append("provider_or_paid_authority_invalid")
-    if value.get("manual_corrected_reissue_after_terminal_attempt") is not True:
-        errors.append("manual_reissue_missing")
     if value.get("automatic_paid_retry_authorized") is not False or value.get("maximum_automatic_retries") != 0:
         errors.append("automatic_retry_contract_invalid")
     if value.get("maximum_paid_attempts") != 1 or value.get("zero_retry") is not True:
@@ -313,10 +435,11 @@ def validate_aura_exact_residual_paid_attempt_authority(
         errors.append("authorization_digest_invalid")
 
     prior_cost = 0.0
+    historic_additional_digests: frozenset[str] = frozenset()
     prior_manual_authority = value.get("prior_manual_corrected_attempt_authority")
     if prior_manual_authority is not None:
         try:
-            historic_authority, historic_cost = _bound_prior_manual_authority(
+            historic_authority, historic_cost, historic_additional_digests = _bound_prior_manual_authority(
                 prior_manual_authority
             )
         except ValueError:
@@ -352,25 +475,13 @@ def validate_aura_exact_residual_paid_attempt_authority(
             errors.append("previous_terminal_cost_invalid")
         else:
             prior_cost += float(prior_cost_value)
-        if (
-            previous.get("schema_version") != RESULT_SCHEMA_VERSION
-            or previous.get("status") != "blocked"
-            or previous.get("retry_cap") != 0
-            or previous.get("raw_result_path") is not None
-            or previous.get("continuing_spend_from_this_run") is not False
-            or previous.get("all_staged_objects_absent") is not True
-            or previous.get("bundle_sha256") != value.get("previous_bundle_sha256")
-            or previous.get("preflight_digest") != prepared_bundle.get("preflight_digest")
+        if not _terminal_attempt_evidence_valid(
+            authority=value,
+            previous=previous,
+            runtime=prior_runtime,
+            expected_new_preflight_digest=prepared_bundle.get("preflight_digest"),
         ):
             errors.append("previous_terminal_execution_invalid")
-        if (
-            prior_runtime.get("schema_version")
-            != "public_scene_aura_exact_residual_runtime_result.v1"
-            or prior_runtime.get("status") != "blocked"
-            or prior_runtime.get("aura_inpainting_executed") is not False
-            or not _is_known_correctable_aura_runtime_failure(prior_runtime)
-        ):
-            errors.append("previous_runtime_failure_binding_invalid")
         if (
             prior_teardown.get("status") != "completed"
             or prior_teardown.get("continuing_spend_from_this_run") is not False
@@ -383,6 +494,17 @@ def validate_aura_exact_residual_paid_attempt_authority(
             errors.append("previous_terminal_zero_close_invalid")
 
     try:
+        additional_cost, additional_digests = _bound_additional_terminal_spend_receipts(
+            value.get("additional_terminal_spend_receipts")
+        )
+    except ValueError:
+        errors.append("additional_terminal_spend_receipts_invalid")
+    else:
+        if additional_digests & historic_additional_digests:
+            errors.append("additional_terminal_spend_receipt_duplicate")
+        prior_cost += additional_cost
+
+    try:
         _, campaign = _bound_json(
             value.get("prior_provider_runtime_campaign"),
             code="prior_provider_runtime_campaign_unbound",
@@ -391,9 +513,14 @@ def validate_aura_exact_residual_paid_attempt_authority(
         errors.append("prior_provider_runtime_campaign_unbound")
     else:
         campaign_cost = campaign.get("total_estimated_cost_usd")
+        expected_campaign_preflight = (
+            value.get("previous_preflight_digest")
+            if attempt_mode == "scientific_successor"
+            else prepared_bundle.get("preflight_digest")
+        )
         if (
             campaign.get("schema_version") != CAMPAIGN_ABSTENTION_SCHEMA_VERSION
-            or campaign.get("preflight_digest") != prepared_bundle.get("preflight_digest")
+            or campaign.get("preflight_digest") != expected_campaign_preflight
             or campaign.get("provider_zero_confirmed_all") is not True
             or campaign.get("aura_inpainting_executed") is not False
             or isinstance(campaign_cost, bool)
@@ -488,6 +615,8 @@ def materialize_aura_exact_residual_paid_attempt_authority(
     previous_object_store_cleanup_path: str | Path,
     prior_provider_runtime_campaign_path: str | Path,
     prior_manual_corrected_attempt_authority_path: str | Path | None = None,
+    scientific_input_changed_after_terminal_attempt: bool = False,
+    additional_terminal_spend_receipt_paths: Sequence[str | Path] = (),
     authorization_reference: str,
     authorized_by: str,
     authorized_on: str,
@@ -497,7 +626,7 @@ def materialize_aura_exact_residual_paid_attempt_authority(
     hard_ttl_seconds: int,
     output_path: str | Path,
 ) -> dict[str, Any]:
-    """Materialize one manual corrected-attempt authority from file receipts.
+    """Materialize one manual corrected or scientific-successor authority.
 
     This performs no provider mutation.  It makes the user's current explicit
     continuation authority reviewable and validates the generated authority
@@ -524,9 +653,22 @@ def materialize_aura_exact_residual_paid_attempt_authority(
             prior_manual_corrected_attempt_authority_path,
             code="prior_manual_corrected_attempt_authority_unbound",
         )
-        _, prior_manual_cost = _bound_prior_manual_authority(prior_manual_authority_record)
+        _, prior_manual_cost, prior_additional_digests = _bound_prior_manual_authority(
+            prior_manual_authority_record
+        )
+    else:
+        prior_additional_digests = frozenset()
     previous = _read(Path(previous_terminal_execution_result_path).expanduser().resolve())
     campaign = _read(Path(prior_provider_runtime_campaign_path).expanduser().resolve())
+    additional_records = [
+        _record_existing_file(path, code="additional_terminal_spend_receipt_unbound")
+        for path in additional_terminal_spend_receipt_paths
+    ]
+    additional_cost, additional_digests = _bound_additional_terminal_spend_receipts(
+        additional_records
+    )
+    if additional_digests & prior_additional_digests:
+        raise ValueError("aura_exact_residual_paid_attempt_authority_spend_duplicate")
     previous_cost = previous.get("estimated_cost_usd")
     campaign_cost = campaign.get("total_estimated_cost_usd")
     if (
@@ -552,16 +694,32 @@ def materialize_aura_exact_residual_paid_attempt_authority(
         or aggregate_cap > MAX_HARD_CAP_USD
     ):
         raise ValueError("aura_exact_residual_paid_attempt_authority_parent_cap_invalid")
+    previous_raw_result_record: dict[str, Any] | None = None
+    if scientific_input_changed_after_terminal_attempt:
+        raw_result_path = previous.get("raw_result_path")
+        if not isinstance(raw_result_path, str) or not raw_result_path:
+            raise ValueError(
+                "aura_exact_residual_paid_attempt_authority_previous_raw_result_invalid"
+            )
+        previous_raw_result_record = _record_existing_file(
+            raw_result_path, code="previous_raw_result_unbound"
+        )
     authority: dict[str, Any] = {
         "schema_version": PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION,
         "authority_kind": "explicit_user_direction_in_current_goal",
         "authority_reference": authorization_reference,
         "authorized_by": authorized_by,
         "authorized_on": authorized_on,
-        "purpose": "manual_corrected_aura_exact_residual_execution",
+        "purpose": (
+            SCIENTIFIC_SUCCESSOR_PURPOSE
+            if scientific_input_changed_after_terminal_attempt
+            else CORRECTED_ATTEMPT_PURPOSE
+        ),
         "provider": "vast",
         "paid_compute_authorized": True,
-        "manual_corrected_reissue_after_terminal_attempt": True,
+        "manual_corrected_reissue_after_terminal_attempt": not scientific_input_changed_after_terminal_attempt,
+        "manual_successor_after_terminal_attempt": scientific_input_changed_after_terminal_attempt,
+        "scientific_input_changed_after_terminal_attempt": scientific_input_changed_after_terminal_attempt,
         "automatic_paid_retry_authorized": False,
         "maximum_automatic_retries": 0,
         "maximum_paid_attempts": 1,
@@ -580,10 +738,16 @@ def materialize_aura_exact_residual_paid_attempt_authority(
         "publication_authorized": False,
         "exact_mask_only_edits_required": True,
         "previous_bundle_sha256": previous.get("bundle_sha256"),
+        "previous_preflight_digest": previous.get("preflight_digest"),
+        "previous_raw_result": previous_raw_result_record,
         **records,
         "prior_manual_corrected_attempt_authority": prior_manual_authority_record,
+        "additional_terminal_spend_receipts": additional_records,
         "prior_goal_spend_usd": round(
-            prior_manual_cost + float(previous_cost) + (0.0 if prior_manual_authority_record else float(campaign_cost)),
+            prior_manual_cost
+            + float(previous_cost)
+            + additional_cost
+            + (0.0 if prior_manual_authority_record else float(campaign_cost)),
             6,
         ),
         "aggregate_goal_spend_cap_usd": aggregate_cap,

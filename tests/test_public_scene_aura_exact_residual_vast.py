@@ -268,6 +268,120 @@ def test_materializes_manual_corrected_attempt_from_file_backed_receipts(
     assert materialized["previous_runtime_result"] == authority["previous_runtime_result"]
 
 
+def test_scientific_successor_binds_completed_run_new_preflight_and_extra_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new repair input may follow completion without erasing any goal spend."""
+
+    prior_authority, old_bundle = _corrected_attempt_authority(tmp_path)
+    prior_authority_path = _write(tmp_path / "prior-authority.json", prior_authority)
+    raw_result = _write(
+        tmp_path / "completed" / "raw-result.json",
+        {"schema_version": "public_scene_aura_exact_residual_raw_result.v1"},
+    )
+    completed = _write(
+        tmp_path / "completed" / "execution.json",
+        {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "completed",
+            "retry_cap": 0,
+            "raw_result_path": str(raw_result),
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+            "bundle_sha256": old_bundle["bundle_sha256"],
+            "preflight_digest": old_bundle["preflight_digest"],
+            "estimated_cost_usd": 0.279869,
+        },
+    )
+    runtime = _write(
+        tmp_path / "completed" / "runtime.json",
+        {
+            "schema_version": "public_scene_aura_exact_residual_runtime_result.v1",
+            "status": "completed",
+            "aura_inpainting_executed": True,
+            "blockers": [],
+        },
+    )
+    renderer: dict[str, object] = {
+        "schema_version": "adp009d_retained_scene_gpu_render_vast_run.v1",
+        "status": "completed",
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "estimated_cost_usd": 0.018506,
+        "receipt_digest": "",
+    }
+    renderer["receipt_digest"] = canonical_digest(
+        renderer, digest_field="receipt_digest"
+    )
+    renderer_path = _write(tmp_path / "renderer.json", renderer)
+    bundle = {
+        **old_bundle,
+        "receipt_sha256": "sha256:" + "1" * 64,
+        "bundle_sha256": "sha256:" + "2" * 64,
+        "preflight_digest": "sha256:" + "3" * 64,
+    }
+    bundle_receipt = _write(tmp_path / "bundle-receipt.json", {"fixture": True})
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_aura_exact_residual_vast.validate_aura_exact_residual_bundle",
+        lambda _path: {**bundle, "receipt_path": str(bundle_receipt)},
+    )
+
+    successor = materialize_aura_exact_residual_paid_attempt_authority(
+        bundle_receipt_path=bundle_receipt,
+        previous_terminal_execution_result_path=completed,
+        previous_runtime_result_path=runtime,
+        previous_teardown_path=prior_authority["previous_teardown"]["path"],
+        previous_watchdog_path=prior_authority["previous_watchdog"]["path"],
+        previous_object_store_cleanup_path=prior_authority[
+            "previous_object_store_cleanup"
+        ]["path"],
+        prior_provider_runtime_campaign_path=prior_authority[
+            "prior_provider_runtime_campaign"
+        ]["path"],
+        prior_manual_corrected_attempt_authority_path=prior_authority_path,
+        scientific_input_changed_after_terminal_attempt=True,
+        additional_terminal_spend_receipt_paths=[renderer_path],
+        authorization_reference="fixture-new-broad-repair-input",
+        authorized_by="fixture-user",
+        authorized_on="2026-08-12",
+        corrective_blueprint_commit="f" * 40,
+        max_hourly_rate_usd=3.0,
+        hard_cap_usd=6.0,
+        hard_ttl_seconds=7200,
+        output_path=tmp_path / "successor-authority.json",
+    )
+
+    assert successor["purpose"] == "manual_successor_aura_exact_residual_execution"
+    assert successor["previous_preflight_digest"] == old_bundle["preflight_digest"]
+    assert successor["preflight_digest"] == bundle["preflight_digest"]
+    assert successor["previous_raw_result"] == _record(raw_result)
+    assert successor["additional_terminal_spend_receipts"] == [_record(renderer_path)]
+    assert successor["prior_goal_spend_usd"] == 0.459999
+    assert validate_aura_exact_residual_paid_attempt_authority(
+        successor,
+        prepared_bundle=bundle,
+        max_hourly_rate_usd=3.0,
+        hard_cap_usd=6.0,
+        hard_ttl_seconds=7200,
+        allowed_active_instance_ids=[47373597],
+    )["prior_goal_spend_usd"] == 0.459999
+
+    same_preflight = dict(successor)
+    same_preflight["preflight_digest"] = old_bundle["preflight_digest"]
+    same_preflight["authorization_digest"] = canonical_digest(
+        same_preflight, digest_field="authorization_digest"
+    )
+    with pytest.raises(ValueError, match="previous_terminal_execution_invalid"):
+        validate_aura_exact_residual_paid_attempt_authority(
+            same_preflight,
+            prepared_bundle={**bundle, "preflight_digest": old_bundle["preflight_digest"]},
+            max_hourly_rate_usd=3.0,
+            hard_cap_usd=6.0,
+            hard_ttl_seconds=7200,
+            allowed_active_instance_ids=[47373597],
+        )
+
+
 def test_second_manual_attempt_chains_the_first_spend_and_zero_closeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
