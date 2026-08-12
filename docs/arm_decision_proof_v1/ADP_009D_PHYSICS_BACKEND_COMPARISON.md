@@ -561,3 +561,64 @@ behaviour is unchanged.
 
 This is the second gravity assumption the change has surfaced, after the arm
 gains themselves, and both were invisible while the arm was weightless.
+
+## Second gravity-real PhysX run: the replay fix holds, a third gate remains
+
+Vast instance `47520665` (L40S, machine 137572, $0.7644/hr) ran the same
+gravity-real PhysX controls configuration at `0a36cc7c0`, under the same `$2`
+cap, `5400` s TTL and retry cap `0`. Settled charge `$0.19`; teardown completed;
+API-confirmed provider-zero
+(`sha256:8c2a47d58b268e4bb5bfc99d464e52834fd28ed5ae2a884b695aae52cc4dd52a`).
+
+Two results carry forward.
+
+**The hold reproduced bit-identically** at `0.008284330368041992` rad across two
+independently allocated instances on different machines. The gravity-real
+configuration is deterministic, not a lucky sample.
+
+**The episode-start replay fix works.** The restore receipt returns
+`blockers: []`, and the per-joint replay error is now
+`[1.85e-05, 2.60e-04, 4.95e-06, 0.0, 2.00e-06, …]` — `panda_joint4` lands
+exactly on target where it was previously a full `0.0083` rad droop short. The
+integrating command law converges the achieved pose, which is what the wrist
+observability guarantee is defined on.
+
+The run then stopped at
+`adp009d_backend_native_probe_invalid:adp009d_backend_probe_contact_readback_invalid`,
+with no policy queried and no candidate outcome accessed.
+
+The cause is exact and is a contract-versus-emitter mismatch, not a physics
+failure. `validate_backend_probe` requires `contact_readback.partner_prim_paths`
+to be a non-empty list. The runtime emits `partner_filter.filter_prim_paths_expr`
+— the filter that was *requested* — and never the partner prims that were
+*resolved*. Those are different claims, and the contract is right to want the
+second: `contact_partner_readback` means being able to say which body a measured
+force acted against, which a filter expression does not establish.
+
+The measured force vectors themselves are valid and were not the problem. They
+are `[[0,0,0],[0,0,0]]` because the closest geometric clearance at probe time is
+`0.29880005736181087` m, so nothing is in contact; the validator correctly
+accepts finite zeros.
+
+Fixing this requires reading the resolved filtered prim paths back from the
+pinned Isaac Lab contact sensor. The exact attribute for the pinned revision was
+not verified, and this programme has already spent one paid run on a guessed
+prim-path API. No further allocation should be made until that attribute is
+confirmed against Arena's own source at the pinned revision, which is the
+recorded ground-truth authority for prim paths.
+
+### Where the gravity-real sequence stands
+
+| step | state |
+| --- | --- |
+| gravity-real configuration, both backends | landed and validated in-run |
+| canonical reset | passes, bitwise reproducible |
+| canonical hold under real weight | **passes at 0.008284 rad, twice** |
+| episode-start replay | **fixed and passing** |
+| backend contact-partner probe | blocked: emitter omits resolved partner prims |
+| PhysX controls receipt | not yet produced |
+| Newton controls receipt | blocked on the Robotiq drive, unresolved |
+| dual-backend comparison | not yet possible |
+
+Two paid allocations, `$0.112` and `$0.19`, `$0.302` total, both torn down with
+API-confirmed provider-zero and no orphaned spend.
