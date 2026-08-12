@@ -44,6 +44,8 @@ from .wam_provider_object_store import (
 )
 
 
+from .spend_authority_consumption_root import consumption_root
+
 PROBE_KIND = "adp-gaussian-excision"
 PROVIDER_BUNDLE_KIND = "adp_gaussian_excision"
 SCHEMA_VERSION = "adp009b_gaussian_excision_vast_bundle.v1"
@@ -94,9 +96,6 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
-AUTHORIZATION_CONSUMPTION_ROOT = (
-    Path.home() / ".blueprint-spend-authority" / "consumed"
-)
 
 
 def gaussian_excision_lane_identity(freeze: Mapping[str, Any]) -> dict[str, str]:
@@ -302,7 +301,7 @@ def consume_gaussian_excision_paid_attempt_authority_once(
             "status": "blocked",
             "blockers": ["gaussian_excision_paid_attempt_authority_identity_invalid"],
         }
-    root = AUTHORIZATION_CONSUMPTION_ROOT
+    root = consumption_root()
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root_stat = root.stat()
@@ -1516,7 +1515,6 @@ def run_gaussian_excision_vast(
 
 __all__: Sequence[str] = (
     "AUTHORITY_SCHEMA",
-    "AUTHORIZATION_CONSUMPTION_ROOT",
     "DEFAULT_IMAGE",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",

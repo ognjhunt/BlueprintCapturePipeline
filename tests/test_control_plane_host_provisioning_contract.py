@@ -63,3 +63,36 @@ def test_verifies_entrypoints_before_declaring_success() -> None:
 
 def test_is_executable() -> None:
     assert BOOTSTRAP.stat().st_mode & 0o111, "bootstrap script must be executable"
+
+
+INSTALLER = REPO_ROOT / "scripts" / "install_live_pipeline_control_plane.sh"
+
+
+def _installer() -> str:
+    return INSTALLER.read_text(encoding="utf-8")
+
+
+def test_binds_the_spend_authority_ledger_off_the_service_home() -> None:
+    """Single-use spend enforcement must not depend on a home directory.
+
+    The hardened units set ``ProtectHome=true`` and the service account's home
+    is ``/nonexistent``, so a ledger under ``Path.home()`` is unwritable and
+    every paid run fails after its authority validates. A rebuilt host must get
+    this binding from the installer, not from someone editing the env file.
+    """
+    text = _installer()
+    assert "BLUEPRINT_SPEND_AUTHORITY_ROOT" in text, (
+        "the installer must bind the spend-authority ledger; without it the "
+        "single-use consumption record cannot be written on a hardened host"
+    )
+    assert "/var/lib/blueprint" in text.split("BLUEPRINT_SPEND_AUTHORITY_ROOT")[0][-400:] or (
+        re.search(r'SPEND_AUTHORITY_ROOT="\$\{SPEND_AUTHORITY_ROOT:-/var/lib/blueprint', text)
+    ), "the ledger must live inside the ReadWritePaths the units already grant"
+
+
+def test_spend_authority_ledger_is_not_group_or_world_accessible() -> None:
+    """A second writer could forge or delete a record and re-fund an allocation."""
+    text = _installer()
+    assert re.search(r'chmod 0700 "\$\{SPEND_AUTHORITY_ROOT\}"', text), (
+        "the consumption check refuses a group- or world-accessible tree"
+    )

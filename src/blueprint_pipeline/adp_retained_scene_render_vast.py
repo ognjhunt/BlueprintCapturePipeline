@@ -34,12 +34,13 @@ from .wam_provider_object_store import (
 )
 
 
+from .spend_authority_consumption_root import consumption_root
+
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
 RESULT_SCHEMA = "adp009d_retained_scene_gpu_render_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_authority.v1"
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
 OUTPUT_RELOCATION_SCHEMA = "adp009d_retained_scene_gpu_render_output_relocation.v1"
-AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 _VAST_MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _VAST_STALE_OFFER_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
@@ -259,7 +260,7 @@ def consume_retained_scene_render_paid_attempt_authority_once(
     digest = str(authority.get("authorization_digest") or "")
     if not digest.startswith("sha256:") or len(digest) != 71:
         return {"status": "blocked", "blockers": ["attempt_authority_identity_invalid"]}
-    root = AUTHORIZATION_CONSUMPTION_ROOT
+    root = consumption_root()
     identity = digest.removeprefix("sha256:")
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)

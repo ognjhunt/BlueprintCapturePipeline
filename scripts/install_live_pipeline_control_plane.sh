@@ -219,6 +219,27 @@ else
   echo "WARNING: no source commit resolved; /api/live-pipeline/version stays 503" >&2
 fi
 
+# Single-use paid-attempt enforcement writes a consumption record before any
+# provider allocation.  It defaults to the invoking user's home, which the
+# hardened units cannot reach: the service account's home is /nonexistent and
+# the units set ProtectHome=true.  Without this the ledger is unwritable and
+# every paid run fails *after* its authority validates, which reads as a
+# spend-authority fault rather than a filesystem one.  Bind it to the state
+# directory the units already grant in ReadWritePaths.
+SPEND_AUTHORITY_ROOT="${SPEND_AUTHORITY_ROOT:-/var/lib/blueprint/spend-authority}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  printf '[dry-run] record BLUEPRINT_SPEND_AUTHORITY_ROOT=%s\n' "${SPEND_AUTHORITY_ROOT}"
+else
+  run mkdir -p "${SPEND_AUTHORITY_ROOT}"
+  run chown "${SERVICE_USER}":"${SERVICE_GROUP}" "${SPEND_AUTHORITY_ROOT}"
+  # The consumption check refuses a group- or world-accessible tree, because a
+  # second writer could forge or delete a record and re-fund an allocation.
+  run chmod 0700 "${SPEND_AUTHORITY_ROOT}"
+  sed -i '/^BLUEPRINT_SPEND_AUTHORITY_ROOT=/d' "${ENV_FILE}"
+  printf 'BLUEPRINT_SPEND_AUTHORITY_ROOT=%s\n' "${SPEND_AUTHORITY_ROOT}" >> "${ENV_FILE}"
+  echo "bound spend-authority ledger to ${SPEND_AUTHORITY_ROOT}"
+fi
+
 # Render the public TLS/reverse-proxy edge.  The intake service binds loopback
 # only, so without this the control plane has no reachable surface at all.
 # The hostname stays operator-supplied because a rebuilt host gets a new

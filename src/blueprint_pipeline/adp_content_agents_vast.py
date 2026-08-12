@@ -62,6 +62,8 @@ from .wam_provider_object_store import (
 )
 
 
+from .spend_authority_consumption_root import consumption_root
+
 PROBE_KIND = "adp-usd-content-agents"
 RESULT_SCHEMA_VERSION = "adp_content_agents_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_content_agents_paid_attempt_authority.v1"
@@ -103,9 +105,6 @@ _VAST_MUTATION_ENV = (
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 _FORWARDED_SECRET_NAMES = (
     "OPENAI_API_KEY",
-)
-AUTHORIZATION_CONSUMPTION_ROOT = (
-    Path.home() / ".blueprint-spend-authority" / "consumed"
 )
 
 
@@ -670,7 +669,7 @@ def consume_content_agents_paid_attempt_authority_once(
             "status": "blocked",
             "blockers": ["adp_content_agents_paid_attempt_authority_identity_invalid"],
         }
-    root = AUTHORIZATION_CONSUMPTION_ROOT
+    root = consumption_root()
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root_stat = root.stat()

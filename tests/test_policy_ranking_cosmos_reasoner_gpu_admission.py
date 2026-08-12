@@ -6,6 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.spend_authority_consumption_root import (
+    authorizations_root,
+)
+
 from blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission import (
     ADMISSION_SCHEMA,
     AUTHORIZATION_ID,
@@ -163,12 +167,11 @@ def _bundle(tmp_path):
 def _external_authorization(
     tmp_path, monkeypatch, *, source_commit=COMMIT, authorization_id=AUTHORIZATION_ID
 ):
-    authority_root = tmp_path / "external-authorizations"
-    authority_root.mkdir(mode=0o700, exist_ok=True)
-    monkeypatch.setattr(
-        "blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission.EXTERNAL_AUTHORIZATION_ROOT",
-        authority_root,
-    )
+    # Derive the directory from the resolver rather than naming it here, so the
+    # test exercises the same layout production uses.
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str(tmp_path / "spend-authority"))
+    authority_root = authorizations_root()
+    authority_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     record = {
         "schema_version": "policy_ranking_cosmos_reasoner_compute_authorization.v2",
         "authorization_id": authorization_id,
@@ -473,10 +476,7 @@ def test_reasoner_admission_rejects_nonpositive_or_unsafe_allocation_identity(
 
 def test_reasoner_authorization_consumption_is_unique(tmp_path, monkeypatch):
     root = tmp_path / "consumed"
-    monkeypatch.setattr(
-        "blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission.AUTHORIZATION_CONSUMPTION_ROOT",
-        root,
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((root).parent))
     first = {"authorization_id": f"{AUTHORIZATION_ID_PREFIX}1"}
     assert _consume_once(first, COMMIT)["status"] == "consumed"
     assert _consume_once(first, COMMIT)["status"] == "blocked"
