@@ -21,6 +21,10 @@ from blueprint_pipeline.live_pipeline_intake_service import (
     create_app,
 )
 from blueprint_pipeline.task_evaluation_supervisor import replay_supervisor_run
+from blueprint_pipeline.task_evaluation_launch_dispatcher import (
+    CANONICAL_ALLOCATOR_ENTRYPOINT,
+    canonical_digest as launch_digest,
+)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -132,6 +136,84 @@ def _seed_robot_eval_dataset_cards(capture_root: Path) -> None:
             ],
         },
     )
+
+
+def _task_evaluation_launch_request() -> dict[str, object]:
+    source_bundle = {
+        "bundle_id": "interiorgs-sage-new-scene-001",
+        "source_kind": "interiorgs_sage",
+        "uri": "gs://blueprint-runs/interiorgs-sage-new-scene-001.zip",
+        "digest": "sha256:" + "a" * 64,
+    }
+    request: dict[str, object] = {
+        "schema_version": "task_evaluation_launch_request.v1",
+        "launch_id": "launch-interiorgs-sage-001",
+        "run_id": "run-interiorgs-sage-001",
+        "launch_profile_id": "interiorgs-sage-franka-001",
+        "launch_profile_digest": "sha256:" + "b" * 64,
+        "source_bundle": source_bundle,
+        "evaluation_run_spec": {
+            "uri": "gs://blueprint-runs/evaluation-run-spec-001.json",
+            "digest": "sha256:" + "c" * 64,
+        },
+        "authorization": {
+            "actor": {"id": "founder-001", "role": "admin"},
+            "authorized_at": datetime.now(timezone.utc).isoformat(),
+            "rights": {
+                "approved": True,
+                "scope": "interiorgs_sage_simulator_evaluation",
+                "evidence": {
+                    "uri": "firestore://taskEvaluationLaunchAuthorities/rights-001",
+                    "digest": "sha256:" + "d" * 64,
+                },
+            },
+            "spend": {
+                "approved": True,
+                "currency": "USD",
+                "max_spend_usd": 2.0,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            },
+            "execution": {"approved": True},
+        },
+        "required_controls": {
+            "canonical_allocator": CANONICAL_ALLOCATOR_ENTRYPOINT,
+            "secret_profile_id": "canonical-vast-adp",
+            "watchdog_required": True,
+            "artifact_storage_required": True,
+            "teardown_required": True,
+            "provider_zero_required": True,
+            "webapp_status_sync_required": True,
+            "retry_cap": 0,
+        },
+        "claim_ceiling": "development_only",
+        "idempotency_key": "launch-interiorgs-sage-001",
+    }
+    request["request_digest"] = launch_digest(request, digest_field="request_digest")
+    return request
+
+
+def _public_task_evaluation_launch_profile() -> dict[str, object]:
+    request = _task_evaluation_launch_request()
+    return {
+        "profile_id": request["launch_profile_id"],
+        "profile_digest": request["launch_profile_digest"],
+        "source_bundle": request["source_bundle"],
+        "evaluation_run_spec": request["evaluation_run_spec"],
+        "required_controls": request["required_controls"],
+        "execution_admission": {
+            "live_enabled": False,
+            "readiness_receipt": {
+                "uri": "https://github.com/ognjhunt/BlueprintCapturePipeline/blob/commit/readiness.json",
+                "digest": "sha256:" + "e" * 64,
+            },
+            "blockers": ["scripted_positive_control_not_passed"],
+        },
+        "claim_ceiling": request["claim_ceiling"],
+        "required_authorization": {
+            "max_spend_usd": 6.0,
+            "hard_ttl_seconds": 5400,
+        },
+    }
 
 
 def _webapp_request(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict[str, object]:
@@ -1054,6 +1136,268 @@ def test_signed_nonce_replay_is_rejected_across_app_instances_and_cache_reset(
     assert "replayed intake signature nonce" in replay_after_restart.text
     nonce_claims = list(Path(os.environ[service.INTAKE_NONCE_STORE_DIR_ENV]).glob("*.json"))
     assert len(nonce_claims) == 1
+
+
+def test_task_evaluation_launch_is_immutably_queued_before_async_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "launch-queue"
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    catalog_path = tmp_path / "published-launch-profiles.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
+    monkeypatch.setenv(service.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"blueprint-webapp": "token"}))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV, str(queue_root))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV, str(catalog_path))
+    monkeypatch.setenv(
+        service.TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV,
+        "blueprint-task-evaluation-launch-dispatcher.service",
+    )
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
+    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, raising=False)
+    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
+    systemctl_calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        systemctl_calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(service.subprocess, "run", fake_run)
+    payload = _task_evaluation_launch_request()
+    body = json.dumps(payload, separators=(",", ":"))
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launches",
+        data=body,
+        headers=_signed_intake_headers(
+            "token",
+            body,
+            nonce="task-launch-nonce-1",
+            client_id="blueprint-webapp",
+        ),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
+    assert response.json()["provider_mutation_performed_inside_http_request"] is False
+    assert response.json()["canonical_allocator_required"] is True
+    queued = list((queue_root / "pending").glob("*.json"))
+    assert len(queued) == 1
+    assert json.loads(queued[0].read_text(encoding="utf-8"))["request_digest"] == payload[
+        "request_digest"
+    ]
+    assert systemctl_calls == [
+        [
+            "systemctl",
+            "start",
+            "--no-block",
+            "blueprint-task-evaluation-launch-dispatcher.service",
+        ]
+    ]
+
+
+def test_task_evaluation_launch_rejects_tampering_before_trigger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
+    monkeypatch.setenv(service.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"blueprint-webapp": "token"}))
+    catalog_path = tmp_path / "published-launch-profiles.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV, str(catalog_path))
+    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda argv, **_kwargs: calls.append(list(argv)) or SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    )
+    payload = _task_evaluation_launch_request()
+    payload["launch_profile_digest"] = "sha256:" + "f" * 64
+    body = json.dumps(payload, separators=(",", ":"))
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launches",
+        data=body,
+        headers=_signed_intake_headers(
+            "token",
+            body,
+            nonce="task-launch-nonce-2",
+            client_id="blueprint-webapp",
+        ),
+    )
+    assert response.status_code == 422
+    assert "launch_request_digest_mismatch" in response.text
+    assert calls == []
+
+
+def test_task_evaluation_launch_rejects_an_unpublished_signed_profile_before_trigger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "launch-queue"
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    catalog_path = tmp_path / "published-launch-profiles.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
+    monkeypatch.setenv(service.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"blueprint-webapp": "token"}))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV, str(queue_root))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV, str(catalog_path))
+    monkeypatch.setenv(
+        service.TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV,
+        "blueprint-task-evaluation-launch-dispatcher.service",
+    )
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda argv, **_kwargs: calls.append(list(argv)) or SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    )
+    payload = _task_evaluation_launch_request()
+    payload["launch_profile_id"] = "interiorgs-sage-franka-unpublished"
+    payload["launch_profile_digest"] = "sha256:" + "f" * 64
+    payload["request_digest"] = launch_digest(payload, digest_field="request_digest")
+    body = json.dumps(payload, separators=(",", ":"))
+
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launches",
+        data=body,
+        headers=_signed_intake_headers(
+            "token",
+            body,
+            nonce="task-launch-unpublished-profile-nonce",
+            client_id="blueprint-webapp",
+        ),
+    )
+
+    assert response.status_code == 422
+    assert "launch_profile_not_published" in response.text
+    assert not list((queue_root / "pending").glob("*.json"))
+    assert calls == []
+
+
+def test_task_evaluation_launch_requires_a_published_catalog_before_queueing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "launch-queue"
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
+    monkeypatch.setenv(service.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"blueprint-webapp": "token"}))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV, str(queue_root))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
+    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV, raising=False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda argv, **_kwargs: calls.append(list(argv)) or SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    )
+    payload = _task_evaluation_launch_request()
+    body = json.dumps(payload, separators=(",", ":"))
+
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launches",
+        data=body,
+        headers=_signed_intake_headers(
+            "token",
+            body,
+            nonce="task-launch-missing-catalog-nonce",
+            client_id="blueprint-webapp",
+        ),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["blockers"] == [
+        "task_evaluation_launch_public_catalog_not_configured"
+    ]
+    assert not list((queue_root / "pending").glob("*.json"))
+    assert calls == []
+
+
+def test_public_task_evaluation_profile_catalog_is_validated_and_path_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog_path = tmp_path / "catalog.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
+    monkeypatch.setenv(
+        service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV,
+        str(catalog_path),
+    )
+
+    client = TestClient(create_app())
+    response = client.get("/api/live-pipeline/task-evaluation-launch-profiles")
+    health = client.get("/health").json()["task_evaluation_launch_queue"]
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "schema_version": "task_evaluation_launch_profile_catalog.v1",
+        "status": "published",
+        "profiles": [_public_task_evaluation_launch_profile()],
+        "allocator_arguments_exposed": False,
+        "secret_values_exposed": False,
+    }
+    assert str(catalog_path) not in response.text
+    assert health["public_catalog_configured"] is True
+    assert health["public_catalog_ready"] is True
+
+
+def test_public_task_evaluation_profile_catalog_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog_path = tmp_path / "catalog.json"
+    unsafe = _public_task_evaluation_launch_profile()
+    unsafe["allocator"] = {"argv": ["--execute"]}
+    _write_json(catalog_path, [unsafe])
+    monkeypatch.setenv(
+        service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV,
+        str(catalog_path),
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/live-pipeline/task-evaluation-launch-profiles"
+    )
+
+    assert response.status_code == 503
+    assert response.json()["profiles"] == []
+    assert response.json()["blockers"] == [
+        "task_evaluation_launch_public_catalog_invalid"
+    ]
+    assert str(catalog_path) not in response.text
+
+
+def test_task_evaluation_launch_systemd_path_mode_never_shells_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
+    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, raising=False)
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV, "systemd_path")
+    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV, raising=False)
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("systemd path mode must not call systemctl"),
+    )
+
+    result = service._trigger_task_evaluation_launch_dispatcher()
+
+    assert result == {
+        "status": "armed_by_systemd_path",
+        "performed": True,
+        "allowed": True,
+        "trigger_mode": "systemd_path",
+        "provider_mutation_performed": False,
+    }
 
 
 def test_signed_client_scope_cannot_select_another_tenant_root(

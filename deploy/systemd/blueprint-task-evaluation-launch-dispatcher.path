@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the durable Blueprint Task Evaluation launch queue
+
+[Path]
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/pending/*.json
+Unit=blueprint-task-evaluation-launch-dispatcher.service
+
+[Install]
+WantedBy=multi-user.target

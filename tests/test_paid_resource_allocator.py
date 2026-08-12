@@ -795,6 +795,70 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_task_evaluation_profile_preflight_stays_dry_inside_canonical_allocator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    commit = "c" * 40
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": commit}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_adp_expected_source_commit_blockers",
+        lambda expected, _identity: ([], expected),
+    )
+
+    def run_preflight(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready", "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(
+        allocator, "run_task_evaluation_profile_preflight", run_preflight
+    )
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider-launch-request",
+            str(tmp_path / "request.json"),
+            "--release-evidence",
+            str(tmp_path / "release.json"),
+            "--model-cache-evidence",
+            str(tmp_path / "readiness.json"),
+            "--preflight-bundle",
+            str(tmp_path / "guard.json"),
+            "--admission-out",
+            str(tmp_path / "admission.json"),
+            "--bound-request-out",
+            str(tmp_path / "bound.json"),
+            "--adapter-output",
+            str(tmp_path / "adapter.json"),
+            "--pod-name",
+            "adp009d-840313-franka-dry-v1",
+            "--expected-source-commit",
+            commit,
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["execute"] is False
+    assert observed["expected_source_commit"] == commit
+    assert observed["observed_source_commit"] == commit
+    assert json.loads((tmp_path / "adapter.json").read_text(encoding="utf-8"))[
+        "provider_mutations_performed"
+    ] == 0
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def _reconstruction_args(tmp_path: Path, *, execute: bool) -> Namespace:
     return Namespace(
         provider_launch_request=str(tmp_path / "request.json"),
@@ -1578,7 +1642,7 @@ def test_gpu_canary_source_checkout_binding_rejects_mismatch_and_dirty(
     monkeypatch.setattr(
         allocator,
         "_current_checkout_source_state",
-        lambda: ("c" * 40, True),
+        lambda: ("c" * 40, True, True),
     )
     assert allocator._source_checkout_blockers("b" * 40) == (
         ["gpu_canary_expected_source_commit_not_current_checkout"],
@@ -1587,7 +1651,7 @@ def test_gpu_canary_source_checkout_binding_rejects_mismatch_and_dirty(
     monkeypatch.setattr(
         allocator,
         "_current_checkout_source_state",
-        lambda: ("c" * 40, False),
+        lambda: ("c" * 40, False, True),
     )
     assert allocator._source_checkout_blockers("c" * 40) == (
         ["gpu_canary_checkout_not_clean"],
@@ -1601,7 +1665,7 @@ def test_gpu_canary_source_checkout_binding_requires_origin_main_parity(
     monkeypatch.setattr(
         allocator,
         "_current_checkout_source_state",
-        lambda: ("c" * 40, True),
+        lambda: ("c" * 40, True, True),
     )
     monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "c" * 40)
     monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
@@ -1622,7 +1686,7 @@ def test_gpu_canary_source_checkout_binding_requires_live_remote_main_parity(
     monkeypatch.setattr(
         allocator,
         "_current_checkout_source_state",
-        lambda: ("c" * 40, True),
+        lambda: ("c" * 40, True, True),
     )
     monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "c" * 40)
     monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "b" * 40)
@@ -1643,7 +1707,7 @@ def test_gpu_canary_experimental_lane_accepts_clean_pushed_codex_branch(
     monkeypatch.setattr(
         allocator,
         "_current_checkout_source_state",
-        lambda: ("c" * 40, True),
+        lambda: ("c" * 40, True, True),
     )
     monkeypatch.setattr(allocator, "_current_branch_name", lambda: "codex/diagnostic")
     monkeypatch.setattr(
@@ -1664,7 +1728,7 @@ def test_gpu_canary_experimental_lane_requires_matching_remote_branch_commit(
     monkeypatch.setattr(
         allocator,
         "_current_checkout_source_state",
-        lambda: ("c" * 40, True),
+        lambda: ("c" * 40, True, True),
     )
     monkeypatch.setattr(allocator, "_current_branch_name", lambda: "codex/diagnostic")
     monkeypatch.setattr(
@@ -1685,7 +1749,7 @@ def test_gpu_canary_experimental_lane_rejects_non_codex_branch(
     monkeypatch.setattr(
         allocator,
         "_current_checkout_source_state",
-        lambda: ("c" * 40, True),
+        lambda: ("c" * 40, True, True),
     )
     monkeypatch.setattr(allocator, "_current_branch_name", lambda: "feature/diagnostic")
     monkeypatch.setattr(
@@ -1706,7 +1770,7 @@ def test_gpu_canary_experimental_lane_rejects_non_codex_branch(
 def test_gpu_qualification_control_plane_identity_records_main_drift_without_blocking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("c" * 40, True))
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("c" * 40, True, True))
     monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
     monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "a" * 40)
 
@@ -1723,7 +1787,7 @@ def test_gpu_qualification_control_plane_identity_records_main_drift_without_blo
 def test_gpu_qualification_control_plane_identity_still_requires_clean_checkout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("c" * 40, False))
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("c" * 40, False, True))
     monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
     monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "a" * 40)
 

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve a promoted-release symlink before ownership changes.  Without the
+# physical path, recursive chown changes the link rather than the detached
+# checkout Git resolves, leaving the service account unable to prove identity.
+REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 ENV_DIR="${ENV_DIR:-/etc/blueprint}"
 ENV_FILE="${ENV_FILE:-${ENV_DIR}/pipeline-control-plane.env}"
 STATE_DIR="${STATE_DIR:-/var/lib/blueprint/pipeline-control-plane}"
 HANDOFF_DIR="${HANDOFF_DIR:-/var/lib/blueprint/pubsub-handoffs}"
 PROVIDER_SECRETS_DIR="${PROVIDER_SECRETS_DIR:-${ENV_DIR}/provider-secrets}"
+LAUNCH_PROFILE_DIR="${LAUNCH_PROFILE_DIR:-${ENV_DIR}/task-evaluation-launch-profiles}"
 SERVICE_USER="${SERVICE_USER:-blueprint}"
 SERVICE_GROUP="${SERVICE_GROUP:-blueprint}"
 ENABLE_NOW=false
@@ -20,8 +24,8 @@ Usage: scripts/install_live_pipeline_control_plane.sh [--enable-now] [--dry-run]
 Installs the Blueprint live pipeline control-plane systemd service/timer, the
 capture handoff Pub/Sub listener service/timer, and the optional authenticated
 WebApp intake service unit, plus the paid-work spend admission guard service/
-timer. The spend guard remains locked until current external billing input and
-provider credentials are installed.
+timer and read-only provider billing reconciler. The spend guard remains locked
+until current provider billing input and credentials are installed.
 The service runs one safe control-plane pass on each timer tick:
 read env, audit readiness, optionally consume the robot-eval job inbox, write
 manifests, run the proof-boundary audit, and exit. It does not add secrets or
@@ -34,6 +38,7 @@ Environment overrides:
   STATE_DIR=/var/lib/blueprint/pipeline-control-plane
   HANDOFF_DIR=/var/lib/blueprint/pubsub-handoffs
   PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
+  LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
   SERVICE_USER=blueprint
   SERVICE_GROUP=blueprint
 USAGE
@@ -83,18 +88,36 @@ if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     --shell /usr/sbin/nologin "${SERVICE_USER}"
 fi
 
+# The service account runs git against this checkout to pin the allocator's
+# source identity. A root-owned checkout makes git refuse with "detected
+# dubious ownership", the identity probe fails, and a paid launch is rejected
+# at admission -- so the account that reads the repository must own it.
+run chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${REPO_ROOT}"
+
 run install -d -m 0755 "${SYSTEMD_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${ENV_DIR}"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${HANDOFF_DIR}"
 run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${PROVIDER_SECRETS_DIR}"
+run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
+  "${LAUNCH_PROFILE_DIR}"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}" \
   "${STATE_DIR}/robot-eval-job-requests" \
   "${STATE_DIR}/incoming_webapp_job_requests" \
   "${STATE_DIR}/deliveries" \
-  "${STATE_DIR}/gpu_spend_guard"
+  "${STATE_DIR}/gpu_spend_guard" \
+  "${STATE_DIR}/provider-locks"
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${STATE_DIR}/task-evaluation-launches/pending" \
+  "${STATE_DIR}/task-evaluation-launches/processing" \
+  "${STATE_DIR}/task-evaluation-launches/completed" \
+  "${STATE_DIR}/task-evaluation-launches/blocked" \
+  "${STATE_DIR}/task-evaluation-launch-runs" \
+  "${STATE_DIR}/task-evaluation-control-plane-releases" \
+  "${STATE_DIR}/task-evaluation-launch-reconciliation" \
+  "${STATE_DIR}/task-evaluation-launch-supervision/recommendations"
 # Older units ran as root. Migrate only the two explicitly bounded runtime
 # trees before installing the hardened service-user units. GNU chown's
 # --no-dereference keeps a symlink itself in scope instead of following it to
@@ -123,6 +146,30 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-gpu-spend-guard.timer" \
   "${SYSTEMD_DIR}/blueprint-gpu-spend-guard.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-dispatcher.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-dispatcher.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-dispatcher.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-reconciler.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-reconciler.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-reconciler.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-reconciler.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-provider-billing-reconciler.service" \
+  "${SYSTEMD_DIR}/blueprint-provider-billing-reconciler.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-provider-billing-reconciler.timer" \
+  "${SYSTEMD_DIR}/blueprint-provider-billing-reconciler.timer"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   run install -o root -g "${SERVICE_GROUP}" -m 0640 \
@@ -143,10 +190,18 @@ systemctl daemon-reload
 if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-pipeline-control-plane.timer
   systemctl enable --now blueprint-pubsub-handoff-listener.timer
+  systemctl enable --now blueprint-provider-billing-reconciler.timer
   systemctl enable --now blueprint-gpu-spend-guard.timer
+  systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
+  systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
+  systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
   echo "installed; enable timer with: systemctl enable --now blueprint-pipeline-control-plane.timer"
   echo "enable handoff listener with: systemctl enable --now blueprint-pubsub-handoff-listener.timer"
+  echo "enable billing reconciliation with: systemctl enable --now blueprint-provider-billing-reconciler.timer"
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
+  echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
+  echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
+  echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"
 fi

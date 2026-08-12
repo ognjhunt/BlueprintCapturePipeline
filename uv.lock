@@ -246,6 +246,8 @@ version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "blueprint-contracts" },
+    { name = "boto3" },
+    { name = "botocore" },
     { name = "cryptography" },
     { name = "defusedxml" },
     { name = "fastapi" },
@@ -256,6 +258,7 @@ dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "openai-agents" },
+    { name = "packaging" },
     { name = "pillow" },
     { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -263,13 +266,13 @@ dependencies = [
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "tenacity" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "usd-core" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
 
 [package.optional-dependencies]
 cloud = [
-    { name = "boto3" },
     { name = "google-auth" },
     { name = "google-cloud-storage" },
     { name = "requests" },
@@ -381,8 +384,9 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'retrieval'", specifier = ">=0.30.0" },
     { name = "bandit", marker = "extra == 'dev'", specifier = "==1.8.6" },
     { name = "blueprint-contracts", git = "https://github.com/ognjhunt/BlueprintContracts.git?rev=7708a4e4c5dedeeb39cc73d3f6869304de295b81" },
-    { name = "boto3", marker = "extra == 'cloud'", specifier = ">=1.34.0" },
+    { name = "boto3", specifier = ">=1.34.0" },
     { name = "boto3", marker = "extra == 'dev'", specifier = ">=1.34.0" },
+    { name = "botocore", specifier = ">=1.34.0" },
     { name = "botocore", marker = "extra == 'dev'", specifier = ">=1.34.0" },
     { name = "coal", marker = "extra == 'exact-geometry-development'", specifier = "==3.0.3" },
     { name = "cryptography", specifier = ">=46.0.5" },
@@ -414,6 +418,7 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.19.1,<0.20" },
     { name = "opencv-python-headless", marker = "extra == 'dev'", specifier = ">=4.10.0" },
     { name = "opencv-python-headless", marker = "extra == 'runtime'", specifier = ">=4.10.0" },
+    { name = "packaging", specifier = ">=24.0" },
     { name = "peft", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.14.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pin", marker = "extra == 'exact-geometry-development'", specifier = "==4.1.0" },
@@ -449,6 +454,7 @@ requires-dist = [
     { name = "trimesh", marker = "extra == 'geometry'", specifier = ">=4.4.0" },
     { name = "trimesh", marker = "extra == 'runtime'", specifier = ">=4.4.0" },
     { name = "ultralytics", marker = "extra == 'runtime'", specifier = ">=8.3.0" },
+    { name = "usd-core", specifier = ">=24.0" },
     { name = "usd-core", marker = "extra == 'dev'", specifier = ">=24.0" },
     { name = "usd-core", marker = "extra == 'geometry'", specifier = ">=24.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },

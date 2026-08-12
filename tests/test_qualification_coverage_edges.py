@@ -996,3 +996,94 @@ def test_run_qualification_pipeline_suppresses_failure_writer_errors(
             descriptor_gcs_uri="not-a-gs-uri",
             config=SimpleNamespace(gcs_root=tmp_path / "gcs", runtime_preflight_enabled=False),
         )
+
+
+def test_run_qualification_pipeline_enrichment_stages_can_overlap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the stage-concurrency knob raised, the two independent enrichment
+    LLM calls run as a two-stage graph and genuinely overlap; each result still
+    lands in its own artifact."""
+
+    import threading
+
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _write_descriptor(
+        storage_root,
+        _descriptor(
+            raw_video_uri=None,
+            metadata={
+                "task_statement": "Inspect dock",
+                "task_zone": {"label": "Dock"},
+                "success_criteria": ["Dock inspected"],
+            },
+        ),
+    )
+    _patch_pipeline_side_effects(monkeypatch)
+
+    barrier = threading.Barrier(2, timeout=5.0)
+
+    def rendezvous_runner(name, _payload):
+        barrier.wait()
+        if name == "qualification_weakness_summarizer":
+            return {"summary": "weaknesses"}
+        if name == "recapture_instruction_writer":
+            return {"instructions": ["rescan dock"]}
+        return None
+
+    monkeypatch.setattr(
+        q, "build_capture_enrichment_runner", lambda **_kwargs: rendezvous_runner
+    )
+    monkeypatch.setenv("BLUEPRINT_SITE_PACKAGE_STAGE_CONCURRENCY", "2")
+
+    result = q.run_qualification_pipeline(
+        descriptor_gcs_uri=descriptor_uri,
+        config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False),
+    )
+
+    pipeline_dir = storage_root / "scenes" / "scene-1" / "captures" / "capture-1" / "pipeline"
+    assert result["status"] == "completed"
+    weakness = json.loads((pipeline_dir / "qualification_weakness_summary.json").read_text())
+    recapture = json.loads((pipeline_dir / "recapture_instructions.json").read_text())
+    assert weakness == {"summary": "weaknesses"}
+    assert recapture == {"instructions": ["rescan dock"]}
+
+
+def test_run_qualification_pipeline_enrichment_failure_still_aborts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An enrichment-runner failure keeps today's fail-closed abort semantics
+    through the stage graph: the original error reaches the spine's failure
+    handler and the run raises PipelineError."""
+
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _write_descriptor(
+        storage_root,
+        _descriptor(
+            raw_video_uri=None,
+            metadata={
+                "task_statement": "Inspect dock",
+                "task_zone": {"label": "Dock"},
+                "success_criteria": ["Dock inspected"],
+            },
+        ),
+    )
+    _patch_pipeline_side_effects(monkeypatch)
+
+    def failing_runner(name, _payload):
+        if name == "qualification_weakness_summarizer":
+            raise RuntimeError("enrichment boom")
+        raise AssertionError(
+            "recapture stage must not run after the weakness stage fails in serial mode"
+        )
+
+    monkeypatch.setattr(q, "build_capture_enrichment_runner", lambda **_kwargs: failing_runner)
+    monkeypatch.delenv("BLUEPRINT_SITE_PACKAGE_STAGE_CONCURRENCY", raising=False)
+
+    with pytest.raises(q.PipelineError, match="enrichment boom"):
+        q.run_qualification_pipeline(
+            descriptor_gcs_uri=descriptor_uri,
+            config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False),
+        )

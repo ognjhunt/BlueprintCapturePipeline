@@ -28,6 +28,15 @@ dependencies = [
     # robot_eval_job_request.v1 schema cannot fall back silently.
     "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@7708a4e4c5dedeeb39cc73d3f6869304de295b81",
     "pyyaml>=6.0",
+    # The canonical paid-resource allocator imports PEP 508 marker parsing at
+    # module load. Keep this direct in the production base instead of relying
+    # on a developer-only transitive dependency.
+    "packaging>=24.0",
+    # The canonical allocator imports the Content Agents adapter at module
+    # load, and that adapter imports OpenUSD pxr. The production control-plane
+    # base must therefore carry usd-core; a geometry/dev-only declaration
+    # makes the website dispatcher fail before it can classify any request.
+    "usd-core>=24.0",
     "numpy>=1.24.0",
     # Exact-camera frame registration uses scipy.spatial.cKDTree in the core
     # external-scene admission path, so this cannot be left to a transitive
@@ -47,6 +56,10 @@ dependencies = [
     # the production base environment rather than only in the cloud extra.
     "google-cloud-pubsub>=2.21.0",
     "google-cloud-storage>=2.10.0",
+    # Canonical provider launches stage immutable bundles and collect outputs
+    # through S3-compatible object storage before any provider mutation.
+    "boto3>=1.34.0",
+    "botocore>=1.34.0",
     "cryptography>=46.0.5",
     "defusedxml>=0.7.1",
     # Canonical agent harness for the Task Evaluation Supervisor and its
@@ -64,7 +77,6 @@ dependencies = [
 [project.optional-dependencies]
 cloud = [
     "google-cloud-storage>=2.10.0",
-    "boto3>=1.34.0",
     "google-auth>=2.0.0",
     "requests>=2.31.0",
 ]
@@ -363,6 +375,9 @@ blueprint-alert-live-pipeline-manifest = "blueprint_pipeline.live_pipeline_manif
 blueprint-audit-live-robot-eval-closure = "blueprint_pipeline.live_robot_eval_closure:main"
 blueprint-intake-live-pipeline-inputs = "blueprint_pipeline.live_pipeline_input_intake:main"
 blueprint-live-pipeline-intake-service = "blueprint_pipeline.live_pipeline_intake_service:main"
+blueprint-dispatch-task-evaluation-launches = "blueprint_pipeline.task_evaluation_launch_dispatcher:main"
+blueprint-reconcile-task-evaluation-launches = "blueprint_pipeline.task_evaluation_launch_reconciler:main"
+blueprint-supervise-task-evaluation-launches = "blueprint_pipeline.task_evaluation_launch_supervisor:main"
 blueprint-setup-live-pipeline-forwarding = "blueprint_pipeline.live_pipeline_forwarding_secret_setup:main"
 blueprint-label-rollout-vision-openai = "blueprint_pipeline.rollout_vision_label_openai:main"
 blueprint-deliver-arena-package-local = "blueprint_pipeline.arena_package_delivery_local:main"
