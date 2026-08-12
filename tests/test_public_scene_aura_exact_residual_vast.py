@@ -409,3 +409,11 @@ def test_campaign_abstention_requires_two_distinct_zero_closed_hosts(
             bundle_receipt_path=bundle_receipt,
             output_path=tmp_path / "campaign-duplicate.json",
         )
+
+    same_machine = make_attempt(tmp_path / "same-machine", 47534100, 27753)
+    with pytest.raises(ValueError, match="attempts_not_independent"):
+        materialize_aura_exact_residual_provider_runtime_campaign_abstention(
+            runtime_abstention_paths=[first, same_machine],
+            bundle_receipt_path=bundle_receipt,
+            output_path=tmp_path / "campaign-same-machine.json",
+        )
