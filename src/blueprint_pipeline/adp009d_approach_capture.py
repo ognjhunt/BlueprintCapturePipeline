@@ -170,6 +170,31 @@ def approved_can_visual_center_world() -> list[float]:
 
 BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START = "no_safe_wrist_observable_episode_start"
 BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH = "wrist_episode_start_restore_joint_mismatch"
+
+
+def next_episode_start_restore_command(
+    *,
+    commanded_joint_position_rad: float,
+    achieved_joint_position_rad: float,
+    target_joint_position_rad: float,
+    max_joint_step_rad: float,
+) -> float:
+    """Advance one episode-start replay command toward the target pose.
+
+    The command is integrated from its own previous value, not re-derived from
+    the achieved pose.  Under gravity a position-controlled joint settles a
+    steady-state droop below whatever it is commanded, so re-deriving the
+    command each step converges to ``command == target`` and therefore
+    ``achieved == target - droop`` -- the replay lands a full droop short of the
+    pose it is replaying, and no tolerance below the droop can ever be met.
+    Integrating instead makes ``achieved == target`` the fixed point, with the
+    command carrying the droop.  With a weightless arm the droop is zero and the
+    two laws agree, so this does not change the previously validated behaviour.
+    """
+
+    error = float(target_joint_position_rad) - float(achieved_joint_position_rad)
+    step = max(-float(max_joint_step_rad), min(float(max_joint_step_rad), error))
+    return float(commanded_joint_position_rad) + step
 BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED = "wrist_episode_start_restore_object_moved"
 BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE = "wrist_episode_start_restore_object_not_visible"
 BLOCKER_EXTERNAL_TASK_OBJECT_NOT_VISIBLE = "external_task_camera_object_not_visible"
@@ -1106,6 +1131,7 @@ __all__ = [
     "APPROACH_MAX_JOINT_STEP_RAD",
     "APPROACH_MAX_OBJECT_DISPLACEMENT_M",
     "BLOCKER_EPISODE_START_RESTORE_JOINT_MISMATCH",
+    "next_episode_start_restore_command",
     "BLOCKER_EPISODE_START_RESTORE_OBJECT_MOVED",
     "BLOCKER_EPISODE_START_RESTORE_OBJECT_NOT_VISIBLE",
     "BLOCKER_NO_SAFE_WRIST_OBSERVABLE_EPISODE_START",

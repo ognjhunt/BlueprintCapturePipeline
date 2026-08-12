@@ -498,3 +498,66 @@ Zeroing the gripper actuator entirely *does* let the gravity-real arm hold at
 gripper change reproduces that, the replica cannot say which. **The Robotiq
 resolution therefore requires the real Newton runtime, not this replica**, and no
 Newton allocation should be launched claiming a fix is in hand.
+
+## First gravity-real PhysX baseline: the arm holds its own weight
+
+Vast instance `47519696` (L40S, machine 27268, $0.6794/hr) ran the gravity-real
+PhysX controls configuration under a `$2` cap, `5400` s TTL and retry cap `0`.
+Settled charge `$0.112`; 36 artifacts retained; teardown completed and
+API-confirmed provider-zero across RunPod, Vast and DigitalOcean
+(`sha256:85b184c02f9e3fe774e13f0370dd7cfe42e52fddb6a5c349e8b8d59618dda36e`).
+
+**The canonical hold passed at `0.008284330368041992` rad**, inside the
+`1.0e-2` rad gate. This is the first ADP-009D run in which the Franka held its
+commanded pose while actually carrying its own weight.
+
+The measurement matches the prediction made from the retained model before the
+run, to within one percent:
+
+| source | worst-joint hold error (rad) |
+| --- | --- |
+| analytic `20.070 / 2400` | 0.0083625 |
+| CPU replica | 0.008347 |
+| **measured, PhysX on GPU** | **0.008284** |
+
+Per joint, the measured error is the analytic `gravity_torque / kp` throughout,
+which closes the root-cause argument quantitatively rather than by narrative:
+
+| joint | `τ_g / 2400` | measured |
+| --- | --- | --- |
+| panda_joint4 | 0.008363 | 0.008284 |
+| panda_joint2 | 0.002594 | 0.002805 |
+| panda_joint6 | 0.000331 | 0.000351 |
+| panda_joint1/3/5/7 | ~0 | 1e-06 … 1e-04 |
+
+The retained `canonical_hold_trace` records `convergence: settled` and
+`hold_failure_mode: within_tolerance`, with per-step error rising
+`0.00468 → 0.00679 → 0.00767 → 0.00803` and converging. That distinction —
+settled at a bounded offset versus still falling — is exactly what the trace was
+built for, and it is the first run in which it had a passing hold to describe.
+
+### Controls did not complete, and the cause is a gravity assumption in the replay
+
+The run stopped with `scenario_controls_receipt_missing`, from
+`wrist_observable_episode_start_restore_failed:wrist_episode_start_restore_joint_mismatch`.
+No policy was queried and no candidate outcome was accessed.
+
+The episode-start replay computed each command as
+`achieved + clamp(target - achieved)`. Its fixed point is `command == target`,
+therefore `achieved == target - droop`: with a weightless arm the droop is zero
+and the law is correct, but a gravity-real joint settles a steady-state droop
+below whatever it is commanded, so the replay lands a full droop short of the
+pose it is replaying. The early exit at `tolerance / 3 = 1.0e-3` rad can never
+trigger against a `0.0083` rad droop, so the loop exhausted its horizon and the
+final `3.0e-3` rad check failed at the droop.
+
+Widening the tolerance would have hidden this: the replay would still be
+restoring the wrong pose, and the wrist observability it exists to guarantee is
+defined on the achieved pose, not the commanded one. The fix is the servo law.
+`next_episode_start_restore_command` integrates the command from its own previous
+value, making `achieved == target` the fixed point with the command carrying the
+droop. With a weightless arm the two laws agree exactly, so previously validated
+behaviour is unchanged.
+
+This is the second gravity assumption the change has surfaced, after the arm
+gains themselves, and both were invisible while the arm was weightless.

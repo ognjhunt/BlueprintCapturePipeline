@@ -3757,14 +3757,21 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     )
                     env.reset(seed=20260806)
                     restore_steps = 0
+                    # Integrate the command from its own previous value.  A
+                    # gravity-real joint settles a steady-state droop below what
+                    # it is commanded, so re-deriving the command from the
+                    # achieved pose each step converges on achieved == target -
+                    # droop and never reaches the replayed pose.
+                    commanded = _to_torch(robot.data.joint_pos)[:, :7].clone()
                     for _ in range(EPISODE_START_RESTORE_MAX_STEPS):
                         current = _to_torch(robot.data.joint_pos)[:, :7]
                         restore_action = torch.zeros_like(action)
-                        restore_action[:, :7] = current + torch.clamp(
+                        commanded = commanded + torch.clamp(
                             target - current,
                             -APPROACH_MAX_JOINT_STEP_RAD,
                             APPROACH_MAX_JOINT_STEP_RAD,
                         )
+                        restore_action[:, :7] = commanded
                         restore_action[:, 7] = float(gripper_probe["open_command"])
                         env.step(restore_action)
                         restore_steps += 1

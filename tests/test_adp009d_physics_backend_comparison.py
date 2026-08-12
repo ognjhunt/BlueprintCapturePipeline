@@ -43,6 +43,9 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     validate_newton_dynamics_representable,
     validate_newton_explicit_pd_feasibility,
 )
+from blueprint_pipeline.adp009d_approach_capture import (
+    next_episode_start_restore_command,
+)
 from blueprint_pipeline.adp009d_provider_zero import build_provider_zero_receipt
 from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -1376,3 +1379,54 @@ def test_unrepresentable_property_without_a_value_fails_closed() -> None:
         ]
     )
     assert admission["status"] == "blocked"
+
+
+def test_restore_command_integrates_so_the_achieved_pose_reaches_the_target() -> None:
+    """The episode-start replay must converge the ACHIEVED pose, not the command.
+
+    Deriving the command from the achieved pose each step gives the fixed point
+    command==target, achieved==target-droop: under gravity the replay lands a
+    full droop short of the pose it is replaying, and the early exit at
+    tolerance/3 can never trigger. Integrating the command instead makes
+    achieved==target the fixed point, with the command carrying the droop.
+    """
+
+    target, droop, max_step = 1.0, 0.0083, 0.01
+    commanded = 0.0
+    for _ in range(400):
+        achieved = commanded - droop
+        commanded = next_episode_start_restore_command(
+            commanded_joint_position_rad=commanded,
+            achieved_joint_position_rad=achieved,
+            target_joint_position_rad=target,
+            max_joint_step_rad=max_step,
+        )
+    achieved = commanded - droop
+    assert abs(achieved - target) <= 1.0e-9
+    assert commanded == pytest.approx(target + droop, abs=1.0e-9)
+
+
+def test_restore_command_respects_the_step_clamp() -> None:
+    assert next_episode_start_restore_command(
+        commanded_joint_position_rad=0.0,
+        achieved_joint_position_rad=0.0,
+        target_joint_position_rad=5.0,
+        max_joint_step_rad=0.01,
+    ) == pytest.approx(0.01)
+    assert next_episode_start_restore_command(
+        commanded_joint_position_rad=0.0,
+        achieved_joint_position_rad=0.0,
+        target_joint_position_rad=-5.0,
+        max_joint_step_rad=0.01,
+    ) == pytest.approx(-0.01)
+
+
+def test_restore_command_is_a_fixed_point_once_achieved() -> None:
+    """No creep once the achieved pose is already on target."""
+
+    assert next_episode_start_restore_command(
+        commanded_joint_position_rad=1.0083,
+        achieved_joint_position_rad=1.0,
+        target_joint_position_rad=1.0,
+        max_joint_step_rad=0.01,
+    ) == pytest.approx(1.0083)
