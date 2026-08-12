@@ -122,10 +122,54 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
         return False
 
 
+RECEIPT_FILENAME = "terminal_resource_release_receipt.json"
+
+
+def release_redrive_admission(receipt: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Decide whether a blocked release may be re-armed by an operator.
+
+    The invariant that matters is that the provider was never contacted. A
+    release that failed before the canonical allocator reached a provider -- an
+    unimportable allocator, an unhandled dispatcher error -- left nothing
+    behind to reconcile, so re-running it can neither double-spend nor destroy
+    an unexpected resource.
+
+    Absent evidence is not evidence of absence: a missing receipt is refused,
+    because a release whose outcome was never retained may have mutated the
+    provider before dying.
+    """
+    if not isinstance(receipt, Mapping):
+        return {"admitted": False, "blockers": ["redrive_refused_no_retained_receipt"]}
+
+    blockers: list[str] = []
+    if _string(receipt.get("status")) != "blocked":
+        blockers.append("redrive_refused_release_not_blocked")
+    if receipt.get("provider_mutation_attempted") not in (None, False):
+        blockers.append("redrive_refused_provider_mutation_attempted")
+    if list(receipt.get("provider_mutations_performed") or []):
+        blockers.append("redrive_refused_provider_mutation_performed")
+    return {"admitted": not blockers, "blockers": blockers}
+
+
+def _retained_receipt(state_root: str | Path, release_id: str) -> dict[str, Any] | None:
+    path = Path(state_root).expanduser().resolve() / release_id / RECEIPT_FILENAME
+    try:
+        return _mapping(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
 def stage_terminal_resource_release_request(
-    *, value: Mapping[str, Any], queue_root: str | Path
+    *, value: Mapping[str, Any], queue_root: str | Path,
+    state_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Validate then append one immutable, provider-free queue record."""
+    """Validate then append one immutable, provider-free queue record.
+
+    Passing ``state_root`` lets an explicit operator re-submit re-arm a release
+    that blocked before the provider was contacted. Re-arming is never
+    automatic: only this call, driven by a website request, can move a blocked
+    record back to ``pending``.
+    """
 
     request = dict(value)
     blockers = validate_terminal_resource_release_request(request)
@@ -143,6 +187,27 @@ def stage_terminal_resource_release_request(
                     f"duplicate_terminal_resource_release_queue_state:{filename}"
                 )
             existing = candidate
+
+    if existing is not None and existing.parent.name == "blocked" and state_root is not None:
+        admission = release_redrive_admission(
+            _retained_receipt(state_root, _string(request["release_id"]))
+        )
+        if not admission["admitted"]:
+            raise TerminalResourceReleaseError(",".join(admission["blockers"]))
+        rearmed = queue / "pending" / filename
+        rearmed.parent.mkdir(parents=True, exist_ok=True)
+        existing.replace(rearmed)
+        return {
+            "schema_version": QUEUE_RECEIPT_SCHEMA_VERSION,
+            "status": "requeued",
+            "already_exists": True,
+            "release_id": request["release_id"],
+            "launch_id": request["launch_id"],
+            "terminal_resource_release_digest": digest,
+            "provider_mutation_performed": False,
+            "automatic_retry_performed": False,
+        }
+
     path = existing or queue / "pending" / filename
     created = _write_immutable(path, request)
     return {
@@ -159,9 +224,11 @@ def stage_terminal_resource_release_request(
 __all__ = [
     "QUEUE_RECEIPT_SCHEMA_VERSION",
     "QUEUE_RUN_SCHEMA_VERSION",
+    "RECEIPT_FILENAME",
     "RECEIPT_SCHEMA_VERSION",
     "REQUEST_SCHEMA_VERSION",
     "TerminalResourceReleaseError",
+    "release_redrive_admission",
     "stage_terminal_resource_release_request",
     "validate_terminal_resource_release_request",
 ]
