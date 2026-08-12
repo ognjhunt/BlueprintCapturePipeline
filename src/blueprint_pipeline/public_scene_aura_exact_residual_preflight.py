@@ -162,10 +162,49 @@ def _validated_backend(packet: Mapping[str, Any]) -> dict[str, Any]:
         or policy.get("publication") is not False
     ):
         raise AuraExactResidualPreflightError(["aura_exact_residual_backend_invalid"])
+    attestation_record = backend.get("noncommercial_research_evaluation_attestation")
+    if not isinstance(attestation_record, Mapping):
+        # Older candidate admissions were sealed before the Aura source archive
+        # was inspected for its Gaussian-Splatting nested components.  They are
+        # not execution authority now: accept only a receipt that carries the
+        # separately reviewable noncommercial-use attestation.
+        raise AuraExactResidualPreflightError(
+            ["aura_exact_residual_backend_noncommercial_attestation_missing"]
+        )
+    attestation_path = _bound_file(
+        attestation_record,
+        code="aura_exact_residual_backend_noncommercial_attestation_invalid",
+    )
+    attestation = _read(
+        attestation_path,
+        code="aura_exact_residual_backend_noncommercial_attestation_invalid",
+    )
+    if (
+        attestation.get("schema_version")
+        != "third_scene_released_code_noncommercial_use_attestation.v1"
+        or attestation.get("reviewer_role") != "authorized_rights_holder"
+        or attestation.get("noncommercial_research_evaluation_use_authorized") is not True
+        or attestation.get("commercial_use_authorized") is not False
+        or attestation.get("redistribution_authorized") is not False
+        or attestation.get("publication_authorized") is not False
+        or attestation.get("attestation_digest")
+        != canonical_digest(attestation, digest_field="attestation_digest")
+        or attestation_record.get("attestation_digest")
+        != attestation["attestation_digest"]
+        or attestation_record.get("reviewer_role") != attestation["reviewer_role"]
+    ):
+        raise AuraExactResidualPreflightError(
+            ["aura_exact_residual_backend_noncommercial_attestation_invalid"]
+        )
     return {
         **_record(path),
         "receipt_digest": backend["receipt_digest"],
         "backend_id": backend["backend_id"],
+        "noncommercial_research_evaluation_attestation": {
+            **_record(attestation_path),
+            "attestation_digest": attestation["attestation_digest"],
+            "reviewer_role": attestation["reviewer_role"],
+        },
         "_backend": backend,
     }
 
