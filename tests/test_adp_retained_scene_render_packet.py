@@ -313,6 +313,9 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     assert "provider_runtime/input/source_standard.ply" in names
     assert "provider_runtime/input/shared_retained_scene.ply" in names
     assert "provider_runtime/input/direct_evidence_successor_set.json" in names
+    assert (tmp_path / "job/provider_runtime/input/source_standard.ply").stat().st_ino == (
+        tmp_path / "direct_set/source.ply"
+    ).stat().st_ino
 
 
 def test_rejects_more_than_five_task_lanes() -> None:

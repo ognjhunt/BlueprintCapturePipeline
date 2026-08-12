@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -70,6 +71,22 @@ def _record(path: Path, *, root: Path | None = None) -> dict[str, Any]:
     else:
         result["relative_path"] = path.relative_to(root).as_posix()
     return result
+
+
+def _link_or_copy(source: Path, destination: Path) -> None:
+    """Prefer a same-volume hardlink for immutable, receipt-verified inputs.
+
+    This avoids duplicating hundreds of megabytes of derived PLY/vendor bytes
+    while an archive is being built on a constrained workstation.  The final
+    ZIP remains self-contained and immutable; cross-device sources fall back
+    to a byte copy.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
 
 
 def _read(path: Path, *, code: str) -> dict[str, Any]:
@@ -381,8 +398,7 @@ def _copy_tree(source: Path, destination: Path) -> list[dict[str, Any]]:
         if not path.is_file():
             continue
         target = destination / path.relative_to(source)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+        _link_or_copy(path, target)
         files.append(_record(target, root=destination))
     if not files:
         raise RetainedSceneRenderPacketError(["retained_scene_render_vendor_package_empty"])
@@ -441,16 +457,16 @@ def build_retained_scene_gpu_render_bundle(
     input_root.mkdir(parents=True)
     source_copy = input_root / "source_standard.ply"
     retained_copy = input_root / "shared_retained_scene.ply"
-    shutil.copy2(source_ply, source_copy)
-    shutil.copy2(retained_ply, retained_copy)
+    _link_or_copy(source_ply, source_copy)
+    _link_or_copy(retained_ply, retained_copy)
     candidate_copy = input_root / "direct_evidence_successor_set.json"
-    shutil.copy2(candidate_path, candidate_copy)
+    _link_or_copy(candidate_path, candidate_copy)
     task_bindings: dict[str, dict[str, Any]] = {}
     freezes = input_root / "task_freezes"
     freezes.mkdir()
     for task_id, (freeze_path, freeze) in task_paths.items():
         copied_freeze = freezes / f"{task_id}.json"
-        shutil.copy2(freeze_path, copied_freeze)
+        _link_or_copy(freeze_path, copied_freeze)
         removal = freeze["removal_plan"]
         task_bindings[task_id] = {
             "task_freeze": _record(copied_freeze, root=runtime),
@@ -470,7 +486,7 @@ def build_retained_scene_gpu_render_bundle(
         lane_root = input_root / "cameras" / task_id
         lane_root.mkdir(parents=True)
         copied = lane_root / "cameras.v1.json"
-        shutil.copy2(camera_path, copied)
+        _link_or_copy(camera_path, copied)
         lanes.append(
             {
                 "task_id": task_id,
@@ -497,8 +513,7 @@ def build_retained_scene_gpu_render_bundle(
         if not source.is_file() or source.is_symlink():
             raise RetainedSceneRenderPacketError(["retained_scene_render_renderer_source_missing"])
         target = renderer / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        _link_or_copy(source, target)
     vendor_files: dict[str, list[dict[str, Any]]] = {}
     for package in _VENDOR_PACKAGES:
         source = vendor_root / package
@@ -520,11 +535,11 @@ def build_retained_scene_gpu_render_bundle(
         if not source.is_file() or source.is_symlink():
             raise RetainedSceneRenderPacketError(["retained_scene_render_provider_runner_missing"])
         target = runtime / destination_name
-        shutil.copy2(source, target)
+        _link_or_copy(source, target)
         if source.suffix == ".sh":
             target.chmod(target.stat().st_mode | stat.S_IXUSR)
     authority_copy = runtime / "execution_authority.json"
-    shutil.copy2(authority_path, authority_copy)
+    _link_or_copy(authority_path, authority_copy)
     renderer_identity = {
         "repository": identity,
         "harness_sha256": _sha256(renderer / "render_splat.mjs"),
@@ -596,7 +611,18 @@ def build_retained_scene_gpu_render_bundle(
         canonical_json(manifest) + "\n", encoding="utf-8"
     )
     bundle_path = job / "adp_retained_scene_gpu_render_bundle.zip"
-    _write_deterministic_zip(job, bundle_path)
+    partial_bundle_path = job / ".adp_retained_scene_gpu_render_bundle.partial.zip"
+    try:
+        _write_deterministic_zip(job, partial_bundle_path)
+        with zipfile.ZipFile(partial_bundle_path) as archive:
+            if archive.testzip() is not None:
+                raise RetainedSceneRenderPacketError(
+                    ["retained_scene_render_bundle_integrity_invalid"]
+                )
+        partial_bundle_path.replace(bundle_path)
+    finally:
+        if partial_bundle_path.exists():
+            partial_bundle_path.unlink()
     rehearsal = rehearse_provider_bundle_entrypoint(
         bundle_path=bundle_path,
         entrypoint_relative_path=ENTRYPOINT,
