@@ -6,11 +6,24 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.public_scene_aura_exact_residual_vast import (
+    GPU_SELECTION_POLICY,
     RESULT_SCHEMA_VERSION,
     materialize_aura_exact_residual_provider_runtime_campaign_abstention,
     materialize_aura_exact_residual_runtime_abstention,
     run_aura_exact_residual_vast,
 )
+
+
+def test_exact_residual_uses_only_previously_observed_aura_gpu_classes() -> None:
+    assert GPU_SELECTION_POLICY == {
+        "policy_id": "aura_exact_residual_observed_cuda_control",
+        "allowed_gpu_keywords": ("L40S", "RTX 4090"),
+        "denied_gpu_keywords": (),
+        "reason": (
+            "released Aura author controls previously reached their entrypoint on "
+            "both L40S and RTX 4090; no task input or scene claim depends on GPU class"
+        ),
+    }
 
 
 def test_exact_residual_vast_dry_run_has_no_provider_mutation(tmp_path: Path) -> None:

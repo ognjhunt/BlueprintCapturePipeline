@@ -48,10 +48,13 @@ MIN_TTL_SECONDS = 7_200
 MAX_HARD_CAP_USD = 12.0
 MIN_RASTERIZER_COMPUTE_CAP = 890
 GPU_SELECTION_POLICY = {
-    "policy_id": "aura_exact_residual_l40s_observed_control",
-    "allowed_gpu_keywords": ("L40S",),
+    "policy_id": "aura_exact_residual_observed_cuda_control",
+    "allowed_gpu_keywords": ("L40S", "RTX 4090"),
     "denied_gpu_keywords": (),
-    "reason": "same released Aura rasterizer class as the qualified author control",
+    "reason": (
+        "released Aura author controls previously reached their entrypoint on "
+        "both L40S and RTX 4090; no task input or scene claim depends on GPU class"
+    ),
 }
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
@@ -456,7 +459,7 @@ def run_aura_exact_residual_vast(
                 heartbeat_no_progress_seconds=1800,
                 session_budget_ledger_path=job / "aura_exact_residual_vast_session_budget.json",
                 verify_staging_urls=True, require_known_supported_isaac_driver=False,
-                preferred_gpu_keywords=("L40S",), prefer_isaac_rt=False,
+                preferred_gpu_keywords=("L40S", "RTX 4090"), prefer_isaac_rt=False,
                 gpu_selection_policy=GPU_SELECTION_POLICY, machine_avoidlist_path=machine_avoidlist_path,
                 allowed_active_instance_ids=allowed,
                 vast_launch_lock_file=job.parent / "aura_exact_residual_paid_launch.lock",
