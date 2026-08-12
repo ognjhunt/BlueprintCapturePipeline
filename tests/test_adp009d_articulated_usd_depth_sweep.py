@@ -426,7 +426,7 @@ def test_legacy_implicit_subject_depth_sweep_requires_file_backed_attestation(
     )
 
     assert result["scene_state_role"] == "task_subject"
-    assert result["legacy_subject_role_attestation"]["copied_depth_array_byte_exact"] is True
+    assert result["legacy_subject_role_attestation"]["depth_array_hardlinked_byte_exact"] is True
     assert (
         (tmp_path / "attested" / "replacement_depth_sweep.npy").read_bytes()
         == (source_root / "replacement_depth_sweep.npy").read_bytes()

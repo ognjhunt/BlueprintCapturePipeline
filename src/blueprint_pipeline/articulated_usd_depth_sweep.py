@@ -12,7 +12,7 @@ import hashlib
 import itertools
 import json
 import math
-import shutil
+import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -1355,7 +1355,12 @@ def attest_legacy_default_subject_depth_sweep(
         )
     output.mkdir(parents=True, exist_ok=True)
     destination_array = output / "replacement_depth_sweep.npy"
-    shutil.copyfile(array, destination_array)
+    try:
+        os.link(array, destination_array)
+    except OSError as exc:
+        raise ArticulatedUsdDepthSweepError(
+            ["replacement_depth_legacy_subject_array_hardlink_failed"]
+        ) from exc
     if _sha256(destination_array) != _sha256(array):
         raise ArticulatedUsdDepthSweepError(
             ["replacement_depth_legacy_subject_array_copy_invalid"]
@@ -1377,7 +1382,7 @@ def attest_legacy_default_subject_depth_sweep(
             "request_digest": admitted["request_digest"],
         },
         "source_role": "implicit_legacy_default_task_subject",
-        "copied_depth_array_byte_exact": True,
+        "depth_array_hardlinked_byte_exact": True,
     }
     upgraded["manifest_digest"] = canonical_digest(
         upgraded, digest_field="manifest_digest"
