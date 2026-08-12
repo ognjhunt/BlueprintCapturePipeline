@@ -38,6 +38,7 @@ PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
 RESULT_SCHEMA = "adp009d_retained_scene_gpu_render_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_authority.v1"
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
+OUTPUT_RELOCATION_SCHEMA = "adp009d_retained_scene_gpu_render_output_relocation.v1"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 _VAST_MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _VAST_STALE_OFFER_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
@@ -297,7 +298,124 @@ def consume_retained_scene_render_paid_attempt_authority_once(
     }
 
 
-def _extract_provider_output(path: Path, destination: Path) -> tuple[dict[str, Any], list[str]]:
+def _render_manifest_path(
+    *, destination: Path, task_id: str, layer: str, background_rgb: str
+) -> Path:
+    if (
+        not task_id
+        or "/" in task_id
+        or "\\" in task_id
+        or layer not in {"shared_deleted_source_layer", "shared_retained_scene"}
+        or background_rgb not in {"#000000", "#ffffff"}
+    ):
+        raise ValueError("retained_scene_render_manifest_reference_invalid")
+    background = "black" if background_rgb == "#000000" else "white"
+    path = (
+        destination
+        / "renders"
+        / task_id
+        / f"{task_id}_{layer}_{background}"
+        / "sealed_camera_render_manifest.v1.json"
+    ).resolve()
+    root = destination.resolve()
+    if root not in path.parents:
+        raise ValueError("retained_scene_render_manifest_reference_invalid")
+    return path
+
+
+def materialize_retained_scene_render_output_relocation(
+    *, result_path: str | Path, destination: str | Path
+) -> dict[str, Any]:
+    """Bind extracted renderer manifests to the untouched provider result bytes.
+
+    Provider runtime manifests contain paths meaningful only inside the
+    container.  This receipt neither edits the exported result nor trusts
+    those path strings: it deterministically resolves the extracted filename,
+    reopens the local manifest, and verifies its digest before exposing a local
+    path for the next file-backed evidence gate.
+    """
+
+    result_file = Path(result_path).expanduser().resolve()
+    root = Path(destination).expanduser().resolve()
+    if not result_file.is_file() or result_file.is_symlink() or not root.is_dir():
+        raise ValueError("retained_scene_render_output_relocation_input_missing")
+    if result_file.parent != root:
+        raise ValueError("retained_scene_render_output_relocation_result_outside_root")
+    result = _read(result_file)
+    if result.get("schema_version") != "adp009d_retained_scene_gpu_render_result.v1":
+        raise ValueError("retained_scene_render_output_relocation_result_invalid")
+    rows = result.get("render_manifests")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("retained_scene_render_output_relocation_manifests_missing")
+    local_manifests: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("retained_scene_render_output_relocation_manifests_invalid")
+        task_id = str(row.get("task_id") or "")
+        layer = str(row.get("layer") or "")
+        background_rgb = str(row.get("background_rgb") or "")
+        key = (task_id, layer, background_rgb)
+        if key in seen:
+            raise ValueError("retained_scene_render_output_relocation_manifest_duplicate")
+        seen.add(key)
+        manifest_path = _render_manifest_path(
+            destination=root,
+            task_id=task_id,
+            layer=layer,
+            background_rgb=background_rgb,
+        )
+        manifest = _read(manifest_path)
+        digest = manifest.get("sealed_camera_render_manifest_digest")
+        expected_role = (
+            "shared_deleted_source_union"
+            if layer == "shared_deleted_source_layer"
+            else "shared_retained_scene"
+        )
+        if (
+            manifest.get("schema_version") != "sealed_camera_render_manifest.v1"
+            or manifest.get("status") != "rendered_exact_cameras"
+            or manifest.get("source_layer_role") != expected_role
+            or manifest.get("render_settings", {}).get("background_rgb") != background_rgb
+            or digest != row.get("manifest_digest")
+            or digest != canonical_digest(
+                manifest, digest_field="sealed_camera_render_manifest_digest"
+            )
+        ):
+            raise ValueError("retained_scene_render_output_relocation_manifest_invalid")
+        local_manifests.append(
+            {
+                "task_id": task_id,
+                "layer": layer,
+                "background_rgb": background_rgb,
+                "remote_manifest_path": row.get("manifest_path"),
+                "local_manifest": {
+                    "path": str(manifest_path),
+                    "size_bytes": manifest_path.stat().st_size,
+                    "sha256": _sha256(manifest_path),
+                    "manifest_digest": digest,
+                },
+            }
+        )
+    receipt: dict[str, Any] = {
+        "schema_version": OUTPUT_RELOCATION_SCHEMA,
+        "status": "extracted_manifest_paths_verified",
+        "provider_result": {
+            "path": str(result_file),
+            "size_bytes": result_file.stat().st_size,
+            "sha256": _sha256(result_file),
+        },
+        "render_manifests": local_manifests,
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = root / "adp009d_retained_scene_gpu_render_output_relocation.v1.json"
+    write_json(receipt_path, receipt)
+    return receipt
+
+
+def _extract_provider_output(
+    path: Path, destination: Path
+) -> tuple[dict[str, Any], list[str], dict[str, Any] | None]:
     blockers: list[str] = []
     root = destination.resolve()
     try:
@@ -314,7 +432,15 @@ def _extract_provider_output(path: Path, destination: Path) -> tuple[dict[str, A
     result = _read(result_path) if result_path.is_file() else {}
     if not result:
         blockers.append("provider_result_missing")
-    return result, blockers
+    relocation: dict[str, Any] | None = None
+    if not blockers:
+        try:
+            relocation = materialize_retained_scene_render_output_relocation(
+                result_path=result_path, destination=destination
+            )
+        except ValueError:
+            blockers.append("provider_output_manifest_relocation_invalid")
+    return result, blockers, relocation
 
 
 @contextmanager
@@ -505,7 +631,9 @@ def run_retained_scene_render_vast(
             not instance_ids and adapter.get("provider_create_attempted") is not True
         ),
     )
-    execution, blockers = _extract_provider_output(output_zip, job / "immutable_execution")
+    execution, blockers, relocation = _extract_provider_output(
+        output_zip, job / "immutable_execution"
+    )
     if execution.get("status") != "completed":
         blockers.append("provider_render_not_completed")
     if (
@@ -531,6 +659,18 @@ def run_retained_scene_render_vast(
         "execution_result_path": str(
             job / "immutable_execution/adp009d_retained_scene_gpu_render_result.v1.json"
         ),
+        "output_relocation_receipt": (
+            {
+                "path": str(
+                    job
+                    / "immutable_execution"
+                    / "adp009d_retained_scene_gpu_render_output_relocation.v1.json"
+                ),
+                "receipt_digest": relocation.get("receipt_digest"),
+            }
+            if relocation is not None
+            else None
+        ),
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
         "hard_cap_usd": bundle["hard_total_spend_cap_usd"],
         "hard_ttl_seconds": hard_ttl_seconds,
@@ -551,6 +691,7 @@ __all__ = [
     "PAID_ATTEMPT_AUTHORITY_SCHEMA",
     "PROVIDER_BUNDLE_KIND",
     "RESULT_SCHEMA",
+    "materialize_retained_scene_render_output_relocation",
     "consume_retained_scene_render_paid_attempt_authority_once",
     "run_retained_scene_render_vast",
     "validate_retained_scene_render_bundle",

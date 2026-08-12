@@ -20,6 +20,7 @@ from blueprint_pipeline.adp_retained_scene_render_packet import (
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.adp_retained_scene_render_vast import (
     _authority_environment,
+    materialize_retained_scene_render_output_relocation,
     run_retained_scene_render_vast,
     validate_retained_scene_render_bundle,
     validate_retained_scene_render_paid_attempt_authority,
@@ -76,6 +77,54 @@ def test_retained_scene_render_authority_environment_restores_retry_setting(
     assert os.environ["BLUEPRINT_ALLOW_VAST_API_CALLS"] == "caller-api"
     assert os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "caller-launch"
     assert os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] == "caller-retry"
+
+
+def test_output_relocation_rebinds_container_manifest_paths_to_verified_local_files(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "immutable-extraction"
+    manifest_path = (
+        output
+        / "renders"
+        / "task_a"
+        / "task_a_shared_deleted_source_layer_black"
+        / "sealed_camera_render_manifest.v1.json"
+    )
+    manifest_path.parent.mkdir(parents=True)
+    manifest: dict[str, object] = {
+        "schema_version": "sealed_camera_render_manifest.v1",
+        "status": "rendered_exact_cameras",
+        "source_layer_role": "shared_deleted_source_union",
+        "render_settings": {"background_rgb": "#000000"},
+        "sealed_camera_render_manifest_digest": "",
+    }
+    manifest["sealed_camera_render_manifest_digest"] = canonical_digest(
+        manifest, digest_field="sealed_camera_render_manifest_digest"
+    )
+    _write_json(manifest_path, manifest)
+    result: dict[str, object] = {
+        "schema_version": "adp009d_retained_scene_gpu_render_result.v1",
+        "render_manifests": [
+            {
+                "task_id": "task_a",
+                "layer": "shared_deleted_source_layer",
+                "background_rgb": "#000000",
+                "manifest_path": "/workspace/provider/output/manifest.json",
+                "manifest_digest": manifest["sealed_camera_render_manifest_digest"],
+            }
+        ],
+    }
+    result_path = output / "adp009d_retained_scene_gpu_render_result.v1.json"
+    _write_json(result_path, result)
+
+    receipt = materialize_retained_scene_render_output_relocation(
+        result_path=result_path, destination=output
+    )
+
+    assert receipt["provider_result"]["sha256"] == _sha256(result_path)
+    local = receipt["render_manifests"][0]["local_manifest"]
+    assert local["path"] == str(manifest_path)
+    assert local["manifest_digest"] == manifest["sealed_camera_render_manifest_digest"]
 
 
 def test_retained_scene_render_uses_a_watchdog_canary_prefix(
