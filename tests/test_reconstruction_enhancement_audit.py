@@ -54,6 +54,22 @@ def test_difix_and_artifixer_record_separate_code_and_model_license_status() -> 
     artifixer = enhancement_method_audit("artifixer")
     assert artifixer["source_license"] == "Apache-2.0"
     assert "research_and_development_only" in artifixer["model_license"]
+    assert artifixer["source_tree"] == "f9283bfe5e3a6cc160fd418f4e66412746a19a07"
+    assert artifixer["model_revision"] == "f96352ad72c84a628d5844b6543e94ae8c4479b3"
+    lighter = artifixer["release_checkpoints"]["artifixer_1_3b_v1"]
+    assert lighter["size_bytes"] == 6_715_346_651
+    assert lighter["sha256"] == (
+        "sha256:23e909fb4232c6a74a1c59eaf0ebfd419dd188e601aa0ab0145b9aaea821e059"
+    )
+    assert lighter["base_model_revision"] == (
+        "0fad780a534b6463e45facd96134c9f345acfa5b"
+    )
+    assert artifixer["official_cuda12_base_image"]["linux_amd64_digest"] == (
+        "sha256:0981807f1a51a156563e28b59dc2e7a9b5c1c7d85d1169d4965c5fd91fa38bcb"
+    )
+    assert artifixer["modes"][-1] == (
+        "artifixer3d_plus_postprocess_over_distilled_renders"
+    )
 
 
 def test_fixer_and_harmonizer_record_commercial_weights_but_stay_rejected() -> None:
