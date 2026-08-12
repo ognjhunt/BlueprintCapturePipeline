@@ -118,6 +118,18 @@ def test_composes_nearest_depth_for_five_co_present_replacements(tmp_path: Path)
         "finite_depth_pixel_count_by_cell" in row and "visible_in_any_composed_camera" in row
         for row in packet["input_sweeps"]
     )
+    assert [
+        row["finite_depth_pixel_count_by_cell"] for row in packet["input_sweeps"]
+    ] == [
+        [1, 1],
+        [1, 1],
+        [1, 1],
+        [1, 1],
+        [1, 1],
+    ]
+    assert [
+        row["visible_in_any_composed_camera"] for row in packet["input_sweeps"]
+    ] == [True, True, True, True, True]
     composed = np.load(tmp_path / "output" / "replacement_depth_composition.npy")
     assert np.isfinite(composed).sum() == 8
     assert float(composed[0, 1, 0]) == 5.0

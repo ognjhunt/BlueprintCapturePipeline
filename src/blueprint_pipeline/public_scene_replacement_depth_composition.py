@@ -317,9 +317,9 @@ def materialize_replacement_depth_composition(
                 "asset_id": manifest["asset_id"],
                 "task_freeze_digest": manifest["task_freeze_digest"],
                 "finite_depth_pixel_count_by_cell": [
-                    int(np.isfinite(cell_depth).sum()) for cell_depth in depth
+                    int(np.isfinite(cell_depth).sum()) for cell_depth in _depth
                 ],
-                "visible_in_any_composed_camera": bool(np.isfinite(depth).any()),
+                "visible_in_any_composed_camera": bool(np.isfinite(_depth).any()),
             }
             for manifest, _depth, record in loaded
         ],
