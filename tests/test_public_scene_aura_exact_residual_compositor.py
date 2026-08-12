@@ -16,7 +16,7 @@ from blueprint_pipeline.public_scene_aura_exact_residual_compositor import (
 from blueprint_pipeline.public_scene_aura_exact_residual_preflight import (
     materialize_aura_exact_residual_preflight,
 )
-from test_public_scene_aura_exact_residual_preflight import _packet
+from tests.test_public_scene_aura_exact_residual_preflight import _packet
 
 
 def _sha256(path: Path) -> str:

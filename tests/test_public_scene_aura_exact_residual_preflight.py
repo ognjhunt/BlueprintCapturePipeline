@@ -15,7 +15,7 @@ from blueprint_pipeline.public_scene_aura_exact_residual_preflight import (
 from blueprint_pipeline.public_scene_residual_inpainting_packet import (
     materialize_residual_inpainting_input_packet,
 )
-from test_public_scene_residual_inpainting_packet import _packet_inputs
+from tests.test_public_scene_residual_inpainting_packet import _packet_inputs
 
 
 def _write(path: Path, value: dict[str, object]) -> None:
