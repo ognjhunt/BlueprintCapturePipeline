@@ -32,6 +32,10 @@ SUPPORTED_PROVIDERS = ("runpod", "vast")
 VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
 CANARY_NAME_PREFIXES = (
     "blueprint-groot-oscar-canary-",
+    # ADP's exact-mask Aura residual lane is a bounded, independently
+    # watched Vast canary. Keep its resource name scope explicit rather than
+    # borrowing the historical GR00T name family.
+    "blueprint-adp-aura-exact-residual-",
     "blueprint-native-warehouse-camera-",
     "blueprint-reconstruction-",
     "blueprint-measurement-isaac-",

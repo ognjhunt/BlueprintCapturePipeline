@@ -45,6 +45,22 @@ def test_watchdog_arms_reconstruction_prefix_with_executor_alias(tmp_path) -> No
     assert result["name_prefix"] == "blueprint-reconstruction-"
     assert result["provider"] == "vast"
 
+
+def test_watchdog_arms_aura_exact_residual_prefix(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
+
+    result = arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix="blueprint-adp-aura-exact-residual-",
+        deadline_epoch=3_000.0,
+        pid=os.getpid(),
+        provider_name="vast",
+    )
+
+    assert result["status"] == "armed"
+    assert result["pod_name_prefix"] == "blueprint-adp-aura-exact-residual-"
+    assert result["provider"] == "vast"
+
 def test_watchdog_arms_measurement_isaac_canary_prefix(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
 
