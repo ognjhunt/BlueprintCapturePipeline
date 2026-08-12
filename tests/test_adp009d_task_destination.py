@@ -58,6 +58,11 @@ def _grid(half_extent: float = 0.6, step: float = 0.05):
     return points, counts, indices
 
 
+def _derive(**kwargs):
+    points, counts, indices = _grid()
+    return derive_task_destination(points, counts, indices, **kwargs)
+
+
 def test_only_triangles_on_the_support_plane_are_candidates() -> None:
     points, counts, indices = _grid()
 
@@ -182,3 +187,67 @@ def test_the_frozen_destination_matches_the_sealed_support_mesh() -> None:
     assert start >= DESTINATION_MIN_DISTANCE_FROM_START_M
     # Reach at the support height, less the place tolerance and safety margin.
     assert base <= 0.7177
+
+
+def test_planner_clearance_consumes_the_resolved_contact_envelope() -> None:
+    """The seam: geometry-only clearance is optimistic by one contact envelope.
+
+    Contact is generated one envelope *before* geometric touch, so a margin
+    computed from radii alone admits a destination the simulator then treats as
+    touching the support edge. Dynamics receipts already resolve and attest to
+    this value; the planner has to enforce the same number or the two can
+    disagree with nothing noticing.
+    """
+    from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelope
+    from blueprint_pipeline.adp009d_task_destination import (
+        APPROVED_CAN_RADIUS_M,
+        PLACE_RADIUS_M,
+    )
+
+    envelope = canonical_contact_envelope()
+    receipt = _derive()
+
+    required = receipt["constraints"]["required_edge_clearance_m"]
+    assert required == pytest.approx(
+        APPROVED_CAN_RADIUS_M
+        + PLACE_RADIUS_M
+        + envelope["effective_contact_envelope_m"]
+    )
+    # Strictly more conservative than geometry alone, never less.
+    assert required > APPROVED_CAN_RADIUS_M + PLACE_RADIUS_M
+
+
+def test_destination_receipt_retains_the_envelope_and_its_calculation() -> None:
+    """A reader must be able to reproduce the clearance from the receipt alone."""
+    from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelope
+
+    envelope = canonical_contact_envelope()
+    constraints = _derive()["constraints"]
+
+    assert constraints["effective_contact_envelope_m"] == pytest.approx(
+        envelope["effective_contact_envelope_m"]
+    )
+    assert (
+        constraints["effective_contact_envelope_calculation"]
+        == envelope["effective_contact_envelope_calculation"]
+    )
+
+
+def test_a_larger_envelope_tightens_the_admitted_region() -> None:
+    """Proves the value is consumed, not merely recorded beside the result."""
+    from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelope
+
+    envelope = canonical_contact_envelope()
+    widened = {**envelope, "effective_contact_envelope_m": 0.25}
+
+    baseline = _derive()
+    tightened = _derive(contact_envelope=widened)
+
+    assert (
+        tightened["constraints"]["required_edge_clearance_m"]
+        > baseline["constraints"]["required_edge_clearance_m"]
+    )
+    assert (
+        tightened["admissible_candidate_count"]
+        < baseline["admissible_candidate_count"]
+    )

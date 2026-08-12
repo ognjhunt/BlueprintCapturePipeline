@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .adp009d_approach_capture import SUPPORT_HEIGHT_M
+from .adp009d_contact_envelope import canonical_contact_envelope
 from .adp009d_task_scoring import (
     CAN_START_POSITION_M,
     DESTINATION_MIN_DISTANCE_FROM_START_M,
@@ -108,6 +109,7 @@ def derive_task_destination(
     *,
     can_start_position_m: Sequence[float] = CAN_START_POSITION_M,
     robot_base_position_m: Sequence[float] = ROBOT_BASE_POSITION_M,
+    contact_envelope: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compute the frozen place destination, outcome-blind and deterministic.
 
@@ -140,7 +142,15 @@ def derive_task_destination(
     if reach_squared <= 0.0:
         raise TaskDestinationError([BLOCKER_NO_ADMISSIBLE_CANDIDATE])
     horizontal_reach = math.sqrt(reach_squared) - REACH_SAFETY_MARGIN_M - PLACE_RADIUS_M
-    edge_clearance = APPROVED_CAN_RADIUS_M + PLACE_RADIUS_M
+    # Contact is generated one envelope *before* geometric touch, so a margin
+    # computed from geometry alone is optimistic by exactly that distance: the
+    # planner would admit a destination the simulator then treats as touching
+    # the support edge. The dynamics receipts already resolve and attest to this
+    # value; consuming the same resolved number here is what keeps the margin
+    # the planner enforces and the envelope the receipts record from disagreeing.
+    resolved_envelope = dict(contact_envelope or canonical_contact_envelope())
+    contact_envelope_m = float(resolved_envelope["effective_contact_envelope_m"])
+    edge_clearance = APPROVED_CAN_RADIUS_M + PLACE_RADIUS_M + contact_envelope_m
 
     admissible: list[dict[str, Any]] = []
     for triangle in triangles:
@@ -208,6 +218,12 @@ def derive_task_destination(
             "place_radius_m": PLACE_RADIUS_M,
             "reach_safety_margin_m": REACH_SAFETY_MARGIN_M,
             "approved_can_radius_m": APPROVED_CAN_RADIUS_M,
+            # Retained with its calculation so a reader can reproduce the
+            # required clearance from the receipt alone.
+            "effective_contact_envelope_m": contact_envelope_m,
+            "effective_contact_envelope_calculation": resolved_envelope[
+                "effective_contact_envelope_calculation"
+            ],
         },
         "policy_outcome_consulted": False,
         "selection_rule": (
