@@ -37,6 +37,7 @@ PROBE_KIND = "adp-aurafusion360-exact-residual"
 PROVIDER_BUNDLE_KIND = "adp_aura_exact_residual"
 RESULT_SCHEMA_VERSION = "public_scene_aura_exact_residual_vast_run.v1"
 RAW_RESULT_SCHEMA_VERSION = "public_scene_aura_exact_residual_raw_result.v1"
+RUNTIME_ABSTENTION_SCHEMA_VERSION = "public_scene_aura_exact_residual_runtime_abstention.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/aura-exact-residual"
 MAX_TTL_SECONDS = 14_400
 MIN_TTL_SECONDS = 7_200
@@ -543,4 +544,196 @@ def run_aura_exact_residual_vast(
     return result
 
 
-__all__ = ["DEFAULT_IMAGE", "MAX_HARD_CAP_USD", "MAX_TTL_SECONDS", "PROBE_KIND", "PROVIDER_BUNDLE_KIND", "run_aura_exact_residual_vast", "validate_aura_exact_residual_bundle"]
+def materialize_aura_exact_residual_runtime_abstention(
+    *,
+    execution_result_path: str | Path,
+    paid_admission_path: str | Path,
+    bundle_receipt_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal a pre-entrypoint provider null without treating it as Aura execution.
+
+    This is intentionally narrower than a general run failure.  It applies only
+    when a rights-admitted, exact-mask packet created one provider instance but
+    the provider failed before the sealed Aura bundle or entrypoint could run,
+    and when both the owner and independent watchdog prove resource zero.
+    """
+
+    result_path = Path(execution_result_path).expanduser().resolve()
+    admission_path = Path(paid_admission_path).expanduser().resolve()
+    bundle = validate_aura_exact_residual_bundle(bundle_receipt_path)
+    result = _read(result_path)
+    admission = _read(admission_path)
+    if (
+        result.get("schema_version") != RESULT_SCHEMA_VERSION
+        or result.get("status") != "blocked"
+        or result.get("retry_cap") != 0
+        or result.get("raw_result_path") is not None
+        or result.get("continuing_spend_from_this_run") is not False
+        or result.get("all_staged_objects_absent") is not True
+        or admission.get("schema_version") != "paid_lane_admission.v1"
+        or admission.get("status") != "admitted"
+        or admission.get("retry_cap") != 0
+        or admission.get("private_derived_upload_only") is not True
+        or admission.get("raw_interiorgs_upload_authorized") is not False
+        or admission.get("provider_training_authorized") is not False
+        or admission.get("exact_mask_only_edits_required") is not True
+        or (admission.get("allocation_binding") or {}).get("bundle_receipt_sha256")
+        != bundle["receipt_sha256"]
+        or result.get("bundle_sha256") != bundle["bundle_sha256"]
+        or result.get("preflight_digest") != bundle["preflight_digest"]
+    ):
+        raise ValueError("aura_exact_residual_runtime_abstention_result_invalid")
+
+    root = result_path.parent.resolve()
+
+    def result_member(field: str, relative: str, code: str) -> Path:
+        path = Path(str(result.get(field) or "")).expanduser().resolve()
+        expected = (root / relative).resolve()
+        if path != expected or not path.is_file() or path.is_symlink():
+            raise ValueError(code)
+        return path
+
+    adapter_path = result_member(
+        "adapter_result_path",
+        "vast_provider_run/vast_provider_adapter_result.json",
+        "aura_exact_residual_runtime_abstention_adapter_missing",
+    )
+    teardown_path = result_member(
+        "teardown_manifest_path",
+        "vast_provider_run/vast_teardown_manifest.json",
+        "aura_exact_residual_runtime_abstention_teardown_missing",
+    )
+    watchdog_path = result_member(
+        "watchdog_receipt_path",
+        f"independent_vast_watchdog/{WATCHDOG_EVIDENCE_NAME}",
+        "aura_exact_residual_runtime_abstention_watchdog_missing",
+    )
+    adapter = _read(adapter_path)
+    teardown = _read(teardown_path)
+    watchdog = _read(watchdog_path)
+    classification = adapter.get("provider_attempt_classification")
+    instance_ids = adapter.get("vast_instance_ids")
+    if (
+        adapter.get("schema_version") != "vast_provider_adapter_result.v1"
+        or adapter.get("status") != "failed"
+        or adapter.get("reason") != "vast_probe_failed"
+        or adapter.get("provider_bundle_kind") != PROVIDER_BUNDLE_KIND
+        or adapter.get("api_call_performed") is not True
+        or adapter.get("provider_create_attempted") is not True
+        or adapter.get("continuing_spend_from_this_run") is not False
+        or not isinstance(instance_ids, list)
+        or len(instance_ids) != 1
+        or not isinstance(instance_ids[0], int)
+        or instance_ids[0] <= 0
+        or not isinstance(classification, Mapping)
+        or classification.get("classification") != "pre_execution_provider_null"
+        or classification.get("provider_bundle_started") is not False
+        or classification.get("provider_entrypoint_started") is not False
+        or classification.get("provider_output_returned") is not False
+        or classification.get("automatic_requeue_authorized") is not False
+        or classification.get("automatic_requeue_executed") is not False
+        or classification.get("maximum_automatic_requeues") != 0
+        or "vast_heartbeat_instance_exited" not in (adapter.get("blockers") or [])
+        or teardown.get("schema_version") != "vast_teardown_manifest.v1"
+        or teardown.get("status") != "completed"
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or teardown.get("runner_gpu_teardown_completed") is not True
+        or teardown.get("vast_instance_ids") != instance_ids
+        or watchdog.get("schema_version") != "groot_oscar_runpod_canary_watchdog.v1"
+        or watchdog.get("status") != "provider_terminal"
+        or watchdog.get("provider_absence_confirmed") is not True
+        or (watchdog.get("recorded_vast_instance") or {}).get("instance_id")
+        != str(instance_ids[0])
+        or (watchdog.get("recorded_vast_instance_teardown") or {}).get("status") != "absent"
+        or (watchdog.get("final_inventory") or {}).get("live_resource_count") != 0
+    ):
+        raise ValueError("aura_exact_residual_runtime_abstention_provider_evidence_invalid")
+
+    cleanup_path = root / "object_store_staging" / "wam_provider_object_store_cleanup.json"
+    avoidlist_path = root / "vast_machine_avoidlist.json"
+    if not cleanup_path.is_file() or cleanup_path.is_symlink():
+        raise ValueError("aura_exact_residual_runtime_abstention_object_store_cleanup_missing")
+    if not avoidlist_path.is_file() or avoidlist_path.is_symlink():
+        raise ValueError("aura_exact_residual_runtime_abstention_machine_avoidlist_missing")
+    cleanup = _read(cleanup_path)
+    avoidlist = _read(avoidlist_path)
+    entries = avoidlist.get("entries")
+    if (
+        cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("status") != "completed"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or avoidlist.get("schema_version") != "vast_machine_avoidlist.v1"
+        or avoidlist.get("status") != "completed"
+        or not isinstance(entries, list)
+        or not any(
+            isinstance(entry, Mapping)
+            and entry.get("instance_id") == instance_ids[0]
+            and entry.get("reason") == "vast_startup_control_plane_did_not_reach_onstart_heartbeat"
+            and entry.get("retry_policy")
+            == "exclude_persistently_across_sibling_jobs_until_manual_review"
+            for entry in entries
+        )
+    ):
+        raise ValueError("aura_exact_residual_runtime_abstention_closeout_invalid")
+
+    receipt: dict[str, Any] = {
+        "schema_version": RUNTIME_ABSTENTION_SCHEMA_VERSION,
+        "status": "abstained_provider_runtime_before_aura_entrypoint",
+        "bundle_sha256": result.get("bundle_sha256"),
+        "preflight_digest": result.get("preflight_digest"),
+        "replacement_object_count": bundle["replacement_object_count"],
+        "shared_camera_count": bundle["shared_camera_count"],
+        "task_count": bundle["task_count"],
+        "bundle_receipt": _record(Path(bundle["receipt_path"])),
+        "paid_admission": _record(admission_path),
+        "execution_result": _record(result_path),
+        "provider_adapter": _record(adapter_path),
+        "teardown": _record(teardown_path),
+        "independent_watchdog": _record(watchdog_path),
+        "object_store_cleanup": _record(cleanup_path),
+        "machine_avoidlist": _record(avoidlist_path),
+        "provider_instance_id": instance_ids[0],
+        "aura_inpainting_executed": False,
+        "provider_bundle_started": False,
+        "provider_entrypoint_started": False,
+        "provider_output_returned": False,
+        "automatic_paid_retry_allowed": False,
+        "automatic_paid_retry_executed": False,
+        "provider_mutations_performed": 1,
+        "continuing_spend_from_this_run": False,
+        "provider_zero_confirmed": True,
+        "smallest_missing_capability": (
+            "rights_admitted_gpu_provider_runtime_that_reaches_the_sealed_Aura_exact_"
+            "residual_container_entrypoint"
+        ),
+        "blockers": ["aura_exact_residual_provider_runtime_pre_entrypoint_null"],
+        "claim_boundary": {
+            "rights_admitted_backend_is_not_executed_backend": True,
+            "inpainting_output_exists": False,
+            "native_aura_frames_exist": False,
+            "outside_mask_locality_measured": False,
+            "multi_view_consistency_measured": False,
+            "simready_or_policy_gate_unlocked": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_json(output, receipt)
+    return receipt
+
+
+__all__ = [
+    "DEFAULT_IMAGE",
+    "MAX_HARD_CAP_USD",
+    "MAX_TTL_SECONDS",
+    "PROBE_KIND",
+    "PROVIDER_BUNDLE_KIND",
+    "RUNTIME_ABSTENTION_SCHEMA_VERSION",
+    "materialize_aura_exact_residual_runtime_abstention",
+    "run_aura_exact_residual_vast",
+    "validate_aura_exact_residual_bundle",
+]
