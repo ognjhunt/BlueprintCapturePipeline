@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
     _probe_shell_script,
 )
+from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
 
 
 def _sha256(path: Path) -> str:
@@ -145,6 +147,135 @@ def test_retained_scene_render_uses_a_watchdog_canary_prefix(
 
     assert result["status"] == "blocked"
     assert captured["pod_name_prefix"] == "blueprint-groot-oscar-canary-adp-retained-render-"
+
+
+def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node unavailable")
+    runtime = tmp_path / "runtime"
+    output = tmp_path / "output"
+    renderer = runtime / "renderer"
+    renderer.mkdir(parents=True)
+    source = runtime / "input/source.ply"
+    retained = runtime / "input/retained.ply"
+    candidate = runtime / "input/candidate.json"
+    authority = runtime / "execution_authority.json"
+    camera = runtime / "input/cameras.json"
+    freeze = runtime / "input/freeze.json"
+    for path in (source, retained):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nend_header\n")
+    candidate.write_text("{}\n", encoding="utf-8")
+    authority.write_text("{}\n", encoding="utf-8")
+    freeze.write_text("{}\n", encoding="utf-8")
+    camera.write_text(
+        canonical_json(
+            [
+                {
+                    "camera_id": "camera",
+                    "T_world_camera_provider_frame": [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "intrinsics": {
+                        "fx": 1.0,
+                        "fy": 1.0,
+                        "cx": 1.0,
+                        "cy": 1.0,
+                        "width": 2,
+                        "height": 2,
+                    },
+                }
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    renderer.joinpath("render_splat.mjs").write_text(
+        "process.stdout.write('renderer stdout'); process.stderr.write('renderer stderr'); process.exit(7);\n",
+        encoding="utf-8",
+    )
+    request = {
+        "source_standard_splat": {**_relative_record(runtime, source), "gaussian_count": 1},
+        "shared_retained_scene": _relative_record(runtime, retained),
+        "shared_retained_gaussian_count": 1,
+        "candidate_set": _relative_record(runtime, candidate),
+        "execution_authority": _relative_record(runtime, authority),
+        "candidate_set_digest": _digest("a"),
+        "request_digest": _digest("b"),
+        "renderer_identity": {},
+        "lanes": [
+            {
+                "task_id": "task",
+                "camera_contract": _relative_record(runtime, camera),
+                "task_freeze": _relative_record(runtime, freeze),
+                "dimensions": {"width": 2, "height": 2},
+                "render_variants": [
+                    {"layer": "source_standard", "background_rgb": "#000000"}
+                ],
+            }
+        ],
+    }
+    runtime.joinpath("render_request.json").write_text(
+        canonical_json(request) + "\n", encoding="utf-8"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    nvidia_smi = bin_dir / "nvidia-smi"
+    nvidia_smi.write_text("#!/usr/bin/env bash\necho 'Fixture GPU, 1.0'\n", encoding="utf-8")
+    nvidia_smi.chmod(0o700)
+    runner = Path(__file__).resolve().parents[1] / "scripts/adp_retained_scene_render_provider_runner.mjs"
+    environment = os.environ | {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    completed = subprocess.run(
+        [node, str(runner), "--runtime", str(runtime), "--output", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 2
+    result = json.loads((output / "adp009d_retained_scene_gpu_render_result.v1.json").read_text())
+    assert result["blockers"] == ["retained_scene_render_runtime_renderer_failed"]
+    assert result["renderer_diagnostic"] == {
+        "command": "render_splat.mjs",
+        "error_code": None,
+        "error_name": None,
+        "exit_status": 7,
+        "signal": None,
+        "stderr_tail": "renderer stderr",
+        "stdout_tail": "renderer stdout",
+    }
+
+
+def test_retained_scene_render_runtime_result_is_recognized_by_provider_inspection(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "provider-output.zip"
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr(
+            "adp009d_retained_scene_gpu_render_result.v1.json",
+            canonical_json(
+                {
+                    "status": "blocked",
+                    "blockers": ["retained_scene_render_runtime_renderer_failed"],
+                    "renderer_diagnostic": {"exit_status": 7},
+                }
+            ),
+        )
+
+    inspected = inspect_provider_runtime_output_zip(output)
+
+    assert inspected["runtime_result_present"] is True
+    assert inspected["runtime_result_status"] == "blocked"
+    assert inspected["runtime_result_blockers"] == [
+        "retained_scene_render_runtime_renderer_failed"
+    ]
 
 
 def _task_freeze(task_id: str, slot: int) -> dict[str, object]:

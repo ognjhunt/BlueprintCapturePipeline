@@ -41,7 +41,7 @@ function write(value) {
   );
 }
 
-function fail(code) {
+function fail(code, rendererDiagnostic = null) {
   const result = {
     schema_version: "adp009d_retained_scene_gpu_render_result.v1",
     status: "blocked",
@@ -51,6 +51,7 @@ function fail(code) {
     provider_mutations_performed: 0,
     blockers: [code],
   };
+  if (rendererDiagnostic) result.renderer_diagnostic = rendererDiagnostic;
   write(result);
   process.exitCode = 2;
   return result;
@@ -159,7 +160,17 @@ function renderOne({ request, lane, variant, source, retained, gpu }) {
   ];
   const rendered = spawnSync(process.execPath, command, { encoding: "utf8", timeout: 900_000 });
   if (rendered.error || rendered.status !== 0) {
-    throw new Error("retained_scene_render_runtime_renderer_failed");
+    const error = new Error("retained_scene_render_runtime_renderer_failed");
+    error.rendererDiagnostic = {
+      command: "render_splat.mjs",
+      exit_status: rendered.status ?? null,
+      signal: rendered.signal ?? null,
+      error_code: rendered.error?.code ?? null,
+      error_name: rendered.error?.name ?? null,
+      stdout_tail: String(rendered.stdout || "").slice(-4000),
+      stderr_tail: String(rendered.stderr || "").slice(-4000),
+    };
+    throw error;
   }
   let harness;
   try {
@@ -292,7 +303,10 @@ function main() {
     };
     write(result);
   } catch (error) {
-    fail(error instanceof Error ? error.message : "retained_scene_render_runtime_unknown_failure");
+    fail(
+      error instanceof Error ? error.message : "retained_scene_render_runtime_unknown_failure",
+      error instanceof Error ? error.rendererDiagnostic || null : null,
+    );
   }
 }
 
