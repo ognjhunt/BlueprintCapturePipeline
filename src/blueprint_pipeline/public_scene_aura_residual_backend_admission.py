@@ -25,10 +25,23 @@ from .public_scene_residual_inpainting_packet import BACKEND_ADMISSION_SCHEMA
 
 REQUEST_SCHEMA = "public_scene_aura_residual_backend_admission_request.v1"
 RECEIPT_SCHEMA = BACKEND_ADMISSION_SCHEMA
+ABSTENTION_SCHEMA = "public_scene_released_code_inpainting_abstention.v1"
+PACKET_ABSTENTION_SCHEMA = "public_scene_residual_inpainting_execution_abstention.v1"
 AURA_REPOSITORY = "https://github.com/kkennethwu/AuraFusion360_official"
 AURA_COMMIT = "f23b26c44ba84608306ba952510533ebf4c7877d"
 AURA_TREE = "cc8447c66448b29bb4d39fec29c031df63d4b179"
 AURA_LICENSE_SHA256 = "sha256:43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+NESTED_COMPONENT_LICENSES = {
+    "submodules/diff-surfel-rasterization/LICENSE.md": (
+        "sha256:cd5c95b3cfff3acc1bd412420c770f88809331c3db6872df11a970147aa8e81f"
+    ),
+    "submodules/simple-knn/LICENSE.md": (
+        "sha256:c5ba70a2194af2aefe85dfe3da68608dcb3abd21a3aa53b55aa297c2f0b60eb3"
+    ),
+}
+NONCOMMERCIAL_ATTESTATION_SCHEMA = (
+    "third_scene_released_code_noncommercial_use_attestation.v1"
+)
 REQUIRED_CHECKPOINTS = frozenset(
     {
         "aurafusion360_sam2_hiera_large",
@@ -37,7 +50,9 @@ REQUIRED_CHECKPOINTS = frozenset(
         "aurafusion360_sd2_inpainting_exact_checkpoint",
     }
 )
-REQUIRED_AURA_ARCHIVE_MEMBERS = frozenset({"LICENSE", "inpaint.py", "arguments/__init__.py"})
+REQUIRED_AURA_ARCHIVE_MEMBERS = frozenset(
+    {"LICENSE", "inpaint.py", "arguments/__init__.py", *NESTED_COMPONENT_LICENSES}
+)
 
 
 class AuraResidualBackendAdmissionError(ValueError):
@@ -180,7 +195,10 @@ def _validate_source_identity_spec(path: Path) -> tuple[dict[str, Any], dict[str
             "size_bytes": row["size_bytes"],
             "sha256": row["sha256"],
         }
-    if not REQUIRED_AURA_ARCHIVE_MEMBERS.issubset(expected):
+    required_members = {
+        "LICENSE", "inpaint.py", "arguments/__init__.py", *NESTED_COMPONENT_LICENSES
+    }
+    if not required_members.issubset(expected):
         raise AuraResidualBackendAdmissionError(["aura_residual_source_identity_spec_invalid"])
     return spec, expected
 
@@ -208,6 +226,27 @@ def _validate_source_archive(path: Path, *, expected: Mapping[str, Mapping[str, 
             if "Apache License" not in license_bytes.decode("utf-8", errors="ignore"):
                 raise AuraResidualBackendAdmissionError(["aura_residual_source_license_invalid"])
             license_sha256 = "sha256:" + hashlib.sha256(license_bytes).hexdigest()
+            nested_license_records = []
+            for name, expected_sha256 in sorted(NESTED_COMPONENT_LICENSES.items()):
+                bytes_value = archive.read(name)
+                observed_sha256 = "sha256:" + hashlib.sha256(bytes_value).hexdigest()
+                if (
+                    observed_sha256 != expected_sha256
+                    or "Gaussian-Splatting License"
+                    not in bytes_value.decode("utf-8", errors="ignore")
+                    or "non-commercially"
+                    not in bytes_value.decode("utf-8", errors="ignore")
+                ):
+                    raise AuraResidualBackendAdmissionError(
+                        ["aura_residual_nested_component_license_invalid"]
+                    )
+                nested_license_records.append(
+                    {
+                        "path": name,
+                        "sha256": observed_sha256,
+                        "license": "Gaussian-Splatting-noncommercial-research-evaluation",
+                    }
+                )
             for member in members:
                 row = expected[member.filename]
                 if member.file_size != row["size_bytes"]:
@@ -226,7 +265,48 @@ def _validate_source_archive(path: Path, *, expected: Mapping[str, Mapping[str, 
         raise AuraResidualBackendAdmissionError(["aura_residual_source_archive_invalid"]) from exc
     if license_sha256 != AURA_LICENSE_SHA256:
         raise AuraResidualBackendAdmissionError(["aura_residual_source_license_digest_mismatch"])
-    return {**_record(path), "license": "Apache-2.0", "license_sha256": license_sha256}
+    return {
+        **_record(path),
+        "top_level_license": "Apache-2.0",
+        "top_level_license_sha256": license_sha256,
+        "nested_component_licenses": nested_license_records,
+        "noncommercial_research_evaluation_attestation_required": True,
+    }
+
+
+def _validate_noncommercial_attestation(
+    *,
+    path: Path,
+    source_archive: Mapping[str, Any],
+    source_identity: Mapping[str, Any],
+    source_identity_path: Path,
+) -> dict[str, Any]:
+    attestation = _read_object(path, code="aura_residual_noncommercial_attestation_unreadable")
+    expected_nested = source_archive["nested_component_licenses"]
+    if (
+        attestation.get("schema_version") != NONCOMMERCIAL_ATTESTATION_SCHEMA
+        or attestation.get("program_id") != "arm-decision-proof-v1"
+        or attestation.get("publisher_scene_id") != "840920"
+        or attestation.get("reviewer_role") != "authorized_rights_holder"
+        or attestation.get("source_repository") != AURA_REPOSITORY
+        or attestation.get("source_revision") != AURA_COMMIT
+        or attestation.get("source_tree") != AURA_TREE
+        or attestation.get("source_archive_sha256") != source_archive["sha256"]
+        or attestation.get("source_identity_spec_sha256") != _sha256(source_identity_path)
+        or attestation.get("source_identity_spec_source_file_count")
+        != len(source_identity["source_files"])
+        or attestation.get("nested_component_licenses") != expected_nested
+        or attestation.get("noncommercial_research_evaluation_use_authorized") is not True
+        or attestation.get("commercial_use_authorized") is not False
+        or attestation.get("redistribution_authorized") is not False
+        or attestation.get("publication_authorized") is not False
+        or attestation.get("attestation_digest")
+        != canonical_digest(attestation, digest_field="attestation_digest")
+    ):
+        raise AuraResidualBackendAdmissionError(
+            ["aura_residual_noncommercial_attestation_invalid"]
+        )
+    return attestation
 
 
 def _validate_environment_lock(path: Path) -> dict[str, Any]:
@@ -266,6 +346,7 @@ def build_aura_residual_backend_admission_request(value: Mapping[str, Any]) -> d
         "prerequisite_receipt_path",
         "source_archive_path",
         "source_identity_spec_path",
+        "noncommercial_attestation_path",
         "environment_lock_path",
     ):
         if not str(request.get(key) or "").strip():
@@ -316,11 +397,21 @@ def materialize_aura_residual_backend_admission(
     source_identity_path = _file(
         request["source_identity_spec_path"], code="aura_residual_source_identity_spec_missing"
     )
+    attestation_path = _file(
+        request["noncommercial_attestation_path"],
+        code="aura_residual_noncommercial_attestation_missing",
+    )
     lock_path = _file(request["environment_lock_path"], code="aura_residual_environment_lock_missing")
     authority = _validate_execution_authority(authority_path, policy)
     prerequisite = _validate_prerequisite(prerequisite_path)
     source_identity, expected_source_members = _validate_source_identity_spec(source_identity_path)
     source = _validate_source_archive(source_path, expected=expected_source_members)
+    noncommercial_attestation = _validate_noncommercial_attestation(
+        path=attestation_path,
+        source_archive=source,
+        source_identity=source_identity,
+        source_identity_path=source_identity_path,
+    )
     environment = _validate_environment_lock(lock_path)
     receipt: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA,
@@ -350,6 +441,11 @@ def materialize_aura_residual_backend_admission(
             "source_tree": source_identity["source_tree"],
             "source_member_count": len(expected_source_members),
         },
+        "noncommercial_research_evaluation_attestation": {
+            **_record(attestation_path),
+            "attestation_digest": noncommercial_attestation["attestation_digest"],
+            "reviewer_role": noncommercial_attestation["reviewer_role"],
+        },
         "environment_lock": environment,
         "strict_exact_residual_masks_required": True,
         "mask_dilation_pixels": 0,
@@ -364,6 +460,182 @@ def materialize_aura_residual_backend_admission(
             "publisher_ply_edited_in_place": False,
             "inpainting_result_qualified": False,
         },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
+def materialize_aura_residual_backend_abstention(
+    *, request_path: str | Path, output_path: str | Path
+) -> dict[str, Any]:
+    """Seal the smallest rights blocker without pretending the backend is admitted."""
+
+    request_file = _file(request_path, code="aura_residual_request_missing")
+    request = build_aura_residual_backend_admission_request(
+        _read_object(request_file, code="aura_residual_request_unreadable")
+    )
+    source_path = _file(request["source_archive_path"], code="aura_residual_source_archive_missing")
+    source_identity_path = _file(
+        request["source_identity_spec_path"], code="aura_residual_source_identity_spec_missing"
+    )
+    source_identity, expected_source_members = _validate_source_identity_spec(source_identity_path)
+    source = _validate_source_archive(source_path, expected=expected_source_members)
+    attestation = Path(request["noncommercial_attestation_path"]).expanduser().resolve()
+    try:
+        _validate_noncommercial_attestation(
+            path=_file(
+                attestation,
+                code="aura_residual_noncommercial_attestation_missing",
+            ),
+            source_archive=source,
+            source_identity=source_identity,
+            source_identity_path=source_identity_path,
+        )
+    except AuraResidualBackendAdmissionError as exc:
+        if not set(exc.codes).issubset(
+            {
+                "aura_residual_noncommercial_attestation_missing",
+                "aura_residual_noncommercial_attestation_unreadable",
+                "aura_residual_noncommercial_attestation_invalid",
+            }
+        ):
+            raise
+        blocker = "aura_nested_gaussian_splatting_noncommercial_use_attestation_missing"
+    else:
+        raise AuraResidualBackendAdmissionError(["aura_residual_abstention_no_longer_applicable"])
+    receipt: dict[str, Any] = {
+        "schema_version": ABSTENTION_SCHEMA,
+        "status": "abstained_rights_admission_missing",
+        "backend_id": "aurafusion360_exact_residual_multiview",
+        "request": {**_record(request_file), "request_digest": request["request_digest"]},
+        "source_archive": source,
+        "source_identity_provenance": {
+            **_record(source_identity_path),
+            "source_repository": source_identity["source_repository"],
+            "source_commit": source_identity["source_commit"],
+            "source_tree": source_identity["source_tree"],
+            "source_member_count": len(expected_source_members),
+        },
+        "smallest_missing_capability": (
+            "authorized_rights_holder_attestation_that_the_pinned_AuraFusion360_"
+            "Gaussian-Splatting_nested_components_are_used_only_for_the_bounded_"
+            "noncommercial_research_evaluation_rehearsal"
+        ),
+        "blocked_operation": "private_derived_inpainting_upload_and_execution",
+        "inpainting_executed": False,
+        "provider_mutations_performed": 0,
+        "claim_boundary": {
+            "top_level_apache_license_alone_not_sufficient": True,
+            "raw_dataset_bytes_upload_authorized": False,
+            "private_derived_upload_performed": False,
+            "provider_training_authorized": False,
+            "publication_authorized": False,
+            "inpainting_result_qualified": False,
+        },
+        "blockers": [blocker],
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
+def materialize_aura_residual_packet_rights_abstention(
+    *,
+    input_packet_path: str | Path,
+    backend_abstention_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Prohibit execution from a prior input packet when Aura rights are unresolved.
+
+    Input packets are immutable and may correctly have been prepared before a
+    later source-license inspection.  This receipt never alters those inputs;
+    it establishes the current execution prohibition by reopening both files.
+    """
+
+    packet_path = _file(input_packet_path, code="aura_residual_input_packet_missing")
+    packet = _read_object(packet_path, code="aura_residual_input_packet_unreadable")
+    if (
+        packet.get("schema_version") != "public_scene_residual_inpainting_input_packet.v1"
+        or packet.get("status")
+        != "exact_mask_contained_inpainting_input_packet_materialized"
+        or packet.get("packet_digest")
+        != canonical_digest(packet, digest_field="packet_digest")
+        or packet.get("replacement_object_count") not in range(1, 6)
+        or (packet.get("claim_boundary") or {}).get("released_code_inpainting_executed")
+        is not False
+    ):
+        raise AuraResidualBackendAdmissionError(["aura_residual_input_packet_invalid"])
+    prior_backend = packet.get("backend_admission")
+    if not isinstance(prior_backend, Mapping):
+        raise AuraResidualBackendAdmissionError(["aura_residual_input_packet_backend_missing"])
+    prior_backend_path = _file(
+        str(prior_backend.get("path") or ""),
+        code="aura_residual_input_packet_backend_missing",
+    )
+    if (
+        prior_backend.get("size_bytes") != prior_backend_path.stat().st_size
+        or prior_backend.get("sha256") != _sha256(prior_backend_path)
+    ):
+        raise AuraResidualBackendAdmissionError(["aura_residual_input_packet_backend_changed"])
+    backend = _read_object(
+        prior_backend_path, code="aura_residual_input_packet_backend_unreadable"
+    )
+    if (
+        backend.get("schema_version") != RECEIPT_SCHEMA
+        or backend.get("receipt_digest")
+        != canonical_digest(backend, digest_field="receipt_digest")
+        or backend.get("backend_id") != "aurafusion360_exact_residual_multiview"
+        or prior_backend.get("receipt_digest") != backend["receipt_digest"]
+    ):
+        raise AuraResidualBackendAdmissionError(["aura_residual_input_packet_backend_invalid"])
+    abstention_path = _file(
+        backend_abstention_path, code="aura_residual_backend_abstention_missing"
+    )
+    abstention = _read_object(
+        abstention_path, code="aura_residual_backend_abstention_unreadable"
+    )
+    if (
+        abstention.get("schema_version") != ABSTENTION_SCHEMA
+        or abstention.get("status") != "abstained_rights_admission_missing"
+        or abstention.get("backend_id") != backend["backend_id"]
+        or abstention.get("receipt_digest")
+        != canonical_digest(abstention, digest_field="receipt_digest")
+        or abstention.get("source_archive", {}).get("sha256")
+        != backend.get("source_archive_sha256")
+        or abstention.get("provider_mutations_performed") != 0
+        or not abstention.get("blockers")
+    ):
+        raise AuraResidualBackendAdmissionError(["aura_residual_backend_abstention_invalid"])
+    receipt: dict[str, Any] = {
+        "schema_version": PACKET_ABSTENTION_SCHEMA,
+        "status": "inpainting_execution_prohibited_rights_admission_missing",
+        "input_packet": {**_record(packet_path), "packet_digest": packet["packet_digest"]},
+        "prior_backend_admission": {
+            **_record(prior_backend_path),
+            "receipt_digest": backend["receipt_digest"],
+        },
+        "rights_abstention": {
+            **_record(abstention_path),
+            "receipt_digest": abstention["receipt_digest"],
+        },
+        "operation_prohibited": "private_derived_inpainting_upload_and_execution",
+        "inpainting_executed": False,
+        "provider_mutations_performed": 0,
+        "replacement_object_count": packet["replacement_object_count"],
+        "claim_boundary": {
+            "input_packet_remains_immutable": True,
+            "input_packet_is_not_execution_authority": True,
+            "private_derived_upload_performed": False,
+            "inpainting_result_qualified": False,
+        },
+        "blockers": list(abstention["blockers"]),
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
@@ -389,10 +661,13 @@ __all__ = [
     "AURA_COMMIT",
     "AURA_REPOSITORY",
     "AURA_TREE",
+    "ABSTENTION_SCHEMA",
     "AuraResidualBackendAdmissionError",
     "RECEIPT_SCHEMA",
     "REQUEST_SCHEMA",
     "build_aura_residual_backend_admission_request",
     "materialize_aura_residual_backend_admission_request",
     "materialize_aura_residual_backend_admission",
+    "materialize_aura_residual_backend_abstention",
+    "materialize_aura_residual_packet_rights_abstention",
 ]
