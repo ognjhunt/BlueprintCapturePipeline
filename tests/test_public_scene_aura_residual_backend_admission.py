@@ -17,6 +17,7 @@ from blueprint_pipeline.public_scene_aura_residual_backend_admission import (
     materialize_aura_residual_backend_abstention,
     materialize_aura_residual_backend_admission,
     materialize_aura_residual_backend_admission_request,
+    materialize_aura_residual_noncommercial_attestation,
     materialize_aura_residual_packet_rights_abstention,
 )
 
@@ -35,10 +36,16 @@ def _authority(path: Path) -> Path:
         "schema_version": "third_scene_dual_task_execution_authority.v1",
         "program_id": "arm-decision-proof-v1",
         "publisher_scene_id": "840920",
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authorized_by": "fixture_authorized_rights_holder",
         "private_rights_admitted_scene_derived_uploads_authorized": True,
         "raw_interiorgs_upload_authorized": False,
         "training_authorized": False,
         "public_dataset_bytes_publication_authorized": False,
+        "terms": {
+            "interiorgs_commercial_use_authorized": False,
+            "interiorgs_redistribution_authorized": False,
+        },
         "retention": "bounded_to_goal_then_provider_zero",
         "paid_compute": {
             "provider": "vast",
@@ -122,9 +129,15 @@ def _source_archive_and_spec(
 
 
 def _attestation(
-    *, archive: Path, source_identity: Path, nested: list[dict[str, str]], path: Path
+    *,
+    authority: Path,
+    archive: Path,
+    source_identity: Path,
+    nested: list[dict[str, str]],
+    path: Path,
 ) -> Path:
     spec = source_identity.read_bytes()
+    authority_value = __import__("json").loads(authority.read_text(encoding="utf-8"))
     value: dict[str, object] = {
         "schema_version": "third_scene_released_code_noncommercial_use_attestation.v1",
         "program_id": "arm-decision-proof-v1",
@@ -137,6 +150,14 @@ def _attestation(
         "source_identity_spec_sha256": "sha256:" + hashlib.sha256(spec).hexdigest(),
         "source_identity_spec_source_file_count": 5,
         "nested_component_licenses": nested,
+        "authorization_kind": authority_value["authority_kind"],
+        "authorized_by": authority_value["authorized_by"],
+        "execution_authority_sha256": _sha256_bytes(authority.read_bytes()),
+        "execution_authority_digest": authority_value["authority_digest"],
+        "internal_noncommercial_use_only": True,
+        "private_derived_upload_authorized": True,
+        "raw_dataset_bytes_upload_authorized": False,
+        "provider_training_authorized": False,
         "noncommercial_research_evaluation_use_authorized": True,
         "commercial_use_authorized": False,
         "redistribution_authorized": False,
@@ -192,6 +213,7 @@ def test_materializes_private_derived_aura_admission(tmp_path: Path, monkeypatch
     lock = (tmp_path / "pip-freeze.txt")
     lock.write_text("torch==2.0.1\n", encoding="utf-8")
     attestation = _attestation(
+        authority=authority,
         archive=archive,
         source_identity=source_identity,
         nested=nested,
@@ -224,6 +246,63 @@ def test_materializes_private_derived_aura_admission(tmp_path: Path, monkeypatch
     assert receipt["source_archive"]["noncommercial_research_evaluation_attestation_required"] is True
 
 
+def test_materializes_internal_noncommercial_attestation_from_bound_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = _authority(tmp_path / "authority.json")
+    archive, source_identity, license_digest, _nested = _source_archive_and_spec(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_aura_residual_backend_admission.AURA_LICENSE_SHA256",
+        license_digest,
+    )
+
+    receipt = materialize_aura_residual_noncommercial_attestation(
+        execution_authority_path=authority,
+        source_archive_path=archive,
+        source_identity_spec_path=source_identity,
+        output_path=tmp_path / "attestation.json",
+    )
+
+    assert receipt["authorized_by"] == "fixture_authorized_rights_holder"
+    assert receipt["internal_noncommercial_use_only"] is True
+    assert receipt["execution_authority_sha256"] == _sha256_bytes(authority.read_bytes())
+    assert receipt["attestation_digest"] == canonical_digest(
+        receipt, digest_field="attestation_digest"
+    )
+
+
+def test_internal_noncommercial_attestation_refuses_broader_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = _authority(tmp_path / "authority.json")
+    authority_value = __import__("json").loads(authority.read_text(encoding="utf-8"))
+    authority_value["terms"]["interiorgs_commercial_use_authorized"] = True
+    authority_value["authority_digest"] = canonical_digest(
+        authority_value, digest_field="authority_digest"
+    )
+    _write_json(authority, authority_value)
+    archive, source_identity, license_digest, _nested = _source_archive_and_spec(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_aura_residual_backend_admission.AURA_LICENSE_SHA256",
+        license_digest,
+    )
+
+    with pytest.raises(
+        AuraResidualBackendAdmissionError,
+        match="execution_authority_internal_use_invalid",
+    ):
+        materialize_aura_residual_noncommercial_attestation(
+            execution_authority_path=authority,
+            source_archive_path=archive,
+            source_identity_spec_path=source_identity,
+            output_path=tmp_path / "attestation.json",
+        )
+
+
 def test_rejects_archive_that_does_not_match_pinned_source_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -239,6 +318,7 @@ def test_rejects_archive_that_does_not_match_pinned_source_identity(
     lock = tmp_path / "pip-freeze.txt"
     lock.write_text("torch==2.0.1\n", encoding="utf-8")
     attestation = _attestation(
+        authority=authority,
         archive=archive,
         source_identity=source_identity,
         nested=nested,
@@ -273,6 +353,7 @@ def test_rejects_provider_training_permission(tmp_path: Path, monkeypatch: pytes
     lock = tmp_path / "pip-freeze.txt"
     lock.write_text("torch==2.0.1\n", encoding="utf-8")
     attestation = _attestation(
+        authority=authority,
         archive=archive,
         source_identity=source_identity,
         nested=nested,

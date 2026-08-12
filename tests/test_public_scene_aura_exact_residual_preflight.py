@@ -39,16 +39,45 @@ def _admit_exact_aura_backend(request_path: Path) -> None:
     attestation: dict[str, object] = {
         "schema_version": "third_scene_released_code_noncommercial_use_attestation.v1",
         "reviewer_role": "authorized_rights_holder",
+        "authorization_kind": "explicit_user_direction_in_current_goal",
+        "authorized_by": "fixture_user",
+        "execution_authority_sha256": "",
+        "execution_authority_digest": "",
+        "internal_noncommercial_use_only": True,
+        "private_derived_upload_authorized": True,
+        "raw_dataset_bytes_upload_authorized": False,
+        "provider_training_authorized": False,
         "noncommercial_research_evaluation_use_authorized": True,
         "commercial_use_authorized": False,
         "redistribution_authorized": False,
         "publication_authorized": False,
         "attestation_digest": "",
     }
+    attestation_path = backend_path.parent / "aura-noncommercial-attestation.json"
+    authority_path = backend_path.parent / "aura-execution-authority.json"
+    authority: dict[str, object] = {
+        "schema_version": "third_scene_dual_task_execution_authority.v1",
+        "program_id": "arm-decision-proof-v1",
+        "publisher_scene_id": "840920",
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authorized_by": "fixture_user",
+        "terms": {
+            "interiorgs_commercial_use_authorized": False,
+            "interiorgs_redistribution_authorized": False,
+        },
+        "authority_digest": "",
+    }
+    authority["authority_digest"] = canonical_digest(
+        authority, digest_field="authority_digest"
+    )
+    _write(authority_path, authority)
+    attestation["execution_authority_sha256"] = "sha256:" + hashlib.sha256(
+        authority_path.read_bytes()
+    ).hexdigest()
+    attestation["execution_authority_digest"] = authority["authority_digest"]
     attestation["attestation_digest"] = canonical_digest(
         attestation, digest_field="attestation_digest"
     )
-    attestation_path = backend_path.parent / "aura-noncommercial-attestation.json"
     _write(attestation_path, attestation)
     backend["noncommercial_research_evaluation_attestation"] = {
         "path": str(attestation_path),
@@ -56,6 +85,12 @@ def _admit_exact_aura_backend(request_path: Path) -> None:
         "sha256": "sha256:" + hashlib.sha256(attestation_path.read_bytes()).hexdigest(),
         "attestation_digest": attestation["attestation_digest"],
         "reviewer_role": attestation["reviewer_role"],
+    }
+    backend["execution_authority"] = {
+        "path": str(authority_path),
+        "size_bytes": authority_path.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(authority_path.read_bytes()).hexdigest(),
+        "authority_digest": authority["authority_digest"],
     }
     backend["receipt_digest"] = canonical_digest(backend, digest_field="receipt_digest")
     _write(backend_path, backend)
@@ -224,6 +259,46 @@ def test_rejects_historical_backend_receipt_without_noncommercial_attestation(
     with pytest.raises(
         AuraExactResidualPreflightError,
         match="backend_noncommercial_attestation_missing",
+    ):
+        materialize_aura_exact_residual_preflight(
+            input_packet_path=packet_path, output_path=tmp_path / "preflight.json"
+        )
+
+
+def test_rejects_attestation_not_bound_to_the_execution_authority(tmp_path: Path) -> None:
+    packet_path = _packet(tmp_path)
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    backend_path = Path(packet["backend_admission"]["path"])
+    backend = json.loads(backend_path.read_text(encoding="utf-8"))
+    attestation_path = Path(backend["noncommercial_research_evaluation_attestation"]["path"])
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    attestation["execution_authority_digest"] = "sha256:" + "0" * 64
+    attestation["attestation_digest"] = canonical_digest(
+        attestation, digest_field="attestation_digest"
+    )
+    _write(attestation_path, attestation)
+    backend["noncommercial_research_evaluation_attestation"]["size_bytes"] = (
+        attestation_path.stat().st_size
+    )
+    backend["noncommercial_research_evaluation_attestation"]["sha256"] = "sha256:" + hashlib.sha256(
+        attestation_path.read_bytes()
+    ).hexdigest()
+    backend["noncommercial_research_evaluation_attestation"]["attestation_digest"] = (
+        attestation["attestation_digest"]
+    )
+    backend["receipt_digest"] = canonical_digest(backend, digest_field="receipt_digest")
+    _write(backend_path, backend)
+    packet["backend_admission"]["size_bytes"] = backend_path.stat().st_size
+    packet["backend_admission"]["sha256"] = "sha256:" + hashlib.sha256(
+        backend_path.read_bytes()
+    ).hexdigest()
+    packet["backend_admission"]["receipt_digest"] = backend["receipt_digest"]
+    packet["packet_digest"] = canonical_digest(packet, digest_field="packet_digest")
+    _write(packet_path, packet)
+
+    with pytest.raises(
+        AuraExactResidualPreflightError,
+        match="backend_noncommercial_attestation_invalid",
     ):
         materialize_aura_exact_residual_preflight(
             input_packet_path=packet_path, output_path=tmp_path / "preflight.json"

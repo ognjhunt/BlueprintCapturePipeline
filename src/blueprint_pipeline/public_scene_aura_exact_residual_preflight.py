@@ -165,6 +165,34 @@ def _validated_backend(packet: Mapping[str, Any]) -> dict[str, Any]:
         or policy.get("publication") is not False
     ):
         raise AuraExactResidualPreflightError(["aura_exact_residual_backend_invalid"])
+    authority_record = backend.get("execution_authority")
+    authority_path = _bound_file(
+        authority_record,
+        code="aura_exact_residual_backend_execution_authority_invalid",
+    )
+    authority = _read(
+        authority_path,
+        code="aura_exact_residual_backend_execution_authority_invalid",
+    )
+    terms = authority.get("terms")
+    if (
+        authority.get("schema_version") != "third_scene_dual_task_execution_authority.v1"
+        or authority.get("program_id") != "arm-decision-proof-v1"
+        or authority.get("publisher_scene_id") != "840920"
+        or authority.get("authority_kind") != "explicit_user_direction_in_current_goal"
+        or not isinstance(authority.get("authorized_by"), str)
+        or not authority["authorized_by"].strip()
+        or authority.get("authority_digest")
+        != canonical_digest(authority, digest_field="authority_digest")
+        or not isinstance(authority_record, Mapping)
+        or authority_record.get("authority_digest") != authority["authority_digest"]
+        or not isinstance(terms, Mapping)
+        or terms.get("interiorgs_commercial_use_authorized") is not False
+        or terms.get("interiorgs_redistribution_authorized") is not False
+    ):
+        raise AuraExactResidualPreflightError(
+            ["aura_exact_residual_backend_execution_authority_invalid"]
+        )
     attestation_record = backend.get("noncommercial_research_evaluation_attestation")
     if not isinstance(attestation_record, Mapping):
         # Older candidate admissions were sealed before the Aura source archive
@@ -186,6 +214,14 @@ def _validated_backend(packet: Mapping[str, Any]) -> dict[str, Any]:
         attestation.get("schema_version")
         != "third_scene_released_code_noncommercial_use_attestation.v1"
         or attestation.get("reviewer_role") != "authorized_rights_holder"
+        or attestation.get("authorization_kind") != authority["authority_kind"]
+        or attestation.get("authorized_by") != authority["authorized_by"]
+        or attestation.get("execution_authority_sha256") != _sha256(authority_path)
+        or attestation.get("execution_authority_digest") != authority["authority_digest"]
+        or attestation.get("internal_noncommercial_use_only") is not True
+        or attestation.get("private_derived_upload_authorized") is not True
+        or attestation.get("raw_dataset_bytes_upload_authorized") is not False
+        or attestation.get("provider_training_authorized") is not False
         or attestation.get("noncommercial_research_evaluation_use_authorized") is not True
         or attestation.get("commercial_use_authorized") is not False
         or attestation.get("redistribution_authorized") is not False
@@ -203,6 +239,10 @@ def _validated_backend(packet: Mapping[str, Any]) -> dict[str, Any]:
         **_record(path),
         "receipt_digest": backend["receipt_digest"],
         "backend_id": backend["backend_id"],
+        "execution_authority": {
+            **_record(authority_path),
+            "authority_digest": authority["authority_digest"],
+        },
         "noncommercial_research_evaluation_attestation": {
             **_record(attestation_path),
             "attestation_digest": attestation["attestation_digest"],

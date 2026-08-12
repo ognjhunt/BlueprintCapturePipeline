@@ -124,6 +124,9 @@ def _validate_execution_authority(path: Path, policy: Mapping[str, Any]) -> dict
         authority.get("schema_version") != "third_scene_dual_task_execution_authority.v1"
         or authority.get("program_id") != "arm-decision-proof-v1"
         or authority.get("publisher_scene_id") != "840920"
+        or authority.get("authority_kind") != "explicit_user_direction_in_current_goal"
+        or not isinstance(authority.get("authorized_by"), str)
+        or not authority["authorized_by"].strip()
         or authority.get("private_rights_admitted_scene_derived_uploads_authorized")
         is not True
         or authority.get("raw_interiorgs_upload_authorized") is not False
@@ -277,6 +280,8 @@ def _validate_source_archive(path: Path, *, expected: Mapping[str, Mapping[str, 
 def _validate_noncommercial_attestation(
     *,
     path: Path,
+    execution_authority: Mapping[str, Any],
+    execution_authority_path: Path,
     source_archive: Mapping[str, Any],
     source_identity: Mapping[str, Any],
     source_identity_path: Path,
@@ -296,6 +301,19 @@ def _validate_noncommercial_attestation(
         or attestation.get("source_identity_spec_source_file_count")
         != len(source_identity["source_files"])
         or attestation.get("nested_component_licenses") != expected_nested
+        # The attestation records the user's bounded internal-use direction;
+        # it cannot be reused with a different scene/spend/upload authority.
+        or attestation.get("authorization_kind")
+        != "explicit_user_direction_in_current_goal"
+        or attestation.get("authorized_by") != execution_authority["authorized_by"]
+        or attestation.get("execution_authority_sha256")
+        != _sha256(execution_authority_path)
+        or attestation.get("execution_authority_digest")
+        != execution_authority["authority_digest"]
+        or attestation.get("internal_noncommercial_use_only") is not True
+        or attestation.get("private_derived_upload_authorized") is not True
+        or attestation.get("raw_dataset_bytes_upload_authorized") is not False
+        or attestation.get("provider_training_authorized") is not False
         or attestation.get("noncommercial_research_evaluation_use_authorized") is not True
         or attestation.get("commercial_use_authorized") is not False
         or attestation.get("redistribution_authorized") is not False
@@ -306,6 +324,88 @@ def _validate_noncommercial_attestation(
         raise AuraResidualBackendAdmissionError(
             ["aura_residual_noncommercial_attestation_invalid"]
         )
+    return attestation
+
+
+def materialize_aura_residual_noncommercial_attestation(
+    *,
+    execution_authority_path: str | Path,
+    source_archive_path: str | Path,
+    source_identity_spec_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal the user's bounded internal-use direction against inspected Aura bytes.
+
+    This is deliberately not a generic license waiver.  It only transcribes an
+    existing, digest-valid third-scene authority that already rules out raw
+    upload, training, commercial use, and publication; it then binds that
+    authority to the exact Aura archive and nested component licenses.
+    """
+
+    policy = {
+        "raw_dataset_bytes_upload": False,
+        "private_derived_upload": True,
+        "maximum_retention_days": 7,
+        "provider_training": False,
+        "publication": False,
+    }
+    authority_path = _file(
+        execution_authority_path, code="aura_residual_execution_authority_missing"
+    )
+    authority = _validate_execution_authority(authority_path, policy)
+    terms = authority.get("terms")
+    if (
+        not isinstance(terms, Mapping)
+        or terms.get("interiorgs_commercial_use_authorized") is not False
+        or terms.get("interiorgs_redistribution_authorized") is not False
+    ):
+        raise AuraResidualBackendAdmissionError(
+            ["aura_residual_execution_authority_internal_use_invalid"]
+        )
+    source_path = _file(source_archive_path, code="aura_residual_source_archive_missing")
+    source_identity_path = _file(
+        source_identity_spec_path, code="aura_residual_source_identity_spec_missing"
+    )
+    source_identity, expected_source_members = _validate_source_identity_spec(
+        source_identity_path
+    )
+    source = _validate_source_archive(source_path, expected=expected_source_members)
+    attestation: dict[str, Any] = {
+        "schema_version": NONCOMMERCIAL_ATTESTATION_SCHEMA,
+        "program_id": "arm-decision-proof-v1",
+        "publisher_scene_id": "840920",
+        "reviewer_role": "authorized_rights_holder",
+        "authorization_kind": authority["authority_kind"],
+        "authorized_by": authority["authorized_by"],
+        "execution_authority_sha256": _sha256(authority_path),
+        "execution_authority_digest": authority["authority_digest"],
+        "source_repository": AURA_REPOSITORY,
+        "source_revision": AURA_COMMIT,
+        "source_tree": AURA_TREE,
+        "source_archive_sha256": source["sha256"],
+        "source_identity_spec_sha256": _sha256(source_identity_path),
+        "source_identity_spec_source_file_count": len(source_identity["source_files"]),
+        "nested_component_licenses": source["nested_component_licenses"],
+        "internal_noncommercial_use_only": True,
+        "private_derived_upload_authorized": True,
+        "raw_dataset_bytes_upload_authorized": False,
+        "provider_training_authorized": False,
+        "noncommercial_research_evaluation_use_authorized": True,
+        "commercial_use_authorized": False,
+        "redistribution_authorized": False,
+        "publication_authorized": False,
+        "claim_boundary": (
+            "records_authorized_bounded_internal_noncommercial_use_only;"
+            "does_not_modify_third_party_license_terms"
+        ),
+        "attestation_digest": "",
+    }
+    attestation["attestation_digest"] = canonical_digest(
+        attestation, digest_field="attestation_digest"
+    )
+    output = Path(output_path).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(canonical_json(attestation) + "\n", encoding="utf-8")
     return attestation
 
 
@@ -408,6 +508,8 @@ def materialize_aura_residual_backend_admission(
     source = _validate_source_archive(source_path, expected=expected_source_members)
     noncommercial_attestation = _validate_noncommercial_attestation(
         path=attestation_path,
+        execution_authority=authority,
+        execution_authority_path=authority_path,
         source_archive=source,
         source_identity=source_identity,
         source_identity_path=source_identity_path,
@@ -490,6 +592,20 @@ def materialize_aura_residual_backend_abstention(
             path=_file(
                 attestation,
                 code="aura_residual_noncommercial_attestation_missing",
+            ),
+            execution_authority=_validate_execution_authority(
+                _file(
+                    request["execution_authority_path"],
+                    code="aura_residual_execution_authority_missing",
+                ),
+                _validated_policy(
+                    request["private_derived_upload_policy"],
+                    code="aura_residual_request_private_upload_policy_invalid",
+                ),
+            ),
+            execution_authority_path=_file(
+                request["execution_authority_path"],
+                code="aura_residual_execution_authority_missing",
             ),
             source_archive=source,
             source_identity=source_identity,
@@ -666,6 +782,7 @@ __all__ = [
     "RECEIPT_SCHEMA",
     "REQUEST_SCHEMA",
     "build_aura_residual_backend_admission_request",
+    "materialize_aura_residual_noncommercial_attestation",
     "materialize_aura_residual_backend_admission_request",
     "materialize_aura_residual_backend_admission",
     "materialize_aura_residual_backend_abstention",
