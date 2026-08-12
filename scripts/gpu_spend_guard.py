@@ -326,42 +326,6 @@ def collect_instances(
     return instances
 
 
-def bind_inventory_live_resource_counts(
-    inventory_results: Sequence[Mapping[str, Any]],
-    instances: Sequence[GpuInstance],
-) -> list[dict[str, Any]]:
-    """Bind each successful provider query to its live-resource count.
-
-    Providers can retain destroyed resources in their instance-list response.
-    Those rows are audit-relevant, but they are not continuing allocations and
-    therefore cannot by themselves block provider-zero.  Preserve the raw
-    response cardinality separately so a zero-live result never hides that the
-    provider returned historical state.
-    """
-
-    live_counts: dict[str, int] = {}
-    for instance in instances:
-        if instance.live:
-            live_counts[instance.provider] = live_counts.get(instance.provider, 0) + 1
-
-    normalized: list[dict[str, Any]] = []
-    for raw_result in inventory_results:
-        result = dict(raw_result)
-        if result.get("status") == "succeeded":
-            provider = str(result.get("provider") or "")
-            returned_row_count = result.get("row_count")
-            if isinstance(returned_row_count, int) and not isinstance(
-                returned_row_count, bool
-            ):
-                result["returned_row_count"] = returned_row_count
-                # ``row_count`` is the compatibility field consumed by the
-                # paid-admission and terminal-receipt gates.  It must mean
-                # billable live resources, never historical API rows.
-                result["row_count"] = live_counts.get(provider, 0)
-        normalized.append(result)
-    return normalized
-
-
 def total_burn_per_hour(instances: Iterable[GpuInstance]) -> float:
     return sum(i.cost_per_hr for i in instances if i.live)
 
@@ -1872,7 +1836,7 @@ def build_json_report(
             "blockers": provider_zero_blockers,
             "claim_boundary": (
                 "Provider-zero is verified only when every required provider "
-                "inventory query succeeds with zero live resources and the "
+                "inventory query succeeds with zero returned resources and the "
                 "global reported live inventory and burn are zero."
             ),
         },
@@ -2117,6 +2081,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         gcp_inventory,
         aws_inventory,
     ]
+    inventory_blocked = any(result.get("blockers") for result in inventory_results)
     if not configured:
         print(
             "No file-based GPU credentials or configured cloud identity found; "
@@ -2129,10 +2094,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         gcp_instances=gcp_instances,
         aws_instances=aws_instances,
     )
-    inventory_results = bind_inventory_live_resource_counts(
-        inventory_results, instances
-    )
-    inventory_blocked = any(result.get("blockers") for result in inventory_results)
 
     roots = [Path(p) for p in (args.output_root or default_output_roots())]
     protected = find_protected_pod_ids(roots, process_cmdlines=list_process_cmdlines())
