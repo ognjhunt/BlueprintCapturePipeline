@@ -1624,6 +1624,7 @@ def test_lerobot_and_gr00t_exports_require_video_for_every_episode(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv(package_module.PTDP_MIN_FREE_HEADROOM_BYTES_ENV, "1")
     capture_root = _capture_root(tmp_path)
     _seed_required_pipeline_artifacts(capture_root)
     job_dir = tmp_path / "job"
@@ -3198,7 +3199,11 @@ def test_export_policy_rl_flags_track_actual_handoff_content(
     assert export_policy["intervention_safety_ledger_included"] is False
 
 
-def test_lerobot_episode_export_wired_into_package_export(tmp_path: Path) -> None:
+def test_lerobot_episode_export_wired_into_package_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(package_module.PTDP_MIN_FREE_HEADROOM_BYTES_ENV, "1")
     capture_root = _capture_root(tmp_path)
     _seed_required_pipeline_artifacts(capture_root)
     # This case intentionally exercises the quarantined/missing-consent export
