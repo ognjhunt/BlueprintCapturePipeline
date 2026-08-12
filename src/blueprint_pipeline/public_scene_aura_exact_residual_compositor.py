@@ -21,6 +21,7 @@ import numpy as np
 from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .gaussian_splat_decode import read_aura_2dgs_surfel_ply
 from .public_scene_aura_exact_residual_preflight import (
     SCHEMA_VERSION as PREFLIGHT_SCHEMA,
 )
@@ -156,7 +157,9 @@ def _input_rows(preflight: Mapping[str, Any]) -> dict[tuple[str, str], dict[str,
 
 def _raw_result_rows(
     *, preflight: Mapping[str, Any], raw_result_path: Path
-) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, Any]]:
+) -> tuple[
+    dict[tuple[str, str], dict[str, Any]], dict[str, Any], list[dict[str, Any]]
+]:
     result = _read(raw_result_path, code="aura_exact_residual_raw_result_unreadable")
     if (
         result.get("schema_version") != RAW_RESULT_SCHEMA
@@ -181,7 +184,102 @@ def _raw_result_rows(
         indexed[key] = dict(row)
     if set(indexed) != set(_input_rows(preflight)):
         raise AuraExactResidualCompositeError(["aura_exact_residual_raw_camera_set_mismatch"])
-    return indexed, _provider_closeout(result.get("provider_closeout"))
+    return (
+        indexed,
+        _provider_closeout(result.get("provider_closeout")),
+        _multiview_geometry_measurement(
+            expected_inputs=_input_rows(preflight),
+            raw_frames=indexed,
+            task_outputs=result.get("task_outputs"),
+        ),
+    )
+
+
+def _multiview_geometry_measurement(
+    *,
+    expected_inputs: Mapping[tuple[str, str], Mapping[str, Any]],
+    raw_frames: Mapping[tuple[str, str], Mapping[str, Any]],
+    task_outputs: Any,
+) -> list[dict[str, Any]]:
+    """Measure one verified Aura 2DGS output for every exact task camera set.
+
+    Pixel-perfect locality is established only by the later exact-mask
+    composite.  This separate measurement says something narrower and useful:
+    each task's complete native multi-view frame set came from one physical
+    Aura 2DGS output PLY, rather than unrelated per-view completions.  It does
+    not turn that structural fact into a visual-consistency or quality pass.
+    """
+
+    if not isinstance(task_outputs, list):
+        raise AuraExactResidualCompositeError(["aura_exact_residual_multiview_outputs_missing"])
+    expected_by_task: dict[str, set[str]] = {}
+    for task_id, camera_id in expected_inputs:
+        expected_by_task.setdefault(task_id, set()).add(camera_id)
+    outputs: dict[str, Mapping[str, Any]] = {}
+    for output in task_outputs:
+        if not isinstance(output, Mapping):
+            raise AuraExactResidualCompositeError(
+                ["aura_exact_residual_multiview_output_invalid"]
+            )
+        task_id = str(output.get("task_id") or "")
+        if not task_id or task_id in outputs:
+            raise AuraExactResidualCompositeError(
+                ["aura_exact_residual_multiview_output_invalid"]
+            )
+        outputs[task_id] = output
+    if set(outputs) != set(expected_by_task):
+        raise AuraExactResidualCompositeError(
+            ["aura_exact_residual_multiview_task_set_mismatch"]
+        )
+    measured: list[dict[str, Any]] = []
+    for task_id in sorted(expected_by_task):
+        output = outputs[task_id]
+        point_cloud = _bound_absolute(
+            output.get("native_aura_point_cloud"),
+            code="aura_exact_residual_multiview_output_invalid",
+        )
+        try:
+            surfel = read_aura_2dgs_surfel_ply(point_cloud)
+        except ValueError as exc:
+            raise AuraExactResidualCompositeError(
+                ["aura_exact_residual_multiview_output_invalid"]
+            ) from exc
+        camera_ids = output.get("render_camera_ids")
+        expected_camera_ids = expected_by_task[task_id]
+        if (
+            output.get("native_aura_representation")
+            != "aura_2d_gaussian_surfels_scale_0_scale_1"
+            or not isinstance(camera_ids, list)
+            or set(camera_ids) != expected_camera_ids
+            or len(camera_ids) != len(expected_camera_ids)
+            or output.get("native_aura_gaussian_count") != surfel.count
+        ):
+            raise AuraExactResidualCompositeError(
+                ["aura_exact_residual_multiview_output_invalid"]
+            )
+        point_cloud_sha256 = _sha256(point_cloud)
+        for camera_id in expected_camera_ids:
+            frame = raw_frames[(task_id, camera_id)]
+            if frame.get("native_aura_point_cloud_sha256") != point_cloud_sha256:
+                raise AuraExactResidualCompositeError(
+                    ["aura_exact_residual_multiview_frame_ply_binding_invalid"]
+                )
+        measured.append(
+            {
+                "task_id": task_id,
+                "native_aura_point_cloud": _record(point_cloud),
+                "native_aura_representation": output["native_aura_representation"],
+                "native_aura_gaussian_count": surfel.count,
+                "exact_camera_ids": sorted(expected_camera_ids),
+                "exact_camera_count": len(expected_camera_ids),
+                "all_raw_frames_bind_same_native_aura_point_cloud": True,
+                "visual_semantic_consistency_passed": False,
+                "claim_boundary": (
+                    "shared_native_2dgs_geometry_measured_not_a_visual_quality_verdict"
+                ),
+            }
+        )
+    return measured
 
 
 def _positive_number(value: Any) -> bool:
@@ -286,7 +384,7 @@ def materialize_aura_exact_residual_composite(
     raw_result_file = _file(raw_result_path, code="aura_exact_residual_raw_result_missing")
     preflight = _preflight(preflight_file)
     inputs = _input_rows(preflight)
-    raw_rows, provider_closeout = _raw_result_rows(
+    raw_rows, provider_closeout, multiview_measurement = _raw_result_rows(
         preflight=preflight, raw_result_path=raw_result_file
     )
     output = Path(output_root).expanduser().resolve()
@@ -407,6 +505,14 @@ def materialize_aura_exact_residual_composite(
         "outside_mask_pixel_delta_required": 0,
         "outside_mask_changed_pixels_total": sum(row["outside_mask_changed_pixels"] for row in rows),
         "multi_view_consistency_required": True,
+        "multi_view_consistency_measurement": {
+            "status": "measured_complete_exact_camera_sets_share_one_verified_native_aura_2dgs_per_task",
+            "tasks": multiview_measurement,
+            "visual_semantic_consistency_passed": False,
+            "claim_boundary": (
+                "shared_native_2dgs_geometry_measured_not_a_visual_quality_verdict"
+            ),
+        },
         "claim_boundary": {
             "native_aura_frames_retained": True,
             "outside_mask_pixels_copied_exactly_from_retained_scene": True,

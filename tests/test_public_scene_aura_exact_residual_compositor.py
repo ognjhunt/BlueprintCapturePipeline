@@ -99,11 +99,47 @@ def _provider_closeout(root: Path) -> dict[str, object]:
     return records
 
 
+def _aura_surfel_ply(path: Path) -> Path:
+    names = ["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"]
+    names.extend(f"f_rest_{index}" for index in range(45))
+    names.extend(
+        [
+            "opacity",
+            "scale_0",
+            "scale_1",
+            "rot_0",
+            "rot_1",
+            "rot_2",
+            "rot_3",
+            "is_masked_0",
+            "is_masked_1",
+            "is_masked_2",
+        ]
+    )
+    values = np.zeros((1, len(names)), dtype="<f4")
+    values[0, names.index("rot_0")] = 1.0
+    header = ["ply", "format binary_little_endian 1.0", "element vertex 1"]
+    header.extend(f"property float {name}" for name in names)
+    header.append("end_header\n")
+    path.write_bytes("\n".join(header).encode("ascii") + values.tobytes())
+    return path
+
+
 def _raw_result(preflight_path: Path, *, mutate_outside: bool = False) -> Path:
     preflight = __import__("json").loads(preflight_path.read_text())
     rows: list[dict[str, object]] = []
     root = preflight_path.parent / "raw"
     root.mkdir()
+    task_outputs: dict[str, dict[str, object]] = {}
+    for task_id in sorted({str(row["task_id"]) for row in preflight["camera_inputs"]}):
+        point_cloud = _aura_surfel_ply(root / f"{task_id}.ply")
+        task_outputs[task_id] = {
+            "task_id": task_id,
+            "native_aura_point_cloud": _record(point_cloud),
+            "native_aura_representation": "aura_2d_gaussian_surfels_scale_0_scale_1",
+            "native_aura_gaussian_count": 1,
+            "render_camera_ids": [],
+        }
     for index, input_row in enumerate(preflight["camera_inputs"]):
         before = Path(input_row["retained_scene_before"]["path"])
         mask = Path(input_row["exact_residual_mask"]["path"])
@@ -118,12 +154,18 @@ def _raw_result(preflight_path: Path, *, mutate_outside: bool = False) -> Path:
             {
                 "task_id": input_row["task_id"],
                 "camera_id": input_row["camera_id"],
+                "native_aura_point_cloud_sha256": task_outputs[input_row["task_id"]][
+                    "native_aura_point_cloud"
+                ]["sha256"],
                 "native_aura_frame": {
                     "path": str(path),
                     "size_bytes": path.stat().st_size,
                     "sha256": _sha256(path),
                 },
             }
+        )
+        task_outputs[input_row["task_id"]]["render_camera_ids"].append(
+            input_row["camera_id"]
         )
     result: dict[str, object] = {
         "schema_version": "public_scene_aura_exact_residual_raw_result.v1",
@@ -133,6 +175,7 @@ def _raw_result(preflight_path: Path, *, mutate_outside: bool = False) -> Path:
         "provider_mutations_performed": 1,
         "learned_policy_outcomes_accessed": False,
         "provider_closeout": _provider_closeout(root),
+        "task_outputs": list(task_outputs.values()),
         "frames": rows,
         "result_digest": "",
     }
@@ -154,6 +197,14 @@ def test_composites_raw_aura_output_inside_only_the_exact_masks(tmp_path: Path) 
     assert receipt["outside_mask_changed_pixels_total"] == 0
     assert receipt["replacement_object_count"] == 2
     assert len(receipt["frames"]) == 2
+    assert receipt["multi_view_consistency_measurement"]["status"] == (
+        "measured_complete_exact_camera_sets_share_one_verified_native_aura_2dgs_per_task"
+    )
+    assert all(
+        row["all_raw_frames_bind_same_native_aura_point_cloud"]
+        for row in receipt["multi_view_consistency_measurement"]["tasks"]
+    )
+    assert receipt["multi_view_consistency_measurement"]["visual_semantic_consistency_passed"] is False
     for row in receipt["frames"]:
         before = np.asarray(
             Image.open(tmp_path / "composite" / row["task_id"] / row["retained_scene_before"]["relative_path"])
@@ -222,4 +273,23 @@ def test_rejects_non_binary_or_empty_exact_mask(tmp_path: Path) -> None:
     with pytest.raises(AuraExactResidualCompositeError, match="mask_invalid"):
         materialize_aura_exact_residual_composite(
             preflight_path=preflight, raw_result_path=raw, output_root=tmp_path / "composite"
+        )
+
+
+def test_rejects_raw_frames_not_bound_to_the_task_native_aura_ply(tmp_path: Path) -> None:
+    preflight = _preflight(tmp_path)
+    raw = _raw_result(preflight)
+    result = __import__("json").loads(raw.read_text())
+    result["frames"][0]["native_aura_point_cloud_sha256"] = "sha256:" + "0" * 64
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    _write(raw, result)
+
+    with pytest.raises(
+        AuraExactResidualCompositeError,
+        match="multiview_frame_ply_binding_invalid",
+    ):
+        materialize_aura_exact_residual_composite(
+            preflight_path=preflight,
+            raw_result_path=raw,
+            output_root=tmp_path / "composite",
         )
