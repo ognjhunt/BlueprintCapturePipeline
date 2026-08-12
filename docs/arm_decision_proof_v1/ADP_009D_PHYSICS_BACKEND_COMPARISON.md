@@ -416,3 +416,44 @@ canaries were therefore decidable as failures for free, before launch.
 No further Newton allocation is justified until the gravity-real actuator
 decision and the Robotiq drive are settled, because the outcome of such a run is
 already known by arithmetic.
+
+## Gravity-real actuation is now the configured contract
+
+`build_gravity_real_actuation_contract` binds the decision and
+`_configure_gravity_real_actuation` applies it for **both** backends before the
+backend-specific configuration runs. It clears `disable_gravity` in the spawn
+configuration only — the sealed source asset is never mutated — and raises the
+arm gains to `kp=2400`, `kd=196`.
+
+The damping follows the stiffness as `sqrt(kp)`: `80 × sqrt(2400/400) = 195.96`,
+rounded to `196.0`, which preserves the shipped damping ratio to within 0.02%.
+This is therefore a stiffness decision forced by the arm now carrying weight, not
+a re-tune of the control character. Predicted worst-joint droop is
+`20.070 / 2400 = 0.0083625` rad against the `1.0e-2` rad gate, and the measured
+value on the retained model is `0.008347` rad with `22.1` N·m peak against
+`panda_joint4`'s `87` N·m limit — `65` N·m of headroom. The superseded
+`kp=400` is retained in the contract precisely so the `0.0502` rad droop that
+made the gate unreachable stays on the record.
+
+Because the contract sits in the shared section of `build_backend_profile`, both
+profile digests moved:
+
+- PhysX profile `sha256:82c22625b895baeffee93482255f29b029faaaac36f4b3ff1939914436749c9f`
+- Newton profile `sha256:4d0c5e92e76e174439710146029bd5af08eb148c8f74dc1a9e6002164324f254`
+- Comparison design `sha256:9253863575f517863667205cba08a6b879d0b3a29570dc1398351062ce1740d2`
+
+`prior_weightless_evidence_carries_over` is `false` in the contract. The PhysX
+controls evidence collected before this change was measured on a weightless arm
+and is superseded, not merely re-labelled.
+
+### Execution order
+
+1. **PhysX baseline run.** PhysX is unaffected by the explicit-PD instability, so
+   it validates the gravity-real configuration first and re-establishes the
+   controls baseline that the previous weightless evidence no longer provides.
+2. **Robotiq drive resolution.** Required before Newton can execute controls at
+   all; it is unstable with or without gravity and needs the source authoring of
+   the `5729.58 / 0.0114592` pair inspected.
+3. **Newton run**, once `validate_newton_explicit_pd_feasibility` admits the full
+   drive set rather than only the arm.
+4. **Comparison**, on the shared gravity-real physical system.

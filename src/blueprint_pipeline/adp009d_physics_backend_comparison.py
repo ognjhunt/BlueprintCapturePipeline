@@ -374,6 +374,98 @@ def validate_newton_dynamics_representable(
 
 EXPLICIT_INTEGRATION_STABILITY_RATIO_LIMIT = 2.0
 
+# Gravity-real actuation.  The sealed asset shipped disable_gravity=True, which
+# made the arm weightless under PhysX and left Newton -- which cannot express the
+# property -- carrying the full 18.28 kg.  The programme decision is to let the
+# arm carry its weight in BOTH backends, which changes the PhysX baseline too.
+#
+# Static gravity torque at the canonical pose, recomputed from the exact model
+# mjwarp simulated (retained newton_converted_model.xml, fixed base):
+GRAVITY_REAL_HOLD_TORQUE_NM = {
+    "panda_joint1": 0.0,
+    "panda_joint2": -6.225,
+    "panda_joint3": 0.001,
+    "panda_joint4": 20.070,
+    "panda_joint5": -0.002,
+    "panda_joint6": 0.794,
+    "panda_joint7": 0.0,
+}
+# The shipped kp=400 cannot meet the 1.0e-2 rad canonical hold gate once the arm
+# has weight: droop is 20.070/400 = 0.0502 rad.  kp=2400 droops 0.00836 rad,
+# measured 0.008347 rad on the retained model, and needs 22.1 N*m peak against
+# panda_joint4's 87 N*m limit.  Damping is scaled as sqrt(kp) -- 80*sqrt(6) =
+# 195.96, rounded to 196.0 -- so the shipped damping ratio is preserved to within
+# 0.02% and this is a stiffness decision, not a re-tune of the control character.
+GRAVITY_REAL_ARM_STIFFNESS_NM_PER_RAD = 2400.0
+GRAVITY_REAL_ARM_DAMPING_NM_S_PER_RAD = 196.0
+GRAVITY_REAL_ARM_ACTUATOR_GROUPS = ("panda_shoulder", "panda_forearm")
+
+
+def build_gravity_real_actuation_contract() -> dict[str, Any]:
+    """Bind the gravity-real actuation decision for both backends."""
+
+    contract: dict[str, Any] = {
+        "schema_version": "adp009d_gravity_real_actuation.v1",
+        "applies_to_backends": list(ALLOWED_PHYSICS_BACKENDS),
+        "robot_disable_gravity": False,
+        "source_asset_disable_gravity": True,
+        "source_asset_mutated": False,
+        "arm_actuator_groups": list(GRAVITY_REAL_ARM_ACTUATOR_GROUPS),
+        "arm_stiffness_nm_per_rad": GRAVITY_REAL_ARM_STIFFNESS_NM_PER_RAD,
+        "arm_damping_nm_s_per_rad": GRAVITY_REAL_ARM_DAMPING_NM_S_PER_RAD,
+        "superseded_arm_stiffness_nm_per_rad": 400.0,
+        "superseded_arm_damping_nm_s_per_rad": 80.0,
+        "hold_torque_nm": dict(GRAVITY_REAL_HOLD_TORQUE_NM),
+        "hold_tolerance_rad": 1.0e-2,
+        "predicted_worst_joint": "panda_joint4",
+        "predicted_worst_droop_rad": (
+            abs(GRAVITY_REAL_HOLD_TORQUE_NM["panda_joint4"])
+            / GRAVITY_REAL_ARM_STIFFNESS_NM_PER_RAD
+        ),
+        "prior_weightless_evidence_carries_over": False,
+        "independent_fidelity_claimed": False,
+        "runtime_receipt_required": True,
+        "contract_digest": "",
+    }
+    contract["contract_digest"] = canonical_digest(
+        contract, digest_field="contract_digest"
+    )
+    return contract
+
+
+def validate_gravity_real_actuation(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Reject a run that did not actually apply the gravity-real decision."""
+
+    if not isinstance(receipt, Mapping):
+        raise PhysicsBackendContractError("adp009d_gravity_real_receipt_invalid")
+    contract = build_gravity_real_actuation_contract()
+    blockers: list[str] = []
+    if receipt.get("contract_digest") != contract["contract_digest"]:
+        blockers.append("adp009d_gravity_real_contract_digest_mismatch")
+    if receipt.get("robot_disable_gravity") is not False:
+        blockers.append("adp009d_gravity_real_robot_still_weightless")
+    if receipt.get("source_asset_mutated") is not False:
+        blockers.append("adp009d_gravity_real_source_asset_mutated")
+    observed = receipt.get("observed_arm_gains")
+    if not isinstance(observed, Mapping) or not observed:
+        blockers.append("adp009d_gravity_real_arm_gains_missing")
+    else:
+        for group in GRAVITY_REAL_ARM_ACTUATOR_GROUPS:
+            row = observed.get(group)
+            if not isinstance(row, Mapping):
+                blockers.append(f"adp009d_gravity_real_arm_group_missing:{group}")
+                continue
+            if row.get("stiffness") != GRAVITY_REAL_ARM_STIFFNESS_NM_PER_RAD:
+                blockers.append(f"adp009d_gravity_real_stiffness_invalid:{group}")
+            if row.get("damping") != GRAVITY_REAL_ARM_DAMPING_NM_S_PER_RAD:
+                blockers.append(f"adp009d_gravity_real_damping_invalid:{group}")
+    return {
+        "schema_version": "adp009d_gravity_real_actuation_validation.v1",
+        "status": "blocked" if blockers else "validated",
+        "typed_blockers": sorted(set(blockers)),
+        "contract_digest": contract["contract_digest"],
+    }
+
 
 def validate_newton_explicit_pd_feasibility(
     *,
@@ -524,6 +616,10 @@ def build_backend_profile(physics_backend: str) -> dict[str, Any]:
             "closest_geometric_clearance_measurement": True,
         },
         "claim_ceiling": "controls_comparison_evidence_only",
+        # Shared physical system: the arm carries its weight in both lanes, so
+        # this moves the PhysX profile digest too and voids the weightless
+        # controls evidence collected under the previous profile.
+        "gravity_real_actuation": build_gravity_real_actuation_contract(),
     }
     if backend == "physx":
         common.update(
@@ -1883,6 +1979,12 @@ __all__ = [
     "MEASUREMENT_FIELDS",
     "NEWTON_MAPPED_PHYSX_PROPERTY_NAMES",
     "NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES",
+    "build_gravity_real_actuation_contract",
+    "validate_gravity_real_actuation",
+    "GRAVITY_REAL_ARM_ACTUATOR_GROUPS",
+    "GRAVITY_REAL_ARM_STIFFNESS_NM_PER_RAD",
+    "GRAVITY_REAL_ARM_DAMPING_NM_S_PER_RAD",
+    "GRAVITY_REAL_HOLD_TORQUE_NM",
     "NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES",
     "PHYSX_ONLY_FIELD_NAMES",
     "PROBE_SCHEMA_VERSION",

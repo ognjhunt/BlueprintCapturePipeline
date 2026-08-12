@@ -105,16 +105,19 @@ try:  # flat provider-bundle layout, where this file runs as a script
         FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
         FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
         FRANKA_SOURCE_MESH_SCALE,
+        GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
         NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
         NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
         ROBOTIQ_BODY_MASSES_KG,
         build_backend_contact_configuration,
         build_backend_profile,
+        build_gravity_real_actuation_contract,
         build_newton_actuator_limit_mapping_contract,
         build_newton_robot_inertial_overlay_contract,
         normalize_physics_backend,
         validate_backend_probe,
         validate_backend_profile,
+        validate_gravity_real_actuation,
         validate_newton_dynamics_representable,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
@@ -124,16 +127,19 @@ except ModuleNotFoundError:  # imported as part of the repository package
         FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
         FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
         FRANKA_SOURCE_MESH_SCALE,
+        GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
         NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
         NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
         ROBOTIQ_BODY_MASSES_KG,
         build_backend_contact_configuration,
         build_backend_profile,
+        build_gravity_real_actuation_contract,
         build_newton_actuator_limit_mapping_contract,
         build_newton_robot_inertial_overlay_contract,
         normalize_physics_backend,
         validate_backend_probe,
         validate_backend_profile,
+        validate_gravity_real_actuation,
         validate_newton_dynamics_representable,
     )
 
@@ -1217,6 +1223,56 @@ def _validate_newton_robot_inertial_overlay_receipt(
     return sorted(set(blockers))
 
 
+def _configure_gravity_real_actuation(embodiment: Any) -> dict[str, Any]:
+    """Let the arm carry its own weight, in whichever backend is running.
+
+    The sealed asset ships ``disable_gravity=True`` on every robot body.  PhysX
+    honours it and Newton cannot express it, so the same asset was a weightless
+    arm in one backend and an 18.28 kg arm in the other.  Clearing it in the
+    spawn configuration -- never in the sealed source -- puts both backends on
+    the same physical system, and the arm stiffness rises with it because the
+    shipped kp=400 cannot hold 20.07 N*m inside the 1.0e-2 rad gate.
+    """
+
+    contract = build_gravity_real_actuation_contract()
+    spawn_cfg = embodiment.scene_config.robot.spawn
+    if spawn_cfg.rigid_props is None:
+        raise RuntimeError("adp009d_gravity_real_rigid_props_missing")
+    if spawn_cfg.rigid_props.disable_gravity is not True:
+        raise RuntimeError("adp009d_gravity_real_source_state_unexpected")
+    spawn_cfg.rigid_props = spawn_cfg.rigid_props.replace(disable_gravity=False)
+    actuators = embodiment.scene_config.robot.actuators
+    observed: dict[str, dict[str, float]] = {}
+    for group in GRAVITY_REAL_ARM_ACTUATOR_GROUPS:
+        actuator = actuators[group]
+        actuator.stiffness = contract["arm_stiffness_nm_per_rad"]
+        actuator.damping = contract["arm_damping_nm_s_per_rad"]
+        observed[group] = {
+            "stiffness": actuator.stiffness,
+            "damping": actuator.damping,
+        }
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009d_gravity_real_actuation_receipt.v1",
+        "status": "applied_and_verified",
+        "contract_digest": contract["contract_digest"],
+        "robot_disable_gravity": spawn_cfg.rigid_props.disable_gravity,
+        "source_asset_mutated": False,
+        "observed_arm_gains": observed,
+        "hold_torque_nm": dict(contract["hold_torque_nm"]),
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = _canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    validation = validate_gravity_real_actuation(receipt)
+    if validation["status"] != "validated":
+        raise RuntimeError(
+            "adp009d_gravity_real_actuation_invalid:"
+            + ",".join(validation["typed_blockers"])
+        )
+    return receipt
+
+
 def _configure_newton_robot_inertial_overlay(
     embodiment: Any, *, output_dir: Path
 ) -> None:
@@ -2159,6 +2215,9 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     # gripper names overlap right_outer.* / left_inner.* / right_inner.* and
     # Isaac Lab correctly rejects such an ambiguous mapping.
     _bind_canonical_joint_positions(embodiment)
+    # Applied for both backends: the gravity decision and the stiffness it
+    # forces belong to the shared physical system, not to one engine's lane.
+    gravity_real_actuation = _configure_gravity_real_actuation(embodiment)
     if args.physics_backend == "newton":
         _configure_newton_robot_inertial_overlay(
             embodiment,
@@ -2475,6 +2534,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         external_task_camera_plan,
         overview_camera_plan,
         newton_actuator_limit_mapping,
+        gravity_real_actuation,
     )
 
 
@@ -2710,6 +2770,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 external_task_camera_plan,
                 overview_camera_plan,
                 newton_actuator_limit_mapping,
+                gravity_real_actuation,
             ) = _build_environment(runtime, args)
         except Exception as exc:
             if backend == "newton":
@@ -4381,6 +4442,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     newton_robot_inertial_overlay_receipt
                 ),
                 "newton_actuator_limit_mapping": newton_actuator_limit_mapping,
+                "gravity_real_actuation": gravity_real_actuation,
                 "static_sage_collision_validation": static_sage_collision,
                 "live_sage_collision_validation": live_sage_collision,
                 "sage_task_collision_derivative": task_collision_manifest,

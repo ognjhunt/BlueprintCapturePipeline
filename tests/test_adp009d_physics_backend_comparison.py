@@ -17,6 +17,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     FRANKA_INERTIA_UNIT_CORRECTION_FACTOR,
     FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
     FRANKA_SOURCE_MESH_SCALE,
+    GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
     MEASUREMENT_FIELDS,
     NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
     NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
@@ -26,6 +27,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     build_backend_control_run_receipt,
     build_backend_profile,
     build_comparison_design_contract,
+    build_gravity_real_actuation_contract,
     build_comparison_receipt,
     build_newton_canary_admission,
     build_newton_canary_terminal_receipt,
@@ -37,6 +39,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     validate_comparison_receipt,
     validate_comparison_design_contract,
     validate_newton_canary_admission,
+    validate_gravity_real_actuation,
     validate_newton_dynamics_representable,
     validate_newton_explicit_pd_feasibility,
 )
@@ -1226,3 +1229,97 @@ def test_explicit_pd_feasibility_rejects_a_drive_that_cannot_reach_its_load() ->
         "adp009d_newton_hold_torque_exceeds_effort_limit:panda_joint4"
         in receipt["typed_blockers"]
     )
+
+
+def _gravity_real_receipt(**overrides: object) -> dict[str, object]:
+    contract = build_gravity_real_actuation_contract()
+    receipt = {
+        "contract_digest": contract["contract_digest"],
+        "robot_disable_gravity": False,
+        "source_asset_mutated": False,
+        "observed_arm_gains": {
+            group: {"stiffness": 2400.0, "damping": 196.0}
+            for group in GRAVITY_REAL_ARM_ACTUATOR_GROUPS
+        },
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+def test_gravity_real_contract_applies_to_both_backends_and_voids_prior_evidence() -> None:
+    """The arm carries its weight in both lanes; weightless evidence does not carry."""
+
+    contract = build_gravity_real_actuation_contract()
+    assert contract["applies_to_backends"] == ["physx", "newton"]
+    assert contract["robot_disable_gravity"] is False
+    assert contract["source_asset_disable_gravity"] is True
+    assert contract["source_asset_mutated"] is False
+    assert contract["prior_weightless_evidence_carries_over"] is False
+    assert contract["independent_fidelity_claimed"] is False
+
+
+def test_gravity_real_stiffness_makes_the_hold_gate_reachable() -> None:
+    """kp=2400 must put worst-joint droop inside the gate it is judged against."""
+
+    contract = build_gravity_real_actuation_contract()
+    assert contract["arm_stiffness_nm_per_rad"] == 2400.0
+    assert contract["predicted_worst_joint"] == "panda_joint4"
+    assert contract["predicted_worst_droop_rad"] == pytest.approx(0.0083625, abs=1e-7)
+    assert contract["predicted_worst_droop_rad"] < contract["hold_tolerance_rad"]
+    # the superseded gain could not, which is why it is recorded alongside
+    superseded = (
+        abs(contract["hold_torque_nm"]["panda_joint4"])
+        / contract["superseded_arm_stiffness_nm_per_rad"]
+    )
+    assert superseded > contract["hold_tolerance_rad"]
+
+
+def test_gravity_real_gains_are_feasible_under_the_explicit_pd_gate() -> None:
+    """The chosen gain must survive the same feasibility gate Newton is held to."""
+
+    contract = build_gravity_real_actuation_contract()
+    receipt = validate_newton_explicit_pd_feasibility(
+        joint_drives=[
+            {
+                "joint_name": "panda_joint4",
+                "stiffness_nm_per_rad": contract["arm_stiffness_nm_per_rad"],
+                "damping_nm_s_per_rad": contract["arm_damping_nm_s_per_rad"],
+                "effective_inertia_kg_m2": 1.0,
+                "gravity_torque_nm": contract["hold_torque_nm"]["panda_joint4"],
+                "effort_limit_nm": 87.0,
+            }
+        ],
+        timestep_seconds=1.0 / 120.0,
+        hold_tolerance_rad=contract["hold_tolerance_rad"],
+    )
+    assert receipt["status"] == "admitted"
+
+
+def test_gravity_real_validation_rejects_a_still_weightless_run() -> None:
+    validation = validate_gravity_real_actuation(
+        _gravity_real_receipt(robot_disable_gravity=True)
+    )
+    assert validation["status"] == "blocked"
+    assert "adp009d_gravity_real_robot_still_weightless" in validation["typed_blockers"]
+
+
+def test_gravity_real_validation_rejects_the_superseded_stiffness() -> None:
+    validation = validate_gravity_real_actuation(
+        _gravity_real_receipt(
+            observed_arm_gains={
+                group: {"stiffness": 400.0, "damping": 80.0}
+                for group in GRAVITY_REAL_ARM_ACTUATOR_GROUPS
+            }
+        )
+    )
+    assert validation["status"] == "blocked"
+    assert any(
+        blocker.startswith("adp009d_gravity_real_stiffness_invalid")
+        for blocker in validation["typed_blockers"]
+    )
+
+
+def test_gravity_real_validation_accepts_a_correctly_applied_run() -> None:
+    validation = validate_gravity_real_actuation(_gravity_real_receipt())
+    assert validation["status"] == "validated"
+    assert validation["typed_blockers"] == []

@@ -53,6 +53,40 @@
         "closest_geometric_clearance_measurement": true
       },
       "claim_ceiling": "controls_comparison_evidence_only",
+      "gravity_real_actuation": {
+        "schema_version": "adp009d_gravity_real_actuation.v1",
+        "applies_to_backends": [
+          "physx",
+          "newton"
+        ],
+        "robot_disable_gravity": false,
+        "source_asset_disable_gravity": true,
+        "source_asset_mutated": false,
+        "arm_actuator_groups": [
+          "panda_shoulder",
+          "panda_forearm"
+        ],
+        "arm_stiffness_nm_per_rad": 2400.0,
+        "arm_damping_nm_s_per_rad": 196.0,
+        "superseded_arm_stiffness_nm_per_rad": 400.0,
+        "superseded_arm_damping_nm_s_per_rad": 80.0,
+        "hold_torque_nm": {
+          "panda_joint1": 0.0,
+          "panda_joint2": -6.225,
+          "panda_joint3": 0.001,
+          "panda_joint4": 20.07,
+          "panda_joint5": -0.002,
+          "panda_joint6": 0.794,
+          "panda_joint7": 0.0
+        },
+        "hold_tolerance_rad": 0.01,
+        "predicted_worst_joint": "panda_joint4",
+        "predicted_worst_droop_rad": 0.0083625,
+        "prior_weightless_evidence_carries_over": false,
+        "independent_fidelity_claimed": false,
+        "runtime_receipt_required": true,
+        "contract_digest": "sha256:e3dd1d05dc2d516ae9c944cfd0d4fd17aa13a70058927b883f00348c70882868"
+      },
       "maturity": "production_baseline",
       "backend_runtime": {
         "package": "isaaclab_physx",
@@ -84,7 +118,7 @@
         "source_usd_mutated": false,
         "conversion_receipt_required": true
       },
-      "profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c"
+      "profile_digest": "sha256:82c22625b895baeffee93482255f29b029faaaac36f4b3ff1939914436749c9f"
     },
     "newton": {
       "schema_version": "adp009d_physics_backend_profile.v1",
@@ -128,6 +162,40 @@
         "newton_actuator_limit_mapping": true
       },
       "claim_ceiling": "controls_comparison_evidence_only",
+      "gravity_real_actuation": {
+        "schema_version": "adp009d_gravity_real_actuation.v1",
+        "applies_to_backends": [
+          "physx",
+          "newton"
+        ],
+        "robot_disable_gravity": false,
+        "source_asset_disable_gravity": true,
+        "source_asset_mutated": false,
+        "arm_actuator_groups": [
+          "panda_shoulder",
+          "panda_forearm"
+        ],
+        "arm_stiffness_nm_per_rad": 2400.0,
+        "arm_damping_nm_s_per_rad": 196.0,
+        "superseded_arm_stiffness_nm_per_rad": 400.0,
+        "superseded_arm_damping_nm_s_per_rad": 80.0,
+        "hold_torque_nm": {
+          "panda_joint1": 0.0,
+          "panda_joint2": -6.225,
+          "panda_joint3": 0.001,
+          "panda_joint4": 20.07,
+          "panda_joint5": -0.002,
+          "panda_joint6": 0.794,
+          "panda_joint7": 0.0
+        },
+        "hold_tolerance_rad": 0.01,
+        "predicted_worst_joint": "panda_joint4",
+        "predicted_worst_droop_rad": 0.0083625,
+        "prior_weightless_evidence_carries_over": false,
+        "independent_fidelity_claimed": false,
+        "runtime_receipt_required": true,
+        "contract_digest": "sha256:e3dd1d05dc2d516ae9c944cfd0d4fd17aa13a70058927b883f00348c70882868"
+      },
       "maturity": "experimental_comparison_candidate",
       "backend_runtime": {
         "package": "isaaclab_newton",
@@ -378,14 +446,14 @@
           "overlay_digest": "sha256:4766188ad656344c866762945cd8593f4777160309bb684d17d5b9474756f3ba"
         }
       },
-      "profile_digest": "sha256:953480dc084beb799e90293e26b214162c64a4c836db53dd3919bd3b5e21e285"
+      "profile_digest": "sha256:4d0c5e92e76e174439710146029bd5af08eb148c8f74dc1a9e6002164324f254"
     }
   },
   "backend_contact_configurations": {
     "physx": {
       "schema_version": "adp009d_backend_contact_configuration.v1",
       "physics_backend": "physx",
-      "backend_profile_digest": "sha256:956c5e1ec84d3ac01cfea063c1eff6410465031a11b06baf60b2e9742076bc9c",
+      "backend_profile_digest": "sha256:82c22625b895baeffee93482255f29b029faaaac36f4b3ff1939914436749c9f",
       "contact_model": {
         "configuration_schema": "adp009d_physx_sdf_contact_model.v1",
         "source": "approved_can_physx_sdf_adapter.usda",
@@ -401,12 +469,12 @@
       "planner_contact_allowance_m": 0.01,
       "planner_contact_allowance_source": "physx_sdf_margin_plus_narrow_band_plus_finger_contact_offset",
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "configuration_digest": "sha256:b1b66e9b5f5ebc995d09a5f82bdcdc9434be6d1becb737b7ac57e7c5841b3484"
+      "configuration_digest": "sha256:c1b5af847c6b5c49c137f4389e46995a0ec4be3cce05501d92ed0cd2f973f4e1"
     },
     "newton": {
       "schema_version": "adp009d_backend_contact_configuration.v1",
       "physics_backend": "newton",
-      "backend_profile_digest": "sha256:953480dc084beb799e90293e26b214162c64a4c836db53dd3919bd3b5e21e285",
+      "backend_profile_digest": "sha256:4d0c5e92e76e174439710146029bd5af08eb148c8f74dc1a9e6002164324f254",
       "contact_model": {
         "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
         "contact_generation": "mujoco_warp_from_generic_usd_import",
@@ -422,7 +490,7 @@
       "planner_contact_allowance_m": 0.0,
       "planner_contact_allowance_source": "generic_surface_geometry_only_no_physx_standoff_assumed",
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "configuration_digest": "sha256:dd310015d8470619d9d21b5641b9d1b0997dbefbc7fd631b193b646a0f3fe8ca"
+      "configuration_digest": "sha256:a1a8ff04af9032a111b6c4f5c79523db11895eccb39c0e3c456002f451b0ce88"
     }
   },
   "common_comparability_bindings": [
@@ -491,5 +559,5 @@
   },
   "provider_mutation_performed": false,
   "claim_ceiling": "controls_comparison_design_only",
-  "design_digest": "sha256:7beac1cf97ab655a5039fc28a4393bfba7f0344d235770f0048ae684ad650a3f"
+  "design_digest": "sha256:9253863575f517863667205cba08a6b879d0b3a29570dc1398351062ce1740d2"
 }
