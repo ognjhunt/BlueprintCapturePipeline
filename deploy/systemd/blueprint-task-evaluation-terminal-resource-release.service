@@ -30,10 +30,10 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint
 ReadOnlyPaths=/etc/blueprint/provider-secrets
-TasksMax=128
+TasksMax=512
 LimitNOFILE=65536
-MemoryMax=1G
-CPUQuota=100%
+MemoryMax=8G
+CPUQuota=200%
 TimeoutStartSec=5m
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
