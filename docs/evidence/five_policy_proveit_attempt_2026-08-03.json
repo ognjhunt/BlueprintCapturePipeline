@@ -1,0 +1,66 @@
+{
+  "schema_version": "five_policy_proveit_attempt.v1",
+  "attempt_id": "five-policy-20260803",
+  "status": "blocked",
+  "terminal_reason": "hard_ttl_elapsed_before_output_observed",
+  "execution_identity": {
+    "source_commit": "75fa1198b8bb9c6f2aa5b5857797d7e50f47ef7c",
+    "image_digest_ref": "docker.io/nijelhunt/blueprint-openpi-policy-ranking@sha256:02bd35d9f233009964742a05956ac2ca1f2fcb73b3be42cb83d197cf4f7685c9",
+    "input_bundle_sha256": "2844b0ba60a3f3afc9ac02f2d2cce032bb6a9563b0a11bf53bac7e9371b8201a",
+    "input_receipt_sha256": "79933f54806a3a6b4f7541edd60df4e1cfd00f004e43a1b5d5f197d76fe6134c",
+    "openpi_source_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac"
+  },
+  "paid_execution": {
+    "provider": "vast",
+    "provider_instance_id": "46716335",
+    "gpu_model": "NVIDIA L40",
+    "hard_ttl_seconds": 7200,
+    "provider_all_in_rate_usd_per_hour": 0.49962962962962965,
+    "conservative_campaign_charge_usd": 1.5,
+    "campaign_cap_usd": 5.0,
+    "campaign_remaining_usd": 3.5,
+    "campaign_open_reservation_count": 0
+  },
+  "observations": {
+    "output_object_observed": false,
+    "completed_policy_receipt_count": 0,
+    "policy_result_claimed": false,
+    "worker_log_download_fallback_marker_count": 2,
+    "worker_log_marker": "gsutil not found, falling back to gcsfs",
+    "provider_absence_confirmed": true,
+    "live_instance_count_after_reconciliation": 0,
+    "total_burn_per_hour_usd_after_reconciliation": 0.0,
+    "staged_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "root_cause_assessment": {
+    "observed_failure_mode": "OpenPI did not find gsutil and selected its fsspec fallback",
+    "source_verified_fallback_behavior": "single-worker fsspec checkpoint download",
+    "assessment": "The missing parallel GCS transfer path is a confirmed throughput bottleneck; it does not by itself prove that no other bottleneck exists.",
+    "retry_fix": "Install a digest-pinned isolated gsutil and emit per-candidate phase progress markers."
+  },
+  "local_evidence_sha256": {
+    "openpi_policy_ranking_gpu_release.json": "d5b6093a86e7e0fd89bf432aed25843fbb5682ba6290a91bbaefa425fc6432b2",
+    "postrun_provider_zero.json": "04a0260eb88db6918363f1e4e33fd7e20a91ab6be6163146e66f360637dce6b9",
+    "campaign_budget.json": "aef45ddbac5ed45f845a5919d7ebd45785e1d1c5ab568e6a4c235483025fa56f",
+    "wam_provider_object_store_cleanup.json": "4660bb41e750030978e4055a9b8af25b13be03766a17455f369f913d89ad4b28",
+    "vast_worker_tail.log": "8ca264a4768c9897bd8d9f73fbf39add4e1850f0d8e7a342f5fc4fec53631401"
+  },
+  "prepared_retry": {
+    "executed": false,
+    "hard_ttl_seconds": 14400,
+    "max_hourly_rate_usd": 0.75,
+    "max_additional_conservative_charge_usd": 3.0,
+    "max_total_conservative_campaign_charge_usd": 4.5,
+    "campaign_cap_usd": 5.0,
+    "requires_new_immutable_image_digest": true,
+    "requires_exact_new_input_bundle_sha256": true,
+    "requires_post_failure_retry_approval": true
+  },
+  "claim_boundary": {
+    "attempt_is_policy_result": false,
+    "attempt_is_task_success": false,
+    "provider_zero_is_run_success": false,
+    "root_cause_assessment_is_exhaustive": false
+  }
+}

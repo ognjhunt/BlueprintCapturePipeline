@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from .common import write_json
+from .five_policy_identity_smoke import (
+    INPUT_RECEIPT_SCHEMA_VERSION as FIVE_POLICY_INPUT_RECEIPT_SCHEMA_VERSION,
+    INPUT_SCHEMA_VERSION as FIVE_POLICY_INPUT_SCHEMA_VERSION,
+)
 from .gpu_render_providers import get_render_provider
 from .new_site_diagnostic_canary_gpu import (
     INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
@@ -27,6 +31,7 @@ NEW_SITE_CANARY_PROBE_KIND = "new-site-diagnostic-canary"
 OPENPI_REVISION = "15a9616a00943ada6c20a0f158e3adb39df2ccac"
 MENAGERIE_REVISION = "71f066ad0be9cd271f7ed58c030243ef157af9f4"
 CHECKPOINT_BYTES = 47_286_181_297
+FIVE_POLICY_CHECKPOINT_BYTES = 58_138_199_882
 MAX_TTL_SECONDS = 14_400
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MIN_GPU_MEMORY_BYTES = 24 * 1024**3
@@ -248,9 +253,11 @@ def build_openpi_policy_ranking_gpu_admission(
 
     receipt_schema = input_bundle.get("schema_version")
     is_canary = receipt_schema == CANARY_INPUT_RECEIPT_SCHEMA_VERSION
+    is_identity_smoke = receipt_schema == FIVE_POLICY_INPUT_RECEIPT_SCHEMA_VERSION
     if receipt_schema not in {
         "openpi_policy_ranking_gpu_input_bundle_receipt.v1",
         CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
+        FIVE_POLICY_INPUT_RECEIPT_SCHEMA_VERSION,
     }:
         blockers.append("openpi_gpu_input_bundle_receipt_schema_invalid")
     bundle_sha = str(input_bundle.get("bundle_sha256") or "")
@@ -261,7 +268,11 @@ def build_openpi_policy_ranking_gpu_admission(
     expected_manifest_schema = (
         CANARY_INPUT_SCHEMA_VERSION
         if is_canary
-        else "openpi_policy_ranking_gpu_input_bundle.v2"
+        else (
+            FIVE_POLICY_INPUT_SCHEMA_VERSION
+            if is_identity_smoke
+            else "openpi_policy_ranking_gpu_input_bundle.v2"
+        )
     )
     if manifest.get("schema_version") != expected_manifest_schema:
         blockers.append("openpi_gpu_input_bundle_manifest_schema_invalid")
@@ -272,11 +283,17 @@ def build_openpi_policy_ranking_gpu_admission(
     expected_purpose = (
         "private_internal_noncommercial_new_site_diagnostic_canary"
         if is_canary
-        else "private_internal_noncommercial_research_gpu_execution"
+        else (
+            "internal_noncommercial_identity_bound_inference_smoke"
+            if is_identity_smoke
+            else "private_internal_noncommercial_research_gpu_execution"
+        )
     )
     if manifest.get("purpose") != expected_purpose:
         blockers.append("openpi_gpu_input_bundle_purpose_invalid")
-    if not _SHA256.fullmatch(str(manifest.get("background_sha256") or "")):
+    if not is_identity_smoke and not _SHA256.fullmatch(
+        str(manifest.get("background_sha256") or "")
+    ):
         blockers.append("openpi_gpu_input_background_sha256_invalid")
     if is_canary:
         if (
@@ -294,6 +311,23 @@ def build_openpi_policy_ranking_gpu_admission(
         manifest_payload.pop("manifest_sha256", None)
         if declared_manifest_sha != canonical_sha256(manifest_payload):
             blockers.append("openpi_gpu_input_canary_manifest_sha256_invalid")
+    elif is_identity_smoke:
+        candidate_ids = manifest.get("candidate_ids")
+        if (
+            manifest.get("candidate_count") != 5
+            or not isinstance(candidate_ids, list)
+            or len(candidate_ids) != 5
+            or len(set(candidate_ids)) != 5
+            or manifest.get("query_count_per_candidate") != 1
+            or manifest.get("physical_robot_endpoint_access_allowed") is not False
+            or not _SHA256.fullmatch(str(manifest.get("registry_sha256") or ""))
+            or not _SHA256.fullmatch(str(manifest.get("manifest_sha256") or ""))
+        ):
+            blockers.append("openpi_gpu_five_policy_identity_smoke_freeze_invalid")
+        manifest_payload = dict(manifest)
+        declared_manifest_sha = manifest_payload.pop("manifest_sha256", None)
+        if declared_manifest_sha != canonical_sha256(manifest_payload):
+            blockers.append("openpi_gpu_five_policy_manifest_sha256_invalid")
     else:
         scenes = manifest.get("scenes")
         scenes = scenes if isinstance(scenes, list) else []
@@ -387,13 +421,17 @@ def build_openpi_policy_ranking_gpu_admission(
         "status": "admitted" if not blockers and shared["status"] == "admitted" else "blocked",
         "probe_kind": NEW_SITE_CANARY_PROBE_KIND if is_canary else PROBE_KIND,
         "execution_mode": (
-            "new_site_diagnostic_canary" if is_canary else "full_campaign"
+            "new_site_diagnostic_canary"
+            if is_canary
+            else ("five_policy_identity_smoke" if is_identity_smoke else "full_campaign")
         ),
         "blockers": sorted(set(blockers)),
         "source_commit": source_commit or None,
         "release_image_ref": image_ref or None,
         "input_bundle_sha256": bundle_sha or None,
-        "checkpoint_size_bytes": CHECKPOINT_BYTES,
+        "checkpoint_size_bytes": (
+            FIVE_POLICY_CHECKPOINT_BYTES if is_identity_smoke else CHECKPOINT_BYTES
+        ),
         "gpu_type_id": preflight.get("gpu_type_id"),
         "provider": provider_name or None,
         "provider_resource_class": provider_resource_class,

@@ -10,6 +10,9 @@ ARG OPENPI_SOURCE_URL=https://github.com/Physical-Intelligence/openpi.git
 ARG OPENPI_SOURCE_REVISION=15a9616a00943ada6c20a0f158e3adb39df2ccac
 ARG MENAGERIE_SOURCE_URL=https://github.com/google-deepmind/mujoco_menagerie.git
 ARG MENAGERIE_SOURCE_REVISION=71f066ad0be9cd271f7ed58c030243ef157af9f4
+ARG GSUTIL_VERSION=5.37
+ARG GSUTIL_ARCHIVE_URL=https://files.pythonhosted.org/packages/9a/6f/5da5e0a8dd3b101809e9f6ba7875facdcd26de42d2ca8fede2ff9769bc39/gsutil-5.37.tar.gz
+ARG GSUTIL_ARCHIVE_SHA256=c217df9fba2fb16464ee2e4968ff7d669c9699a69af7003c5deb2da4db8e4298
 ARG BLUEPRINT_SOURCE_COMMIT
 
 ENV PYTHONUNBUFFERED=1 \
@@ -38,6 +41,17 @@ RUN git clone --filter=blob:none --recurse-submodules "${OPENPI_SOURCE_URL}" /op
     && cd /opt/openpi \
     && uv venv --python 3.11.9 "${UV_PROJECT_ENVIRONMENT}" \
     && GIT_LFS_SKIP_SMUDGE=1 uv sync --frozen --no-dev
+
+# OpenPI otherwise falls back to its single-worker fsspec downloader for GCS.
+# Keep gsutil isolated from OpenPI's locked environment and bind the exact PyPI
+# artifact so the parallel transfer path is reproducible without dependency drift.
+RUN curl -fsSL "${GSUTIL_ARCHIVE_URL}" -o /tmp/gsutil.tar.gz \
+    && echo "${GSUTIL_ARCHIVE_SHA256}  /tmp/gsutil.tar.gz" | sha256sum -c - \
+    && uv venv --python 3.11.9 /opt/gsutil-venv \
+    && VIRTUAL_ENV=/opt/gsutil-venv uv pip install /tmp/gsutil.tar.gz \
+    && ln -s /opt/gsutil-venv/bin/gsutil /usr/local/bin/gsutil \
+    && gsutil version -l | grep -F "gsutil version: ${GSUTIL_VERSION}" \
+    && rm -f /tmp/gsutil.tar.gz
 
 RUN git clone --filter=blob:none --no-checkout "${MENAGERIE_SOURCE_URL}" /opt/mujoco-menagerie \
     && git -C /opt/mujoco-menagerie fetch --depth 1 origin "${MENAGERIE_SOURCE_REVISION}" \
