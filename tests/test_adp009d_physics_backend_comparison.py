@@ -922,10 +922,13 @@ def test_comparison_receipt_requires_exact_common_bindings() -> None:
     assert validate_comparison_receipt(blocked) == []
 
 
-def test_comparison_rejects_nonfinite_terminal_spend() -> None:
+@pytest.mark.parametrize("invalid_spend", [float("nan"), float("inf"), True])
+def test_comparison_rejects_nonfinite_terminal_spend(
+    invalid_spend: float | bool,
+) -> None:
     newton = _run("newton")
     measurements = deepcopy(newton["measurements"])
-    measurements["spend"]["total_usd"] = float("nan")
+    measurements["spend"]["total_usd"] = invalid_spend
     newton = build_backend_control_run_receipt(
         physics_backend="newton",
         comparability_bindings=newton["comparability_bindings"],
