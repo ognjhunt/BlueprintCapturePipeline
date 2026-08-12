@@ -101,6 +101,12 @@ git -C "${submodule_dir}" checkout -q --detach FETCH_HEAD \
   || { write_missing_result "artifixer3d_submodule_commit_mismatch"; exit 2; }
 [[ "$(git -C "${submodule_dir}" rev-parse 'HEAD^{tree}')" == "494ecc2dd0834fcf71bf0124de152940e0c6d845" ]] \
   || { write_missing_result "artifixer3d_submodule_tree_mismatch"; exit 2; }
+git -C "${submodule_dir}" submodule update --init --recursive \
+  || { write_missing_result "artifixer3d_nested_submodule_fetch_failed"; exit 2; }
+if git -C "${submodule_dir}" submodule status --recursive | grep -Eq '^[-+U]'; then
+  write_missing_result "artifixer3d_nested_submodule_identity_mismatch"
+  exit 2
+fi
 
 "${uv_bin}" pip install --python "${artifixer_python}" --no-build-isolation \
   -r "${submodule_dir}/requirements.txt" \

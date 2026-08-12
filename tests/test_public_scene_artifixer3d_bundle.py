@@ -139,6 +139,9 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert manifest["contains_model_weights"] is False
     assert 'pip install --python "${artifixer_python}" --no-build-isolation' in entrypoint
     assert '-r "${submodule_dir}/requirements.txt"' in entrypoint
+    assert 'submodule update --init --recursive' in entrypoint
+    assert 'submodule status --recursive' in entrypoint
+    assert "artifixer3d_nested_submodule_identity_mismatch" in entrypoint
 
 
 def test_rejects_tampered_candidate_or_dirty_source(
