@@ -483,6 +483,16 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         or request.get("outside_exact_support_changed_pixels_permitted") != 0
         or request.get("repair_target")
         != "plausible_object_free_background_inside_exact_support_only"
+        or request.get("direct_editor_backend")
+        not in {"artifixer", "qwen_image_edit_2511"}
+        or manifest.get("direct_editor_backend")
+        != request.get("direct_editor_backend")
+        or receipt.get("direct_editor_backend")
+        != request.get("direct_editor_backend")
+        or receipt.get("semantic_editor_only")
+        != (request.get("semantic_editor_only") is True)
+        or manifest.get("semantic_editor_only")
+        != (request.get("semantic_editor_only") is True)
         or manifest.get("contains_raw_dataset_bytes") is not False
         or manifest.get("contains_model_weights") is not False
         or manifest.get("container_image") != DEFAULT_IMAGE
@@ -565,6 +575,8 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         "replacement_object_count": receipt["replacement_object_count"],
         "task_ids": task_ids,
         "task_camera_counts": task_camera_counts,
+        "direct_editor_backend": request["direct_editor_backend"],
+        "semantic_editor_only": request.get("semantic_editor_only") is True,
     }
 
 
@@ -1310,16 +1322,23 @@ def _materialize_raw_result(
                     **_record(path),
                 }
             )
-        checkpoint = _local_runtime_path(
-            execution_root,
-            task.get("artifixer3d_checkpoint", {}).get("path"),
-            code="artifixer3d_runtime_checkpoint_unbound",
-        )
+        checkpoint_record = task.get("artifixer3d_checkpoint")
+        checkpoint: Path | None = None
+        if checkpoint_record is not None:
+            checkpoint = _local_runtime_path(
+                execution_root,
+                checkpoint_record.get("path"),
+                code="artifixer3d_runtime_checkpoint_unbound",
+            )
         if (
-            checkpoint.stat().st_size
-            != task.get("artifixer3d_checkpoint", {}).get("size_bytes")
-            or _sha256(checkpoint)
-            != task.get("artifixer3d_checkpoint", {}).get("sha256")
+            (
+                checkpoint is not None
+                and (
+                    checkpoint.stat().st_size != checkpoint_record.get("size_bytes")
+                    or _sha256(checkpoint) != checkpoint_record.get("sha256")
+                )
+            )
+            or (checkpoint is None) != (bundle.get("semantic_editor_only") is True)
             or len(frames) != bundle["task_camera_counts"][task_id]
             or task.get("outside_support_changed_pixels_total") != 0
         ):
@@ -1328,7 +1347,9 @@ def _materialize_raw_result(
             {
                 "task_id": task_id,
                 "final_candidate_frames": frames,
-                "artifixer3d_checkpoint": _record(checkpoint),
+                "artifixer3d_checkpoint": (
+                    _record(checkpoint) if checkpoint is not None else None
+                ),
                 "outside_support_changed_pixels_total": 0,
                 "semantic_object_free_review_passed": False,
                 "multiview_consistency_review_passed": False,
@@ -1591,9 +1612,14 @@ def run_artifixer3d_vast(
         or execution.get("status")
         != "candidate_completed_requires_visual_and_multiview_review"
         or execution.get("model_loaded") is not True
-        or execution.get("artifixer_direct_inference_executed") is not True
-        or execution.get("artifixer3d_distillation_executed") is not True
-        or execution.get("artifixer3d_plus_inference_executed") is not True
+        or execution.get("artifixer_direct_inference_executed")
+        != (bundle["direct_editor_backend"] == "artifixer")
+        or execution.get("semantic_editor_inference_executed")
+        != (bundle["direct_editor_backend"] == "qwen_image_edit_2511")
+        or execution.get("artifixer3d_distillation_executed")
+        != (not bundle["semantic_editor_only"])
+        or execution.get("artifixer3d_plus_inference_executed")
+        != (not bundle["semantic_editor_only"])
         or execution.get("provider_zero_required_after_return") is not True
         or execution.get("source_object_restoration_permitted") is not False
         or execution.get("outside_exact_support_changed_pixels_permitted") != 0

@@ -8,11 +8,13 @@ import sys
 import zipfile
 
 import pytest
+from PIL import Image
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ArtiFixer3DBundleError,
     DEFAULT_IMAGE,
+    QWEN_IMAGE_EDIT_REVISION,
     SCHEMA_VERSION,
     build_artifixer3d_bundle,
     materialize_artifixer3d_use_attestation,
@@ -152,6 +154,73 @@ def test_runner_preserves_completed_task_receipt_on_later_failure(
     assert runner._read_task_progress(output / runner.TASK_PROGRESS_FILENAME) is None
 
 
+def test_semantic_editor_only_runtime_stops_before_3d_training(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner_module()
+    task_id = "task_1"
+    staged = tmp_path / "input" / task_id
+    for name in ("renders", "images", "exact_masks"):
+        (staged / name).mkdir(parents=True)
+    Image.new("RGB", (8, 6), (10, 20, 30)).save(staged / "renders/00000.png")
+    Image.new("RGB", (8, 6), (0, 0, 0)).save(staged / "images/00000.png")
+    mask = Image.new("L", (8, 6), 0)
+    for x in range(2, 6):
+        for y in range(1, 5):
+            mask.putpixel((x, y), 255)
+    mask.save(staged / "exact_masks/00000.png")
+    prediction = tmp_path / "prediction.png"
+    Image.new("RGB", (8, 6), (90, 100, 110)).save(prediction)
+
+    monkeypatch.setattr(
+        runner,
+        "_semantic_editor_predictions",
+        lambda **_kwargs: (
+            {0: prediction},
+            [{"frame_index": 0, "camera_id": "camera_0"}],
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run",
+        lambda *_args, **_kwargs: pytest.fail("3D training must not start"),
+    )
+    result = runner._task_runtime(
+        task={
+            "task_id": task_id,
+            "direct_inference_folds": [],
+            "direct_prediction_coverage_indices": [0],
+            "frames": [
+                {
+                    "frame_index": 0,
+                    "camera_id": "camera_0",
+                    "rendered_rgb": {"relative_path": "renders/00000.png"},
+                    "masked_reference_rgb": {"relative_path": "images/00000.png"},
+                    "exact_repair_mask": {"relative_path": "exact_masks/00000.png"},
+                }
+            ],
+        },
+        input_root=tmp_path / "input",
+        source_root=tmp_path / "source",
+        output_root=tmp_path / "output",
+        checkpoint=tmp_path / "unused-checkpoint",
+        wan_root=tmp_path / "unused-wan",
+        semantic_editor_root=tmp_path / "semantic-model",
+        request={
+            "direct_editor_backend": "qwen_image_edit_2511",
+            "semantic_editor_only": True,
+            "semantic_editor": {},
+            "random_seed": 1,
+        },
+    )
+    assert result["artifixer3d_checkpoint"] is None
+    assert result["outside_support_changed_pixels_total"] == 0
+    assert len(result["final_candidate_frames"]) == 1
+    with Image.open(result["final_candidate_frames"][0]["path"]) as image:
+        assert image.getpixel((0, 0)) == (10, 20, 30)
+        assert image.getpixel((3, 2)) == (90, 100, 110)
+
+
 def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -215,6 +284,69 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert '/ "cutlass"\n    / "include"' in entrypoint
     assert '"ninja", "nvcc", "slangc"' in entrypoint
     assert '"single_cuda_device_unavailable"' in entrypoint
+
+
+def test_seals_semantic_editor_only_bundle_before_3d_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, commit, tree = _source(tmp_path)
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
+    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
+    candidate = _candidate(tmp_path)
+    receipt = build_artifixer3d_bundle(
+        candidate_inputs_receipt_path=candidate,
+        use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
+        artifixer_source_directory=source,
+        output_root=tmp_path / "bundle",
+        repository_root=_repository(tmp_path),
+        direct_editor_backend="qwen_image_edit_2511",
+        semantic_editor_only=True,
+    )
+
+    assert receipt["direct_editor_backend"] == "qwen_image_edit_2511"
+    assert receipt["semantic_editor_only"] is True
+    with zipfile.ZipFile(receipt["bundle"]["path"]) as archive:
+        request = json.loads(
+            archive.read("provider_runtime/artifixer3d_runtime_request.json")
+        )
+        runner = archive.read(
+            "provider_runtime/public_scene_artifixer3d_runner.py"
+        ).decode("utf-8")
+    assert request["semantic_editor"]["revision"] == QWEN_IMAGE_EDIT_REVISION
+    assert request["semantic_editor"]["license"] == "Apache-2.0"
+    assert request["semantic_editor"]["enable_model_cpu_offload"] is True
+    assert request["semantic_editor_only"] is True
+    assert request["phases"] == [
+        "semantic_editor_inference",
+        "exact_support_composite",
+        "external_visual_and_multiview_review",
+    ]
+    assert "QwenImageEditPlusPipeline" in runner
+    assert "SEMANTIC_EDITOR_PROMPT" in runner
+
+
+def test_rejects_semantic_only_with_nonsemantic_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, commit, tree = _source(tmp_path)
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
+    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
+    candidate = _candidate(tmp_path)
+    with pytest.raises(ArtiFixer3DBundleError, match="configuration_invalid"):
+        build_artifixer3d_bundle(
+            candidate_inputs_receipt_path=candidate,
+            use_attestation_path=_attestation(
+                candidate, tmp_path / "attestation.json"
+            ),
+            artifixer_source_directory=source,
+            output_root=tmp_path / "bundle",
+            repository_root=_repository(tmp_path),
+            semantic_editor_only=True,
+        )
 
 
 def test_rejects_tampered_candidate_or_dirty_source(

@@ -81,7 +81,12 @@ def _upgrade_parent_authority(candidate_path: Path) -> None:
 
 
 def _bundle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, count: int = 2
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    count: int = 2,
+    direct_editor_backend: str = "artifixer",
+    semantic_editor_only: bool = False,
 ) -> tuple[Path, dict[str, object]]:
     source, commit, tree = _source(tmp_path)
     import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
@@ -104,6 +109,8 @@ def _bundle(
         repository_root=_repository(tmp_path),
         allowed_active_instance_ids=[],
         artifixer3d_steps=10,
+        direct_editor_backend=direct_editor_backend,
+        semantic_editor_only=semantic_editor_only,
     )
     return tmp_path / "bundle/public_scene_artifixer3d_bundle_receipt.json", receipt
 
@@ -218,6 +225,22 @@ def test_bundle_kind_and_static_contract_are_registered(
     validated = validate_artifixer3d_bundle(receipt_path)
     assert validated["replacement_object_count"] == 2
     assert validated["task_camera_counts"] == {"task_1": 2, "task_2": 2}
+
+
+def test_semantic_editor_only_bundle_reopens_for_paid_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path, receipt = _bundle(
+        tmp_path,
+        monkeypatch,
+        direct_editor_backend="qwen_image_edit_2511",
+        semantic_editor_only=True,
+    )
+    validated = validate_artifixer3d_bundle(receipt_path)
+    assert validated["direct_editor_backend"] == "qwen_image_edit_2511"
+    assert validated["semantic_editor_only"] is True
+    assert validated["replacement_object_count"] == 2
+    bundle = Path(receipt["bundle"]["path"])
     assert validated["publisher_scene_id"] == "840920"
     assert validated["forbidden_external_instance_ids"] == [47373597]
     preflight = _blueprint_bundle_preflight(

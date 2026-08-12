@@ -21,6 +21,15 @@ RESULT_SCHEMA = "public_scene_artifixer3d_runtime_result.v1"
 TASK_PROGRESS_SCHEMA = "public_scene_artifixer3d_task_progress.v1"
 TASK_PROGRESS_FILENAME = "public_scene_artifixer3d_task_progress.json"
 INPUT_SCHEMA = "public_scene_artifixer3d_candidate_inputs.v3"
+DIRECT_EDITOR_BACKENDS = {"artifixer", "qwen_image_edit_2511"}
+SEMANTIC_EDITOR_PROMPT = (
+    "Reconstruct the natural empty background where the solid black masked hole "
+    "appears. Continue the surrounding floor, wall, cabinet, desk, curtain, and "
+    "their edges, texture, lighting, reflections, and perspective as appropriate. "
+    "The removed foreground object is absent. Add no replacement object, furniture, "
+    "text, decoration, silhouette, patch, blank panel, or solid-color shape. Preserve "
+    "the rest of the photograph exactly."
+)
 
 
 def _sha256(path: Path) -> str:
@@ -163,6 +172,7 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
         or manifest.get("contains_model_weights") is not False
         or request.get("source_object_restoration_permitted") is not False
         or request.get("outside_exact_support_changed_pixels_permitted") != 0
+        or request.get("direct_editor_backend") not in DIRECT_EDITOR_BACKENDS
         or manifest.get("blueprint_source_identity")
         != request.get("blueprint_source_identity")
         or attestation.get("attestation_digest")
@@ -181,6 +191,24 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
         or attestation.get("publication_authorized") is not False
     ):
         raise ValueError("artifixer3d_bundle_binding_invalid")
+    backend = request["direct_editor_backend"]
+    if manifest.get("direct_editor_backend") != backend:
+        raise ValueError("artifixer3d_bundle_binding_invalid")
+    semantic = request.get("semantic_editor")
+    if backend == "qwen_image_edit_2511":
+        if (
+            not isinstance(semantic, Mapping)
+            or semantic.get("backend") != backend
+            or semantic.get("license") != "Apache-2.0"
+            or semantic.get("output_must_be_exact_support_composited") is not True
+            or semantic.get("enable_model_cpu_offload") is not True
+            or manifest.get("semantic_editor_model_identity") != semantic
+        ):
+            raise ValueError("artifixer3d_semantic_editor_binding_invalid")
+        if not isinstance(request.get("semantic_editor_only"), bool):
+            raise ValueError("artifixer3d_semantic_editor_binding_invalid")
+    elif semantic is not None or manifest.get("semantic_editor_model_identity") is not None:
+        raise ValueError("artifixer3d_semantic_editor_binding_invalid")
     for row in manifest.get("candidate_files") or []:
         _bound(runtime / "input", row, "artifixer3d_candidate_file_invalid")
     for row in manifest.get("source_files") or []:
@@ -236,6 +264,26 @@ def _download_models(request: Mapping[str, Any], cache: Path) -> tuple[Path, Pat
     _verify_inventory(checkpoint_dir, model["files"], "artifixer3d_checkpoint_invalid")
     _verify_inventory(wan_dir, wan["files"], "artifixer3d_wan_runtime_invalid")
     return checkpoint, wan_dir
+
+
+def _download_semantic_editor(request: Mapping[str, Any], cache: Path) -> Path | None:
+    if request["direct_editor_backend"] != "qwen_image_edit_2511":
+        return None
+    from huggingface_hub import snapshot_download
+
+    semantic = request["semantic_editor"]
+    output = cache / "qwen_image_edit_2511"
+    snapshot_download(
+        repo_id=semantic["repository"],
+        revision=semantic["revision"],
+        local_dir=output,
+    )
+    _verify_inventory(
+        output,
+        semantic["large_files"],
+        "artifixer3d_semantic_editor_model_invalid",
+    )
+    return output
 
 
 def _zero_prompt(path: Path) -> None:
@@ -325,6 +373,71 @@ def _copy_scene(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, symlinks=False)
 
 
+def _semantic_editor_predictions(
+    *,
+    task: Mapping[str, Any],
+    staged_task: Path,
+    task_output: Path,
+    model_root: Path,
+    request: Mapping[str, Any],
+) -> tuple[dict[int, Path], list[dict[str, Any]]]:
+    import torch
+    from diffusers import QwenImageEditPlusPipeline
+    from PIL import Image
+
+    semantic = request["semantic_editor"]
+    pipeline = QwenImageEditPlusPipeline.from_pretrained(
+        str(model_root),
+        torch_dtype=torch.bfloat16,
+        local_files_only=True,
+    )
+    pipeline.enable_model_cpu_offload()
+    pipeline.set_progress_bar_config(disable=None)
+    predictions: dict[int, Path] = {}
+    rows: list[dict[str, Any]] = []
+    output_root = task_output / "semantic_editor" / "predictions"
+    for frame in task["frames"]:
+        index = int(frame["frame_index"])
+        source = staged_task / frame["masked_reference_rgb"]["relative_path"]
+        with Image.open(source) as image:
+            condition = image.convert("RGB")
+        generator = torch.Generator(device="cpu").manual_seed(
+            int(request["random_seed"]) + index
+        )
+        generated = pipeline(
+            image=condition,
+            prompt=SEMANTIC_EDITOR_PROMPT,
+            negative_prompt=(
+                "object, appliance, laptop, notebook, silhouette, blank panel, "
+                "solid white patch, blurry patch, floating geometry"
+            ),
+            true_cfg_scale=float(semantic["true_cfg_scale"]),
+            guidance_scale=float(semantic["guidance_scale"]),
+            num_inference_steps=int(semantic["num_inference_steps"]),
+            generator=generator,
+        ).images[0].convert("RGB")
+        if generated.size != condition.size:
+            generated = generated.resize(condition.size, Image.Resampling.LANCZOS)
+        output = output_root / f"{index:05d}.png"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        generated.save(output)
+        predictions[index] = output
+        rows.append(
+            {
+                "frame_index": index,
+                "camera_id": frame["camera_id"],
+                "prediction": {
+                    "path": str(output),
+                    "size_bytes": output.stat().st_size,
+                    "sha256": _sha256(output),
+                },
+            }
+        )
+    del pipeline
+    torch.cuda.empty_cache()
+    return predictions, rows
+
+
 def _task_runtime(
     *,
     task: Mapping[str, Any],
@@ -333,6 +446,7 @@ def _task_runtime(
     output_root: Path,
     checkpoint: Path,
     wan_root: Path,
+    semantic_editor_root: Path | None,
     request: Mapping[str, Any],
 ) -> dict[str, Any]:
     task_id = str(task["task_id"])
@@ -341,10 +455,25 @@ def _task_runtime(
     logs = task_output / "logs"
     python = sys.executable
     prompt = staged_task / "captions" / "unconditioned_zero_prompt.h5"
-    _zero_prompt(prompt)
+    if request.get("semantic_editor_only") is not True:
+        _zero_prompt(prompt)
     fold_predictions: dict[int, Path] = {}
     direct_rows: list[dict[str, Any]] = []
-    for fold in task["direct_inference_folds"]:
+    if request["direct_editor_backend"] == "qwen_image_edit_2511":
+        if semantic_editor_root is None:
+            raise ValueError("artifixer3d_semantic_editor_model_missing")
+        fold_predictions, direct_rows = _semantic_editor_predictions(
+            task=task,
+            staged_task=staged_task,
+            task_output=task_output,
+            model_root=semantic_editor_root,
+            request=request,
+        )
+    for fold in (
+        task["direct_inference_folds"]
+        if request["direct_editor_backend"] == "artifixer"
+        else []
+    ):
         fold_id = str(fold["fold_id"])
         template = staged_task / Path(fold["split_template"]["path"]).name
         split_path = staged_task / f"split.direct_{fold_id}.json"
@@ -417,6 +546,23 @@ def _task_runtime(
         )
         row.update(frame_index=index, camera_id=frame["camera_id"])
         composite_rows.append(row)
+
+    if request.get("semantic_editor_only") is True:
+        return {
+            "task_id": task_id,
+            "direct_editor_backend": request["direct_editor_backend"],
+            "direct_folds": direct_rows,
+            "direct_exact_composite_frames": composite_rows,
+            "artifixer3d_checkpoint": None,
+            "artifixer3d_log_sha256": None,
+            "artifixer3d_plus_log_sha256": None,
+            "final_candidate_frames": composite_rows,
+            "outside_support_changed_pixels_total": sum(
+                row["outside_support_changed_pixels"] for row in composite_rows
+            ),
+            "semantic_object_free_review_passed": False,
+            "multiview_consistency_review_passed": False,
+        }
 
     distill_split = repaired_scene / "split.distill.json"
     _write(
@@ -516,6 +662,7 @@ def _task_runtime(
         raise ValueError("artifixer3d_checkpoint_missing_or_ambiguous")
     return {
         "task_id": task_id,
+        "direct_editor_backend": request["direct_editor_backend"],
         "direct_folds": direct_rows,
         "direct_exact_composite_frames": composite_rows,
         "artifixer3d_checkpoint": {
@@ -563,7 +710,12 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
             "blockers": [],
         }
     cache = bundle_root.parent / "artifixer3d_model_cache"
-    checkpoint, wan_root = _download_models(request, cache)
+    semantic_editor_root = _download_semantic_editor(request, cache)
+    if request.get("semantic_editor_only") is True:
+        checkpoint = Path("unused-semantic-editor-only")
+        wan_root = Path("unused-semantic-editor-only")
+    else:
+        checkpoint, wan_root = _download_models(request, cache)
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     source_root = bundle_root / "provider_runtime" / "ArtiFixer_official"
@@ -578,6 +730,7 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
             output_root=output_root,
             checkpoint=checkpoint,
             wan_root=wan_root,
+            semantic_editor_root=semantic_editor_root,
             request=request,
         )
         tasks.append(completed)
@@ -596,9 +749,18 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
         "status": "candidate_completed_requires_visual_and_multiview_review",
         "tasks": tasks,
         "model_loaded": True,
-        "artifixer_direct_inference_executed": True,
-        "artifixer3d_distillation_executed": True,
-        "artifixer3d_plus_inference_executed": True,
+        "artifixer_direct_inference_executed": (
+            request["direct_editor_backend"] == "artifixer"
+        ),
+        "semantic_editor_inference_executed": (
+            request["direct_editor_backend"] == "qwen_image_edit_2511"
+        ),
+        "artifixer3d_distillation_executed": (
+            request.get("semantic_editor_only") is not True
+        ),
+        "artifixer3d_plus_inference_executed": (
+            request.get("semantic_editor_only") is not True
+        ),
         "provider_mutations_performed": 1,
         "blockers": [
             "semantic_object_free_visual_review_required",
