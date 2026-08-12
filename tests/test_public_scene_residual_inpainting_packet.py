@@ -489,6 +489,41 @@ def test_blocks_coverage_from_a_different_retained_scene(tmp_path: Path) -> None
         )
 
 
+def test_derives_legacy_audit_removal_and_mask_identity_from_task_freeze(tmp_path: Path) -> None:
+    request_path, _candidate = _packet_inputs(tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    coverage_path = Path(request["task_lanes"][0]["coverage_audit_path"])
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    coverage.pop("removal_id")
+    coverage.pop("mask_set_id")
+    coverage["manifest_digest"] = canonical_digest(coverage, digest_field="manifest_digest")
+    _write_json(coverage_path, coverage)
+
+    packet = materialize_residual_inpainting_input_packet(
+        request_path=request_path, output_root=tmp_path / "packet"
+    )
+
+    lane_path = Path(packet["lanes"][0]["path"])
+    lane = json.loads(lane_path.read_text(encoding="utf-8"))
+    assert lane["removal_id"] == "removal_1"
+    assert lane["mask_set_id"] == "mask_set_1"
+
+
+def test_blocks_audit_that_attempts_to_override_task_freeze_mask_identity(tmp_path: Path) -> None:
+    request_path, _candidate = _packet_inputs(tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    coverage_path = Path(request["task_lanes"][0]["coverage_audit_path"])
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    coverage["mask_set_id"] = "other-mask-set"
+    coverage["manifest_digest"] = canonical_digest(coverage, digest_field="manifest_digest")
+    _write_json(coverage_path, coverage)
+
+    with pytest.raises(ResidualInpaintingInputPacketError, match="coverage_task_join_invalid"):
+        materialize_residual_inpainting_input_packet(
+            request_path=request_path, output_root=tmp_path / "packet"
+        )
+
+
 def test_blocks_deleted_source_layer_that_is_not_byte_exact_to_deletion_indices(
     tmp_path: Path,
 ) -> None:

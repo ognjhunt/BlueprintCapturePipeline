@@ -449,9 +449,20 @@ def _validate_coverage_audit(
     if (
         audit.get("task_id") != task_freeze.get("task_id")
         or audit.get("task_freeze_digest") != task_freeze.get("task_freeze_digest")
-        or audit.get("removal_id") != removal.get("removal_id")
-        or audit.get("mask_set_id") != removal.get("mask_set_id")
         or audit.get("replacement_asset_id") != candidate.get("replacement_asset_id")
+        # Older source-layer audit receipts predate the residual-packet
+        # contract and therefore bind the frozen task but have no duplicated
+        # removal/mask keys.  The packet obtains those identities from the
+        # validated task freeze below.  Once an audit does carry either key,
+        # it must agree and cannot override the freeze.
+        or (
+            audit.get("removal_id") is not None
+            and audit.get("removal_id") != removal.get("removal_id")
+        )
+        or (
+            audit.get("mask_set_id") is not None
+            and audit.get("mask_set_id") != removal.get("mask_set_id")
+        )
     ):
         raise ResidualInpaintingInputPacketError(
             ["residual_inpainting_coverage_task_join_invalid"]
