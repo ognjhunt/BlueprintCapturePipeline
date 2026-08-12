@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import struct
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
     ArtiFixer3DCandidateInputError,
     SCHEMA_VERSION,
@@ -19,12 +21,30 @@ from blueprint_pipeline.public_scene_aura_exact_residual_preflight import (
 from tests.test_public_scene_aura_exact_residual_preflight import _packet
 
 
-def _preflight(tmp_path: Path, *, count: int = 2) -> Path:
+def _preflight(
+    tmp_path: Path, *, count: int = 2, cameras_per_task: int = 1
+) -> Path:
     packet = _packet(tmp_path, count=count)
     output = tmp_path / "preflight.json"
     materialize_aura_exact_residual_preflight(
         input_packet_path=packet, output_path=output
     )
+    if cameras_per_task == 2:
+        value = json.loads(output.read_text())
+        expanded = []
+        for row in value["camera_inputs"]:
+            expanded.append(row)
+            duplicate = deepcopy(row)
+            duplicate["camera_id"] = f"{row['camera_id']}_second"
+            duplicate["calibration"]["spec"]["pose"][
+                "T_world_camera_opencv"
+            ][0][3] += 0.25
+            expanded.append(duplicate)
+        value["camera_inputs"] = expanded
+        value["preflight_digest"] = canonical_digest(
+            value, digest_field="preflight_digest"
+        )
+        output.write_text(canonical_json(value) + "\n", encoding="utf-8")
     return output
 
 
@@ -105,6 +125,42 @@ def test_masks_references_and_builds_exact_inverse_opacity(tmp_path: Path) -> No
         dtype=np.float64,
     ) @ np.diag([1.0, -1.0, -1.0, 1.0])
     assert np.allclose(transforms["frames"][0]["transform_matrix"], expected)
+
+
+def test_materializes_colmap_seed_and_complementary_direct_folds(
+    tmp_path: Path,
+) -> None:
+    preflight = _preflight(tmp_path, count=1, cameras_per_task=2)
+    receipt = materialize_artifixer3d_candidate_inputs(
+        calibrated_residual_preflight_path=preflight,
+        output_root=tmp_path / "artifixer",
+    )
+
+    task = receipt["tasks"][0]
+    task_root = Path(task["scene_directory"])
+    distillation = task["artifixer3d_distillation"]
+    assert distillation["eligible"] is True
+    assert distillation["selected_anchor_indices"] == [0]
+    assert distillation["generated_prediction_indices"] == [1]
+    assert task["direct_prediction_coverage_indices"] == [0, 1]
+    assert len(task["direct_inference_folds"]) == 2
+    for fold in task["direct_inference_folds"]:
+        assert not set(fold["selected_indices"]) & set(fold["target_indices"])
+        split = json.loads(
+            Path(fold["split_template"]["path"]).read_text(encoding="utf-8")
+        )
+        metadata = split["upstream_split"]["test"][task["task_id"]]
+        assert metadata["image_root"] == "."
+        assert metadata["target_indices_path"].startswith("target_indices.")
+
+    cameras = task_root / "sparse" / "0" / "cameras.bin"
+    images = task_root / "sparse" / "0" / "images.bin"
+    points = task_root / "sparse" / "0" / "points3D.bin"
+    assert struct.unpack("<Q", cameras.read_bytes()[:8])[0] == 2
+    assert struct.unpack("<Q", images.read_bytes()[:8])[0] == 2
+    assert struct.unpack("<Q", points.read_bytes()[:8])[0] == receipt[
+        "shared_retained_scene"
+    ]["retained_gaussian_count"]
 
 
 def test_rejects_tampered_preflight_or_nonempty_output(tmp_path: Path) -> None:

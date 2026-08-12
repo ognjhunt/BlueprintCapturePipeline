@@ -18,6 +18,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import shutil
+import struct
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -27,15 +30,17 @@ from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
+from .gaussian_splat_decode import read_standard_3dgs_ply
 from .public_scene_aura_exact_residual_preflight import (
     SCHEMA_VERSION as CALIBRATED_RESIDUAL_PREFLIGHT_SCHEMA,
 )
 
 
-SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v1"
+SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v2"
 CAMERA_INDEX_SCHEMA = "public_scene_artifixer3d_camera_index.v1"
 SPLIT_TEMPLATE_SCHEMA = "public_scene_artifixer3d_split_template.v1"
 CAMERA_CONVENTION_FLIP = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float64)
+SH_C0 = 0.28209479177387814
 
 
 class ArtiFixer3DCandidateInputError(ValueError):
@@ -266,6 +271,148 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(canonical_json(value) + "\n", encoding="utf-8")
 
 
+def _rotmat_to_qvec(rotation: np.ndarray) -> np.ndarray:
+    rxx, ryx, rzx, rxy, ryy, rzy, rxz, ryz, rzz = rotation.flat
+    matrix = np.asarray(
+        [
+            [rxx - ryy - rzz, 0.0, 0.0, 0.0],
+            [ryx + rxy, ryy - rxx - rzz, 0.0, 0.0],
+            [rzx + rxz, rzy + ryz, rzz - rxx - ryy, 0.0],
+            [ryz - rzy, rzx - rxz, rxy - ryx, rxx + ryy + rzz],
+        ],
+        dtype=np.float64,
+    ) / 3.0
+    values, vectors = np.linalg.eigh(matrix)
+    qvec = vectors[[3, 0, 1, 2], int(np.argmax(values))]
+    return -qvec if qvec[0] < 0 else qvec
+
+
+def _retained_splat(preflight: Mapping[str, Any]):
+    record = preflight.get("shared_retained_scene")
+    path = _bound_absolute(record, code="artifixer3d_retained_splat_invalid")
+    splat = read_standard_3dgs_ply(path)
+    if (
+        not isinstance(record, Mapping)
+        or record.get("retained_gaussian_count") != splat.count
+        or splat.count <= 0
+    ):
+        raise ArtiFixer3DCandidateInputError(["artifixer3d_retained_splat_invalid"])
+    return path, splat
+
+
+def _write_colmap_points3d(path: Path, splat: Any) -> None:
+    """Convert retained splat centers to a deterministic COLMAP seed cloud."""
+
+    rgb = np.rint(
+        np.clip(0.5 + SH_C0 * np.asarray(splat.f_dc), 0.0, 1.0) * 255.0
+    ).astype(np.uint8)
+    with path.open("wb") as stream:
+        stream.write(struct.pack("<Q", int(splat.count)))
+        for point_id, (xyz, color) in enumerate(zip(splat.xyz, rgb), start=1):
+            stream.write(
+                struct.pack(
+                    "<QdddBBBdQ",
+                    point_id,
+                    float(xyz[0]),
+                    float(xyz[1]),
+                    float(xyz[2]),
+                    int(color[0]),
+                    int(color[1]),
+                    int(color[2]),
+                    0.0,
+                    0,
+                )
+            )
+
+
+def _write_colmap_cameras_and_images(
+    sparse: Path, rows: Sequence[Mapping[str, Any]]
+) -> None:
+    """Write the binary COLMAP calibration ArtiFixer3D reads directly."""
+
+    camera_path = sparse / "cameras.bin"
+    image_path = sparse / "images.bin"
+    with camera_path.open("wb") as cameras, image_path.open("wb") as images:
+        cameras.write(struct.pack("<Q", len(rows)))
+        images.write(struct.pack("<Q", len(rows)))
+        for index, row in enumerate(rows, start=1):
+            intrinsic = row["intrinsics"]
+            cameras.write(
+                struct.pack(
+                    "<iiQQdddddddd",
+                    index,
+                    4,  # COLMAP OPENCV
+                    int(intrinsic["w"]),
+                    int(intrinsic["h"]),
+                    float(intrinsic["fl_x"]),
+                    float(intrinsic["fl_y"]),
+                    float(intrinsic["cx"]),
+                    float(intrinsic["cy"]),
+                    float(intrinsic["k1"]),
+                    float(intrinsic["k2"]),
+                    float(intrinsic["p1"]),
+                    float(intrinsic["p2"]),
+                )
+            )
+            world_to_camera = np.linalg.inv(row["T_world_camera_opencv"])
+            qvec = _rotmat_to_qvec(world_to_camera[:3, :3])
+            images.write(
+                struct.pack(
+                    "<idddddddi",
+                    index,
+                    *qvec,
+                    *world_to_camera[:3, 3],
+                    index,
+                )
+            )
+            images.write(f"{index - 1:05d}.png".encode("utf-8") + b"\x00")
+            images.write(struct.pack("<Q", 0))
+
+
+def _link_or_copy(source: Path, destination: Path) -> None:
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copyfile(source, destination)
+    if _sha256(source) != _sha256(destination):
+        raise ArtiFixer3DCandidateInputError(
+            ["artifixer3d_colmap_seed_copy_invalid"]
+        )
+
+
+def _split_template(
+    *,
+    task_id: str,
+    selected_name: str,
+    target_name: str | None,
+    render_trajectory: str,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "transforms_path": "transforms.json",
+        "image_root": ".",
+        "render_dir": "renders",
+        "opacity_dir": "opacity",
+        "selected_indices_path": selected_name,
+        "prompt_path": "captions/unconditioned_zero_prompt.h5",
+        "camera_scale": 1.0,
+        "has_gt": False,
+    }
+    if target_name is not None:
+        metadata["target_indices_path"] = target_name
+    value: dict[str, Any] = {
+        "schema_version": SPLIT_TEMPLATE_SCHEMA,
+        "upstream_evalset": "reconstructed_colmap",
+        "upstream_split": {"test": {task_id: metadata}},
+        "prompt_artifact_materialized": False,
+        "render_trajectory": render_trajectory,
+        "split_template_digest": "",
+    }
+    value["split_template_digest"] = canonical_digest(
+        value, digest_field="split_template_digest"
+    )
+    return value
+
+
 def materialize_artifixer3d_candidate_inputs(
     *, calibrated_residual_preflight_path: str | Path, output_root: str | Path
 ) -> dict[str, Any]:
@@ -277,6 +424,7 @@ def materialize_artifixer3d_candidate_inputs(
     )
     preflight = _validated_preflight(preflight_path)
     publisher_scene_id, execution_authority = _scene_identity(preflight)
+    retained_splat_path, retained_splat = _retained_splat(preflight)
     rows = preflight.get("camera_inputs")
     if not isinstance(rows, list) or not rows:
         raise ArtiFixer3DCandidateInputError(["artifixer3d_camera_inputs_missing"])
@@ -292,6 +440,10 @@ def materialize_artifixer3d_candidate_inputs(
     if output.exists() and any(output.iterdir()):
         raise ArtiFixer3DCandidateInputError(["artifixer3d_output_not_empty"])
     output.mkdir(parents=True, exist_ok=True)
+    shared_seed_root = output / "shared_initialization"
+    shared_seed_root.mkdir()
+    shared_points = shared_seed_root / "points3D.bin"
+    _write_colmap_points3d(shared_points, retained_splat)
     task_receipts: list[dict[str, Any]] = []
     for task_id in task_ids:
         task_root = output / task_id
@@ -299,7 +451,14 @@ def materialize_artifixer3d_candidate_inputs(
         renders_root = task_root / "renders"
         opacity_root = task_root / "opacity"
         masks_root = task_root / "exact_masks"
-        for directory in (images_root, renders_root, opacity_root, masks_root):
+        sparse_root = task_root / "sparse" / "0"
+        for directory in (
+            images_root,
+            renders_root,
+            opacity_root,
+            masks_root,
+            sparse_root,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         task_rows = _ordered_cameras(
             [row for row in normalized if row["task_id"] == task_id]
@@ -357,9 +516,17 @@ def materialize_artifixer3d_candidate_inputs(
         transforms = {**top_intrinsics, "frames": transforms_frames}
         transforms_path = task_root / "transforms.json"
         _write_json(transforms_path, transforms)
-        selected_indices = list(range(len(task_rows)))
+        _write_colmap_cameras_and_images(sparse_root, task_rows)
+        _link_or_copy(shared_points, sparse_root / "points3D.bin")
+
+        all_indices = list(range(len(task_rows)))
+        selected_indices = all_indices[::2]
+        target_indices = all_indices[1::2]
         selected_path = task_root / "selected_indices.json"
         _write_json(selected_path, selected_indices)
+        target_path = task_root / "target_indices.json"
+        if target_indices:
+            _write_json(target_path, target_indices)
         camera_index: dict[str, Any] = {
             "schema_version": CAMERA_INDEX_SCHEMA,
             "ordering": (
@@ -378,33 +545,40 @@ def materialize_artifixer3d_candidate_inputs(
         )
         camera_index_path = task_root / "camera_index.json"
         _write_json(camera_index_path, camera_index)
-        prompt_path = task_root / "captions" / "unconditioned_zero_prompt.h5"
-        split_template: dict[str, Any] = {
-            "schema_version": SPLIT_TEMPLATE_SCHEMA,
-            "upstream_evalset": "reconstructed_colmap",
-            "upstream_split": {
-                "test": {
-                    task_id: {
-                        "transforms_path": "transforms.json",
-                        "image_root": "images",
-                        "render_dir": "renders",
-                        "opacity_dir": "opacity",
-                        "selected_indices_path": "selected_indices.json",
-                        "prompt_path": "captions/unconditioned_zero_prompt.h5",
-                        "camera_scale": 1.0,
-                        "has_gt": False,
-                    }
+        split_rows: list[dict[str, Any]] = []
+        fold_sets = [("fold_0", selected_indices, target_indices)]
+        if target_indices:
+            fold_sets.append(("fold_1", target_indices, selected_indices))
+        for fold_id, anchors, targets in fold_sets:
+            selected_name = f"selected_indices.{fold_id}.json"
+            _write_json(task_root / selected_name, anchors)
+            target_name = None
+            trajectory = "all_frames"
+            if targets:
+                target_name = f"target_indices.{fold_id}.json"
+                _write_json(task_root / target_name, targets)
+                trajectory = "trajectory"
+            split_template = _split_template(
+                task_id=task_id,
+                selected_name=selected_name,
+                target_name=target_name,
+                render_trajectory=trajectory,
+            )
+            split_path = task_root / f"split.direct_{fold_id}.template.json"
+            _write_json(split_path, split_template)
+            split_rows.append(
+                {
+                    "fold_id": fold_id,
+                    "selected_indices": anchors,
+                    "target_indices": targets,
+                    "split_template": {
+                        **_record(split_path),
+                        "split_template_digest": split_template[
+                            "split_template_digest"
+                        ],
+                    },
                 }
-            },
-            "prompt_artifact_materialized": prompt_path.is_file(),
-            "render_trajectory": "all_frames",
-            "split_template_digest": "",
-        }
-        split_template["split_template_digest"] = canonical_digest(
-            split_template, digest_field="split_template_digest"
-        )
-        split_path = task_root / "split.template.json"
-        _write_json(split_path, split_template)
+            )
         task_receipts.append(
             {
                 "task_id": task_id,
@@ -413,15 +587,27 @@ def materialize_artifixer3d_candidate_inputs(
                 "frames": frame_rows,
                 "transforms": _record(transforms_path),
                 "selected_indices": _record(selected_path),
+                "target_indices": _record(target_path)
+                if target_indices
+                else None,
+                "direct_inference_folds": split_rows,
+                "direct_prediction_coverage_indices": sorted(
+                    {index for row in split_rows for index in row["target_indices"]}
+                    or set(all_indices)
+                ),
+                "artifixer3d_distillation": {
+                    "selected_anchor_indices": selected_indices,
+                    "generated_prediction_indices": target_indices,
+                    "eligible": bool(target_indices),
+                    "source_colmap": {
+                        "cameras": _record(sparse_root / "cameras.bin"),
+                        "images": _record(sparse_root / "images.bin"),
+                        "points3D": _record(sparse_root / "points3D.bin"),
+                    },
+                },
                 "camera_index": {
                     **_record(camera_index_path),
                     "camera_index_digest": camera_index["camera_index_digest"],
-                },
-                "split_template": {
-                    **_record(split_path),
-                    "split_template_digest": split_template[
-                        "split_template_digest"
-                    ],
                 },
             }
         )
@@ -435,6 +621,11 @@ def materialize_artifixer3d_candidate_inputs(
             **_record(preflight_path),
             "preflight_digest": preflight["preflight_digest"],
         },
+        "shared_retained_scene": {
+            **_record(retained_splat_path),
+            "retained_gaussian_count": retained_splat.count,
+        },
+        "shared_colmap_initialization_points3D": _record(shared_points),
         "execution_authority": execution_authority,
         "replacement_object_count": preflight["replacement_object_count"],
         "maximum_replacement_objects": MAX_REPLACEMENT_OBJECTS,
@@ -455,7 +646,8 @@ def materialize_artifixer3d_candidate_inputs(
             "mask_dilation_pixels": 0,
             "direct_output_must_be_composited_inside_exact_support": True,
             "artifixer3d_distillation_input": (
-                "exact_support_composited_direct_predictions_only"
+                "masked_retained_anchor_views_plus_exact_support_composited_"
+                "direct_predictions_for_complementary_target_views"
             ),
             "artifixer3d_plus_input": "renders_from_candidate_artifixer3d_representation",
         },
@@ -465,6 +657,14 @@ def materialize_artifixer3d_candidate_inputs(
             "artifixer_cuda_container_image_not_bound",
             "artifixer_noncommercial_research_development_attestation_not_bound",
             "artifixer_unconditioned_zero_prompt_hdf5_not_materialized",
+            *(
+                []
+                if all(
+                    task["artifixer3d_distillation"]["eligible"]
+                    for task in task_receipts
+                )
+                else ["artifixer3d_requires_at_least_two_calibrated_views_per_task"]
+            ),
         ],
         "scientific_limitations": [
             "native_continuous_3dgrut_opacity_unavailable_binary_exact_support_surrogate_used",
