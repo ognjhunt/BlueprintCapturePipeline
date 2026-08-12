@@ -357,7 +357,6 @@
               "physxMaterial:compliantContactDamping",
               "physxMaterial:compliantContactStiffness",
               "physxRigidBody:angularDamping",
-              "physxRigidBody:disableGravity",
               "physxRigidBody:linearDamping"
             ],
             "mapped_property_prefixes": [
@@ -365,6 +364,10 @@
               "physxMimicJoint:"
             ],
             "unmapped_authored_property_policy": "block_value_before_newton_model_import",
+            "unrepresentable_property_names": [
+              "physxRigidBody:disableGravity"
+            ],
+            "unrepresentable_authored_property_policy": "fail_closed_before_provider_launch_not_comparable",
             "physx_contact_report_api_activation": false,
             "arena_solver_iteration_overrides_authored": false,
             "arena_max_depenetration_velocity_override_authored": false,
@@ -372,10 +375,10 @@
           },
           "newton_importer_revision": "2684d75bfa4bb8b058a93b81c458a74b7701c997",
           "runtime_receipt_required": true,
-          "overlay_digest": "sha256:e98dfe0accdf19d5daf139468e5af40b64cb3eb5a9bcc3599ba672159ae7b0d1"
+          "overlay_digest": "sha256:4766188ad656344c866762945cd8593f4777160309bb684d17d5b9474756f3ba"
         }
       },
-      "profile_digest": "sha256:8f46f2c5e68cffb0d5a7b36b9b7b54b49e4d0e1c5e6e3caeb45cbdaf6a12290f"
+      "profile_digest": "sha256:953480dc084beb799e90293e26b214162c64a4c836db53dd3919bd3b5e21e285"
     }
   },
   "backend_contact_configurations": {
@@ -403,7 +406,7 @@
     "newton": {
       "schema_version": "adp009d_backend_contact_configuration.v1",
       "physics_backend": "newton",
-      "backend_profile_digest": "sha256:8f46f2c5e68cffb0d5a7b36b9b7b54b49e4d0e1c5e6e3caeb45cbdaf6a12290f",
+      "backend_profile_digest": "sha256:953480dc084beb799e90293e26b214162c64a4c836db53dd3919bd3b5e21e285",
       "contact_model": {
         "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
         "contact_generation": "mujoco_warp_from_generic_usd_import",
@@ -419,7 +422,7 @@
       "planner_contact_allowance_m": 0.0,
       "planner_contact_allowance_source": "generic_surface_geometry_only_no_physx_standoff_assumed",
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "configuration_digest": "sha256:c331cc100d995a7f044e08c676961d9d8cd35c39053dea1acd1b901d928d3a09"
+      "configuration_digest": "sha256:dd310015d8470619d9d21b5641b9d1b0997dbefbc7fd631b193b646a0f3fe8ca"
     }
   },
   "common_comparability_bindings": [
@@ -488,5 +491,5 @@
   },
   "provider_mutation_performed": false,
   "claim_ceiling": "controls_comparison_design_only",
-  "design_digest": "sha256:6ac1a23917bf009c4a6e406b4914aa18007e0d5fb2dc69ffbc69611114856ec1"
+  "design_digest": "sha256:7beac1cf97ab655a5039fc28a4393bfba7f0344d235770f0048ae684ad650a3f"
 }

@@ -115,6 +115,7 @@ try:  # flat provider-bundle layout, where this file runs as a script
         normalize_physics_backend,
         validate_backend_probe,
         validate_backend_profile,
+        validate_newton_dynamics_representable,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_physics_backend_comparison import (
@@ -133,6 +134,7 @@ except ModuleNotFoundError:  # imported as part of the repository package
         normalize_physics_backend,
         validate_backend_probe,
         validate_backend_profile,
+        validate_newton_dynamics_representable,
     )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
@@ -914,6 +916,28 @@ def _block_newton_unmapped_physx_properties(
         raise RuntimeError("adp009d_newton_robot_root_missing")
     mapped: list[dict[str, str]] = []
     blocked: list[dict[str, str]] = []
+    authored: list[dict[str, str]] = []
+    for prim in Usd.PrimRange(robot_prim):
+        for attribute in prim.GetAttributes():
+            property_name = str(attribute.GetName())
+            if (
+                not property_name.lower().startswith("physx")
+                or not attribute.HasAuthoredValue()
+            ):
+                continue
+            authored.append(
+                {
+                    "prim_path": str(prim.GetPath()),
+                    "property_name": property_name,
+                }
+            )
+    # Blocking a property Newton cannot express does not make the two backends
+    # comparable, it just changes the dynamics silently: dropping
+    # ``disableGravity`` leaves PhysX with a weightless arm and Newton with a
+    # full-weight one.  Refuse before the paid allocation does any work.
+    representability = validate_newton_dynamics_representable(authored)
+    if representability["status"] != "admitted":
+        raise RuntimeError(representability["typed_blocker"])
     for prim in Usd.PrimRange(robot_prim):
         for attribute in prim.GetAttributes():
             property_name = str(attribute.GetName())

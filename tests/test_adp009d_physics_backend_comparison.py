@@ -18,6 +18,9 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
     FRANKA_SOURCE_MESH_SCALE,
     MEASUREMENT_FIELDS,
+    NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
+    NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
+    NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES,
     PROBE_SCHEMA_VERSION,
     PhysicsBackendContractError,
     build_backend_control_run_receipt,
@@ -34,6 +37,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     validate_comparison_receipt,
     validate_comparison_design_contract,
     validate_newton_canary_admission,
+    validate_newton_dynamics_representable,
 )
 from blueprint_pipeline.adp009d_provider_zero import build_provider_zero_receipt
 from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
@@ -1059,3 +1063,68 @@ def test_comparison_rejects_untyped_or_terminal_measurement_gaps() -> None:
         "blockers"
     ]
     assert validate_comparison_receipt(receipt) == []
+
+
+def test_disable_gravity_is_not_claimed_as_a_newton_mapped_property() -> None:
+    """PhysX honours per-body gravity disable; the Newton MJCF has no equivalent.
+
+    Measured on the sealed asset: PhysX held the canonical pose to 4.649e-06 rad
+    because ``disable_gravity=True`` makes the arm weightless, while the Newton
+    model mjwarp actually simulated carried the full 18.28 kg and drifted
+    0.853033662 rad.  Listing the property as *mapped* asserted a semantic Newton
+    does not provide, so the divergence surfaced as a hold failure instead of a
+    typed non-comparability blocker.
+    """
+
+    assert (
+        "physxRigidBody:disableGravity"
+        not in NEWTON_MAPPED_PHYSX_PROPERTY_NAMES
+    )
+    assert (
+        "physxRigidBody:disableGravity"
+        in NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES
+    )
+    for property_name in NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES:
+        assert property_name not in NEWTON_MAPPED_PHYSX_PROPERTY_NAMES
+        assert not any(
+            property_name.startswith(prefix)
+            for prefix in NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES
+        )
+
+
+def test_unrepresentable_physx_property_fails_closed_before_a_paid_newton_run() -> None:
+    """An authored dynamics-changing property Newton cannot express must block."""
+
+    admission = validate_newton_dynamics_representable(
+        [
+            {
+                "prim_path": "/World/template/Robot/proto_asset_0/panda_link4",
+                "property_name": "physxRigidBody:disableGravity",
+            }
+        ]
+    )
+    assert admission["status"] == "blocked"
+    assert admission["comparable_across_backends"] is False
+    assert admission["typed_blocker"] == (
+        "adp009d_newton_unrepresentable_physx_property:physxRigidBody:disableGravity"
+    )
+    assert admission["affected_prim_paths"] == [
+        "/World/template/Robot/proto_asset_0/panda_link4"
+    ]
+
+
+def test_representable_physx_properties_admit_cleanly() -> None:
+    """Properties Newton does express must not be turned into false blockers."""
+
+    admission = validate_newton_dynamics_representable(
+        [
+            {
+                "prim_path": "/World/template/Robot/proto_asset_0/panda_link4",
+                "property_name": "physxJoint:maxJointVelocity",
+            }
+        ]
+    )
+    assert admission["status"] == "admitted"
+    assert admission["comparable_across_backends"] is True
+    assert admission["typed_blocker"] is None
+    assert admission["affected_prim_paths"] == []

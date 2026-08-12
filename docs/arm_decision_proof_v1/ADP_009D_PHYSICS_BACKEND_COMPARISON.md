@@ -285,3 +285,68 @@ Newton remains comparison evidence only until both backends achieve evidence
 parity and an independently meaningful deterministic fidelity result exists.
 Even then, the receipt only makes a promotion review eligible; it never promotes
 an engine automatically.
+
+## Root cause of the Newton hold drift: the robot is weightless under PhysX
+
+The hold drift is not a Newton solver defect and not an actuator tuning gap. It
+is a physics property whose semantics only one backend can express, diagnosed
+entirely from retained evidence of the ninth run at no additional GPU cost.
+
+The sealed Franka/Robotiq asset authors `physxRigidBody:disableGravity` on all
+eighteen robot bodies — every Panda link and every Robotiq body — and the
+runtime configuration confirms `RigidBodyPropertiesCfg(disable_gravity=True)`.
+PhysX honours that: its arm carries no weight, which is why the PhysX run at the
+bitwise-identical canonical pose, timestep, decimation and forty-frame warmup
+held to `4.649162292480469e-06` rad.
+
+The Newton model mjwarp actually simulated is retained as
+`newton_converted_model.xml` (the runtime's `save_to_mjcf` target). It contains
+no `gravcomp` attribute and no other expression of per-body gravity disable, so
+its arm carries the full 18.28 kg. Recomputing from that exact model, the
+gravity torque at the canonical pose is `20.070` N·m at `panda_joint4`. The
+converted model drives every arm joint with `gainprm=400`, `biasprm="0 -400 -80"`
+— an explicit PD at kp=400 — so the steady-state droop alone is
+`20.070 / 400 = 0.0502` rad, five times the `1.0e-2` hold gate, before any
+transient. Newton could not have passed that gate as configured, by arithmetic.
+The observed `0.853033662` rad is that droop plus an underdamped transient
+(`kd=80` against zero joint armature), and the earlier NaN is the same mechanism
+at a more marginal operating point.
+
+Toggling only gravity on the identical retained model, with contacts and the
+Robotiq equality constraints isolated, flips the hold from `0.000000000` rad to
+`2.504` rad, and the joints that drift are exactly the joints that drift in the
+paid run: `panda_joint4` largest, then `panda_joint2` and `panda_joint6`, with
+`panda_joint1/3/5/7` unaffected.
+
+`physxRigidBody:disableGravity` was listed in
+`NEWTON_MAPPED_PHYSX_PROPERTY_NAMES`, which asserted that Newton gives the
+property semantics. That assertion was false, and it is the specific defect: a
+dynamics-changing PhysX property was silently ignored, so the divergence
+surfaced as a downstream hold failure that reads like a Newton stability problem
+instead of as a typed non-comparability blocker. Blocking the attribute would
+not have helped either — it would leave PhysX weightless and Newton loaded, which
+is the same divergence with no error.
+
+The property is now classified in `NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES`
+and `validate_newton_dynamics_representable` fails closed with typed blocker
+`adp009d_newton_unrepresentable_physx_property:physxRigidBody:disableGravity`
+before a Newton allocation does any work. The revised Newton profile digest is
+`sha256:ab6ddfae0dc9fe6e0b9901e3950c2992245f161ee2a1461b9b5db17f957a42de` and
+the revised provider-free comparison-design digest is
+`sha256:7beac1cf97ab655a5039fc28a4393bfba7f0344d235770f0048ae684ad650a3f`.
+
+Two consequences follow, and neither is a Newton verdict.
+
+First, no bounded Newton retest is scientifically justified until the gravity
+semantics are settled, because a retest of the current configuration would only
+re-measure the same droop.
+
+Second, and more important for the programme than the Newton question: the
+production PhysX baseline simulates a robot arm that does not carry its own
+weight. Every joint torque, contact force and clearance measurement collected
+under that baseline was measured on a weightless arm. That is a fidelity
+property of the current default backend, it is not caused by Newton, and it
+bounds what the existing PhysX controls evidence can claim about real
+manipulation. Making the two backends comparable requires deciding whether the
+arm should carry its weight at all; that decision changes the PhysX baseline,
+not only the Newton lane.
