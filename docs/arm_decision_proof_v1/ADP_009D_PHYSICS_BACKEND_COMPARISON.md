@@ -350,3 +350,69 @@ bounds what the existing PhysX controls evidence can claim about real
 manipulation. Making the two backends comparable requires deciding whether the
 arm should carry its weight at all; that decision changes the PhysX baseline,
 not only the Newton lane.
+
+## Second, independent Newton defect: the Robotiq drive is explicitly unstable
+
+Separating the arm from the gripper in the retained model isolates a second
+defect that the gravity finding was masking. With the gripper actuator frozen,
+the arm under full gravity tracks first-principles theory exactly — simulated
+steady-state error matches the analytic `gravity_torque / kp` to three
+significant figures at every gain tested:
+
+| kp | simulated hold error (rad) | analytic `20.070 / kp` |
+| --- | --- | --- |
+| 400 | 0.049519 | 0.050175 |
+| 1600 | 0.012490 | 0.012544 |
+| 2400 | 0.008347 | 0.008363 |
+| 8000 | 0.002500 | 0.002509 |
+
+With the gripper actuator live, every arm gain diverges to ~2.5 rad. The
+converted model drives `finger_joint` with `gainprm=5729.58` and
+`biasprm="0 -5729.58 -0.0114592"` against Robotiq knuckle inertias of
+`3.80173e-07` kg·m². That is a natural frequency of
+`sqrt(5729.58 / 3.80173e-07) ≈ 1.23e+05` rad/s; at `dt = 1/120` s the
+explicit-integration stability ratio `ω·dt` is `≈ 1.0e+03` against a limit of 2 —
+roughly five hundred times over. PhysX solves the same declared drive as a
+solver constraint and is unconditionally stable, so it never surfaced there.
+This is the mechanism behind the earlier canary's `NaN` at the gripper DOF.
+
+Note that `5729.58 = 100 × 180/π` exactly, and `0.0114592 = 0.657 × π/180`, so
+the pair is consistent with a per-degree value converted in one direction for
+stiffness and the opposite direction for damping. That is the same duplicated
+unit-conversion signature already corrected once in this programme for the Franka
+diagonal inertias. It is flagged here as a strong indication, not a proven
+provenance; the source authoring must be inspected before any correction.
+
+## Gravity-real is the chosen resolution
+
+The programme decision is to make **both** backends gravity-real rather than to
+make Newton reproduce PhysX's weightless arm. That is the physically correct
+choice for a fidelity comparison, and it makes the existing PhysX baseline —
+not only the Newton lane — the thing that has to be re-validated.
+
+Three consequences are already decidable without a provider:
+
+1. `disable_gravity=True` must come off the robot rigid-body properties, which
+   changes the PhysX baseline. Every PhysX joint-torque, contact-force and
+   clearance measurement collected to date was taken on a weightless arm and
+   does not carry over.
+2. The shipped `kp=400` cannot satisfy the `1.0e-2` rad canonical hold gate once
+   the arm carries weight: droop alone is `0.0502` rad. Either the arm gains
+   rise to about `kp≈2400` (which holds at `0.00835` rad with the required
+   `20.07` N·m well inside the `87` N·m effort limit) or the hold gate is
+   restated as a stability-and-bounded-droop criterion. That is an actuator
+   decision affecting both backends and must be declared, not tuned silently.
+3. The Robotiq drive must be resolved independently before Newton can execute
+   controls at all, because it is unstable with or without gravity.
+
+`validate_newton_explicit_pd_feasibility` now decides all three from the
+declared gains, the converted-model inertias and the measured gravity torques,
+and fails closed before a provider allocation. Run against the exact ninth-canary
+configuration it returns `blocked` with
+`adp009d_newton_hold_gate_unreachable_by_droop:panda_joint4`, and against the
+Robotiq drive `adp009d_newton_explicit_pd_unstable:finger_joint`. Both paid
+canaries were therefore decidable as failures for free, before launch.
+
+No further Newton allocation is justified until the gravity-real actuator
+decision and the Robotiq drive are settled, because the outcome of such a run is
+already known by arithmetic.

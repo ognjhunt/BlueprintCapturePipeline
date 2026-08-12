@@ -372,6 +372,101 @@ def validate_newton_dynamics_representable(
     return receipt
 
 
+EXPLICIT_INTEGRATION_STABILITY_RATIO_LIMIT = 2.0
+
+
+def validate_newton_explicit_pd_feasibility(
+    *,
+    joint_drives: Iterable[Mapping[str, Any]],
+    timestep_seconds: float,
+    hold_tolerance_rad: float,
+) -> dict[str, Any]:
+    """Refuse a Newton launch whose own hold gate is unreachable by arithmetic.
+
+    Newton realises Isaac Lab's implicit actuator as an explicit force-level PD,
+    so two properties are decidable before any provider is touched:
+
+    * steady-state droop is ``gravity_torque / stiffness``, which must fit inside
+      the hold tolerance the same run will be judged against;
+    * the drive's natural frequency ``sqrt(stiffness / inertia)`` times the
+      timestep must stay under the explicit-integration stability limit.
+
+    PhysX solves the same declared drive as a solver constraint and is
+    unconditionally stable, so neither check constrains the PhysX lane.
+    """
+
+    if not math.isfinite(timestep_seconds) or timestep_seconds <= 0.0:
+        raise PhysicsBackendContractError("adp009d_newton_timestep_invalid")
+    if not math.isfinite(hold_tolerance_rad) or hold_tolerance_rad <= 0.0:
+        raise PhysicsBackendContractError("adp009d_newton_hold_tolerance_invalid")
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for drive in joint_drives:
+        if not isinstance(drive, Mapping):
+            raise PhysicsBackendContractError("adp009d_newton_joint_drive_invalid")
+        name = drive.get("joint_name")
+        if not isinstance(name, str) or not name:
+            raise PhysicsBackendContractError("adp009d_newton_joint_drive_invalid")
+        numbers: dict[str, float] = {}
+        for field in (
+            "stiffness_nm_per_rad",
+            "damping_nm_s_per_rad",
+            "effective_inertia_kg_m2",
+            "gravity_torque_nm",
+            "effort_limit_nm",
+        ):
+            value = drive.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise PhysicsBackendContractError(
+                    "adp009d_newton_joint_drive_invalid"
+                )
+            value = float(value)
+            if not math.isfinite(value):
+                raise PhysicsBackendContractError(
+                    "adp009d_newton_joint_drive_invalid"
+                )
+            numbers[field] = value
+        stiffness = numbers["stiffness_nm_per_rad"]
+        inertia = numbers["effective_inertia_kg_m2"]
+        if stiffness <= 0.0 or inertia <= 0.0 or numbers["effort_limit_nm"] <= 0.0:
+            raise PhysicsBackendContractError("adp009d_newton_joint_drive_invalid")
+        hold_torque = abs(numbers["gravity_torque_nm"])
+        droop = hold_torque / stiffness
+        stability_ratio = math.sqrt(stiffness / inertia) * timestep_seconds
+        row = {
+            "joint_name": name,
+            "steady_state_droop_rad": droop,
+            "hold_torque_nm": hold_torque,
+            "explicit_stability_ratio": stability_ratio,
+        }
+        if droop > hold_tolerance_rad:
+            blockers.append(f"adp009d_newton_hold_gate_unreachable_by_droop:{name}")
+        if stability_ratio >= EXPLICIT_INTEGRATION_STABILITY_RATIO_LIMIT:
+            blockers.append(f"adp009d_newton_explicit_pd_unstable:{name}")
+        if hold_torque > numbers["effort_limit_nm"]:
+            blockers.append(
+                f"adp009d_newton_hold_torque_exceeds_effort_limit:{name}"
+            )
+        rows.append(row)
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009d_newton_explicit_pd_feasibility.v1",
+        "physics_backend": "newton",
+        "timestep_seconds": float(timestep_seconds),
+        "hold_tolerance_rad": float(hold_tolerance_rad),
+        "explicit_stability_ratio_limit": (
+            EXPLICIT_INTEGRATION_STABILITY_RATIO_LIMIT
+        ),
+        "joints": rows,
+        "status": "blocked" if blockers else "admitted",
+        "typed_blockers": sorted(set(blockers)),
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
 def build_newton_actuator_limit_mapping_contract() -> dict[str, Any]:
     """Bind Newton's active implicit-actuator limits to Arena's source values.
 
@@ -1813,4 +1908,5 @@ __all__ = [
     "validate_comparison_design_contract",
     "validate_newton_canary_admission",
     "validate_newton_dynamics_representable",
+    "validate_newton_explicit_pd_feasibility",
 ]

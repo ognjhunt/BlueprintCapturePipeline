@@ -38,6 +38,7 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     validate_comparison_design_contract,
     validate_newton_canary_admission,
     validate_newton_dynamics_representable,
+    validate_newton_explicit_pd_feasibility,
 )
 from blueprint_pipeline.adp009d_provider_zero import build_provider_zero_receipt
 from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
@@ -1128,3 +1129,100 @@ def test_representable_physx_properties_admit_cleanly() -> None:
     assert admission["comparable_across_backends"] is True
     assert admission["typed_blocker"] is None
     assert admission["affected_prim_paths"] == []
+
+
+def _feasible_drive(**overrides: object) -> dict[str, object]:
+    row = {
+        "joint_name": "panda_joint4",
+        "stiffness_nm_per_rad": 2400.0,
+        "damping_nm_s_per_rad": 196.0,
+        "effective_inertia_kg_m2": 1.0,
+        "gravity_torque_nm": 20.070,
+        "effort_limit_nm": 87.0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_explicit_pd_feasibility_admits_a_gain_that_can_actually_hold() -> None:
+    """kp=2400 against 20.07 N*m droops 0.00836 rad, inside the 1.0e-2 gate."""
+
+    receipt = validate_newton_explicit_pd_feasibility(
+        joint_drives=[_feasible_drive()],
+        timestep_seconds=1.0 / 120.0,
+        hold_tolerance_rad=1.0e-2,
+    )
+    assert receipt["status"] == "admitted"
+    assert receipt["typed_blockers"] == []
+    joint = receipt["joints"][0]
+    assert joint["steady_state_droop_rad"] == pytest.approx(0.0083625, abs=1e-7)
+    assert joint["explicit_stability_ratio"] < 2.0
+
+
+def test_explicit_pd_feasibility_rejects_a_gate_unreachable_by_arithmetic() -> None:
+    """The shipped kp=400 droops 0.0502 rad -- five times its own hold gate.
+
+    This is the exact configuration the ninth paid Newton canary launched with.
+    It could not have passed the canonical hold gate at any solver setting, so it
+    must fail closed before a provider allocation rather than after.
+    """
+
+    receipt = validate_newton_explicit_pd_feasibility(
+        joint_drives=[_feasible_drive(stiffness_nm_per_rad=400.0, damping_nm_s_per_rad=80.0)],
+        timestep_seconds=1.0 / 120.0,
+        hold_tolerance_rad=1.0e-2,
+    )
+    assert receipt["status"] == "blocked"
+    assert (
+        "adp009d_newton_hold_gate_unreachable_by_droop:panda_joint4"
+        in receipt["typed_blockers"]
+    )
+    assert receipt["joints"][0]["steady_state_droop_rad"] == pytest.approx(
+        0.050175, abs=1e-6
+    )
+
+
+def test_explicit_pd_feasibility_rejects_an_explicitly_unstable_drive() -> None:
+    """The Robotiq drive: kp=5729.58 on a 3.8e-07 kg*m^2 knuckle.
+
+    omega = sqrt(kp/M) ~ 1.2e+05 rad/s, so omega*dt at 1/120 s is ~1.0e+03 against
+    an explicit-integration limit of 2.  PhysX solves this drive implicitly and is
+    unconditionally stable; Newton realises it as an explicit PD force and
+    diverges, which is the NaN the earlier canary recorded.
+    """
+
+    receipt = validate_newton_explicit_pd_feasibility(
+        joint_drives=[
+            _feasible_drive(
+                joint_name="finger_joint",
+                stiffness_nm_per_rad=5729.58,
+                damping_nm_s_per_rad=0.0114592,
+                effective_inertia_kg_m2=3.80173e-07,
+                gravity_torque_nm=0.0,
+                effort_limit_nm=16.5,
+            )
+        ],
+        timestep_seconds=1.0 / 120.0,
+        hold_tolerance_rad=1.0e-2,
+    )
+    assert receipt["status"] == "blocked"
+    assert (
+        "adp009d_newton_explicit_pd_unstable:finger_joint"
+        in receipt["typed_blockers"]
+    )
+    assert receipt["joints"][0]["explicit_stability_ratio"] > 100.0
+
+
+def test_explicit_pd_feasibility_rejects_a_drive_that_cannot_reach_its_load() -> None:
+    """A hold torque above the effort limit can never be delivered."""
+
+    receipt = validate_newton_explicit_pd_feasibility(
+        joint_drives=[_feasible_drive(gravity_torque_nm=120.0)],
+        timestep_seconds=1.0 / 120.0,
+        hold_tolerance_rad=1.0e-2,
+    )
+    assert receipt["status"] == "blocked"
+    assert (
+        "adp009d_newton_hold_torque_exceeds_effort_limit:panda_joint4"
+        in receipt["typed_blockers"]
+    )
