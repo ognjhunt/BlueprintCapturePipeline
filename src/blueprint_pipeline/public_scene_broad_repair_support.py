@@ -236,6 +236,7 @@ def _manifest_frames(
     manifest = _read(path, code="broad_repair_render_manifest_unreadable")
     source = manifest.get("source_splat")
     settings = manifest.get("render_settings")
+    source_count = source.get("retained_gaussian_count") if isinstance(source, Mapping) else None
     if (
         manifest.get("schema_version") != RENDER_SCHEMA
         or manifest.get("status") != "rendered_exact_cameras"
@@ -247,7 +248,15 @@ def _manifest_frames(
         or manifest.get("splat_digest") != splat_digest
         or not isinstance(source, Mapping)
         or source.get("digest") != splat_digest
-        or source.get("retained_gaussian_count") != splat_count
+        or (
+            layer == "shared_deleted_source_layer"
+            and source_count != splat_count
+        )
+        or (
+            layer == "shared_retained_scene"
+            and source_count is not None
+            and source_count != splat_count
+        )
         or not isinstance(settings, Mapping)
         or settings.get("background_rgb") != background
     ):

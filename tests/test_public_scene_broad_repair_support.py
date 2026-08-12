@@ -62,7 +62,11 @@ def _render_manifest(
         "splat_digest": splat_digest,
         "source_splat": {
             "digest": splat_digest,
-            "retained_gaussian_count": splat_count,
+            **(
+                {"retained_gaussian_count": splat_count}
+                if layer == "shared_deleted_source_layer"
+                else {"retained_count_source": "verified_standard_ply_header"}
+            ),
         },
         "source_layer_role": layer,
         "render_settings": {
