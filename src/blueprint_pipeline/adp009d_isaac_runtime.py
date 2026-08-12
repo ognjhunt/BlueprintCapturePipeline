@@ -107,6 +107,7 @@ try:  # flat provider-bundle layout, where this file runs as a script
         FRANKA_SOURCE_MESH_SCALE,
         GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
         NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
+        NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES,
         NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
         ROBOTIQ_BODY_MASSES_KG,
         build_backend_contact_configuration,
@@ -129,6 +130,7 @@ except ModuleNotFoundError:  # imported as part of the repository package
         FRANKA_SOURCE_MESH_SCALE,
         GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
         NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
+        NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES,
         NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
         ROBOTIQ_BODY_MASSES_KG,
         build_backend_contact_configuration,
@@ -931,12 +933,18 @@ def _block_newton_unmapped_physx_properties(
                 or not attribute.HasAuthoredValue()
             ):
                 continue
-            authored.append(
-                {
-                    "prim_path": str(prim.GetPath()),
-                    "property_name": property_name,
-                }
-            )
+            row: dict[str, Any] = {
+                "prim_path": str(prim.GetPath()),
+                "property_name": property_name,
+            }
+            if property_name in NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES:
+                # Read it so an inactive value is not mistaken for a divergence;
+                # an unreadable one is left absent and fails closed.
+                try:
+                    row["value"] = attribute.Get()
+                except Exception:  # noqa: BLE001 - absent value fails closed
+                    pass
+            authored.append(row)
     # Blocking a property Newton cannot express does not make the two backends
     # comparable, it just changes the dynamics silently: dropping
     # ``disableGravity`` leaves PhysX with a weightless arm and Newton with a

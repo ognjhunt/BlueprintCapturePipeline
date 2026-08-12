@@ -346,6 +346,13 @@ def validate_newton_dynamics_representable(
                 "adp009d_newton_physx_property_row_invalid"
             )
         if property_name in NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES:
+            # Only an *active* value diverges.  ``disableGravity=False`` is the
+            # backend-neutral default -- normal gravity, which Newton expresses
+            # -- and the gravity-real configuration authors exactly that, so
+            # blocking on mere authorship would forbid every gravity-real Newton
+            # run.  A missing or unreadable value still fails closed.
+            if "value" in row and row.get("value") is False:
+                continue
             affected.setdefault(property_name, []).append(prim_path)
     receipt: dict[str, Any] = {
         "schema_version": "adp009d_newton_dynamics_representability.v1",

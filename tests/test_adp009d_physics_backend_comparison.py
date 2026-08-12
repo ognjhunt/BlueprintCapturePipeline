@@ -1323,3 +1323,56 @@ def test_gravity_real_validation_accepts_a_correctly_applied_run() -> None:
     validation = validate_gravity_real_actuation(_gravity_real_receipt())
     assert validation["status"] == "validated"
     assert validation["typed_blockers"] == []
+
+
+def test_disabled_gravity_authored_false_is_representable() -> None:
+    """After the gravity-real change the property is authored as False.
+
+    ``disableGravity=False`` is the backend-neutral default: it means normal
+    gravity, which Newton does express. Blocking on the property being *authored*
+    rather than on it being *active* would make every gravity-real Newton run
+    impossible.
+    """
+
+    admission = validate_newton_dynamics_representable(
+        [
+            {
+                "prim_path": "/World/template/Robot/proto_asset_0/panda_link4",
+                "property_name": "physxRigidBody:disableGravity",
+                "value": False,
+            }
+        ]
+    )
+    assert admission["status"] == "admitted"
+    assert admission["comparable_across_backends"] is True
+    assert admission["affected_prim_paths"] == []
+
+
+def test_disabled_gravity_authored_true_still_fails_closed() -> None:
+    admission = validate_newton_dynamics_representable(
+        [
+            {
+                "prim_path": "/World/template/Robot/proto_asset_0/panda_link4",
+                "property_name": "physxRigidBody:disableGravity",
+                "value": True,
+            }
+        ]
+    )
+    assert admission["status"] == "blocked"
+    assert admission["typed_blocker"] == (
+        "adp009d_newton_unrepresentable_physx_property:physxRigidBody:disableGravity"
+    )
+
+
+def test_unrepresentable_property_without_a_value_fails_closed() -> None:
+    """An unreadable value must not be treated as harmless."""
+
+    admission = validate_newton_dynamics_representable(
+        [
+            {
+                "prim_path": "/World/template/Robot/proto_asset_0/panda_link4",
+                "property_name": "physxRigidBody:disableGravity",
+            }
+        ]
+    )
+    assert admission["status"] == "blocked"
