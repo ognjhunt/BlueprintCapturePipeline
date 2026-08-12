@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -531,11 +532,46 @@ def test_retained_scene_render_reissue_binds_prior_terminal_spend(
         )
 
 
+def test_egl_graphics_arguments_are_pinned_without_running_node() -> None:
+    """The flag contract, pinned hermetically so CI always enforces it.
+
+    The subprocess test below skips wherever the renderer's dependencies are not
+    installed, which is every CI runner -- so on its own it left this contract
+    unenforced exactly where enforcement matters. This reads the source instead
+    and runs everywhere.
+
+    The flags matter: ``--use-gl=egl`` alone can leave WebGL disabled in
+    headless Chromium even on a container exposing an NVIDIA GPU, and dropping
+    ``--disable-software-rasterizer`` lets a run silently fall back to software
+    and report a render that never touched the GPU.
+    """
+    renderer = Path(__file__).resolve().parents[1] / "tools/splat_render/render_splat.mjs"
+    source = renderer.read_text(encoding="utf-8")
+    egl_block = source.split('if (backend === "egl")', 1)[1].split("return [", 1)[1]
+    egl_block = egl_block.split("]", 1)[0]
+    flags = re.findall(r'"([^"]+)"', egl_block)
+
+    assert flags == [
+        "--use-gl=angle",
+        "--use-angle=gl-egl",
+        "--ignore-gpu-blocklist",
+        "--disable-software-rasterizer",
+        "--enable-webgl",
+    ]
+
+
 def test_egl_renderer_uses_angle_gl_egl_without_software_fallback() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node unavailable")
     renderer = Path(__file__).resolve().parents[1] / "tools/splat_render/render_splat.mjs"
+    # `node_modules` is not committed, so on a runner that never installed them
+    # the renderer exits before printing anything. That is the same class of
+    # environmental absence as a missing `node`, but it was surfacing as a bare
+    # CalledProcessError -- which failed CI on every PR touching this lane and
+    # said nothing about the flags this test exists to pin.
+    if not (renderer.parent / "node_modules").is_dir():
+        pytest.skip("splat renderer dependencies not installed")
     completed = subprocess.run(
         [
             node,
@@ -546,9 +582,14 @@ def test_egl_renderer_uses_angle_gl_egl_without_software_fallback() -> None:
             "--out",
             str(Path.cwd()),
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
+    )
+    # An installed renderer that cannot report its flags is a real regression,
+    # so report what it said rather than raising an opaque subprocess error.
+    assert completed.returncode == 0, (
+        f"renderer exited {completed.returncode}: {completed.stderr.strip()[:500]}"
     )
 
     assert json.loads(completed.stdout) == [
