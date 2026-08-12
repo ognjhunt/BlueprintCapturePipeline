@@ -12,6 +12,10 @@ from typing import Any
 
 from .common import parse_bool
 from .launch_proof_policy import PRODUCTION_MODE, launch_proof_mode
+from .spend_authority_ledger_migration import (
+    SpendAuthorityLedgerError,
+    reconcile_spend_authority_ledger,
+)
 
 SCHEMA_VERSION = "blueprint.production_runtime_env_guard.v1"
 
@@ -87,9 +91,39 @@ def _check_control_plane_entrypoints(
     return detail, blockers
 
 
+def _check_spend_authority_ledger(
+    reconcile: Callable[[], dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    """Adopt a ledger left at a previous root, or block the unit from starting.
+
+    Binding ``BLUEPRINT_SPEND_AUTHORITY_ROOT`` on a host that was already
+    running moves the single-use consumption ledger and leaves its records
+    behind, so the new root reads empty and every authorization spent under the
+    old root looks unspent. Observed in production after PR #453 deployed.
+
+    Reconciling here rather than only in the installer means it holds for every
+    start of every host, including one restored from an image or rebuilt by a
+    path that never ran the installer.
+    """
+    try:
+        receipt = reconcile()
+    except SpendAuthorityLedgerError as exc:
+        return (
+            {"status": "blocked", "error": str(exc)},
+            [f"spend_authority_ledger_not_reconciled:{exc}"],
+        )
+    except OSError as exc:
+        return (
+            {"status": "blocked", "error": str(exc)},
+            ["spend_authority_ledger_not_reconciled:unwritable_root"],
+        )
+    return (receipt, [])
+
+
 def build_production_runtime_env_guard(
     env: Mapping[str, str] | None = None,
     import_module: Callable[[str], Any] | None = None,
+    reconcile_spend_authority: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = os.environ if env is None else env
     blockers: list[str] = []
@@ -113,6 +147,13 @@ def build_production_runtime_env_guard(
     )
     blockers.extend(entrypoint_blockers)
 
+    ledger, ledger_blockers = _check_spend_authority_ledger(
+        reconcile_spend_authority_ledger
+        if reconcile_spend_authority is None
+        else reconcile_spend_authority
+    )
+    blockers.extend(ledger_blockers)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -121,9 +162,11 @@ def build_production_runtime_env_guard(
         "launch_proof_mode": mode or None,
         "required_true_flags": flag_status,
         "control_plane_entrypoints": entrypoints,
+        "spend_authority_ledger": ledger,
         "claim_boundary": (
-            "This guard verifies production fail-closed runtime posture and "
-            "that every control-plane entrypoint imports. It is not proof of "
+            "This guard verifies production fail-closed runtime posture, that "
+            "every control-plane entrypoint imports, and that no spend-authority "
+            "ledger is stranded at a previous root. It is not proof of "
             "deployed health, Pub/Sub message consumption, WebApp forwarding, "
             "buyer delivery, simulator execution, or live provider success."
         ),
