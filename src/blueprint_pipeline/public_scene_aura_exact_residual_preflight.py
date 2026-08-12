@@ -389,10 +389,33 @@ def _lane(
         planned.append(
             {
                 "camera_id": camera_id,
-                "retained_scene_before": retained_frames[camera_id],
-                "exact_residual_mask": mask_records[camera_id],
-                "deleted_source_black": black_frames[camera_id],
-                "deleted_source_white": white_frames[camera_id],
+                "retained_scene_before": {
+                    "camera_id": camera_id,
+                    **_record(
+                        retained_path.parent
+                        / retained_frames[camera_id]["relative_path"]
+                    ),
+                },
+                "exact_residual_mask": {
+                    "camera_id": camera_id,
+                    **_record(
+                        coverage_path.parent
+                        / mask_records[camera_id]["relative_path"]
+                    ),
+                    "pixel_count": mask_records[camera_id]["pixel_count"],
+                },
+                "deleted_source_black": {
+                    "camera_id": camera_id,
+                    **_record(
+                        black_path.parent / black_frames[camera_id]["relative_path"]
+                    ),
+                },
+                "deleted_source_white": {
+                    "camera_id": camera_id,
+                    **_record(
+                        white_path.parent / white_frames[camera_id]["relative_path"]
+                    ),
+                },
             }
         )
     lane_record = {
