@@ -309,7 +309,28 @@ def _make_render(
         },
         "source_layer_role": source_layer_role,
         "calibrated_camera_file": {"binding": "caller_file_exact_match"},
-        "calibrated_cameras": [{"id": camera_id}],
+        "calibrated_cameras": [
+            {
+                "id": camera_id,
+                "spec": {
+                    "pose": {
+                        "T_world_camera_opencv": [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ]
+                    },
+                    "intrinsics": {
+                        "model": "PINHOLE",
+                        "fx": 2.0,
+                        "fy": 2.0,
+                        "cx": 1.0,
+                        "cy": 1.0,
+                    },
+                },
+            }
+        ],
         "render_settings": {
             "dimensions": {"width": 2, "height": 2},
             "background_rgb": background_rgb,

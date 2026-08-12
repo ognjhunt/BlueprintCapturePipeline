@@ -336,3 +336,36 @@ def test_rejects_big_lama_checkpoint_bytes_changed(tmp_path: Path) -> None:
         materialize_aura_exact_residual_preflight(
             input_packet_path=packet_path, output_path=tmp_path / "preflight.json"
         )
+
+
+def test_rejects_source_render_with_camera_calibration_mismatch(tmp_path: Path) -> None:
+    packet_path = _packet(tmp_path)
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    lane_path = Path(packet["lanes"][0]["path"])
+    lane = json.loads(lane_path.read_text(encoding="utf-8"))
+    black_path = Path(lane["source_layer_black_render"]["path"])
+    black = json.loads(black_path.read_text(encoding="utf-8"))
+    black["calibrated_cameras"][0]["spec"]["intrinsics"]["fx"] = 3.0
+    black["sealed_camera_render_manifest_digest"] = canonical_digest(
+        black, digest_field="sealed_camera_render_manifest_digest"
+    )
+    _write(black_path, black)
+    lane["source_layer_black_render"]["size_bytes"] = black_path.stat().st_size
+    lane["source_layer_black_render"]["sha256"] = "sha256:" + hashlib.sha256(
+        black_path.read_bytes()
+    ).hexdigest()
+    lane["lane_digest"] = canonical_digest(lane, digest_field="lane_digest")
+    _write(lane_path, lane)
+    packet["lanes"][0]["size_bytes"] = lane_path.stat().st_size
+    packet["lanes"][0]["sha256"] = "sha256:" + hashlib.sha256(lane_path.read_bytes()).hexdigest()
+    packet["lanes"][0]["lane_digest"] = lane["lane_digest"]
+    packet["packet_digest"] = canonical_digest(packet, digest_field="packet_digest")
+    _write(packet_path, packet)
+
+    with pytest.raises(
+        AuraExactResidualPreflightError,
+        match="source_black_calibration_mismatch",
+    ):
+        materialize_aura_exact_residual_preflight(
+            input_packet_path=packet_path, output_path=tmp_path / "preflight.json"
+        )

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -385,6 +386,76 @@ def _camera_frames(
     return frames
 
 
+def _calibrated_cameras(
+    *, manifest: Mapping[str, Any], code: str
+) -> dict[str, dict[str, Any]]:
+    """Read the exact calibrated camera values sealed with a render manifest.
+
+    Aura's COLMAP staging must be derived from these values.  Camera labels are
+    insufficient: accepting them alone would permit a provider bundle to train
+    or render an almost-identical, but unsealed, camera constellation.
+    """
+
+    settings = manifest["render_settings"]
+    dimensions = settings["dimensions"]
+    rows = manifest.get("calibrated_cameras")
+    if not isinstance(rows, list) or not rows:
+        raise AuraExactResidualPreflightError([code])
+    cameras: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise AuraExactResidualPreflightError([code])
+        camera_id = str(row.get("id") or "")
+        pose = row.get("spec", {}).get("pose") if isinstance(row.get("spec"), Mapping) else None
+        intrinsics = (
+            row.get("spec", {}).get("intrinsics") if isinstance(row.get("spec"), Mapping) else None
+        )
+        matrix = pose.get("T_world_camera_opencv") if isinstance(pose, Mapping) else None
+        if (
+            not camera_id
+            or camera_id in cameras
+            or not isinstance(matrix, list)
+            or len(matrix) != 4
+            or any(not isinstance(line, list) or len(line) != 4 for line in matrix)
+            or any(
+                not isinstance(value, (int, float)) or not math.isfinite(float(value))
+                for line in matrix
+                for value in line
+            )
+            or [float(value) for value in matrix[3]] != [0.0, 0.0, 0.0, 1.0]
+            or not isinstance(intrinsics, Mapping)
+            or intrinsics.get("model") != "PINHOLE"
+            or any(
+                not isinstance(intrinsics.get(field), (int, float))
+                or not math.isfinite(float(intrinsics[field]))
+                for field in ("fx", "fy", "cx", "cy")
+            )
+            or float(intrinsics["fx"]) <= 0
+            or float(intrinsics["fy"]) <= 0
+            or float(intrinsics["cx"]) != float(dimensions["width"]) / 2.0
+            or float(intrinsics["cy"]) != float(dimensions["height"]) / 2.0
+        ):
+            raise AuraExactResidualPreflightError([code])
+        cameras[camera_id] = {
+            "id": camera_id,
+            "spec": {
+                "pose": {
+                    "T_world_camera_opencv": [
+                        [float(value) for value in line] for line in matrix
+                    ]
+                },
+                "intrinsics": {
+                    "model": "PINHOLE",
+                    "fx": float(intrinsics["fx"]),
+                    "fy": float(intrinsics["fy"]),
+                    "cx": float(intrinsics["cx"]),
+                    "cy": float(intrinsics["cy"]),
+                },
+            },
+        }
+    return cameras
+
+
 def _lane(
     *, packet_path: Path, row: Any, expected_asset_ids: list[str]
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -417,6 +488,9 @@ def _lane(
     retained_frames = _camera_frames(
         manifest_path=retained_path, manifest=retained, code="aura_exact_residual_retained_frame_invalid"
     )
+    retained_calibrations = _calibrated_cameras(
+        manifest=retained, code="aura_exact_residual_retained_calibration_invalid"
+    )
     black_path, black = _render_manifest(
         lane.get("source_layer_black_render"), code="aura_exact_residual_source_black_invalid"
     )
@@ -426,8 +500,14 @@ def _lane(
     black_frames = _camera_frames(
         manifest_path=black_path, manifest=black, code="aura_exact_residual_source_black_frame_invalid"
     )
+    black_calibrations = _calibrated_cameras(
+        manifest=black, code="aura_exact_residual_source_black_calibration_invalid"
+    )
     white_frames = _camera_frames(
         manifest_path=white_path, manifest=white, code="aura_exact_residual_source_white_frame_invalid"
+    )
+    white_calibrations = _calibrated_cameras(
+        manifest=white, code="aura_exact_residual_source_white_calibration_invalid"
     )
     masks = lane.get("exact_residual_masks")
     if not isinstance(masks, list) or not masks:
@@ -462,15 +542,24 @@ def _lane(
         if not camera_id or camera_id in mask_records:
             raise AuraExactResidualPreflightError(["aura_exact_residual_mask_invalid"])
         mask_records[camera_id] = {"camera_id": camera_id, **bound, "pixel_count": mask["pixel_count"]}
-    if not (
-        set(mask_records) == set(retained_frames) == set(black_frames) == set(white_frames)
-    ):
+    if not (set(mask_records) == set(retained_frames) == set(black_frames) == set(white_frames)):
         raise AuraExactResidualPreflightError(["aura_exact_residual_camera_set_mismatch"])
+    if set(retained_calibrations) != set(retained_frames):
+        raise AuraExactResidualPreflightError(["aura_exact_residual_retained_calibration_invalid"])
+    if set(black_calibrations) != set(black_frames):
+        raise AuraExactResidualPreflightError(["aura_exact_residual_source_black_calibration_invalid"])
+    if set(white_calibrations) != set(white_frames):
+        raise AuraExactResidualPreflightError(["aura_exact_residual_source_white_calibration_invalid"])
+    if black_calibrations != retained_calibrations:
+        raise AuraExactResidualPreflightError(["aura_exact_residual_source_black_calibration_mismatch"])
+    if white_calibrations != retained_calibrations:
+        raise AuraExactResidualPreflightError(["aura_exact_residual_source_white_calibration_mismatch"])
     planned = []
     for camera_id in sorted(mask_records):
         planned.append(
             {
                 "camera_id": camera_id,
+                "calibration": retained_calibrations[camera_id],
                 "retained_scene_before": {
                     "camera_id": camera_id,
                     **_record(
