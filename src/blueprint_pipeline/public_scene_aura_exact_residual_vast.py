@@ -129,6 +129,10 @@ def _is_known_correctable_aura_runtime_failure(runtime: Mapping[str, Any]) -> bo
     return (
         "aura_exact_residual_runtime_wonderworld_bytes_changed" in observed
         or (
+            "aura_exact_residual_runtime_exception:ValueError" in observed
+            and "aura_exact_residual_runtime_native_point_cloud_missing" in observed
+        )
+        or (
             "aura_exact_residual_runtime_exception:FileNotFoundError" in observed
             and (
                 "[Errno 2] No such file or directory: "
@@ -140,10 +144,16 @@ def _is_known_correctable_aura_runtime_failure(runtime: Mapping[str, Any]) -> bo
     )
 
 
-def _bound_prior_manual_authority(record: Any) -> tuple[dict[str, Any], float]:
-    """Re-open a prior manual authority and all of the receipts beneath it."""
+def _bound_prior_manual_authority(
+    record: Any, *, ancestor_paths: frozenset[Path] = frozenset()
+) -> tuple[dict[str, Any], float]:
+    """Re-open a prior manual authority and its complete, acyclic spend chain."""
 
-    _, authority = _bound_json(record, code="prior_manual_corrected_attempt_authority_unbound")
+    authority_path, authority = _bound_json(
+        record, code="prior_manual_corrected_attempt_authority_unbound"
+    )
+    if authority_path in ancestor_paths:
+        raise ValueError("prior_manual_corrected_attempt_authority_cycle")
     if (
         authority.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION
         or authority.get("authority_kind") != "explicit_user_direction_in_current_goal"
@@ -209,7 +219,18 @@ def _bound_prior_manual_authority(record: Any) -> tuple[dict[str, Any], float]:
         or not isinstance(campaign_cost, (int, float))
     ):
         raise ValueError("prior_manual_corrected_attempt_evidence_invalid")
-    total = round(float(previous_cost) + float(campaign_cost), 6)
+    parent_record = authority.get("prior_manual_corrected_attempt_authority")
+    if parent_record is None:
+        prior_total = float(campaign_cost)
+    else:
+        parent, prior_total = _bound_prior_manual_authority(
+            parent_record, ancestor_paths=ancestor_paths | {authority_path}
+        )
+        if authority.get("prior_provider_runtime_campaign") != parent.get(
+            "prior_provider_runtime_campaign"
+        ):
+            raise ValueError("prior_manual_corrected_attempt_campaign_mismatch")
+    total = round(float(previous_cost) + prior_total, 6)
     if authority.get("prior_goal_spend_usd") != total:
         raise ValueError("prior_manual_corrected_attempt_spend_invalid")
     return authority, total
