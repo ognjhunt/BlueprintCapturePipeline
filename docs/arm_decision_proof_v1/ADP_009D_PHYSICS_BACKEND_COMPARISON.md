@@ -54,6 +54,14 @@ torque utilization and clipping, closest geometric clearance, action delivery,
 phase completion, lossless policy-input-equivalent frames, review media,
 teardown, spend, and API-confirmed provider-zero.
 
+If a typed runtime blocker prevents a nonterminal measurement, the control-run
+receipt retains that field as `not_reached` and binds it to the exact blocker;
+it never substitutes a nominal value. Teardown, settled spend, and fresh global
+provider-zero remain mandatory and cannot be represented as measurement gaps.
+An independently meaningful fidelity result may likewise remain `not_measured`
+only when it cites an exact typed backend-run blocker. That yields a valid
+blocked comparison receipt, never evidence parity or promotion eligibility.
+
 A Newton `--execute` request is rejected before provider mutation unless it has
 a current explicit, task-scoped Newton GPU authorization plus the canonical
 paid-resource admission, spend cap, TTL, watchdog, artifact storage, teardown, and
@@ -250,7 +258,7 @@ fields, and retains an application receipt. It is a compatibility mapping, not
 an actuator retune or a fidelity claim. The revised Newton profile digest is
 `sha256:8f46f2c5e68cffb0d5a7b36b9b7b54b49e4d0e1c5e6e3caeb45cbdaf6a12290f` and
 the revised provider-free comparison-design digest is
-`sha256:f86ea6e006a2a7abf1820696714b976d2a447f1cfa32c06d926b5a367a9e18d0`.
+`sha256:6ac1a23917bf009c4a6e406b4914aa18007e0d5fb2dc69ffbc69611114856ec1`.
 
 No terminal canary receipt is compiled for this ninth run yet. A fresh,
 read-only global post-teardown inventory correctly found two pre-existing active

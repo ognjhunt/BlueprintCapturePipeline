@@ -479,6 +479,8 @@
   "comparison_acceptance": {
     "evidence_parity_required": true,
     "independently_meaningful_fidelity_result_required": true,
+    "unreached_measurement_requires_typed_gap": true,
+    "unmeasured_fidelity_requires_typed_run_blocker": true,
     "automatic_engine_promotion_allowed": false,
     "policy_verdict_allowed": false,
     "task_success_verdict_allowed": false,
@@ -486,5 +488,5 @@
   },
   "provider_mutation_performed": false,
   "claim_ceiling": "controls_comparison_design_only",
-  "design_digest": "sha256:f86ea6e006a2a7abf1820696714b976d2a447f1cfa32c06d926b5a367a9e18d0"
+  "design_digest": "sha256:6ac1a23917bf009c4a6e406b4914aa18007e0d5fb2dc69ffbc69611114856ec1"
 }

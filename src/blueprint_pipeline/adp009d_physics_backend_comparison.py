@@ -174,6 +174,14 @@ MEASUREMENT_FIELDS = (
     "spend",
     "provider_zero",
 )
+TERMINAL_MEASUREMENT_FIELDS = (
+    "teardown",
+    "spend",
+    "provider_zero",
+)
+NONTERMINAL_MEASUREMENT_FIELDS = tuple(
+    field for field in MEASUREMENT_FIELDS if field not in TERMINAL_MEASUREMENT_FIELDS
+)
 
 
 class PhysicsBackendContractError(ValueError):
@@ -1251,6 +1259,18 @@ def _validate_control_run(
         binding_row.get(name) in {None, ""} for name in COMPARABILITY_BINDINGS
     ):
         blockers.append("adp009d_backend_control_run_binding_invalid")
+    raw_typed_blockers = value.get("blockers")
+    typed_blockers = (
+        sorted({item for item in raw_typed_blockers if isinstance(item, str) and item})
+        if isinstance(raw_typed_blockers, list)
+        else []
+    )
+    if (
+        raw_typed_blockers != typed_blockers
+        or (value.get("status") == "completed" and typed_blockers)
+        or (value.get("status") == "blocked" and not typed_blockers)
+    ):
+        blockers.append("adp009d_backend_control_run_blockers_invalid")
     measurements = value.get("measurements")
     measurement_row = dict(measurements) if isinstance(measurements, Mapping) else {}
     if set(measurement_row) != set(MEASUREMENT_FIELDS) or any(
@@ -1269,6 +1289,32 @@ def _validate_control_run(
         or float(spend.get("total_usd", -1.0)) < 0.0
     ):
         blockers.append("adp009d_backend_control_run_terminal_evidence_invalid")
+    raw_gaps = value.get("measurement_gaps")
+    gap_by_field: dict[str, str] = {}
+    gaps_valid = isinstance(raw_gaps, list)
+    if isinstance(raw_gaps, list):
+        for gap in raw_gaps:
+            gap_row = dict(gap) if isinstance(gap, Mapping) else {}
+            field = gap_row.get("field")
+            typed_blocker = gap_row.get("typed_blocker")
+            if (
+                set(gap_row) != {"field", "status", "typed_blocker"}
+                or field not in NONTERMINAL_MEASUREMENT_FIELDS
+                or gap_row.get("status") != "not_reached"
+                or not isinstance(typed_blocker, str)
+                or typed_blocker not in typed_blockers
+                or field in gap_by_field
+            ):
+                gaps_valid = False
+                continue
+            gap_by_field[field] = typed_blocker
+            if measurement_row.get(field) != {
+                "status": "not_reached",
+                "typed_blocker": typed_blocker,
+            }:
+                gaps_valid = False
+    if not gaps_valid or (value.get("status") == "completed" and gap_by_field):
+        blockers.append("adp009d_backend_control_run_measurement_gaps_invalid")
     initialization = dict(measurement_row.get("initialization_reset") or {})
     poses = dict(measurement_row.get("target_robot_pose") or {})
     contacts = dict(measurement_row.get("contacts_and_force_vectors") or {})
@@ -1278,15 +1324,17 @@ def _validate_control_run(
     phases = dict(measurement_row.get("phase_completion") or {})
     frames = dict(measurement_row.get("lossless_frames") or {})
     review = dict(measurement_row.get("review_media") or {})
-    if initialization.get("initialization_completed") is not True or initialization.get(
-        "reset_completed"
-    ) is not True:
+    if "initialization_reset" not in gap_by_field and (
+        initialization.get("initialization_completed") is not True
+        or initialization.get("reset_completed") is not True
+    ):
         blockers.append("adp009d_backend_control_run_initialization_invalid")
-    if not _finite_vector(poses.get("target_pose_world"), minimum_length=7) or not _finite_vector(
-        poses.get("robot_pose_world"), minimum_length=7
+    if "target_robot_pose" not in gap_by_field and (
+        not _finite_vector(poses.get("target_pose_world"), minimum_length=7)
+        or not _finite_vector(poses.get("robot_pose_world"), minimum_length=7)
     ):
         blockers.append("adp009d_backend_control_run_pose_invalid")
-    if (
+    if "contacts_and_force_vectors" not in gap_by_field and (
         not isinstance(contacts.get("force_vectors_world_n"), list)
         or not contacts.get("force_vectors_world_n")
         or not isinstance(contacts.get("partner_prim_paths"), list)
@@ -1297,33 +1345,36 @@ def _validate_control_run(
         )
     ):
         blockers.append("adp009d_backend_control_run_contacts_invalid")
-    if (
+    if "torque_utilization_and_clipping" not in gap_by_field and (
         not isinstance(torque.get("maximum_utilization"), (int, float))
         or not math.isfinite(float(torque.get("maximum_utilization", math.nan)))
         or torque.get("clipping_observed") not in {True, False}
     ):
         blockers.append("adp009d_backend_control_run_torque_invalid")
-    if not isinstance(clearance.get("minimum_m"), (int, float)) or not math.isfinite(
-        float(clearance.get("minimum_m", math.nan))
+    if "closest_geometric_clearance" not in gap_by_field and (
+        not isinstance(clearance.get("minimum_m"), (int, float))
+        or not math.isfinite(float(clearance.get("minimum_m", math.nan)))
     ):
         blockers.append("adp009d_backend_control_run_clearance_invalid")
-    if (
+    if "action_delivery" not in gap_by_field and (
         not isinstance(action.get("requested_count"), int)
         or not isinstance(action.get("delivered_count"), int)
         or action.get("requested_count") != action.get("delivered_count")
         or action.get("nontrivial_action_delivered") is not True
     ):
         blockers.append("adp009d_backend_control_run_action_delivery_invalid")
-    if not isinstance(phases.get("rows"), list) or not phases.get("rows"):
+    if "phase_completion" not in gap_by_field and (
+        not isinstance(phases.get("rows"), list) or not phases.get("rows")
+    ):
         blockers.append("adp009d_backend_control_run_phase_completion_invalid")
-    if (
+    if "lossless_frames" not in gap_by_field and (
         not isinstance(frames.get("frame_manifest_digest"), str)
         or not isinstance(frames.get("frame_count"), int)
         or frames.get("frame_count", 0) <= 0
         or frames.get("lossless") is not True
     ):
         blockers.append("adp009d_backend_control_run_lossless_frames_invalid")
-    if (
+    if "review_media" not in gap_by_field and (
         not isinstance(review.get("media_digest"), str)
         or review.get("derived_from_lossless_frames") is not True
     ):
@@ -1338,12 +1389,17 @@ def build_backend_control_run_receipt(
     backend_control_plan_digest: str,
     measurements: Mapping[str, Mapping[str, Any]],
     blockers: Sequence[str] = (),
+    measurement_gaps: Sequence[Mapping[str, str]] = (),
 ) -> dict[str, Any]:
     """Seal one controls-only terminal run without caller-authored verdicts."""
 
     backend = normalize_physics_backend(physics_backend)
     profile = build_backend_profile(backend)
     typed_blockers = sorted({str(item) for item in blockers if str(item)})
+    normalized_gaps = sorted(
+        (dict(item) for item in measurement_gaps),
+        key=lambda item: str(item.get("field", "")),
+    )
     receipt: dict[str, Any] = {
         "schema_version": CONTROL_RUN_SCHEMA_VERSION,
         "status": "blocked" if typed_blockers else "completed",
@@ -1359,6 +1415,7 @@ def build_backend_control_run_receipt(
         "measurements": {
             str(name): dict(row) for name, row in measurements.items()
         },
+        "measurement_gaps": normalized_gaps,
         "policy_query_count": 0,
         "candidate_outcomes_accessed": False,
         "task_success_claimed": False,
@@ -1386,12 +1443,17 @@ def build_comparison_receipt(
     blockers: list[str] = []
     for backend, run in runs.items():
         blockers.extend(_validate_control_run(run, profile=profiles[backend]))
+        if run.get("status") != "completed":
+            blockers.append(
+                f"adp009d_backend_comparison_backend_run_not_completed:{backend}"
+            )
     physx_bindings = dict(runs["physx"].get("comparability_bindings") or {})
     newton_bindings = dict(runs["newton"].get("comparability_bindings") or {})
     if physx_bindings != newton_bindings:
         blockers.append("adp009d_backend_comparison_bindings_differ")
     fidelity = dict(fidelity_result)
-    required_fidelity = {
+    observed_fidelity_fields = {
+        "status",
         "metric_id",
         "metric_authority",
         "direction",
@@ -1429,8 +1491,23 @@ def build_comparison_receipt(
         if direction == "lower_is_better" and threshold < 0.0
         else None
     )
-    if (
-        set(fidelity) != required_fidelity
+    if fidelity.get("status") == "not_measured":
+        run_blockers = {
+            blocker
+            for run in runs.values()
+            for blocker in (run.get("blockers") or [])
+            if isinstance(blocker, str)
+        }
+        if (
+            set(fidelity) != {"status", "typed_blocker"}
+            or fidelity.get("typed_blocker") not in run_blockers
+        ):
+            blockers.append("adp009d_backend_comparison_fidelity_result_invalid")
+        else:
+            blockers.append("adp009d_backend_comparison_fidelity_not_measured")
+    elif (
+        set(fidelity) != observed_fidelity_fields
+        or fidelity.get("status") != "observed"
         or direction not in {"higher_is_better", "lower_is_better"}
         or fidelity.get("metric_authority")
         not in {"deterministic_geometry", "deterministic_simulator_state"}
@@ -1464,6 +1541,7 @@ def build_comparison_receipt(
                     "backend_contact_configuration"
                 ),
                 "measurements": run.get("measurements"),
+                "measurement_gaps": run.get("measurement_gaps") or [],
                 "typed_blockers": run.get("blockers") or [],
             }
             for backend, run in runs.items()
@@ -1507,6 +1585,7 @@ def validate_comparison_receipt(value: Mapping[str, Any]) -> list[str]:
                 ),
                 measurements=dict(row["measurements"]),
                 blockers=list(row.get("typed_blockers") or []),
+                measurement_gaps=list(row.get("measurement_gaps") or []),
             )
             if (
                 row.get("run_digest") != run["run_digest"]
@@ -1585,6 +1664,8 @@ def build_comparison_design_contract() -> dict[str, Any]:
         "comparison_acceptance": {
             "evidence_parity_required": True,
             "independently_meaningful_fidelity_result_required": True,
+            "unreached_measurement_requires_typed_gap": True,
+            "unmeasured_fidelity_requires_typed_run_blocker": True,
             "automatic_engine_promotion_allowed": False,
             "policy_verdict_allowed": False,
             "task_success_verdict_allowed": False,

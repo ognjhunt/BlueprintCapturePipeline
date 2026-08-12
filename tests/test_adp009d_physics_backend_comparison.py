@@ -518,6 +518,7 @@ def _run(backend: str) -> dict:
 
 def _fidelity() -> dict:
     return {
+        "status": "observed",
         "metric_id": "closest_geometric_clearance_error_m",
         "metric_authority": "deterministic_geometry",
         "direction": "lower_is_better",
@@ -936,3 +937,89 @@ def test_comparison_recomputes_fidelity_meaning_and_nested_receipts() -> None:
     assert validate_comparison_receipt(receipt) == [
         "adp009d_backend_comparison_receipt_invalid"
     ]
+
+
+def test_comparison_retains_typed_pre_controls_measurement_gaps() -> None:
+    blocker = "canonical_hold_arm_pose_drift:maximum_error_rad=0.853033662"
+    baseline_newton = _run("newton")
+    measurements = deepcopy(baseline_newton["measurements"])
+    gap_fields = (
+        "contacts_and_force_vectors",
+        "torque_utilization_and_clipping",
+        "closest_geometric_clearance",
+        "action_delivery",
+        "phase_completion",
+    )
+    gaps = [
+        {
+            "field": field,
+            "status": "not_reached",
+            "typed_blocker": blocker,
+        }
+        for field in gap_fields
+    ]
+    for gap in gaps:
+        measurements[gap["field"]] = {
+            "status": "not_reached",
+            "typed_blocker": blocker,
+        }
+    newton = build_backend_control_run_receipt(
+        physics_backend="newton",
+        comparability_bindings=baseline_newton["comparability_bindings"],
+        backend_control_plan_digest=baseline_newton[
+            "backend_control_plan_digest"
+        ],
+        measurements=measurements,
+        blockers=[blocker],
+        measurement_gaps=gaps,
+    )
+
+    receipt = build_comparison_receipt(
+        physx_run=_run("physx"),
+        newton_run=newton,
+        fidelity_result={"status": "not_measured", "typed_blocker": blocker},
+    )
+
+    assert receipt["status"] == "blocked"
+    assert receipt["evidence_parity_observed"] is False
+    assert receipt["meaningful_improvement_observed"] is False
+    assert receipt["promotion_review_eligible"] is False
+    assert receipt["engine_promotion_performed"] is False
+    assert receipt["policy_verdict"] is None
+    assert receipt["backend_runs"]["newton"]["measurement_gaps"] == sorted(
+        gaps, key=lambda item: item["field"]
+    )
+    assert (
+        "adp009d_backend_comparison_backend_run_not_completed:newton"
+        in receipt["blockers"]
+    )
+    assert "adp009d_backend_comparison_fidelity_not_measured" in receipt[
+        "blockers"
+    ]
+    assert validate_comparison_receipt(receipt) == []
+
+
+def test_comparison_rejects_untyped_or_terminal_measurement_gaps() -> None:
+    blocker = "pre_controls_native_measurement_missing"
+    newton = _run("newton")
+    newton["status"] = "blocked"
+    newton["blockers"] = [blocker]
+    newton["measurement_gaps"] = [
+        {
+            "field": "spend",
+            "status": "not_reached",
+            "typed_blocker": blocker,
+        }
+    ]
+    newton["run_digest"] = canonical_digest(newton, digest_field="run_digest")
+
+    receipt = build_comparison_receipt(
+        physx_run=_run("physx"),
+        newton_run=newton,
+        fidelity_result={"status": "not_measured", "typed_blocker": blocker},
+    )
+
+    assert "adp009d_backend_control_run_measurement_gaps_invalid" in receipt[
+        "blockers"
+    ]
+    assert validate_comparison_receipt(receipt) == []
