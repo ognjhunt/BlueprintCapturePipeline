@@ -236,6 +236,37 @@ def test_seals_shared_camera_bundle_and_rehearses_without_provider_mutation(
         assert runner._bound(runtime, row, code="wonderworld_path_unbound") == runtime / row["relative_path"]
 
 
+def test_runtime_stage_failure_retains_a_real_log_before_returning_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed released command cannot be hidden by a missing harness log dir."""
+
+    runner_path = Path(__file__).resolve().parents[1] / "scripts" / "public_scene_aura_exact_residual_runner.py"
+    spec = importlib.util.spec_from_file_location("aura_exact_residual_runner_log_test", runner_path)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    def fake_run(*_args, **kwargs):
+        kwargs["stdout"].write("released command failed\n")
+        return subprocess.CompletedProcess(args=["released"], returncode=23)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    output = tmp_path / "runtime-output"
+    result = runner._run(
+        ["released"], cwd=tmp_path, output=output, stage="train_shared_retained_scene", environment={}
+    )
+
+    log = output / "logs" / "train_shared_retained_scene.log"
+    assert result["returncode"] == 23
+    assert log.read_text(encoding="utf-8") == "released command failed\n"
+    assert result["log"] == {
+        "relative_path": "logs/train_shared_retained_scene.log",
+        "size_bytes": len("released command failed\n"),
+        "sha256": _sha256(log),
+    }
+
+
 def test_rejects_a_source_release_tree_with_a_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

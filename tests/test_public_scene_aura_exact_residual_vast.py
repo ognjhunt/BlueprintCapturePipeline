@@ -268,6 +268,96 @@ def test_materializes_manual_corrected_attempt_from_file_backed_receipts(
     assert materialized["previous_runtime_result"] == authority["previous_runtime_result"]
 
 
+def test_second_manual_attempt_chains_the_first_spend_and_zero_closeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrective reissue never erases the prior manual attempt's spend."""
+
+    first_authority, bundle = _corrected_attempt_authority(tmp_path)
+    first_path = _write(tmp_path / "first-attempt-authority.json", first_authority)
+    second_execution = _write(
+        tmp_path / "second" / "execution.json",
+        {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "retry_cap": 0,
+            "raw_result_path": None,
+            "continuing_spend_from_this_run": False,
+            "all_staged_objects_absent": True,
+            "bundle_sha256": bundle["bundle_sha256"],
+            "preflight_digest": bundle["preflight_digest"],
+            "estimated_cost_usd": 0.134197,
+        },
+    )
+    second_runtime = _write(
+        tmp_path / "second" / "runtime.json",
+        {
+            "schema_version": "public_scene_aura_exact_residual_runtime_result.v1",
+            "status": "blocked",
+            "aura_inpainting_executed": False,
+            "blockers": [
+                "aura_exact_residual_runtime_exception:FileNotFoundError",
+                "[Errno 2] No such file or directory: "
+                "'/workspace/adp_aura_exact_residual_provider_bundle/runtime_output/logs/"
+                "train_shared_retained_scene.log'",
+            ],
+        },
+    )
+    second_teardown = _write(
+        tmp_path / "second" / "teardown.json",
+        {"status": "completed", "continuing_spend_from_this_run": False},
+    )
+    second_watchdog = _write(
+        tmp_path / "second" / "watchdog.json",
+        {
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+            "final_inventory": {"live_resource_count": 0},
+        },
+    )
+    second_cleanup = _write(
+        tmp_path / "second" / "cleanup.json",
+        {"status": "completed", "all_objects_absent": True},
+    )
+    bundle_receipt = _write(tmp_path / "bundle-receipt.json", {"fixture": "validator only"})
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_aura_exact_residual_vast.validate_aura_exact_residual_bundle",
+        lambda _path: {**bundle, "receipt_path": str(bundle_receipt)},
+    )
+
+    third = materialize_aura_exact_residual_paid_attempt_authority(
+        bundle_receipt_path=bundle_receipt,
+        previous_terminal_execution_result_path=second_execution,
+        previous_runtime_result_path=second_runtime,
+        previous_teardown_path=second_teardown,
+        previous_watchdog_path=second_watchdog,
+        previous_object_store_cleanup_path=second_cleanup,
+        prior_provider_runtime_campaign_path=first_authority[
+            "prior_provider_runtime_campaign"
+        ]["path"],
+        prior_manual_corrected_attempt_authority_path=first_path,
+        authorization_reference="fixture-second-manual-corrected-aura-attempt",
+        authorized_by="fixture-user",
+        authorized_on="2026-08-12",
+        corrective_blueprint_commit="f" * 40,
+        max_hourly_rate_usd=3.0,
+        hard_cap_usd=6.0,
+        hard_ttl_seconds=7200,
+        output_path=tmp_path / "third-attempt-authority.json",
+    )
+
+    assert third["prior_manual_corrected_attempt_authority"] == _record(first_path)
+    assert third["prior_goal_spend_usd"] == 0.295821
+    assert validate_aura_exact_residual_paid_attempt_authority(
+        third,
+        prepared_bundle=bundle,
+        max_hourly_rate_usd=3.0,
+        hard_cap_usd=6.0,
+        hard_ttl_seconds=7200,
+        allowed_active_instance_ids=[47373597],
+    )["prior_goal_spend_usd"] == 0.295821
+
+
 def _allocator_args(
     tmp_path: Path, *, bundle_receipt: Path, attempt_authority: Path | None = None
 ) -> list[str]:

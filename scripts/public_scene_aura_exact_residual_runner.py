@@ -98,6 +98,10 @@ def _run(
     command: list[str], *, cwd: Path, output: Path, stage: str, environment: Mapping[str, str]
 ) -> dict[str, Any]:
     log = output / "logs" / f"{stage}.log"
+    # A released entrypoint may fail before it emits any candidate geometry.
+    # Retain that failure's stdout/stderr as an immutable runtime receipt rather
+    # than masking it with a harness FileNotFoundError while opening the log.
+    log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("w", encoding="utf-8") as stream:
         completed = subprocess.run(
             command,
