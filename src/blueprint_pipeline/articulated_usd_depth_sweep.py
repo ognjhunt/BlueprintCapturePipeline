@@ -1522,6 +1522,23 @@ def _verified_render_rows(
     manifest = _read_object(
         manifest_path, "source_coverage_render_manifest_unreadable"
     )
+    renderer_identity = (
+        manifest.get("renderer_identity")
+        if isinstance(manifest.get("renderer_identity"), Mapping)
+        else {}
+    )
+    render_settings = (
+        manifest.get("render_settings")
+        if isinstance(manifest.get("render_settings"), Mapping)
+        else {}
+    )
+    identity_background = renderer_identity.get("background_rgb")
+    settings_background = render_settings.get("background_rgb")
+    # Older sealed manifests carried the background in renderer identity.
+    # Current exact GPU receipts carry it in render settings.  Accept either
+    # authenticated field, but fail closed if both fields contradict each
+    # other; a caller cannot choose a favorable pair by relabeling it.
+    background = settings_background if settings_background is not None else identity_background
     if (
         manifest.get("schema_version") != "sealed_camera_render_manifest.v1"
         or manifest.get("status") != "rendered_exact_cameras"
@@ -1529,8 +1546,12 @@ def _verified_render_rows(
         != canonical_digest(
             manifest, digest_field="sealed_camera_render_manifest_digest"
         )
-        or (manifest.get("renderer_identity") or {}).get("background_rgb")
-        != expected_background
+        or background != expected_background
+        or (
+            identity_background is not None
+            and settings_background is not None
+            and identity_background != settings_background
+        )
     ):
         raise ArticulatedUsdDepthSweepError(
             ["source_coverage_render_manifest_invalid"]

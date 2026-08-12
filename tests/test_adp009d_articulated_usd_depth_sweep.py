@@ -12,6 +12,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.articulated_usd_depth_sweep import (
     ArticulatedUsdDepthSweepError,
+    _verified_render_rows,
     attest_legacy_default_subject_depth_sweep,
     _primitive_points_and_faces,
     conservative_max_pool_alpha,
@@ -234,6 +235,47 @@ def _render_manifest(
     path = root / "sealed_camera_render_manifest.v1.json"
     path.write_text(json.dumps(value), encoding="utf-8")
     return path
+
+
+def test_source_coverage_accepts_sealed_render_settings_background(
+    tmp_path: Path,
+) -> None:
+    image = np.zeros((48, 64, 3), dtype=np.uint8)
+    manifest_path = _render_manifest(
+        tmp_path / "render", background="#000000", image=image, scene_id="840920"
+    )
+    manifest = json.loads(manifest_path.read_text())
+    manifest["renderer_identity"] = {}
+    manifest["render_settings"] = {"background_rgb": "#000000"}
+    manifest["sealed_camera_render_manifest_digest"] = canonical_digest(
+        manifest, digest_field="sealed_camera_render_manifest_digest"
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    verified, rows = _verified_render_rows(manifest_path, expected_background="#000000")
+
+    assert verified["render_settings"]["background_rgb"] == "#000000"
+    assert set(rows) == {"external"}
+
+
+def test_source_coverage_rejects_conflicting_sealed_background_fields(
+    tmp_path: Path,
+) -> None:
+    image = np.zeros((48, 64, 3), dtype=np.uint8)
+    manifest_path = _render_manifest(
+        tmp_path / "render", background="#000000", image=image, scene_id="840920"
+    )
+    manifest = json.loads(manifest_path.read_text())
+    manifest["render_settings"] = {"background_rgb": "#ffffff"}
+    manifest["sealed_camera_render_manifest_digest"] = canonical_digest(
+        manifest, digest_field="sealed_camera_render_manifest_digest"
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(
+        ArticulatedUsdDepthSweepError, match="source_coverage_render_manifest_invalid"
+    ):
+        _verified_render_rows(manifest_path, expected_background="#000000")
 
 
 def test_rotation_and_perspective_depth_are_geometric() -> None:
