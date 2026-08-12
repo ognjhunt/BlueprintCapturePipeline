@@ -20,12 +20,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .task_evaluation_standing_launch_authorization import (
+    STANDING_AUTHORIZATION_DIR_ENV,
+    StandingAuthorizationError,
+    consumption_totals,
+    standing_authorization_admits,
+)
+
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
 LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION = "task_evaluation_launch_profile_catalog.v1"
 CANONICAL_ALLOCATOR_ENTRYPOINT = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
+
 EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
 EXECUTE_LAUNCH_ID_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID"
 SECRET_PROFILE_ID_ENV = "BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID"
@@ -66,6 +74,29 @@ PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
 
 class TaskEvaluationLaunchError(ValueError):
     """Raised when a launch request or profile fails closed."""
+
+
+def _standing_authorization_decision(
+    profile: Mapping[str, Any], live_requested: bool
+) -> dict[str, Any]:
+    """Consult the standing per-profile authorization, if this host has one."""
+    if not live_requested:
+        return {"admitted": False, "blockers": []}
+    directory = str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip()
+    if not directory:
+        return {"admitted": False, "blockers": []}
+    profile_id = str(profile.get("profile_id") or "")
+    try:
+        launches, spend = consumption_totals(directory=directory, profile_id=profile_id)
+    except StandingAuthorizationError as exc:
+        # Spend we cannot account for must not be treated as zero.
+        return {"admitted": False, "blockers": [str(exc)]}
+    return standing_authorization_admits(
+        profile=profile,
+        directory=directory,
+        launches_consumed=launches,
+        spend_consumed_usd=spend,
+    )
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -781,13 +812,23 @@ def dispatch_launch_request(
 
     live_requested = bool(execute)
     execution_scope_launch_id = str(execute_launch_id or "").strip()
-    if live_requested:
+    # A standing per-profile authorization is the alternative to copying a
+    # freshly minted launch id into the host's environment file before every
+    # run. It is consulted only when the per-launch handshake is not satisfied,
+    # so a launch carrying a matching id is admitted exactly as before and a
+    # launch carrying neither is still refused.
+    standing = _standing_authorization_decision(profile, live_requested)
+    if live_requested and not standing.get("admitted"):
         if not execution_scope_launch_id:
             blockers.append("execute_launch_id_required")
         elif not _is_identifier(execution_scope_launch_id):
             blockers.append("execute_launch_id_invalid")
         elif execution_scope_launch_id != request.get("launch_id"):
             blockers.append("execute_launch_scope_mismatch")
+        # Only surface authorization faults when one was actually present:
+        # a host with none is refused for the missing id, not for a document
+        # it was never asked to have.
+        blockers.extend(standing.get("blockers") or [])
     live_allowed = _is_truthy(os.getenv(EXECUTE_ENV))
     if live_requested and not live_allowed:
         blockers.append(f"missing_env_{EXECUTE_ENV}")
