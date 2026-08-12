@@ -67,6 +67,7 @@ def rehearse_provider_bundle_entrypoint(
                 "BLUEPRINT_ADP_JOINT_AGENT_OUTPUT_DIR": str(output),
                 "BLUEPRINT_ADP_GAUSSIAN_EXCISION_OUTPUT_DIR": str(output),
                 "BLUEPRINT_ADP_ARENA_OUTPUT_DIR": str(output),
+                "BLUEPRINT_PUBLIC_SCENE_AURA_EXACT_RESIDUAL_OUTPUT_DIR": str(output),
             }
         )
         result = subprocess.run(
