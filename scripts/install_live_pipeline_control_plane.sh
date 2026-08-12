@@ -238,6 +238,35 @@ else
   sed -i '/^BLUEPRINT_SPEND_AUTHORITY_ROOT=/d' "${ENV_FILE}"
   printf 'BLUEPRINT_SPEND_AUTHORITY_ROOT=%s\n' "${SPEND_AUTHORITY_ROOT}" >> "${ENV_FILE}"
   echo "bound spend-authority ledger to ${SPEND_AUTHORITY_ROOT}"
+
+  # Same interpreter selection the units use, so the installer and the running
+  # service agree on which checkout's code reconciles the ledger.
+  if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+    LEDGER_PYTHON="${REPO_ROOT}/.venv/bin/python"
+  else
+    LEDGER_PYTHON="$(command -v python3)"
+  fi
+
+  # Binding the root on a host that was already running moves the ledger and
+  # leaves its consumption records at the previous location, so the new root
+  # reads empty and every authorization spent there looks unspent.  Adopt them
+  # now rather than letting the unit discover it at its next paid attempt.  The
+  # startup guard repeats this check, so a host rebuilt without the installer is
+  # still covered; running it here surfaces the failure while an operator is
+  # watching.
+  # Run as the service account so adopted records carry the ownership the
+  # consumption check requires; root-owned records would be refused.
+  if runuser -u "${SERVICE_USER}" -- env \
+       BLUEPRINT_SPEND_AUTHORITY_ROOT="${SPEND_AUTHORITY_ROOT}" \
+       PYTHONPATH="${REPO_ROOT}/src" \
+       "${LEDGER_PYTHON}" -m blueprint_pipeline.spend_authority_ledger_migration \
+       --receipt-out "${SPEND_AUTHORITY_ROOT}/reconciliation_receipt.json"; then
+    echo "reconciled spend-authority ledger"
+  else
+    echo "ERROR: spend-authority ledger could not be reconciled; refusing to continue" >&2
+    echo "       a ledger stranded at a previous root disables single-use spend enforcement" >&2
+    exit 1
+  fi
 fi
 
 # Render the public TLS/reverse-proxy edge.  The intake service binds loopback
