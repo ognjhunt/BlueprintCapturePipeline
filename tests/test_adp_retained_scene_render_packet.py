@@ -253,6 +253,118 @@ def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
     }
 
 
+def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
+    tmp_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node unavailable")
+    runtime = tmp_path / "runtime"
+    output = tmp_path / "output"
+    renderer = runtime / "renderer"
+    renderer.mkdir(parents=True)
+    source = runtime / "input/source.ply"
+    retained = runtime / "input/retained.ply"
+    candidate = runtime / "input/candidate.json"
+    authority = runtime / "execution_authority.json"
+    camera = runtime / "input/cameras.json"
+    freeze = runtime / "input/freeze.json"
+    for path in (source, retained):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nend_header\n")
+    candidate.write_text("{}\n", encoding="utf-8")
+    authority.write_text("{}\n", encoding="utf-8")
+    freeze.write_text("{}\n", encoding="utf-8")
+    camera.write_text(
+        canonical_json(
+            [
+                {
+                    "camera_id": "camera",
+                    "T_world_camera_provider_frame": [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                    "intrinsics": {
+                        "fx": 1.0,
+                        "fy": 1.0,
+                        "cx": 1.0,
+                        "cy": 1.0,
+                        "width": 2,
+                        "height": 2,
+                    },
+                }
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    renderer.joinpath("render_splat.mjs").write_text(
+        "import fs from 'node:fs'; import path from 'node:path'; "
+        "const out = process.argv[process.argv.indexOf('--out') + 1]; "
+        "fs.mkdirSync(out, { recursive: true }); "
+        "fs.writeFileSync(path.join(out, 'camera.png'), 'png'); "
+        "process.stdout.write(JSON.stringify({status: 'completed', "
+        "graphics_diagnostics: {webgl_available: true, renderer: 'NVIDIA GPU'}}));\n",
+        encoding="utf-8",
+    )
+    request = {
+        "source_standard_splat": {**_relative_record(runtime, source), "gaussian_count": 1},
+        "shared_retained_scene": _relative_record(runtime, retained),
+        "shared_retained_gaussian_count": 1,
+        "candidate_set": _relative_record(runtime, candidate),
+        "execution_authority": _relative_record(runtime, authority),
+        "candidate_set_digest": _digest("a"),
+        "request_digest": _digest("b"),
+        "renderer_identity": {},
+        "lanes": [
+            {
+                "task_id": "task",
+                "camera_contract": _relative_record(runtime, camera),
+                "task_freeze": _relative_record(runtime, freeze),
+                "dimensions": {"width": 2, "height": 2},
+                "render_variants": [
+                    {"layer": "source_standard", "background_rgb": "#000000"}
+                ],
+            }
+        ],
+    }
+    runtime.joinpath("render_request.json").write_text(
+        canonical_json(request) + "\n", encoding="utf-8"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    nvidia_smi = bin_dir / "nvidia-smi"
+    nvidia_smi.write_text("#!/usr/bin/env bash\necho 'Fixture GPU, 1.0'\n", encoding="utf-8")
+    nvidia_smi.chmod(0o700)
+    runner = Path(__file__).resolve().parents[1] / "scripts/adp_retained_scene_render_provider_runner.mjs"
+    environment = os.environ | {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    completed = subprocess.run(
+        [node, str(runner), "--runtime", str(runtime), "--output", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 0
+    result = json.loads((output / "adp009d_retained_scene_gpu_render_result.v1.json").read_text())
+    assert result["status"] == "completed"
+    manifest_path = Path(result["render_manifests"][0]["manifest_path"])
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["renders"] == [
+        {
+            "camera_id": "camera",
+            "relative_path": "frames/camera.png",
+            "size_bytes": 3,
+            "digest": _sha256(manifest_path.parent / "frames/camera.png"),
+            "width": 2,
+            "height": 2,
+        }
+    ]
+
+
 def test_retained_scene_render_runtime_result_is_recognized_by_provider_inspection(
     tmp_path: Path,
 ) -> None:

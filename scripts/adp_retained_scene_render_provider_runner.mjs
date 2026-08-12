@@ -192,7 +192,7 @@ function renderOne({ request, lane, variant, source, retained, gpu }) {
     }
     return {
       camera_id: id,
-      relative_path: path.relativeTo(root, frame),
+      relative_path: path.relative(root, frame),
       size_bytes: fs.statSync(frame).size,
       digest: sha256(frame),
       width: dimensions.width,
