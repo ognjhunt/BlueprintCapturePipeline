@@ -148,9 +148,37 @@ def test_refuses_a_redrive_once_the_provider_may_have_been_touched(overrides) ->
     assert admission["blockers"]
 
 
-def test_refuses_a_redrive_without_a_retained_receipt() -> None:
-    """Absent evidence is not evidence of absence."""
-    assert release_redrive_admission(None)["admitted"] is False
+def test_refuses_a_redrive_without_a_retained_receipt_or_a_known_action() -> None:
+    """With neither an outcome nor an action class, nothing can be reasoned about."""
+    admission = release_redrive_admission(None)
+    assert admission["admitted"] is False
+    assert admission["blockers"] == ["redrive_refused_no_retained_receipt"]
+
+
+def test_admits_a_release_only_action_that_retained_no_receipt() -> None:
+    """The worker re-verifies the exact instance before mutating, and spend is zero.
+
+    Releases blocked before receipt retention existed would otherwise strand
+    their provider record forever, which is the situation this recovers.
+    """
+    admission = release_redrive_admission(None, _request())
+    assert admission["admitted"] is True
+    assert admission["admitted_without_retained_receipt"] is True
+
+
+@pytest.mark.parametrize(
+    "authorization_overrides",
+    [
+        {"action": "terminal_provider_record_teardown"},
+        {"max_additional_spend_usd": 5},
+        {"retry_cap": 1},
+    ],
+    ids=["other_action", "nonzero_spend", "nonzero_retry_cap"],
+)
+def test_refuses_any_other_action_without_a_retained_receipt(authorization_overrides) -> None:
+    request = _request()
+    request["authorization"] = {**request["authorization"], **authorization_overrides}
+    assert release_redrive_admission(None, request)["admitted"] is False
 
 
 # --- the seam --------------------------------------------------------------

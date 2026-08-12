@@ -199,6 +199,86 @@ def validate_contact_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
     return expected
 
 
+def apply_contact_envelope_to_clearance(
+    open_jaw_clearance_m: Any, *, envelope: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Subtract the approved envelope from a planned open-jaw clearance.
+
+    The controls plan must plan against the clearance that actually remains
+    once the contact-generating envelope is accounted for, not against the raw
+    jaw aperture. Without this the envelope was defined and cross-checked but
+    never applied, so a plan that leaves no usable clearance looked identical
+    to a correct one.
+
+    The envelope is re-validated rather than trusted, and a clearance the
+    envelope fully consumes is a typed blocker: no positive clearance remains,
+    so contact is certain rather than planned.
+    """
+    resolved_envelope = validate_contact_envelope(
+        canonical_contact_envelope() if envelope is None else envelope
+    )
+    clearance = _finite_number(
+        open_jaw_clearance_m,
+        error="adp009d_contact_envelope_open_jaw_clearance_invalid",
+    )
+    if clearance <= 0:
+        raise ContactEnvelopeError("adp009d_contact_envelope_open_jaw_clearance_invalid")
+    effective = float(resolved_envelope["effective_contact_envelope_m"])
+    remaining = clearance - effective
+    if remaining <= 0:
+        raise ContactEnvelopeError("adp009d_contact_envelope_exceeds_open_jaw_clearance")
+    return {
+        "schema_version": CONTACT_ENVELOPE_SCHEMA_VERSION,
+        "open_jaw_clearance_m": clearance,
+        "effective_contact_envelope_m": effective,
+        "effective_contact_envelope_calculation": resolved_envelope[
+            "effective_contact_envelope_calculation"
+        ],
+        "resolved_clearance_m": remaining,
+    }
+
+
+def validate_dynamics_receipt_contact_envelope(
+    receipt: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Require a native arm-dynamics receipt to retain the approved envelope.
+
+    A receipt that drops the resolved value, or carries one that drifted from
+    the approved envelope, must block controls before policy execution. Left
+    unchecked such a receipt would be scored as a policy result when it is
+    really a runtime configuration mismatch.
+    """
+    if not isinstance(receipt, Mapping):
+        raise ContactEnvelopeError("adp009d_dynamics_receipt_contact_envelope_missing")
+    expected = canonical_contact_envelope()
+    for field in (
+        "effective_contact_envelope_m",
+        "effective_contact_envelope_calculation",
+    ):
+        if field not in receipt:
+            raise ContactEnvelopeError(
+                "adp009d_dynamics_receipt_contact_envelope_missing"
+            )
+    _exact_number(
+        receipt.get("effective_contact_envelope_m"),
+        expected=float(expected["effective_contact_envelope_m"]),
+        error="adp009d_dynamics_receipt_contact_envelope_mismatch",
+    )
+    if (
+        receipt.get("effective_contact_envelope_calculation")
+        != expected["effective_contact_envelope_calculation"]
+    ):
+        raise ContactEnvelopeError(
+            "adp009d_dynamics_receipt_contact_envelope_mismatch"
+        )
+    return {
+        "effective_contact_envelope_m": float(expected["effective_contact_envelope_m"]),
+        "effective_contact_envelope_calculation": expected[
+            "effective_contact_envelope_calculation"
+        ],
+    }
+
+
 __all__ = [
     "APPROVED_CAN_SDF_MARGIN_M",
     "APPROVED_CAN_SDF_NARROW_BAND_THICKNESS_M",
@@ -209,8 +289,10 @@ __all__ = [
     "ContactEnvelopeError",
     "FINGER_COLLIDER_CONTACT_OFFSET_M",
     "FINGER_COLLIDER_CONTACT_OFFSET_SOURCE",
+    "apply_contact_envelope_to_clearance",
     "canonical_contact_envelope",
     "contact_envelope_from_harness_manifest",
     "contact_envelope_from_physx_sdf_settings",
     "validate_contact_envelope",
+    "validate_dynamics_receipt_contact_envelope",
 ]
