@@ -36,7 +36,7 @@ from .public_scene_aura_exact_residual_preflight import (
 )
 
 
-SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v2"
+SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v3"
 CAMERA_INDEX_SCHEMA = "public_scene_artifixer3d_camera_index.v1"
 SPLIT_TEMPLATE_SCHEMA = "public_scene_artifixer3d_split_template.v1"
 CAMERA_CONVENTION_FLIP = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float64)
@@ -598,7 +598,14 @@ def materialize_artifixer3d_candidate_inputs(
                 "artifixer3d_distillation": {
                     "selected_anchor_indices": selected_indices,
                     "generated_prediction_indices": target_indices,
-                    "eligible": bool(target_indices),
+                    "required_repaired_input_indices": all_indices,
+                    "camera_partition_eligible": bool(target_indices),
+                    "execution_eligible": False,
+                    "required_image_role": (
+                        "exact_support_composited_object_free_background_"
+                        "prediction_from_complementary_direct_folds"
+                    ),
+                    "masked_reference_placeholders_permitted_as_distillation_images": False,
                     "source_colmap": {
                         "cameras": _record(sparse_root / "cameras.bin"),
                         "images": _record(sparse_root / "images.bin"),
@@ -646,10 +653,19 @@ def materialize_artifixer3d_candidate_inputs(
             "mask_dilation_pixels": 0,
             "direct_output_must_be_composited_inside_exact_support": True,
             "artifixer3d_distillation_input": (
-                "masked_retained_anchor_views_plus_exact_support_composited_"
-                "direct_predictions_for_complementary_target_views"
+                "all_camera_exact_support_composited_object_free_background_"
+                "predictions_from_both_complementary_direct_folds_only"
             ),
             "artifixer3d_plus_input": "renders_from_candidate_artifixer3d_representation",
+        },
+        "repair_target_semantics": {
+            "inside_exact_support": (
+                "plausible_object_free_background_consistent_with_calibrated_"
+                "outside_support_context"
+            ),
+            "source_washer_or_notebook_restoration_permitted": False,
+            "black_unknown_placeholder_preservation_permitted": False,
+            "outside_exact_support_changed_pixels_permitted": 0,
         },
         "execution_blockers": [
             "artifixer_checkpoint_bytes_not_bound",
@@ -657,10 +673,11 @@ def materialize_artifixer3d_candidate_inputs(
             "artifixer_cuda_container_image_not_bound",
             "artifixer_noncommercial_research_development_attestation_not_bound",
             "artifixer_unconditioned_zero_prompt_hdf5_not_materialized",
+            "artifixer_all_camera_exact_support_composited_repairs_not_materialized",
             *(
                 []
                 if all(
-                    task["artifixer3d_distillation"]["eligible"]
+                    task["artifixer3d_distillation"]["camera_partition_eligible"]
                     for task in task_receipts
                 )
                 else ["artifixer3d_requires_at_least_two_calibrated_views_per_task"]

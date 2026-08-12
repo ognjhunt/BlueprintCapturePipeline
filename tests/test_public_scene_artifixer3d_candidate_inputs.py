@@ -139,7 +139,15 @@ def test_materializes_colmap_seed_and_complementary_direct_folds(
     task = receipt["tasks"][0]
     task_root = Path(task["scene_directory"])
     distillation = task["artifixer3d_distillation"]
-    assert distillation["eligible"] is True
+    assert distillation["camera_partition_eligible"] is True
+    assert distillation["execution_eligible"] is False
+    assert distillation["required_repaired_input_indices"] == [0, 1]
+    assert (
+        distillation[
+            "masked_reference_placeholders_permitted_as_distillation_images"
+        ]
+        is False
+    )
     assert distillation["selected_anchor_indices"] == [0]
     assert distillation["generated_prediction_indices"] == [1]
     assert task["direct_prediction_coverage_indices"] == [0, 1]
@@ -161,6 +169,12 @@ def test_materializes_colmap_seed_and_complementary_direct_folds(
     assert struct.unpack("<Q", points.read_bytes()[:8])[0] == receipt[
         "shared_retained_scene"
     ]["retained_gaussian_count"]
+    assert receipt["repair_target_semantics"][
+        "source_washer_or_notebook_restoration_permitted"
+    ] is False
+    assert receipt["repair_target_semantics"][
+        "black_unknown_placeholder_preservation_permitted"
+    ] is False
 
 
 def test_rejects_tampered_preflight_or_nonempty_output(tmp_path: Path) -> None:
