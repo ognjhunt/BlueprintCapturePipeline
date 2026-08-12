@@ -22,6 +22,7 @@ from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .public_scene_aura_exact_residual_bundle import DEFAULT_IMAGE, SCHEMA_VERSION as BUNDLE_SCHEMA
 from .vast_independent_watchdog_control import (
+    EVIDENCE_NAME as WATCHDOG_EVIDENCE_NAME,
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
 )
@@ -475,7 +476,10 @@ def run_aura_exact_residual_vast(
     execution, blockers = _extract(output_zip, execution_root)
     adapter_path = provider_run / "vast_provider_adapter_result.json"
     final_path = provider_run / "vast_final_validation.json"
-    watchdog_path = job / "independent_vast_watchdog" / "watchdog_owner_teardown_evidence.json"
+    # Bind the watchdog's terminal provider-inventory observation, not the
+    # owner-to-watchdog cancellation request.  The compositor requires its
+    # independent exact-id and global-zero evidence.
+    watchdog_path = job / "independent_vast_watchdog" / WATCHDOG_EVIDENCE_NAME
     closeout_adapter = {
         "schema_version": "public_scene_aura_exact_residual_adapter_closeout.v1",
         "source_adapter_result": _record(adapter_path) if adapter_path.is_file() else None,
