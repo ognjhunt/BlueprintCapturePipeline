@@ -48,8 +48,10 @@ def _source(tmp_path: Path) -> tuple[Path, str, str]:
     )
 
 
-def _candidate(tmp_path: Path) -> Path:
-    preflight = _preflight(tmp_path / "inputs", count=2, cameras_per_task=2)
+def _candidate(tmp_path: Path, *, count: int = 2, cameras_per_task: int = 2) -> Path:
+    preflight = _preflight(
+        tmp_path / "inputs", count=count, cameras_per_task=cameras_per_task
+    )
     output = tmp_path / "candidate"
     receipt = materialize_artifixer3d_candidate_inputs(
         calibrated_residual_preflight_path=preflight,

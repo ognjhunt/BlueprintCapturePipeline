@@ -1173,6 +1173,7 @@ def _provider_plan(
                     "adp_aura_smoke",
                     "adp_aura_interiorgs",
                     "adp_aura_exact_residual",
+                    "adp_artifixer3d",
                     "adp_inpaint360_interiorgs",
                 }
                 else "not_required_for_public_probe",
@@ -2212,6 +2213,14 @@ def _blueprint_bundle_preflight(
         "provider_runtime/input/shared_retained_scene.ply",
         "provider_runtime/big-lama.zip",
     }
+    adp_artifixer3d_required_entries = {
+        "provider_runtime/run_public_scene_artifixer3d.sh",
+        "provider_runtime/public_scene_artifixer3d_runner.py",
+        "provider_runtime/artifixer3d_bundle_manifest.json",
+        "provider_runtime/artifixer3d_runtime_request.json",
+        "provider_runtime/input/public_scene_artifixer3d_candidate_inputs.v3.json",
+        "provider_runtime/artifixer3d_use_attestation.json",
+    }
     adp_inpaint360_required_entries = {
         "provider_runtime/run_adp_inpaint360_interiorgs_provider_runtime.sh",
         "provider_runtime/adp_inpaint360_interiorgs_provider_runner.py",
@@ -2308,6 +2317,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_public_scene_aura_exact_residual.sh"
         runner_member = "provider_runtime/public_scene_aura_exact_residual_runner.py"
         readiness_name = "aura_exact_residual_bundle_manifest.json"
+    elif provider_bundle_kind == "adp_artifixer3d":
+        required_entries = adp_artifixer3d_required_entries
+        entrypoint_member = "provider_runtime/run_public_scene_artifixer3d.sh"
+        runner_member = "provider_runtime/public_scene_artifixer3d_runner.py"
+        readiness_name = "artifixer3d_bundle_manifest.json"
     elif provider_bundle_kind == "adp_inpaint360_interiorgs":
         required_entries = adp_inpaint360_required_entries
         entrypoint_member = "provider_runtime/run_adp_inpaint360_interiorgs_provider_runtime.sh"
@@ -2374,6 +2388,7 @@ def _blueprint_bundle_preflight(
             "adp_aura_smoke",
             "adp_aura_interiorgs",
             "adp_aura_exact_residual",
+            "adp_artifixer3d",
             "adp_inpaint360_interiorgs",
             "adp_retained_scene_render",
             "adp_gaussian_excision",
@@ -3094,6 +3109,7 @@ def _resolve_launch_mode(
             "adp_aura_smoke",
             "adp_aura_interiorgs",
             "adp_aura_exact_residual",
+            "adp_artifixer3d",
             "adp_inpaint360_interiorgs",
             "adp_retained_scene_render",
         }:
@@ -3163,6 +3179,7 @@ def _probe_env(
         "adp_aura_smoke",
         "adp_aura_interiorgs",
         "adp_aura_exact_residual",
+        "adp_artifixer3d",
         "adp_inpaint360_interiorgs",
     }:
         # SIMPLER's headless SAPIEN renderer still needs the NVIDIA Vulkan
@@ -4094,6 +4111,71 @@ def _probe_shell_script(
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_aura_exact_residual_provider_runtime_output.zip"; then '
+                "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+                "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
+                "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+                "fi; fi; fi; fi; "
+            )
+        elif provider_bundle_kind == "adp_artifixer3d":
+            # This packet contains only digest-bound derived frames/masks and
+            # released source. Model bytes are fetched at exact revisions by
+            # the sealed entrypoint; the canonical InteriorGS never leaves the
+            # local evidence root and is never modified.
+            script += (
+                common_start + "RUNTIME_PY=''; "
+                "if command -v apt-get >/dev/null 2>&1; then "
+                "apt-get update >/tmp/blueprint_adp_artifixer3d_apt_update.log 2>&1 && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl wget unzip git build-essential gcc-11 g++-11 ffmpeg libgl1 libglib2.0-0 >/tmp/blueprint_adp_artifixer3d_apt_install.log 2>&1; "
+                "fi; "
+                "if [ -x /usr/bin/python3 ]; then RUNTIME_PY=/usr/bin/python3; "
+                "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); fi; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
+                "else "
+                'rm -rf "$WORK_DIR/adp_artifixer3d_provider_bundle" "$WORK_DIR/adp_artifixer3d_provider_runtime_bundle.zip" "$WORK_DIR/adp_artifixer3d_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp_artifixer3d_provider_runtime_bundle.zip"; dl=$?; '
+                "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_artifixer3d_provider_runtime_bundle.zip" "$WORK_DIR/adp_artifixer3d_provider_bundle"; unzip_rc=$?; '
+                "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
+                'elif [ ! -f "$WORK_DIR/adp_artifixer3d_provider_bundle/provider_runtime/run_public_scene_artifixer3d.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                "else "
+                'export BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR="$WORK_DIR/adp_artifixer3d_provider_bundle/runtime_output"; '
+                'mkdir -p "$BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR"; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'bash "$WORK_DIR/adp_artifixer3d_provider_bundle/provider_runtime/run_public_scene_artifixer3d.sh"; provider_rc=$?; '
+                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
+                "$RUNTIME_PY - <<'PY'\n"
+                "import json\n"
+                "import os\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "output_dir = Path(os.environ.get('BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_OUTPUT_DIR', '/workspace/adp_artifixer3d_provider_bundle/runtime_output'))\n"
+                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
+                "output_zip = work_dir / 'adp_artifixer3d_provider_runtime_output.zip'\n"
+                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:\n"
+                "    if output_dir.is_dir():\n"
+                "        skipped = []\n"
+                "        for path in sorted(output_dir.rglob('*')):\n"
+                "            if path.is_file():\n"
+                "                relative = path.relative_to(output_dir).as_posix()\n"
+                "                parts = relative.split('/')\n"
+                "                required = relative in {'public_scene_artifixer3d_runtime_result.json', 'artifixer3d-pip-freeze.txt'} or (parts and parts[0] == 'tasks' and ('/final_candidate_frames/' in '/' + relative or '/repaired_scene/images/' in '/' + relative or '/logs/' in '/' + relative or (path.name.startswith('ckpt_') and path.suffix == '.pt')))\n"
+                "                if not required:\n"
+                "                    continue\n"
+                "                size = path.stat().st_size\n"
+                "                if size <= 2_000_000_000:\n"
+                "                    archive.write(path, relative)\n"
+                "                else:\n"
+                "                    skipped.append({'path': relative, 'size_bytes': size, 'reason': 'file_exceeds_provider_output_limit'})\n"
+                "        if skipped:\n"
+                "            archive.writestr('provider_output_zip_exclusions.json', json.dumps({'schema_version': 'adp_artifixer3d_provider_output_zip_exclusions.v1', 'skipped': skipped}, indent=2, sort_keys=True))\n"
+                "    else:\n"
+                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
+                "PY\n"
+                "zip_rc=$?; "
+                "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_artifixer3d_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -5126,6 +5208,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp_aura_smoke",
             "adp_aura_interiorgs",
             "adp_aura_exact_residual",
+            "adp_artifixer3d",
             "adp_inpaint360_interiorgs",
         }
         else 60
