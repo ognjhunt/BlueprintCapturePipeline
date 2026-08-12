@@ -909,10 +909,19 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     assert "apt-get" not in probe
 
 
-def test_seals_broad_ownership_coverage_cutout_for_repair_render(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "candidate_schema",
+    [
+        "adp009b_ownership_coverage_cutout_set.v1",
+        "adp009d_segment_contribution_cutout_set.v1",
+    ],
+)
+def test_seals_broad_ownership_coverage_cutout_for_repair_render(
+    tmp_path: Path, candidate_schema: str
+) -> None:
     candidate, inputs = _inputs(
         tmp_path,
-        candidate_schema="adp009b_ownership_coverage_cutout_set.v1",
+        candidate_schema=candidate_schema,
     )
     repo, vendor = _repo(tmp_path)
     authority = _authority(tmp_path / "authority.json")

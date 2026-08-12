@@ -34,6 +34,7 @@ SUPPORTED_CANDIDATE_SCHEMAS = frozenset(
     {
         "adp009b_direct_evidence_expansion_set.v1",
         "adp009b_ownership_coverage_cutout_set.v1",
+        "adp009d_segment_contribution_cutout_set.v1",
     }
 )
 

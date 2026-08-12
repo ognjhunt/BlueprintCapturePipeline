@@ -94,7 +94,12 @@ def _render_manifest(
     return _write(path, manifest)
 
 
-def _fixture(tmp_path: Path, *, task_count: int = 5) -> tuple[Path, Path, Path]:
+def _fixture(
+    tmp_path: Path,
+    *,
+    task_count: int = 5,
+    candidate_schema: str = "adp009b_ownership_coverage_cutout_set.v1",
+) -> tuple[Path, Path, Path]:
     candidate_root = tmp_path / "candidate"
     deleted = candidate_root / "shared/deleted.ply"
     retained = candidate_root / "shared/retained.ply"
@@ -114,7 +119,7 @@ def _fixture(tmp_path: Path, *, task_count: int = 5) -> tuple[Path, Path, Path]:
             }
         )
     candidate: dict[str, object] = {
-        "schema_version": "adp009b_ownership_coverage_cutout_set.v1",
+        "schema_version": candidate_schema,
         "task_candidates": task_rows,
         "shared_scene_union": {
             "counts": {"deleted_total": 2, "retained_total": 8},
@@ -206,8 +211,19 @@ def _fixture(tmp_path: Path, *, task_count: int = 5) -> tuple[Path, Path, Path]:
     return candidate_path, result_path, relocation_path
 
 
-def test_materializes_full_detectable_support_for_five_tasks(tmp_path: Path) -> None:
-    candidate, result, relocation = _fixture(tmp_path, task_count=5)
+@pytest.mark.parametrize(
+    "candidate_schema",
+    [
+        "adp009b_ownership_coverage_cutout_set.v1",
+        "adp009d_segment_contribution_cutout_set.v1",
+    ],
+)
+def test_materializes_full_detectable_support_for_five_tasks(
+    tmp_path: Path, candidate_schema: str
+) -> None:
+    candidate, result, relocation = _fixture(
+        tmp_path, task_count=5, candidate_schema=candidate_schema
+    )
 
     packet = materialize_broad_repair_support(
         candidate_set_path=candidate,
