@@ -48,9 +48,6 @@ BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     "cosmos_edge_closed_loop_provider_bundle.py",
     # Arena family: four bundles, three probe kinds, not yet reached.
     "native_task_arena_bundle.py",
-    "native_task_arena_construction_bundle.py",
-    "native_task_arena_controls_bundle.py",
-    "native_task_arena_policy_bundle.py",
     # ADP-009D diagnostics and the launch qualification bundle.
     "adp009d_native_microcheck_bundle.py",
     "articulated_isaac_bundle.py",

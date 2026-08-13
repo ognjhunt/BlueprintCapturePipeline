@@ -199,3 +199,58 @@ __all__ = [
     "controls_runtime_sources",
     "load_verified_native_task_arena_controls_bundle",
 ]
+
+def main(argv: list[str] | None = None) -> int:
+    """Build the sealed native Arena controls packet.
+
+    The Arena family is a chain -- construction, then controls, then policy --
+    and each link consumes the previous link's result. None of the three could
+    be produced except by calling a Python function, so the whole chain was
+    unreachable from any production path.
+
+    The allocator refuses a bundle whose commit is not the one the control
+    plane is running, and every deploy moves that commit, so a bundle that can
+    only be built by hand is launchable at most once.
+
+    Performs no provider mutation and rents nothing.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build the sealed native Arena controls packet.")
+    parser.add_argument("--job-dir", dest="job_dir", required=True)
+    parser.add_argument("--packet-dir", dest="packet_dir", required=True)
+    parser.add_argument("--construction-result", dest="construction_result_path", required=True)
+    parser.add_argument("--runtime-source-packet-receipt", dest="runtime_source_packet_receipt", required=True)
+    parser.add_argument("--implementation-commit", dest="implementation_commit", required=True)
+    parser.add_argument("--generated-at", dest="generated_at")
+    args = parser.parse_args(argv)
+
+    try:
+        receipt = build_native_task_arena_controls_bundle(
+            job_dir=args.job_dir,
+            packet_dir=args.packet_dir,
+            construction_result_path=args.construction_result_path,
+            runtime_source_packet_receipt=args.runtime_source_packet_receipt,
+            implementation_commit=args.implementation_commit,
+            **({"generated_at": args.generated_at} if args.generated_at else {}),
+        )
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": [f"{type(exc).__name__}:{exc}"],
+                    "provider_mutation_performed": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0 if receipt.get("status") in {"ready", "sealed"} else 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
