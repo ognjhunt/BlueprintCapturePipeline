@@ -7354,3 +7354,139 @@ def test_request_logs_marks_access_unrecorded_when_the_provider_omits_it(
 
     assert result["workload_independent_access_recorded"] is False
     assert result["instance_ssh_host"] is None
+
+
+def _dead_log_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exactly the 2026-08-12 shape: HTTP 200 with a result_url, every fetch of
+    that url 403s, instance reports running throughout."""
+
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_: (200, {"result_url": "https://logs.example/result"}),
+    )
+
+    def _forbidden(*_args, **_kwargs):
+        raise OSError("HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(vpa, "_fetch_text", _forbidden)
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_kwargs: {
+            "observed": True,
+            "status": "running",
+            "exited": False,
+            "probe_error": None,
+            "ssh_host": "ssh.example",
+            "ssh_port": 22,
+        },
+    )
+
+
+def test_an_unreadable_log_channel_no_longer_ends_a_run_that_has_a_second_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The workload's output lands in object storage, on a channel that has
+    nothing to do with Vast's log API. A dead log channel is a loss of
+    narration, not a loss of the result."""
+
+    _dead_log_transport(monkeypatch)
+    polls = {"count": 0}
+
+    def _probe() -> bool:
+        polls["count"] += 1
+        # Absent while the render runs, present once it uploads.
+        return polls["count"] >= 4
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "dead-logs.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=600,
+        success_markers=["SUCCESS"],
+        log_transport_failure_limit=2,
+        output_probe=_probe,
+    )
+
+    assert result["output_probe_configured"] is True
+    assert result["output_probe_observed"] is True
+    assert result["output_probe_failed"] is False
+    # It waited for the object instead of abandoning the run at the log fault.
+    assert polls["count"] == 4
+    assert result["log_bytes_ever_read"] is False
+
+
+def test_a_dead_log_channel_with_no_second_one_still_aborts_quickly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing else to wait for, keeping the instance is paying to watch a
+    black screen."""
+
+    _dead_log_transport(monkeypatch)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "dead-logs-no-probe.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=600,
+        success_markers=["SUCCESS"],
+        log_transport_failure_limit=2,
+        output_probe=None,
+    )
+
+    assert result["output_probe_configured"] is False
+    assert len(result["log_poll_attempts"]) == 2
+    assert result["log_transport_failure_streak"] >= 2
+
+
+def test_a_second_channel_that_faults_does_not_hold_a_run_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dead_log_transport(monkeypatch)
+
+    def _probe() -> bool:
+        raise RuntimeError("object store unreachable")
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "dead-both.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=600,
+        success_markers=["SUCCESS"],
+        log_transport_failure_limit=2,
+        output_probe=_probe,
+    )
+
+    assert result["output_probe_failed"] is True
+    assert result["output_probe_observed"] is False
+    assert len(result["log_poll_attempts"]) == 2
+
+
+def test_the_output_probe_treats_a_not_yet_uploaded_object_as_not_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    probe = vpa._provider_output_probe("https://objects.example/output.zip?signed")
+    assert probe is not None
+
+    def _missing(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://objects.example/output.zip", 404, "Not Found", {}, None
+        )
+
+    monkeypatch.setattr(vpa.urllib.request, "urlopen", _missing)
+    assert probe() is False
+
+    assert vpa._provider_output_probe("") is None
