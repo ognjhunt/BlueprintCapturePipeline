@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Stage a built retained-scene render job onto a control-plane host.
+"""Stage a built paid-lane bundle onto a control-plane host.
 
-The bundle is built where the private scene bytes are -- a workstation with a
-120 MB source PLY on it -- and run from the control plane, which has neither the
-scene bytes nor any way to obtain them. Something has to carry the archive
-across, and on 2026-08-12 that something was a person with `scp`, which is how
-the live receipt ended up naming `/Users/<author>/...` and how an authoring
-directory tree ended up recreated on the droplet.
+A bundle is built where its private source bytes are -- a workstation with a
+120 MB source PLY or a CAD agent's sealed inputs on it -- and run from the
+control plane, which has neither those bytes nor any way to obtain them.
+Something has to carry the archive across, and on 2026-08-12 that something was
+a person with `scp`, which is how the live receipt ended up naming
+`/Users/<author>/...` and how an authoring directory tree ended up recreated on
+the droplet.
+
+Deliberately lane-neutral. Every paid lane has this same problem and the same
+shape of answer -- a receipt beside its archive -- so a per-lane copy of this
+would be a per-lane opportunity to omit a digest check.
 
 The transfer is not the problem; an unrecorded transfer is. This stages the
 exact files the receipt references, verifies every digest on both ends, refuses
@@ -15,8 +20,8 @@ says what was placed, from which commit, and with which digests.
 
 What it stages is deliberately a subset. The receipt, the archive, and the small
 documents the receipt references by relative path are what the control plane
-opens; the bulk PLY inputs are already inside the archive and are not copied a
-second time.
+opens; bulk inputs are already inside the archive and are not copied a second
+time.
 
 Performs no provider mutation and rents nothing.
 """
@@ -37,9 +42,7 @@ from blueprint_pipeline.host_resident_launch_inputs import (
     resolve_host_resident_bundle_receipt,
 )
 
-SCHEMA_VERSION = "retained_scene_render_job_staging_receipt.v1"
-RECEIPT_NAME = "adp_retained_scene_gpu_render_bundle_receipt.json"
-REHEARSAL_NAME = "adp_retained_scene_gpu_render_exact_bundle_rehearsal.json"
+SCHEMA_VERSION = "paid_lane_bundle_staging_receipt.v1"
 DEFAULT_REMOTE_ROOT = "/var/lib/blueprint/task-evaluation-inputs"
 
 
@@ -92,23 +95,40 @@ class SshTransport:
         return "sha256:" + output.split()[0]
 
 
-def _referenced_relative_paths(receipt: Mapping[str, Any]) -> list[str]:
+def _referenced_relative_paths(
+    receipt: Mapping[str, Any], *, receipt_name: str, job: Path
+) -> list[str]:
     """The receipt, the archive, and every document the receipt resolves by
-    relative path. Anything else is already sealed inside the archive."""
+    relative path. Anything else is already sealed inside the archive.
 
-    relatives = [RECEIPT_NAME, REHEARSAL_NAME]
+    A receipt that predates portable references still stages: the archive is
+    taken from the basename of its recorded path, which is where the resolver
+    looks first anyway. Refusing those would strand every bundle built before
+    the receipt format carried relative paths, for no gain in safety -- the
+    digest is checked either way.
+    """
+
+    relatives = [receipt_name]
     bundle_relative = str(receipt.get("bundle_relative_path") or "").strip()
     if not bundle_relative:
-        raise StagingError("staging_receipt_has_no_portable_bundle_reference")
+        recorded = str(receipt.get("bundle_path") or "").strip()
+        bundle_relative = Path(recorded).name if recorded else ""
+    if not bundle_relative:
+        raise StagingError("staging_receipt_names_no_bundle")
     relatives.append(bundle_relative)
     for name in ("execution_authority", "request"):
         record = receipt.get(name)
         if not isinstance(record, Mapping):
             continue
         relative = str(record.get("relative_path") or "").strip()
-        if not relative:
-            raise StagingError(f"staging_receipt_reference_not_portable:{name}")
-        relatives.append(relative)
+        if relative:
+            relatives.append(relative)
+    # Anything else sitting beside the receipt that the lane wrote as its own
+    # evidence: rehearsal receipts, preflights. Small, and absent exactly when
+    # a reader most wants them.
+    for sibling in sorted(job.glob("*.json")):
+        if sibling.name not in relatives and sibling.is_file():
+            relatives.append(sibling.name)
     ordered: list[str] = []
     for relative in relatives:
         if relative not in ordered:
@@ -116,9 +136,9 @@ def _referenced_relative_paths(receipt: Mapping[str, Any]) -> list[str]:
     return ordered
 
 
-def stage_retained_scene_render_job(
+def stage_paid_lane_bundle(
     *,
-    job_dir: str | Path,
+    receipt_path: str | Path,
     lane_id: str,
     remote_root: str = DEFAULT_REMOTE_ROOT,
     transport: Any | None = None,
@@ -126,10 +146,10 @@ def stage_retained_scene_render_job(
 ) -> dict[str, Any]:
     """Copy the receipt-referenced files to the host and verify them there."""
 
-    job = Path(job_dir).expanduser().resolve()
-    receipt_path = job / RECEIPT_NAME
-    if not receipt_path.is_file():
+    receipt_file = Path(receipt_path).expanduser().resolve()
+    if not receipt_file.is_file():
         raise StagingError("staging_job_receipt_missing")
+    job = receipt_file.parent
     if not lane_id or "/" in lane_id or lane_id.startswith("."):
         raise StagingError("staging_lane_id_invalid")
     if not any(
@@ -143,7 +163,7 @@ def stage_retained_scene_render_job(
     # The receipt must already resolve against its own directory here, or it
     # cannot resolve against the staged one there either.
     try:
-        resolution = resolve_host_resident_bundle_receipt(receipt_path, roots=[job])
+        resolution = resolve_host_resident_bundle_receipt(receipt_file, roots=[job])
     except HostResidentInputError as exc:
         raise StagingError(str(exc)) from exc
     if resolution["blockers"]:
@@ -151,8 +171,10 @@ def stage_retained_scene_render_job(
             "staging_receipt_not_self_resolving:" + ",".join(resolution["blockers"])
         )
 
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    relatives = _referenced_relative_paths(receipt)
+    receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+    relatives = _referenced_relative_paths(
+        receipt, receipt_name=receipt_file.name, job=job
+    )
     link = transport if transport is not None else SshTransport(str(host or ""))
     if transport is None and not host:
         raise StagingError("staging_host_required")
@@ -187,7 +209,9 @@ def stage_retained_scene_render_job(
         "status": "staged",
         "lane_id": lane_id,
         "remote_dir": remote_dir,
-        "blueprint_commit": receipt.get("blueprint_commit"),
+        "receipt_name": receipt_file.name,
+        "blueprint_commit": receipt.get("blueprint_commit")
+        or receipt.get("implementation_commit"),
         "bundle_sha256": receipt.get("bundle_sha256"),
         "receipt_sha256": resolution["receipt_sha256"],
         "staged_files": staged,
@@ -203,7 +227,11 @@ def stage_retained_scene_render_job(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--job-dir", required=True)
+    parser.add_argument(
+        "--receipt",
+        required=True,
+        help="The lane's bundle receipt. Its directory is what gets staged.",
+    )
     parser.add_argument("--lane-id", required=True)
     parser.add_argument("--host", required=True, help="ssh destination, e.g. root@<host>")
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
@@ -211,8 +239,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        receipt = stage_retained_scene_render_job(
-            job_dir=args.job_dir,
+        receipt = stage_paid_lane_bundle(
+            receipt_path=args.receipt,
             lane_id=args.lane_id,
             remote_root=args.remote_root,
             host=args.host,
