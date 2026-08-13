@@ -125,9 +125,8 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         "task_id": task_id,
         "asset_id": cad["asset_id"],
         "authored_structure_statically_qualified": True,
-        "replacement_usd": {"sha256": cad["output_usd"]["sha256"]},
+        "authoring_receipt": {"receipt_digest": cad["receipt_digest"]},
     }
-    static_path = _write(task / "static.json", static, "receipt_digest")
     visual_usd = task / "replacement_visual.usda"
     visual_usd.write_text("#usda 1.0", encoding="utf-8")
     registered = {
@@ -136,6 +135,7 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         "scene_id": "840920",
         "task_id": task_id,
         "asset_id": cad["asset_id"],
+        "task_freeze_digest": "sha256:" + "f" * 64,
         "output_usd": _record(visual_usd),
         "agent_authored_display_colors_preserved": True,
         "neutral_fallback_present": False,
@@ -149,6 +149,17 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         ],
     }
     registered_path = _write(task / "registered.json", registered, "receipt_digest")
+    static.update(
+        {
+            "replacement_usd": registered["output_usd"],
+            "registered_replacement_asset": {
+                "receipt_digest": registered["receipt_digest"]
+            },
+            "registered_visual_readback": {
+                "asset_frame_registration_digest": "pending"
+            },
+        }
+    )
     references = [task / "front.png", task / "oblique.png"]
     for index, reference in enumerate(references):
         reference.write_bytes(b"reference" + bytes([index]))
@@ -165,6 +176,21 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         reviewed_by="fixture",
         output_path=registration_path,
     )
+    registration = json.loads(registration_path.read_text(encoding="utf-8"))
+    registered["frame_registration"] = {
+        "registration_digest": registration["registration_digest"]
+    }
+    registered["receipt_digest"] = canonical_digest(
+        registered, digest_field="receipt_digest"
+    )
+    registered_path.write_text(json.dumps(registered), encoding="utf-8")
+    static["registered_replacement_asset"] = {
+        "receipt_digest": registered["receipt_digest"]
+    }
+    static["registered_visual_readback"]["asset_frame_registration_digest"] = registration[
+        "registration_digest"
+    ]
+    static_path = _write(task / "static.json", static, "receipt_digest")
     scenario = {
         "schema_version": "third_scene_task_scenario_suite.v1",
         "scene_id": "840920",

@@ -103,6 +103,42 @@ def _verified_registration(record: Any) -> dict[str, Any]:
     return dict(record)
 
 
+def _verified_registered_static(record: Any, *, asset: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(record, Mapping):
+        raise PairedTargetNativeImportBundleError(
+            "paired_target_native_import_registered_static_invalid"
+        )
+    path = Path(str(record.get("path") or "")).expanduser().resolve()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PairedTargetNativeImportBundleError(
+            "paired_target_native_import_registered_static_invalid"
+        ) from exc
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size != record.get("size_bytes")
+        or _sha256(path) != record.get("sha256")
+        or value.get("schema_version") != "simready_graph_asset_static_qualification.v1"
+        or value.get("receipt_digest") != record.get("receipt_digest")
+        or value.get("receipt_digest")
+        != canonical_digest(value, digest_field="receipt_digest")
+        or value.get("authored_structure_statically_qualified") is not True
+        or value.get("replacement_usd", {}).get("sha256") != asset.get("sha256")
+        or value.get("replacement_usd", {}).get("size_bytes") != asset.get("size_bytes")
+    ):
+        raise PairedTargetNativeImportBundleError(
+            "paired_target_native_import_registered_static_invalid"
+        )
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+        "receipt_digest": value["receipt_digest"],
+    }
+
+
 def _source_replacement_set(source: Mapping[str, Any]) -> list[dict[str, Any]]:
     tasks = source.get("tasks")
     if (
@@ -157,6 +193,9 @@ def _source_replacement_set(source: Mapping[str, Any]) -> list[dict[str, Any]]:
                 asset, "paired_target_native_import_replacement_asset_invalid"
             )
             registration = _verified_registration(row.get("asset_frame_registration"))
+            registered_static = _verified_registered_static(
+                row.get("registered_static_qualification"), asset=asset
+            )
             rows.append(
                 {
                     "task_id": replacement_task_id,
@@ -164,6 +203,7 @@ def _source_replacement_set(source: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "source": dict(asset),
                     "source_path": asset_path,
                     "asset_frame_registration": registration,
+                    "registered_static_qualification": registered_static,
                     "task_subject": row.get("task_subject") is True,
                     "passive_co_present": row.get("passive_co_present") is True,
                 }
@@ -274,6 +314,9 @@ def build_paired_target_native_import_bundle(
                     "asset_frame_registration_digest": row["asset_frame_registration"][
                         "registration_digest"
                     ],
+                    "registered_static_qualification_digest": row[
+                        "registered_static_qualification"
+                    ]["receipt_digest"],
                 }
             )
         request: dict[str, Any] = {

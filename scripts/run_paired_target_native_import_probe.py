@@ -132,6 +132,9 @@ def run(*, request_path: Path, output_root: Path) -> dict[str, Any]:
                 "status": "completed" if imported else "blocked",
                 "asset_id": asset_id,
                 "replacement_asset_sha256": row["sha256"],
+                "registered_static_qualification_digest": row[
+                    "registered_static_qualification_digest"
+                ],
                 "native_isaac_executed": True,
                 "native_simulator_import_qualified": imported,
                 "physical_equivalence_claimed": False,

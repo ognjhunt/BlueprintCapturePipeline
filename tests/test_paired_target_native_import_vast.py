@@ -30,6 +30,20 @@ def _source_request(tmp_path: Path) -> Path:
     import hashlib
 
     sha = "sha256:" + hashlib.sha256(asset.read_bytes()).hexdigest()
+    static_path = tmp_path / "registered_static.json"
+    static = {
+        "schema_version": "simready_graph_asset_static_qualification.v1",
+        "authored_structure_statically_qualified": True,
+        "replacement_usd": {
+            "path": str(asset),
+            "size_bytes": asset.stat().st_size,
+            "sha256": sha,
+        },
+        "receipt_digest": "",
+    }
+    static["receipt_digest"] = canonical_digest(static, digest_field="receipt_digest")
+    write_json(static_path, static)
+    static_sha = "sha256:" + hashlib.sha256(static_path.read_bytes()).hexdigest()
     source = {
         "schema_version": "paired_target_native_render_request.v1",
         "status": "native_render_requests_materialized_pending_isaac_execution",
@@ -52,6 +66,12 @@ def _source_request(tmp_path: Path) -> Path:
                         },
                         "asset_frame_registration": {
                             "registration_digest": "sha256:" + "b" * 64
+                        },
+                        "registered_static_qualification": {
+                            "path": str(static_path),
+                            "size_bytes": static_path.stat().st_size,
+                            "sha256": static_sha,
+                            "receipt_digest": static["receipt_digest"],
                         },
                         "task_subject": True,
                         "passive_co_present": False,

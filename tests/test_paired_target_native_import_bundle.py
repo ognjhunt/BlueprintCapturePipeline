@@ -39,12 +39,27 @@ def _source(tmp_path: Path, *, count: int) -> Path:
             '#usda 1.0\n(defaultPrim="Asset")\ndef Xform "Asset" {}\n',
             encoding="utf-8",
         )
+        static_path = tmp_path / f"static_{index}.json"
+        static = {
+            "schema_version": "simready_graph_asset_static_qualification.v1",
+            "authored_structure_statically_qualified": True,
+            "replacement_usd": _record(path),
+            "receipt_digest": "",
+        }
+        static["receipt_digest"] = canonical_digest(
+            static, digest_field="receipt_digest"
+        )
+        static_path.write_text(json.dumps(static), encoding="utf-8")
         assets.append(
             {
                 "task_id": f"task_{index}",
                 "asset_id": f"asset_{index}",
                 "visual_usd": _record(path),
                 "asset_frame_registration": {"registration_digest": "sha256:" + str(index) * 64},
+                "registered_static_qualification": {
+                    **_record(static_path),
+                    "receipt_digest": static["receipt_digest"],
+                },
             }
         )
     tasks = []

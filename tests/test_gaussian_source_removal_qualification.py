@@ -367,6 +367,9 @@ def test_derived_source_removal_receipt_feeds_construction_bindings(
             "status": "completed",
             "asset_id": removal["replacement_asset_id"],
             "replacement_asset_sha256": asset_sha256,
+            "registered_static_qualification_digest": json.loads(
+                static_path.read_text(encoding="utf-8")
+            )["receipt_digest"],
             "native_isaac_executed": True,
             "native_simulator_import_qualified": True,
             "physical_equivalence_claimed": False,

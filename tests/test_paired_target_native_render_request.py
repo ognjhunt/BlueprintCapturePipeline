@@ -80,6 +80,8 @@ def _fixture(tmp_path: Path, *, task_count: int = 2) -> Path:
         appearance.write_bytes(b"usdz" + bytes([task_index]))
         simready.write_text(f"simready {task_index}", encoding="utf-8")
         visual.write_text(f"visual {task_index}", encoding="utf-8")
+        registered_static_path = task_root / "registered_static.json"
+        registered_static_path.write_text("{}", encoding="utf-8")
         _, camera_ids = _trajectory(trajectory_path, prefix=task_id)
         index_path.write_text(json.dumps({"frames": camera_ids}), encoding="utf-8")
         tasks.append(
@@ -102,6 +104,10 @@ def _fixture(tmp_path: Path, *, task_count: int = 2) -> Path:
                         [0.0, 0.0, 1.0, 0.0],
                         [0.0, 0.0, 0.0, 1.0],
                     ],
+                },
+                "registered_static_qualification": {
+                    **_record(registered_static_path),
+                    "receipt_digest": "sha256:" + str(task_index) * 64,
                 },
                 "camera_trajectory": _record(trajectory_path),
                 "camera_index": _record(index_path, camera_ids=camera_ids),
