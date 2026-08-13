@@ -1515,3 +1515,44 @@ def test_an_unconfigured_host_still_finds_its_standing_authorizations(
 
     assert "execute_launch_id_required" not in receipt["blockers"]
     assert len(calls) == 1
+
+
+def test_an_unset_terminal_path_field_is_not_recorded_as_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Path("").resolve()` is the process working directory, so a result that
+    never set `teardown_manifest_path` used to produce a descriptor naming the
+    release checkout -- evidence a reader could mistake for a real artifact
+    that had merely gone missing."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    result_path = Path(profile["terminal_contract"]["result_path"])
+
+    def _runner(argv: list[str]) -> int:
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps({"status": "blocked", "continuing_spend_from_this_run": False}),
+            encoding="utf-8",
+        )
+        return 2
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=_runner,
+    )
+
+    artifacts = receipt["terminal_evidence"]["artifacts"]
+    for field in ("teardown_manifest_path", "artifact_manifest_path"):
+        assert artifacts[field] == {"path": None, "exists": False, "digest": None}
+        assert f"allocator_terminal_artifact_missing:{field}" in receipt["blockers"]

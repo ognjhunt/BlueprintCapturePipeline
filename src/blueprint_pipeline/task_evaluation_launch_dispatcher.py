@@ -762,7 +762,17 @@ def _terminal_evidence(
                 blockers.append(f"allocator_terminal_value_mismatch:{field}")
         artifacts: dict[str, Any] = {}
         for field in terminal.get("required_path_fields") or []:
-            artifact_path = Path(str(result.get(field) or "")).expanduser().resolve()
+            raw = str(result.get(field) or "").strip()
+            if not raw:
+                # `Path("").resolve()` is the process working directory, so an
+                # unset field used to be recorded as a descriptor naming the
+                # release checkout -- evidence that a reader could mistake for
+                # a real artifact that had merely gone missing. A field the
+                # result never set has no path.
+                artifacts[str(field)] = {"path": None, "exists": False, "digest": None}
+                blockers.append(f"allocator_terminal_artifact_missing:{field}")
+                continue
+            artifact_path = Path(raw).expanduser().resolve()
             artifacts[str(field)] = _artifact(artifact_path)
             if not artifact_path.is_file():
                 blockers.append(f"allocator_terminal_artifact_missing:{field}")
