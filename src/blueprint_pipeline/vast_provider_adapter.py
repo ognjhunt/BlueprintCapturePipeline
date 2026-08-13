@@ -4898,6 +4898,41 @@ def _semantic_log_text(text: str) -> str:
     return "\n".join(lines)
 
 
+def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
+    """A completion signal that does not travel over Vast's log API.
+
+    The workload uploads its output to object storage with a presigned PUT, and
+    the adapter already holds the matching GET. Asking that object whether it
+    exists is a second, independent channel: on 2026-08-12 every log fetch
+    returned 403 for twenty minutes while the instance reported ``running``, and
+    the run was abandoned without ever asking the one place the answer would
+    have been.
+
+    A HEAD keeps the poll cheap; the body is fetched once, after the wait ends.
+    """
+
+    if not get_url:
+        return None
+
+    def _probe() -> bool:
+        request = urllib.request.Request(get_url, method="HEAD")  # noqa: S310 - presigned https
+        request.add_header("User-Agent", "BlueprintVastProviderAdapter/1.0")
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:  # nosec B310
+                return 200 <= int(response.status) < 300
+        except urllib.error.HTTPError as exc:
+            # 404 is the normal answer until the workload finishes. Anything
+            # else means this channel is not usable and the caller should stop
+            # relying on it rather than treat silence as "not done yet".
+            if int(exc.code) in {403, 404, 405}:
+                return False
+            raise
+        except OSError:
+            return False
+
+    return _probe
+
+
 def _request_logs_and_fetch(
     *,
     instance_id: int,
@@ -4912,6 +4947,7 @@ def _request_logs_and_fetch(
     container_missing_retry_attempts: int = 5,
     no_progress_seconds: int | None = None,
     log_transport_failure_limit: int = 6,
+    output_probe: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, max_wait_seconds)
     attempts: list[dict[str, Any]] = []
@@ -4952,6 +4988,8 @@ def _request_logs_and_fetch(
     log_transport_failure_streak = 0
     last_log_transport_error: str | None = None
     log_transport_failure_ceiling = max(0, int(log_transport_failure_limit))
+    output_probe_observed = False
+    output_probe_failed = False
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -5123,12 +5161,29 @@ def _request_logs_and_fetch(
             and log_transport_failure_streak >= log_transport_failure_ceiling
         )
         instance_exited = instance_exited_count >= 2
+        # The workload's output lands in object storage, on a channel that has
+        # nothing to do with Vast's log API. Polling it means an unreadable log
+        # channel is a loss of narration, not a loss of the result.
+        output_observed = False
+        if output_probe is not None and not output_probe_failed:
+            try:
+                output_observed = bool(output_probe())
+            except Exception:  # noqa: BLE001 - a probe fault must not end the run
+                output_probe_failed = True
+        if output_observed:
+            output_probe_observed = True
         if marker_found:
             break_reason = "success_marker_found"
-        elif log_transport_unavailable:
-            # Ahead of the no-progress watchdog, whose blocker would blame the
-            # workload for output we were never able to read.  Also stops paying
-            # for an instance we cannot observe: a minute instead of twenty.
+        elif output_observed:
+            break_reason = "provider_output_observed"
+        elif log_transport_unavailable and output_probe is None:
+            # With no second channel there is nothing left to wait for: the
+            # blocker would otherwise blame the workload for output we were
+            # never able to read, and we would keep paying for an instance we
+            # cannot observe. A minute instead of twenty.
+            break_reason = "log_transport_unavailable"
+        elif log_transport_unavailable and output_probe_failed:
+            # The second channel exists but is not answering either.
             break_reason = "log_transport_unavailable"
         elif instance_exited:
             # Ahead of the generic watchdogs so the reason names the exit rather
@@ -5162,6 +5217,12 @@ def _request_logs_and_fetch(
         "log_transport_failure_streak": log_transport_failure_streak,
         "log_transport_failure_limit": log_transport_failure_ceiling,
         "last_log_transport_error": last_log_transport_error,
+        # Which channel ended the wait. A run that finished on the object store
+        # while the log channel stayed dark is a successful run with no
+        # narration, and the receipt should say so rather than imply silence.
+        "output_probe_configured": output_probe is not None,
+        "output_probe_observed": output_probe_observed,
+        "output_probe_failed": output_probe_failed,
         # When every channel is silent this is the only way back to an instance
         # we are still paying for. Without it the forensic trail ends at "403"
         # and the next attempt has to buy the same twenty minutes to learn the
@@ -7193,6 +7254,7 @@ def run_vast_provider_adapter(
                 )
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
+            output_probe=_provider_output_probe(_string(provider_output_get_url)),
         )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         if not _log_text_has_success_marker(
@@ -7570,7 +7632,15 @@ def run_vast_provider_adapter(
                 "output_zip_path": str(output_zip_path),
                 "raw_secret_values_recorded": False,
             }
-            if provider_upload_ok and _string(provider_output_get_url):
+            # Attempt the download whenever a GET URL exists, not only when a
+            # marker was read out of the logs. The upload marker and the object
+            # travel on different channels, and gating the download on the
+            # marker made the log channel a hard dependency for the *result*:
+            # on 2026-08-12 every log fetch returned 403 while the instance ran,
+            # so an output the workload may well have uploaded would never have
+            # been fetched. The object's presence is stronger evidence than a
+            # line claiming it was written.
+            if _string(provider_output_get_url):
                 transfer = download_url_to_file(
                     url=_string(provider_output_get_url),
                     output_path=output_zip_path,
@@ -7616,7 +7686,21 @@ def run_vast_provider_adapter(
                 expected_video_count=_provider_expected_video_count(provider_bundle_kind),
             )
             output_zip_received = output_zip_inspection.get("zip_present") is True
-            provider_runtime_output_zip_produced = provider_upload_ok and output_zip_received
+            # The object arriving is what proves the workload produced output.
+            # Requiring the log marker as well meant a readable object and an
+            # unreadable log channel added up to "no output".
+            provider_runtime_output_zip_produced = output_zip_received
+            output_download_manifest["provider_output_observed_via"] = (
+                "log_marker_and_object_store"
+                if provider_upload_ok and output_zip_received
+                else "object_store_only"
+                if output_zip_received
+                else "none"
+            )
+            write_json(
+                resolved_job_dir / "vast_provider_output_download_manifest.json",
+                output_download_manifest,
+            )
             runtime_result_present = output_zip_inspection.get("runtime_result_present") is True
             video_smoke_proven = output_zip_inspection.get("video_smoke_proven") is True
             mp4_validation = _mapping(output_zip_inspection.get("mp4_validation"))
@@ -7641,7 +7725,9 @@ def run_vast_provider_adapter(
                     provider_completed_or_blocked=provider_completed_or_blocked,
                 )
             )
-            if not provider_upload_ok:
+            if not provider_upload_ok and not output_zip_received:
+                # Only a blocker when the object is also absent: the marker is
+                # corroboration for an upload, not the upload itself.
                 completion_blockers.append("provider_output_upload_marker_missing")
             if not output_zip_received:
                 completion_blockers.append("provider_runtime_output_zip_not_received_locally")
