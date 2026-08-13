@@ -190,7 +190,10 @@ def _adopt_directory(source: Path, target: Path) -> tuple[int, int]:
                 )
             already_present += 1
             continue
-        target.mkdir(parents=True, exist_ok=True)
+        # 0o700, because every paid lane refuses a consumption root with a
+        # group or other bit set. Creating it under the process umask made
+        # the reconciler and the lanes disagree about the same directory.
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Exclusive create, so a concurrent writer claiming the same
         # authorization wins rather than being silently overwritten.
         try:

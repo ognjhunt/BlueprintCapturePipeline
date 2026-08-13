@@ -105,7 +105,75 @@ def test_unconfigured_root_with_unwritable_home_still_fails_closed(
     )
 
     assert outcome["status"] == "blocked"
-    assert "attempt_authority_consumption_write_failed" in outcome["blockers"]
+    # The blocker now names the cause. `attempt_authority_consumption_write_failed`
+    # said only that a write failed, which sent the last diagnosis after a
+    # spend-authority problem when the fault was the filesystem layout.
+    assert outcome["blockers"] == ["spend_authority_consumption_root_unwritable:30"]
+
+
+def test_a_ledger_directory_left_group_readable_is_tightened_not_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The reconciler created this directory under the process umask (0o755 on
+    the deployed host) while every paid lane refuses any group or other bit. So
+    on every deployed host each paid attempt was refused, for a state the lane
+    owned and could have fixed."""
+
+    root = tmp_path / "authority"
+    consumed = root / "consumed"
+    consumed.mkdir(parents=True)
+    consumed.chmod(0o755)
+    monkeypatch.setenv(SPEND_AUTHORITY_ROOT_ENV, str(root))
+
+    outcome = consume_retained_scene_render_paid_attempt_authority_once(
+        _authority("e" * 64), blueprint_commit=COMMIT
+    )
+
+    assert outcome["status"] == "consumed"
+    # Tightening enforces the property the check exists for, rather than
+    # reporting that it is not met.
+    assert consumed.stat().st_mode & 0o077 == 0
+
+
+def test_a_ledger_directory_owned_by_someone_else_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ownership is not something we can make safe by changing a mode."""
+
+    import os
+
+    from blueprint_pipeline.spend_authority_consumption_root import (
+        SpendAuthorityRootError,
+        prepare_consumption_root,
+    )
+
+    root = tmp_path / "authority"
+    (root / "consumed").mkdir(parents=True)
+    monkeypatch.setenv(SPEND_AUTHORITY_ROOT_ENV, str(root))
+    foreign_uid = os.getuid() + 12345
+    monkeypatch.setattr(os, "getuid", lambda: foreign_uid)
+
+    with pytest.raises(SpendAuthorityRootError, match="not_owned"):
+        prepare_consumption_root()
+
+
+def test_a_symlinked_ledger_directory_is_refused_outright(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from blueprint_pipeline.spend_authority_consumption_root import (
+        SpendAuthorityRootError,
+        prepare_consumption_root,
+    )
+
+    root = tmp_path / "authority"
+    root.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (root / "consumed").symlink_to(elsewhere)
+    monkeypatch.setenv(SPEND_AUTHORITY_ROOT_ENV, str(root))
+
+    with pytest.raises(SpendAuthorityRootError, match="is_symlink"):
+        prepare_consumption_root()
 
 
 def test_second_consumption_of_same_authority_is_refused(
