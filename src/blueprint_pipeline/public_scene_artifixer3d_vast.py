@@ -1636,15 +1636,26 @@ def _materialize_raw_result(
                 native_appearance_record.get("status")
                 != "native_appearance_candidates_exported_pending_native_import_and_multiview_review"
                 or not isinstance(coordinate, Mapping)
-                or coordinate.get("source_coordinate_frame_preserved") is not True
-                or coordinate.get("normalizing_transform_applied") is not False
-                or coordinate.get("transform_matrix")
+                or coordinate.get("source_gaussian_tensor_coordinates_preserved")
+                is not True
+                or coordinate.get("camera_derived_normalizing_transform_applied")
+                is not False
+                or coordinate.get("standard_gaussian_ply_transform_matrix")
                 != [
                     [1.0, 0.0, 0.0, 0.0],
                     [0.0, 1.0, 0.0, 0.0],
                     [0.0, 0.0, 1.0, 0.0],
                     [0.0, 0.0, 0.0, 1.0],
                 ]
+                or coordinate.get("isaac_nurec_usdz_wrapper_transform_matrix")
+                != [
+                    [-1.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, -1.0, 0.0],
+                    [0.0, -1.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+                or coordinate.get("usdz_wrapper_transform_role")
+                != "fixed_pinned_3dgrut_to_usd_axis_convention_only"
                 or not isinstance(checkpoint_record, Mapping)
                 or not isinstance(source_checkpoint, Mapping)
                 or source_checkpoint.get("size_bytes")

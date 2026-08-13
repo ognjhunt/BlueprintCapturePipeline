@@ -890,14 +890,23 @@ def _export_checkpoint_native_appearance(
         "source_checkpoint": _file_record(checkpoint),
         "gaussian_count": int(model.positions.shape[0]),
         "coordinate_contract": {
-            "source_coordinate_frame_preserved": True,
-            "normalizing_transform_applied": False,
-            "transform_matrix": [
+            "source_gaussian_tensor_coordinates_preserved": True,
+            "camera_derived_normalizing_transform_applied": False,
+            "standard_gaussian_ply_transform_matrix": [
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
+            "isaac_nurec_usdz_wrapper_transform_matrix": [
+                [-1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0, 0.0],
+                [0.0, -1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "usdz_wrapper_transform_role": (
+                "fixed_pinned_3dgrut_to_usd_axis_convention_only"
+            ),
         },
         "standard_gaussian_ply": _file_record(ply_path),
         "isaac_nurec_usdz": _file_record(usdz_path),

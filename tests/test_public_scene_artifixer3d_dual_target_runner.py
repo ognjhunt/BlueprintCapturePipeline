@@ -431,14 +431,23 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
     assert result["gaussian_count"] == 2
     assert result["source_checkpoint"]["sha256"] == runner._sha256(checkpoint)
     assert result["coordinate_contract"] == {
-        "source_coordinate_frame_preserved": True,
-        "normalizing_transform_applied": False,
-        "transform_matrix": [
+        "source_gaussian_tensor_coordinates_preserved": True,
+        "camera_derived_normalizing_transform_applied": False,
+        "standard_gaussian_ply_transform_matrix": [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],
+        "isaac_nurec_usdz_wrapper_transform_matrix": [
+            [-1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "usdz_wrapper_transform_role": (
+            "fixed_pinned_3dgrut_to_usd_axis_convention_only"
+        ),
     }
     assert Path(result["standard_gaussian_ply"]["path"]).read_bytes() == b"ply"
     assert Path(result["isaac_nurec_usdz"]["path"]).read_bytes() == b"usdz"
