@@ -319,6 +319,65 @@ def test_supervisor_snapshot_exposes_unmatched_webapp_receipt(
     }]
 
 
+def test_supervisor_snapshot_exposes_bound_website_trigger_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    profile, _ = _snapshot(tmp_path)
+    run_root = tmp_path / "state" / "website-launch"
+    receipt = {
+        "launch_id": "website-launch",
+        "run_id": "website-run",
+        "request_digest": "sha256:" + "c" * 64,
+        "receipt_digest": "sha256:" + "d" * 64,
+        "status": "completed",
+        "provider_mutation_attempted": False,
+    }
+    attempt = {
+        "schema_version": "task_evaluation_launch_webapp_sync_result.v1",
+        "status": "succeeded",
+        "launch_id": receipt["launch_id"],
+        "run_id": receipt["run_id"],
+        "request_digest": receipt["request_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+        "response": {
+            "launch_id": receipt["launch_id"],
+            "run_id": receipt["run_id"],
+            "request_digest": receipt["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+        },
+        "attempt_number": 1,
+        "attempted_at": "2026-08-13T14:00:00+00:00",
+        "provider_mutation_performed": False,
+    }
+    attempt["sync_result_digest"] = canonical_digest(
+        attempt, digest_field="sync_result_digest"
+    )
+    _write(run_root / "launch_receipt.json", receipt)
+    _write(run_root / "webapp_sync_succeeded.json", attempt)
+
+    snapshot = build_supervisor_snapshot(
+        profile_dir=tmp_path / "profiles",
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "guard.json",
+    )
+
+    assert profile["profile_id"] in snapshot["admissible_profile_ids"]
+    terminal = snapshot["terminal_launches"][0]
+    assert terminal["webapp_sync_status"] == "webapp_sync_succeeded"
+    assert terminal["webapp_record_bound"] is True
+    assert terminal["website_trigger_proven"] is True
+    assert terminal["webapp_sync_blockers"] == []
+    assert terminal["webapp_sync_receipt"] == {
+        "sync_result_digest": attempt["sync_result_digest"],
+        "launch_id": receipt["launch_id"],
+        "run_id": receipt["run_id"],
+        "request_digest": receipt["request_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+    }
+
+
 def test_supervisor_snapshot_bounds_old_terminal_history_before_live_inference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -24,6 +24,7 @@ from .task_evaluation_launch_dispatcher import (
     load_public_launch_profile_catalog,
     validate_launch_profile,
 )
+from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
 from .task_evaluation_supervisor.agents_sdk import (
     DEFAULT_SUPERVISOR_AGENT_MODEL,
     AgentsSDKAgentSpec,
@@ -280,7 +281,25 @@ def build_supervisor_snapshot(
             else None,
         }
         terminal_unmatched_path = path.with_name("webapp_sync_terminal_unmatched.json")
-        if terminal_unmatched_path.is_file():
+        terminal_succeeded_path = path.with_name("webapp_sync_succeeded.json")
+        if terminal_succeeded_path.is_file():
+            try:
+                succeeded = validated_succeeded_webapp_sync_row(
+                    receipt=receipt,
+                    attempt=_read(terminal_succeeded_path),
+                )
+            except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+                terminal_row["webapp_sync_status"] = "succeeded_receipt_invalid"
+                terminal_row["webapp_sync_blockers"] = [
+                    "webapp_sync_succeeded_invalid"
+                ]
+            else:
+                terminal_row["webapp_sync_status"] = succeeded["status"]
+                terminal_row["webapp_record_bound"] = True
+                terminal_row["website_trigger_proven"] = True
+                terminal_row["webapp_sync_blockers"] = []
+                terminal_row["webapp_sync_receipt"] = succeeded["receipt"]
+        elif terminal_unmatched_path.is_file():
             try:
                 terminal_unmatched = _read(terminal_unmatched_path)
             except (OSError, json.JSONDecodeError):

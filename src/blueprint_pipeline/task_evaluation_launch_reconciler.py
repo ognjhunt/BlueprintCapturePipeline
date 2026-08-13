@@ -38,6 +38,7 @@ WEBAPP_SYNC_TERMINAL_UNMATCHED_SCHEMA_VERSION = (
     "task_evaluation_launch_webapp_sync_terminal_unmatched.v1"
 )
 WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME = "webapp_sync_terminal_unmatched.json"
+WEBAPP_SYNC_SUCCEEDED_FILENAME = "webapp_sync_succeeded.json"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -537,6 +538,54 @@ def _terminal_unmatched_webapp_sync_receipt(
     return unmatched
 
 
+def validated_succeeded_webapp_sync_row(
+    *, receipt: Mapping[str, Any], attempt: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Validate the WebApp's exact terminal binding before claiming website origin."""
+
+    response = attempt.get("response")
+    response = response if isinstance(response, Mapping) else {}
+    if (
+        attempt.get("schema_version")
+        != "task_evaluation_launch_webapp_sync_result.v1"
+        or attempt.get("status") != "succeeded"
+        or attempt.get("provider_mutation_performed") is not False
+        or attempt.get("sync_result_digest")
+        != canonical_digest(attempt, digest_field="sync_result_digest")
+        or not isinstance(attempt.get("attempt_number"), int)
+        or isinstance(attempt.get("attempt_number"), bool)
+        or attempt["attempt_number"] < 1
+        or _timestamp(attempt.get("attempted_at")) is None
+        or any(
+            attempt.get(field) != receipt.get(field)
+            for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
+        )
+        or any(
+            response.get(field) != receipt.get(field)
+            for field in ("launch_id", "run_id", "request_digest", "receipt_digest")
+        )
+    ):
+        raise TaskEvaluationLaunchError("webapp_sync_succeeded_invalid")
+    return {
+        "launch_id": receipt.get("launch_id"),
+        "status": "webapp_sync_succeeded",
+        "attempts": attempt["attempt_number"],
+        "blockers": [],
+        "webapp_record_bound": True,
+        "website_trigger_proven": True,
+        "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_performed": False,
+        "receipt": {
+            "sync_result_digest": attempt.get("sync_result_digest"),
+            "launch_id": receipt.get("launch_id"),
+            "run_id": receipt.get("run_id"),
+            "request_digest": receipt.get("request_digest"),
+            "receipt_digest": receipt.get("receipt_digest"),
+        },
+    }
+
+
 def _validated_terminal_unmatched_webapp_sync_row(
     *,
     run_root: Path,
@@ -801,10 +850,17 @@ def reconcile_launches(
 
     for receipt_path in receipt_paths:
         run_root = receipt_path.parent
-        if (run_root / "webapp_sync_succeeded.json").is_file():
-            continue
         try:
             receipt = _read(receipt_path)
+            succeeded_path = run_root / WEBAPP_SYNC_SUCCEEDED_FILENAME
+            if succeeded_path.is_file():
+                sync_rows.append(
+                    validated_succeeded_webapp_sync_row(
+                        receipt=receipt,
+                        attempt=_read(succeeded_path),
+                    )
+                )
+                continue
             terminal_unmatched_path = run_root / WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME
             if terminal_unmatched_path.is_file():
                 sync_rows.append(
@@ -855,7 +911,7 @@ def reconcile_launches(
                 attempt_dir / f"{attempt['sync_result_digest'][7:]}.json", attempt
             )
             if sync_result.get("status") == "succeeded":
-                _write_immutable(run_root / "webapp_sync_succeeded.json", attempt)
+                _write_immutable(run_root / WEBAPP_SYNC_SUCCEEDED_FILENAME, attempt)
             if (
                 sync_result.get("status") == "failed"
                 and sync_result.get("reason") == "http_error:404"
@@ -870,6 +926,13 @@ def reconcile_launches(
                         run_root=run_root,
                         receipt=receipt,
                         unmatched=unmatched,
+                    )
+                )
+            elif sync_result.get("status") == "succeeded":
+                sync_rows.append(
+                    validated_succeeded_webapp_sync_row(
+                        receipt=receipt,
+                        attempt=attempt,
                     )
                 )
             else:

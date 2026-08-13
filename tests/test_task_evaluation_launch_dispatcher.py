@@ -181,6 +181,30 @@ def _write(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _webapp_sync_succeeded(receipt: dict, *, attempt_number: int = 1) -> dict:
+    value = {
+        "schema_version": "task_evaluation_launch_webapp_sync_result.v1",
+        "status": "succeeded",
+        "launch_id": receipt["launch_id"],
+        "run_id": receipt["run_id"],
+        "request_digest": receipt["request_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+        "response": {
+            "launch_id": receipt["launch_id"],
+            "run_id": receipt["run_id"],
+            "request_digest": receipt["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+        },
+        "attempt_number": attempt_number,
+        "attempted_at": "2026-08-13T14:00:00+00:00",
+        "provider_mutation_performed": False,
+    }
+    value["sync_result_digest"] = canonical_digest(
+        value, digest_field="sync_result_digest"
+    )
+    return value
+
+
 def _zero_guard(*, generated_at: datetime, live_instance_count: int = 0) -> dict:
     provider_zero = live_instance_count == 0
     return {
@@ -792,7 +816,7 @@ def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
     _write(run_root / "launch_profile.json", profile)
     _write(run_root / "launch_receipt.json", receipt)
     # Keep this focused on closure evidence rather than WebApp callback setup.
-    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    _write(run_root / "webapp_sync_succeeded.json", _webapp_sync_succeeded(receipt))
     guard_path = tmp_path / "gpu-spend-guard.json"
     observed_at = datetime.now(timezone.utc)
     _write(guard_path, _zero_guard(generated_at=observed_at - timedelta(seconds=1)))
@@ -853,7 +877,7 @@ def test_reconciler_never_retains_provider_zero_before_teardown_or_while_nonzero
     )
     _write(run_root / "launch_profile.json", profile)
     _write(run_root / "launch_receipt.json", receipt)
-    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    _write(run_root / "webapp_sync_succeeded.json", _webapp_sync_succeeded(receipt))
     guard_path = tmp_path / "gpu-spend-guard.json"
     _write(
         guard_path,
@@ -928,7 +952,7 @@ def test_reconciler_separates_preprovider_admission_rejection_from_teardown_gap(
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     _write(run_root / "launch_profile.json", profile)
     _write(run_root / "launch_receipt.json", receipt)
-    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    _write(run_root / "webapp_sync_succeeded.json", _webapp_sync_succeeded(receipt))
     guard_path = tmp_path / "gpu-spend-guard.json"
     _write(guard_path, _zero_guard(generated_at=datetime.now(timezone.utc)))
 
@@ -988,7 +1012,7 @@ def test_reconciler_keeps_unknown_paid_terminal_without_teardown_pending(
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     _write(run_root / "launch_profile.json", profile)
     _write(run_root / "launch_receipt.json", receipt)
-    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    _write(run_root / "webapp_sync_succeeded.json", _webapp_sync_succeeded(receipt))
     guard_path = tmp_path / "gpu-spend-guard.json"
     _write(guard_path, _zero_guard(generated_at=datetime.now(timezone.utc)))
 
@@ -1076,6 +1100,12 @@ def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
             "run_id": receipt["run_id"],
             "request_digest": receipt["request_digest"],
             "receipt_digest": receipt["receipt_digest"],
+            "response": {
+                "launch_id": receipt["launch_id"],
+                "run_id": receipt["run_id"],
+                "request_digest": receipt["request_digest"],
+                "receipt_digest": receipt["receipt_digest"],
+            },
         }
 
     monkeypatch.setattr(webapp_sync_module, "sync_launch_receipt_to_webapp", sync_receipt)
@@ -1092,12 +1122,33 @@ def test_reconciler_retries_dry_terminal_receipt_sync_without_allocator(
         "launch_id": request["launch_id"],
         "status": "webapp_sync_succeeded",
         "attempts": 2,
+        "blockers": [],
+        "webapp_record_bound": True,
+        "website_trigger_proven": True,
         "provider_mutation_performed": False,
+        "allocator_invoked": False,
+        "automatic_retry_performed": False,
+        "receipt": {
+            "sync_result_digest": result["webapp_sync"][0]["receipt"][
+                "sync_result_digest"
+            ],
+            "launch_id": request["launch_id"],
+            "run_id": request["run_id"],
+            "request_digest": request["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+        },
     }]
     assert result["terminal_provider_zero"] == []
     succeeded = json.loads((run_root / "webapp_sync_succeeded.json").read_text())
     assert succeeded["attempt_number"] == 2
     assert succeeded["provider_mutation_performed"] is False
+    replay = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        guard_report_path=tmp_path / "missing-guard.json",
+    )
+    assert replay["webapp_sync"] == result["webapp_sync"]
+    assert sync_calls == [receipt]
 
 
 def test_reconciler_retains_unmatched_webapp_404_without_retrying(
