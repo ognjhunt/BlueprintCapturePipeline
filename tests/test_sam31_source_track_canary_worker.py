@@ -189,6 +189,24 @@ def test_worker_returns_only_bound_semantic_tracks(
         "blueprint_pipeline.sam31_source_track_canary_worker.run_sam31_source_track_stage",
         fake_stage,
     )
+    normalized = {
+        "schema_version": "semantic_source_track_import_result.v1",
+        "status": "abstained",
+        "bindings": {},
+        "track_registry": [],
+        "frame_masks": [],
+        "blockers": [],
+        "warnings": ["provider_returned_no_tracks"],
+        "claim_ceiling": "no_source_tracks_detected",
+        "result_digest": "",
+    }
+    normalized["result_digest"] = canonical_json_digest(
+        {key: value for key, value in normalized.items() if key != "result_digest"}
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_source_track_canary_worker.import_semantic_source_tracks",
+        lambda *_args, **_kwargs: normalized,
+    )
     monkeypatch.setattr(
         "blueprint_pipeline.sam31_source_track_canary_worker._runtime_facts",
         lambda: {
@@ -204,6 +222,7 @@ def test_worker_returns_only_bound_semantic_tracks(
     assert result["status"] == "passed"
     assert result["stage_run_result"]["status"] == "abstained"
     assert result["source_frame_bytes_returned"] is False
+    assert result["normalized_source_tracks"] == normalized
     assert result["metric_box_ready"] is False
     assert result["physics_ready"] is False
     assert result["physical_task_success_established"] is False
@@ -226,6 +245,21 @@ def test_worker_fails_closed_without_cuda(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(
         "blueprint_pipeline.sam31_source_track_canary_worker.run_sam31_source_track_stage",
         fake_stage,
+    )
+    normalized = {
+        "schema_version": "semantic_source_track_import_result.v1",
+        "status": "abstained",
+        "bindings": {},
+        "track_registry": [],
+        "frame_masks": [],
+        "blockers": [],
+        "warnings": ["provider_returned_no_tracks"],
+        "claim_ceiling": "no_source_tracks_detected",
+    }
+    normalized["result_digest"] = canonical_json_digest(normalized)
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_source_track_canary_worker.import_semantic_source_tracks",
+        lambda *_args, **_kwargs: normalized,
     )
     monkeypatch.setattr(
         "blueprint_pipeline.sam31_source_track_canary_worker._runtime_facts",

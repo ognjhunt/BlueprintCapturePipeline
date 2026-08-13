@@ -112,7 +112,11 @@ and provider-zero preflight at execution time, writes it beneath the launch
 root, and fails closed before authority consumption or provider mutation when
 that live check does not pass. Every terminal execute result also seals the
 shared Task Evaluation artifact manifest and teardown record required by the
-website reconciler.
+website reconciler. A successful terminal result must additionally name the
+normalized `semantic_source_track_import_result.v1` artifact. That compact,
+digest-bound track file is the direct input to the reviewed calibrated-mask
+request; the production handoff never returns or redistributes source-frame
+bytes.
 
 ## Agents SDK orchestration
 

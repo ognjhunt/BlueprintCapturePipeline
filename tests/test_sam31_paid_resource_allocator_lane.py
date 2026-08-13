@@ -96,6 +96,14 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
         canary_root.mkdir(parents=True, exist_ok=True)
         write_json(canary_root / "provider_runtime_result.json", {"status": "passed"})
         write_json(
+            canary_root / "semantic_source_track_import_result.v1.json",
+            {
+                "schema_version": "semantic_source_track_import_result.v1",
+                "status": "completed",
+                "result_digest": "sha256:" + "e" * 64,
+            },
+        )
+        write_json(
             canary_root / "teardown_receipt.json",
             {
                 "status": "PASS",
@@ -169,6 +177,7 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
     assert result["authorization_consumption"]["status"] == "consumed"
     assert Path(result["artifact_manifest_path"]).is_file()
     assert Path(result["teardown_manifest_path"]).is_file()
+    assert Path(result["source_track_import_result_path"]).is_file()
     teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())
     assert teardown["continuing_spend_from_this_run"] is False
     manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
@@ -177,6 +186,7 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
     assert {
         "allocator_adapter_result",
         "sam31_runtime_result",
+        "sam31_normalized_source_tracks",
         "sam31_source_teardown_receipt",
         "sam31_watchdog_receipt",
         "teardown_manifest",

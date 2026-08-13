@@ -231,7 +231,11 @@ def build_sam31_source_tracks_live_profile(
                 "continuing_spend_from_this_run": False,
                 "retry_cap": 0,
             },
-            "required_path_fields": ["teardown_manifest_path", "artifact_manifest_path"],
+            "required_path_fields": [
+                "teardown_manifest_path",
+                "artifact_manifest_path",
+                "source_track_import_result_path",
+            ],
         },
         "webapp_sync": {"max_attempts": 20},
     }

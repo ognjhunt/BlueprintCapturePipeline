@@ -114,6 +114,9 @@ def test_builds_publishable_zero_retry_sam_profile(tmp_path: Path) -> None:
         "continuing_spend_from_this_run": False,
         "retry_cap": 0,
     }
+    assert "source_track_import_result_path" in profile["terminal_contract"][
+        "required_path_fields"
+    ]
 
 
 def test_profile_binds_all_nonsecret_immutable_inputs(tmp_path: Path) -> None:
