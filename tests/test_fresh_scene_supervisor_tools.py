@@ -163,3 +163,56 @@ def test_agents_sdk_invokes_digest_bound_sam_packet_builder(tmp_path: Path) -> N
     assert observation["typed_result"]["provider_mutations_performed"] == 0
     assert len(calls) == 1
     assert calls[0]["output_root"] == tmp_path / "generated/sam31_task_inputs"
+
+
+def test_agents_sdk_invokes_digest_bound_removal_freeze_builder(tmp_path: Path) -> None:
+    request = {
+        "schema_version": "fresh_scene_removal_freeze_tool_request.v1",
+        "tasks": {"task_a": {}},
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    calls: list[dict] = []
+
+    def materializer(*, request: dict, output_root: Path) -> dict:
+        calls.append({"request": request, "output_root": output_root})
+        result = {
+            "schema_version": "fresh_scene_removal_freeze_set.v1",
+            "status": "excision_and_segment_sweep_freezes_materialized_no_execution",
+            "task_count": 1,
+            "paid_execution_started": False,
+            "provider_mutations_performed": 0,
+            "agent_selected_gaussian_indices": False,
+            "canonical_source_altered": False,
+            "receipt_digest": "",
+        }
+        result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="fresh-scene-tools-test",
+        customer_question="Prepare one fresh scene.",
+        supervisor_output_dir=str(tmp_path),
+        fresh_scene_removal_freeze_request=request,
+        fresh_scene_removal_freeze_materializer=materializer,
+    )
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=_authority(registry, request["request_digest"]),
+        )
+    }
+
+    observation = bindings["materialize_fresh_scene_removal_freezes"].invoke(
+        {"request_digest": request["request_digest"]}
+    )
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["paid_execution_started"] is False
+    assert observation["typed_result"]["provider_mutations_performed"] == 0
+    assert observation["typed_result"]["agent_selected_gaussian_indices"] is False
+    assert observation["typed_result"]["canonical_source_altered"] is False
+    assert calls[0]["output_root"] == tmp_path / "generated/removal_freezes"

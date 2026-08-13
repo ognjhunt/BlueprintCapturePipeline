@@ -55,11 +55,17 @@ provider-zero closure.
      and writes one undilated binary PNG per calibrated camera. It never assumes
      that a camera ID happens to equal a source-frame ID.
 5. `excision_freezes` and `segment_sweep_freezes`
-   - Implementations: `public_scene_gaussian_excision_audit` and
+   - Production interface: `fresh_scene_removal_freezes`; deterministic
+     implementations: `public_scene_gaussian_excision_audit` and
      `public_scene_segment_contribution_cutout`.
    - Bind the immutable standard-3DGS derivative, registered collision object,
      calibrated views, source images, reviewed object masks, and 1--5 task
      freezes before any contribution execution.
+   - The supervisor receives only the request digest. The host re-hashes the
+     task freezes, normalized SAM tracks, review-authorized masks, cameras,
+     source images, standard-3DGS derivative, registered collision asset, and
+     registered-frame receipt. It produces both freeze types without choosing
+     Gaussian indices, altering canonical source bytes, or starting paid work.
 6. `gaussian_contribution_evidence`
    - Backend: FlashSplat commit
      `3e3b14786333bf0163ba1b8541e86a3765112d7d`, rasterizer commit
@@ -169,6 +175,10 @@ The required agent-facing tools are:
 - `materialize_calibrated_object_masks`: invoke the deterministic task-local
   camera/frame bridge after explicit track selections and their human review
   receipt are present.
+- `materialize_fresh_scene_removal_freezes`: turn the exact reviewed 1--5-task
+  mask set into per-task excision and all-camera segment-sweep freezes. This is
+  a non-spend producer; only the later Gaussian-contribution profile may enter
+  the paid allocator.
 
 `fresh_scene_supervisor_bindings` is the production bridge. It accepts only a
 host-resident, digest-bound status plus the exact available tool request, and

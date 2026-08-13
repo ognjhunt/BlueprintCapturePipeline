@@ -77,6 +77,65 @@ def _mask_request(root: Path) -> Path:
     return _write(root / "mask-request.json", value)
 
 
+def _removal_request(root: Path) -> Path:
+    for name in (
+        "scene.ply",
+        "collision.usda",
+        "registered.json",
+        "task.json",
+        "tracks.json",
+        "cameras.json",
+        "image.png",
+        "mask.png",
+    ):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(b"fixture")
+    def record(name: str) -> dict:
+        path = root / name
+        import hashlib
+
+        return {
+            "path": str(path),
+            "size_bytes": path.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    def relative_record(name: str) -> dict:
+        absolute = record(name)
+        absolute.pop("path")
+        return {"relative_path": name, **absolute}
+    mask_receipt = {
+        "tasks": [
+            {
+                "task_id": "task_a",
+                "task_freeze": record("task.json"),
+                "source_track_result": record("tracks.json"),
+                "camera_contract": record("cameras.json"),
+                "source_images": [{"image": relative_record("image.png")}],
+                "masks": [{"mask": relative_record("mask.png")}],
+            }
+        ]
+    }
+    masks_path = _write(root / "masks.json", mask_receipt)
+    value = {
+        "schema_version": "fresh_scene_removal_freeze_tool_request.v1",
+        "source_standard_splat_path": str(root / "scene.ply"),
+        "source_collision_path": str(root / "collision.usda"),
+        "registered_frame_receipt_path": str(root / "registered.json"),
+        "calibrated_mask_set_receipt_path": str(masks_path),
+        "tasks": {
+            "task_a": {
+                "target_collision_prim_path": "/Root/Target",
+                "scene": {"task_id": "task_a"},
+                "policy": {"minimum_core_camera_count": 2},
+                "historical_baseline": {"method": "fixture"},
+            }
+        },
+        "request_digest": "",
+    }
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    return _write(root / "removal-request.json", value)
+
+
 def test_host_resident_manifest_compiles_exact_agents_sdk_bindings(tmp_path: Path) -> None:
     status = _status(tmp_path / "status.json")
     request = _sam_request(tmp_path / "inputs")
@@ -174,6 +233,34 @@ def test_mask_binding_rehashes_human_track_review_receipt(tmp_path: Path) -> Non
     (tmp_path / "mask-inputs/review.json").write_text(
         '{"changed":true}', encoding="utf-8"
     )
+    with pytest.raises(
+        FreshSceneSupervisorBindingError,
+        match="fresh_scene_tool_request_input_bytes_changed",
+    ):
+        compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+
+
+def test_removal_binding_rehashes_all_scientific_inputs(tmp_path: Path) -> None:
+    status = _status(tmp_path / "status.json")
+    request = _removal_request(tmp_path / "removal-inputs")
+    manifest_path = tmp_path / "binding.json"
+    manifest = materialize_fresh_scene_supervisor_bindings(
+        preparation_status_path=status,
+        removal_freeze_request_path=request,
+        output_path=manifest_path,
+        roots=[tmp_path],
+    )
+    compiled = compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+    assert compiled["requested_tool_ids"] == [
+        "inspect_fresh_scene_preparation",
+        "materialize_fresh_scene_removal_freezes",
+    ]
+    assert len(
+        manifest["tool_requests"]["fresh_scene_removal_freeze_request"][
+            "input_inventory"
+        ]
+    ) == 9
+    (tmp_path / "removal-inputs/scene.ply").write_bytes(b"changed")
     with pytest.raises(
         FreshSceneSupervisorBindingError,
         match="fresh_scene_tool_request_input_bytes_changed",
