@@ -330,7 +330,17 @@ def test_no_module_resolves_a_credential_only_from_a_developer_home() -> None:
     # is a developer convenience the units override with an explicit path; a
     # `Path("~/.blueprint-secrets/...")` is the module deciding for itself
     # where a secret lives.
-    resolves_from_home = re.compile(r'Path\(\s*f?"~/\.blueprint-secrets/')
+    #
+    # A *function* default is also the module deciding. `adp_joint_agent_vast`
+    # took `secret_root: str | Path = "~/.blueprint-secrets"` and read files
+    # under it, and this pattern missed it entirely -- the lane then failed on
+    # a rented-adjacent boundary with `model_api_key_missing`, the same defect
+    # #492 had just fixed in three siblings. A default is not a convenience
+    # when nothing overrides it.
+    resolves_from_home = re.compile(
+        r'Path\(\s*f?"~/\.blueprint-secrets/'
+        r'|secret_root[^=\n]*=\s*"~/\.blueprint-secrets"'
+    )
     home_only: list[str] = []
     for path in sorted(SOURCE_ROOT.glob("*.py")):
         source = path.read_text(encoding="utf-8")

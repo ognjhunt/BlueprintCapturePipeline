@@ -21,6 +21,7 @@ from .task_evaluation_artifact_manifest import (
     seal_lane_terminal_artifacts,
     seal_unallocated_provider_teardown,
 )
+from .gpu_render_providers import _read_secret as _read_provider_secret
 from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
@@ -908,27 +909,37 @@ def recover_joint_agent_local_closeout(
     return result
 
 
-def _model_api_key(
-    backend: str, *, secret_root: str | Path = "~/.blueprint-secrets"
-) -> tuple[str, str]:
+def _model_api_key(backend: str) -> tuple[str, str]:
+    """Resolve the model key the way a service can read it.
+
+    This defaulted its secret root to `~/.blueprint-secrets` and read the file
+    directly. Every control-plane unit runs with `ProtectHome=true` and home
+    `/nonexistent`, so that path resolves to nothing and the lane raised
+    `adp_joint_agent_model_api_key_missing` after admission had been granted --
+    the same failure #492 fixed in three other modules on the same day.
+
+    It survived that sweep because the root was a *default parameter* rather
+    than a literal in the body, and the contract test matched literals. The
+    contract now reads defaults too.
+
+    `_read_secret` honours `<NAME>_FILE`, then the configured secrets
+    directory, and a developer home only when no directory is configured.
+    """
+
     if backend == "openai":
-        env_name, filename = "OPENAI_API_KEY", "openai_api_key"
+        env_name, filenames = "OPENAI_API_KEY", ("openai_api_key",)
     elif backend == "nvidia_nim":
-        env_name, filename = "NVIDIA_API_KEY", "nvidia_nim_api_key"
+        # Compatibility only: NGC registry credentials do not necessarily
+        # authorize NIM inference, so the inference-specific key wins.
+        env_name, filenames = "NVIDIA_API_KEY", ("nvidia_nim_api_key", "ngc_api_key")
     else:
         raise ValueError("adp_joint_agent_model_backend_invalid")
     value = str(os.environ.get(env_name) or "").strip()
     if value:
         return value, env_name
-    resolved_secret_root = Path(secret_root).expanduser()
-    candidates = [filename]
-    if backend == "nvidia_nim":
-        # Compatibility only: NGC registry credentials do not necessarily
-        # authorize NIM inference, so the inference-specific key wins.
-        candidates.append("ngc_api_key")
-    for candidate in candidates:
-        path = resolved_secret_root / candidate
-        if path.is_file() and (secret := path.read_text(encoding="utf-8").strip()):
+    for candidate in filenames:
+        secret = str(_read_provider_secret(candidate) or "")
+        if secret:
             return secret, env_name
     return "", env_name
 

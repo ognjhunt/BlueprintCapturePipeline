@@ -1167,11 +1167,18 @@ def test_provider_runner_reports_typed_openai_credential_gap_before_gpu_work(
 def test_nim_resolver_prefers_inference_key_over_registry_key(
     monkeypatch, tmp_path: Path
 ) -> None:
+    from blueprint_pipeline.gpu_render_providers import PROVIDER_SECRETS_DIR_ENV
+
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     (tmp_path / "nvidia_nim_api_key").write_text("inference-key", encoding="utf-8")
     (tmp_path / "ngc_api_key").write_text("registry-key", encoding="utf-8")
+    # The configured secrets directory, which is how a deployed host supplies
+    # these. The resolver used to take the root as a parameter defaulting to a
+    # developer home -- unreadable under ProtectHome=true, which is what made
+    # this lane fail after admission.
+    monkeypatch.setenv(PROVIDER_SECRETS_DIR_ENV, str(tmp_path))
 
-    assert joint_vast._model_api_key("nvidia_nim", secret_root=tmp_path) == (
+    assert joint_vast._model_api_key("nvidia_nim") == (
         "inference-key",
         "NVIDIA_API_KEY",
     )
