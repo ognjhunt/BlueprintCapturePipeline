@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping
 
 from .common import utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .gpu_render_providers import _read_secret as _read_provider_secret
 from .openai_successor_models import OPENAI_IMAGE_MODEL
 
 
@@ -31,9 +32,13 @@ def _secret() -> tuple[str, str]:
     value = str(os.getenv("OPENAI_API_KEY") or "").strip()
     if value:
         return value, "OPENAI_API_KEY"
-    path = Path("~/.blueprint-secrets/openai_api_key").expanduser()
-    if path.is_file() and (value := path.read_text(encoding="utf-8").strip()):
-        return value, path.name
+    # A developer home is unreadable under `ProtectHome=true` with home
+    # `/nonexistent`, which is how every control-plane unit runs. `_read_secret`
+    # honours `<NAME>_FILE`, then the configured secrets directory, and the
+    # developer home only when no directory is configured.
+    resolved = str(_read_provider_secret("openai_api_key") or "")
+    if resolved:
+        return resolved, "openai_api_key"
     return "", "missing"
 
 

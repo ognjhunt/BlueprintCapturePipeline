@@ -20,6 +20,7 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
+from .gpu_render_providers import _read_secret as _read_provider_secret
 from .adp_content_agents_bundle_matrix import (
     SCHEMA_VERSION as AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA,
     validate_agent_cad_content_agents_bundle_matrix,
@@ -1925,12 +1926,24 @@ def _extract(path: Path, destination: Path) -> dict[str, Any]:
 
 
 def _model_secret() -> str:
+    """Resolve the forwarded model secret for a service first, a shell second.
+
+    #488 fixed this in the config preflight and missed it here, so the paid
+    preflight could prove model access while the run that followed could not
+    find the same key: the units run with `ProtectHome=true` and home
+    `/nonexistent`, and a developer home resolves to nothing there. The
+    observed failure was `adp_content_agents_openai_secret_missing` raised
+    after admission had already been granted.
+
+    `_read_secret` honours `<NAME>_FILE`, then the configured secrets
+    directory, and a developer home only when no directory is configured.
+    """
+
     for name in _FORWARDED_SECRET_NAMES:
         value = str(os.getenv(name) or "").strip()
         if value:
             return value
-    path = Path("~/.blueprint-secrets/openai_api_key").expanduser()
-    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    return str(_read_provider_secret("openai_api_key") or "")
 
 
 @contextmanager

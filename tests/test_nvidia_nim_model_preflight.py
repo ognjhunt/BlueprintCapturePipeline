@@ -189,12 +189,17 @@ def test_the_inference_key_is_preferred_over_the_registry_key(monkeypatch, tmp_p
 
     from blueprint_pipeline import nvidia_nim_model_preflight as module
 
+    from blueprint_pipeline.gpu_render_providers import PROVIDER_SECRETS_DIR_ENV
+
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     secrets = tmp_path / "secrets"
     secrets.mkdir()
     (secrets / "ngc_api_key").write_text("registry-key")
     (secrets / "nvidia_nim_api_key").write_text("inference-key")
-    monkeypatch.setattr(module.Path, "expanduser", lambda self: secrets / self.name)
+    # The configured secrets directory, which is how a deployed host supplies
+    # these. A developer home is unreadable under ProtectHome=true, so
+    # resolving only from there could never work on the control plane.
+    monkeypatch.setenv(PROVIDER_SECRETS_DIR_ENV, str(secrets))
 
     value, source = module._secret()
 
