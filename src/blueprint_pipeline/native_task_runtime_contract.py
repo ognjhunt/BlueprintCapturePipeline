@@ -23,6 +23,11 @@ from .articulated_runtime_composition import plan_articulated_runtime_compositio
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
+from .paired_target_native_construction_bindings import (
+    PairedTargetNativeConstructionBindingsError,
+    SCHEMA_VERSION as PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION,
+    validate_paired_target_native_construction_bindings,
+)
 from .replacement_construction_bindings import (
     ReplacementConstructionBindingsError,
     validate_materialized_replacement_construction_bindings,
@@ -772,19 +777,38 @@ def materialize_native_task_runtime_contract(
             errors.append("native_task_runtime_construction_bindings_missing")
         else:
             try:
-                qualified_construction = validate_materialized_replacement_construction_bindings(
-                    construction_bindings
-                )
-            except ReplacementConstructionBindingsError as exc:
+                if (
+                    construction_bindings.get("schema_version")
+                    == PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION
+                ):
+                    qualified_construction = (
+                        validate_paired_target_native_construction_bindings(
+                            construction_bindings
+                        )
+                    )
+                else:
+                    qualified_construction = (
+                        validate_materialized_replacement_construction_bindings(
+                            construction_bindings
+                        )
+                    )
+            except (
+                PairedTargetNativeConstructionBindingsError,
+                ReplacementConstructionBindingsError,
+            ) as exc:
                 errors.extend(exc.errors)
         if not _digest(task_freeze_digest):
             errors.append("native_task_runtime_task_freeze_digest_invalid")
         if qualified_construction is not None:
             binding_rows = qualified_construction["bindings"]
-            _replacement_construction_evidence_bound(
-                binding_rows=binding_rows,
-                errors=errors,
-            )
+            if (
+                qualified_construction.get("schema_version")
+                != PAIRED_TARGET_CONSTRUCTION_SCHEMA_VERSION
+            ):
+                _replacement_construction_evidence_bound(
+                    binding_rows=binding_rows,
+                    errors=errors,
+                )
             expected_asset_ids = {row["asset_id"] for row in replacement_rows}
             observed_asset_ids = {row["asset_id"] for row in binding_rows}
             if expected_asset_ids != observed_asset_ids:
