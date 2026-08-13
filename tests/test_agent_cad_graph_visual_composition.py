@@ -39,8 +39,7 @@ from blueprint_pipeline.simready_cad_agent_contract import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FREEZE_A = (
-    REPO_ROOT
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+    REPO_ROOT / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
 TASK_ID = "task_a_washer_door_open"
 ASSET_ID = "840920_simready_washer_candidate"
@@ -69,9 +68,7 @@ def _write_png(path: Path, color: tuple[int, int, int]) -> Path:
     return path
 
 
-def _backend(
-    tmp_path: Path, backend_id: str = "earthtojake_text_to_cad"
-) -> dict:
+def _backend(tmp_path: Path, backend_id: str = "earthtojake_text_to_cad") -> dict:
     archive = tmp_path / f"{backend_id}.zip"
     with ZipFile(archive, "w", compression=ZIP_DEFLATED) as source:
         source.comment = b"1" * 40
@@ -97,9 +94,7 @@ def _backend(
         "source_archive": _record(archive),
         "license": "MIT",
         "model_id": (
-            "codex_gpt_5_6_luna"
-            if backend_id == "earthtojake_text_to_cad"
-            else "gpt-5.6"
+            "codex_gpt_5_6_luna" if backend_id == "earthtojake_text_to_cad" else "gpt-5.6"
         ),
     }
 
@@ -123,6 +118,7 @@ def _mesh_projection(tmp_path: Path) -> tuple[Path, Path]:
                 "assembly_transform_applied": True,
                 "points_mm": [[0, 0, 0], [100, 0, 0], [0, 100, 0]],
                 "triangles": [[0, 1, 2]],
+                "agent_authored_display_color_rgba": [0.8, 0.8, 0.8, 1.0],
             },
             {
                 "prim_path": "/Asset/links/door/geometry/rim",
@@ -131,6 +127,7 @@ def _mesh_projection(tmp_path: Path) -> tuple[Path, Path]:
                 "assembly_transform_applied": True,
                 "points_mm": [[0, 0, 10], [50, 0, 10], [0, 50, 10]],
                 "triangles": [[0, 1, 2]],
+                "agent_authored_display_color_rgba": [0.1, 0.1, 0.1, 1.0],
             },
         ],
         "claim_boundary": {
@@ -148,9 +145,7 @@ def _mesh_projection(tmp_path: Path) -> tuple[Path, Path]:
     receipt = materialize_mesh_usd_projection(
         packet_path=packet_path, output_usd_path=projection_usd
     )
-    receipt_path = _write(
-        tmp_path / "projection.receipt.json", json.dumps(receipt, sort_keys=True)
-    )
+    receipt_path = _write(tmp_path / "projection.receipt.json", json.dumps(receipt, sort_keys=True))
     return step, receipt_path
 
 
@@ -218,9 +213,7 @@ def _cad_output(
         },
         "receipt_digest": "",
     }
-    inspection["receipt_digest"] = canonical_digest(
-        inspection, digest_field="receipt_digest"
-    )
+    inspection["receipt_digest"] = canonical_digest(inspection, digest_field="receipt_digest")
     inspection_path = _write(tmp_path / "inspection.json", json.dumps(inspection))
     execution = seal_cad_agent_execution_receipt(
         request=request,
@@ -258,9 +251,7 @@ def _visual_review_for_matrix(tmp_path: Path, matrix_path: Path) -> Path:
                     "task_id": row["task_id"],
                     "asset_id": row["asset_id"],
                     "backend_id": candidate["backend_id"],
-                    "cad_agent_output_receipt_digest": candidate[
-                        "output_receipt_digest"
-                    ],
+                    "cad_agent_output_receipt_digest": candidate["output_receipt_digest"],
                     "reference_signature": row["reference_signature"],
                     "reviewed_reference_image_digests": references,
                     "review_status": "conditionally_admitted_for_construction",
@@ -284,9 +275,7 @@ def _visual_review_for_matrix(tmp_path: Path, matrix_path: Path) -> Path:
         reviewer={
             "reviewer_kind": "codex_visual_review",
             "reviewer_id": "fixture-codex",
-            "visual_input_mode": (
-                "all_manifest_bound_reference_frames_and_candidate_snapshots"
-            ),
+            "visual_input_mode": ("all_manifest_bound_reference_frames_and_candidate_snapshots"),
         },
         candidate_decisions=decisions,
         output_path=review_path,
@@ -294,9 +283,7 @@ def _visual_review_for_matrix(tmp_path: Path, matrix_path: Path) -> Path:
     return review_path
 
 
-def _visual_review_for_candidate(
-    tmp_path: Path, *, candidate_path: Path, step: Path
-) -> Path:
+def _visual_review_for_candidate(tmp_path: Path, *, candidate_path: Path, step: Path) -> Path:
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
     backend_id = candidate["request"]["backend"]["backend_id"]
     alternate_backend = (
@@ -482,9 +469,7 @@ def test_binding_can_derive_link_local_transform_from_graph_reset_pose(
     visual_review = _visual_review_for_candidate(
         tmp_path / "visual_review", candidate_path=cad_output, step=step
     )
-    graph = _graph_authoring_receipt(
-        tmp_path / "graph", door_translation=(0.0, 0.2, 0.3)
-    )
+    graph = _graph_authoring_receipt(tmp_path / "graph", door_translation=(0.0, 0.2, 0.3))
     binding_path = tmp_path / "binding.json"
     binding = seal_agent_cad_visual_binding(
         graph_authoring_receipt_path=graph,
@@ -507,9 +492,7 @@ def test_binding_can_derive_link_local_transform_from_graph_reset_pose(
         unmapped_graph_link_reasons={},
         output_path=binding_path,
     )
-    door_binding = next(
-        row for row in binding["link_bindings"] if row["agent_link_id"] == "door"
-    )
+    door_binding = next(row for row in binding["link_bindings"] if row["agent_link_id"] == "door")
     assert door_binding["T_graph_link_from_agent_asset"] == [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, -0.2],
@@ -535,9 +518,7 @@ def test_binding_selects_one_exact_candidate_from_a_verified_cad_matrix(
         tmp_path / "multi",
         step=step,
         backend_id="pan_chera_multi_agent_cad",
-        reference_manifest_path=Path(
-            earth["request"]["inputs"]["reference_manifest"]["path"]
-        ),
+        reference_manifest_path=Path(earth["request"]["inputs"]["reference_manifest"]["path"]),
     )
     multi = json.loads(multi_path.read_text(encoding="utf-8"))
     matrix = seal_cad_agent_matrix(

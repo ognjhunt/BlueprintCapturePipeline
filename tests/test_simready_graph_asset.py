@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from pxr import Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.simready_graph_asset import (
@@ -222,6 +222,168 @@ def test_static_readback_qualifies_authored_structure_but_retains_claim_blockers
     }
     assert qualification["claim_boundary"]["native_simulator_import_qualified"] is False
     assert (tmp_path / "static_qualification.json").is_file()
+
+
+def test_static_readback_qualifies_exact_registered_visual_and_graph_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source_receipt(tmp_path)
+    spec = _spec(source)
+    task_freeze = _task_freeze(tmp_path, spec)
+    receipt_path = tmp_path / "asset.receipt.json"
+    author_simready_graph_asset(
+        spec=spec,
+        task_freeze_receipt_path=task_freeze,
+        source_asset_receipt_path=source,
+        destination=tmp_path / "asset.usda",
+        receipt_path=receipt_path,
+    )
+    final_usd = tmp_path / "registered.usda"
+    stage = Usd.Stage.Open(str(tmp_path / "asset.usda"), load=Usd.Stage.LoadAll)
+    assert stage.Export(str(final_usd))
+    stage = Usd.Stage.Open(str(final_usd), load=Usd.Stage.LoadAll)
+    root = stage.GetDefaultPrim()
+    xform = UsdGeom.Xformable(root)
+    xform.ClearXformOpOrder()
+    matrix = Gf.Matrix4d(1.0)
+    matrix.SetTranslateOnly(Gf.Vec3d(1.0, 2.0, 3.0))
+    xform.AddTransformOp(
+        UsdGeom.XformOp.PrecisionDouble, "assetFrameRegistration"
+    ).Set(matrix)
+    root.SetCustomDataByKey("blueprint:assetFrameRegistrationDigest", "sha256:" + "d" * 64)
+    root.SetCustomDataByKey("blueprint:identityOrientationAssumed", False)
+    visual = UsdGeom.Mesh.Define(stage, "/Asset/links/root/visuals/body").GetPrim()
+    visual.SetCustomDataByKey(
+        "blueprint:agentAuthoredDisplayColorRgba", Gf.Vec4d(0.2, 0.3, 0.4, 1.0)
+    )
+    material = UsdShade.Material.Define(stage, "/Asset/visual_materials/body")
+    UsdShade.MaterialBindingAPI.Apply(visual).Bind(material)
+    stage.GetRootLayer().Save()
+
+    def record(path: Path) -> dict:
+        import hashlib
+
+        return {
+            "path": str(path.resolve()),
+            "size_bytes": path.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    composition_path = tmp_path / "composition.json"
+    composition_path.write_text(json.dumps({"visual_mesh_count": 1}), encoding="utf-8")
+    registration_path = tmp_path / "registration.json"
+    registration_path.write_text("{}", encoding="utf-8")
+    registered = {
+        "scene_id": "scene",
+        "task_id": spec["task_id"],
+        "asset_id": spec["asset_id"],
+        "task_freeze_digest": spec["task_freeze_digest"],
+        "output_usd": record(final_usd),
+        "visual_composition_receipt": {
+            **record(composition_path),
+            "receipt_digest": "sha256:" + "c" * 64,
+        },
+        "frame_registration": {
+            **record(registration_path),
+            "registration_digest": "sha256:" + "d" * 64,
+        },
+        "T_observed_world_axes_from_asset_local_axes": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "source_root_translation_preserved": [1.0, 2.0, 3.0],
+        "receipt_digest": "sha256:" + "e" * 64,
+    }
+    registered_path = tmp_path / "registered.json"
+    registered_path.write_text(json.dumps(registered), encoding="utf-8")
+    monkeypatch.setattr(
+        "blueprint_pipeline.simready_graph_asset_static_qualification."
+        "validate_registered_replacement_asset",
+        lambda value: value,
+    )
+    qualification = qualify_simready_graph_asset_static(
+        spec=spec,
+        authoring_receipt_path=receipt_path,
+        registered_replacement_asset_receipt_path=registered_path,
+    )
+
+    assert qualification["status"] == "authored_structure_statically_qualified"
+    assert qualification["replacement_usd"]["sha256"] == record(final_usd)["sha256"]
+    assert qualification["registered_visual_readback"] == {
+        "render_visible_visual_mesh_count": 1,
+        "bound_material_visual_mesh_count": 1,
+        "agent_authored_color_visual_mesh_count": 1,
+        "expected_visual_mesh_count": 1,
+        "asset_frame_registration_digest": "sha256:" + "d" * 64,
+    }
+    assert "visual_material_artifact_unbound" not in qualification["contract_blockers"]
+
+
+def test_registered_static_readback_rejects_wrong_final_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source_receipt(tmp_path)
+    spec = _spec(source)
+    task_freeze = _task_freeze(tmp_path, spec)
+    receipt_path = tmp_path / "asset.receipt.json"
+    author_simready_graph_asset(
+        spec=spec,
+        task_freeze_receipt_path=task_freeze,
+        source_asset_receipt_path=source,
+        destination=tmp_path / "asset.usda",
+        receipt_path=receipt_path,
+    )
+    final_usd = tmp_path / "registered.usda"
+    stage = Usd.Stage.Open(str(tmp_path / "asset.usda"), load=Usd.Stage.LoadAll)
+    assert stage.Export(str(final_usd))
+    stage = Usd.Stage.Open(str(final_usd), load=Usd.Stage.LoadAll)
+    root = stage.GetDefaultPrim()
+    UsdGeom.Xformable(root).ClearXformOpOrder()
+    UsdGeom.Xformable(root).AddTransformOp(
+        UsdGeom.XformOp.PrecisionDouble, "assetFrameRegistration"
+    ).Set(Gf.Matrix4d(1.0))
+    root.SetCustomDataByKey("blueprint:assetFrameRegistrationDigest", "sha256:" + "d" * 64)
+    root.SetCustomDataByKey("blueprint:identityOrientationAssumed", False)
+    stage.GetRootLayer().Save()
+    import hashlib
+
+    final_record = {
+        "path": str(final_usd),
+        "size_bytes": final_usd.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(final_usd.read_bytes()).hexdigest(),
+    }
+    registered_path = tmp_path / "registered.json"
+    registered_path.write_text("{}", encoding="utf-8")
+    composition_path = tmp_path / "composition.json"
+    composition_path.write_text(json.dumps({"visual_mesh_count": 0}), encoding="utf-8")
+    monkeypatch.setattr(
+        "blueprint_pipeline.simready_graph_asset_static_qualification."
+        "validate_registered_replacement_asset",
+        lambda value: {
+            "task_id": spec["task_id"],
+            "asset_id": spec["asset_id"],
+            "task_freeze_digest": spec["task_freeze_digest"],
+            "output_usd": final_record,
+            "T_observed_world_axes_from_asset_local_axes": [
+                [0.0, 1.0, 0.0, 0.0],
+                [-1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "source_root_translation_preserved": [0.0, 0.0, 0.0],
+            "frame_registration": {"registration_digest": "sha256:" + "d" * 64},
+            "visual_composition_receipt": {"path": str(composition_path)},
+            "receipt_digest": "sha256:" + "e" * 64,
+        },
+    )
+    result = qualify_simready_graph_asset_static(
+        spec=spec,
+        authoring_receipt_path=receipt_path,
+        registered_replacement_asset_receipt_path=registered_path,
+    )
+    assert "graph_asset_static_registered_world_pose_mismatch" in result["structural_findings"]
 
 
 @pytest.mark.parametrize(

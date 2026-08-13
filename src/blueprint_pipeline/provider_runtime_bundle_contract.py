@@ -20,6 +20,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp009d_isaac",
     "adp009d_articulated_native",
     "native_task_arena",
+    "paired_target_native_import",
     "adp009d_ovrtx",
     "adp009d_aura_native",
     "adp_content_agents",
@@ -27,6 +28,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp_aura_smoke",
     "adp_aura_interiorgs",
     "adp_aura_exact_residual",
+    "adp_artifixer3d",
     "adp_inpaint360_interiorgs",
     "adp_gaussian_excision",
     "adp_retained_scene_render",
@@ -204,6 +206,27 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
+    elif provider_bundle_kind == "paired_target_native_import":
+        entrypoint_valid = all(
+            token in entrypoint_text
+            for token in (
+                "run_paired_target_native_import_probe.py",
+                "paired_target_native_import_runtime_result.v1.json",
+                "BLUEPRINT_PAIRED_TARGET_IMPORT_OUTPUT_DIR",
+                "paired_target_native_import_runner_failed_without_runtime_result",
+            )
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "SimulationApp",
+                "paired_target_native_import_request.v1",
+                "all_replacements_import_qualified",
+                "candidate_policy_queried",
+                "asset_frame_registration_digest",
+            )
+        )
+        runner_blocker = "provider_runner_missing_paired_target_native_import_contract"
     elif provider_bundle_kind == "adp009d_ovrtx":
         entrypoint_valid = (
             "adp009d_ovrtx_runner_failed_without_runtime_result" in entrypoint_text
@@ -352,6 +375,33 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp_aura_exact_residual_runtime_contract"
+    elif provider_bundle_kind == "adp_artifixer3d":
+        # ArtiFixer is a candidate appearance repair, never hidden-background
+        # truth.  The worker must preserve exact support, cover the reusable
+        # 1--5 task packet, and leave visual/multiview qualification external.
+        entrypoint_valid = all(
+            token in entrypoint_text
+            for token in (
+                "artifixer3d_runner_failed_without_result",
+                "BLUEPRINT_PUBLIC_SCENE_ARTIFIXER3D_STAGE_STARTED",
+                "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL",
+                "write_missing_result",
+            )
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "public_scene_artifixer3d_runtime_result.json",
+                "source_object_restoration_permitted",
+                "outside_exact_support_changed_pixels_permitted",
+                "artifixer_direct_inference_executed",
+                "artifixer3d_distillation_executed",
+                "artifixer3d_plus_inference_executed",
+                "provider_zero_required_after_return",
+                "candidate_completed_requires_visual_and_multiview_review",
+            )
+        )
+        runner_blocker = "provider_runner_missing_adp_artifixer3d_runtime_contract"
     elif provider_bundle_kind == "adp_inpaint360_interiorgs":
         entrypoint_valid = (
             "adp_inpaint360_runner_failed_without_runtime_result" in entrypoint_text

@@ -39,7 +39,7 @@ from .simready_graph_asset import RECEIPT_SCHEMA as GRAPH_ASSET_RECEIPT_SCHEMA
 
 
 BINDING_SCHEMA_VERSION = "simready_agent_cad_visual_binding.v2"
-COMPOSITION_SCHEMA_VERSION = "simready_agent_cad_visual_composition.v1"
+COMPOSITION_SCHEMA_VERSION = "simready_agent_cad_visual_composition.v2"
 COMPOSITION_SET_SCHEMA_VERSION = "scene_agent_cad_visual_composition_set.v1"
 
 _CLAIM_BOUNDARY = {
@@ -50,6 +50,12 @@ _CLAIM_BOUNDARY = {
     "native_simulator_import_qualified": False,
     "joint_physics_behavior_qualified": False,
     "physical_equivalence_proven": False,
+}
+
+_COMPOSITION_CLAIM_BOUNDARY = {
+    **_CLAIM_BOUNDARY,
+    "agent_authored_display_colors_preserved": True,
+    "generated_texture_maps_present": False,
 }
 
 
@@ -65,9 +71,7 @@ def _clone(value: Mapping[str, Any]) -> dict[str, Any]:
     try:
         clone = json.loads(json.dumps(dict(value), allow_nan=False))
     except (TypeError, ValueError) as exc:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_payload_not_json"]
-        ) from exc
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_payload_not_json"]) from exc
     if not isinstance(clone, dict):
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_payload_not_mapping"])
     return clone
@@ -83,18 +87,16 @@ def _sha256(path: Path) -> str:
 
 def _is_digest(value: Any) -> bool:
     text = str(value or "")
-    return len(text) == 71 and text.startswith("sha256:") and all(
-        character in "0123456789abcdef" for character in text[7:]
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
     )
 
 
 def _file_record(path: str | Path) -> dict[str, Any]:
     resolved = Path(path).expanduser().resolve()
-    if (
-        not resolved.is_file()
-        or resolved.is_symlink()
-        or resolved.stat().st_size <= 0
-    ):
+    if not resolved.is_file() or resolved.is_symlink() or resolved.stat().st_size <= 0:
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_file_invalid"])
     return {
         "path": str(resolved),
@@ -177,12 +179,14 @@ def _matrix(value: Any) -> list[list[float]] | None:
                 return None
             normalized.append(number)
         result.append(normalized)
-    if any(abs(result[3][index] - expected) > 1e-8 for index, expected in enumerate((0.0, 0.0, 0.0, 1.0))):
+    if any(
+        abs(result[3][index] - expected) > 1e-8
+        for index, expected in enumerate((0.0, 0.0, 0.0, 1.0))
+    ):
         return None
     rotation = [[result[row][column] for column in range(3)] for row in range(3)]
     if any(
-        abs(sum(rotation[row][column] * rotation[row][other] for row in range(3)) - expected)
-        > 1e-6
+        abs(sum(rotation[row][column] * rotation[row][other] for row in range(3)) - expected) > 1e-6
         for column in range(3)
         for other, expected in ((column, 1.0),)
     ):
@@ -204,8 +208,7 @@ def _matrix(value: Any) -> list[list[float]] | None:
 def _transform_point(matrix: Sequence[Sequence[float]], point: Sequence[float]) -> list[float]:
     vector = [float(point[0]), float(point[1]), float(point[2]), 1.0]
     return [
-        sum(float(matrix[row][column]) * vector[column] for column in range(4))
-        for row in range(3)
+        sum(float(matrix[row][column]) * vector[column] for column in range(4)) for row in range(3)
     ]
 
 
@@ -260,12 +263,11 @@ def _graph_link_reset_inverse(stage: Any, link_path: str) -> list[list[float]]:
         )
     transpose = [[rotation[column][row] for column in range(3)] for row in range(3)]
     inverse_translation = [
-        -sum(transpose[row][column] * offset[column] for column in range(3))
-        for row in range(3)
+        -sum(transpose[row][column] * offset[column] for column in range(3)) for row in range(3)
     ]
-    return [
-        [*transpose[row], inverse_translation[row]] for row in range(3)
-    ] + [[0.0, 0.0, 0.0, 1.0]]
+    return [[*transpose[row], inverse_translation[row]] for row in range(3)] + [
+        [0.0, 0.0, 0.0, 1.0]
+    ]
 
 
 def _collision_visual_isolation(stage: Any) -> None:
@@ -283,9 +285,7 @@ def _collision_visual_isolation(stage: Any) -> None:
         ):
             violations.append(str(prim.GetPath()))
     if violations:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_collision_not_isolated"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_collision_not_isolated"])
 
 
 def _graph_has_no_renderable_geometry(stage: Any) -> None:
@@ -299,8 +299,7 @@ def _graph_has_no_renderable_geometry(stage: Any) -> None:
             continue
         imageable = UsdGeom.Imageable(prim)
         if (
-            imageable.ComputePurpose()
-            in {UsdGeom.Tokens.default_, UsdGeom.Tokens.render}
+            imageable.ComputePurpose() in {UsdGeom.Tokens.default_, UsdGeom.Tokens.render}
             and imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
         ):
             raise AgentCadGraphVisualCompositionError(
@@ -308,9 +307,7 @@ def _graph_has_no_renderable_geometry(stage: Any) -> None:
             )
 
 
-def _load_graph_authoring(
-    record: Any, *, verify_files: bool
-) -> tuple[dict[str, Any], Any]:
+def _load_graph_authoring(record: Any, *, verify_files: bool) -> tuple[dict[str, Any], Any]:
     try:
         from pxr import Usd, UsdGeom
     except ImportError as exc:  # pragma: no cover - environment guard
@@ -324,8 +321,7 @@ def _load_graph_authoring(
     if (
         receipt.get("schema_version") != GRAPH_ASSET_RECEIPT_SCHEMA
         or receipt.get("status") != "simready_candidate_authored"
-        or receipt.get("receipt_digest")
-        != canonical_digest(receipt, digest_field="receipt_digest")
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
         or not _is_digest(receipt.get("task_freeze_digest"))
         or not str(receipt.get("asset_id") or "").strip()
         or not str(receipt.get("task_id") or "").strip()
@@ -345,10 +341,7 @@ def _load_graph_authoring(
     ):
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_graph_usd_invalid"])
     root = stage.GetPrimAtPath("/Asset")
-    if (
-        not root.IsValid()
-        or root.GetCustomDataByKey("blueprint:assetId") != receipt["asset_id"]
-    ):
+    if not root.IsValid() or root.GetCustomDataByKey("blueprint:assetId") != receipt["asset_id"]:
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_graph_usd_invalid"])
     links = receipt.get("link_paths")
     if not isinstance(links, Mapping) or not links:
@@ -356,23 +349,17 @@ def _load_graph_authoring(
     seen_paths: set[str] = set()
     for link_id, path in links.items():
         if not _identifier(link_id) or not str(path).startswith("/Asset/links/"):
-            raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_graph_link_paths_invalid"]
-            )
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_graph_link_paths_invalid"])
         prim = stage.GetPrimAtPath(str(path))
         if not prim.IsValid() or str(path) in seen_paths:
-            raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_graph_link_paths_invalid"]
-            )
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_graph_link_paths_invalid"])
         seen_paths.add(str(path))
     _collision_visual_isolation(stage)
     _graph_has_no_renderable_geometry(stage)
     return receipt, stage
 
 
-def _load_cad_output(
-    record: Any, *, verify_files: bool
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def _load_cad_output(record: Any, *, verify_files: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     _, receipt = _read_json_record(
         record, "agent_cad_visual_cad_output_receipt_invalid", verify_files=verify_files
     )
@@ -383,12 +370,8 @@ def _load_cad_output(
             ["agent_cad_visual_cad_output_receipt_invalid", *exc.codes]
         ) from exc
     if output.get("status") != "candidate_authored":
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_cad_output_not_authored"]
-        )
-    task_freeze_record = ((output.get("request") or {}).get("inputs") or {}).get(
-        "task_freeze"
-    )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_cad_output_not_authored"])
+    task_freeze_record = ((output.get("request") or {}).get("inputs") or {}).get("task_freeze")
     _, task_freeze = _read_json_record(
         task_freeze_record,
         "agent_cad_visual_task_freeze_record_invalid",
@@ -428,19 +411,14 @@ def _load_cad_output_from_matrix(
         if row.get("task_id") == task_id and row.get("asset_id") == asset_id
     ]
     if len(objects) != 1:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_cad_matrix_identity_invalid"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_cad_matrix_identity_invalid"])
     candidates = [
         row
         for row in objects[0]["candidates"]
-        if ((row.get("request") or {}).get("backend") or {}).get("backend_id")
-        == backend_id
+        if ((row.get("request") or {}).get("backend") or {}).get("backend_id") == backend_id
     ]
     if len(candidates) != 1:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_cad_matrix_backend_invalid"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_cad_matrix_backend_invalid"])
     output = candidates[0]
     try:
         output = validate_cad_agent_output(output, verify_files=verify_files)
@@ -448,9 +426,7 @@ def _load_cad_output_from_matrix(
         raise AgentCadGraphVisualCompositionError(
             ["agent_cad_visual_cad_matrix_invalid", *exc.codes]
         ) from exc
-    task_freeze_record = ((output.get("request") or {}).get("inputs") or {}).get(
-        "task_freeze"
-    )
+    task_freeze_record = ((output.get("request") or {}).get("inputs") or {}).get("task_freeze")
     _, task_freeze = _read_json_record(
         task_freeze_record,
         "agent_cad_visual_task_freeze_record_invalid",
@@ -471,9 +447,7 @@ def _load_cad_output_source(
     direct = binding.get("cad_agent_output_receipt")
     matrix = binding.get("cad_agent_matrix")
     if direct is not None and matrix is not None:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_cad_source_ambiguous"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_cad_source_ambiguous"])
     if direct is not None:
         return _load_cad_output(direct, verify_files=verify_files)
     if matrix is not None:
@@ -507,8 +481,7 @@ def _load_mesh_projection(
     if (
         receipt.get("schema_version") != PROJECTION_SCHEMA_VERSION
         or receipt.get("status") != "mesh_working_copy_authored"
-        or receipt.get("receipt_digest")
-        != canonical_digest(receipt, digest_field="receipt_digest")
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
         or receipt.get("canonical_simulator_asset") is not False
         or not _record_valid(receipt.get("packet"), verify_files=verify_files)
         or not _record_valid(receipt.get("step"), verify_files=verify_files)
@@ -523,19 +496,14 @@ def _load_mesh_projection(
     try:
         packet = validate_step_mesh_packet(packet_value, verify_files=verify_files)
     except CadAgentMeshProjectionError as exc:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_mesh_packet_invalid"]
-        ) from exc
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_mesh_packet_invalid"]) from exc
     if (
         receipt.get("packet_digest") != packet.get("packet_digest")
         or not _same_file(receipt.get("step"), packet.get("step"))
-        or receipt.get("mesh_prim_paths")
-        != [row["prim_path"] for row in packet["meshes"]]
+        or receipt.get("mesh_prim_paths") != [row["prim_path"] for row in packet["meshes"]]
         or receipt.get("mesh_count") != packet.get("mesh_count")
     ):
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_mesh_projection_join_invalid"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_mesh_projection_join_invalid"])
     if not verify_files:
         return receipt, packet, None
     stage = Usd.Stage.Open(str(receipt["output_usd"]["path"]), load=Usd.Stage.LoadAll)
@@ -548,8 +516,7 @@ def _load_mesh_projection(
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_mesh_projection_usd_invalid"])
     root = stage.GetPrimAtPath("/Asset")
     if (
-        root.GetCustomDataByKey("blueprint:sourceStepSha256")
-        != packet["step"]["sha256"]
+        root.GetCustomDataByKey("blueprint:sourceStepSha256") != packet["step"]["sha256"]
         or root.GetCustomDataByKey("blueprint:collisionAuthority") is not False
     ):
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_mesh_projection_usd_invalid"])
@@ -572,16 +539,13 @@ def _load_mesh_projection(
             or prim.HasAPI(UsdPhysics.CollisionAPI)
             or imageable.ComputePurpose() != UsdGeom.Tokens.default_
             or imageable.ComputeVisibility() == UsdGeom.Tokens.invisible
-            or prim.GetCustomDataByKey("blueprint:geometryAuthority")
-            != "exact_agent_authored_step"
+            or prim.GetCustomDataByKey("blueprint:geometryAuthority") != "exact_agent_authored_step"
         ):
             raise AgentCadGraphVisualCompositionError(
                 ["agent_cad_visual_mesh_projection_usd_invalid"]
             )
     if actual_paths != expected_paths:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_mesh_projection_usd_invalid"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_mesh_projection_usd_invalid"])
     return receipt, packet, stage
 
 
@@ -599,9 +563,7 @@ def _normalize_link_bindings(
     source_seen: set[str] = set()
     for raw in value:
         if not isinstance(raw, Mapping):
-            raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_link_bindings_invalid"]
-            )
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_link_bindings_invalid"])
         agent_link_id = _identifier(raw.get("agent_link_id"))
         graph_link_id = _identifier(raw.get("graph_link_id"))
         transform_mode = str(raw.get("transform_mode") or "")
@@ -627,10 +589,7 @@ def _normalize_link_bindings(
                         derived_transform
                         if normalized_supplied is not None
                         and all(
-                            abs(
-                                normalized_supplied[row][column]
-                                - derived_transform[row][column]
-                            )
+                            abs(normalized_supplied[row][column] - derived_transform[row][column])
                             <= 1e-8
                             for row in range(4)
                             for column in range(4)
@@ -644,9 +603,7 @@ def _normalize_link_bindings(
             or agent_link_id in source_seen
             or transform is None
         ):
-            raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_link_bindings_invalid"]
-            )
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_link_bindings_invalid"])
         source_seen.add(agent_link_id)
         rows.append(
             {
@@ -657,13 +614,9 @@ def _normalize_link_bindings(
             }
         )
     if source_seen != source_link_ids:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_link_bindings_incomplete"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_link_bindings_incomplete"])
     if not isinstance(unmapped_reasons, Mapping):
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_unmapped_graph_links_invalid"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_unmapped_graph_links_invalid"])
     mapped_graph_ids = {row["graph_link_id"] for row in rows}
     expected_unmapped = set(graph_link_paths) - mapped_graph_ids
     reasons: dict[str, str] = {}
@@ -676,9 +629,7 @@ def _normalize_link_bindings(
             )
         reasons[normalized_id] = text
     if set(reasons) != expected_unmapped:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_unmapped_graph_links_invalid"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_unmapped_graph_links_invalid"])
     return (
         sorted(rows, key=lambda row: row["agent_link_id"]),
         {key: reasons[key] for key in sorted(reasons)},
@@ -689,18 +640,14 @@ def _validate_binding(
     value: Mapping[str, Any], *, verify_files: bool
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     binding = _clone(value)
-    if (
-        binding.get("schema_version") != BINDING_SCHEMA_VERSION
-        or binding.get("binding_digest")
-        != canonical_digest(binding, digest_field="binding_digest")
-    ):
+    if binding.get("schema_version") != BINDING_SCHEMA_VERSION or binding.get(
+        "binding_digest"
+    ) != canonical_digest(binding, digest_field="binding_digest"):
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_binding_digest_invalid"])
     graph, graph_stage = _load_graph_authoring(
         binding.get("graph_authoring_receipt"), verify_files=verify_files
     )
-    cad_output, task_freeze = _load_cad_output_source(
-        binding, verify_files=verify_files
-    )
+    cad_output, task_freeze = _load_cad_output_source(binding, verify_files=verify_files)
     projection, packet, _ = _load_mesh_projection(
         binding.get("mesh_projection_receipt"), verify_files=verify_files
     )
@@ -727,11 +674,8 @@ def _validate_binding(
         or binding.get("asset_id") != request.get("asset_id")
         or binding.get("task_freeze_digest") != graph.get("task_freeze_digest")
         or binding.get("task_freeze_digest") != task_freeze.get("task_freeze_digest")
-        or binding.get("cad_agent_output_receipt_digest")
-        != cad_output.get("receipt_digest")
-        or not _same_file(
-            (cad_output.get("artifacts") or {}).get("step"), projection.get("step")
-        )
+        or binding.get("cad_agent_output_receipt_digest") != cad_output.get("receipt_digest")
+        or not _same_file((cad_output.get("artifacts") or {}).get("step"), projection.get("step"))
     ):
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_binding_identity_mismatch"])
     source_links = {row["link_id"] for row in packet["meshes"]}
@@ -742,10 +686,11 @@ def _validate_binding(
         graph_stage=graph_stage,
         unmapped_reasons=binding.get("unmapped_graph_link_reasons"),
     )
-    if binding.get("link_bindings") != rows or binding.get("unmapped_graph_link_reasons") != unmapped:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_binding_not_canonical"]
-        )
+    if (
+        binding.get("link_bindings") != rows
+        or binding.get("unmapped_graph_link_reasons") != unmapped
+    ):
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_binding_not_canonical"])
     context = {
         "graph": graph,
         "cad_output": cad_output,
@@ -781,22 +726,16 @@ def seal_agent_cad_visual_binding(
 
     graph_record = _file_record(graph_authoring_receipt_path)
     if (cad_agent_output_receipt_path is None) == (cad_agent_matrix_path is None):
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_cad_source_ambiguous"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_cad_source_ambiguous"])
     if cad_agent_output_receipt_path is not None and cad_agent_backend_id is not None:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_cad_source_ambiguous"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_cad_source_ambiguous"])
     output_record = (
         _file_record(cad_agent_output_receipt_path)
         if cad_agent_output_receipt_path is not None
         else None
     )
     matrix_record = (
-        _file_record(cad_agent_matrix_path)
-        if cad_agent_matrix_path is not None
-        else None
+        _file_record(cad_agent_matrix_path) if cad_agent_matrix_path is not None else None
     )
     projection_record = _file_record(mesh_projection_receipt_path)
     visual_review_record = _file_record(cad_agent_visual_review_path)
@@ -813,9 +752,7 @@ def seal_agent_cad_visual_binding(
             }
         ),
     }
-    cad_output, task_freeze = _load_cad_output_source(
-        candidate_source, verify_files=True
-    )
+    cad_output, task_freeze = _load_cad_output_source(candidate_source, verify_files=True)
     projection, packet, _ = _load_mesh_projection(projection_record, verify_files=True)
     request = cad_output["request"]
     source_links = {row["link_id"] for row in packet["meshes"]}
@@ -873,9 +810,7 @@ def seal_agent_cad_visual_binding(
     binding = validate_agent_cad_visual_binding(binding)
     target = Path(output_path).expanduser().resolve()
     if target.exists() or target.is_symlink():
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_binding_destination_exists"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_binding_destination_exists"])
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(canonical_json(binding) + "\n", encoding="utf-8")
     return binding
@@ -899,6 +834,7 @@ def _copy_visual_mesh(
     destination_path: str,
     transform: Sequence[Sequence[float]],
     material: Any,
+    display_color_rgba: Sequence[float],
 ) -> tuple[int, int]:
     from pxr import Gf, UsdGeom, UsdPhysics, UsdShade
 
@@ -929,14 +865,14 @@ def _copy_visual_mesh(
         raise AgentCadGraphVisualCompositionError(
             ["agent_cad_visual_visual_mesh_collision_present"]
         )
-    mesh.GetPrim().SetCustomDataByKey(
-        "blueprint:geometryAuthority", "exact_agent_authored_step"
-    )
-    mesh.GetPrim().SetCustomDataByKey(
-        "blueprint:collisionGeometryOnly", False
-    )
+    mesh.GetPrim().SetCustomDataByKey("blueprint:geometryAuthority", "exact_agent_authored_step")
+    mesh.GetPrim().SetCustomDataByKey("blueprint:collisionGeometryOnly", False)
     mesh.GetPrim().SetCustomDataByKey(
         "blueprint:agentCadSourceMeshPath", str(source_mesh.GetPath())
+    )
+    mesh.GetPrim().SetCustomDataByKey(
+        "blueprint:agentAuthoredDisplayColorRgba",
+        Gf.Vec4f(*(float(value) for value in display_color_rgba)),
     )
     return len(source_points), len(counts)
 
@@ -953,33 +889,24 @@ def _validate_composition_stage(stage: Any, receipt: Mapping[str, Any]) -> None:
     actual_paths: set[str] = set()
     for row in expected:
         if not isinstance(row, Mapping):
-            raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_composition_usd_invalid"]
-            )
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_usd_invalid"])
         prim = stage.GetPrimAtPath(str(row.get("visual_mesh_path") or ""))
         if not prim.IsA(UsdGeom.Mesh):
-            raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_composition_usd_invalid"]
-            )
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_usd_invalid"])
         imageable = UsdGeom.Imageable(prim)
         if (
             prim.HasAPI(UsdPhysics.CollisionAPI)
             or imageable.ComputePurpose() != UsdGeom.Tokens.default_
             or imageable.ComputeVisibility() == UsdGeom.Tokens.invisible
-            or prim.GetCustomDataByKey("blueprint:geometryAuthority")
-            != "exact_agent_authored_step"
+            or prim.GetCustomDataByKey("blueprint:geometryAuthority") != "exact_agent_authored_step"
             or prim.GetCustomDataByKey("blueprint:collisionGeometryOnly") is not False
             or prim.GetCustomDataByKey("blueprint:agentCadSourceMeshPath")
             != row.get("source_mesh_path")
         ):
-            raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_composition_usd_invalid"]
-            )
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_usd_invalid"])
         actual_paths.add(str(prim.GetPath()))
     if actual_paths != {str(row["visual_mesh_path"]) for row in expected}:
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_composition_usd_invalid"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_usd_invalid"])
 
 
 def materialize_agent_cad_visual_composition(
@@ -1013,16 +940,29 @@ def materialize_agent_cad_visual_composition(
     )
     if stage is None or source_stage is None:
         raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_usd_invalid"])
-    material = UsdShade.Material.Define(stage, "/Asset/materials/agent_cad_visual_neutral")
-    shader = UsdShade.Shader.Define(
-        stage, "/Asset/materials/agent_cad_visual_neutral/PreviewSurface"
-    )
-    shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
-        Gf.Vec3f(0.5, 0.5, 0.5)
-    )
-    shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
-    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    materials: dict[tuple[float, float, float, float], Any] = {}
+
+    def material_for(color: Sequence[float]) -> Any:
+        key = tuple(float(value) for value in color)
+        if len(key) != 4 or any(
+            not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in key
+        ):
+            raise AgentCadGraphVisualCompositionError(
+                ["agent_cad_visual_agent_authored_color_invalid"]
+            )
+        if key in materials:
+            return materials[key]
+        name = f"agent_authored_display_{len(materials):03d}"
+        material = UsdShade.Material.Define(stage, f"/Asset/materials/{name}")
+        shader = UsdShade.Shader.Define(stage, f"/Asset/materials/{name}/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*key[:3]))
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(key[3])
+        shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        materials[key] = material
+        return material
+
     by_agent_link = {row["agent_link_id"]: row for row in binding["link_bindings"]}
     visual_meshes: list[dict[str, Any]] = []
     used_paths: set[str] = set()
@@ -1030,8 +970,11 @@ def materialize_agent_cad_visual_composition(
         source_path = row["prim_path"]
         source_mesh = UsdGeom.Mesh(source_stage.GetPrimAtPath(source_path))
         if not source_mesh:
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_projection_mesh_missing"])
+        display_color = row.get("agent_authored_display_color_rgba")
+        if not isinstance(display_color, list):
             raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_projection_mesh_missing"]
+                ["agent_cad_visual_agent_authored_color_missing"]
             )
         mapping = by_agent_link[row["link_id"]]
         graph_link_path = context["graph"]["link_paths"][mapping["graph_link_id"]]
@@ -1050,19 +993,19 @@ def materialize_agent_cad_visual_composition(
             source_mesh=source_mesh,
             destination_path=visual_path,
             transform=mapping["T_graph_link_from_agent_asset"],
-            material=material,
+            material=material_for(display_color),
+            display_color_rgba=display_color,
         )
         visual_meshes.append(
             {
                 "source_mesh_path": source_path,
                 "agent_link_id": mapping["agent_link_id"],
                 "graph_link_id": mapping["graph_link_id"],
-                "T_graph_link_from_agent_asset": mapping[
-                    "T_graph_link_from_agent_asset"
-                ],
+                "T_graph_link_from_agent_asset": mapping["T_graph_link_from_agent_asset"],
                 "visual_mesh_path": visual_path,
                 "point_count": point_count,
                 "face_count": face_count,
+                "agent_authored_display_color_rgba": display_color,
             }
         )
     stage.GetRootLayer().documentation = (
@@ -1086,7 +1029,10 @@ def materialize_agent_cad_visual_composition(
         "visual_meshes": visual_meshes,
         "visual_mesh_count": len(visual_meshes),
         "collision_visual_isolation_verified": True,
-        "claim_boundary": dict(_CLAIM_BOUNDARY),
+        "agent_authored_display_color_mesh_count": len(visual_meshes),
+        "neutral_fallback_mesh_count": 0,
+        "generated_texture_map_count": 0,
+        "claim_boundary": dict(_COMPOSITION_CLAIM_BOUNDARY),
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
@@ -1114,35 +1060,31 @@ def validate_agent_cad_visual_composition(
     if (
         receipt.get("schema_version") != COMPOSITION_SCHEMA_VERSION
         or receipt.get("status") != "agent_cad_visuals_composed"
-        or receipt.get("claim_boundary") != _CLAIM_BOUNDARY
-        or receipt.get("receipt_digest")
-        != canonical_digest(receipt, digest_field="receipt_digest")
+        or receipt.get("claim_boundary") != _COMPOSITION_CLAIM_BOUNDARY
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
         or not _record_valid(receipt.get("output_usd"), verify_files=verify_files)
     ):
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_composition_receipt_invalid"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_receipt_invalid"])
     _, binding = _read_json_record(
         receipt.get("binding"),
         "agent_cad_visual_composition_binding_invalid",
         verify_files=verify_files,
     )
-    admitted_binding = validate_agent_cad_visual_binding(
-        binding, verify_files=verify_files
-    )
+    admitted_binding = validate_agent_cad_visual_binding(binding, verify_files=verify_files)
     if (
-        receipt.get("binding", {}).get("binding_digest")
-        != admitted_binding.get("binding_digest")
+        receipt.get("binding", {}).get("binding_digest") != admitted_binding.get("binding_digest")
         or any(
             receipt.get(field) != admitted_binding.get(field)
             for field in ("scene_id", "task_id", "asset_id", "task_freeze_digest")
         )
         or receipt.get("visual_mesh_count") != len(receipt.get("visual_meshes") or [])
+        or receipt.get("agent_authored_display_color_mesh_count")
+        != receipt.get("visual_mesh_count")
+        or receipt.get("neutral_fallback_mesh_count") != 0
+        or receipt.get("generated_texture_map_count") != 0
         or receipt.get("collision_visual_isolation_verified") is not True
     ):
-        raise AgentCadGraphVisualCompositionError(
-            ["agent_cad_visual_composition_binding_mismatch"]
-        )
+        raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_binding_mismatch"])
     if verify_files:
         try:
             from pxr import Usd
@@ -1152,9 +1094,7 @@ def validate_agent_cad_visual_composition(
             ) from exc
         stage = Usd.Stage.Open(str(receipt["output_usd"]["path"]), load=Usd.Stage.LoadAll)
         if stage is None:
-            raise AgentCadGraphVisualCompositionError(
-                ["agent_cad_visual_composition_usd_invalid"]
-            )
+            raise AgentCadGraphVisualCompositionError(["agent_cad_visual_composition_usd_invalid"])
         _validate_composition_stage(stage, receipt)
     return receipt
 
@@ -1185,9 +1125,7 @@ def validate_agent_cad_visual_composition_set(
             "agent_cad_visual_composition_set_receipt_invalid",
             verify_files=verify_files,
         )
-        composition = validate_agent_cad_visual_composition(
-            receipt, verify_files=verify_files
-        )
+        composition = validate_agent_cad_visual_composition(receipt, verify_files=verify_files)
         if composition.get("scene_id") != payload.get("scene_id"):
             raise AgentCadGraphVisualCompositionError(
                 ["agent_cad_visual_composition_set_scene_mismatch"]
