@@ -44,6 +44,9 @@ from blueprint_pipeline.host_resident_launch_inputs import (
 
 SCHEMA_VERSION = "paid_lane_bundle_staging_receipt.v1"
 DEFAULT_REMOTE_ROOT = "/var/lib/blueprint/task-evaluation-inputs"
+#: The account the control-plane units run as. Staged bytes are useless to
+#: the pipeline unless this user can read them.
+DEFAULT_OWNER = "blueprint"
 
 
 class StagingError(ValueError):
@@ -88,8 +91,26 @@ class SshTransport:
         if result.returncode != 0:
             raise StagingError(f"staging_transfer_failed:{Path(remote).name}")
 
-    def digest(self, remote: str) -> str:
-        output = self._ssh(f"sha256sum {shlex.quote(remote)} 2>/dev/null || true").strip()
+    def finalize(self, remote_dir: str, owner: str) -> None:
+        """Hand the staged tree to the account that will consume it.
+
+        `scp` preserves the source mode, so a receipt that happened to be 0600
+        on the authoring machine lands 0600 and root-owned. Everything then
+        looks correct -- the bytes are there and their digests match -- while
+        the service account cannot open a single one of them.
+        """
+
+        quoted = shlex.quote(remote_dir)
+        user = shlex.quote(owner)
+        self._ssh(
+            f"chown -R {user}:{user} {quoted} && chmod -R u=rwX,g=rX,o= {quoted}"
+        )
+
+    def digest(self, remote: str, *, as_user: str | None = None) -> str:
+        command = f"sha256sum {shlex.quote(remote)} 2>/dev/null || true"
+        if as_user:
+            command = f"sudo -u {shlex.quote(as_user)} " + command
+        output = self._ssh(command).strip()
         if not output:
             return ""
         return "sha256:" + output.split()[0]
@@ -144,6 +165,7 @@ def stage_paid_lane_bundle(
     transport: Any | None = None,
     host: str | None = None,
     extra_paths: Sequence[str | Path] = (),
+    owner: str = DEFAULT_OWNER,
 ) -> dict[str, Any]:
     """Copy the receipt-referenced files to the host and verify them there."""
 
@@ -206,16 +228,28 @@ def stage_paid_lane_bundle(
             link.mkdir(parent)
         local_digest = _sha256(local)
         link.put(local, remote)
-        remote_digest = link.digest(remote)
-        if remote_digest != local_digest:
-            raise StagingError(f"staging_remote_digest_mismatch:{relative}")
         staged.append(
             {
                 "relative_path": relative,
+                "remote_path": remote,
                 "sha256": local_digest,
                 "size_bytes": local.stat().st_size,
             }
         )
+
+    # Hand the tree over first, then read every digest back as the account that
+    # will consume it. Verifying as the transfer user proves the bytes arrived
+    # and nothing about whether the pipeline can open them.
+    if hasattr(link, "finalize"):
+        link.finalize(remote_dir, owner)
+    for row in staged:
+        observed = link.digest(row["remote_path"], as_user=owner)
+        if not observed:
+            # Distinct from a mismatch: the bytes may be perfect and simply
+            # unopenable by the account that has to use them.
+            raise StagingError(f"staging_consumer_cannot_read:{row['relative_path']}")
+        if observed != row["sha256"]:
+            raise StagingError(f"staging_remote_digest_mismatch:{row['relative_path']}")
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -227,7 +261,10 @@ def stage_paid_lane_bundle(
         or receipt.get("implementation_commit"),
         "bundle_sha256": receipt.get("bundle_sha256"),
         "receipt_sha256": resolution["receipt_sha256"],
-        "staged_files": staged,
+        "staged_files": [
+            {k: v for k, v in row.items() if k != "remote_path"} for row in staged
+        ],
+        "verified_readable_as": owner,
         "provider_mutation_performed": False,
         "claim_boundary": (
             "This receipt proves the named files were placed on the host and "
@@ -249,6 +286,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--host", required=True, help="ssh destination, e.g. root@<host>")
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
     parser.add_argument(
+        "--owner",
+        default=DEFAULT_OWNER,
+        help="Account the control plane runs as; staged bytes are verified as it.",
+    )
+    parser.add_argument(
         "--extra",
         action="append",
         default=[],
@@ -267,6 +309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             remote_root=args.remote_root,
             host=args.host,
             extra_paths=args.extra,
+            owner=args.owner,
         )
     except (OSError, StagingError, json.JSONDecodeError) as exc:
         print(
