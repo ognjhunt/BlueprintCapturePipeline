@@ -114,6 +114,40 @@ def _job(tmp_path: Path, *, portable: bool = True) -> Path:
     return job
 
 
+def _artifixer_job(tmp_path: Path) -> Path:
+    job = tmp_path / "artifixer3d-job"
+    job.mkdir()
+    archive = job / "public_scene_artifixer3d_provider_bundle.zip"
+    archive.write_bytes(b"paired-artifixer3d-bundle")
+    receipt = {
+        "schema_version": "public_scene_artifixer3d_bundle.v1",
+        "status": "sealed_rehearsal_passed_no_upload_no_execution",
+        "blueprint_source_identity": {
+            "commit": "b" * 40,
+            "tracked_files_clean": True,
+        },
+        "bundle": {
+            "path": "/Users/author/job/public_scene_artifixer3d_provider_bundle.zip",
+            "sha256": _digest(archive.read_bytes()),
+            "size_bytes": archive.stat().st_size,
+        },
+        "pipeline_mode": "dual_target_artifixer3d_only",
+        "direct_editor_backend": "none",
+        "semantic_editor_only": False,
+        "provider_mutations_performed": 0,
+        "local_rehearsal": {
+            "status": "passed",
+            "pipeline_mode": "dual_target_artifixer3d_only",
+            "provider_mutations_performed": 0,
+            "paid_inference_performed": False,
+            "gpu_runtime_started": False,
+        },
+    }
+    receipt_path = job / "public_scene_artifixer3d_bundle_receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    return receipt_path
+
+
 def test_staging_places_the_referenced_files_and_verifies_them_on_the_host(tmp_path):
     job = _job(tmp_path)
     transport = _LocalTransport(tmp_path / "host")
@@ -164,6 +198,35 @@ def test_a_receipt_read_on_the_host_resolves_against_what_was_staged(tmp_path):
     assert resolution["status"] == "ready"
     assert resolution["receipt"]["status"] == "ready"
     assert resolution["receipt"]["bundle_path"].startswith(str(staged_dir))
+
+
+def test_lane_native_artifixer_receipt_stages_without_rewriting_its_evidence(tmp_path):
+    receipt_path = _artifixer_job(tmp_path)
+    host_root = tmp_path / "host"
+    transport = _LocalTransport(host_root)
+
+    staged = stager.stage_paid_lane_bundle(
+        receipt_path=receipt_path,
+        lane_id="artifixer3d-paired-target",
+        remote_root="/var/lib/blueprint/task-evaluation-inputs",
+        transport=transport,
+    )
+
+    assert staged["blueprint_commit"] == "b" * 40
+    assert staged["bundle_sha256"].startswith("sha256:")
+    assert {row["relative_path"] for row in staged["staged_files"]} == {
+        "public_scene_artifixer3d_bundle_receipt.json",
+        "public_scene_artifixer3d_provider_bundle.zip",
+    }
+    staged_receipt = (
+        host_root / staged["remote_dir"].lstrip("/") /
+        "public_scene_artifixer3d_bundle_receipt.json"
+    )
+    # The retained scientific receipt remains lane-native; only the resolver's
+    # read-only projection says ``ready``.
+    assert json.loads(staged_receipt.read_text(encoding="utf-8"))["status"] == (
+        "sealed_rehearsal_passed_no_upload_no_execution"
+    )
 
 
 def test_a_destination_outside_a_control_plane_root_is_refused(tmp_path):

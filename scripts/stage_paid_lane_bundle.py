@@ -241,7 +241,11 @@ def stage_paid_lane_bundle(
             "staging_receipt_not_self_resolving:" + ",".join(resolution["blockers"])
         )
 
-    receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+    # Use the resolver's launch-contract view.  Lane-native receipts (currently
+    # ArtiFixer3D) keep their scientific status and bundle record nested in the
+    # retained bytes; the view exposes their portable bundle reference without
+    # rewriting the evidence the allocator will later validate.
+    receipt = resolution["receipt"]
     relatives = _referenced_relative_paths(
         receipt, receipt_name=receipt_file.name, job=job
     )

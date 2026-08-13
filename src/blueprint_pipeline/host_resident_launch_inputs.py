@@ -59,10 +59,68 @@ LAUNCH_INPUT_ROOTS_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_INPUT_ROOTS"
 # it, and a receipt that cannot resolve them is not usable evidence either.
 _BUNDLE_REFERENCE = "bundle"
 _RECORD_REFERENCES = ("execution_authority", "request")
+ARTIFIXER3D_BUNDLE_SCHEMA = "public_scene_artifixer3d_bundle.v1"
+ARTIFIXER3D_BUNDLE_READY_STATUS = (
+    "sealed_rehearsal_passed_no_upload_no_execution"
+)
+ARTIFIXER3D_LIVE_PIPELINE_MODE = "dual_target_artifixer3d_only"
 
 
 class HostResidentInputError(ValueError):
     """A launch input cannot be resolved on this host."""
+
+
+def _launch_receipt_view(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a lane-native receipt onto the portable launch contract.
+
+    Most paid-lane receipts already expose ``bundle_path``, ``bundle_sha256``,
+    ``implementation_commit``, and ``status: ready`` at the top level.  The
+    ArtiFixer3D receipt predates that contract and deliberately keeps its
+    scientific status plus bundle record nested.  The allocator must still
+    receive those original bytes, so rewriting the retained receipt is not an
+    option; this read-only view supplies only the fields the residency and live
+    profile layers share.
+
+    Only the paired whole-frame-teacher mode is launch-ready.  A historical
+    direct-editor, broad-repair, Aura, or Inpaint-compatible receipt remains in
+    its native status and therefore cannot become a selectable live profile.
+    """
+
+    view = json.loads(json.dumps(dict(receipt)))
+    if receipt.get("schema_version") != ARTIFIXER3D_BUNDLE_SCHEMA:
+        return view
+
+    bundle = receipt.get("bundle")
+    identity = receipt.get("blueprint_source_identity")
+    rehearsal = receipt.get("local_rehearsal")
+    if isinstance(bundle, Mapping):
+        view["bundle_path"] = bundle.get("path")
+        view["bundle_sha256"] = bundle.get("sha256")
+        recorded = str(bundle.get("path") or "").strip()
+        if recorded:
+            view["bundle_relative_path"] = Path(recorded).name
+    if isinstance(identity, Mapping):
+        view["implementation_commit"] = identity.get("commit")
+
+    view["native_receipt_status"] = receipt.get("status")
+    paired_ready = (
+        receipt.get("status") == ARTIFIXER3D_BUNDLE_READY_STATUS
+        and receipt.get("pipeline_mode") == ARTIFIXER3D_LIVE_PIPELINE_MODE
+        and receipt.get("direct_editor_backend") == "none"
+        and receipt.get("semantic_editor_only") is False
+        and receipt.get("provider_mutations_performed") == 0
+        and isinstance(identity, Mapping)
+        and identity.get("tracked_files_clean") is True
+        and isinstance(rehearsal, Mapping)
+        and rehearsal.get("status") == "passed"
+        and rehearsal.get("pipeline_mode") == ARTIFIXER3D_LIVE_PIPELINE_MODE
+        and rehearsal.get("provider_mutations_performed") == 0
+        and rehearsal.get("paid_inference_performed") is False
+        and rehearsal.get("gpu_runtime_started") is False
+    )
+    if paired_ready:
+        view["status"] = "ready"
+    return view
 
 
 def _sha256(path: Path) -> str:
@@ -247,9 +305,9 @@ def resolve_host_resident_bundle_receipt(
     if not isinstance(receipt, Mapping):
         raise HostResidentInputError(f"host_resident_receipt_not_an_object:{source.name}")
 
-    resolved_receipt = json.loads(json.dumps(dict(receipt)))
+    resolved_receipt = _launch_receipt_view(receipt)
     resolutions: dict[str, Any] = {}
-    for name, record in _reference_records(receipt).items():
+    for name, record in _reference_records(resolved_receipt).items():
         resolution, reference_blockers = _resolve_reference(
             name, record, receipt_dir=resolved_source.parent, roots=search_roots
         )
