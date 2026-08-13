@@ -37,6 +37,7 @@ RUNTIME_RESULT_FILENAMES = (
     "native_task_arena_construction_result.v1.json",
     "native_task_arena_control_result.v1.json",
     "native_task_arena_policy_result.v1.json",
+    "paired_target_native_import_runtime_result.v1.json",
 )
 ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 

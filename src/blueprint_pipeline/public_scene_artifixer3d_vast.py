@@ -1025,6 +1025,56 @@ def _validate_prior_artifixer_attempt(
     return authority, attempt_cost, lineage_cost
 
 
+def validate_artifixer3d_terminal_spend_chain(
+    *,
+    authority_path: str | Path,
+    result_path: str | Path,
+    cleanup_path: str | Path,
+    provider_zero_path: str | Path,
+) -> dict[str, Any]:
+    """Expose a verified terminal campaign spend anchor to successor modules."""
+
+    resolved = tuple(
+        Path(path).expanduser().resolve()
+        for path in (authority_path, result_path, cleanup_path, provider_zero_path)
+    )
+    authority, attempt_cost, lineage_cost = _validate_prior_artifixer_attempt(
+        authority_path=resolved[0],
+        result_path=resolved[1],
+        cleanup_path=resolved[2],
+        provider_zero_path=resolved[3],
+    )
+    aggregate_before = authority.get("aggregate_goal_spend_before_attempt_usd")
+    aggregate_cap = authority.get("aggregate_goal_spend_cap_usd")
+    if (
+        isinstance(aggregate_before, bool)
+        or not isinstance(aggregate_before, (int, float))
+        or isinstance(aggregate_cap, bool)
+        or not isinstance(aggregate_cap, (int, float))
+        or not math.isfinite(float(aggregate_before))
+        or not math.isfinite(float(aggregate_cap))
+        or float(aggregate_before) < 0
+        or float(aggregate_cap) <= 0
+    ):
+        raise ValueError("artifixer3d_terminal_spend_anchor_invalid")
+    return {
+        "authority": authority,
+        "authority_digest": authority["authorization_digest"],
+        "attempt_cost_usd": attempt_cost,
+        "lineage_cost_usd": lineage_cost,
+        "aggregate_goal_spend_after_attempt_usd": round(
+            float(aggregate_before) + attempt_cost, 6
+        ),
+        "aggregate_goal_spend_cap_usd": round(float(aggregate_cap), 6),
+        "records": {
+            "authority": _record(resolved[0]),
+            "terminal_result": _record(resolved[1]),
+            "object_store_cleanup": _record(resolved[2]),
+            "provider_zero": _record(resolved[3]),
+        },
+    }
+
+
 def materialize_artifixer3d_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
@@ -2520,4 +2570,5 @@ __all__ = [
     "run_artifixer3d_vast",
     "validate_artifixer3d_bundle",
     "validate_artifixer3d_paid_attempt_authority",
+    "validate_artifixer3d_terminal_spend_chain",
 ]

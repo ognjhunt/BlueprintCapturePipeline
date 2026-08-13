@@ -20,6 +20,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp009d_isaac",
     "adp009d_articulated_native",
     "native_task_arena",
+    "paired_target_native_import",
     "adp009d_ovrtx",
     "adp009d_aura_native",
     "adp_content_agents",
@@ -205,6 +206,27 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
+    elif provider_bundle_kind == "paired_target_native_import":
+        entrypoint_valid = all(
+            token in entrypoint_text
+            for token in (
+                "run_paired_target_native_import_probe.py",
+                "paired_target_native_import_runtime_result.v1.json",
+                "BLUEPRINT_PAIRED_TARGET_IMPORT_OUTPUT_DIR",
+                "paired_target_native_import_runner_failed_without_runtime_result",
+            )
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "SimulationApp",
+                "paired_target_native_import_request.v1",
+                "all_replacements_import_qualified",
+                "candidate_policy_queried",
+                "asset_frame_registration_digest",
+            )
+        )
+        runner_blocker = "provider_runner_missing_paired_target_native_import_contract"
     elif provider_bundle_kind == "adp009d_ovrtx":
         entrypoint_valid = (
             "adp009d_ovrtx_runner_failed_without_runtime_result" in entrypoint_text

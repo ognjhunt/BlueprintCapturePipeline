@@ -294,6 +294,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "paired_target_native_import",
     }
 
 
@@ -303,6 +304,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "paired_target_native_import",
     }:
         return 0
     if _is_isaac_provider_bundle(provider_bundle_kind):
@@ -2146,6 +2148,12 @@ def _blueprint_bundle_preflight(
         "provider_runtime/blueprint_pipeline/native_task_arena_runtime.py",
         "provider_runtime/blueprint_pipeline/native_task_camera_observability.py",
     }
+    paired_target_native_import_required_entries = {
+        "provider_runtime/run_paired_target_native_import_probe.sh",
+        "provider_runtime/run_paired_target_native_import_probe.py",
+        "provider_runtime/paired_target_native_import_request.v1.json",
+        "provider_runtime/paired_target_native_import_bundle_manifest.v1.json",
+    }
     adp009d_ovrtx_required_entries = {
         "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh",
         "provider_runtime/adp009d_ovrtx_provider_runner.py",
@@ -2281,6 +2289,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "paired_target_native_import":
+        required_entries = paired_target_native_import_required_entries
+        entrypoint_member = "provider_runtime/run_paired_target_native_import_probe.sh"
+        runner_member = "provider_runtime/run_paired_target_native_import_probe.py"
+        readiness_name = "paired_target_native_import_bundle_manifest.v1.json"
     elif provider_bundle_kind == "adp009d_ovrtx":
         required_entries = adp009d_ovrtx_required_entries
         entrypoint_member = "provider_runtime/run_adp009d_ovrtx_provider_runtime.sh"
@@ -2383,6 +2396,8 @@ def _blueprint_bundle_preflight(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "paired_target_native_import",
+            "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -2475,6 +2490,43 @@ def _blueprint_bundle_preflight(
                                 )
                         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                             blockers.append("adp009d_ovrtx_camera_manifest_invalid")
+                    if provider_bundle_kind == "paired_target_native_import":
+                        try:
+                            request_payload = json.loads(
+                                archive.read(
+                                    "provider_runtime/paired_target_native_import_request.v1.json"
+                                ).decode("utf-8")
+                            )
+                            replacement_rows = request_payload.get("replacements")
+                            if (
+                                request_payload.get("schema_version")
+                                != "paired_target_native_import_request.v1"
+                                or not isinstance(replacement_rows, list)
+                                or not 1 <= len(replacement_rows) <= 5
+                                or request_payload.get("replacement_count")
+                                != len(replacement_rows)
+                            ):
+                                raise ValueError("paired_target_native_import_request_invalid")
+                            for row in replacement_rows:
+                                if not isinstance(row, Mapping):
+                                    raise ValueError(
+                                        "paired_target_native_import_request_invalid"
+                                    )
+                                relative_path = _string(row.get("relative_path"))
+                                if not relative_path.startswith("assets/"):
+                                    raise ValueError(
+                                        "paired_target_native_import_request_invalid"
+                                    )
+                                required_entries.add(
+                                    f"provider_runtime/{relative_path}"
+                                )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            json.JSONDecodeError,
+                        ):
+                            blockers.append("paired_target_native_import_request_invalid")
                     if provider_bundle_kind == "adp009d_aura_native":
                         manifest_member = (
                             "provider_runtime/adp009d_aura_native_provider_manifest.json"
@@ -3207,6 +3259,8 @@ def _resolve_launch_mode(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "paired_target_native_import",
+            "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -3267,6 +3321,7 @@ def _probe_env(
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "paired_target_native_import",
     }:
         env.update(
             {
@@ -3811,6 +3866,7 @@ def _probe_shell_script(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "paired_target_native_import",
         }:
             script += (
                 common_start + "RUNTIME_PY=/isaac-sim/python.sh; "
@@ -3822,12 +3878,24 @@ def _probe_shell_script(
                 "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
                 '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_arena_provider_runtime_bundle.zip" "$WORK_DIR/adp_arena_provider_bundle"; unzip_rc=$?; '
                 "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
-                'elif [ ! -f "$WORK_DIR/adp_arena_provider_bundle/provider_runtime/run_adp_arena_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
+                'elif [ ! -f "$WORK_DIR/adp_arena_provider_bundle/provider_runtime/'
+                + (
+                    "run_paired_target_native_import_probe.sh"
+                    if provider_bundle_kind == "paired_target_native_import"
+                    else "run_adp_arena_provider_runtime.sh"
+                )
+                + '" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
                 "else "
                 'export BLUEPRINT_ADP_ARENA_OUTPUT_DIR="$WORK_DIR/adp_arena_provider_bundle/runtime_output"; '
                 'mkdir -p "$BLUEPRINT_ADP_ARENA_OUTPUT_DIR"; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
-                'bash "$WORK_DIR/adp_arena_provider_bundle/provider_runtime/run_adp_arena_provider_runtime.sh"; provider_rc=$?; '
+                'bash "$WORK_DIR/adp_arena_provider_bundle/provider_runtime/'
+                + (
+                    "run_paired_target_native_import_probe.sh"
+                    if provider_bundle_kind == "paired_target_native_import"
+                    else "run_adp_arena_provider_runtime.sh"
+                )
+                + '"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
                 "$RUNTIME_PY - <<'PY'\n"
                 "import json\n"

@@ -303,13 +303,26 @@ def build_paired_target_native_import_bundle(
         entrypoint = runtime / "run_paired_target_native_import_probe.sh"
         entrypoint.write_text(
             "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
+            "set +e\n"
             'RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
             'OUT_DIR="${BLUEPRINT_PAIRED_TARGET_IMPORT_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"\n'
             'mkdir -p "$OUT_DIR"\n'
             '/isaac-sim/python.sh "$RUNTIME_DIR/run_paired_target_native_import_probe.py" '
             '--request "$RUNTIME_DIR/paired_target_native_import_request.v1.json" '
-            '--output-root "$OUT_DIR"\n',
+            '--output-root "$OUT_DIR"\n'
+            'runner_rc=$?\n'
+            'if [ ! -s "$OUT_DIR/paired_target_native_import_runtime_result.v1.json" ]; then\n'
+            '/isaac-sim/python.sh - "$OUT_DIR/paired_target_native_import_runtime_result.v1.json" <<\'PY\'\n'
+            'import hashlib, json, sys\n'
+            'from pathlib import Path\n'
+            'path=Path(sys.argv[1])\n'
+            'value={"schema_version":"paired_target_native_import_runtime_result.v1","status":"blocked","native_isaac_executed":False,"all_replacements_import_qualified":False,"candidate_policy_queried":False,"physical_equivalence_claimed":False,"blockers":["paired_target_native_import_runner_failed_without_runtime_result"],"result_digest":""}\n'
+            'payload=dict(value); payload.pop("result_digest",None)\n'
+            'value["result_digest"]="sha256:"+hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()\n'
+            'path.write_text(json.dumps(value,indent=2,sort_keys=True)+"\\n",encoding="utf-8")\n'
+            'PY\n'
+            'fi\n'
+            'exit $runner_rc\n',
             encoding="utf-8",
         )
         entrypoint.chmod(0o755)
@@ -326,9 +339,11 @@ def build_paired_target_native_import_bundle(
             "schema_version": SCHEMA_VERSION,
             "status": "ready",
             "implementation_commit": implementation_commit,
+            "source_commit_sha": implementation_commit,
             "container_image": DEFAULT_IMAGE,
             "source_request_digest": source["receipt_digest"],
             "request_digest": request["request_digest"],
+            "probe_spec_sha256": request["request_digest"],
             "replacement_count": len(replacement_rows),
             "replacements": replacement_rows,
             "input_files": inventory,
@@ -366,6 +381,92 @@ def build_paired_target_native_import_bundle(
         raise
 
 
+def validate_paired_target_native_import_bundle(
+    receipt_path: str | Path,
+) -> dict[str, Any]:
+    """Reopen one immutable 1--5 replacement bundle and verify every staged byte."""
+
+    receipt_file, receipt = _read_mapping(
+        receipt_path, "paired_target_native_import_bundle_receipt_invalid"
+    )
+    bundle = Path(str(receipt.get("bundle_path") or "")).expanduser().resolve()
+    rows = receipt.get("input_files")
+    if (
+        receipt.get("schema_version") != SCHEMA_VERSION
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+        or receipt.get("status") != "ready"
+        or receipt.get("source_commit_sha") != receipt.get("implementation_commit")
+        or not isinstance(rows, list)
+        or not 1 <= int(receipt.get("replacement_count") or 0) <= MAX_REPLACEMENT_OBJECTS
+        or receipt.get("retry_cap") != 0
+        or receipt.get("provider_zero_required_before_and_after") is not True
+        or receipt.get("raw_nonredistributable_bytes_included") is not False
+        or receipt.get("canonical_interiorgs_included_or_mutated") is not False
+        or bundle.is_symlink()
+        or not bundle.is_file()
+        or bundle.stat().st_size != receipt.get("bundle_size_bytes")
+        or _sha256(bundle) != receipt.get("bundle_sha256")
+    ):
+        raise PairedTargetNativeImportBundleError(
+            "paired_target_native_import_bundle_receipt_invalid"
+        )
+    declared = {
+        str(row.get("relative_path") or ""): dict(row)
+        for row in rows
+        if isinstance(row, Mapping)
+    }
+    if len(declared) != len(rows) or any(
+        not path or PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts
+        for path in declared
+    ):
+        raise PairedTargetNativeImportBundleError(
+            "paired_target_native_import_bundle_inventory_invalid"
+        )
+    try:
+        with zipfile.ZipFile(bundle) as archive:
+            if archive.testzip() is not None:
+                raise ValueError("zip_integrity")
+            members = {
+                name.removeprefix("provider_runtime/"): name
+                for name in archive.namelist()
+                if name.startswith("provider_runtime/") and not name.endswith("/")
+            }
+            manifest_name = "paired_target_native_import_bundle_manifest.v1.json"
+            if set(members) != {*declared, manifest_name}:
+                raise ValueError("inventory_mismatch")
+            for relative, record in declared.items():
+                body = archive.read(members[relative])
+                if (
+                    len(body) != record.get("size_bytes")
+                    or "sha256:" + hashlib.sha256(body).hexdigest()
+                    != record.get("sha256")
+                ):
+                    raise ValueError("member_digest")
+            manifest = json.loads(
+                archive.read(
+                    f"provider_runtime/{manifest_name}"
+                ).decode("utf-8")
+            )
+            if not isinstance(manifest, dict):
+                raise ValueError("manifest_shape")
+            expected_manifest = dict(receipt)
+            for field in (
+                "bundle_path",
+                "bundle_size_bytes",
+                "bundle_sha256",
+                "receipt_digest",
+            ):
+                expected_manifest.pop(field, None)
+            if manifest != expected_manifest:
+                raise ValueError("manifest_mismatch")
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+        raise PairedTargetNativeImportBundleError(
+            "paired_target_native_import_bundle_archive_invalid"
+        ) from exc
+    return {**receipt, "receipt_path": str(receipt_file)}
+
+
 __all__ = [
     "PairedTargetNativeImportBundleError",
     "REQUEST_SCHEMA_VERSION",
@@ -373,4 +474,5 @@ __all__ = [
     "RESULT_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "build_paired_target_native_import_bundle",
+    "validate_paired_target_native_import_bundle",
 ]
