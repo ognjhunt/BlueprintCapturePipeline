@@ -26,6 +26,7 @@ SCHEMA_VERSION = "digest_bound_review_contact_sheets.v1"
 SOURCE_SCHEMA_VERSIONS = {
     "public_scene_artifixer3d_raw_result.v1",
     "public_scene_artifixer3d_final_composite.v1",
+    "public_scene_agent_cad_replacement_visual_review.v1",
 }
 FRAME_FIELDS = ("artifixer3d_review_frames", "final_candidate_frames", "frames")
 COLUMNS = 4
@@ -277,6 +278,12 @@ def materialize_digest_bound_review_contact_sheets(
         )
         or (
             raw.get("schema_version") == "public_scene_artifixer3d_final_composite.v1"
+            and raw.get("receipt_digest")
+            != canonical_digest(raw, digest_field="receipt_digest")
+        )
+        or (
+            raw.get("schema_version")
+            == "public_scene_agent_cad_replacement_visual_review.v1"
             and raw.get("receipt_digest")
             != canonical_digest(raw, digest_field="receipt_digest")
         )
