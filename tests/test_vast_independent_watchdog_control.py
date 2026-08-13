@@ -68,6 +68,25 @@ def test_watchdog_is_armed_detached_before_allocation(
     assert handle.process.command[index + 1] == "47226054"
 
 
+def test_paired_native_import_prefix_is_accepted_by_real_watchdog_contract(
+    tmp_path: Path,
+) -> None:
+    import time
+
+    from blueprint_pipeline.groot_oscar_runpod_watchdog import arm_watchdog
+
+    receipt = arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix="blueprint-adp-paired-native-import-bound-run-",
+        deadline_epoch=time.time() + 120,
+        provider_name="vast",
+    )
+
+    assert receipt["status"] == "armed"
+    assert receipt["provider"] == "vast"
+    assert receipt["pre_deadline_provider_mutation_allowed"] is False
+
+
 def test_watchdog_exact_instance_handoff_is_atomic_and_private(tmp_path: Path) -> None:
     path = tmp_path / "watchdog" / "started_vast_instance_id.txt"
 
