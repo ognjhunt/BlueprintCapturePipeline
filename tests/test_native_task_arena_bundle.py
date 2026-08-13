@@ -302,6 +302,10 @@ def test_bound_runtime_inputs_are_immutable_and_scene_neutral(
             archive.read("provider_runtime/runtime_inputs/qualification/input.json")
             == bound.read_bytes()
         )
+    assert not (
+        Path(receipt["bundle_path"]).parent
+        / "provider_runtime/runtime_inputs/qualification/input.json"
+    ).exists()
 
 
 def _articulated_packet(root: Path) -> tuple[Path, dict]:
@@ -750,6 +754,9 @@ def test_construction_bundle_has_one_scene_neutral_import_closure(
         "provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip"
         in names
     )
+    bundle_root = Path(receipt["bundle_path"]).parent / "provider_runtime"
+    assert not (bundle_root / "native_task_packet").exists()
+    assert not (bundle_root / "native_task_runtime_sources").exists()
     assert receipt["runtime_source_packet"]["redistribution_permitted"] is True
     assert "provider_runtime/blueprint_pipeline/native_task_arena_scene_plan.py" not in names
     assert "provider_runtime/blueprint_pipeline/adp009d_approach_capture.py" not in names

@@ -52,6 +52,18 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _write_zip_file(
+    archive: zipfile.ZipFile, *, source: Path, archive_path: str
+) -> None:
+    """Stream one verified regular file into a deterministic ZIP member."""
+
+    info = zipfile.ZipInfo(archive_path, date_time=(1980, 1, 1, 0, 0, 0))
+    info.create_system = 3
+    info.external_attr = (source.stat().st_mode & 0xFFFF) << 16
+    with source.open("rb") as input_stream, archive.open(info, "w") as output_stream:
+        shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+
+
 def _has_symlink_component(path: Path, *, root: Path) -> bool:
     current = root
     for part in path.relative_to(root).parts:
@@ -334,9 +346,7 @@ def build_native_task_arena_bundle(
     if job.exists():
         shutil.rmtree(job)
     runtime = job / "provider_runtime"
-    packet_destination = runtime / "native_task_packet"
     ensure_dir(runtime)
-    shutil.copytree(packet_root, packet_destination, symlinks=False)
     shutil.copy2(worker, runtime / "adp_arena_provider_runner.py")
     package = runtime / "blueprint_pipeline"
     ensure_dir(package)
@@ -353,28 +363,15 @@ def build_native_task_arena_bundle(
             }
         )
     if runtime_source_receipt is not None:
-        runtime_sources = runtime / "native_task_runtime_sources"
-        ensure_dir(runtime_sources)
         source_receipt_path = Path(runtime_source_packet_receipt).expanduser().resolve()
         source_packet_path = Path(runtime_source_receipt["verified_packet_path"])
-        shutil.copy2(
-            source_receipt_path,
-            runtime_sources / "native_task_runtime_source_packet.v1.json",
-        )
-        shutil.copy2(
-            source_packet_path,
-            runtime_sources / "native_task_runtime_sources.zip",
-        )
     input_rows: list[dict[str, Any]] = []
     for relative, source in input_sources:
-        destination = runtime / "runtime_inputs" / Path(*relative.parts)
-        ensure_dir(destination.parent)
-        shutil.copy2(source, destination)
         input_rows.append(
             {
                 "relative_path": f"runtime_inputs/{relative.as_posix()}",
-                "size_bytes": destination.stat().st_size,
-                "sha256": _sha256(destination),
+                "size_bytes": source.stat().st_size,
+                "sha256": _sha256(source),
             }
         )
     entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
@@ -441,15 +438,44 @@ def build_native_task_arena_bundle(
     write_json(runtime / "adp_arena_provider_manifest.json", manifest)
     bundle_path = job / "native_task_arena_provider_bundle.zip"
     with zipfile.ZipFile(bundle_path, "w", allowZip64=True) as archive:
+        for row in packet_rows:
+            relative = str(row["relative_path"])
+            _write_zip_file(
+                archive,
+                source=packet_root / relative,
+                archive_path=f"provider_runtime/native_task_packet/{relative}",
+            )
+        if runtime_source_receipt is not None:
+            _write_zip_file(
+                archive,
+                source=source_receipt_path,
+                archive_path=(
+                    "provider_runtime/native_task_runtime_sources/"
+                    "native_task_runtime_source_packet.v1.json"
+                ),
+            )
+            _write_zip_file(
+                archive,
+                source=source_packet_path,
+                archive_path=(
+                    "provider_runtime/native_task_runtime_sources/"
+                    "native_task_runtime_sources.zip"
+                ),
+            )
+        for relative, source in input_sources:
+            _write_zip_file(
+                archive,
+                source=source,
+                archive_path=f"provider_runtime/runtime_inputs/{relative.as_posix()}",
+            )
         for path in sorted(runtime.rglob("*")):
             if not path.is_file():
                 continue
-            info = zipfile.ZipInfo(
-                path.relative_to(job).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
+            _write_zip_file(
+                archive,
+                source=path,
+                archive_path=path.relative_to(job).as_posix(),
             )
-            info.create_system = 3
-            info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-            archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_STORED)
     receipt = {
         **manifest,
         "bundle_path": str(bundle_path),
