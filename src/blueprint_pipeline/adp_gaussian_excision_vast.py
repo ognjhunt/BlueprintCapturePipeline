@@ -19,7 +19,7 @@ from packaging.tags import compatible_tags, cpython_tags
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
 from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .paid_attempt_authority import (
@@ -1427,7 +1427,7 @@ def run_gaussian_excision_vast(
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
             "status": "blocked",
-            "blockers": [f"gaussian_excision_vast_adapter_failed:{type(exc).__name__}"],
+            "blockers": [f"gaussian_excision_vast_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
     finally:

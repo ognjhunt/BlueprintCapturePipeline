@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
@@ -1022,7 +1022,7 @@ def run_aura_author_smoke_vast(
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
             "status": "blocked",
-            "blockers": [f"adp_aura_vast_adapter_failed:{type(exc).__name__}"],
+            "blockers": [f"adp_aura_vast_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
     finally:

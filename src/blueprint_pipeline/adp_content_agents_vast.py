@@ -19,7 +19,7 @@ import yaml
 from pxr import Usd, UsdGeom, UsdPhysics
 
 from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .adp_content_agents_bundle_matrix import (
     SCHEMA_VERSION as AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA,
     validate_agent_cad_content_agents_bundle_matrix,
@@ -2086,7 +2086,7 @@ def run_content_agents_vast(
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
             "status": "blocked",
-            "blockers": [f"adp_content_agents_vast_adapter_failed:{type(exc).__name__}"],
+            "blockers": [f"adp_content_agents_vast_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
     finally:

@@ -18,7 +18,7 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
 )
@@ -1117,7 +1117,7 @@ def run_joint_agent_vast(
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
             "status": "blocked",
-            "blockers": [f"adp_joint_agent_vast_adapter_failed:{type(exc).__name__}"],
+            "blockers": [f"adp_joint_agent_vast_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
     finally:

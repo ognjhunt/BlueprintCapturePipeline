@@ -211,3 +211,78 @@ def test_the_content_agents_preflight_resolves_its_bundle_host_side() -> None:
 
     assert "bundle_receipt = _read_json(receipt_path)" not in preflight
     assert "_host_resident_receipt" in preflight
+
+
+def test_a_teardown_path_naming_a_file_nobody_wrote_is_nulled(tmp_path) -> None:
+    """Lanes name their teardown path unconditionally as
+    `<provider_run>/vast_teardown_manifest.json`. A run that failed before that
+    directory existed then reports a path to a file that was never written,
+    which reads as teardown evidence gone missing rather than teardown that
+    never happened. Observed on the 2026-08-13 content-agents attempt."""
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        seal_lane_terminal_artifacts,
+    )
+
+    claimed = tmp_path / "vast_provider_run" / "vast_teardown_manifest.json"
+
+    sealed = seal_lane_terminal_artifacts(
+        {"status": "blocked", "teardown_manifest_path": str(claimed)},
+        attempt_root=tmp_path,
+        lane="adp_example",
+    )
+
+    assert sealed["teardown_manifest_path"] is None
+
+
+def test_a_real_teardown_path_survives(tmp_path) -> None:
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        seal_lane_terminal_artifacts,
+    )
+
+    provider_run = tmp_path / "vast_provider_run"
+    provider_run.mkdir()
+    teardown = provider_run / "vast_teardown_manifest.json"
+    teardown.write_text('{"continuing_spend_from_this_run": false}', encoding="utf-8")
+    (provider_run / "vast_provider_adapter_result.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "immutable_execution").mkdir()
+    (tmp_path / "immutable_execution" / "r.json").write_text("{}", encoding="utf-8")
+
+    sealed = seal_lane_terminal_artifacts(
+        {"status": "completed", "teardown_manifest_path": str(teardown)},
+        attempt_root=tmp_path,
+        lane="adp_example",
+    )
+
+    assert sealed["teardown_manifest_path"] == str(teardown)
+
+
+def test_a_lane_records_why_a_caught_failure_happened() -> None:
+    """Ten lanes recorded `..._failed:{type(exc).__name__}` and discarded the
+    message, so a blocked run said `ValueError` and nothing about which value.
+    Diagnosing that costs another attempt, and a paid one when the failure only
+    happens on the execute path."""
+
+    import ast
+
+    for module in PAID_LANE_MODULES:
+        source = (SOURCE_ROOT / module).read_text(encoding="utf-8")
+        assert "{type(exc).__name__}" not in source, (
+            f"{module} records a caught failure by type alone; use "
+            "redacted_failure_detail(exc) so the receipt carries the cause"
+        )
+        ast.parse(source)
+
+
+def test_a_failure_detail_carries_the_cause_without_a_secret() -> None:
+    from blueprint_pipeline.common import redacted_failure_detail
+
+    assert redacted_failure_detail(ValueError("invalid_vast_instance_label_prefix")) == (
+        "ValueError:invalid_vast_instance_label_prefix"
+    )
+    # A receipt is exactly the artifact that gets copied around later.
+    signed = redacted_failure_detail(
+        RuntimeError("PUT https://o.example/x?X-Amz-Signature=deadbeefcafe failed")
+    )
+    assert "X-Amz-Signature" not in signed and "<redacted>" in signed
+    assert redacted_failure_detail(RuntimeError("")) == "RuntimeError"

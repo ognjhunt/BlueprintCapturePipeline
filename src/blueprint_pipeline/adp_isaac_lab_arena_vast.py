@@ -16,7 +16,7 @@ from typing import Any, Mapping
 
 from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
 from .adp_isaac_lab_arena_request import build_arena_worker_request
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .task_evaluation_artifact_manifest import (
     TaskEvaluationArtifactManifestError,
@@ -521,7 +521,7 @@ def run_arena_native_control_vast(
         )
         blockers.extend(artifact_manifest.get("blockers") or [])
     except (OSError, TaskEvaluationArtifactManifestError) as exc:
-        blockers.append(f"{blocker_prefix}_artifact_manifest_failed:{type(exc).__name__}")
+        blockers.append(f"{blocker_prefix}_artifact_manifest_failed:{redacted_failure_detail(exc)}")
     result = {
         "schema_version": result_schema_version,
         "generated_at": generated,

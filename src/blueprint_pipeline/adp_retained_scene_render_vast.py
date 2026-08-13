@@ -16,7 +16,7 @@ from .adp_retained_scene_render_packet import (
     ENTRYPOINT,
     PROBE_KIND,
 )
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
@@ -623,7 +623,7 @@ def run_retained_scene_render_vast(
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     except (OSError, RuntimeError, ValueError) as exc:
-        adapter = {"status": "blocked", "blockers": [f"vast_adapter_failed:{type(exc).__name__}"]}
+        adapter = {"status": "blocked", "blockers": [f"vast_adapter_failed:{redacted_failure_detail(exc)}"]}
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     teardown_path = provider_run / "vast_teardown_manifest.json"
