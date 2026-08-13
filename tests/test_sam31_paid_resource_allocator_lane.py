@@ -1,7 +1,11 @@
 from argparse import Namespace
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import blueprint_pipeline.paid_resource_allocator as allocator
 from blueprint_pipeline.common import write_json
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.sam31_paid_resource_allocator_lane import (
     run_sam31_paid_resource_allocator_lane,
 )
@@ -17,9 +21,14 @@ def _args(tmp_path: Path, *, execute: bool) -> Namespace:
         provider="vast",
         expected_source_commit="c" * 40,
         sam31_max_spend_usd=1.0,
+        sam31_max_hourly_rate_usd=0.5,
         sam31_hard_ttl_seconds=300,
         sam31_retry_cap=0,
         sam31_authority_id="fixture-authority",
+        sam31_input_bundle=str(tmp_path / "input.zip"),
+        sam31_input_bundle_receipt=str(tmp_path / "input-receipt.json"),
+        sam31_attempt_authority=str(tmp_path / "authority.json"),
+        sam31_allowed_active_vast_instance_id=[],
         sam31_hf_token_file=str(tmp_path / "hf-token.txt"),
         provider_bundle_url_file=str(tmp_path / "input-url.txt"),
         provider_output_put_url_file=str(tmp_path / "put-url.txt"),
@@ -33,13 +42,27 @@ def _write_private(path: Path, value: str) -> None:
     path.chmod(0o600)
 
 
-def test_sam31_allocator_lane_routes_exact_private_inputs(tmp_path: Path) -> None:
+def test_sam31_allocator_lane_routes_exact_private_inputs(
+    tmp_path: Path, monkeypatch
+) -> None:
     args = _args(tmp_path, execute=True)
+    write_json(Path(args.provider_launch_request), {"request": True})
     write_json(Path(args.preflight_bundle), {"provider": "vast"})
+    write_json(Path(args.sam31_attempt_authority), {"request_authority_id": "fixture-authority"})
+    write_json(Path(args.sam31_input_bundle_receipt), {"receipt": True})
+    Path(args.sam31_input_bundle).write_bytes(b"bundle")
     _write_private(Path(args.sam31_hf_token_file), "hf-secret")
-    _write_private(Path(args.provider_bundle_url_file), "https://objects.example/input")
-    _write_private(Path(args.provider_output_put_url_file), "https://objects.example/put")
-    _write_private(Path(args.provider_output_get_url_file), "https://objects.example/get")
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.validate_sam31_paid_attempt_authority",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.consume_sam31_paid_attempt_authority_once",
+        lambda *_args, **_kwargs: {
+            "status": "consumed",
+            "authorization_digest": "sha256:" + "a" * 64,
+        },
+    )
     observed: dict[str, object] = {}
 
     def prepare(**kwargs):
@@ -52,16 +75,47 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(tmp_path: Path) -> Non
         return {
             "status": "completed",
             "provider_mutations_performed": 2,
+            "provider_zero_verified": True,
             "comparative_policy_ranking_verdict": "thesis_not_supported",
         }
 
     provider = object()
+    started = tmp_path / "watchdog" / "started.txt"
+
+    def arm(**_kwargs):
+        return (
+            {
+                "watchdog_pid": 123,
+                "watchdog_deadline_epoch": 9_999_999_999,
+                "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
+            },
+            SimpleNamespace(started_instance_id_path=started),
+        )
+
+    def stage(**kwargs):
+        root = Path(kwargs["job_dir"])
+        root.mkdir(parents=True)
+        for name, value in (
+            ("provider_bundle_url.txt", "https://objects.example/input"),
+            ("provider_output_put_url.txt", "https://objects.example/put"),
+            ("provider_output_get_url.txt", "https://objects.example/get"),
+        ):
+            _write_private(root / name, value)
+        return {"status": "completed", "blockers": []}
+
     result = run_sam31_paid_resource_allocator_lane(
         args,
         checkout_commit="c" * 40,
         prepare=prepare,
         provider_factory=lambda _name: provider,
         execute_canary=execute,
+        stage_bundle=stage,
+        cleanup_bundle=lambda *_args, **_kwargs: {
+            "all_objects_absent": True,
+            "signed_url_files_removed": True,
+        },
+        arm_watchdog=arm,
+        close_watchdog=lambda **_kwargs: {"status": "provider_terminal"},
     )
     assert result["status"] == "completed"
     assert observed["prepare"]["execution_adapter_qualified"] is True
@@ -69,10 +123,18 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(tmp_path: Path) -> Non
     assert observed["execute"]["hf_token"] == "hf-secret"
     assert observed["execute"]["input_bundle_get_url"].endswith("/input")
     assert observed["execute"]["paid_resource_admission_grant"].resource_class == "gpu_render"
+    assert result["all_staged_objects_absent"] is True
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["authorization_consumption"]["status"] == "consumed"
+    assert result["execution_result_digest"] == canonical_digest(
+        result, digest_field="execution_result_digest"
+    )
 
 
 def test_sam31_allocator_lane_dry_run_never_reads_secrets(tmp_path: Path) -> None:
     args = _args(tmp_path, execute=False)
+    args.sam31_attempt_authority = None
+    Path(args.provider_launch_request).write_text("{}", encoding="utf-8")
     result = run_sam31_paid_resource_allocator_lane(
         args,
         checkout_commit="c" * 40,
@@ -84,18 +146,21 @@ def test_sam31_allocator_lane_dry_run_never_reads_secrets(tmp_path: Path) -> Non
 
 
 def test_sam31_allocator_lane_refuses_nonprivate_token_before_provider(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     args = _args(tmp_path, execute=True)
+    write_json(Path(args.provider_launch_request), {"request": True})
     write_json(Path(args.preflight_bundle), {"provider": "vast"})
+    write_json(Path(args.sam31_attempt_authority), {"request_authority_id": "fixture-authority"})
+    write_json(Path(args.sam31_input_bundle_receipt), {"receipt": True})
+    Path(args.sam31_input_bundle).write_bytes(b"bundle")
     Path(args.sam31_hf_token_file).write_text("hf-secret", encoding="utf-8")
     Path(args.sam31_hf_token_file).chmod(0o644)
-    for path, value in (
-        (Path(args.provider_bundle_url_file), "https://objects.example/input"),
-        (Path(args.provider_output_put_url_file), "https://objects.example/put"),
-        (Path(args.provider_output_get_url_file), "https://objects.example/get"),
-    ):
-        _write_private(path, value)
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.validate_sam31_paid_attempt_authority",
+        lambda *_args, **_kwargs: {},
+    )
+    handle = SimpleNamespace(started_instance_id_path=tmp_path / "started.txt")
     result = run_sam31_paid_resource_allocator_lane(
         args,
         checkout_commit="c" * 40,
@@ -105,7 +170,150 @@ def test_sam31_allocator_lane_refuses_nonprivate_token_before_provider(
         ),
         provider_factory=lambda _name: (_ for _ in ()).throw(AssertionError("provider accessed")),
         execute_canary=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("canary executed")),
+        arm_watchdog=lambda **_kwargs: (
+            {
+                "watchdog_pid": 123,
+                "watchdog_deadline_epoch": 9_999_999_999,
+                "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
+            },
+            handle,
+        ),
+        close_watchdog_without_allocation=lambda **_kwargs: {"status": "provider_terminal"},
     )
     assert result["status"] == "blocked"
     assert "sam31_hf_token_file_permissions_not_0600" in result["blockers"]
     assert result["provider_mutations_performed"] == 0
+
+
+def test_sam31_allocator_closes_watchdog_when_preflight_is_unreadable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    write_json(Path(args.provider_launch_request), {"request": True})
+    write_json(Path(args.sam31_attempt_authority), {"request_authority_id": "fixture-authority"})
+    write_json(Path(args.sam31_input_bundle_receipt), {"receipt": True})
+    Path(args.sam31_input_bundle).write_bytes(b"bundle")
+    Path(args.preflight_bundle).write_text("not-json", encoding="utf-8")
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.validate_sam31_paid_attempt_authority",
+        lambda *_args, **_kwargs: {},
+    )
+    closed: list[bool] = []
+    handle = SimpleNamespace(started_instance_id_path=tmp_path / "started.txt")
+    result = run_sam31_paid_resource_allocator_lane(
+        args,
+        checkout_commit="c" * 40,
+        prepare=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("prepare reached")),
+        provider_factory=lambda _name: (_ for _ in ()).throw(AssertionError("provider reached")),
+        arm_watchdog=lambda **_kwargs: (
+            {
+                "watchdog_pid": 123,
+                "watchdog_deadline_epoch": 9_999_999_999,
+                "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
+            },
+            handle,
+        ),
+        close_watchdog_without_allocation=lambda **_kwargs: (
+            closed.append(True) or {"status": "provider_terminal"}
+        ),
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["sam31_preflight_bundle_invalid"]
+    assert closed == [True]
+
+
+def test_canonical_allocator_dispatches_sam31_dry_run_without_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def run(args, *, checkout_commit: str):
+        observed["args"] = args
+        observed["checkout_commit"] = checkout_commit
+        return {"status": "dry_run_ready", "blockers": []}
+
+    monkeypatch.setattr(
+        allocator,
+        "_source_checkout_blockers",
+        lambda *_args, **_kwargs: ([], "c" * 40),
+    )
+    monkeypatch.setattr(allocator, "run_sam31_paid_resource_allocator_lane", run)
+    result = allocator.main(
+        [
+            "gpu-canary",
+            "--probe-kind",
+            "semantic-sam31-source-tracks",
+            "--provider",
+            "vast",
+            "--provider-launch-request",
+            str(tmp_path / "request.json"),
+            "--preflight-bundle",
+            str(tmp_path / "preflight.json"),
+            "--admission-out",
+            str(tmp_path / "admission.json"),
+            "--bound-request-out",
+            str(tmp_path / "bound.json"),
+            "--adapter-output",
+            str(tmp_path / "adapter.json"),
+            "--expected-source-commit",
+            "c" * 40,
+            "--sam31-max-spend-usd",
+            "1.0",
+            "--sam31-hard-ttl-seconds",
+            "600",
+            "--sam31-retry-cap",
+            "0",
+            "--sam31-authority-id",
+            "fixture-authority",
+        ]
+    )
+    assert result == 0
+    assert observed["checkout_commit"] == "c" * 40
+    assert observed["args"].execute is False
+
+
+def test_canonical_allocator_refuses_sam31_execute_without_private_inputs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_source_checkout_blockers",
+        lambda *_args, **_kwargs: ([], "c" * 40),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_sam31_paid_resource_allocator_lane",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lane reached with missing secret files")
+        ),
+    )
+    result = allocator.main(
+        [
+            "gpu-canary",
+            "--probe-kind",
+            "semantic-sam31-source-tracks",
+            "--provider-launch-request",
+            str(tmp_path / "request.json"),
+            "--preflight-bundle",
+            str(tmp_path / "preflight.json"),
+            "--admission-out",
+            str(tmp_path / "admission.json"),
+            "--bound-request-out",
+            str(tmp_path / "bound.json"),
+            "--adapter-output",
+            str(tmp_path / "adapter.json"),
+            "--expected-source-commit",
+            "c" * 40,
+            "--sam31-max-spend-usd",
+            "1.0",
+            "--sam31-hard-ttl-seconds",
+            "600",
+            "--sam31-authority-id",
+            "fixture-authority",
+            "--execute",
+        ]
+    )
+    assert result == 2
+    blocked = json.loads((tmp_path / "adapter.json").read_text())
+    assert "sam31_attempt_authority_missing" in blocked["blockers"]
+    assert blocked["provider_mutations_performed"] == 0
