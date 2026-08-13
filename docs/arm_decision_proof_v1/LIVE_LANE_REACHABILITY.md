@@ -51,6 +51,29 @@ provider-zero verified — but nothing binds a run to a website record. Until th
 is closed, the honest phrasing is "triggered through the intake API", not
 "triggered by the website".
 
+## Defect-class sweep, 2026-08-13
+
+Each named shape swept across the tree rather than fixed where first seen.
+Three came back clean because they had already been fixed *as classes*
+earlier, which is the point of the rule.
+
+| Shape | Result | Rediscovery contract |
+| --- | --- | --- |
+| Artifact recording the authoring machine's absolute paths | fixed in 5 places (#464, #484, #487, #488, #492) | `launch_profile_residency_blockers`; the developer-home credential contract |
+| A lane not emitting the evidence its terminal contract requires | fixed in 8 lanes (#481), plus the seal-*root* variant in 1 of 9 (#501) | `test_paid_lane_terminal_artifact_contract.py` |
+| A lane whose bundle cannot be rebuilt from a command line | **found 4** (#512) | `test_paid_lane_bundle_cli_contract.py` |
+| Secret resolved only from a developer home under `ProtectHome=true` | fixed in 3 modules (#492) | `test_no_module_resolves_a_credential_only_from_a_developer_home` |
+| Bytes verified as the transfer user, not the consuming account | fixed for wire transfer (#485) and local install (#493) | `test_install_paid_lane_evidence_for_consumer.py` |
+| A gate reading a channel that can fail independently | **clean** — `watching_a_live_second_channel` (#459, #477) | in `vast_provider_adapter` |
+| A frozen pin encoding one machine's identity | **clean** — every lane carries its own `instance_label_prefix` (#473); no frozen instance-id allowlist remains | prelaunch inventory guard |
+| Two components disagreeing about a directory's mode or schema | **clean** — one instance (`0o755` consumption ledger, #479) | — |
+
+The false lead worth recording so nobody re-chases it: the four `mode_is_0600`
+gates look like they disagree with the `0640 root:blueprint` provider secrets
+and do not. They cover staging URL files and handoff capabilities the code
+chmods itself; provider secrets are read through `_read_secret`, which does not
+check mode. No change was made.
+
 ## Rehearse before firing
 
 `scripts/rehearse_lane_terminal_contract.py` asks the launch's own terminal

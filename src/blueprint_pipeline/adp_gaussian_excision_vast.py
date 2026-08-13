@@ -1549,6 +1549,84 @@ __all__: Sequence[str] = (
     "build_gaussian_excision_vast_bundle",
     "consume_gaussian_excision_paid_attempt_authority_once",
     "gaussian_excision_lane_identity",
+    "materialize_gaussian_excision_dependency_wheelhouse",
     "run_gaussian_excision_vast",
     "validate_gaussian_excision_paid_attempt_authority",
 )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Build the immutable bundle, or seal its dependency wheelhouse.
+
+    This lane had a bundle builder and no way to call it. That is not a
+    convenience gap: the allocator refuses a bundle whose `blueprint_commit` is
+    not the commit the control plane is running, and every deploy moves that
+    commit -- so a lane that cannot rebuild from a command line cannot be
+    launched at all after the first deploy. It had been unreachable for exactly
+    that reason.
+
+    Two subcommands, because the bundle needs a sealed wheelhouse manifest and
+    sealing one is a separate, offline step: `wheelhouse` turns a directory of
+    downloaded wheels into the digest-bound manifest, and `bundle` builds the
+    packet from it.
+
+    Performs no provider mutation and rents nothing.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build the Gaussian excision packet.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    wheels = sub.add_parser("wheelhouse", help="Seal a downloaded wheel closure.")
+    wheels.add_argument("--wheelhouse", required=True)
+    wheels.add_argument("--manifest-out", required=True)
+
+    bundle = sub.add_parser("bundle", help="Build the immutable provider bundle.")
+    bundle.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
+    bundle.add_argument("--flashsplat-root", required=True)
+    bundle.add_argument("--freeze", required=True)
+    bundle.add_argument("--source-standard-splat", required=True)
+    bundle.add_argument("--camera-contract", required=True)
+    bundle.add_argument("--execution-authority", required=True)
+    bundle.add_argument("--dependency-wheelhouse", required=True)
+    bundle.add_argument("--dependency-manifest", required=True)
+    bundle.add_argument("--job-dir", required=True)
+
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "wheelhouse":
+            receipt = materialize_gaussian_excision_dependency_wheelhouse(
+                wheelhouse_path=args.wheelhouse, manifest_path=args.manifest_out
+            )
+        else:
+            receipt = build_gaussian_excision_vast_bundle(
+                repo_root=args.repo_root,
+                flashsplat_root=args.flashsplat_root,
+                freeze_path=args.freeze,
+                source_standard_splat_path=args.source_standard_splat,
+                camera_contract_path=args.camera_contract,
+                execution_authority_path=args.execution_authority,
+                dependency_wheelhouse_path=args.dependency_wheelhouse,
+                dependency_manifest_path=args.dependency_manifest,
+                job_dir=args.job_dir,
+            )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0 if receipt.get("status") in {"ready", "sealed"} else 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
