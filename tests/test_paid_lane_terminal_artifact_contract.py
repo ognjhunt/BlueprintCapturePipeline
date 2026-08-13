@@ -286,3 +286,26 @@ def test_a_failure_detail_carries_the_cause_without_a_secret() -> None:
     )
     assert "X-Amz-Signature" not in signed and "<redacted>" in signed
     assert redacted_failure_detail(RuntimeError("")) == "RuntimeError"
+
+
+def test_every_live_profile_builder_can_distinguish_a_rebuild() -> None:
+    """Published profiles are immutable, so a profile whose inputs changed
+    needs its own id rather than a conflicting rewrite.
+
+    Inputs change at a fixed commit more often than they look like they would:
+    regenerating a config preflight is enough. Without a discriminator the
+    collision surfaces as `launch_profile_immutable_input_digest_mismatch` on a
+    later launch rather than at publish time, which is a wasted attempt and a
+    confusing one.
+    """
+
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    builders = sorted(scripts.glob("build_*_live_profile.py"))
+    assert builders, "no live profile builders found"
+
+    for builder in builders:
+        source = builder.read_text(encoding="utf-8")
+        assert '"--revision"' in source, (
+            f"{builder.name} cannot distinguish a rebuilt profile at the same "
+            "commit; add a --revision discriminator"
+        )

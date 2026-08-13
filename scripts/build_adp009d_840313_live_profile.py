@@ -14,7 +14,6 @@ from blueprint_pipeline.adp009d_840313_runtime_bundle import (
 from blueprint_pipeline.adp009d_live_readiness import (
     APPEARANCE_DIGEST,
     EVALUATION_RUN_SPEC_DIGEST,
-    PROFILE_ID as READINESS_PROFILE_ID,
     RUNTIME_BUNDLE_DIGEST,
     SOURCE_BUNDLE_DIGEST,
     build_live_readiness,
@@ -81,6 +80,7 @@ def build_live_profile_release(
     provider_zero_guard_path: str | Path,
     readiness_uri: str,
     output_dir: str | Path,
+    revision: str | None = None,
 ) -> dict[str, Any]:
     repo = Path(repo_root).expanduser().resolve()
     source_inputs = Path(source_input_root).expanduser().resolve()
@@ -89,6 +89,13 @@ def build_live_profile_release(
     output = Path(output_dir).expanduser().resolve()
     verify_protected_main_checkout(repo, source_commit)
     profile_id = live_profile_id_for_source_commit(source_commit)
+    if revision:
+        # Published profiles are immutable, so a profile whose inputs changed
+        # needs its own id rather than a conflicting rewrite. Inputs change at
+        # a fixed commit more often than they look like they would, and the
+        # collision surfaces as an immutable-input digest mismatch on a later
+        # launch rather than at publish time.
+        profile_id = f"{profile_id}-{revision}"
     if not readiness_uri.startswith(("s3://", "gs://", "https://")):
         raise ProductionProfileBuildError("live_profile_readiness_uri_invalid")
 
@@ -341,6 +348,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "output-dir",
     ):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument(
+        "--revision",
+        help="Distinguish a rebuilt profile whose inputs changed at the same commit.",
+    )
     args = parser.parse_args(argv)
     try:
         receipt = build_live_profile_release(**vars(args))
