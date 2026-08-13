@@ -232,6 +232,35 @@ def seal_unallocated_provider_teardown(
     return teardown
 
 
+def _result_reached_a_provider(result: Mapping[str, Any]) -> bool:
+    """Did this attempt get far enough that terminal artifacts must exist?
+
+    Deliberately narrow, and read only from what the lane already recorded: a
+    cost it could only have from a rented resource, or an instance id it could
+    only have from a launch API. A blocked pre-provider attempt has neither.
+    """
+
+    if result.get("estimated_cost_usd") is not None:
+        return True
+    for key, value in result.items():
+        if key.endswith("instance_ids") and value:
+            return True
+    return False
+
+
+def _blocked(result: Mapping[str, Any], blocker: str) -> dict[str, Any]:
+    """Carry a blocker into the result rather than leaving a false success."""
+
+    sealed = dict(result)
+    blockers = [str(item) for item in sealed.get("blockers") or []]
+    if blocker not in blockers:
+        blockers.append(blocker)
+    sealed["blockers"] = sorted(set(blockers))
+    if sealed.get("status") == "completed":
+        sealed["status"] = "blocked"
+    return sealed
+
+
 def seal_lane_terminal_artifacts(
     result: Mapping[str, Any],
     *,
@@ -264,15 +293,30 @@ def seal_lane_terminal_artifacts(
     evidence = root / PROVIDER_EVIDENCE_DIRNAME
     teardown = provider_run / TEARDOWN_MANIFEST_NAME
     if not provider_run.is_dir() and not evidence.is_dir():
-        # No attempt reached a provider, so there is nothing to inventory. A
-        # dry run has no terminal artifacts to seal and must not be made to
-        # look like a live one that lost them.
+        # Two very different situations look identical from here, and only the
+        # result can tell them apart.
         #
-        # A teardown path is still corrected. Lanes name theirs unconditionally
-        # as `<provider_run>/vast_teardown_manifest.json`, so a run that failed
-        # before the provider run directory existed reports a path to a file
-        # that was never written -- which reads as teardown evidence that has
-        # gone missing rather than teardown that never happened.
+        # If no attempt reached a provider there is nothing to inventory: a dry
+        # run has no terminal artifacts to seal and must not be made to look
+        # like a live one that lost them. The teardown path is still corrected,
+        # because lanes name theirs unconditionally as
+        # `<provider_run>/vast_teardown_manifest.json` and a run that failed
+        # before that directory existed would otherwise report a path to a file
+        # that was never written -- which reads as teardown evidence gone
+        # missing rather than teardown that never happened.
+        #
+        # But if the result says a provider *did* run, then the evidence exists
+        # somewhere and this root is not where it is. That is a caller error,
+        # and staying silent about it is how a lane reports `completed` with
+        # `blockers: []` while its own terminal contract went unmet -- which is
+        # exactly what the first live SimReady run did, having torn its
+        # instance down correctly and sealed nothing, because its provider run
+        # lives under `attempts/attempt_001/` and it sealed the job root.
+        if _result_reached_a_provider(result):
+            return _blocked(
+                _without_absent_teardown(result, teardown),
+                f"terminal_artifacts_not_found_under_attempt_root:{root.name}",
+            )
         return _without_absent_teardown(result, teardown)
     roots: dict[str, str | Path] = {}
     if evidence.is_dir():
