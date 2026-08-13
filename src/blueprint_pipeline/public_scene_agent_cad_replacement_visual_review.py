@@ -1,11 +1,12 @@
-"""Render agent-authored replacement CAD over paired-target ArtiFixer3D views.
+"""Render agent-authored replacement CAD over protected ArtiFixer3D views.
 
-This module is the deterministic visual-review seam between an object-free
-ArtiFixer3D representation and an already-authored replacement USD.  It never
-authors candidate geometry: each generated USD contains only a reference to the
-digest-bound candidate plus one calibrated review camera.  The renderer emits
-an RGBA replacement layer, which is composited over the corresponding raw
-ArtiFixer3D frame.  Every zero-alpha background pixel must remain byte-identical.
+This module is the deterministic visual-review seam between an object-free,
+exact-support-protected ArtiFixer3D representation and an already-authored
+replacement USD.  It never authors candidate geometry: each generated USD
+contains only a reference to the digest-bound candidate plus one calibrated
+review camera.  The renderer emits an RGBA replacement layer, which is
+composited over the corresponding final-composite frame.  Every zero-alpha
+background pixel must remain byte-identical.
 
 The result is review media, not native-simulator, collision, policy, capture, or
 physical evidence.  One call accepts one to five co-present replacement tasks.
@@ -34,16 +35,12 @@ from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 
 SCHEMA_VERSION = "public_scene_agent_cad_replacement_visual_review.v1"
 DUAL_INPUT_SCHEMA = "public_scene_artifixer3d_dual_target_inputs.v1"
-RAW_RESULT_SCHEMA = "public_scene_artifixer3d_raw_result.v1"
+FINAL_COMPOSITE_SCHEMA = "public_scene_artifixer3d_final_composite.v1"
 DEFAULT_RENDERER = "/usr/bin/usdrecord"
 DEFAULT_RENDERER_PLUGIN = "Metal"
 HORIZONTAL_APERTURE_MM = 20.955
 MAX_CAMERAS_PER_TASK = 64
 _DUAL_STATUS = "paired_target_inputs_prepared_no_model_no_execution"
-_RAW_PIPELINE_MODES = {
-    "dual_target_artifixer3d_only",
-    "dual_target_artifixer3d_render_only",
-}
 
 
 class AgentCadReplacementVisualReviewError(ValueError):
@@ -252,7 +249,7 @@ def _composition_claims_valid(receipt: Mapping[str, Any]) -> bool:
 def materialize_agent_cad_replacement_visual_review(
     *,
     dual_input_receipt_paths: Sequence[str | Path],
-    raw_result_paths: Sequence[str | Path],
+    final_composite_receipt_paths: Sequence[str | Path],
     visual_composition_receipt_paths: Sequence[str | Path],
     output_root: str | Path,
     renderer_executable: str | Path = DEFAULT_RENDERER,
@@ -262,9 +259,10 @@ def materialize_agent_cad_replacement_visual_review(
 
     if (
         not dual_input_receipt_paths
-        or len(dual_input_receipt_paths) != len(raw_result_paths)
-        or len(raw_result_paths) != len(visual_composition_receipt_paths)
-        or not 1 <= len(raw_result_paths) <= MAX_REPLACEMENT_OBJECTS
+        or len(dual_input_receipt_paths) != len(final_composite_receipt_paths)
+        or len(final_composite_receipt_paths)
+        != len(visual_composition_receipt_paths)
+        or not 1 <= len(final_composite_receipt_paths) <= MAX_REPLACEMENT_OBJECTS
     ):
         raise AgentCadReplacementVisualReviewError(
             "replacement_visual_input_pairing_invalid"
@@ -285,17 +283,19 @@ def materialize_agent_cad_replacement_visual_review(
     task_results: list[dict[str, Any]] = []
     input_records: list[dict[str, Any]] = []
     seen_tasks: set[str] = set()
-    for dual_value, raw_value, composition_value in zip(
+    for dual_value, final_value, composition_value in zip(
         dual_input_receipt_paths,
-        raw_result_paths,
+        final_composite_receipt_paths,
         visual_composition_receipt_paths,
         strict=True,
     ):
         dual_path = Path(dual_value).expanduser().resolve()
-        raw_path = Path(raw_value).expanduser().resolve()
+        final_path = Path(final_value).expanduser().resolve()
         composition_path = Path(composition_value).expanduser().resolve()
         dual = _read(dual_path, code="replacement_visual_dual_input_unreadable")
-        raw = _read(raw_path, code="replacement_visual_raw_result_unreadable")
+        final = _read(
+            final_path, code="replacement_visual_final_composite_unreadable"
+        )
         composition = _read(
             composition_path, code="replacement_visual_composition_unreadable"
         )
@@ -305,12 +305,15 @@ def materialize_agent_cad_replacement_visual_review(
             != canonical_digest(dual, digest_field="receipt_digest")
             or dual.get("status") != _DUAL_STATUS
             or dual.get("pipeline_mode") != "dual_target_artifixer3d_only"
-            or raw.get("schema_version") != RAW_RESULT_SCHEMA
-            or raw.get("result_digest")
-            != canonical_digest(raw, digest_field="result_digest")
-            or raw.get("pipeline_mode") not in _RAW_PIPELINE_MODES
-            or raw.get("appearance_repair_qualified") is not False
-            or raw.get("generated_output_is_capture_or_physical_evidence") is not False
+            or final.get("schema_version") != FINAL_COMPOSITE_SCHEMA
+            or final.get("receipt_digest")
+            != canonical_digest(final, digest_field="receipt_digest")
+            or final.get("status")
+            != "final_composite_materialized_pending_human_multiview_review"
+            or final.get("appearance_repair_qualified") is not False
+            or final.get("outside_support_invariance_proven") is not True
+            or final.get("outside_support_changed_pixels_total") != 0
+            or final.get("generated_output_is_capture_or_physical_evidence") is not False
             or composition.get("schema_version") != COMPOSITION_SCHEMA_VERSION
             or composition.get("receipt_digest")
             != canonical_digest(composition, digest_field="receipt_digest")
@@ -333,28 +336,29 @@ def materialize_agent_cad_replacement_visual_review(
             code="replacement_visual_candidate_usd_invalid",
         )
         dual_tasks = dual.get("tasks")
-        raw_tasks = raw.get("tasks")
+        final_tasks = final.get("tasks")
         if (
             not isinstance(dual_tasks, list)
             or len(dual_tasks) != 1
-            or not isinstance(raw_tasks, list)
-            or len(raw_tasks) != 1
+            or not isinstance(final_tasks, list)
+            or len(final_tasks) != 1
             or not isinstance(dual_tasks[0], Mapping)
-            or not isinstance(raw_tasks[0], Mapping)
+            or not isinstance(final_tasks[0], Mapping)
         ):
             raise AgentCadReplacementVisualReviewError(
                 "replacement_visual_task_inventory_invalid"
             )
         dual_task = dual_tasks[0]
-        raw_task = raw_tasks[0]
+        final_task = final_tasks[0]
         task_id = str(dual_task.get("task_id") or "")
         this_scene = str(dual.get("publisher_scene_id") or "")
         if (
             not task_id
             or task_id in seen_tasks
-            or raw_task.get("task_id") != task_id
+            or final_task.get("task_id") != task_id
             or composition.get("task_id") != task_id
             or composition.get("scene_id") != this_scene
+            or final.get("publisher_scene_id") != this_scene
             or (scene_id is not None and scene_id != this_scene)
         ):
             raise AgentCadReplacementVisualReviewError(
@@ -372,7 +376,7 @@ def materialize_agent_cad_replacement_visual_review(
         )
         trajectory_frames = trajectory.get("frames")
         dual_frames = dual_task.get("frames")
-        raw_frames = raw_task.get("artifixer3d_review_frames")
+        final_frames = final_task.get("frames")
         camera_count = dual_task.get("physical_camera_count")
         if (
             isinstance(camera_count, bool)
@@ -380,24 +384,26 @@ def materialize_agent_cad_replacement_visual_review(
             or not 1 <= camera_count <= MAX_CAMERAS_PER_TASK
             or not isinstance(trajectory_frames, list)
             or not isinstance(dual_frames, list)
-            or not isinstance(raw_frames, list)
+            or not isinstance(final_frames, list)
             or len(trajectory_frames) != camera_count
             or len(dual_frames) != camera_count
-            or len(raw_frames) != camera_count
+            or len(final_frames) != camera_count
+            or final_task.get("outside_support_invariance_proven") is not True
+            or final_task.get("outside_support_changed_pixels_total") != 0
         ):
             raise AgentCadReplacementVisualReviewError(
                 "replacement_visual_frame_inventory_invalid"
             )
         task_root = output / task_id
         task_root.mkdir()
-        final_frames: list[dict[str, Any]] = []
+        review_frames: list[dict[str, Any]] = []
         camera_ids: set[str] = set()
-        for index, (camera_row, dual_frame, raw_frame) in enumerate(
-            zip(trajectory_frames, dual_frames, raw_frames, strict=True)
+        for index, (camera_row, dual_frame, final_frame) in enumerate(
+            zip(trajectory_frames, dual_frames, final_frames, strict=True)
         ):
             if not all(
                 isinstance(row, Mapping)
-                for row in (camera_row, dual_frame, raw_frame)
+                for row in (camera_row, dual_frame, final_frame)
             ):
                 raise AgentCadReplacementVisualReviewError(
                     "replacement_visual_frame_inventory_invalid"
@@ -408,16 +414,17 @@ def materialize_agent_cad_replacement_visual_review(
                 or camera_id in camera_ids
                 or camera_row.get("physical_camera_index") != index
                 or dual_frame.get("physical_camera_index") != index
-                or raw_frame.get("frame_index") != index
+                or final_frame.get("frame_index") != index
                 or dual_frame.get("camera_id") != camera_id
-                or raw_frame.get("camera_id") != camera_id
+                or final_frame.get("camera_id") != camera_id
+                or final_frame.get("outside_support_changed_pixels") != 0
             ):
                 raise AgentCadReplacementVisualReviewError(
                     "replacement_visual_camera_binding_invalid"
                 )
             width, height, fx, transform = _validate_camera(camera_row, trajectory)
             background_path = _bound_file(
-                raw_frame,
+                final_frame,
                 root=None,
                 code="replacement_visual_background_invalid",
             )
@@ -489,7 +496,7 @@ def materialize_agent_cad_replacement_visual_review(
                 )
             Image.fromarray(combined, mode="RGB").save(combined_path)
             exact_core = exact_mask > 0
-            final_frames.append(
+            review_frames.append(
                 {
                     "frame_index": index,
                     "camera_id": camera_id,
@@ -519,7 +526,7 @@ def materialize_agent_cad_replacement_visual_review(
                 "task_id": task_id,
                 "asset_id": composition["asset_id"],
                 "physical_camera_count": camera_count,
-                "frames": final_frames,
+                "frames": review_frames,
                 "all_camera_bindings_exact": True,
                 "outside_replacement_alpha_changed_pixels_total": 0,
                 "outside_replacement_alpha_invariance_proven": True,
@@ -535,9 +542,9 @@ def materialize_agent_cad_replacement_visual_review(
                     **_file_record(dual_path),
                     "receipt_digest": dual["receipt_digest"],
                 },
-                "raw_artifixer3d_result": {
-                    **_file_record(raw_path),
-                    "result_digest": raw["result_digest"],
+                "protected_artifixer3d_final_composite": {
+                    **_file_record(final_path),
+                    "receipt_digest": final["receipt_digest"],
                 },
                 "agent_cad_visual_composition": {
                     **_file_record(composition_path),
@@ -553,7 +560,9 @@ def materialize_agent_cad_replacement_visual_review(
         "schema_version": SCHEMA_VERSION,
         "status": "replacement_visual_review_materialized_pending_human_and_native_review",
         "publisher_scene_id": scene_id,
-        "pipeline_mode": "paired_target_artifixer3d_plus_agent_authored_cad_visual_review",
+        "pipeline_mode": (
+            "protected_paired_target_artifixer3d_plus_agent_authored_cad_visual_review"
+        ),
         "replacement_object_count": len(task_results),
         "maximum_replacement_objects": MAX_REPLACEMENT_OBJECTS,
         "inputs": input_records,
@@ -566,7 +575,9 @@ def materialize_agent_cad_replacement_visual_review(
         "implementation": {
             "module_source": _file_record(Path(__file__).resolve()),
             "geometry_operations": "reference_existing_candidate_only",
-            "image_operation": "integer_alpha_composite_over_bound_background",
+            "image_operation": (
+                "integer_alpha_composite_over_exact_support_protected_background"
+            ),
         },
         "tasks": task_results,
         "all_camera_bindings_exact": True,
@@ -582,6 +593,7 @@ def materialize_agent_cad_replacement_visual_review(
         "generated_output_is_capture_or_physical_evidence": False,
         "claim_boundary": (
             "deterministic_calibrated_visual_composition_of_agent_authored_candidate_"
+            "over_exact_support_protected_reconstructed_background_"
             "pending_human_pose_occlusion_and_native_simulator_review_not_capture_"
             "collision_policy_or_physical_evidence"
         ),
@@ -596,7 +608,7 @@ def materialize_agent_cad_replacement_visual_review(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dual-input", action="append", required=True)
-    parser.add_argument("--raw-result", action="append", required=True)
+    parser.add_argument("--final-composite", action="append", required=True)
     parser.add_argument("--visual-composition", action="append", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--renderer-executable", default=DEFAULT_RENDERER)
@@ -604,7 +616,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     result = materialize_agent_cad_replacement_visual_review(
         dual_input_receipt_paths=args.dual_input,
-        raw_result_paths=args.raw_result,
+        final_composite_receipt_paths=args.final_composite,
         visual_composition_receipt_paths=args.visual_composition,
         output_root=args.output_root,
         renderer_executable=args.renderer_executable,

@@ -177,24 +177,31 @@ def _task_fixture(root: Path, *, task_id: str, scene_id: str = "fixture_scene") 
     }
     dual["receipt_digest"] = canonical_digest(dual, digest_field="receipt_digest")
     dual_path = _write_json(root / "dual.json", dual)
-    raw = {
-        "schema_version": "public_scene_artifixer3d_raw_result.v1",
-        "status": "raw_artifixer3d_review_frames_ready_for_external_visual_and_multiview_review",
-        "pipeline_mode": "dual_target_artifixer3d_render_only",
+    final = {
+        "schema_version": "public_scene_artifixer3d_final_composite.v1",
+        "status": "final_composite_materialized_pending_human_multiview_review",
+        "publisher_scene_id": scene_id,
         "replacement_object_count": 1,
+        "outside_support_changed_pixels_total": 0,
+        "outside_support_invariance_proven": True,
         "appearance_repair_qualified": False,
         "generated_output_is_capture_or_physical_evidence": False,
         "tasks": [
             {
                 "task_id": task_id,
                 "physical_camera_count": len(cameras),
-                "artifixer3d_review_frames": raw_frames,
+                "outside_support_changed_pixels_total": 0,
+                "outside_support_invariance_proven": True,
+                "frames": [
+                    {**row, "outside_support_changed_pixels": 0}
+                    for row in raw_frames
+                ],
             }
         ],
-        "result_digest": "",
+        "receipt_digest": "",
     }
-    raw["result_digest"] = canonical_digest(raw, digest_field="result_digest")
-    raw_path = _write_json(root / "raw.json", raw)
+    final["receipt_digest"] = canonical_digest(final, digest_field="receipt_digest")
+    final_path = _write_json(root / "final.json", final)
 
     candidate = root / "replacement.usda"
     stage = Usd.Stage.CreateNew(str(candidate))
@@ -224,7 +231,7 @@ def _task_fixture(root: Path, *, task_id: str, scene_id: str = "fixture_scene") 
         composition, digest_field="receipt_digest"
     )
     composition_path = _write_json(root / "composition.json", composition)
-    return dual_path, raw_path, composition_path
+    return dual_path, final_path, composition_path
 
 
 def _admit_fixture_composition(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,7 +250,7 @@ def test_materializes_lossless_two_task_review_and_contact_sheets(
     b = _task_fixture(tmp_path / "b", task_id="task_b")
     result = materialize_agent_cad_replacement_visual_review(
         dual_input_receipt_paths=[a[0], b[0]],
-        raw_result_paths=[a[1], b[1]],
+        final_composite_receipt_paths=[a[1], b[1]],
         visual_composition_receipt_paths=[a[2], b[2]],
         output_root=tmp_path / "review",
         renderer_executable=_fake_renderer(tmp_path),
@@ -298,7 +305,7 @@ def test_accepts_reusable_five_task_inventory(
     ]
     result = materialize_agent_cad_replacement_visual_review(
         dual_input_receipt_paths=[row[0] for row in fixtures],
-        raw_result_paths=[row[1] for row in fixtures],
+        final_composite_receipt_paths=[row[1] for row in fixtures],
         visual_composition_receipt_paths=[row[2] for row in fixtures],
         output_root=tmp_path / "review",
         renderer_executable=_fake_renderer(tmp_path),
@@ -320,7 +327,7 @@ def test_rejects_invalid_replacement_alpha(
     ):
         materialize_agent_cad_replacement_visual_review(
             dual_input_receipt_paths=[fixture[0]],
-            raw_result_paths=[fixture[1]],
+            final_composite_receipt_paths=[fixture[1]],
             visual_composition_receipt_paths=[fixture[2]],
             output_root=tmp_path / "review",
             renderer_executable=_fake_renderer(tmp_path, alpha_kind=alpha_kind),
@@ -343,7 +350,7 @@ def test_rejects_self_digest_valid_camera_mismatch(
     ):
         materialize_agent_cad_replacement_visual_review(
             dual_input_receipt_paths=[fixture[0]],
-            raw_result_paths=[fixture[1]],
+            final_composite_receipt_paths=[fixture[1]],
             visual_composition_receipt_paths=[fixture[2]],
             output_root=tmp_path / "review",
             renderer_executable=_fake_renderer(tmp_path),
@@ -364,7 +371,7 @@ def test_rejects_candidate_usd_byte_tamper(
     ):
         materialize_agent_cad_replacement_visual_review(
             dual_input_receipt_paths=[fixture[0]],
-            raw_result_paths=[fixture[1]],
+            final_composite_receipt_paths=[fixture[1]],
             visual_composition_receipt_paths=[fixture[2]],
             output_root=tmp_path / "review",
             renderer_executable=_fake_renderer(tmp_path),
