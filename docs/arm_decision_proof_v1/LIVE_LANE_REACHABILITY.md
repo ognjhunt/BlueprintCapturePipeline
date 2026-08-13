@@ -93,10 +93,16 @@ what remains for the gate.
 Both now have live profile builders. The paired-target bundle is already built
 at a deployed commit and staged host-resident, waiting only on its predecessor.
 
-Still missing for the chain:
-`materialize_paired_target_native_import_paid_attempt_authority` exists and has
-no CLI -- the same missing-entry-point class as #512 and #520, in a third
-scope: modules that mint an authority rather than seal a bundle.
+Both links can now be authorized from a command line via
+`scripts/issue_appearance_chain_paid_attempt_authority.py`, which was the third
+scope of the missing-entry-point class after #512 (lanes) and #520 (bundle
+modules): modules that mint an authority rather than seal a bundle.
+
+**Do not delete the retired AuraFusion360 receipts.** A prior Aura authority and
+terminal result are what the ArtiFixer3D authority anchors its campaign spend
+on. Retiring the lane means no new launch profile and no new attempt; it does
+not mean the historical artifacts are disposable. Deleting them would strand the
+appearance chain with no anchor.
 
 ## Rehearse before firing
 

@@ -174,3 +174,67 @@ def test_a_bundle_module_has_an_entrypoint_or_is_a_named_gap(path: Path) -> None
         "built exactly once and never rebuilt at a new deployed commit. Give it "
         "a CLI, or add it to BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT with a reason."
     )
+
+
+#: Authority materializers with no command line. Named, not skipped.
+#:
+#: `public_scene_aura_exact_residual_vast` is retired: no launch profile will
+#: be built for it and no attempt will be authorized, so it wants no entry
+#: point. Its *historical* receipts remain this campaign's spend anchor, which
+#: is a reason to keep the artifacts, not a reason to keep the path.
+AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT = {
+    "public_scene_aura_exact_residual_vast.py",
+}
+
+
+def _authority_materializers() -> list[tuple[Path, str]]:
+    """Every module that mints a paid attempt authority, by shape not by name."""
+
+    import ast as _ast
+
+    found: list[tuple[Path, str]] = []
+    for path in sorted(SOURCE_ROOT.glob("*.py")):
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        for node in _ast.walk(tree):
+            if (
+                isinstance(node, _ast.FunctionDef)
+                and node.name.startswith("materialize_")
+                and node.name.endswith("_paid_attempt_authority")
+            ):
+                found.append((path, node.name))
+                break
+    return found
+
+
+def test_authority_materializers_are_discoverable() -> None:
+    assert len(_authority_materializers()) >= 2
+
+
+@pytest.mark.parametrize(
+    "path,function", _authority_materializers(), ids=lambda v: getattr(v, "stem", "")
+)
+def test_an_authority_can_be_minted_from_a_command_line(path: Path, function: str) -> None:
+    """A third scope for the same defect.
+
+    #512 covered lanes that seal a bundle and #520 covered bundle modules. A
+    module that mints an *authority* escaped both, so the ArtiFixer3D campaign
+    was authorizable only from a Python session -- which is not a production
+    path, and left the appearance chain unlaunchable for a reason nothing
+    reported.
+    """
+
+    reachable = any(
+        function in candidate.read_text(encoding="utf-8")
+        for candidate in SCRIPTS.glob("*.py")
+    )
+    if reachable:
+        assert path.name not in AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT, (
+            f"{path.name} is reachable now; remove it from "
+            "AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT"
+        )
+        return
+    assert path.name in AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT, (
+        f"{path.name} mints a paid attempt authority that no script can call, so "
+        "its lane cannot be authorized from a production path. Give it a CLI, or "
+        "add it to AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT with a reason."
+    )
