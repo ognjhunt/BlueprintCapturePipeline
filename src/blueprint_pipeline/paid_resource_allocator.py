@@ -3008,10 +3008,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     != expected_source_commit
                 ):
                     blockers.append("artifixer3d_bundle_source_commit_mismatch")
-            if args.execute:
-                if not args.adp_artifixer3d_attempt_authority:
-                    blockers.append("artifixer3d_paid_attempt_authority_missing")
-                elif prepared_bundle is None:
+            if args.adp_artifixer3d_attempt_authority:
+                if prepared_bundle is None:
                     blockers.append("artifixer3d_paid_attempt_authority_bundle_missing")
                 else:
                     authority_path = Path(
@@ -3036,6 +3034,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ).hexdigest()
                     except (OSError, ValueError, json.JSONDecodeError):
                         blockers.append("artifixer3d_paid_attempt_authority_invalid")
+            elif args.execute:
+                blockers.append("artifixer3d_paid_attempt_authority_missing")
             avoidlist_path: Path | None = None
             avoidlist_sha256: str | None = None
             if args.adp_machine_avoidlist:

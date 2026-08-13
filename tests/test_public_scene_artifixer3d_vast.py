@@ -888,3 +888,186 @@ def test_canonical_allocator_dry_run_binds_exact_bundle(
     assert admitted["raw_dataset_bytes_upload_authorized"] is False
     assert dry_run["status"] == "dry_run_ready"
     assert dry_run["provider_mutations_performed"] == 0
+
+
+def test_canonical_allocator_dry_run_validates_authority_without_consuming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path, _ = _bundle(tmp_path, monkeypatch)
+    bundle = validate_artifixer3d_bundle(receipt_path)
+    commit = bundle["blueprint_source_identity"]["commit"]
+    prior_path, terminal_path = _prior_chain(tmp_path)
+    authority_path = tmp_path / "authority.json"
+    authority = materialize_artifixer3d_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_aura_authority_path=prior_path,
+        prior_terminal_result_path=terminal_path,
+        authorization_reference="fixture-dry-run-one-shot",
+        authorized_by="fixture_user",
+        authorized_on="2026-08-12",
+        blueprint_commit=commit,
+        max_hourly_rate_usd=1.5,
+        hard_cap_usd=9.0,
+        hard_ttl_seconds=21_600,
+        output_path=authority_path,
+    )
+    import blueprint_pipeline.public_scene_artifixer3d_vast as vast_subject
+    import blueprint_pipeline.paid_resource_allocator as allocator
+
+    monkeypatch.setattr(
+        vast_subject,
+        "inspect_artifixer3d_container_image",
+        lambda **_kwargs: {"status": "completed", "blockers": []},
+    )
+    monkeypatch.setattr(
+        vast_subject,
+        "consume_artifixer3d_paid_attempt_authority_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry run consumed paid authority")
+        ),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {
+                "orchestrator_source_commit": commit,
+                "checkout_clean": True,
+                "identity_probe_ran": True,
+            },
+        ),
+    )
+    admission = tmp_path / "allocator/admission.json"
+    adapter = tmp_path / "allocator/adapter.json"
+    result = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            PROBE_KIND,
+            "--expected-source-commit",
+            commit,
+            "--adp-artifixer3d-bundle-receipt",
+            str(receipt_path),
+            "--adp-artifixer3d-attempt-authority",
+            str(authority_path),
+            "--adp-job-dir",
+            str(tmp_path / "allocator/job"),
+            "--adp-max-hourly-rate-usd",
+            "1.5",
+            "--adp-max-spend-usd",
+            "9.0",
+            "--adp-hard-ttl-seconds",
+            "21600",
+            "--admission-out",
+            str(admission),
+            "--adapter-output",
+            str(adapter),
+        ]
+    )
+    admitted = json.loads(admission.read_text(encoding="utf-8"))
+    dry_run = json.loads(adapter.read_text(encoding="utf-8"))
+    assert result == 0
+    assert admitted["status"] == "admitted"
+    assert admitted["allocation_binding"]["paid_attempt_authority_digest"] == authority[
+        "authorization_digest"
+    ]
+    assert admitted["allocation_binding"]["paid_attempt_authority_file_sha256"] == (
+        "sha256:" + hashlib.sha256(authority_path.read_bytes()).hexdigest()
+    )
+    assert dry_run["status"] == "dry_run_ready"
+    assert dry_run["provider_mutations_performed"] == 0
+    assert "authorization_consumption" not in dry_run
+
+
+def test_canonical_allocator_dry_run_rejects_tampered_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path, _ = _bundle(tmp_path, monkeypatch)
+    bundle = validate_artifixer3d_bundle(receipt_path)
+    commit = bundle["blueprint_source_identity"]["commit"]
+    prior_path, terminal_path = _prior_chain(tmp_path)
+    authority_path = tmp_path / "tampered-authority.json"
+    authority = materialize_artifixer3d_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        prior_aura_authority_path=prior_path,
+        prior_terminal_result_path=terminal_path,
+        authorization_reference="fixture-tampered-dry-run-one-shot",
+        authorized_by="fixture_user",
+        authorized_on="2026-08-12",
+        blueprint_commit=commit,
+        max_hourly_rate_usd=1.5,
+        hard_cap_usd=9.0,
+        hard_ttl_seconds=21_600,
+        output_path=authority_path,
+    )
+    authority["hard_attempt_spend_cap_usd"] = 8.0
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    _write(authority_path, authority)
+    import blueprint_pipeline.public_scene_artifixer3d_vast as vast_subject
+    import blueprint_pipeline.paid_resource_allocator as allocator
+
+    monkeypatch.setattr(
+        vast_subject,
+        "consume_artifixer3d_paid_attempt_authority_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry run consumed paid authority")
+        ),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {
+                "orchestrator_source_commit": commit,
+                "checkout_clean": True,
+                "identity_probe_ran": True,
+            },
+        ),
+    )
+    admission = tmp_path / "allocator/admission.json"
+    adapter = tmp_path / "allocator/adapter.json"
+    result = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            PROBE_KIND,
+            "--expected-source-commit",
+            commit,
+            "--adp-artifixer3d-bundle-receipt",
+            str(receipt_path),
+            "--adp-artifixer3d-attempt-authority",
+            str(authority_path),
+            "--adp-job-dir",
+            str(tmp_path / "allocator/job"),
+            "--adp-max-hourly-rate-usd",
+            "1.5",
+            "--adp-max-spend-usd",
+            "9.0",
+            "--adp-hard-ttl-seconds",
+            "21600",
+            "--admission-out",
+            str(admission),
+            "--adapter-output",
+            str(adapter),
+        ]
+    )
+    blocked_admission = json.loads(admission.read_text(encoding="utf-8"))
+    blocked_result = json.loads(adapter.read_text(encoding="utf-8"))
+    assert result == 2
+    assert blocked_admission["status"] == "blocked"
+    assert blocked_admission["blockers"] == [
+        "artifixer3d_paid_attempt_authority_invalid"
+    ]
+    assert blocked_result == {
+        "status": "blocked",
+        "blockers": ["artifixer3d_paid_attempt_authority_invalid"],
+        "provider_mutations_performed": 0,
+    }
