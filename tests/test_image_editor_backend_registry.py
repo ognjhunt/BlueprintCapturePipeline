@@ -53,7 +53,7 @@ def test_the_shipped_registry_loads_and_covers_the_backends_in_use() -> None:
     registry = load_registry()
 
     assert DEFAULT_REGISTRY_PATH.is_file()
-    assert {"artifixer", "qwen_image_edit_2511", "vibe_image_edit"} <= set(registry)
+    assert {"artifixer", "vibe_image_edit"} <= set(registry)
 
 
 def test_the_bundle_takes_its_admissible_set_from_the_registry() -> None:

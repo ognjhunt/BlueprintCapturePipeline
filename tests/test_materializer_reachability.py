@@ -14,7 +14,7 @@ symptom looked like an absent file.
 The same defect has now been fixed in four scopes -- lanes (#512), bundle
 modules (#520), authority materializers (#523), and input materializers here --
 which is why this counts the whole population from source instead of listing
-the ones anybody happened to notice: 74 of 161 are still unreachable.
+the ones anybody happened to notice: 73 of 161 are still unreachable.
 
 `UNREACHABLE_MATERIALIZERS` is a ledger of debt, not a suppression list. The
 bound below only ratchets down.
@@ -31,13 +31,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "src" / "blueprint_pipeline"
 SCRIPTS = REPO_ROOT / "scripts"
 
-#: The count when this contract was written: 78 before the ArtiFixer3D input
-#: chain got an entry point, 74 after. It may fall and never rise.
+#: 78 before the ArtiFixer3D input chain got an entry point, 74 after, and
+#: 73 once the segment-mask-repair preflight -- the chain's root -- got one.
+#: It may fall and never rise.
 #:
-#: Naming all 74 individually would be a list nobody maintains; the population
+#: Naming all 73 individually would be a list nobody maintains; the population
 #: is rediscovered every run and only its size is pinned, so a new unreachable
 #: materializer fails here even though no name was ever written down.
-UNREACHABLE_MATERIALIZER_BUDGET = 74
+UNREACHABLE_MATERIALIZER_BUDGET = 73
 
 
 def _module_sources() -> dict[Path, str]:

@@ -14,7 +14,6 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     ArtiFixer3DBundleError,
     DEFAULT_IMAGE,
-    QWEN_IMAGE_EDIT_REVISION,
     SCHEMA_VERSION,
     VIBE_IMAGE_EDIT_REVISION,
     VIBE_SOURCE_COMMIT,
@@ -200,7 +199,7 @@ def test_semantic_editor_only_runtime_stops_before_3d_training(
         wan_root=tmp_path / "unused-wan",
         semantic_editor_root=tmp_path / "semantic-model",
         request={
-            "direct_editor_backend": "qwen_image_edit_2511",
+            "direct_editor_backend": "vibe_image_edit",
             "semantic_editor_only": True,
             "semantic_editor": {},
             "random_seed": 1,
@@ -271,43 +270,6 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
     assert '/ "cutlass"\n    / "include"' in entrypoint
     assert '"ninja", "nvcc", "slangc"' in entrypoint
     assert '"single_cuda_device_unavailable"' in entrypoint
-
-
-def test_seals_semantic_editor_only_bundle_before_3d_spend(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source, commit, tree = _source(tmp_path)
-    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
-
-    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
-    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
-    candidate = _candidate(tmp_path)
-    receipt = build_artifixer3d_bundle(
-        candidate_inputs_receipt_path=candidate,
-        use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
-        artifixer_source_directory=source,
-        output_root=tmp_path / "bundle",
-        repository_root=_repository(tmp_path),
-        direct_editor_backend="qwen_image_edit_2511",
-        semantic_editor_only=True,
-    )
-
-    assert receipt["direct_editor_backend"] == "qwen_image_edit_2511"
-    assert receipt["semantic_editor_only"] is True
-    with zipfile.ZipFile(receipt["bundle"]["path"]) as archive:
-        request = json.loads(archive.read("provider_runtime/artifixer3d_runtime_request.json"))
-        runner = archive.read("provider_runtime/public_scene_artifixer3d_runner.py").decode("utf-8")
-    assert request["semantic_editor"]["revision"] == QWEN_IMAGE_EDIT_REVISION
-    assert request["semantic_editor"]["license"] == "Apache-2.0"
-    assert request["semantic_editor"]["enable_model_cpu_offload"] is True
-    assert request["semantic_editor_only"] is True
-    assert request["phases"] == [
-        "semantic_editor_inference",
-        "exact_support_composite",
-        "external_visual_and_multiview_review",
-    ]
-    assert "QwenImageEditPlusPipeline" in runner
-    assert "SEMANTIC_EDITOR_PROMPT" in runner
 
 
 def test_seals_pinned_vibe_semantic_editor_only_bundle(
