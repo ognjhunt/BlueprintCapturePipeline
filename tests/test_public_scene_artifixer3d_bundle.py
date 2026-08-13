@@ -88,6 +88,56 @@ def _attestation(candidate: Path, path: Path) -> Path:
     return path
 
 
+def test_bundle_cli_forwards_each_optional_parameter_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    captured: dict[str, object] = {}
+
+    def fake_build(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"status": "sealed_rehearsal_passed_no_upload_no_execution"}
+
+    monkeypatch.setattr(subject, "build_artifixer3d_bundle", fake_build)
+
+    assert (
+        subject.main(
+            [
+                "--candidate-inputs-receipt",
+                "candidate.json",
+                "--use-attestation",
+                "attestation.json",
+                "--artifixer-source",
+                "artifixer",
+                "--output-root",
+                "output",
+                "--repository-root",
+                "repository",
+                "--artifixer3d-steps",
+                "30000",
+                "--random-seed",
+                "840920",
+                "--pipeline-mode",
+                "dual_target_artifixer3d_only",
+                "--direct-editor-backend",
+                "none",
+                "--allow-active-instance",
+                "17",
+            ]
+        )
+        == 0
+    )
+    assert captured["artifixer3d_steps"] == 30000
+    assert captured["random_seed"] == 840920
+    assert captured["pipeline_mode"] == "dual_target_artifixer3d_only"
+    assert captured["direct_editor_backend"] == "none"
+    assert captured["allowed_active_instance_ids"] == (17,)
+    assert json.loads(capsys.readouterr().out)["status"] == (
+        "sealed_rehearsal_passed_no_upload_no_execution"
+    )
+
+
 def _runner_module():
     path = Path(__file__).resolve().parents[1] / "scripts/public_scene_artifixer3d_runner.py"
     spec = importlib.util.spec_from_file_location("test_public_scene_artifixer3d_runner", path)
