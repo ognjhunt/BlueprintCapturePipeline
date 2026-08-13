@@ -161,3 +161,31 @@ decision here retires it outright rather than leaving it frozen-but-pending.
 
 Its bundle CLI landed in #512 anyway. Retired means we do not run it, not that
 it should stay a landmine for whoever unfreezes it.
+
+## The denominator is 30, not 14
+
+Counting `*_vast.py` lane modules understated the gap. A `*_vast.py` is
+transport, and several probe kinds have no lane module of their own -- the two
+oldest builders emit kinds (`adp009d-franka-native-microcheck`,
+`adp-retained-scene-gpu-render`) that appear in no lane module at all.
+
+The allocator dispatches on **probe kind**, so that is the unit. Read from its
+own `if args.probe_kind == ...` branches: **30 probe kinds are executable, and
+8 are reachable from a live profile builder.** `tests/test_website_reachable_probe_kinds.py`
+rediscovers that set from the allocator on every run, so a new branch there
+cannot become the next unreachable lane without either a builder or a named
+reason.
+
+The 22 unreachable kinds are not one problem:
+
+| Reason | Count | Meaning |
+| --- | --- | --- |
+| `retired_appearance_approach` | 7 | Superseded by the GPT-teacher/ArtiFixer3D path. Not to be relaunched; receipts retained as spend anchors. |
+| `frozen_program` | 7 | Frozen by the active-program contract in `CLAUDE.md`. |
+| `not_a_website_lane` | 1 | The profile preflight, which the allocator runs itself. |
+| `awaiting_builder` | 7 | Real debt: executable, not retired, not frozen, unreachable. |
+
+Only the last row is work. It is the Arena family (construction, controls,
+policy, and the Isaac Lab Arena native control), the two fresh-site probes, and
+the reconstruction worker smoke. The contract caps that row at its current size,
+so it can shrink but not silently grow.
