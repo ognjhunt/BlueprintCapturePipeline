@@ -7492,6 +7492,76 @@ def test_the_output_probe_treats_a_not_yet_uploaded_object_as_not_done(
     assert vpa._provider_output_probe("") is None
 
 
+def test_the_output_probe_keeps_the_method_its_signature_was_issued_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A presigned URL's signature covers the HTTP method. A HEAD against a
+    URL signed for GET is rejected as a signature mismatch, which from here is
+    indistinguishable from "not there yet" -- the probe would never fire and the
+    run would sit until its deadline having learned nothing."""
+
+    seen: dict[str, object] = {}
+
+    class _Response:
+        status = 206
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def _capture(request, *_args, **_kwargs):
+        seen["method"] = request.get_method()
+        seen["range"] = request.get_header("Range")
+        return _Response()
+
+    monkeypatch.setattr(vpa.urllib.request, "urlopen", _capture)
+    probe = vpa._provider_output_probe("https://objects.example/output.zip?signed")
+
+    assert probe is not None
+    assert probe() is True
+    assert seen["method"] == "GET"
+    # One byte, so polling costs nothing meaningful.
+    assert seen["range"] == "bytes=0-0"
+
+
+def test_a_signature_that_cannot_answer_disables_the_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treating an unusable channel as a quiet one would hold a paid run open
+    waiting for an answer that can never arrive."""
+
+    import urllib.error
+
+    def _forbidden(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://objects.example/output.zip", 403, "SignatureDoesNotMatch", {}, None
+        )
+
+    monkeypatch.setattr(vpa.urllib.request, "urlopen", _forbidden)
+    probe = vpa._provider_output_probe("https://objects.example/output.zip?signed")
+
+    assert probe is not None
+    with pytest.raises(urllib.error.HTTPError):
+        probe()
+
+
+def test_a_store_having_a_moment_is_asked_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+
+    def _unavailable(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://objects.example/output.zip", 503, "Slow Down", {}, None
+        )
+
+    monkeypatch.setattr(vpa.urllib.request, "urlopen", _unavailable)
+    probe = vpa._provider_output_probe("https://objects.example/output.zip?signed")
+
+    assert probe is not None
+    assert probe() is False
+
+
 def _inventory(rows):
     def _api(**kwargs):
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
