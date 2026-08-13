@@ -687,9 +687,17 @@ def test_materialize_postblocked_provider_zero_binds_closeout(tmp_path: Path) ->
         {
             "status": "provider_terminal",
             "provider_absence_confirmed": True,
-            "final_global_inventory": {
+            "provider_absence_scope": "recorded_instance_and_lane_prefix",
+            "final_inventory": {
                 "api_confirmed": True,
                 "live_resource_count": 0,
+            },
+            "recorded_vast_instance_teardown": {
+                "provider_absence_confirmed": True,
+            },
+            "final_global_inventory": {
+                "api_confirmed": True,
+                "live_resource_count": 1,
             },
         },
     )
@@ -704,7 +712,9 @@ def test_materialize_postblocked_provider_zero_binds_closeout(tmp_path: Path) ->
     assert receipt["provider_mutations_performed_by_attempt"] == 1
     assert receipt["attempt_terminal_status"] == "blocked"
     assert receipt["provider_zero_confirmed"] is True
+    assert receipt["provider_zero_scope"] == "recorded_instance_and_lane_prefix"
     assert receipt["inventory"]["live_resource_count"] == 0
+    assert receipt["provider_account_global_zero_confirmed"] is False
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
@@ -751,6 +761,14 @@ def test_materialize_postblocked_provider_zero_accepts_completed_terminal_result
         {
             "status": "provider_terminal",
             "provider_absence_confirmed": True,
+            "provider_absence_scope": "recorded_instance_and_lane_prefix",
+            "final_inventory": {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+            },
+            "recorded_vast_instance_teardown": {
+                "provider_absence_confirmed": True,
+            },
             "final_global_inventory": {
                 "api_confirmed": True,
                 "live_resource_count": 0,
@@ -770,6 +788,7 @@ def test_materialize_postblocked_provider_zero_accepts_completed_terminal_result
     assert receipt["attempt_terminal_status"] == "completed"
     assert receipt["provider_mutations_performed_by_attempt"] == 1
     assert receipt["provider_zero_confirmed"] is True
+    assert receipt["provider_account_global_zero_confirmed"] is True
     assert receipt["inventory"]["api_confirmed"] is True
     assert receipt["inventory"]["live_resource_count"] == 0
     assert receipt["receipt_digest"] == canonical_digest(

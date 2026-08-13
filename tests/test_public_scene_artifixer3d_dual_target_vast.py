@@ -12,6 +12,7 @@ from blueprint_pipeline.public_scene_artifixer3d_vast import (
     DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
     _materialize_raw_result,
     materialize_artifixer3d_paid_attempt_authority,
+    recover_artifixer3d_local_closeout,
     validate_artifixer3d_bundle,
     validate_artifixer3d_paid_attempt_authority,
 )
@@ -224,6 +225,165 @@ def test_raw_result_binds_only_physical_dual_target_review_frames(
     assert raw["outside_exact_support_changed_pixels_total"] is None
     assert raw["outside_support_invariance_proven"] is False
     assert raw["appearance_repair_qualified"] is False
+
+
+def test_local_closeout_recovery_rehashes_provider_bytes_without_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import blueprint_pipeline.public_scene_artifixer3d_vast as subject
+
+    job = tmp_path / "vast_execute"
+    execution_root = job / "immutable_execution"
+    provider_run = job / "vast_provider_run"
+    task_root = execution_root / "tasks/task_a"
+    frame = task_root / "artifixer3d_review_frames/00000.png"
+    checkpoint = task_root / "artifixer3d/checkpoints/ckpt_10.pt"
+    frame.parent.mkdir(parents=True)
+    checkpoint.parent.mkdir(parents=True)
+    frame.write_bytes(b"frame")
+    checkpoint.write_bytes(b"checkpoint")
+    runtime: dict[str, object] = {
+        "schema_version": "public_scene_artifixer3d_runtime_result.v1",
+        "status": (
+            "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
+        ),
+        "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+        "model_loaded": True,
+        "provider_zero_required_after_return": True,
+        "source_object_restoration_permitted": False,
+        "artifixer_direct_inference_executed": False,
+        "semantic_editor_inference_executed": False,
+        "artifixer3d_distillation_executed": True,
+        "artifixer3d_plus_inference_executed": False,
+        "tasks": [
+            {
+                "task_id": "task_a",
+                "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+                "training_record_count": 2,
+                "artifixer3d_review_frames": [
+                    {
+                        "frame_index": 0,
+                        "camera_id": "camera_0",
+                        **_record(
+                            frame,
+                            provider_path=(
+                                "/provider/runtime_output/tasks/task_a/"
+                                "artifixer3d_review_frames/00000.png"
+                            ),
+                        ),
+                    }
+                ],
+                "artifixer3d_checkpoint": _record(
+                    checkpoint,
+                    provider_path=(
+                        "/provider/runtime_output/tasks/task_a/"
+                        "artifixer3d/checkpoints/ckpt_10.pt"
+                    ),
+                ),
+                "outside_support_invariance_status": (
+                    "deferred_until_final_soft_composite"
+                ),
+                "outside_support_changed_pixels_total": None,
+            }
+        ],
+    }
+    runtime_path = execution_root / "public_scene_artifixer3d_runtime_result.json"
+    _write_json(runtime_path, runtime)
+    provider_run.mkdir(parents=True)
+    provider_zip = provider_run / "vast_provider_runtime_output.zip"
+    with zipfile.ZipFile(provider_zip, "w") as archive:
+        archive.write(runtime_path, "public_scene_artifixer3d_runtime_result.json")
+        archive.write(
+            frame, "tasks/task_a/artifixer3d_review_frames/00000.png"
+        )
+        archive.write(
+            checkpoint, "tasks/task_a/artifixer3d/checkpoints/ckpt_10.pt"
+        )
+    for path, value in (
+        (
+            provider_run / "vast_provider_adapter_result.json",
+            {
+                "status": "completed",
+                "continuing_spend_from_this_run": False,
+                "estimated_cost_usd": 0.1,
+            },
+        ),
+        (
+            provider_run / "vast_teardown_manifest.json",
+            {"continuing_spend_from_this_run": False},
+        ),
+        (provider_run / "vast_final_validation.json", {"status": "completed"}),
+        (
+            job / "object_store_staging/wam_provider_object_store_cleanup.json",
+            {"all_objects_absent": True, "signed_url_files_removed": True},
+        ),
+        (
+            job
+            / "independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json",
+            {
+                "status": "provider_terminal",
+                "provider_absence_confirmed": True,
+                "final_inventory": {
+                    "api_confirmed": True,
+                    "live_resource_count": 0,
+                },
+            },
+        ),
+    ):
+        _write_json(path, value)
+    authority: dict[str, object] = {
+        "authorization_digest": "sha256:" + "a" * 64,
+        "bundle_sha256": "sha256:bundle",
+        "blueprint_commit": "fixture",
+        "hard_attempt_spend_cap_usd": 1.0,
+        "maximum_hourly_rate_usd": 0.5,
+        "maximum_single_resource_ttl_seconds": 7200,
+    }
+    authority_path = tmp_path / "authority.json"
+    _write_json(authority_path, authority)
+    consumption_root = tmp_path / "consumed"
+    consumption_root.mkdir()
+    _write_json(
+        consumption_root / f"artifixer3d-{'a' * 64}.json",
+        {
+            "schema_version": "artifixer3d_paid_attempt_consumption.v1",
+            "authorization_digest": authority["authorization_digest"],
+            "bundle_sha256": authority["bundle_sha256"],
+            "blueprint_commit": authority["blueprint_commit"],
+            "maximum_provider_allocations": 1,
+        },
+    )
+    bundle = {
+        "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+        "task_ids": ["task_a"],
+        "task_camera_counts": {"task_a": 1},
+        "task_training_record_counts": {"task_a": 2},
+        "bundle_sha256": "sha256:bundle",
+        "manifest_digest": "sha256:manifest",
+        "runtime_request_digest": "sha256:request",
+        "replacement_object_count": 1,
+        "allowed_active_instance_ids": [],
+    }
+    monkeypatch.setattr(subject, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setattr(subject, "validate_artifixer3d_bundle", lambda _path: bundle)
+    monkeypatch.setattr(
+        subject,
+        "validate_artifixer3d_paid_attempt_authority",
+        lambda value, **_kwargs: dict(value),
+    )
+
+    result = recover_artifixer3d_local_closeout(
+        job_dir=job,
+        bundle_receipt_path=tmp_path / "bundle.json",
+        attempt_authority_path=authority_path,
+    )
+
+    assert result["status"] == "completed"
+    assert result["local_receipt_recovered_after_provider_teardown"] is True
+    assert result["retry_cap"] == 0
+    assert Path(result["raw_result_path"]).is_file()
+    assert Path(result["artifact_manifest_path"]).is_file()
+    assert result["authorization_consumption"]["status"] == "consumed"
 
 
 def test_sealed_dual_target_bundle_reopens_with_physical_and_training_counts(

@@ -1419,9 +1419,15 @@ def materialize_artifixer3d_postblocked_provider_zero(
     adapter = _read(adapter_file)
     cleanup = _read(cleanup_file)
     watchdog = _read(watchdog_file)
-    inventory = watchdog.get("final_global_inventory")
-    if not isinstance(inventory, Mapping):
-        inventory = {}
+    lane_inventory = watchdog.get("final_inventory")
+    global_inventory = watchdog.get("final_global_inventory")
+    if not isinstance(lane_inventory, Mapping):
+        lane_inventory = {}
+    if not isinstance(global_inventory, Mapping):
+        global_inventory = {}
+    recorded_teardown = watchdog.get("recorded_vast_instance_teardown")
+    if not isinstance(recorded_teardown, Mapping):
+        recorded_teardown = {}
     authority_digest = authority.get("authorization_digest")
     terminal_status = result.get("status")
     blockers: list[str] = []
@@ -1446,8 +1452,11 @@ def materialize_artifixer3d_postblocked_provider_zero(
         or cleanup.get("signed_url_files_removed") is not True
         or watchdog.get("status") != "provider_terminal"
         or watchdog.get("provider_absence_confirmed") is not True
-        or inventory.get("api_confirmed") is not True
-        or inventory.get("live_resource_count") != 0
+        or watchdog.get("provider_absence_scope")
+        != "recorded_instance_and_lane_prefix"
+        or lane_inventory.get("api_confirmed") is not True
+        or lane_inventory.get("live_resource_count") != 0
+        or recorded_teardown.get("provider_absence_confirmed") is not True
     ):
         blockers.append("artifixer3d_provider_zero_closeout_invalid")
     if blockers:
@@ -1459,7 +1468,14 @@ def materialize_artifixer3d_postblocked_provider_zero(
         "attempt_terminal_status": terminal_status,
         "provider_mutations_performed_by_attempt": provider_mutations,
         "provider_zero_confirmed": True,
-        "inventory": dict(inventory),
+        "provider_zero_scope": "recorded_instance_and_lane_prefix",
+        "inventory": dict(lane_inventory),
+        "recorded_instance_teardown": dict(recorded_teardown),
+        "provider_account_global_zero_confirmed": (
+            global_inventory.get("api_confirmed") is True
+            and global_inventory.get("live_resource_count") == 0
+        ),
+        "global_inventory": dict(global_inventory),
         "attempt_authority": _record(authority_file),
         "attempt_result": _record(result_file),
         "provider_adapter": _record(adapter_file),
@@ -1750,6 +1766,241 @@ def _materialize_raw_result(
     }
     raw["result_digest"] = canonical_digest(raw, digest_field="result_digest")
     return raw
+
+
+def _recovered_consumption(authority: Mapping[str, Any]) -> dict[str, Any]:
+    """Re-open the one-time consumption record without consuming authority again."""
+
+    digest = str(authority.get("authorization_digest") or "")
+    identity = digest.removeprefix("sha256:")
+    if len(identity) != 64:
+        raise ValueError("artifixer3d_recovery_authority_identity_invalid")
+    path = AUTHORIZATION_CONSUMPTION_ROOT / f"artifixer3d-{identity}.json"
+    record = _read(path, code="artifixer3d_recovery_consumption_unreadable")
+    if (
+        record.get("schema_version")
+        != "artifixer3d_paid_attempt_consumption.v1"
+        or record.get("authorization_digest") != digest
+        or record.get("bundle_sha256") != authority.get("bundle_sha256")
+        or record.get("blueprint_commit") != authority.get("blueprint_commit")
+        or record.get("maximum_provider_allocations") != 1
+    ):
+        raise ValueError("artifixer3d_recovery_consumption_invalid")
+    return {
+        "status": "consumed",
+        "authorization_digest": digest,
+        "consumption_record_sha256": _sha256(path),
+        "record_location_disclosed": False,
+    }
+
+
+def _validate_recovered_provider_output(
+    *, output_zip: Path, execution_root: Path, execution: Mapping[str, Any]
+) -> None:
+    """Prove every locally recovered scientific output came from the provider ZIP."""
+
+    runtime_path = execution_root / "public_scene_artifixer3d_runtime_result.json"
+    if not output_zip.is_file() or output_zip.is_symlink() or not runtime_path.is_file():
+        raise ValueError("artifixer3d_recovery_provider_output_missing")
+    records: list[Mapping[str, Any]] = []
+    for task in execution.get("tasks") or []:
+        if not isinstance(task, Mapping):
+            raise ValueError("artifixer3d_recovery_runtime_task_invalid")
+        for field in ("artifixer3d_review_frames", "final_candidate_frames"):
+            for row in task.get(field) or []:
+                if isinstance(row, Mapping):
+                    records.append(row)
+        checkpoint = task.get("artifixer3d_checkpoint")
+        if isinstance(checkpoint, Mapping):
+            records.append(checkpoint)
+    try:
+        with zipfile.ZipFile(output_zip) as archive:
+            if archive.read("public_scene_artifixer3d_runtime_result.json") != (
+                runtime_path.read_bytes()
+            ):
+                raise ValueError("artifixer3d_recovery_runtime_zip_mismatch")
+            checked: set[str] = set()
+            for record in records:
+                provider_path = str(record.get("path") or "").replace("\\", "/")
+                marker = "/runtime_output/"
+                if marker not in provider_path:
+                    raise ValueError("artifixer3d_recovery_output_path_invalid")
+                member = provider_path.split(marker, 1)[1]
+                if member in checked:
+                    continue
+                checked.add(member)
+                info = archive.getinfo(member)
+                digest = hashlib.sha256()
+                with archive.open(info) as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if (
+                    info.is_dir()
+                    or info.file_size != record.get("size_bytes")
+                    or "sha256:" + digest.hexdigest() != record.get("sha256")
+                ):
+                    raise ValueError("artifixer3d_recovery_output_digest_mismatch")
+    except (KeyError, OSError, zipfile.BadZipFile) as exc:
+        raise ValueError("artifixer3d_recovery_provider_output_invalid") from exc
+
+
+def recover_artifixer3d_local_closeout(
+    *,
+    job_dir: str | Path,
+    bundle_receipt_path: str | Path,
+    attempt_authority_path: str | Path,
+) -> dict[str, Any]:
+    """Recover deterministic local receipts after provider teardown and extraction.
+
+    This never calls a provider, consumes authority, trains, or renders.  It exists
+    for the narrow case where the immutable provider output and teardown evidence
+    were retained but a local disk/write failure interrupted final receipt sealing.
+    """
+
+    job = Path(job_dir).expanduser().resolve()
+    result_path = job / "public_scene_artifixer3d_vast_result.json"
+    raw_path = job / "public_scene_artifixer3d_raw_result.json"
+    if result_path.exists():
+        raise ValueError("artifixer3d_recovery_result_exists")
+    bundle = validate_artifixer3d_bundle(bundle_receipt_path)
+    authority = _read(
+        Path(attempt_authority_path).expanduser().resolve(),
+        code="artifixer3d_recovery_authority_unreadable",
+    )
+    authority = validate_artifixer3d_paid_attempt_authority(
+        authority,
+        prepared_bundle=bundle,
+        max_hourly_rate_usd=float(authority.get("maximum_hourly_rate_usd") or 0),
+        hard_cap_usd=float(authority.get("hard_attempt_spend_cap_usd") or 0),
+        hard_ttl_seconds=int(authority.get("maximum_single_resource_ttl_seconds") or 0),
+        allowed_active_instance_ids=bundle["allowed_active_instance_ids"],
+    )
+    consumption = _recovered_consumption(authority)
+    provider_run = job / "vast_provider_run"
+    staging_dir = job / "object_store_staging"
+    execution_root = job / "immutable_execution"
+    adapter_path = provider_run / "vast_provider_adapter_result.json"
+    teardown_path = provider_run / "vast_teardown_manifest.json"
+    final_path = provider_run / "vast_final_validation.json"
+    watchdog_path = job / "independent_vast_watchdog" / WATCHDOG_EVIDENCE_NAME
+    cleanup_path = staging_dir / "wam_provider_object_store_cleanup.json"
+    output_zip = provider_run / "vast_provider_runtime_output.zip"
+    adapter = _read(adapter_path, code="artifixer3d_recovery_adapter_unreadable")
+    teardown = _read(teardown_path, code="artifixer3d_recovery_teardown_unreadable")
+    cleanup = _read(cleanup_path, code="artifixer3d_recovery_cleanup_unreadable")
+    watchdog = _read(watchdog_path, code="artifixer3d_recovery_watchdog_unreadable")
+    execution = _read(
+        execution_root / "public_scene_artifixer3d_runtime_result.json",
+        code="artifixer3d_recovery_runtime_unreadable",
+    )
+    _validate_recovered_provider_output(
+        output_zip=output_zip, execution_root=execution_root, execution=execution
+    )
+    lane_inventory = watchdog.get("final_inventory")
+    if not isinstance(lane_inventory, Mapping):
+        lane_inventory = {}
+    if (
+        adapter.get("status") != "completed"
+        or adapter.get("continuing_spend_from_this_run") is not False
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or watchdog.get("status") != "provider_terminal"
+        or watchdog.get("provider_absence_confirmed") is not True
+        or lane_inventory.get("api_confirmed") is not True
+        or lane_inventory.get("live_resource_count") != 0
+    ):
+        raise ValueError("artifixer3d_recovery_provider_closeout_invalid")
+    render_only_mode = (
+        bundle.get("pipeline_mode") == DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE
+    )
+    dual_target_mode = bundle.get("pipeline_mode") in {
+        DUAL_TARGET_PIPELINE_MODE,
+        DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+    }
+    if (
+        execution.get("schema_version") != RUNTIME_RESULT_SCHEMA_VERSION
+        or execution.get("status")
+        != (
+            "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
+            if dual_target_mode
+            else "candidate_completed_requires_visual_and_multiview_review"
+        )
+        or execution.get("pipeline_mode") != bundle.get("pipeline_mode")
+        or execution.get("model_loaded") is not True
+        or execution.get("provider_zero_required_after_return") is not True
+        or execution.get("source_object_restoration_permitted") is not False
+        or execution.get("artifixer_direct_inference_executed") is not False
+        or execution.get("semantic_editor_inference_executed") is not False
+        or execution.get("artifixer3d_distillation_executed") is not (
+            not render_only_mode
+        )
+        or execution.get("artifixer3d_plus_inference_executed") is not False
+    ):
+        raise ValueError("artifixer3d_recovery_runtime_not_completed")
+    closeout = {
+        "adapter_result": _record(adapter_path),
+        "teardown_manifest": _record(teardown_path),
+        "final_validation": _record(final_path),
+        "watchdog_receipt": _record(watchdog_path),
+        "object_store_cleanup": _record(cleanup_path),
+        "estimated_cost_usd": adapter.get("estimated_cost_usd"),
+        "provider_mutations_performed": 1,
+        "provider_zero_confirmed": True,
+        "provider_zero_scope": "recorded_instance_and_lane_prefix",
+        "all_staged_objects_absent": True,
+    }
+    raw = _materialize_raw_result(
+        execution=execution,
+        execution_root=execution_root,
+        bundle=bundle,
+        closeout=closeout,
+    )
+    if raw_path.exists():
+        if _read(raw_path) != raw:
+            raise ValueError("artifixer3d_recovery_raw_result_conflict")
+    else:
+        write_json(raw_path, raw)
+    result = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed",
+        "bundle_sha256": bundle["bundle_sha256"],
+        "manifest_digest": bundle["manifest_digest"],
+        "runtime_request_digest": bundle["runtime_request_digest"],
+        "execution_result_path": str(
+            execution_root / "public_scene_artifixer3d_runtime_result.json"
+        ),
+        "raw_result_path": str(raw_path),
+        "adapter_result_path": str(adapter_path),
+        "teardown_manifest_path": str(teardown_path),
+        "final_validation_path": str(final_path),
+        "watchdog_receipt_path": str(watchdog_path),
+        "object_store_cleanup_path": str(cleanup_path),
+        "estimated_cost_usd": adapter.get("estimated_cost_usd"),
+        "provider_mutations_performed": 1,
+        "provider_closeout": closeout,
+        "hard_cap_usd": authority["hard_attempt_spend_cap_usd"],
+        "hard_ttl_seconds": authority["maximum_single_resource_ttl_seconds"],
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "authorization_consumption": consumption,
+        "independent_watchdog": watchdog,
+        "local_receipt_recovered_after_provider_teardown": True,
+        "appearance_repair_qualified": False,
+        "simready_or_policy_gate_unlocked": False,
+        "blockers": [],
+        "raw_secret_values_recorded": False,
+    }
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="public_scene_artifixer3d",
+        extra_artifact_roots={"raw_result": raw_path},
+    )
+    write_json(result_path, result)
+    return result
 
 
 def run_artifixer3d_vast(
@@ -2105,6 +2356,7 @@ __all__ = [
     "inspect_artifixer3d_container_image",
     "materialize_artifixer3d_paid_attempt_authority",
     "materialize_artifixer3d_postblocked_provider_zero",
+    "recover_artifixer3d_local_closeout",
     "run_artifixer3d_vast",
     "validate_artifixer3d_bundle",
     "validate_artifixer3d_paid_attempt_authority",
