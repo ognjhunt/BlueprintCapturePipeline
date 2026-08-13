@@ -63,6 +63,7 @@ def build_content_agents_live_profile(
     source_commit: str,
     candidate_id: str,
     raw_manifest_uri: str,
+    revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
     max_spend_usd: float = 3.0,
     hard_ttl_seconds: int = 7_200,
@@ -108,6 +109,14 @@ def build_content_agents_live_profile(
         raise TaskEvaluationLaunchError(",".join(sorted(set(blockers))))
 
     profile_id = f"adp-content-agents-live-{candidate_id}-{source_commit}"
+    if revision:
+        # Published profiles are immutable, so a profile whose inputs changed
+        # needs its own id rather than a conflicting rewrite of an existing
+        # one. Inputs change at a fixed commit more often than they look like
+        # they would: regenerating the config preflight is enough, and the
+        # collision surfaces as an immutable-input digest mismatch on the next
+        # launch rather than at publish time.
+        profile_id = f"{profile_id}-{revision}"
     bundle_digest = str(receipt.get("bundle_sha256") or "")
     profile: dict[str, Any] = {
         "schema_version": "task_evaluation_launch_profile.v1",
@@ -212,6 +221,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Which CAD candidate this profile runs, e.g. a-earthtojake-text-to-cad.",
     )
     parser.add_argument("--raw-manifest-uri", required=True)
+    parser.add_argument(
+        "--revision",
+        help="Distinguish a rebuilt profile whose inputs changed at the same commit.",
+    )
     parser.add_argument("--max-hourly-rate-usd", type=float, default=1.0)
     parser.add_argument("--max-spend-usd", type=float, default=3.0)
     parser.add_argument("--hard-ttl-seconds", type=int, default=7_200)
@@ -226,6 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_commit=args.source_commit,
             candidate_id=args.candidate_id,
             raw_manifest_uri=args.raw_manifest_uri,
+            revision=args.revision,
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             max_spend_usd=args.max_spend_usd,
             hard_ttl_seconds=args.hard_ttl_seconds,
