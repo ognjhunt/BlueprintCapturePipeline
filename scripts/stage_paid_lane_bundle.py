@@ -61,6 +61,53 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+class LocalTransport:
+    """Hand already-present bytes to the consuming account, on this host.
+
+    Not every paid-lane input arrives over the wire. A config preflight has to
+    be produced *on* the control plane, because it binds the deployed commit,
+    and it needs Docker, so it runs as an account the service is not. What it
+    leaves behind is then owned by whoever ran it and mode 0640 under the
+    default umask -- correct-looking bytes the pipeline cannot open.
+
+    That is the same defect the ssh transport already had (#485), so it gets the
+    same answer rather than a second one: hand the tree over, then read every
+    digest back *as the consumer*.
+    """
+
+    def _run(self, argv: list[str]) -> str:
+        result = subprocess.run(  # nosec B603 - fixed argv, no shell
+            argv, capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            raise StagingError(f"staging_local_command_failed:{result.returncode}")
+        return result.stdout
+
+    def mkdir(self, local_dir: str) -> None:
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+
+    def put(self, local: Path, remote: str) -> None:
+        destination = Path(remote)
+        if destination.resolve() == local.resolve():
+            return
+        destination.write_bytes(local.read_bytes())
+
+    def finalize(self, local_dir: str, owner: str) -> None:
+        self._run(["chown", "-R", f"{owner}:{owner}", local_dir])
+        self._run(["chmod", "-R", "u=rwX,g=rX,o=", local_dir])
+
+    def digest(self, remote: str, *, as_user: str | None = None) -> str:
+        argv = ["sha256sum", remote]
+        if as_user:
+            argv = ["sudo", "-n", "-u", as_user, *argv]
+        result = subprocess.run(  # nosec B603 - fixed argv, no shell
+            argv, capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return ""
+        return "sha256:" + result.stdout.split()[0]
+
+
 class SshTransport:
     """Place bytes on a remote host and read back their digests."""
 

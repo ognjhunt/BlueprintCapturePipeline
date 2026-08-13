@@ -18,7 +18,10 @@ from typing import Any, Mapping, Sequence
 from packaging.tags import compatible_tags, cpython_tags
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
-from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .task_evaluation_artifact_manifest import (
+    seal_lane_terminal_artifacts,
+    seal_unallocated_provider_teardown,
+)
 from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
@@ -1444,6 +1447,13 @@ def run_gaussian_excision_vast(
             "blockers": [f"gaussian_excision_vast_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
+        # The adapter may never have been entered -- resolving a secret or a
+        # staged URL raises before it. Record the absence of any allocation so
+        # the run can close; the sealer declines whenever the evidence does not
+        # support that claim.
+        seal_unallocated_provider_teardown(
+            provider_run, reason="gaussian_excision_vast_adapter_failed"
+        )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     extracted_root = job / "immutable_execution"

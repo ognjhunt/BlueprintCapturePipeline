@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import io
 import json
 import subprocess
@@ -678,9 +679,21 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
         "/Asset/links/body/geometry/shell",
         "/Asset/links/door/geometry/panel",
     ]
-    assert texture["material_textures"]["agent_cad_visible_surfaces"][
-        "material_path"
-    ] == "/Asset/materials/agent_input_neutral"
+    # Keyed by the material's USD path, because that is what the texture
+    # agent's planner resolves the mapping by. A label here selects nothing.
+    assert texture["material_textures"] == {
+        "/Asset/materials/agent_input_neutral": {
+            "prompt": texture["material_textures"][
+                "/Asset/materials/agent_input_neutral"
+            ]["prompt"],
+            "opacity": 1.0,
+            "material_path": "/Asset/materials/agent_input_neutral",
+            "prim_paths": [
+                "/Asset/links/body/geometry/shell",
+                "/Asset/links/door/geometry/panel",
+            ],
+        }
+    }
     assert texture["input"]["reference_images"] == [
         "../input/reference.png",
         "../input/reference_0002.png",
@@ -3438,17 +3451,26 @@ def test_usd_bbox_probe_script_is_derived_from_the_bundle_input() -> None:
     assert "ComputePurpose()==UsdGeom.Tokens.default_" in script
 
 
-def test_bundle_preflight_accepts_any_admitted_variant_input_names(
-    tmp_path: Path,
-) -> None:
-    """Required entries must not hardcode one variant's input filenames."""
+def _content_agents_bundle(
+    path: Path, *, usd: str, references: tuple[str, ...], declared: dict | None = None
+) -> Path:
+    """A provider bundle whose manifest declares its own runtime inputs."""
 
-    bundle = tmp_path / "articulated-bundle.zip"
-    with zipfile.ZipFile(bundle, "w") as archive:
+    manifest = (
+        declared
+        if declared is not None
+        else {
+            "schema_version": "adp_content_agents_provider_bundle.v1",
+            "runtime_input_binding": {"relative_path": f"input/{usd}"},
+            "runtime_reference_image_bindings": [
+                {"relative_path": f"input/{name}"} for name in references
+            ],
+        }
+    )
+    with zipfile.ZipFile(path, "w") as archive:
         for member in (
             "provider_runtime/run_adp_content_agents_provider_runtime.sh",
             "provider_runtime/adp_content_agents_provider_runner.py",
-            "provider_runtime/adp_content_agents_provider_manifest.json",
             "provider_runtime/content_agents_source.zip",
             "provider_runtime/configs/material_agent.yaml",
             "provider_runtime/configs/texture_agent.yaml",
@@ -3456,18 +3478,19 @@ def test_bundle_preflight_accepts_any_admitted_variant_input_names(
         ):
             archive.writestr(member, "{}")
         archive.writestr(
-            "provider_runtime/input/"
-            "adp009d_840796_articulated_refrigerator_candidate.usda",
-            '#usda 1.0\n',
+            "provider_runtime/adp_content_agents_provider_manifest.json",
+            json.dumps(manifest),
         )
-        archive.writestr(
-            "provider_runtime/input/"
-            "adp009d_840796_articulated_refrigerator_candidate_reference.png",
-            b"\x89PNG\r\n\x1a\n",
-        )
+        if usd:
+            archive.writestr(f"provider_runtime/input/{usd}", "#usda 1.0\n")
+        for name in references:
+            archive.writestr(f"provider_runtime/input/{name}", b"\x89PNG\r\n\x1a\n")
+    return path
 
-    preflight = _blueprint_bundle_preflight(
-        job_dir=tmp_path / "preflight",
+
+def _content_agents_preflight(bundle: Path, job_dir: Path) -> dict:
+    return _blueprint_bundle_preflight(
+        job_dir=job_dir,
         generated_at="fixed",
         enable_blueprint_bundle=True,
         enable_isaac_smoke=False,
@@ -3476,38 +3499,109 @@ def test_bundle_preflight_accepts_any_admitted_variant_input_names(
         provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
         provider_output_put_url="https://example.com/output.zip?signature=redacted",
     )
+
+
+def test_bundle_preflight_accepts_any_admitted_variant_input_names(
+    tmp_path: Path,
+) -> None:
+    """Required entries must not hardcode one variant's input filenames."""
+
+    bundle = _content_agents_bundle(
+        tmp_path / "articulated-bundle.zip",
+        usd="adp009d_840796_articulated_refrigerator_candidate.usda",
+        references=("adp009d_840796_articulated_refrigerator_candidate_reference.png",),
+    )
+
+    preflight = _content_agents_preflight(bundle, tmp_path / "preflight")
 
     assert "provider_runtime_bundle_required_entries_missing" not in (
         preflight.get("blockers") or []
     )
 
 
-def test_bundle_preflight_still_requires_one_input_usd_and_reference(
+def test_bundle_preflight_accepts_the_plural_reference_bindings_it_ships(
     tmp_path: Path,
 ) -> None:
-    bundle = tmp_path / "no-input-bundle.zip"
-    with zipfile.ZipFile(bundle, "w") as archive:
-        for member in (
-            "provider_runtime/run_adp_content_agents_provider_runtime.sh",
-            "provider_runtime/adp_content_agents_provider_runner.py",
-            "provider_runtime/adp_content_agents_provider_manifest.json",
-            "provider_runtime/content_agents_source.zip",
-            "provider_runtime/configs/material_agent.yaml",
-            "provider_runtime/configs/texture_agent.yaml",
-            "provider_runtime/configs/physics_agent.yaml",
-        ):
-            archive.writestr(member, "{}")
+    """The regression that refused every real bundle for a whole format era.
 
-    preflight = _blueprint_bundle_preflight(
-        job_dir=tmp_path / "preflight",
-        generated_at="fixed",
-        enable_blueprint_bundle=True,
-        enable_isaac_smoke=False,
-        provider_bundle_kind="adp_content_agents",
-        bundle_path=bundle,
-        provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
-        provider_output_put_url="https://example.com/output.zip?signature=redacted",
+    `content_agents_bundle_v7_..._plural_reference_binding` carries three
+    digest-bound reference images by design. The preflight required exactly
+    one, so it refused the bundle and named a missing `.usda` that was present
+    all along -- the blocker pointed at the wrong file entirely.
+    """
+
+    bundle = _content_agents_bundle(
+        tmp_path / "plural-bundle.zip",
+        usd="source_asset.usda",
+        references=("reference.png", "reference_0002.png", "reference_0003.png"),
     )
+
+    preflight = _content_agents_preflight(bundle, tmp_path / "preflight")
+
+    assert "provider_runtime_bundle_required_entries_missing" not in (
+        preflight.get("blockers") or []
+    )
+
+
+def test_bundle_preflight_refuses_an_image_the_manifest_never_declared(
+    tmp_path: Path,
+) -> None:
+    """Counting could never catch this; checking the declaration does."""
+
+    bundle = tmp_path / "undeclared-bundle.zip"
+    _content_agents_bundle(
+        bundle, usd="source_asset.usda", references=("reference.png",)
+    )
+    with zipfile.ZipFile(bundle, "a") as archive:
+        archive.writestr("provider_runtime/input/smuggled.png", b"\x89PNG\r\n\x1a\n")
+
+    preflight = _content_agents_preflight(bundle, tmp_path / "preflight")
+
+    assert "provider_runtime_bundle_required_entries_missing" in (
+        preflight.get("blockers") or []
+    )
+    assert "undeclared:provider_runtime/input/smuggled.png" in (
+        preflight.get("missing_zip_entries") or []
+    )
+
+
+def test_bundle_preflight_still_requires_the_declared_inputs_to_be_present(
+    tmp_path: Path,
+) -> None:
+    bundle = _content_agents_bundle(
+        tmp_path / "no-input-bundle.zip",
+        usd="",
+        references=(),
+        declared={
+            "schema_version": "adp_content_agents_provider_bundle.v1",
+            "runtime_input_binding": {"relative_path": "input/source_asset.usda"},
+            "runtime_reference_image_bindings": [
+                {"relative_path": "input/reference.png"}
+            ],
+        },
+    )
+
+    preflight = _content_agents_preflight(bundle, tmp_path / "preflight")
+
+    assert "provider_runtime_bundle_required_entries_missing" in (
+        preflight.get("blockers") or []
+    )
+    assert "provider_runtime/input/source_asset.usda" in (
+        preflight.get("missing_zip_entries") or []
+    )
+
+
+def test_a_bundle_that_declares_no_runtime_inputs_is_refused(tmp_path: Path) -> None:
+    """A manifest that does not say what it runs on cannot be verified at all."""
+
+    bundle = _content_agents_bundle(
+        tmp_path / "undeclared-manifest.zip",
+        usd="source_asset.usda",
+        references=("reference.png",),
+        declared={"schema_version": "adp_content_agents_provider_bundle.v1"},
+    )
+
+    preflight = _content_agents_preflight(bundle, tmp_path / "preflight")
 
     assert "provider_runtime_bundle_required_entries_missing" in (
         preflight.get("blockers") or []
@@ -3597,3 +3691,90 @@ def test_an_unadmitted_image_id_is_still_refused() -> None:
             "platform": "linux/amd64",
         }
     ) is False
+
+
+def test_the_texture_spec_is_keyed_by_the_path_its_planner_looks_up(
+    tmp_path: Path,
+) -> None:
+    """A label key is a plan with zero jobs, discovered only on a rented GPU.
+
+    `texture_agent.planning.planner._matching_spec` resolves `material_textures`
+    against the material's alias paths and then its name. A descriptive key
+    matches neither, so the only material in the scene is skipped as
+    `not_requested` and the run is rejected as
+    `The plan contains zero executable texture-generation jobs.` -- which is
+    exactly what `adp-content-agents-live-20260813T054343Z` paid $0.123 to find
+    out, having rendered nothing.
+    """
+
+    from blueprint_pipeline import adp_content_agents_vast as lane
+
+    source = inspect.getsource(lane)
+    marker = 'payload["material_textures"] = {'
+    assert marker in source
+    keyed = source[source.index(marker) + len(marker):].lstrip()
+    assert keyed.startswith("material_path:"), (
+        "the texture spec must be keyed by the material's USD path, not a label: "
+        f"{keyed.splitlines()[0]!r}"
+    )
+
+
+def test_the_preflight_refuses_a_texture_key_the_planner_cannot_resolve(
+    tmp_path: Path,
+) -> None:
+    """This has to fail before the GPU, which is the whole point of a preflight."""
+
+    import yaml
+
+    from blueprint_pipeline import adp_content_agents_bundle_preflight as pf
+
+    bundle = tmp_path / "mislabelled.zip"
+    configs = {
+        "input": {"usd_path": "../input/source_asset.usda"},
+        "material_textures": {
+            "agent_cad_visible_surfaces": {
+                "material_path": "/Asset/materials/agent_input_neutral",
+                "prim_paths": ["/Asset/links/body/geometry/cabinet_shell"],
+            }
+        },
+    }
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for member in pf.CONFIG_MEMBERS.values():
+            archive.writestr(member, yaml.safe_dump(configs))
+
+    with pytest.raises(pf.ContentAgentsBundlePreflightError) as excinfo:
+        pf._bundle_config_semantics(bundle)
+
+    assert str(excinfo.value).startswith(
+        "bundle_static_config_material_texture_key_unresolvable:"
+    )
+    assert "agent_cad_visible_surfaces" in str(excinfo.value)
+
+
+def test_the_preflight_accepts_a_path_keyed_or_name_keyed_texture_spec(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    from blueprint_pipeline import adp_content_agents_bundle_preflight as pf
+
+    for key in ("/Asset/materials/agent_input_neutral", "agent_input_neutral"):
+        bundle = tmp_path / f"ok-{key.rsplit('/', 1)[-1]}-{len(key)}.zip"
+        configs = {
+            "input": {"usd_path": "../input/source_asset.usda"},
+            "material_textures": {
+                key: {
+                    "material_path": "/Asset/materials/agent_input_neutral",
+                    "prim_paths": ["/Asset/links/body/geometry/cabinet_shell"],
+                }
+            },
+        }
+        with zipfile.ZipFile(bundle, "w") as archive:
+            for member in pf.CONFIG_MEMBERS.values():
+                archive.writestr(member, yaml.safe_dump(configs))
+
+        # Reaches the later checks rather than refusing the key.
+        try:
+            pf._bundle_config_semantics(bundle)
+        except pf.ContentAgentsBundlePreflightError as exc:
+            assert "material_texture_key_unresolvable" not in str(exc)

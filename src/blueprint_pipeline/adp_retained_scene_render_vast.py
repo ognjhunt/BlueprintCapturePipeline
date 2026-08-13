@@ -24,6 +24,7 @@ from .paid_resource_admission import (
 )
 from .provider_bundle_rehearsal import provider_bundle_rehearsal_blockers
 from .task_evaluation_artifact_manifest import (
+    seal_unallocated_provider_teardown,
     TaskEvaluationArtifactManifestError,
     build_task_evaluation_artifact_manifest,
 )
@@ -652,6 +653,13 @@ def run_retained_scene_render_vast(
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {"status": "blocked", "blockers": [f"vast_adapter_failed:{redacted_failure_detail(exc)}"]}
+        # The adapter may never have been entered -- resolving a secret or a
+        # staged URL raises before it. Record the absence of any allocation so
+        # the run can close; the sealer declines whenever the evidence does not
+        # support that claim.
+        seal_unallocated_provider_teardown(
+            provider_run, reason="vast_adapter_failed"
+        )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     teardown_path = provider_run / "vast_teardown_manifest.json"
