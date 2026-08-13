@@ -36,6 +36,9 @@ CANARY_NAME_PREFIXES = (
     # watched Vast canary. Keep its resource name scope explicit rather than
     # borrowing the historical GR00T name family.
     "blueprint-adp-aura-exact-residual-",
+    # Reusable 1--5 replacement-object native Isaac import canary. Its exact
+    # per-run suffix and instance handoff are still bound by the watchdog.
+    "blueprint-adp-paired-native-import-",
     "blueprint-native-warehouse-camera-",
     "blueprint-reconstruction-",
     "blueprint-measurement-isaac-",
