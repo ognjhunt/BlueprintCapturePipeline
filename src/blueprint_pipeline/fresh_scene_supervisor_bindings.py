@@ -31,6 +31,7 @@ STATUS_SCHEMA = "fresh_scene_paired_target_preparation.v1"
 SAM_REQUEST_SCHEMA = "fresh_scene_sam31_task_input_tool_request.v1"
 MASK_REQUEST_SCHEMA = "fresh_scene_calibrated_mask_tool_request.v1"
 REMOVAL_FREEZE_REQUEST_SCHEMA = "fresh_scene_removal_freeze_tool_request.v1"
+SEGMENT_CUTOUT_REQUEST_SCHEMA = "fresh_scene_segment_cutout_tool_request.v1"
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAX_BOUND_INPUT_FILES = 1024
 MAX_BOUND_INPUT_BYTES = 2 * 1024**3
@@ -152,7 +153,7 @@ def _request_input_paths(
                 ),
             )
         )
-    else:
+    elif schema == REMOVAL_FREEZE_REQUEST_SCHEMA:
         removal_inputs: dict[str, Path] = {}
         for key in (
             "source_standard_splat_path",
@@ -161,10 +162,10 @@ def _request_input_paths(
             "calibrated_mask_set_receipt_path",
         ):
             resident = _resident_path(
-                    str(request.get(key) or ""),
-                    roots=roots,
-                    kind="file",
-                    code=f"fresh_scene_tool_request_input_not_host_resident:{key}",
+                str(request.get(key) or ""),
+                roots=roots,
+                kind="file",
+                code=f"fresh_scene_tool_request_input_not_host_resident:{key}",
             )
             paths.append(resident)
             removal_inputs[key] = resident
@@ -243,6 +244,58 @@ def _request_input_paths(
                             ),
                         )
                     )
+    else:
+        paths.append(
+            _resident_path(
+                str(request.get("source_standard_splat_path") or ""),
+                roots=roots,
+                kind="file",
+                code=(
+                    "fresh_scene_tool_request_input_not_host_resident:"
+                    "source_standard_splat_path"
+                ),
+            )
+        )
+        for key in (
+            "task_freeze_paths",
+            "sweep_freeze_paths_by_task",
+            "contribution_manifest_paths_by_task",
+        ):
+            raw = request.get(key)
+            values = raw if isinstance(raw, list) else (raw or {}).values()
+            for value in values:
+                paths.append(
+                    _resident_path(
+                        str(value),
+                        roots=roots,
+                        kind="file",
+                        code=f"fresh_scene_tool_request_input_not_host_resident:{key}",
+                    )
+                )
+        manifests = request.get("contribution_manifest_paths_by_task") or {}
+        for manifest_value in manifests.values():
+            manifest_path = Path(str(manifest_value)).expanduser().resolve()
+            manifest = _read_object(
+                manifest_path, code="fresh_scene_segment_cutout_manifest_invalid"
+            )
+            repetitions = manifest.get("repetitions")
+            if not isinstance(repetitions, list) or len(repetitions) < 2:
+                raise FreshSceneSupervisorBindingError(
+                    "fresh_scene_segment_cutout_manifest_invalid"
+                )
+            for record in repetitions:
+                if not isinstance(record, Mapping):
+                    raise FreshSceneSupervisorBindingError(
+                        "fresh_scene_segment_cutout_manifest_invalid"
+                    )
+                paths.append(
+                    _resident_path(
+                        manifest_path.parent / str(record.get("relative_path") or ""),
+                        roots=roots,
+                        kind="file",
+                        code="fresh_scene_segment_cutout_array_not_host_resident",
+                    )
+                )
     unique = sorted(set(paths))
     if (
         not unique
@@ -310,7 +363,7 @@ def _validate_request(
             if not isinstance(raw, Mapping) or not str(task_id).strip():
                 raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
         _request_input_paths(request, schema=schema, roots=roots)
-    else:
+    elif schema == REMOVAL_FREEZE_REQUEST_SCHEMA:
         tasks = request.get("tasks")
         if not isinstance(tasks, Mapping) or not 1 <= len(tasks) <= 5:
             raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
@@ -325,6 +378,20 @@ def _validate_request(
             ):
                 raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
         _request_input_paths(request, schema=schema, roots=roots)
+    else:
+        task_freezes = request.get("task_freeze_paths")
+        sweeps = request.get("sweep_freeze_paths_by_task")
+        manifests = request.get("contribution_manifest_paths_by_task")
+        if (
+            not isinstance(task_freezes, list)
+            or not 1 <= len(task_freezes) <= 5
+            or not isinstance(sweeps, Mapping)
+            or not isinstance(manifests, Mapping)
+            or set(sweeps) != set(manifests)
+            or len(sweeps) != len(task_freezes)
+        ):
+            raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+        _request_input_paths(request, schema=schema, roots=roots)
     return request
 
 
@@ -335,6 +402,7 @@ def materialize_fresh_scene_supervisor_bindings(
     sam31_task_input_request_path: str | Path | None = None,
     calibrated_mask_request_path: str | Path | None = None,
     removal_freeze_request_path: str | Path | None = None,
+    segment_cutout_request_path: str | Path | None = None,
     roots: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     """Seal the exact non-spend tool inputs available on this host."""
@@ -372,6 +440,12 @@ def materialize_fresh_scene_supervisor_bindings(
             "materialize_fresh_scene_removal_freezes",
             REMOVAL_FREEZE_REQUEST_SCHEMA,
             removal_freeze_request_path,
+        ),
+        (
+            "fresh_scene_segment_cutout_request",
+            "materialize_fresh_scene_segment_cutout",
+            SEGMENT_CUTOUT_REQUEST_SCHEMA,
+            segment_cutout_request_path,
         ),
     ):
         if raw_path is None:
@@ -474,6 +548,7 @@ def compile_fresh_scene_supervisor_bindings(
         "fresh_scene_sam31_task_input_request": SAM_REQUEST_SCHEMA,
         "fresh_scene_calibrated_mask_request": MASK_REQUEST_SCHEMA,
         "fresh_scene_removal_freeze_request": REMOVAL_FREEZE_REQUEST_SCHEMA,
+        "fresh_scene_segment_cutout_request": SEGMENT_CUTOUT_REQUEST_SCHEMA,
     }
     records = manifest.get("tool_requests")
     if not isinstance(records, Mapping) or set(records) - set(schema_by_field):
@@ -482,6 +557,7 @@ def compile_fresh_scene_supervisor_bindings(
         "fresh_scene_sam31_task_input_request": "materialize_sam31_task_inputs",
         "fresh_scene_calibrated_mask_request": "materialize_calibrated_object_masks",
         "fresh_scene_removal_freeze_request": "materialize_fresh_scene_removal_freezes",
+        "fresh_scene_segment_cutout_request": "materialize_fresh_scene_segment_cutout",
     }
     expected_tools = {"inspect_fresh_scene_preparation"}
     for field, raw in records.items():
@@ -533,6 +609,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build.add_argument("--sam31-task-input-request")
     build.add_argument("--calibrated-mask-request")
     build.add_argument("--removal-freeze-request")
+    build.add_argument("--segment-cutout-request")
     build.add_argument("--output", required=True)
     run = commands.add_parser("run")
     run.add_argument("--binding-manifest", required=True)
@@ -548,6 +625,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sam31_task_input_request_path=args.sam31_task_input_request,
             calibrated_mask_request_path=args.calibrated_mask_request,
             removal_freeze_request_path=args.removal_freeze_request,
+            segment_cutout_request_path=args.segment_cutout_request,
             output_path=args.output,
         )
     else:

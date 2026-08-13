@@ -37,6 +37,7 @@ from .public_scene_gaussian_excision_audit import (
 
 SWEEP_KIND = "repair_supported_full_view_segment_contribution_sweep.v1"
 CUTOUT_SET_SCHEMA = "adp009d_segment_contribution_cutout_set.v1"
+TOOL_REQUEST_SCHEMA = "fresh_scene_segment_cutout_tool_request.v1"
 SELECTION_RULE = (
     "union_across_repetitions_of_any_view_target_core_plus_uncertain_"
     "contribution_at_frozen_threshold.v1"
@@ -460,11 +461,46 @@ def materialize_segment_contribution_cutout_set(
     return receipt
 
 
+def materialize_segment_contribution_cutout_set_from_tool_request(
+    *, request: Mapping[str, Any], output_root: str | Path
+) -> dict[str, Any]:
+    """Execute the registered non-spend cutout request after digest validation."""
+
+    value = dict(request)
+    task_freezes = value.get("task_freeze_paths")
+    sweep_paths = value.get("sweep_freeze_paths_by_task")
+    manifest_paths = value.get("contribution_manifest_paths_by_task")
+    if (
+        value.get("schema_version") != TOOL_REQUEST_SCHEMA
+        or value.get("request_digest")
+        != canonical_digest(value, digest_field="request_digest")
+        or not isinstance(task_freezes, list)
+        or not 1 <= len(task_freezes) <= 5
+        or not isinstance(sweep_paths, Mapping)
+        or not isinstance(manifest_paths, Mapping)
+        or set(sweep_paths) != set(manifest_paths)
+        or len(sweep_paths) != len(task_freezes)
+    ):
+        raise SegmentContributionCutoutError(["segment_cutout_tool_request_invalid"])
+    return materialize_segment_contribution_cutout_set(
+        source_standard_splat_path=str(value.get("source_standard_splat_path") or ""),
+        task_freeze_paths=[str(path) for path in task_freezes],
+        sweep_freeze_paths_by_task={
+            str(task_id): str(path) for task_id, path in sweep_paths.items()
+        },
+        contribution_manifest_paths_by_task={
+            str(task_id): str(path) for task_id, path in manifest_paths.items()
+        },
+        output_root=output_root,
+    )
+
+
 __all__ = [
     "CUTOUT_SET_SCHEMA",
     "SELECTION_RULE",
     "SWEEP_KIND",
     "SegmentContributionCutoutError",
     "materialize_segment_contribution_cutout_set",
+    "materialize_segment_contribution_cutout_set_from_tool_request",
     "materialize_segment_contribution_sweep_freeze",
 ]
