@@ -921,6 +921,7 @@ def _export_checkpoint_native_appearance(
             "compression": "stored",
             "payload_alignment_bytes": 64,
             "all_payload_offsets_aligned": True,
+            "nurec_gzip_mtime_normalized_to_zero": True,
             "members": usdz_members,
         },
         "usdz_tensor_precision": "float16_pinned_upstream_exporter",
@@ -960,6 +961,12 @@ def _align_and_validate_usdz(path: Path) -> list[dict[str, Any]]:
                 allowZip64=True,
             ) as archive:
                 for name, body in members:
+                    if name.endswith(".nurec"):
+                        if len(body) < 10 or body[:3] != b"\x1f\x8b\x08":
+                            raise ValueError(
+                                "artifixer3d_native_export_nurec_invalid"
+                            )
+                        body = body[:4] + b"\0\0\0\0" + body[8:]
                     info = zipfile.ZipInfo(name)
                     info.compress_type = zipfile.ZIP_STORED
                     header_size = 30 + len(name.encode("utf-8"))

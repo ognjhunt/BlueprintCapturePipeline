@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import gzip
+import io
 from pathlib import Path
 import shutil
 import sys
@@ -415,9 +417,12 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
             assert model.get_n_active_features() == 3
             assert dataset is None and conf is config
             assert conf.export_usdz.apply_normalizing_transform is False
+            buffer = io.BytesIO()
+            with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=123) as stream:
+                stream.write(b"nurec")
             with zipfile.ZipFile(output, "w") as archive:
                 archive.writestr("default.usda", b"default")
-                archive.writestr("repaired_scene.nurec", b"nurec")
+                archive.writestr("repaired_scene.nurec", buffer.getvalue())
                 archive.writestr("gauss.usda", b"gauss")
 
     ply_module.PLYExporter = PLYExporter
@@ -467,6 +472,9 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
             "repaired_scene.nurec",
             "gauss.usda",
         ]
+        nurec = archive.read("repaired_scene.nurec")
+        assert nurec[4:8] == b"\0" * 4
+        assert gzip.decompress(nurec) == b"nurec"
     assert result["native_import_qualified"] is False
 
 

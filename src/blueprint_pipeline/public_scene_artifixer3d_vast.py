@@ -1588,6 +1588,10 @@ def _validate_native_usdz_archive(
                     info.compress_type != zipfile.ZIP_STORED
                     or data_offset % 64
                     or len(body) != info.file_size
+                    or (
+                        info.filename.endswith(".nurec")
+                        and (body[:3] != b"\x1f\x8b\x08" or body[4:8] != b"\0" * 4)
+                    )
                 ):
                     raise ValueError
                 observed.append(
@@ -1738,6 +1742,8 @@ def _materialize_raw_result(
                 or archive_contract.get("compression") != "stored"
                 or archive_contract.get("payload_alignment_bytes") != 64
                 or archive_contract.get("all_payload_offsets_aligned") is not True
+                or archive_contract.get("nurec_gzip_mtime_normalized_to_zero")
+                is not True
                 or not isinstance(archive_contract.get("members"), list)
                 or len(archive_contract["members"]) != 3
             ):
