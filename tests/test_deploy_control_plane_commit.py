@@ -46,67 +46,97 @@ def _lock(tmp_path: Path, **overrides) -> Path:
     return path
 
 
-def test_a_held_lock_is_reported_with_the_run_that_holds_it(tmp_path: Path) -> None:
-    held = deploy._paid_launch_in_flight([str(_lock(tmp_path))])
-
-    assert len(held) == 1
-    assert held[0]["pid"] == os.getpid()
-    assert held[0]["job_dir"].endswith("vast_provider_run")
-
-
-def test_no_lock_is_not_a_paid_launch(tmp_path: Path) -> None:
-    assert deploy._paid_launch_in_flight([str(tmp_path / "absent.lock")]) == []
-
-
-def test_a_lock_whose_holder_is_gone_does_not_block_forever(tmp_path: Path) -> None:
-    """A stale lock is the paid-lane reaper's problem, not a deploy freeze."""
-
-    # PID 2^22 is above the default pid_max on Linux and macOS alike, so no
-    # live process can hold it.
-    assert deploy._paid_launch_in_flight([str(_lock(tmp_path, pid=4_194_304))]) == []
-
-
-@pytest.mark.parametrize(
-    "body", ["not json at all", '"a string"', "[]"], ids=["garbage", "scalar", "list"]
-)
-def test_an_unreadable_lock_counts_as_held(tmp_path: Path, body: str) -> None:
-    """Absence of proof is not proof of absence when a GPU may be running."""
-
-    path = tmp_path / "vast_paid_launch.lock"
-    path.write_text(body, encoding="utf-8")
-
-    held = deploy._paid_launch_in_flight([str(path)])
-
-    assert [row["holder"] for row in held] == ["unreadable"]
-
-
-def test_the_deploy_refuses_while_a_paid_launch_holds_the_lock(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """And refuses *before* touching either surface."""
-
-    moved: list[str] = []
-    monkeypatch.setattr(
-        deploy, "_move_source_checkout", lambda repo, commit: moved.append(commit)
-    )
-
-    with pytest.raises(deploy.ControlPlaneDeployError) as excinfo:
-        deploy.deploy_control_plane_commit(
-            source_repo=tmp_path,
-            source_commit="a" * 40,
-            release_root=tmp_path / "releases",
-            state_root=tmp_path / "state",
-            active_link=tmp_path / "active",
-            paid_launch_locks=(str(_lock(tmp_path)),),
-        )
-
-    assert str(excinfo.value).startswith("deploy_refused_paid_launch_in_flight:")
-    assert moved == [], "the source checkout moved before the refusal"
-
-
 def test_the_canonical_lock_is_checked_by_default() -> None:
     """An operator who forgets the flag still gets the guard."""
 
     assert deploy.DEFAULT_PAID_LAUNCH_LOCKS == (
         "/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
     )
+
+
+def test_the_deploy_holds_the_lock_for_its_whole_duration(tmp_path: Path) -> None:
+    """Not a check-then-deploy: a launch can start between the two.
+
+    That is not hypothetical. On 2026-08-13 the check passed and the parallel
+    lane acquired the lock 20 seconds later, mid-deploy.
+    """
+
+    import fcntl
+
+    lock = _lock(tmp_path)
+    observed: list[bool] = []
+
+    with deploy._holding_paid_launch_locks([str(lock)]):
+        # A launch trying to start now must be refused, which is what the
+        # adapter's own non-blocking flock does.
+        with lock.open("r", encoding="utf-8") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                observed.append(True)
+                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+            except BlockingIOError:
+                observed.append(False)
+
+    assert observed == [False], "a launch could start while the deploy held the lock"
+
+    # And released afterwards, or the next launch could never start.
+    with lock.open("r", encoding="utf-8") as probe:
+        fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+
+
+def test_a_lock_held_by_a_launch_refuses_the_deploy_by_name(tmp_path: Path) -> None:
+    import fcntl
+
+    lock = _lock(tmp_path)
+    with lock.open("r", encoding="utf-8") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(deploy.ControlPlaneDeployError) as excinfo:
+            with deploy._holding_paid_launch_locks([str(lock)]):
+                pass
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+
+    # Names the run, not the file.
+    assert str(excinfo.value).startswith("deploy_refused_paid_launch_in_flight:")
+    assert "vast_provider_run" in str(excinfo.value)
+
+
+def test_an_absent_lock_is_not_created_by_the_deploy(tmp_path: Path) -> None:
+    """The adapter creates it as the service account at 0600.
+
+    A deploy running as root that created it first would leave a file the
+    service can never open again, taking every paid lane down.
+    """
+
+    absent = tmp_path / "never-launched" / "vast_paid_launch.lock"
+
+    with deploy._holding_paid_launch_locks([str(absent)]):
+        pass
+
+    assert not absent.exists()
+    assert not absent.parent.exists()
+
+
+def test_the_deploy_does_not_move_a_surface_while_refusing(tmp_path: Path, monkeypatch) -> None:
+    import fcntl
+
+    moved: list[str] = []
+    monkeypatch.setattr(
+        deploy, "_move_source_checkout", lambda repo, commit: moved.append(commit)
+    )
+    lock = _lock(tmp_path)
+
+    with lock.open("r", encoding="utf-8") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(deploy.ControlPlaneDeployError):
+            deploy.deploy_control_plane_commit(
+                source_repo=tmp_path,
+                source_commit="a" * 40,
+                release_root=tmp_path / "releases",
+                state_root=tmp_path / "state",
+                active_link=tmp_path / "active",
+                paid_launch_locks=(str(lock),),
+            )
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+
+    assert moved == []
