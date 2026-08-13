@@ -5769,6 +5769,51 @@ def _api_gate_blockers(
     return blockers
 
 
+#: How many paid launches may hold a provider at once, fleet-wide.
+#:
+#: This is a spend policy, not a technical limit. It was 1 for a long time and
+#: that made every lane queue behind the slowest run in flight -- a Content
+#: Agents run held the provider for 78 minutes on 2026-08-13 while three other
+#: lanes waited. Raised to 3 on explicit authorization the same day.
+#:
+#: What it does NOT change: each attempt still carries its own hard cap, TTL,
+#: and watchdog, so the worst case is N times one attempt's ceiling rather than
+#: an unbounded fleet. And a run still proves teardown from its own receipt.
+#: Fleet-wide provider zero simply becomes provable between batches rather than
+#: after every run, which is where the reconciler already looks for it.
+DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES = 3
+MAX_CONCURRENT_PAID_LAUNCHES_ENV = "BLUEPRINT_VAST_MAX_CONCURRENT_PAID_LAUNCHES"
+
+
+def _max_concurrent_paid_launches() -> int:
+    raw = _string(os.environ.get(MAX_CONCURRENT_PAID_LAUNCHES_ENV))
+    if not raw:
+        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
+    # Never widen past the compiled policy from an environment variable, and
+    # never fall below one: an env typo must not silently authorize more
+    # concurrent spend, nor deadlock every lane.
+    return max(1, min(value, DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES))
+
+
+def vast_launch_lock_paths(lock_path: Path | None = None) -> list[Path]:
+    """One path per concurrency slot.
+
+    Slot 0 keeps the historical filename, so a host, a reaper, or an operator
+    that knows only `vast_paid_launch.lock` still sees a real lock rather than
+    nothing.
+    """
+
+    base = lock_path or _vast_launch_lock_path()
+    paths = [base]
+    for slot in range(1, _max_concurrent_paid_launches()):
+        paths.append(base.with_name(f"{base.stem}.slot{slot}{base.suffix}"))
+    return paths
+
+
 def _vast_launch_lock_path() -> Path:
     configured = _string(os.environ.get(VAST_LAUNCH_LOCK_FILE_ENV))
     if configured:
@@ -5785,28 +5830,42 @@ def _try_acquire_vast_launch_lock(
     generated_at: str,
     lock_path: Path | None = None,
 ) -> tuple[Any | None, dict[str, Any]]:
-    lock_path = lock_path or _vast_launch_lock_path()
-    ensure_dir(lock_path.parent)
-    handle = lock_path.open("a+", encoding="utf-8")
-    lock_path.chmod(0o600)
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        handle.seek(0)
-        existing_holder = handle.read()[:1000]
-        handle.close()
+    slots = vast_launch_lock_paths(lock_path)
+    handle = None
+    held_path: Path | None = None
+    last_holder = ""
+    for candidate in slots:
+        ensure_dir(candidate.parent)
+        attempt = candidate.open("a+", encoding="utf-8")
+        candidate.chmod(0o600)
+        try:
+            fcntl.flock(attempt.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            attempt.seek(0)
+            last_holder = attempt.read()[:1000]
+            attempt.close()
+            continue
+        handle = attempt
+        held_path = candidate
+        break
+    if handle is None or held_path is None:
+        # Every slot is taken. This is the same refusal as before, and it still
+        # says nothing about whether a *particular* run may proceed -- only
+        # that the fleet is at its authorized concurrency.
         manifest = {
             "schema_version": "vast_launch_lock_manifest.v1",
             "generated_at": generated_at,
             "status": "blocked",
-            "lock_path": str(lock_path),
+            "lock_path": str(slots[0]),
+            "lock_slots": [str(item) for item in slots],
             "lock_acquired": False,
             "blockers": ["vast_paid_launch_lock_busy"],
-            "existing_lock_record_prefix": existing_holder,
+            "existing_lock_record_prefix": last_holder,
             "raw_secret_values_recorded": False,
         }
         write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
         return None, manifest
+    lock_path = held_path
     record = {
         "pid": os.getpid(),
         "job_dir": str(job_dir),
@@ -5823,6 +5882,7 @@ def _try_acquire_vast_launch_lock(
         "generated_at": generated_at,
         "status": "acquired",
         "lock_path": str(lock_path),
+        "lock_slots": [str(item) for item in slots],
         "lock_acquired": True,
         "lock_record": record,
         "blockers": [],
