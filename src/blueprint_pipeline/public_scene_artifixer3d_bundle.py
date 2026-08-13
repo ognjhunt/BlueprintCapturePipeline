@@ -1354,6 +1354,7 @@ def main(argv: list[str] | None = None) -> int:
         "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
         "generated_at": args.generated_at,
     }
+    args = parser.parse_args(argv)
     try:
         receipt = build_artifixer3d_bundle(
             candidate_inputs_receipt_path=args.candidate_inputs_receipt,
@@ -1363,6 +1364,9 @@ def main(argv: list[str] | None = None) -> int:
             repository_root=args.repository_root,
             allowed_active_instance_ids=tuple(args.allow_active_instance or ()),
             **{key: value for key, value in optional.items() if value is not None},
+            **({"artifixer3d_steps": args.artifixer3d_steps} if args.artifixer3d_steps is not None else {}),
+            **({"random_seed": args.random_seed} if args.random_seed is not None else {}),
+            **({"pipeline_mode": args.pipeline_mode} if args.pipeline_mode is not None else {}),
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(
