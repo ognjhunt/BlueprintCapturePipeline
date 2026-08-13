@@ -37,7 +37,7 @@ is left merely unattempted.
 | `adp_aura_interiorgs_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
 | `public_scene_aura_exact_residual_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
 | `adp_inpaint360_interiorgs_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
-| `simpler_public_vast` | no | **frozen by doctrine** — SIMPLER policy-ranking reference; five-policy work is frozen. |
+| `simpler_public_vast` | n/a | **retired** 2026-08-13 — not needed. Was already frozen by doctrine as a five-policy/general-ranking reference; now retired outright. |
 
 Six lanes retired or frozen, three completed, six outstanding — of which two are
 blocked on recoverable inputs and three need a builder.
@@ -121,6 +121,13 @@ question. Nothing here is pending anyone's decision.
 
 ### SIMPLER (`simpler_public_vast`)
 
-The SIMPLER policy-ranking reference. `CLAUDE.md` freezes five-policy and
-general-ranking work, so building it a launch path would be outside the active
-program. Frozen, not blocked.
+**Retired 2026-08-13.** Not needed.
+
+Worth keeping straight for anyone reading later: SIMPLER is a *policy-ranking*
+benchmark reference, not an appearance method, so it is not literally replaced
+by artifixer3D+ with `gpt-image-2` the way AuraFusion360 and Inpaint360GS are.
+It was already frozen by doctrine as five-policy/general-ranking work; the
+decision here retires it outright rather than leaving it frozen-but-pending.
+
+Its bundle CLI landed in #512 anyway. Retired means we do not run it, not that
+it should stay a landmine for whoever unfreezes it.
