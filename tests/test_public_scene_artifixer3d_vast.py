@@ -702,7 +702,75 @@ def test_materialize_postblocked_provider_zero_binds_closeout(tmp_path: Path) ->
         output_path=tmp_path / "provider_zero.json",
     )
     assert receipt["provider_mutations_performed_by_attempt"] == 1
+    assert receipt["attempt_terminal_status"] == "blocked"
     assert receipt["provider_zero_confirmed"] is True
+    assert receipt["inventory"]["live_resource_count"] == 0
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
+def test_materialize_postblocked_provider_zero_accepts_completed_terminal_result(
+    tmp_path: Path,
+) -> None:
+    authority: dict[str, object] = {
+        "schema_version": "public_scene_artifixer3d_paid_attempt_authority.v1",
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = tmp_path / "authority.json"
+    result_path = tmp_path / "result.json"
+    adapter_path = tmp_path / "adapter.json"
+    cleanup_path = tmp_path / "cleanup.json"
+    watchdog_path = tmp_path / "watchdog.json"
+    _write(authority_path, authority)
+    _write(
+        result_path,
+        {
+            "schema_version": "public_scene_artifixer3d_vast_run.v1",
+            "status": "completed",
+            "authorization_consumption": {
+                "status": "consumed",
+                "authorization_digest": authority["authorization_digest"],
+            },
+            "continuing_spend_from_this_run": False,
+        },
+    )
+    _write(
+        adapter_path,
+        {"provider_create_attempted": True, "continuing_spend_from_this_run": False},
+    )
+    _write(
+        cleanup_path,
+        {"all_objects_absent": True, "signed_url_files_removed": True},
+    )
+    _write(
+        watchdog_path,
+        {
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+            "final_global_inventory": {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+            },
+        },
+    )
+
+    receipt = materialize_artifixer3d_postblocked_provider_zero(
+        attempt_authority_path=authority_path,
+        result_path=result_path,
+        adapter_result_path=adapter_path,
+        cleanup_path=cleanup_path,
+        watchdog_path=watchdog_path,
+        output_path=tmp_path / "provider_zero.json",
+    )
+
+    assert receipt["attempt_terminal_status"] == "completed"
+    assert receipt["provider_mutations_performed_by_attempt"] == 1
+    assert receipt["provider_zero_confirmed"] is True
+    assert receipt["inventory"]["api_confirmed"] is True
     assert receipt["inventory"]["live_resource_count"] == 0
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"

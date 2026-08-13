@@ -1229,7 +1229,12 @@ def materialize_artifixer3d_postblocked_provider_zero(
     watchdog_path: str | Path,
     output_path: str | Path,
 ) -> dict[str, Any]:
-    """Seal one failed attempt's mutation count and API-confirmed zero state."""
+    """Seal one terminal attempt's mutation count and API-confirmed zero state.
+
+    The historical function and receipt-schema names are retained for compatibility,
+    but a successfully completed attempt needs the same immutable provider-zero
+    closeout before it can serve as a spend-chain predecessor.
+    """
 
     authority_file = Path(attempt_authority_path).expanduser().resolve()
     result_file = Path(result_path).expanduser().resolve()
@@ -1245,6 +1250,7 @@ def materialize_artifixer3d_postblocked_provider_zero(
     if not isinstance(inventory, Mapping):
         inventory = {}
     authority_digest = authority.get("authorization_digest")
+    terminal_status = result.get("status")
     blockers: list[str] = []
     if (
         authority.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION
@@ -1253,7 +1259,7 @@ def materialize_artifixer3d_postblocked_provider_zero(
         blockers.append("artifixer3d_provider_zero_authority_invalid")
     if (
         result.get("schema_version") != RESULT_SCHEMA_VERSION
-        or result.get("status") != "blocked"
+        or terminal_status not in {"blocked", "completed"}
         or result.get("authorization_consumption", {}).get("status") != "consumed"
         or result.get("authorization_consumption", {}).get("authorization_digest")
         != authority_digest
@@ -1277,6 +1283,7 @@ def materialize_artifixer3d_postblocked_provider_zero(
         "schema_version": "artifixer3d_postblocked_provider_zero.v1",
         "generated_at": utc_now_iso(),
         "attempt_authority_digest": authority_digest,
+        "attempt_terminal_status": terminal_status,
         "provider_mutations_performed_by_attempt": provider_mutations,
         "provider_zero_confirmed": True,
         "inventory": dict(inventory),
