@@ -17,7 +17,8 @@
    "license": "Apache-2.0",
    "license_url": "https://huggingface.co/Qwen/Qwen-Image-Edit",
    "commercial_use_permitted": true,
-   "recorded_on": "2026-08-13"
+   "recorded_on": "2026-08-13",
+   "notes": "Locally hosted weights, NOT the hosted-API path. Retiring it is not a row deletion: the bundle pins QWEN_IMAGE_EDIT_REPOSITORY, QWEN_IMAGE_EDIT_REVISION and a large-files download list, so removing it means removing that weights path and its tests."
   },
   {
    "backend_id": "vibe_image_edit",
@@ -26,7 +27,7 @@
    "license_url": "https://openai.com/policies/terms-of-use",
    "commercial_use_permitted": true,
    "recorded_on": "2026-08-13",
-   "notes": "Hosted API. The specific model is recorded per run in editor_identity, so a newer hosted model does not need a new backend_id."
+   "notes": "No implementation is bound to this id -- it is the allowlist token meaning 'a hosted API editor produced these frames', which is the APIs-on-our-own-captures path. Which model, and on whose terms, is recorded per run in editor_identity, so following a newer hosted model needs no change here. The name is inherited from the frozenset this registry replaced and names nothing on its own."
   }
  ]
 }

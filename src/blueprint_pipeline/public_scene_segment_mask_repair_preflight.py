@@ -393,6 +393,55 @@ def materialize_segment_mask_repair_preflight(
     return preflight
 
 
+
+def main(argv: list[str] | None = None) -> int:
+    """Materialize the calibrated preflight the ArtiFixer3D chain starts from.
+
+    This is the root of the appearance path: the candidate-inputs receipt is
+    derived from a calibrated preflight, and the only two producers are this one
+    and the retired Aura residual preflight. With Aura retired and this having
+    no entry point, the chain had no reachable root at all -- the head of the
+    chain reported a missing input, several steps downstream of the actual gap.
+
+    Performs no provider mutation and rents nothing.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Materialize a calibrated segment mask repair preflight."
+    )
+    parser.add_argument("--segment-cutout-set", required=True)
+    parser.add_argument("--execution-authority", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+
+    try:
+        receipt = materialize_segment_mask_repair_preflight(
+            segment_cutout_set_path=args.segment_cutout_set,
+            execution_authority_path=args.execution_authority,
+            output_path=args.output,
+        )
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": [f"{type(exc).__name__}:{exc}"],
+                    "provider_mutation_performed": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+
 __all__ = [
     "SCHEMA_VERSION",
     "SegmentMaskRepairPreflightError",

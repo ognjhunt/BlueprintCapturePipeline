@@ -13,6 +13,8 @@ import shutil
 import struct
 import subprocess
 import sys
+
+from blueprint_pipeline.image_editor_backend_registry import registered_backend_ids
 import time
 from typing import Any, Mapping, Sequence
 import zipfile
@@ -54,11 +56,10 @@ DUAL_TARGET_LOSS_OVERRIDES = {
     "loss.lambda_lpips_override": 0.1,
     "loss.lambda_reconlosses_override": 0.0,
 }
-DIRECT_EDITOR_BACKENDS = {
-    "artifixer",
-    "qwen_image_edit_2511",
-    "vibe_image_edit",
-}
+# Read from the registry rather than a second copy of the same literals: this
+# module and the bundle module each had their own set, so admitting a backend in
+# one and not the other was a silent disagreement waiting to happen.
+DIRECT_EDITOR_BACKENDS = set(registered_backend_ids())
 SEMANTIC_EDITOR_PROMPT = (
     "Reconstruct the natural empty background where the solid black masked hole "
     "appears. Continue the surrounding floor, wall, cabinet, desk, curtain, and "
