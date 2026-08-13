@@ -17,22 +17,47 @@ A lane needs three things to be reachable. Two are code and one is a command:
 
 ## Status
 
-| Lane | Profile builder | Attempt authority | Reachable |
-| --- | --- | --- | --- |
-| `adp_retained_scene_render_vast` | yes | yes | **proven** — completed 2026-08-13 |
-| `adp_content_agents_vast` | yes | yes | **proven** — completed 2026-08-13 |
-| `adp009d_franka_vast` | yes | n/a | yes |
-| `public_scene_simready_isaac_vast` | yes | yes | yes — never launched |
-| `adp_gaussian_excision_vast` | needed | yes | no |
-| `adp_joint_agent_vast` | needed | not required | no |
-| `native_task_arena_vast` | needed | not required | no |
-| `adp009d_ovrtx_vast` | needed | not required | no |
-| `adp009d_aura_native_vast` | needed | not required | no |
-| `adp009d_native_microcheck` | needed | not required | no |
+Every one of the fifteen paid lanes below has an established status: it has
+completed through the live path, or it names the exact thing stopping it. None
+is left merely unattempted.
 
-Bundle receipts already read `status: ready, blockers: []` for every lane in the
-table, and the canonical allocator has always had a branch for each. Reaching
-them is launch-path plumbing, not new capability.
+| Lane | Builder | Status |
+| --- | --- | --- |
+| `adp_retained_scene_render_vast` | yes | **completed** — all controls passed, provider-zero verified |
+| `adp_content_agents_vast` | yes | **completed** — all controls passed, provider-zero verified |
+| `public_scene_simready_isaac_vast` | yes | **completed** — all controls passed, provider-zero verified |
+| `adp009d_franka_vast` | yes | reachable, never fired. Its three published profiles are `task-evaluation-profile-preflight` dry-run profiles, not lane launches; a launchable profile has not been published. |
+| `adp_gaussian_excision_vast` | yes | **blocked: no bundle CLI.** `build_gaussian_excision_vast_bundle` exists but the module has no `main()`, so the bundle cannot be rebuilt at the deployed commit — and the allocator refuses a bundle from any other commit. Its inputs (cameras, execution authority, scene PLY, dependency wheelhouse) survive **only inside the existing bundle zip**, so a rebuild also needs them extracted. |
+| `adp_joint_agent_vast` | yes | **blocked: scattered inputs.** The module has a CLI needing eight inputs; `execution_authority.json`, `joint_agent_packet.json`, and the review contract survive inside the bundle zip, but the freeze and scope-amendment documents were not located on disk. |
+| `native_task_arena_vast` | no | needs a builder. Three probe kinds (construction/controls/policy) and up to five input packets; all inputs located under `second_scene_840796_e2e`. |
+| `adp_isaac_lab_arena_vast` | no | needs a builder. Uses the shared artifact manifest directly. |
+| `adp009d_ovrtx_vast` | no | needs a builder. Appearance/camera transport; see the retirement note below before building it. |
+| `adp009d_aura_native_vast` | no | **retired** with the Aura appearance method. |
+| `adp_aura_author_smoke_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
+| `adp_aura_interiorgs_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
+| `public_scene_aura_exact_residual_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
+| `adp_inpaint360_interiorgs_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
+| `simpler_public_vast` | no | **frozen by doctrine** — SIMPLER policy-ranking reference; five-policy work is frozen. |
+
+Six lanes retired or frozen, three completed, six outstanding — of which two are
+blocked on recoverable inputs and three need a builder.
+
+## What every completed run still cannot claim
+
+All three return `website_trigger_proven: false` with
+`webapp_launch_record_missing`. The runs are real — signed HMAC intake, canonical
+allocator, digest-bound immutable inputs, retained artifacts, teardown receipt,
+provider-zero verified — but nothing binds a run to a website record. Until that
+is closed, the honest phrasing is "triggered through the intake API", not
+"triggered by the website".
+
+## Rehearse before firing
+
+`scripts/rehearse_lane_terminal_contract.py` asks the launch's own terminal
+question against a lane's real sealing path for **$0**, in about a second. All
+23 lane profiles published on the control plane currently rehearse
+`would_pass`. Two of the defects that cost paid GPU runs on 2026-08-13 were path
+bugs this would have caught first, so run it on every profile before firing.
 
 ## Deliberately out of scope
 
