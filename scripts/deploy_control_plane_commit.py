@@ -46,6 +46,7 @@ from typing import Any, Mapping, Sequence
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from stage_task_evaluation_control_plane_release import (  # noqa: E402
     ControlPlaneReleaseError,
@@ -232,55 +233,84 @@ def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
 def _install_intake_runtime_identity_drop_in(
     drop_in: Path, *, source_repo: Path, source_commit: str
 ) -> dict[str, Any]:
-    """Install a non-secret override without opening the credential env file."""
+    """Install a final non-secret env file without opening the credential file.
+
+    The base unit loads ``/etc/blueprint/pipeline-control-plane.env``.  systemd
+    gives values loaded from ``EnvironmentFile=`` precedence over values from
+    ``Environment=``, even when the latter appears in a later drop-in.  The
+    first production version of this deploy guard therefore restarted the
+    service while the archived checkout named in the credential env file still
+    won.  Load a second, identity-only env file last so it overrides those two
+    non-secret keys while leaving every credential in the original file alone.
+    """
 
     if drop_in.is_symlink():
         raise ControlPlaneDeployError("deploy_intake_runtime_drop_in_symlink")
     if drop_in.exists() and not stat.S_ISREG(drop_in.stat().st_mode):
         raise ControlPlaneDeployError("deploy_intake_runtime_drop_in_not_regular")
+    identity_env = drop_in.with_suffix(".env")
+    if identity_env.is_symlink():
+        raise ControlPlaneDeployError("deploy_intake_runtime_identity_env_symlink")
+    if identity_env.exists() and not stat.S_ISREG(identity_env.stat().st_mode):
+        raise ControlPlaneDeployError("deploy_intake_runtime_identity_env_not_regular")
     if any(character.isspace() for character in str(source_repo)):
         raise ControlPlaneDeployError("deploy_intake_source_repo_contains_whitespace")
     if len(source_commit) not in {40, 64} or any(
         character not in "0123456789abcdef" for character in source_commit
     ):
         raise ControlPlaneDeployError("deploy_intake_source_commit_invalid")
-    content = (
+    env_content = (
         "# Managed by scripts/deploy_control_plane_commit.py.\n"
         "# Contains deployment identity only; no credentials.\n"
-        "[Service]\n"
-        f"Environment=BLUEPRINT_PIPELINE_REPO={source_repo}\n"
-        f"Environment=BLUEPRINT_SOURCE_COMMIT={source_commit}\n"
+        f"BLUEPRINT_PIPELINE_REPO={source_repo}\n"
+        f"BLUEPRINT_SOURCE_COMMIT={source_commit}\n"
     )
-    temp_path: Path | None = None
-    try:
-        drop_in.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=drop_in.parent,
-            prefix=f".{drop_in.name}.",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temp_path, 0o644)
-        os.replace(temp_path, drop_in)
-        directory_fd = os.open(drop_in.parent, os.O_RDONLY)
+    drop_in_content = (
+        "# Managed by scripts/deploy_control_plane_commit.py.\n"
+        "# Loaded after the base unit credential EnvironmentFile.\n"
+        "[Service]\n"
+        f"EnvironmentFile={identity_env}\n"
+    )
+
+    def atomic_write(path: Path, content: str) -> None:
+        temp_path: Path | None = None
         try:
-            os.fsync(directory_fd)
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp_path, 0o644)
+            os.replace(temp_path, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            temp_path = None
         finally:
-            os.close(directory_fd)
-        temp_path = None
+            if temp_path is not None:
+                with contextlib.suppress(OSError):
+                    temp_path.unlink()
+
+    try:
+        # Publish the referenced file first.  A concurrent daemon-reload can
+        # therefore see the old complete pair or the new complete env file,
+        # never a drop-in pointing at an absent file.
+        atomic_write(identity_env, env_content)
+        atomic_write(drop_in, drop_in_content)
     except OSError as exc:
         raise ControlPlaneDeployError("deploy_intake_runtime_drop_in_update_failed") from exc
-    finally:
-        if temp_path is not None:
-            with contextlib.suppress(OSError):
-                temp_path.unlink()
     return {
         "path": str(drop_in),
+        "identity_environment_file": str(identity_env),
         "source_repo": str(source_repo),
         "source_commit": source_commit,
         "credential_environment_file_opened": False,
