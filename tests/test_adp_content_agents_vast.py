@@ -1972,6 +1972,35 @@ def test_provider_runtime_pins_native_dependency_closure_before_agent_execution(
     assert "skipped_after_native_probe_failure" in runner
 
 
+def test_provider_runtime_emits_structured_progress_across_silent_paid_stages(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = (ROOT / "scripts/run_adp_content_agents_provider_runtime.sh").read_text()
+    runner_source = (ROOT / "scripts/adp_content_agents_provider_runner.py").read_text()
+    runner = _provider_runner_module()
+
+    runner._progress("texture_agent_started")
+
+    assert capsys.readouterr().out == (
+        "BLUEPRINT_ADP_CONTENT_AGENTS_PROGRESS:texture_agent_started\n"
+    )
+    for stage in (
+        "content_agents_install_started",
+        "ovrtx_runtime_install_started",
+        "agent_runner_started",
+    ):
+        assert f'progress "{stage}"' in runtime
+    for stage in (
+        "gpu_probe_started",
+        "native_probes_started",
+        "validation_agent_started",
+        "result_written",
+    ):
+        assert f'_progress("{stage}")' in runner_source
+    assert '_progress(f"{name}_agent_started")' in runner_source
+    assert '_progress(f"{name}_agent_completed")' in runner_source
+
+
 def test_provider_output_inspector_recognizes_content_agents_result(tmp_path: Path) -> None:
     output = tmp_path / "output.zip"
     with zipfile.ZipFile(output, "w") as archive:
