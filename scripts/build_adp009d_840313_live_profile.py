@@ -14,6 +14,11 @@ from blueprint_pipeline.adp009d_840313_runtime_bundle import (
 from blueprint_pipeline.adp009d_live_readiness import (
     APPEARANCE_DIGEST,
     EVALUATION_RUN_SPEC_DIGEST,
+    # Re-exported deliberately: the builder does not read it, and the live
+    # builder test asserts against it through this module. Ruff reports it
+    # unused, which is true of the module and false of its test surface --
+    # the same pattern common.py documents.
+    PROFILE_ID as READINESS_PROFILE_ID,  # noqa: F401
     RUNTIME_BUNDLE_DIGEST,
     SOURCE_BUNDLE_DIGEST,
     build_live_readiness,
