@@ -67,7 +67,13 @@ def _fixture(tmp_path: Path, *, allowlist=None, cap: float = 12.0, commit: str =
                 "hard_total_spend_cap_usd": cap,
                 "bundle_path": str(bundle),
                 "bundle_sha256": "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest(),
-                "execution_authority": {"path": str(authority)},
+                # A real receipt digests every reference it records; the builder
+                # resolves against those digests rather than trusting the paths.
+                "execution_authority": {
+                    "path": str(authority),
+                    "sha256": "sha256:"
+                    + hashlib.sha256(authority.read_bytes()).hexdigest(),
+                },
             }
         ),
         encoding="utf-8",

@@ -568,6 +568,10 @@ def build_retained_scene_gpu_render_bundle(
             target.chmod(target.stat().st_mode | stat.S_IXUSR)
     authority_copy = runtime / "execution_authority.json"
     _link_or_copy(authority_path, authority_copy)
+    # The request manifest is copied in for the same reason the authority is:
+    # a receipt read on another host can only resolve what travelled with it.
+    request_copy = runtime / "source_request_manifest.json"
+    _link_or_copy(request_file, request_copy)
     renderer_identity = {
         "repository": identity,
         "harness_sha256": _sha256(renderer / "render_splat.mjs"),
@@ -617,10 +621,17 @@ def build_retained_scene_gpu_render_bundle(
         "container_image": DEFAULT_IMAGE,
         "blueprint_commit": identity["commit"],
         "blueprint_tree": identity["tree"],
-        "request": _record(request_file),
+        # Each of these records both where the bytes were read and where they
+        # sit inside the job directory. The absolute path is provenance; the
+        # relative one is what lets another host resolve the same bytes.
+        "request": {
+            **_record(request_file),
+            "relative_path": request_copy.relative_to(job).as_posix(),
+        },
         "candidate_set_digest": candidate["receipt_digest"],
         "execution_authority": {
             **_record(authority_path),
+            "relative_path": authority_copy.relative_to(job).as_posix(),
             "authority_digest": authority["authority_digest"],
         },
         "source_standard_splat_provenance": render_request[
@@ -673,6 +684,10 @@ def build_retained_scene_gpu_render_bundle(
     receipt = {
         **manifest,
         "bundle_path": str(bundle_path),
+        # The receipt is written beside the archive, so this resolves wherever
+        # the pair is staged. The absolute path above records only where it was
+        # built.
+        "bundle_relative_path": bundle_path.relative_to(job).as_posix(),
         "bundle_sha256": _sha256(bundle_path),
         "bundle_size_bytes": bundle_path.stat().st_size,
         "exact_bundle_entrypoint_rehearsal": rehearsal,
