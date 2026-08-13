@@ -15,6 +15,7 @@ fails here.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -309,3 +310,42 @@ def test_every_live_profile_builder_can_distinguish_a_rebuild() -> None:
             f"{builder.name} cannot distinguish a rebuilt profile at the same "
             "commit; add a --revision discriminator"
         )
+
+
+def test_no_module_resolves_a_credential_only_from_a_developer_home() -> None:
+    """Control-plane units run with `ProtectHome=true` and home `/nonexistent`.
+
+    A module that resolves a credential only from `~/.blueprint-secrets` can
+    never read one on the deployed host. PR #449 fixed that for provider keys,
+    #488 for the config preflight, and it was still live in the content-agents
+    lane -- where it surfaced as `adp_content_agents_openai_secret_missing`
+    raised *after* paid admission had been granted, which is the worst place to
+    discover a missing credential.
+
+    A module may still name the developer path as a last resort; it may not be
+    the only thing it consults.
+    """
+
+    # Only resolution counts. An argparse `default="~/.blueprint-secrets/..."`
+    # is a developer convenience the units override with an explicit path; a
+    # `Path("~/.blueprint-secrets/...")` is the module deciding for itself
+    # where a secret lives.
+    resolves_from_home = re.compile(r'Path\(\s*f?"~/\.blueprint-secrets/')
+    home_only: list[str] = []
+    for path in sorted(SOURCE_ROOT.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if not resolves_from_home.search(source):
+            continue
+        honours_deployment = (
+            "_read_secret" in source
+            or "_FILE" in source
+            or "PROVIDER_SECRETS_DIR" in source
+            or "SECRETS_DIR" in source
+        )
+        if not honours_deployment:
+            home_only.append(path.name)
+
+    assert not home_only, (
+        "these resolve a credential only from a developer home, which is "
+        f"unreadable under ProtectHome=true: {home_only}"
+    )

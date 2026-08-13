@@ -12,6 +12,7 @@ import urllib.request
 
 from .common import utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
+from .gpu_render_providers import _read_secret as _read_provider_secret
 
 
 SCHEMA_VERSION = "nvidia_nim_model_preflight.v1"
@@ -38,12 +39,12 @@ def _secret() -> tuple[str, str]:
     value = str(os.environ.get("NVIDIA_API_KEY") or "").strip()
     if value:
         return value, "NVIDIA_API_KEY"
+    # A developer home is unreadable under `ProtectHome=true` with home
+    # `/nonexistent`, which is how every control-plane unit runs.
     for name in ("nvidia_nim_api_key", "ngc_api_key"):
-        path = Path(f"~/.blueprint-secrets/{name}").expanduser()
-        if path.is_file():
-            text = path.read_text(encoding="utf-8").strip()
-            if text:
-                return text, name
+        text = str(_read_provider_secret(name) or "")
+        if text:
+            return text, name
     return "", "missing"
 
 
