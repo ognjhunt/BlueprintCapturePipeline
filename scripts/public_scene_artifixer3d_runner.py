@@ -21,7 +21,11 @@ RESULT_SCHEMA = "public_scene_artifixer3d_runtime_result.v1"
 TASK_PROGRESS_SCHEMA = "public_scene_artifixer3d_task_progress.v1"
 TASK_PROGRESS_FILENAME = "public_scene_artifixer3d_task_progress.json"
 INPUT_SCHEMA = "public_scene_artifixer3d_candidate_inputs.v3"
-DIRECT_EDITOR_BACKENDS = {"artifixer", "qwen_image_edit_2511"}
+DIRECT_EDITOR_BACKENDS = {
+    "artifixer",
+    "qwen_image_edit_2511",
+    "vibe_image_edit",
+}
 SEMANTIC_EDITOR_PROMPT = (
     "Reconstruct the natural empty background where the solid black masked hole "
     "appears. Continue the surrounding floor, wall, cabinet, desk, curtain, and "
@@ -195,14 +199,27 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
     if manifest.get("direct_editor_backend") != backend:
         raise ValueError("artifixer3d_bundle_binding_invalid")
     semantic = request.get("semantic_editor")
-    if backend == "qwen_image_edit_2511":
+    if backend != "artifixer":
         if (
             not isinstance(semantic, Mapping)
             or semantic.get("backend") != backend
             or semantic.get("license") != "Apache-2.0"
             or semantic.get("output_must_be_exact_support_composited") is not True
-            or semantic.get("enable_model_cpu_offload") is not True
             or manifest.get("semantic_editor_model_identity") != semantic
+        ):
+            raise ValueError("artifixer3d_semantic_editor_binding_invalid")
+        if (
+            backend == "qwen_image_edit_2511"
+            and semantic.get("enable_model_cpu_offload") is not True
+        ):
+            raise ValueError("artifixer3d_semantic_editor_binding_invalid")
+        if (
+            backend == "vibe_image_edit"
+            and (
+                request.get("semantic_editor_only") is not True
+                or semantic.get("enable_model_cpu_offload") is not False
+                or not isinstance(semantic.get("source"), Mapping)
+            )
         ):
             raise ValueError("artifixer3d_semantic_editor_binding_invalid")
         if not isinstance(request.get("semantic_editor_only"), bool):
@@ -267,12 +284,13 @@ def _download_models(request: Mapping[str, Any], cache: Path) -> tuple[Path, Pat
 
 
 def _download_semantic_editor(request: Mapping[str, Any], cache: Path) -> Path | None:
-    if request["direct_editor_backend"] != "qwen_image_edit_2511":
+    backend = request["direct_editor_backend"]
+    if backend == "artifixer":
         return None
     from huggingface_hub import snapshot_download
 
     semantic = request["semantic_editor"]
-    output = cache / "qwen_image_edit_2511"
+    output = cache / backend
     snapshot_download(
         repo_id=semantic["repository"],
         revision=semantic["revision"],
@@ -382,17 +400,33 @@ def _semantic_editor_predictions(
     request: Mapping[str, Any],
 ) -> tuple[dict[int, Path], list[dict[str, Any]]]:
     import torch
-    from diffusers import QwenImageEditPlusPipeline
     from PIL import Image
 
     semantic = request["semantic_editor"]
-    pipeline = QwenImageEditPlusPipeline.from_pretrained(
-        str(model_root),
-        torch_dtype=torch.bfloat16,
-        local_files_only=True,
-    )
-    pipeline.enable_model_cpu_offload()
-    pipeline.set_progress_bar_config(disable=None)
+    backend = request["direct_editor_backend"]
+    if backend == "qwen_image_edit_2511":
+        from diffusers import QwenImageEditPlusPipeline
+
+        editor = QwenImageEditPlusPipeline.from_pretrained(
+            str(model_root),
+            torch_dtype=torch.bfloat16,
+            local_files_only=True,
+        )
+        editor.enable_model_cpu_offload()
+        editor.set_progress_bar_config(disable=None)
+    elif backend == "vibe_image_edit":
+        from vibe.editor import ImageEditor
+
+        editor = ImageEditor(
+            checkpoint_path=str(model_root),
+            image_guidance_scale=float(semantic["image_guidance_scale"]),
+            guidance_scale=float(semantic["guidance_scale"]),
+            num_inference_steps=int(semantic["num_inference_steps"]),
+            device="cuda:0",
+            local_files_only=True,
+        )
+    else:
+        raise ValueError("artifixer3d_semantic_editor_backend_invalid")
     predictions: dict[int, Path] = {}
     rows: list[dict[str, Any]] = []
     output_root = task_output / "semantic_editor" / "predictions"
@@ -401,21 +435,30 @@ def _semantic_editor_predictions(
         source = staged_task / frame["masked_reference_rgb"]["relative_path"]
         with Image.open(source) as image:
             condition = image.convert("RGB")
-        generator = torch.Generator(device="cpu").manual_seed(
-            int(request["random_seed"]) + index
-        )
-        generated = pipeline(
-            image=condition,
-            prompt=SEMANTIC_EDITOR_PROMPT,
-            negative_prompt=(
-                "object, appliance, laptop, notebook, silhouette, blank panel, "
-                "solid white patch, blurry patch, floating geometry"
-            ),
-            true_cfg_scale=float(semantic["true_cfg_scale"]),
-            guidance_scale=float(semantic["guidance_scale"]),
-            num_inference_steps=int(semantic["num_inference_steps"]),
-            generator=generator,
-        ).images[0].convert("RGB")
+        seed = int(request["random_seed"]) + index
+        if backend == "qwen_image_edit_2511":
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+            generated = editor(
+                image=condition,
+                prompt=SEMANTIC_EDITOR_PROMPT,
+                negative_prompt=(
+                    "object, appliance, laptop, notebook, silhouette, blank panel, "
+                    "solid white patch, blurry patch, floating geometry"
+                ),
+                true_cfg_scale=float(semantic["true_cfg_scale"]),
+                guidance_scale=float(semantic["guidance_scale"]),
+                num_inference_steps=int(semantic["num_inference_steps"]),
+                generator=generator,
+            ).images[0].convert("RGB")
+        else:
+            generated = editor.generate_edited_image(
+                SEMANTIC_EDITOR_PROMPT,
+                conditioning_image=condition,
+                randomize_seed=False,
+                seed=seed,
+                num_images_per_prompt=1,
+                do_revert_resize=True,
+            )[0].convert("RGB")
         if generated.size != condition.size:
             generated = generated.resize(condition.size, Image.Resampling.LANCZOS)
         output = output_root / f"{index:05d}.png"
@@ -433,7 +476,7 @@ def _semantic_editor_predictions(
                 },
             }
         )
-    del pipeline
+    del editor
     torch.cuda.empty_cache()
     return predictions, rows
 
@@ -459,7 +502,7 @@ def _task_runtime(
         _zero_prompt(prompt)
     fold_predictions: dict[int, Path] = {}
     direct_rows: list[dict[str, Any]] = []
-    if request["direct_editor_backend"] == "qwen_image_edit_2511":
+    if request["direct_editor_backend"] != "artifixer":
         if semantic_editor_root is None:
             raise ValueError("artifixer3d_semantic_editor_model_missing")
         fold_predictions, direct_rows = _semantic_editor_predictions(
@@ -753,7 +796,7 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
             request["direct_editor_backend"] == "artifixer"
         ),
         "semantic_editor_inference_executed": (
-            request["direct_editor_backend"] == "qwen_image_edit_2511"
+            request["direct_editor_backend"] != "artifixer"
         ),
         "artifixer3d_distillation_executed": (
             request.get("semantic_editor_only") is not True
@@ -805,6 +848,7 @@ def main() -> int:
             ),
             "model_loaded": False,
             "artifixer_direct_inference_executed": False,
+            "semantic_editor_inference_executed": False,
             "artifixer3d_distillation_executed": False,
             "artifixer3d_plus_inference_executed": False,
             "provider_mutations_performed": 0 if args.rehearsal else 1,

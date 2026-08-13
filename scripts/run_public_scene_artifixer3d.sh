@@ -74,6 +74,107 @@ export UV_NATIVE_TLS=true
 artifixer_python="${runtime_dir}/.artifixer-venv/bin/python"
 export CUDA_HOME=/usr/local/cuda
 
+mapfile -t runtime_mode < <(
+  python3 - "${runtime_dir}/artifixer3d_runtime_request.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+request = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(request.get("direct_editor_backend", ""))
+print("true" if request.get("semantic_editor_only") is True else "false")
+PY
+)
+direct_editor_backend="${runtime_mode[0]:-}"
+semantic_editor_only="${runtime_mode[1]:-}"
+if [[ "${direct_editor_backend}" != "artifixer" \
+      && "${direct_editor_backend}" != "qwen_image_edit_2511" \
+      && "${direct_editor_backend}" != "vibe_image_edit" ]]; then
+  write_missing_result "artifixer3d_direct_editor_backend_invalid"
+  exit 2
+fi
+if [[ "${direct_editor_backend}" == "vibe_image_edit" \
+      && "${semantic_editor_only}" != "true" ]]; then
+  write_missing_result "artifixer3d_vibe_requires_semantic_editor_only"
+  exit 2
+fi
+
+if [[ "${direct_editor_backend}" == "vibe_image_edit" ]]; then
+  "${uv_bin}" pip install --python "${artifixer_python}" \
+    torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124 \
+    || { write_missing_result "artifixer3d_vibe_torch_install_failed"; exit 2; }
+  "${uv_bin}" pip install --python "${artifixer_python}" \
+    accelerate==1.11.0 annotated-types==0.7.0 click==8.3.1 diffusers==0.33.1 \
+    huggingface-hub==0.35.3 loguru==0.7.3 numpy==1.26.4 protobuf==3.20.2 \
+    pydantic==2.0.3 pydantic-core==2.3.0 pydantic-settings==2.0.3 \
+    python-dotenv==1.2.1 'sentencepiece~=0.1.99' tokenizers==0.22.1 \
+    transformers==4.57.1 Pillow \
+    || { write_missing_result "artifixer3d_vibe_dependencies_failed"; exit 2; }
+
+  vibe_source_dir="${runtime_dir}/VIBE_source"
+  if [[ -e "${vibe_source_dir}" ]]; then
+    write_missing_result "artifixer3d_vibe_source_destination_not_empty"
+    exit 2
+  fi
+  git init -q "${vibe_source_dir}" \
+    || { write_missing_result "artifixer3d_vibe_source_init_failed"; exit 2; }
+  git -C "${vibe_source_dir}" remote add origin https://github.com/ai-forever/VIBE.git
+  git -C "${vibe_source_dir}" fetch --depth 1 origin 7f0f01f9a6f66d55aa0fec2bf2562c332bba262b \
+    || { write_missing_result "artifixer3d_vibe_source_fetch_failed"; exit 2; }
+  git -C "${vibe_source_dir}" checkout -q --detach FETCH_HEAD \
+    || { write_missing_result "artifixer3d_vibe_source_checkout_failed"; exit 2; }
+  [[ "$(git -C "${vibe_source_dir}" rev-parse HEAD)" == "7f0f01f9a6f66d55aa0fec2bf2562c332bba262b" ]] \
+    || { write_missing_result "artifixer3d_vibe_source_commit_mismatch"; exit 2; }
+  [[ "$(git -C "${vibe_source_dir}" rev-parse 'HEAD^{tree}')" == "208f31e15a70de8a8b58e20acd6aba465ac1fcbc" ]] \
+    || { write_missing_result "artifixer3d_vibe_source_tree_mismatch"; exit 2; }
+  [[ "sha256:$(sha256sum "${vibe_source_dir}/LICENSE" | awk '{print $1}')" == \
+      "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" ]] \
+    || { write_missing_result "artifixer3d_vibe_source_license_mismatch"; exit 2; }
+  "${uv_bin}" pip install --python "${artifixer_python}" --no-deps -e "${vibe_source_dir}" \
+    || { write_missing_result "artifixer3d_vibe_source_install_failed"; exit 2; }
+  "${uv_bin}" pip check --python "${artifixer_python}" \
+    > "${output_dir}/artifixer3d-pip-check.txt" \
+    || { write_missing_result "artifixer3d_vibe_dependency_conflict"; exit 2; }
+
+  export PYTHONPATH="${vibe_source_dir}:${runtime_dir}/ArtiFixer_official${PYTHONPATH:+:${PYTHONPATH}}"
+  "${artifixer_python}" - "${output_dir}/artifixer3d-runtime-preflight.json" "${vibe_source_dir}" <<'PY' \
+    || { write_missing_result "artifixer3d_vibe_runtime_preflight_failed"; exit 2; }
+import json
+from pathlib import Path
+import sys
+
+import torch
+from vibe.editor import ImageEditor  # noqa: F401
+
+receipt_path = Path(sys.argv[1])
+source_root = Path(sys.argv[2])
+receipt = {
+    "schema_version": "public_scene_artifixer3d_runtime_preflight.v1",
+    "status": "completed",
+    "direct_editor_backend": "vibe_image_edit",
+    "source_commit": "7f0f01f9a6f66d55aa0fec2bf2562c332bba262b",
+    "source_tree": "208f31e15a70de8a8b58e20acd6aba465ac1fcbc",
+    "source_root": str(source_root),
+    "torch": {
+        "version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "cuda_available": torch.cuda.is_available(),
+        "device_count": torch.cuda.device_count(),
+    },
+    "blockers": [],
+}
+if not receipt["torch"]["cuda_available"] or receipt["torch"]["device_count"] != 1:
+    receipt["status"] = "blocked"
+    receipt["blockers"].append("single_cuda_device_unavailable")
+else:
+    receipt["torch"]["device_name"] = torch.cuda.get_device_name(0)
+    receipt["torch"]["device_capability"] = list(torch.cuda.get_device_capability(0))
+    receipt["torch"]["device_total_memory_bytes"] = torch.cuda.get_device_properties(0).total_memory
+receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+if receipt["blockers"]:
+    raise SystemExit(";".join(receipt["blockers"]))
+PY
+else
 "${uv_bin}" pip install --python "${artifixer_python}" \
   torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128 \
   || { write_missing_result "artifixer3d_torch_install_failed"; exit 2; }
@@ -219,6 +320,7 @@ finally:
 if receipt["blockers"]:
     raise SystemExit(";".join(receipt["blockers"]))
 PY
+fi
 "${uv_bin}" pip freeze --python "${artifixer_python}" > "${output_dir}/artifixer3d-pip-freeze.txt"
 
 export HF_HOME="${bundle_root}/.hf_home"

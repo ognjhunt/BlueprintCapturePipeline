@@ -49,7 +49,18 @@ WAN_MODEL_REVISION = "0fad780a534b6463e45facd96134c9f345acfa5b"
 QWEN_IMAGE_EDIT_REPOSITORY = "Qwen/Qwen-Image-Edit-2511"
 QWEN_IMAGE_EDIT_REVISION = "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9"
 QWEN_IMAGE_EDIT_LICENSE = "Apache-2.0"
-DIRECT_EDITOR_BACKENDS = frozenset({"artifixer", "qwen_image_edit_2511"})
+VIBE_IMAGE_EDIT_REPOSITORY = "iitolstykh/VIBE-Image-Edit"
+VIBE_IMAGE_EDIT_REVISION = "d670fc5220d9806dd95e3d27508aaa66e7415c45"
+VIBE_IMAGE_EDIT_LICENSE = "Apache-2.0"
+VIBE_SOURCE_REPOSITORY = "https://github.com/ai-forever/VIBE.git"
+VIBE_SOURCE_COMMIT = "7f0f01f9a6f66d55aa0fec2bf2562c332bba262b"
+VIBE_SOURCE_TREE = "208f31e15a70de8a8b58e20acd6aba465ac1fcbc"
+VIBE_SOURCE_LICENSE_SHA256 = (
+    "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+)
+DIRECT_EDITOR_BACKENDS = frozenset(
+    {"artifixer", "qwen_image_edit_2511", "vibe_image_edit"}
+)
 MODEL_LICENSE_URL = (
     "https://developer.download.nvidia.com/licenses/"
     "NVIDIA-OneWay-Noncommercial-License-22Mar2022.pdf"
@@ -143,6 +154,23 @@ QWEN_IMAGE_EDIT_LARGE_FILES = (
         "path": "vae/diffusion_pytorch_model.safetensors",
         "size_bytes": 253_806_966,
         "sha256": "sha256:0c8bc8b758c649abef9ea407b95408389a3b2f610d0d10fcb054fe171d0a8344",
+    },
+)
+VIBE_IMAGE_EDIT_LARGE_FILES = (
+    {
+        "path": "text_encoder/model.safetensors",
+        "size_bytes": 4_255_140_312,
+        "sha256": "sha256:7de1838c87a5349b016c26a1c3f7d2bc400a3d485f95ef39a7059ffd734977a0",
+    },
+    {
+        "path": "transformer/diffusion_pytorch_model-00001-of-00001.safetensors",
+        "size_bytes": 3_765_399_232,
+        "sha256": "sha256:ac81406ec9f673a120695f83db41745f1b7b0e8a0b1f45a8de66aa420fc52c54",
+    },
+    {
+        "path": "vae/diffusion_pytorch_model.safetensors",
+        "size_bytes": 1_249_044_836,
+        "sha256": "sha256:dfd991d1b54ffabf22745c5885589d8f2a7bc59930d95d92bd741c4fc64454bb",
     },
 )
 MAX_MEMBER_BYTES = 2 * 1024**3
@@ -528,7 +556,8 @@ def build_artifixer3d_bundle(
         or isinstance(random_seed, bool)
         or direct_editor_backend not in DIRECT_EDITOR_BACKENDS
         or not isinstance(semantic_editor_only, bool)
-        or (semantic_editor_only and direct_editor_backend != "qwen_image_edit_2511")
+        or (semantic_editor_only and direct_editor_backend == "artifixer")
+        or (direct_editor_backend == "vibe_image_edit" and not semantic_editor_only)
         or any(
             not isinstance(value, int) or isinstance(value, bool) or value <= 0
             for value in allowed_active_instance_ids
@@ -609,7 +638,7 @@ def build_artifixer3d_bundle(
         "phases": [
             (
                 "semantic_editor_inference"
-                if direct_editor_backend == "qwen_image_edit_2511"
+                if direct_editor_backend != "artifixer"
                 else "direct_inference"
             ),
             "exact_support_composite",
@@ -620,22 +649,53 @@ def build_artifixer3d_bundle(
         ],
         "runtime_request_digest": "",
     }
-    if direct_editor_backend == "qwen_image_edit_2511":
-        runtime_request["semantic_editor"] = {
+    if direct_editor_backend != "artifixer":
+        semantic_editor = {
             "backend": direct_editor_backend,
-            "repository": QWEN_IMAGE_EDIT_REPOSITORY,
-            "revision": QWEN_IMAGE_EDIT_REVISION,
-            "license": QWEN_IMAGE_EDIT_LICENSE,
-            "large_files": list(QWEN_IMAGE_EDIT_LARGE_FILES),
-            "diffusers_version": "0.37.1",
-            "num_inference_steps": 40,
-            "true_cfg_scale": 4.0,
-            "guidance_scale": 1.0,
-            "enable_model_cpu_offload": True,
             "input_role": "black_exact_mask_hole_with_original_context",
             "prompt_policy": "generic_object_absent_background_completion_v1",
             "output_must_be_exact_support_composited": True,
         }
+        if direct_editor_backend == "qwen_image_edit_2511":
+            semantic_editor.update(
+                {
+                    "repository": QWEN_IMAGE_EDIT_REPOSITORY,
+                    "revision": QWEN_IMAGE_EDIT_REVISION,
+                    "license": QWEN_IMAGE_EDIT_LICENSE,
+                    "large_files": list(QWEN_IMAGE_EDIT_LARGE_FILES),
+                    "torch_version": "2.11.0",
+                    "diffusers_version": "0.37.1",
+                    "transformers_version": "5.5.0",
+                    "num_inference_steps": 40,
+                    "true_cfg_scale": 4.0,
+                    "guidance_scale": 1.0,
+                    "enable_model_cpu_offload": True,
+                }
+            )
+        else:
+            semantic_editor.update(
+                {
+                    "repository": VIBE_IMAGE_EDIT_REPOSITORY,
+                    "revision": VIBE_IMAGE_EDIT_REVISION,
+                    "license": VIBE_IMAGE_EDIT_LICENSE,
+                    "large_files": list(VIBE_IMAGE_EDIT_LARGE_FILES),
+                    "source": {
+                        "repository": VIBE_SOURCE_REPOSITORY,
+                        "commit": VIBE_SOURCE_COMMIT,
+                        "tree": VIBE_SOURCE_TREE,
+                        "license_sha256": VIBE_SOURCE_LICENSE_SHA256,
+                    },
+                    "torch_version": "2.6.0",
+                    "diffusers_version": "0.33.1",
+                    "transformers_version": "4.57.1",
+                    "num_inference_steps": 20,
+                    "image_guidance_scale": 1.2,
+                    "guidance_scale": 4.5,
+                    "enable_model_cpu_offload": False,
+                    "maximum_expected_vram_gib": 24,
+                }
+            )
+        runtime_request["semantic_editor"] = semantic_editor
         runtime_request["semantic_editor_only"] = semantic_editor_only
         if semantic_editor_only:
             runtime_request["phases"] = [
@@ -740,6 +800,12 @@ __all__ = [
     "QWEN_IMAGE_EDIT_REPOSITORY",
     "QWEN_IMAGE_EDIT_REVISION",
     "SCHEMA_VERSION",
+    "VIBE_IMAGE_EDIT_LARGE_FILES",
+    "VIBE_IMAGE_EDIT_REPOSITORY",
+    "VIBE_IMAGE_EDIT_REVISION",
+    "VIBE_SOURCE_COMMIT",
+    "VIBE_SOURCE_REPOSITORY",
+    "VIBE_SOURCE_TREE",
     "WAN_MODEL_REVISION",
     "WAN_RUNTIME_FILES",
     "build_artifixer3d_bundle",

@@ -484,7 +484,7 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         or request.get("repair_target")
         != "plausible_object_free_background_inside_exact_support_only"
         or request.get("direct_editor_backend")
-        not in {"artifixer", "qwen_image_edit_2511"}
+        not in {"artifixer", "qwen_image_edit_2511", "vibe_image_edit"}
         or manifest.get("direct_editor_backend")
         != request.get("direct_editor_backend")
         or receipt.get("direct_editor_backend")
@@ -1615,7 +1615,7 @@ def run_artifixer3d_vast(
         or execution.get("artifixer_direct_inference_executed")
         != (bundle["direct_editor_backend"] == "artifixer")
         or execution.get("semantic_editor_inference_executed")
-        != (bundle["direct_editor_backend"] == "qwen_image_edit_2511")
+        != (bundle["direct_editor_backend"] != "artifixer")
         or execution.get("artifixer3d_distillation_executed")
         != (not bundle["semantic_editor_only"])
         or execution.get("artifixer3d_plus_inference_executed")

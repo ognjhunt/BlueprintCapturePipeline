@@ -268,6 +268,27 @@ def test_semantic_editor_only_bundle_reopens_for_paid_admission(
     assert "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK" in shell
 
 
+def test_vibe_semantic_editor_only_bundle_reopens_for_paid_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path, receipt = _bundle(
+        tmp_path,
+        monkeypatch,
+        direct_editor_backend="vibe_image_edit",
+        semantic_editor_only=True,
+    )
+    validated = validate_artifixer3d_bundle(receipt_path)
+    assert validated["direct_editor_backend"] == "vibe_image_edit"
+    assert validated["semantic_editor_only"] is True
+    assert validated["replacement_object_count"] == 2
+    with zipfile.ZipFile(Path(receipt["bundle"]["path"])) as archive:
+        entrypoint = archive.read(
+            "provider_runtime/run_public_scene_artifixer3d.sh"
+        ).decode("utf-8")
+    assert "artifixer3d_vibe_runtime_preflight_failed" in entrypoint
+    assert "artifixer3d_vibe_source_tree_mismatch" in entrypoint
+
+
 def test_provider_bundle_validation_remains_generic_through_five_objects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

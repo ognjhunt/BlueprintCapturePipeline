@@ -40,6 +40,7 @@ from .public_scene_segment_mask_repair_preflight import (
 
 
 SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v3"
+OBJECT_ABSENT_REFERENCE_SCHEMA = "public_scene_object_absent_reference_candidates.v1"
 CAMERA_INDEX_SCHEMA = "public_scene_artifixer3d_camera_index.v1"
 SPLIT_TEMPLATE_SCHEMA = "public_scene_artifixer3d_split_template.v1"
 CAMERA_CONVENTION_FLIP = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float64)
@@ -138,6 +139,63 @@ def _validated_preflight(path: Path) -> dict[str, Any]:
             ["artifixer3d_calibrated_preflight_invalid"]
         )
     return value
+
+
+def _validated_object_absent_reference_receipts(
+    paths: Sequence[str | Path],
+) -> dict[str, dict[str, Any]]:
+    receipts: dict[str, dict[str, Any]] = {}
+    for unresolved in paths:
+        path = _file(
+            unresolved, code="artifixer3d_object_absent_reference_receipt_missing"
+        )
+        value = _read(
+            path, code="artifixer3d_object_absent_reference_receipt_unreadable"
+        )
+        task_id = str(value.get("task_id") or "")
+        frames = value.get("frames")
+        if (
+            value.get("schema_version") != OBJECT_ABSENT_REFERENCE_SCHEMA
+            or value.get("status")
+            != "candidate_frames_exact_support_composited"
+            or value.get("receipt_digest")
+            != canonical_digest(value, digest_field="receipt_digest")
+            or not task_id
+            or task_id in receipts
+            or not isinstance(frames, list)
+            or not frames
+            or value.get("frame_count") != len(frames)
+            or value.get("outside_support_changed_pixels_total") != 0
+        ):
+            raise ArtiFixer3DCandidateInputError(
+                ["artifixer3d_object_absent_reference_receipt_invalid"]
+            )
+        camera_ids: list[str] = []
+        for frame in frames:
+            if not isinstance(frame, Mapping):
+                raise ArtiFixer3DCandidateInputError(
+                    ["artifixer3d_object_absent_reference_receipt_invalid"]
+                )
+            camera_id = str(frame.get("camera_id") or "")
+            if (
+                not camera_id
+                or frame.get("outside_support_changed_pixels") != 0
+            ):
+                raise ArtiFixer3DCandidateInputError(
+                    ["artifixer3d_object_absent_reference_receipt_invalid"]
+                )
+            for field in ("source_render", "exact_repair_mask", "object_absent_frame"):
+                _bound_absolute(
+                    frame.get(field),
+                    code="artifixer3d_object_absent_reference_frame_invalid",
+                )
+            camera_ids.append(camera_id)
+        if len(camera_ids) != len(set(camera_ids)):
+            raise ArtiFixer3DCandidateInputError(
+                ["artifixer3d_object_absent_reference_receipt_invalid"]
+            )
+        receipts[task_id] = {**value, "receipt_path": path}
+    return receipts
 
 
 def _scene_identity(preflight: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -420,8 +478,155 @@ def _split_template(
     return value
 
 
+def materialize_object_absent_reference_candidate_receipt(
+    *,
+    source_candidate_inputs_receipt_path: str | Path,
+    task_id: str,
+    object_absent_frames_root: str | Path,
+    editor_identity: Mapping[str, Any],
+    prompt_policy: str,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Bind precomputed object-absent views and prove their exact-support locality."""
+
+    source_path = _file(
+        source_candidate_inputs_receipt_path,
+        code="artifixer3d_source_candidate_receipt_missing",
+    )
+    source = _read(source_path, code="artifixer3d_source_candidate_receipt_unreadable")
+    tasks = source.get("tasks")
+    if (
+        source.get("schema_version") != SCHEMA_VERSION
+        or source.get("receipt_digest")
+        != canonical_digest(source, digest_field="receipt_digest")
+        or not isinstance(tasks, list)
+        or not task_id
+        or not isinstance(editor_identity, Mapping)
+        or not editor_identity
+        or not isinstance(prompt_policy, str)
+        or not prompt_policy.strip()
+    ):
+        raise ArtiFixer3DCandidateInputError(
+            ["artifixer3d_source_candidate_receipt_invalid"]
+        )
+    matches = [task for task in tasks if task.get("task_id") == task_id]
+    if len(matches) != 1:
+        raise ArtiFixer3DCandidateInputError(
+            ["artifixer3d_object_absent_reference_task_invalid"]
+        )
+    task = matches[0]
+    task_root = Path(str(task["scene_directory"])).expanduser().resolve()
+    generated_root = Path(object_absent_frames_root).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    if (
+        generated_root.is_symlink()
+        or not generated_root.is_dir()
+        or output.is_symlink()
+        or output.exists()
+    ):
+        raise ArtiFixer3DCandidateInputError(
+            ["artifixer3d_object_absent_reference_output_invalid"]
+        )
+    rows: list[dict[str, Any]] = []
+    for frame in task.get("frames") or []:
+        index = int(frame["frame_index"])
+        candidate_path = _file(
+            generated_root / f"{index:05d}.png",
+            code="artifixer3d_object_absent_reference_frame_missing",
+        )
+        source_render = _bound_absolute(
+            {
+                **frame["rendered_rgb"],
+                "path": str(task_root / frame["rendered_rgb"]["relative_path"]),
+            },
+            code="artifixer3d_object_absent_reference_source_invalid",
+        )
+        mask_path = _bound_absolute(
+            {
+                **frame["exact_repair_mask"],
+                "path": str(task_root / frame["exact_repair_mask"]["relative_path"]),
+            },
+            code="artifixer3d_object_absent_reference_mask_invalid",
+        )
+        before = _image(
+            source_render,
+            mode="RGB",
+            code="artifixer3d_object_absent_reference_source_invalid",
+        )
+        repair = _image(
+            candidate_path,
+            mode="RGB",
+            code="artifixer3d_object_absent_reference_frame_invalid",
+        )
+        support = (
+            _image(
+                mask_path,
+                mode="L",
+                code="artifixer3d_object_absent_reference_mask_invalid",
+            )
+            > 0
+        )
+        if before.shape != repair.shape or before.shape[:2] != support.shape:
+            raise ArtiFixer3DCandidateInputError(
+                ["artifixer3d_object_absent_reference_shape_invalid"]
+            )
+        outside_changes = int(
+            np.count_nonzero(
+                np.any(repair[~support] != before[~support], axis=1)
+            )
+        )
+        if outside_changes != 0:
+            raise ArtiFixer3DCandidateInputError(
+                ["artifixer3d_object_absent_reference_outside_change"]
+            )
+        rows.append(
+            {
+                "frame_index": index,
+                "camera_id": frame["camera_id"],
+                "source_render": _record(source_render),
+                "exact_repair_mask": _record(mask_path),
+                "object_absent_frame": _record(candidate_path),
+                "repair_pixel_count": int(np.count_nonzero(support)),
+                "outside_support_changed_pixels": outside_changes,
+            }
+        )
+    receipt: dict[str, Any] = {
+        "schema_version": OBJECT_ABSENT_REFERENCE_SCHEMA,
+        "status": "candidate_frames_exact_support_composited",
+        "task_id": task_id,
+        "source_candidate_inputs_receipt": {
+            **_record(source_path),
+            "receipt_digest": source["receipt_digest"],
+        },
+        "editor_identity": dict(editor_identity),
+        "prompt_policy": prompt_policy.strip(),
+        "frame_count": len(rows),
+        "frames": rows,
+        "outside_support_changed_pixels_total": sum(
+            row["outside_support_changed_pixels"] for row in rows
+        ),
+        "semantic_object_absence_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "physical_or_deployment_evidence": False,
+        "claim_boundary": (
+            "precomputed_object_absent_candidate_views_not_capture_or_physical_evidence"
+        ),
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(output, receipt)
+    return receipt
+
+
 def materialize_artifixer3d_candidate_inputs(
-    *, calibrated_residual_preflight_path: str | Path, output_root: str | Path
+    *,
+    calibrated_residual_preflight_path: str | Path,
+    output_root: str | Path,
+    selected_task_ids: Sequence[str] | None = None,
+    object_absent_reference_receipt_paths: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """Materialize no-model ArtiFixer candidate inputs from exact repair support."""
 
@@ -430,6 +635,9 @@ def materialize_artifixer3d_candidate_inputs(
         code="artifixer3d_calibrated_preflight_missing",
     )
     preflight = _validated_preflight(preflight_path)
+    object_absent_receipts = _validated_object_absent_reference_receipts(
+        object_absent_reference_receipt_paths
+    )
     publisher_scene_id, execution_authority = _scene_identity(preflight)
     retained_splat_path, retained_splat = _retained_splat(preflight)
     rows = preflight.get("camera_inputs")
@@ -439,9 +647,27 @@ def materialize_artifixer3d_candidate_inputs(
     keys = [(str(row["task_id"]), str(row["camera_id"])) for row in normalized]
     if len(keys) != len(set(keys)):
         raise ArtiFixer3DCandidateInputError(["artifixer3d_camera_input_duplicate"])
-    task_ids = sorted({task_id for task_id, _camera_id in keys})
-    if len(task_ids) != preflight["replacement_object_count"]:
+    available_task_ids = sorted({task_id for task_id, _camera_id in keys})
+    if len(available_task_ids) != preflight["replacement_object_count"]:
         raise ArtiFixer3DCandidateInputError(["artifixer3d_task_set_mismatch"])
+    if selected_task_ids is None:
+        task_ids = available_task_ids
+    else:
+        task_ids = [str(task_id) for task_id in selected_task_ids]
+        if (
+            not 1 <= len(task_ids) <= MAX_REPLACEMENT_OBJECTS
+            or len(task_ids) != len(set(task_ids))
+            or any(not task_id or task_id not in available_task_ids for task_id in task_ids)
+        ):
+            raise ArtiFixer3DCandidateInputError(
+                ["artifixer3d_selected_task_set_invalid"]
+            )
+        task_ids = sorted(task_ids)
+    normalized = [row for row in normalized if row["task_id"] in set(task_ids)]
+    if set(object_absent_receipts) - set(task_ids):
+        raise ArtiFixer3DCandidateInputError(
+            ["artifixer3d_object_absent_reference_task_invalid"]
+        )
 
     output = Path(output_root).expanduser().resolve()
     if output.exists() and any(output.iterdir()):
@@ -470,14 +696,69 @@ def materialize_artifixer3d_candidate_inputs(
         task_rows = _ordered_cameras(
             [row for row in normalized if row["task_id"] == task_id]
         )
+        bound_reference = object_absent_receipts.get(task_id)
+        bound_frames_by_camera = {
+            str(frame["camera_id"]): frame
+            for frame in (bound_reference or {}).get("frames", [])
+        }
+        if bound_reference is not None and set(bound_frames_by_camera) != {
+            str(row["camera_id"]) for row in task_rows
+        }:
+            raise ArtiFixer3DCandidateInputError(
+                ["artifixer3d_object_absent_reference_camera_set_invalid"]
+            )
         frame_rows: list[dict[str, Any]] = []
         repair_support_fractions: list[float] = []
         transforms_frames: list[dict[str, Any]] = []
         for index, row in enumerate(task_rows):
             filename = f"{index:05d}.png"
             repair = row["mask"] > 0
-            reference = row["rgb"].copy()
-            reference[repair] = 0
+            bound_frame = bound_frames_by_camera.get(str(row["camera_id"]))
+            if bound_frame is None:
+                reference = row["rgb"].copy()
+                reference[repair] = 0
+                reference_source = "retained_rgb_with_exact_repair_support_zeroed"
+            else:
+                bound_source = _bound_absolute(
+                    bound_frame.get("source_render"),
+                    code="artifixer3d_object_absent_reference_source_invalid",
+                )
+                bound_mask = _bound_absolute(
+                    bound_frame.get("exact_repair_mask"),
+                    code="artifixer3d_object_absent_reference_mask_invalid",
+                )
+                bound_candidate = _bound_absolute(
+                    bound_frame.get("object_absent_frame"),
+                    code="artifixer3d_object_absent_reference_frame_invalid",
+                )
+                bound_source_pixels = _image(
+                    bound_source,
+                    mode="RGB",
+                    code="artifixer3d_object_absent_reference_source_invalid",
+                )
+                bound_mask_pixels = _image(
+                    bound_mask,
+                    mode="L",
+                    code="artifixer3d_object_absent_reference_mask_invalid",
+                )
+                if not np.array_equal(bound_source_pixels, row["rgb"]) or not np.array_equal(
+                    bound_mask_pixels, row["mask"]
+                ):
+                    raise ArtiFixer3DCandidateInputError(
+                        ["artifixer3d_object_absent_reference_binding_invalid"]
+                    )
+                reference = _image(
+                    bound_candidate,
+                    mode="RGB",
+                    code="artifixer3d_object_absent_reference_frame_invalid",
+                )
+                if reference.shape != row["rgb"].shape or np.any(
+                    reference[~repair] != row["rgb"][~repair]
+                ):
+                    raise ArtiFixer3DCandidateInputError(
+                        ["artifixer3d_object_absent_reference_outside_change"]
+                    )
+                reference_source = "bound_object_absent_exact_support_candidate"
             opacity = np.where(repair, 0, 255).astype(np.uint8)
             reference_path = images_root / filename
             render_path = renders_root / filename
@@ -524,6 +805,7 @@ def materialize_artifixer3d_candidate_inputs(
                     "image_pixel_count": image_pixel_count,
                     "repair_support_fraction": repair_support_fraction,
                     "outside_support_changed_pixels": outside_changes,
+                    "reference_source": reference_source,
                 }
             )
         top_intrinsics = dict(task_rows[0]["intrinsics"])
@@ -598,6 +880,14 @@ def materialize_artifixer3d_candidate_inputs(
                 "task_id": task_id,
                 "scene_directory": str(task_root),
                 "camera_count": len(frame_rows),
+                "object_absent_reference_receipt": (
+                    {
+                        **_record(bound_reference["receipt_path"]),
+                        "receipt_digest": bound_reference["receipt_digest"],
+                    }
+                    if bound_reference is not None
+                    else None
+                ),
                 "frames": frame_rows,
                 "repair_support_coverage": {
                     "minimum_fraction": min(repair_support_fractions),
@@ -658,7 +948,19 @@ def materialize_artifixer3d_candidate_inputs(
         },
         "shared_colmap_initialization_points3D": _record(shared_points),
         "execution_authority": execution_authority,
-        "replacement_object_count": preflight["replacement_object_count"],
+        "replacement_object_count": len(task_ids),
+        "source_preflight_replacement_object_count": preflight[
+            "replacement_object_count"
+        ],
+        "selected_task_ids": task_ids,
+        "object_absent_reference_receipts": [
+            {
+                **_record(object_absent_receipts[task_id]["receipt_path"]),
+                "task_id": task_id,
+                "receipt_digest": object_absent_receipts[task_id]["receipt_digest"],
+            }
+            for task_id in sorted(object_absent_receipts)
+        ],
         "maximum_replacement_objects": MAX_REPLACEMENT_OBJECTS,
         "all_replacements_co_present_in_shared_retained_scene": True,
         "tasks": task_receipts,
@@ -669,8 +971,15 @@ def materialize_artifixer3d_candidate_inputs(
             "camera_conversion": "T_world_camera_opencv @ diag(1,-1,-1,1)",
             "camera_scale": 1.0,
             "camera_scale_basis": "sealed_metric_world_camera_translations_in_meters",
-            "reference_role": "retained_rgb_with_exact_repair_support_zeroed",
+            "reference_role": (
+                "per_task_bound_object_absent_candidate_or_zeroed_exact_support"
+                if object_absent_receipts
+                else "retained_rgb_with_exact_repair_support_zeroed"
+            ),
             "source_object_pixels_available_to_reference": False,
+            "bound_object_absent_reference_task_count": len(
+                object_absent_receipts
+            ),
             "opacity_role": "binary_exact_repair_support_surrogate_not_native_3dgrut_opacity",
             "opacity_outside_support": 1.0,
             "opacity_inside_support": 0.0,
@@ -741,6 +1050,8 @@ def materialize_artifixer3d_candidate_inputs(
 
 __all__ = [
     "ArtiFixer3DCandidateInputError",
+    "OBJECT_ABSENT_REFERENCE_SCHEMA",
     "SCHEMA_VERSION",
     "materialize_artifixer3d_candidate_inputs",
+    "materialize_object_absent_reference_candidate_receipt",
 ]

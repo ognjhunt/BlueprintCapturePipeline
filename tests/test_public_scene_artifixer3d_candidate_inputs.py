@@ -14,6 +14,7 @@ from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
     ArtiFixer3DCandidateInputError,
     SCHEMA_VERSION,
     materialize_artifixer3d_candidate_inputs,
+    materialize_object_absent_reference_candidate_receipt,
 )
 from blueprint_pipeline.public_scene_aura_exact_residual_preflight import (
     materialize_aura_exact_residual_preflight,
@@ -187,6 +188,82 @@ def test_materializes_colmap_seed_and_complementary_direct_folds(
     assert receipt["repair_target_semantics"][
         "black_unknown_placeholder_preservation_permitted"
     ] is False
+
+
+def test_binds_one_selected_tasks_exact_support_object_absent_references(
+    tmp_path: Path,
+) -> None:
+    preflight = _preflight(tmp_path, count=2, cameras_per_task=2)
+    initial_root = tmp_path / "initial"
+    initial = materialize_artifixer3d_candidate_inputs(
+        calibrated_residual_preflight_path=preflight,
+        output_root=initial_root,
+    )
+    task = initial["tasks"][0]
+    task_root = Path(task["scene_directory"])
+    generated_root = tmp_path / "generated"
+    generated_root.mkdir()
+    for frame in task["frames"]:
+        source = np.asarray(
+            Image.open(
+                task_root / frame["rendered_rgb"]["relative_path"]
+            ).convert("RGB"),
+            dtype=np.uint8,
+        ).copy()
+        mask = np.asarray(
+            Image.open(
+                task_root / frame["exact_repair_mask"]["relative_path"]
+            ).convert("L"),
+            dtype=np.uint8,
+        ) > 0
+        source[mask] = (90, 100, 110)
+        Image.fromarray(source, mode="RGB").save(
+            generated_root / f"{frame['frame_index']:05d}.png"
+        )
+    reference_path = tmp_path / "object_absent_reference.json"
+    reference = materialize_object_absent_reference_candidate_receipt(
+        source_candidate_inputs_receipt_path=(
+            initial_root / "public_scene_artifixer3d_candidate_inputs.v3.json"
+        ),
+        task_id=task["task_id"],
+        object_absent_frames_root=generated_root,
+        editor_identity={"backend": "fixture_editor", "snapshot_pinned": True},
+        prompt_policy="generic_object_absent_background_completion_v1",
+        output_path=reference_path,
+    )
+    assert reference["outside_support_changed_pixels_total"] == 0
+
+    rebound = materialize_artifixer3d_candidate_inputs(
+        calibrated_residual_preflight_path=preflight,
+        output_root=tmp_path / "rebound",
+        selected_task_ids=[task["task_id"]],
+        object_absent_reference_receipt_paths=[reference_path],
+    )
+    assert rebound["replacement_object_count"] == 1
+    assert rebound["source_preflight_replacement_object_count"] == 2
+    assert rebound["selected_task_ids"] == [task["task_id"]]
+    assert rebound["adapter"]["bound_object_absent_reference_task_count"] == 1
+    rebound_task = rebound["tasks"][0]
+    assert all(
+        frame["reference_source"]
+        == "bound_object_absent_exact_support_candidate"
+        for frame in rebound_task["frames"]
+    )
+    for frame in rebound_task["frames"]:
+        actual = np.asarray(
+            Image.open(
+                Path(rebound_task["scene_directory"])
+                / frame["masked_reference_rgb"]["relative_path"]
+            ).convert("RGB"),
+            dtype=np.uint8,
+        )
+        expected = np.asarray(
+            Image.open(
+                generated_root / f"{frame['frame_index']:05d}.png"
+            ).convert("RGB"),
+            dtype=np.uint8,
+        )
+        assert np.array_equal(actual, expected)
 
 
 def test_rejects_tampered_preflight_or_nonempty_output(tmp_path: Path) -> None:

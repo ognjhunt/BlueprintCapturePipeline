@@ -16,6 +16,9 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     DEFAULT_IMAGE,
     QWEN_IMAGE_EDIT_REVISION,
     SCHEMA_VERSION,
+    VIBE_IMAGE_EDIT_REVISION,
+    VIBE_SOURCE_COMMIT,
+    VIBE_SOURCE_TREE,
     build_artifixer3d_bundle,
     materialize_artifixer3d_use_attestation,
 )
@@ -325,6 +328,72 @@ def test_seals_semantic_editor_only_bundle_before_3d_spend(
     ]
     assert "QwenImageEditPlusPipeline" in runner
     assert "SEMANTIC_EDITOR_PROMPT" in runner
+
+
+def test_seals_pinned_vibe_semantic_editor_only_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, commit, tree = _source(tmp_path)
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
+    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
+    candidate = _candidate(tmp_path)
+    receipt = build_artifixer3d_bundle(
+        candidate_inputs_receipt_path=candidate,
+        use_attestation_path=_attestation(candidate, tmp_path / "attestation.json"),
+        artifixer_source_directory=source,
+        output_root=tmp_path / "bundle",
+        repository_root=_repository(tmp_path),
+        direct_editor_backend="vibe_image_edit",
+        semantic_editor_only=True,
+    )
+
+    assert receipt["direct_editor_backend"] == "vibe_image_edit"
+    assert receipt["semantic_editor_only"] is True
+    with zipfile.ZipFile(receipt["bundle"]["path"]) as archive:
+        request = json.loads(
+            archive.read("provider_runtime/artifixer3d_runtime_request.json")
+        )
+        entrypoint = archive.read(
+            "provider_runtime/run_public_scene_artifixer3d.sh"
+        ).decode("utf-8")
+        runner = archive.read(
+            "provider_runtime/public_scene_artifixer3d_runner.py"
+        ).decode("utf-8")
+    semantic = request["semantic_editor"]
+    assert semantic["revision"] == VIBE_IMAGE_EDIT_REVISION
+    assert semantic["source"]["commit"] == VIBE_SOURCE_COMMIT
+    assert semantic["source"]["tree"] == VIBE_SOURCE_TREE
+    assert semantic["maximum_expected_vram_gib"] == 24
+    assert semantic["enable_model_cpu_offload"] is False
+    assert VIBE_SOURCE_COMMIT in entrypoint
+    assert VIBE_SOURCE_TREE in entrypoint
+    assert "from vibe.editor import ImageEditor" in runner
+    assert "output_must_be_exact_support_composited" in json.dumps(semantic)
+
+
+def test_rejects_vibe_combined_with_3d_training(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, commit, tree = _source(tmp_path)
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
+    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
+    candidate = _candidate(tmp_path)
+    with pytest.raises(ArtiFixer3DBundleError, match="configuration_invalid"):
+        build_artifixer3d_bundle(
+            candidate_inputs_receipt_path=candidate,
+            use_attestation_path=_attestation(
+                candidate, tmp_path / "attestation.json"
+            ),
+            artifixer_source_directory=source,
+            output_root=tmp_path / "bundle",
+            repository_root=_repository(tmp_path),
+            direct_editor_backend="vibe_image_edit",
+            semantic_editor_only=False,
+        )
 
 
 def test_rejects_semantic_only_with_nonsemantic_backend(
