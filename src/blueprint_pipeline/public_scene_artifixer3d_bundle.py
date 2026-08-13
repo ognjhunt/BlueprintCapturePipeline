@@ -1289,3 +1289,58 @@ __all__ = [
     "materialize_artifixer3d_use_attestation",
     "resolve_default_removal_pipeline",
 ]
+
+def main(argv: list[str] | None = None) -> int:
+    """Build the immutable paired ArtiFixer3D provider bundle.
+
+    The allocator refuses a bundle whose commit is not the one the control
+    plane is running, and every deploy moves that commit. A bundle that can
+    only be produced by calling a Python function is therefore launchable
+    exactly once and then never again -- which is the state this was in, with a
+    `status: ready` receipt pinned to a commit the host had long since left.
+
+    Performs no provider mutation and rents nothing.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build the immutable paired ArtiFixer3D provider bundle.")
+    parser.add_argument("--candidate-inputs-receipt", required=True)
+    parser.add_argument("--use-attestation", required=True)
+    parser.add_argument("--artifixer-source", required=True)
+    parser.add_argument("--output-root", required=True)
+    parser.add_argument("--repository-root", required=True)
+    parser.add_argument("--artifixer3d-steps", type=int)
+    parser.add_argument("--random-seed", type=int)
+    parser.add_argument("--pipeline-mode")
+    args = parser.parse_args(argv)
+    try:
+        receipt = build_artifixer3d_bundle(
+            candidate_inputs_receipt_path=args.candidate_inputs_receipt,
+            use_attestation_path=args.use_attestation,
+            artifixer_source_directory=args.artifixer_source,
+            output_root=args.output_root,
+            repository_root=args.repository_root,
+            **({"artifixer3d_steps": args.artifixer3d_steps} if args.artifixer3d_steps is not None else {}),
+            **({"random_seed": args.random_seed} if args.random_seed is not None else {}),
+            **({"pipeline_mode": args.pipeline_mode} if args.pipeline_mode is not None else {}),
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0 if receipt.get("status") in {"ready", "sealed"} else 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

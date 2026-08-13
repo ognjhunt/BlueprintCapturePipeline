@@ -519,3 +519,50 @@ __all__ = [
     "build_paired_target_native_import_bundle",
     "validate_paired_target_native_import_bundle",
 ]
+
+def main(argv: list[str] | None = None) -> int:
+    """Build the immutable paired-target native import bundle.
+
+    The allocator refuses a bundle whose commit is not the one the control
+    plane is running, and every deploy moves that commit. A bundle that can
+    only be produced by calling a Python function is therefore launchable
+    exactly once and then never again -- which is the state this was in, with a
+    `status: ready` receipt pinned to a commit the host had long since left.
+
+    Performs no provider mutation and rents nothing.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build the immutable paired-target native import bundle.")
+    parser.add_argument("--native-render-request", required=True)
+    parser.add_argument("--runner", required=True)
+    parser.add_argument("--output-root", required=True)
+    parser.add_argument("--implementation-commit", required=True)
+    args = parser.parse_args(argv)
+    try:
+        receipt = build_paired_target_native_import_bundle(
+            native_render_request_path=args.native_render_request,
+            runner_path=args.runner,
+            output_root=args.output_root,
+            implementation_commit=args.implementation_commit,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0 if receipt.get("status") in {"ready", "sealed"} else 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

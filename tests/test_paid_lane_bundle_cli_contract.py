@@ -32,6 +32,51 @@ BUNDLE_BUILT_BY_SCRIPT = {
 }
 
 
+#: Bundle modules that seal a provider bundle and still have no entry point.
+#:
+#: Named, not skipped silently. Each is launchable exactly once after the
+#: commit its bundle was built at, and then never again -- the same defect
+#: #512 fixed in four `*_vast.py` lanes, in modules that scan missed because
+#: it only looked at `*_vast.py`.
+#:
+#: They are listed rather than fixed in one pass because each takes different
+#: inputs and an untested CLI is worse than a named gap. Removing a name here
+#: means giving that module a `main()`.
+BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
+    # Frozen or retired lanes -- no launch path is wanted.
+    "public_scene_aura_exact_residual_bundle.py",
+    "cosmos_edge_closed_loop_provider_bundle.py",
+    # Arena family: four bundles, three probe kinds, not yet reached.
+    "native_task_arena_bundle.py",
+    "native_task_arena_construction_bundle.py",
+    "native_task_arena_controls_bundle.py",
+    "native_task_arena_policy_bundle.py",
+    # ADP-009D diagnostics and the launch qualification bundle.
+    "adp009d_native_microcheck_bundle.py",
+    "articulated_isaac_bundle.py",
+    "articulated_native_diagnostic_bundle.py",
+    "launch_bundle.py",
+}
+
+
+def _bundle_modules() -> list[Path]:
+    """Every module that seals a provider bundle, by shape not by name."""
+
+    import ast as _ast
+
+    found: list[Path] = []
+    for path in sorted(SOURCE_ROOT.glob("*_bundle.py")):
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        if any(
+            isinstance(node, _ast.FunctionDef)
+            and node.name.startswith("build_")
+            and node.name.endswith("_bundle")
+            for node in _ast.walk(tree)
+        ):
+            found.append(path)
+    return found
+
+
 def _paid_lane_modules() -> list[Path]:
     return [
         path
@@ -98,3 +143,34 @@ def test_the_gaussian_excision_lane_exposes_both_of_its_steps() -> None:
     assert callable(lane.main)
     assert callable(lane.materialize_gaussian_excision_dependency_wheelhouse)
     assert callable(lane.build_gaussian_excision_vast_bundle)
+
+
+def test_the_bundle_module_scan_finds_something() -> None:
+    """A scan matching nothing would make the check below vacuous."""
+
+    assert len(_bundle_modules()) >= 10
+
+
+@pytest.mark.parametrize("path", _bundle_modules(), ids=lambda p: p.stem)
+def test_a_bundle_module_has_an_entrypoint_or_is_a_named_gap(path: Path) -> None:
+    """`*_vast.py` was never the whole set.
+
+    `paired_target_native_import_bundle.py` seals the bundle for the appearance
+    path this program bets on, had no `main()`, and its newest receipt read
+    `status: ready` while pinned to a commit the host had long since left. The
+    lane could not launch and nothing said so, because the earlier scan only
+    looked at `*_vast.py`.
+    """
+
+    source = path.read_text(encoding="utf-8")
+    if _has_entrypoint(source):
+        assert path.name not in BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT, (
+            f"{path.name} has an entry point now; remove it from "
+            "BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT"
+        )
+        return
+    assert path.name in BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT, (
+        f"{path.name} seals a provider bundle with no `main()`, so it can be "
+        "built exactly once and never rebuilt at a new deployed commit. Give it "
+        "a CLI, or add it to BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT with a reason."
+    )
