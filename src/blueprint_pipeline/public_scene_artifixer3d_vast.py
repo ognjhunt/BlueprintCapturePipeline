@@ -35,6 +35,7 @@ from .paid_repair_spend_chain import (
     _validate_prior_authority_chain,
     _validate_prior_terminal_result,
     validate_artifixer3d_terminal_spend_chain,
+    validate_campaign_start_receipt,
 )
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .public_scene_artifixer3d_bundle import (
@@ -777,8 +778,6 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
 def materialize_artifixer3d_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
-    prior_aura_authority_path: str | Path,
-    prior_terminal_result_path: str | Path,
     authorization_reference: str,
     authorized_by: str,
     authorized_on: str,
@@ -787,6 +786,9 @@ def materialize_artifixer3d_paid_attempt_authority(
     hard_cap_usd: float,
     hard_ttl_seconds: int,
     output_path: str | Path,
+    prior_aura_authority_path: str | Path | None = None,
+    prior_terminal_result_path: str | Path | None = None,
+    campaign_start_receipt_path: str | Path | None = None,
     prior_artifixer_authority_path: str | Path | None = None,
     prior_artifixer_result_path: str | Path | None = None,
     prior_artifixer_cleanup_path: str | Path | None = None,
@@ -796,10 +798,27 @@ def materialize_artifixer3d_paid_attempt_authority(
     """Seal one zero-retry authority chained through all previous scene spend."""
 
     bundle = validate_artifixer3d_bundle(bundle_receipt_path)
-    prior_authority_path = Path(prior_aura_authority_path).expanduser().resolve()
-    prior_authority = _validate_prior_authority_chain(prior_authority_path)
-    terminal_path = Path(prior_terminal_result_path).expanduser().resolve()
-    _, latest_cost = _validate_prior_terminal_result(terminal_path, prior_authority=prior_authority)
+    # Exactly one anchor, never zero. The legacy pair stays valid for any
+    # historical chain; the campaign-start receipt is what a campaign with no
+    # paid predecessor anchors on. Accepting both would let two different
+    # numbers claim to be the campaign's prior spend.
+    legacy_anchor = prior_aura_authority_path is not None or prior_terminal_result_path is not None
+    if legacy_anchor == (campaign_start_receipt_path is not None):
+        raise ValueError("artifixer3d_campaign_spend_anchor_ambiguous")
+    campaign_start: dict[str, Any] | None = None
+    if legacy_anchor:
+        if prior_aura_authority_path is None or prior_terminal_result_path is None:
+            raise ValueError("artifixer3d_prior_authority_anchor_incomplete")
+        prior_authority_path = Path(prior_aura_authority_path).expanduser().resolve()
+        prior_authority = _validate_prior_authority_chain(prior_authority_path)
+        terminal_path = Path(prior_terminal_result_path).expanduser().resolve()
+        _, latest_cost = _validate_prior_terminal_result(
+            terminal_path, prior_authority=prior_authority
+        )
+        anchor_spend = float(prior_authority["prior_goal_spend_usd"]) + latest_cost
+    else:
+        campaign_start_path = Path(str(campaign_start_receipt_path)).expanduser().resolve()
+        campaign_start, anchor_spend = validate_campaign_start_receipt(campaign_start_path)
     predecessor_paths = (
         prior_artifixer_authority_path,
         prior_artifixer_result_path,
@@ -847,13 +866,7 @@ def materialize_artifixer3d_paid_attempt_authority(
             "receipt_digest": supplemental_receipt["receipt_digest"],
             "total_cost_usd": supplemental_cost,
         }
-    prior_spend = round(
-        float(prior_authority["prior_goal_spend_usd"])
-        + latest_cost
-        + predecessor_cost
-        + supplemental_cost,
-        6,
-    )
+    prior_spend = round(anchor_spend + predecessor_cost + supplemental_cost, 6)
     aggregate_cap = float(bundle["aggregate_goal_spend_cap_usd"])
     if (
         not authorization_reference.strip()
@@ -901,10 +914,26 @@ def materialize_artifixer3d_paid_attempt_authority(
         "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
         "aggregate_goal_spend_before_attempt_usd": prior_spend,
         "aggregate_goal_spend_cap_usd": aggregate_cap,
-        "prior_aura_authority": _record(prior_authority_path),
-        "prior_aura_authority_digest": prior_authority["authorization_digest"],
-        "prior_terminal_result": _record(terminal_path),
-        "prior_terminal_cost_usd": latest_cost,
+        # Whichever anchor was used is recorded, and the other is explicitly
+        # null rather than absent: a reader must be able to tell a campaign
+        # anchored on a measurement from one anchored on a predecessor.
+        "campaign_spend_anchor_kind": (
+            "prior_aura_terminal_attempt" if campaign_start is None else "measured_campaign_start"
+        ),
+        "prior_aura_authority": (
+            _record(prior_authority_path) if campaign_start is None else None
+        ),
+        "prior_aura_authority_digest": (
+            prior_authority["authorization_digest"] if campaign_start is None else None
+        ),
+        "prior_terminal_result": _record(terminal_path) if campaign_start is None else None,
+        "prior_terminal_cost_usd": latest_cost if campaign_start is None else None,
+        "campaign_start_receipt": (
+            None if campaign_start is None else _record(campaign_start_path)
+        ),
+        "campaign_start_receipt_digest": (
+            None if campaign_start is None else campaign_start["receipt_digest"]
+        ),
         "prior_artifixer_attempt": predecessor,
         "supplemental_prior_spend_reconciliation": supplemental,
         "external_active_instance_allowlist": bundle["allowed_active_instance_ids"],

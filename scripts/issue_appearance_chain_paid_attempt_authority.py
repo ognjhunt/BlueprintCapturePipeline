@@ -92,14 +92,23 @@ SHARED: dict[str, Param] = {
 #: some but not all raises `artifixer3d_predecessor_attempt_incomplete`. They
 #: are what lets a *second* attempt account for the first attempt's spend.
 ARTIFIXER_ONLY: dict[str, Param] = {
+    # Exactly one anchor. The legacy Aura pair stays valid for any historical
+    # chain, but no Aura paid run ever completed -- every artifact is
+    # `dry_run_ready` -- so a campaign starting today anchors on a measured
+    # campaign-start receipt instead. Neither is required alone; supplying both
+    # is refused, because two numbers cannot both be the campaign's prior spend.
     "prior_aura_authority_path": Param(
         "--prior-aura-authority",
-        "A retired lane's historical authority is still this campaign's spend "
-        "anchor. Retiring AuraFusion360 did not delete its receipts.",
-        required=True,
+        "Legacy anchor, with --prior-terminal-result. Only for a chain that "
+        "actually has a completed Aura paid attempt.",
     ),
     "prior_terminal_result_path": Param(
-        "--prior-terminal-result", "The Aura terminal result that anchor closed on.", required=True
+        "--prior-terminal-result", "The Aura terminal result that anchor closed on."
+    ),
+    "campaign_start_receipt_path": Param(
+        "--campaign-start-receipt",
+        "Measured anchor from scripts/seal_appearance_campaign_start.py. Use "
+        "this when the campaign has no completed paid predecessor.",
     ),
     "prior_artifixer_authority_path": Param(
         "--prior-artifixer-authority", "Second attempt onward: all four or none."
