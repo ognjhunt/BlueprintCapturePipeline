@@ -164,12 +164,17 @@ def materialize_registered_replacement_asset(
     translation = before.ExtractTranslation()
     matrix = registration["T_observed_world_axes_from_asset_local_axes"]
     rotation_matrix = Gf.Matrix3d(*[float(matrix[r][c]) for r in range(3) for c in range(3)])
-    rotation_transform = Gf.Matrix4d(1.0)
-    rotation_transform.SetRotate(rotation_matrix)
-    rotation = Gf.Transform(rotation_transform).GetRotation()
+    registered_transform = Gf.Matrix4d(1.0)
+    registered_transform.SetRotate(rotation_matrix)
+    registered_transform.SetTranslateOnly(translation)
     xform.ClearXformOpOrder()
-    xform.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(translation)
-    xform.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(rotation.GetQuat())
+    # Clearing the op order deliberately leaves the authored properties in the
+    # layer. Reusing a common translate/orient name can therefore collide with
+    # an existing float-precision op even when it is no longer ordered. A
+    # uniquely suffixed Matrix4d op is precision-stable for every source graph.
+    xform.AddTransformOp(UsdGeom.XformOp.PrecisionDouble, "assetFrameRegistration").Set(
+        registered_transform
+    )
     root.SetCustomDataByKey(
         "blueprint:assetFrameRegistrationDigest", registration["registration_digest"]
     )
@@ -177,9 +182,7 @@ def materialize_registered_replacement_asset(
     registered.GetRootLayer().Save()
     reopened = Usd.Stage.Open(str(destination), load=Usd.Stage.LoadAll)
     actual = UsdGeom.Xformable(reopened.GetDefaultPrim()).GetLocalTransformation()
-    expected = Gf.Matrix4d(1.0)
-    expected.SetRotate(rotation_matrix)
-    expected.SetTranslateOnly(translation)
+    expected = registered_transform
     if not _matrix_close(actual, expected):
         raise RegisteredReplacementAssetError("registered_replacement_transform_mismatch")
     result: dict[str, Any] = {

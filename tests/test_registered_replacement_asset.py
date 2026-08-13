@@ -28,6 +28,7 @@ def test_registered_asset_applies_heading_and_preserves_translation(
     root = UsdGeom.Xform.Define(stage, "/Asset")
     stage.SetDefaultPrim(root.GetPrim())
     root.AddTranslateOp().Set(Gf.Vec3d(3.0, 4.0, 5.0))
+    root.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(Gf.Quatf(1.0, Gf.Vec3f(0.0, 0.0, 0.0)))
     stage.GetRootLayer().Save()
     binding = tmp_path / "binding.json"
     binding.write_text("{}", encoding="utf-8")
