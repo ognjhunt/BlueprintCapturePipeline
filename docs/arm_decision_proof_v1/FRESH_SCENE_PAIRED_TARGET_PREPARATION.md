@@ -102,6 +102,18 @@ Production dispatchers should publish the next paid profile only after all
 prior deterministic stages validate and a new file-backed authority has been
 materialized. Automatic paid retries remain forbidden.
 
+For `sam31_source_tracks`, build that profile with
+`scripts/build_sam31_source_tracks_live_profile.py`. The builder binds the
+exact request, input bundle, bundle receipt, single-use authority, deployed
+commit, host-resident secret-file path, hard cap/TTL, and zero retry. The
+profile deliberately does not publish a capacity snapshot: after the
+independent watchdog is armed, the allocator collects a fresh Vast capacity
+and provider-zero preflight at execution time, writes it beneath the launch
+root, and fails closed before authority consumption or provider mutation when
+that live check does not pass. Every terminal execute result also seals the
+shared Task Evaluation artifact manifest and teardown record required by the
+website reconciler.
+
 ## Agents SDK orchestration
 
 The repository already pins `openai-agents` and the production control plane

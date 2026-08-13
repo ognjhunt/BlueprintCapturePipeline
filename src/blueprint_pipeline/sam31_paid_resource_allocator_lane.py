@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 from typing import Any, Callable
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import get_render_provider
 from .paid_resource_admission import (
@@ -16,12 +16,16 @@ from .paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
-from .sam31_gpu_admission import prepare_sam31_gpu_canary
+from .sam31_gpu_admission import collect_sam31_vast_preflight, prepare_sam31_gpu_canary
 from .sam31_paid_attempt_authority import (
     consume_sam31_paid_attempt_authority_once,
     validate_sam31_paid_attempt_authority,
 )
 from .sam31_vast_source_track_canary import run_sam31_vast_source_track_canary
+from .task_evaluation_artifact_manifest import (
+    seal_lane_terminal_artifacts,
+    seal_unallocated_provider_teardown,
+)
 from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
@@ -55,6 +59,85 @@ def _read_private_secret(path_value: str | Path | None) -> tuple[str, list[str]]
     if not value or len(value) > 4096 or "\n" in value or "\r" in value:
         blockers.append("sam31_hf_token_invalid")
     return value, blockers
+
+
+def _write_terminal_result(
+    adapter_path: Path,
+    result: dict[str, Any],
+    *,
+    extra_artifact_roots: dict[str, Path] | None = None,
+) -> dict[str, Any]:
+    """Seal one execute-path result using the shared Task Evaluation contract."""
+
+    attempt_root = adapter_path.parent
+    result.setdefault("retry_cap", 0)
+    if result.get("provider_mutations_performed") == 0:
+        result.setdefault("continuing_spend_from_this_run", False)
+    provider_run = attempt_root / "vast_provider_run"
+    provider_run.mkdir(parents=True, exist_ok=True)
+    if result.get("provider_mutations_performed") == 0:
+        seal_unallocated_provider_teardown(
+            provider_run,
+            reason="semantic_sam31_source_tracks_no_provider_allocation",
+        )
+    else:
+        source_teardown = Path(
+            str(result.get("source_teardown_receipt_path") or "")
+        ).expanduser()
+        source = _load_object(source_teardown) if source_teardown.is_file() else {}
+        watchdog = result.get("independent_watchdog")
+        watchdog = watchdog if isinstance(watchdog, dict) else {}
+        if source or watchdog.get("status") == "provider_terminal":
+            instance_id = result.get("instance_id") or source.get("instance_id")
+            write_json(
+                provider_run / "vast_teardown_manifest.json",
+                {
+                    "schema_version": "vast_teardown_manifest.v1",
+                    "status": (
+                        "completed"
+                        if result.get("continuing_spend_from_this_run") is False
+                        else "blocked"
+                    ),
+                    "vast_instance_ids": (
+                        [int(instance_id)] if str(instance_id or "").isdigit() else []
+                    ),
+                    "continuing_spend_from_this_run": result.get(
+                        "continuing_spend_from_this_run"
+                    ),
+                    "source_teardown_receipt_path": (
+                        str(source_teardown.resolve()) if source else None
+                    ),
+                    "source_teardown_receipt_digest": source.get(
+                        "teardown_receipt_digest"
+                    ),
+                    "independent_watchdog_status": watchdog.get("status"),
+                },
+            )
+    write_json(
+        provider_run / "vast_provider_adapter_result.json",
+        {
+            "schema_version": "semantic_sam31_allocator_adapter_result.v1",
+            "status": result.get("status"),
+            "provider_mutations_performed": result.get(
+                "provider_mutations_performed", 0
+            ),
+            "instance_id": result.get("instance_id"),
+            "provider_zero_verified": result.get("provider_zero_verified"),
+            "blockers": list(result.get("blockers") or []),
+            "raw_secret_values_recorded": False,
+        },
+    )
+    sealed = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=attempt_root,
+        lane="semantic_sam31_source_tracks",
+        extra_artifact_roots=extra_artifact_roots,
+    )
+    sealed["execution_result_digest"] = canonical_digest(
+        sealed, digest_field="execution_result_digest"
+    )
+    write_json(adapter_path, sealed)
+    return sealed
 
 
 def run_sam31_paid_resource_allocator_lane(
@@ -117,22 +200,8 @@ def run_sam31_paid_resource_allocator_lane(
                 "provider_mutations_performed": 0,
                 "paid_execution_started": False,
             }
-            write_json(Path(args.adapter_output), result)
-            return result
-        try:
-            preflight = _load_object(args.preflight_bundle)
-        except (OSError, ValueError, json.JSONDecodeError):
-            close_watchdog_without_allocation(job_dir=adapter_path.parent, handle=handle)
-            result = {
-                "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
-                "status": "blocked",
-                "blockers": ["sam31_preflight_bundle_invalid"],
-                "provider_mutations_performed": 0,
-                "paid_execution_started": False,
-            }
-            write_json(adapter_path, result)
-            return result
-        preflight["watchdog"] = {
+            return _write_terminal_result(Path(args.adapter_output), result)
+        watchdog_snapshot = {
             "status": "armed",
             "independent_process": True,
             "pid": handoff["watchdog_pid"],
@@ -140,9 +209,27 @@ def run_sam31_paid_resource_allocator_lane(
             "name_prefix": handoff["pod_name_prefix"],
             "started_instance_id_path": str(handle.started_instance_id_path),
         }
-        preflight["preflight_digest"] = canonical_digest(
-            preflight, digest_field="preflight_digest"
-        )
+        try:
+            provider = provider_factory(args.provider)
+            preflight = collect_sam31_vast_preflight(
+                name_prefix="blueprint-sam31-source-tracks-",
+                container_disk_bytes=80 * 1024**3,
+                watchdog=watchdog_snapshot,
+                conflicting_owner_present=False,
+                capacity_probe=provider.capacity_preflight,
+                inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
+                max_hourly_rate_usd=args.sam31_max_hourly_rate_usd,
+            )
+        except (OSError, RuntimeError, ValueError):
+            close_watchdog_without_allocation(job_dir=adapter_path.parent, handle=handle)
+            result = {
+                "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
+                "status": "blocked",
+                "blockers": ["sam31_live_preflight_collection_failed"],
+                "provider_mutations_performed": 0,
+                "paid_execution_started": False,
+            }
+            return _write_terminal_result(adapter_path, result)
         execution_preflight = (
             Path(args.adapter_output).expanduser().resolve().parent
             / "sam31_execution_preflight.json"
@@ -173,7 +260,11 @@ def run_sam31_paid_resource_allocator_lane(
                 job_dir=Path(args.adapter_output).expanduser().resolve().parent,
                 handle=handle,
             )
-        return admission
+        if not args.execute:
+            return admission
+        return _write_terminal_result(
+            Path(args.adapter_output).expanduser().resolve(), admission
+        )
 
     blockers: list[str] = []
     hf_token, token_blockers = _read_private_secret(args.sam31_hf_token_file)
@@ -244,8 +335,7 @@ def run_sam31_paid_resource_allocator_lane(
                 job_dir=adapter_path.parent,
                 handle=handle,
             )
-        write_json(adapter_path, result)
-        return result
+        return _write_terminal_result(adapter_path, result)
 
     try:
         result = execute_canary(
@@ -256,7 +346,7 @@ def run_sam31_paid_resource_allocator_lane(
             output_put_url=(staging_dir / "provider_output_put_url.txt").read_text().strip(),
             output_get_url=(staging_dir / "provider_output_get_url.txt").read_text().strip(),
             hf_token=hf_token,
-            provider=provider_factory(args.provider),
+            provider=provider,
             paid_resource_admission_grant=grant,
         )
     except (OSError, RuntimeError, ValueError) as exc:
@@ -266,7 +356,7 @@ def run_sam31_paid_resource_allocator_lane(
             "instance_id": None,
             "provider_mutations_performed": 0,
             "provider_zero_verified": False,
-            "blockers": [f"sam31_canary_failed:{type(exc).__name__}"],
+            "blockers": [f"sam31_canary_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
             "scientific_qualification_inferred": False,
             "proof_effect": "none",
@@ -280,6 +370,11 @@ def run_sam31_paid_resource_allocator_lane(
     if instance_id is None and handle.started_instance_id_path.is_file():
         candidate = handle.started_instance_id_path.read_text(encoding="utf-8").strip()
         instance_id = candidate or None
+    if instance_id is not None:
+        result["instance_id"] = instance_id
+        result["provider_mutations_performed"] = max(
+            1, int(result.get("provider_mutations_performed") or 0)
+        )
     teardown_path = (
         adapter_path.parent
         / "sam31_vast_source_track_canary"
@@ -299,6 +394,13 @@ def run_sam31_paid_resource_allocator_lane(
     result["object_store_cleanup_path"] = str(
         staging_dir / "wam_provider_object_store_cleanup.json"
     )
+    result["source_teardown_receipt_path"] = str(teardown_path)
+    runtime_artifact_path = (
+        adapter_path.parent
+        / "sam31_vast_source_track_canary"
+        / "provider_runtime_result.json"
+    )
+    result["retry_cap"] = 0
     result["all_staged_objects_absent"] = cleanup.get("all_objects_absent")
     result["watchdog_receipt_path"] = str(
         adapter_path.parent
@@ -318,11 +420,17 @@ def run_sam31_paid_resource_allocator_lane(
         result["status"] = "failed"
         result.setdefault("blockers", []).append("sam31_watchdog_not_terminal")
     result["blockers"] = sorted(set(result.get("blockers") or []))
-    result["execution_result_digest"] = canonical_digest(
-        result, digest_field="execution_result_digest"
+    extra_artifact_roots = {
+        "sam31_runtime_result": runtime_artifact_path,
+        "sam31_source_teardown_receipt": teardown_path,
+        "sam31_watchdog_receipt": Path(result["watchdog_receipt_path"]),
+        "sam31_object_store_cleanup": Path(result["object_store_cleanup_path"]),
+    }
+    return _write_terminal_result(
+        adapter_path,
+        result,
+        extra_artifact_roots=extra_artifact_roots,
     )
-    write_json(adapter_path, result)
-    return result
 
 
 __all__ = ["run_sam31_paid_resource_allocator_lane"]
