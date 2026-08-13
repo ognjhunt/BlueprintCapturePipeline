@@ -152,6 +152,9 @@ from .native_task_arena_vast import (
     run_native_task_arena_policy_vast,
     run_native_task_arena_vast,
 )
+from .native_task_arena_paid_authority import (
+    validate_native_task_arena_paid_attempt_authority,
+)
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -1268,6 +1271,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Previously dry-run native task bundle receipt. Required for execute so "
             "the paid launch cannot rebuild different bytes."
         ),
+    )
+    gpu.add_argument(
+        "--native-task-arena-attempt-authority",
+        help="Exact single-use paid-attempt authority; required for execute.",
     )
     gpu.add_argument(
         "--native-task-arena-runtime-source-packet",
@@ -4106,6 +4113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             blockers = [*missing, *control_blockers]
             if args.execute and not args.native_task_arena_bundle_receipt:
                 blockers.append("native_task_arena_execute_requires_dry_run_bundle_receipt")
+            if args.execute and not args.native_task_arena_attempt_authority:
+                blockers.append("native_task_arena_paid_attempt_authority_missing")
             if args.provider != "vast":
                 blockers.append("native_task_arena_provider_must_be_vast")
             if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
@@ -4124,6 +4133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
                     )
             prepared_bundle = None
+            native_authority = None
             if not blockers:
                 try:
                     source_packet = verify_native_task_runtime_source_packet(
@@ -4188,6 +4198,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                     blockers.append(
                         f"native_task_arena_bundle_preparation_failed:{type(exc).__name__}"
                     )
+            if args.native_task_arena_attempt_authority:
+                try:
+                    native_authority = _load(
+                        Path(args.native_task_arena_attempt_authority)
+                        .expanduser()
+                        .resolve()
+                    )
+                    if prepared_bundle is None:
+                        blockers.append("native_task_arena_authority_requires_bundle")
+                    else:
+                        validate_native_task_arena_paid_attempt_authority(
+                            native_authority,
+                            prepared_bundle=prepared_bundle,
+                            max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                            hard_cap_usd=args.adp_max_spend_usd,
+                            hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                            allowed_active_instance_ids=(
+                                args.adp_allowed_active_vast_instance_id
+                            ),
+                        )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("native_task_arena_paid_attempt_authority_invalid")
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": args.probe_kind,
@@ -4233,6 +4265,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "retry_cap": 0,
+                "paid_attempt_authority_digest": (
+                    native_authority.get("authorization_digest")
+                    if native_authority
+                    else None
+                ),
                 "machine_avoidlist_digest": avoidlist_digest,
                 "allowed_active_vast_instance_ids": sorted(
                     set(args.adp_allowed_active_vast_instance_id)
@@ -4316,6 +4353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     allowed_active_instance_ids=(args.adp_allowed_active_vast_instance_id),
+                    paid_attempt_authority=native_authority,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
