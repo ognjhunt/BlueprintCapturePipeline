@@ -282,7 +282,77 @@ DETACHED_GPU_CANARY_LOCK = "detached_gpu_canary_supervisor.lock"
 TERMINAL_RESOURCE_RELEASE_WORKER_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_WORKER"
 )
+CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME = "adp-content-agents-vast-machine-avoidlist.json"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
+
+
+def _content_agents_machine_avoidlist_path(
+    *, job_dir: str | Path, explicit_path: str | Path | None
+) -> Path | None:
+    """Reuse Content Agents bad-host evidence across control-plane launches.
+
+    A Task Evaluation launch gives each attempt a fresh
+    ``<state>/<launch>/allocator/content-agents-job`` directory.  Letting the
+    Vast adapter choose its ordinary job-local default therefore discards the
+    avoidlist before the next zero-retry attempt can use it.  Resolve one
+    lane-scoped path beside the launch directories and import any retained
+    job-local lists written by older releases.
+
+    Non-control-plane callers keep the adapter's existing local default.  An
+    explicit allocator argument always wins.
+    """
+
+    if explicit_path:
+        return Path(explicit_path).expanduser().resolve()
+    resolved_job = Path(job_dir).expanduser().resolve()
+    if resolved_job.name != "content-agents-job" or resolved_job.parent.name != "allocator":
+        return None
+    launch_root = resolved_job.parent.parent
+    state_root = launch_root.parent
+    shared = state_root / "provider-machine-avoidlists" / CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME
+
+    machine_ids: set[int] = set()
+    entries: list[dict[str, Any]] = []
+    seen_entries: set[str] = set()
+    candidates = [shared]
+    candidates.extend(
+        sorted(state_root.glob("*/allocator/content-agents-job/vast_machine_avoidlist.json"))
+    )
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping) or payload.get("schema_version") != "vast_machine_avoidlist.v1":
+            continue
+        for value in payload.get("machine_ids") or []:
+            if isinstance(value, int) and not isinstance(value, bool):
+                machine_ids.add(value)
+        for value in payload.get("entries") or []:
+            if not isinstance(value, Mapping):
+                continue
+            row = dict(value)
+            machine_id = row.get("machine_id")
+            if isinstance(machine_id, int) and not isinstance(machine_id, bool):
+                machine_ids.add(machine_id)
+            identity = json.dumps(row, sort_keys=True, separators=(",", ":"))
+            if identity not in seen_entries:
+                seen_entries.add(identity)
+                entries.append(row)
+    if machine_ids or entries:
+        write_json(
+            shared,
+            {
+                "schema_version": "vast_machine_avoidlist.v1",
+                "status": "completed",
+                "machine_ids": sorted(machine_ids),
+                "entries": entries,
+                "raw_secret_values_recorded": False,
+            },
+        )
+    return shared
 
 
 def admit_openai_api_candidate(**kwargs: Any) -> AdmissionResult:
@@ -3213,6 +3283,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
+                content_agents_machine_avoidlist = _content_agents_machine_avoidlist_path(
+                    job_dir=args.adp_job_dir,
+                    explicit_path=args.adp_machine_avoidlist,
+                )
                 result = run_content_agents_vast(
                     job_dir=args.adp_job_dir,
                     paid_resource_admission_grant=grant,
@@ -3223,6 +3297,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     public_image=ADP_CONTENT_AGENTS_IMAGE,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                    machine_avoidlist_path=content_agents_machine_avoidlist,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
