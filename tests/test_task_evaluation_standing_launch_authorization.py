@@ -28,6 +28,7 @@ from blueprint_pipeline.task_evaluation_standing_launch_authorization import (
 
 NOW = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
 DIGEST = "sha256:" + "a" * 64
+URI = "https://raw.githubusercontent.com/example/repo/" + "0" * 40 + "/request.json"
 
 
 def _profile(spend: float = 5.0, digest: str = DIGEST) -> dict:
@@ -327,22 +328,31 @@ def test_dispatcher_admits_a_launch_without_a_copied_launch_id(
         "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", str(tmp_path)
     )
 
-    decision = dispatcher._standing_authorization_decision(_profile(), True)
+    decision = dispatcher._standing_authorization_decision(
+        _profile(), True, tmp_path / "launch-runs"
+    )
 
     assert decision["admitted"] is True
 
 
-def test_dispatcher_does_not_consult_an_unconfigured_host(
-    monkeypatch: pytest.MonkeyPatch,
+def test_an_unconfigured_host_derives_the_directory_and_still_refuses_an_empty_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A host without the directory keeps the per-launch handshake unchanged."""
+    """The deployed control plane never set the variable, so the capability
+    could not admit anything there. Deriving the location makes it usable on
+    a rebuilt host; finding nothing there still refuses, with no blocker."""
     from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
 
     monkeypatch.delenv(
         "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False
     )
+    state_root = tmp_path / "control-plane" / "launch-runs"
+    state_root.mkdir(parents=True)
 
-    decision = dispatcher._standing_authorization_decision(_profile(), True)
+    assert dispatcher.standing_authorization_directory(state_root) == str(
+        tmp_path / "control-plane" / "standing-authorizations"
+    )
+    decision = dispatcher._standing_authorization_decision(_profile(), True, state_root)
 
     assert decision["admitted"] is False
     assert decision["blockers"] == []
@@ -360,4 +370,10 @@ def test_dispatcher_never_consults_on_a_dry_run(
         "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", str(tmp_path)
     )
 
-    assert dispatcher._standing_authorization_decision(_profile(), False)["admitted"] is False
+    assert (
+        dispatcher._standing_authorization_decision(
+            _profile(), False, tmp_path / "launch-runs"
+        )["admitted"]
+        is False
+    )
+
