@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Build a live launch profile for one Content Agents CAD candidate.
+"""Build a live launch profile for the ADP-009B exact SimReady import probe.
 
-The four content-agents bundles were built, rehearsed, and left at
-`blocked_before_paid_execution` because no profile existed to run them: the
-lane had a bundle builder, a provider runner, and an allocator branch, and no
-way for the website to reach any of it.
+ADP-009 names "one exact SimReady USD" in as many words, the bundle has read
+`status: ready` for some time, and the allocator has had a branch for this probe
+throughout. What was missing was a launch profile -- the one thing that carries
+a lane across the website boundary -- so nothing could reach it.
 
-Everything a profile needs is already stated by the receipts the run will use,
-so this derives it rather than asking an operator to keep four documents
-consistent by hand -- and the same failure mode is avoided: a profile that names
-an authoring path, or a spend ceiling that disagrees with the authority it runs
-under.
-
-The skeleton is shared with every other paid lane in
-`task_evaluation_live_profile`. What is here is only what makes this lane
-different.
+This is the first lane written against the shared skeleton in
+`task_evaluation_live_profile` rather than as another near-copy of an existing
+builder. Everything below is only what makes this lane different: its probe
+kind, its TTL band, the arguments the allocator branch expects, and the receipts
+it pins. Residency, spend binding, terminal contract, and validation are shared,
+which is the point -- those are exactly the checks a hurried copy drops.
 
 Reads retained bytes only; performs no provider mutation.
 """
@@ -24,9 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
-from blueprint_pipeline.adp_content_agents_vast import PROBE_KIND
+from blueprint_pipeline.public_scene_simready_isaac_vast import PROBE_KIND
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
     LaneLiveProfileContext,
@@ -35,22 +32,26 @@ from blueprint_pipeline.task_evaluation_live_profile import (
     file_digest,
 )
 
-# The allocator refuses a TTL outside this band for this probe.
-MIN_TTL_SECONDS = 2_700
+# The allocator refuses a TTL outside this band for this probe
+# (`simready_isaac_hard_ttl_invalid`).
+MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
-
-
-def _read(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, Mapping):
-        raise TaskEvaluationLaunchError(f"profile_input_not_object:{path.name}")
-    return dict(value)
 
 
 def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
     blockers: list[str] = []
+    receipt = context.receipt
+    # Mirror the allocator's own binding checks so a profile that could never be
+    # admitted is refused here, before an attempt authority is consumed.
+    if receipt.get("source_commit_sha") != context.source_commit:
+        blockers.append("bundle_commit_not_source_commit")
+    if not receipt.get("probe_spec_sha256"):
+        blockers.append("bundle_probe_spec_digest_missing")
+    if receipt.get("retry_cap") != 0:
+        blockers.append(f"bundle_retry_cap_not_zero:{receipt.get('retry_cap')}")
     if not 0 < context.max_hourly_rate_usd <= context.max_spend_usd:
         blockers.append("budget_invalid")
+
     # The ceiling this profile publishes has to be the one the attempt authority
     # was issued against, or the allocator refuses at the paid boundary having
     # already been handed a provider.
@@ -58,29 +59,26 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
     if authority_path is None or not authority_path.is_file():
         blockers.append("attempt_authority_missing")
     else:
-        authority = _read(authority_path)
+        authority = json.loads(authority_path.read_text(encoding="utf-8"))
         if authority.get("hard_attempt_spend_cap_usd") != context.max_spend_usd:
             blockers.append("attempt_authority_spend_cap_mismatch")
         if authority.get("maximum_hourly_rate_usd") != context.max_hourly_rate_usd:
             blockers.append("attempt_authority_hourly_rate_mismatch")
         if authority.get("maximum_single_resource_ttl_seconds") != context.hard_ttl_seconds:
             blockers.append("attempt_authority_ttl_mismatch")
-        if authority.get("bundle_sha256") != context.receipt.get("bundle_sha256"):
+        if authority.get("bundle_sha256") != receipt.get("bundle_sha256"):
             blockers.append("attempt_authority_bundle_mismatch")
-    preflight = context.extra_paths.get("config_preflight")
-    if preflight is None or not preflight.is_file():
-        blockers.append("config_preflight_missing")
+        if authority.get("probe_spec_sha256") != receipt.get("probe_spec_sha256"):
+            blockers.append("attempt_authority_probe_spec_mismatch")
     return blockers
 
 
 def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
     return [
-        "--adp-content-agents-bundle-receipt", str(context.receipt_path),
-        "--adp-content-agents-config-preflight-receipt",
-        str(context.extra_paths["config_preflight"]),
-        "--adp-content-agents-attempt-authority",
+        "--adp-simready-isaac-bundle-receipt", str(context.receipt_path),
+        "--adp-simready-isaac-attempt-authority",
         str(context.extra_paths["attempt_authority"]),
-        "--adp-job-dir", context.job_dir("content-agents-job"),
+        "--adp-job-dir", context.job_dir("simready-isaac-job"),
         "--adp-max-hourly-rate-usd", str(context.max_hourly_rate_usd),
         "--adp-max-spend-usd", str(context.max_spend_usd),
         "--adp-hard-ttl-seconds", str(context.hard_ttl_seconds),
@@ -88,7 +86,6 @@ def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
 
 
 def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
-    preflight = context.extra_paths["config_preflight"]
     return [
         {
             "name": "source_bundle_manifest",
@@ -97,11 +94,11 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
         },
         {
             "name": "evaluation_run_spec",
-            "path": str(preflight),
-            "digest": file_digest(preflight),
+            "path": str(context.receipt_path),
+            "digest": file_digest(context.receipt_path),
         },
         {
-            "name": "content_agents_bundle",
+            "name": "simready_isaac_bundle",
             # The path the receipt resolved to here, not the one it was built at.
             "path": context.bundle_path,
             "digest": context.bundle_sha256,
@@ -109,38 +106,39 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
     ]
 
 
-def _spec(candidate_id: str) -> LaneLiveProfileSpec:
-    return LaneLiveProfileSpec(
-        profile_id_prefix=f"adp-content-agents-live-{candidate_id}",
-        probe_kind=PROBE_KIND,
-        min_ttl_seconds=MIN_TTL_SECONDS,
-        max_ttl_seconds=MAX_TTL_SECONDS,
-        source_bundle_id=lambda context: f"content-agents-{candidate_id}",
-        source_kind="interiorgs_sage",
-        lane_argv=_lane_argv,
-        immutable_inputs=_immutable_inputs,
-        lane_blockers=_lane_blockers,
-        extra_path_names=("config_preflight", "attempt_authority"),
-    )
+SPEC = LaneLiveProfileSpec(
+    profile_id_prefix="adp009b-simready-isaac-live",
+    probe_kind=PROBE_KIND,
+    min_ttl_seconds=MIN_TTL_SECONDS,
+    max_ttl_seconds=MAX_TTL_SECONDS,
+    source_bundle_id=lambda context: f"simready-isaac-{context.source_commit[:12]}",
+    # The probe's stage is built over `native/scene/assets/840313_collision.usd`
+    # -- scene 840313, the InteriorGS/SAGE pair. "SimReady" describes what the
+    # asset became, not where the scene came from, and this field records the
+    # latter.
+    source_kind="interiorgs_sage",
+    lane_argv=_lane_argv,
+    immutable_inputs=_immutable_inputs,
+    lane_blockers=_lane_blockers,
+    extra_path_names=("attempt_authority",),
+)
 
 
-def build_content_agents_live_profile(
+def build_simready_isaac_live_profile(
     *,
     bundle_receipt_path: str | Path,
-    config_preflight_path: str | Path,
     attempt_authority_path: str | Path,
     source_commit: str,
-    candidate_id: str,
     raw_manifest_uri: str,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
     max_spend_usd: float = 3.0,
     hard_ttl_seconds: int = 7_200,
 ) -> dict[str, Any]:
-    """Derive a live profile from the receipts it will run."""
+    """Derive a live profile from the bundle receipt it will run."""
 
     return build_lane_live_profile(
-        _spec(candidate_id),
+        SPEC,
         bundle_receipt_path=bundle_receipt_path,
         source_commit=source_commit,
         raw_manifest_uri=raw_manifest_uri,
@@ -148,24 +146,15 @@ def build_content_agents_live_profile(
         hard_ttl_seconds=hard_ttl_seconds,
         revision=revision,
         max_spend_usd=max_spend_usd,
-        extra_paths={
-            "config_preflight": config_preflight_path,
-            "attempt_authority": attempt_authority_path,
-        },
+        extra_paths={"attempt_authority": attempt_authority_path},
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-receipt", required=True)
-    parser.add_argument("--config-preflight", required=True)
     parser.add_argument("--attempt-authority", required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument(
-        "--candidate-id",
-        required=True,
-        help="Which CAD candidate this profile runs, e.g. a-earthtojake-text-to-cad.",
-    )
     parser.add_argument("--raw-manifest-uri", required=True)
     parser.add_argument(
         "--revision",
@@ -178,12 +167,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        profile = build_content_agents_live_profile(
+        profile = build_simready_isaac_live_profile(
             bundle_receipt_path=args.bundle_receipt,
-            config_preflight_path=args.config_preflight,
             attempt_authority_path=args.attempt_authority,
             source_commit=args.source_commit,
-            candidate_id=args.candidate_id,
             raw_manifest_uri=args.raw_manifest_uri,
             revision=args.revision,
             max_hourly_rate_usd=args.max_hourly_rate_usd,
