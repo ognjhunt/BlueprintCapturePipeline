@@ -66,12 +66,10 @@ rediscovers it:
   `public_scene_method_prerequisites.py` is request-driven and has no reference
   to that method, so a request document would have to be authored first.
 
-Note that `CLAUDE.md` and `AGENTS.md` still name Inpaint360GS author smoke and
-AuraFusion360-as-challenger among ADP-009's completion requirements. That text
-was not changed alongside this decision. **If the artifixer3d result is meant to
-replace those requirements rather than sit beside them, the doctrine has to move
-too** — otherwise the repository's binding guide and this file disagree about
-what ADP-009 requires.
+`CLAUDE.md` and `AGENTS.md` were updated alongside this decision, so the binding
+guides and this file agree: artifixer3D+ with `gpt-image-2` is the appearance
+path, and neither retired method is an outstanding requirement or an open rights
+question. Nothing here is pending anyone's decision.
 
 ### SIMPLER (`simpler_public_vast`)
 
