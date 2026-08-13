@@ -531,6 +531,12 @@ def test_deployment_identity_fails_closed_without_exact_source_commit(
         "commit_proven": False,
         "source_commit": None,
         "claim_ceiling": "deployed_service_identity_only",
+        "default_object_removal": {
+            "policy": "candidate_schema_resolved.v1",
+            "paired_target_pipeline_mode": "dual_target_artifixer3d_only",
+            "maximum_replacement_objects": 5,
+            "generated_appearance_is_physical_evidence": False,
+        },
     }
 
     monkeypatch.setenv(service.PIPELINE_SOURCE_COMMIT_ENV, "not-a-commit")
@@ -542,6 +548,12 @@ def test_deployment_identity_fails_closed_without_exact_source_commit(
     assert proven.status_code == 200
     assert proven.json()["commit_proven"] is True
     assert proven.json()["source_commit"] == source_commit
+    assert proven.json()["default_object_removal"] == {
+        "policy": "candidate_schema_resolved.v1",
+        "paired_target_pipeline_mode": "dual_target_artifixer3d_only",
+        "maximum_replacement_objects": 5,
+        "generated_appearance_is_physical_evidence": False,
+    }
 
 
 def test_live_pipeline_intake_service_error_edges(

@@ -45,6 +45,7 @@ FULL_PIPELINE_MODE = "full_artifixer3d_plus"
 DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
 DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE = "dual_target_artifixer3d_render_only"
 CHECKPOINT_REUSE_SCHEMA_VERSION = "public_scene_artifixer3d_checkpoint_reuse.v1"
+DEFAULT_REMOVAL_PIPELINE_POLICY = "candidate_schema_resolved.v1"
 
 ARTIFIXER_REPOSITORY = "https://github.com/nv-tlabs/ArtiFixer.git"
 ARTIFIXER_COMMIT = "a392c4dfe17459ef9952407accdb9fcdcdddba98"
@@ -72,6 +73,24 @@ DIRECT_EDITOR_BACKENDS = frozenset(
     {"artifixer", "qwen_image_edit_2511", "vibe_image_edit"}
 )
 NO_DIRECT_EDITOR = "none"
+
+
+def resolve_default_removal_pipeline(candidate_schema_version: str) -> dict[str, str]:
+    """Resolve the removal pipeline without exposing training internals to callers."""
+
+    if candidate_schema_version == DUAL_TARGET_INPUT_SCHEMA:
+        return {
+            "policy": DEFAULT_REMOVAL_PIPELINE_POLICY,
+            "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+            "direct_editor_backend": NO_DIRECT_EDITOR,
+        }
+    if candidate_schema_version == CANDIDATE_INPUT_SCHEMA:
+        return {
+            "policy": DEFAULT_REMOVAL_PIPELINE_POLICY,
+            "pipeline_mode": FULL_PIPELINE_MODE,
+            "direct_editor_backend": "artifixer",
+        }
+    raise ValueError("artifixer3d_candidate_schema_unsupported")
 MODEL_LICENSE_URL = (
     "https://developer.download.nvidia.com/licenses/"
     "NVIDIA-OneWay-Noncommercial-License-22Mar2022.pdf"
@@ -830,9 +849,9 @@ def build_artifixer3d_bundle(
     allowed_active_instance_ids: Sequence[int] = (),
     artifixer3d_steps: int = 30_000,
     random_seed: int = 840_920,
-    direct_editor_backend: str = "artifixer",
+    direct_editor_backend: str | None = None,
     semantic_editor_only: bool = False,
-    pipeline_mode: str = FULL_PIPELINE_MODE,
+    pipeline_mode: str | None = None,
     reused_checkpoint_provider_output_zip_path: str | Path | None = None,
     reused_checkpoint_source_provider_zero_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -843,6 +862,22 @@ def build_artifixer3d_bundle(
         code="artifixer3d_bundle_candidate_receipt_missing",
     )
     candidate = _candidate_receipt(receipt_path)
+    default_pipeline = resolve_default_removal_pipeline(
+        str(candidate.get("schema_version") or "")
+    )
+    if pipeline_mode is None:
+        pipeline_mode = default_pipeline["pipeline_mode"]
+    if direct_editor_backend is None:
+        direct_editor_backend = (
+            default_pipeline["direct_editor_backend"]
+            if pipeline_mode == default_pipeline["pipeline_mode"]
+            else (
+                NO_DIRECT_EDITOR
+                if pipeline_mode
+                in {DUAL_TARGET_PIPELINE_MODE, DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE}
+                else "artifixer"
+            )
+        )
     attestation_path = _file(
         use_attestation_path, code="artifixer3d_bundle_use_attestation_missing"
     )
@@ -1343,6 +1378,7 @@ def build_artifixer3d_bundle(
 __all__ = [
     "ARTIFIXER_COMMIT",
     "ARTIFIXER_MODEL_FILES",
+    "DEFAULT_REMOVAL_PIPELINE_POLICY",
     "ARTIFIXER_MODEL_REVISION",
     "ARTIFIXER_SUBMODULE_COMMIT",
     "ARTIFIXER_SUBMODULE_TREE",
@@ -1370,4 +1406,5 @@ __all__ = [
     "WAN_RUNTIME_FILES",
     "build_artifixer3d_bundle",
     "materialize_artifixer3d_use_attestation",
+    "resolve_default_removal_pipeline",
 ]

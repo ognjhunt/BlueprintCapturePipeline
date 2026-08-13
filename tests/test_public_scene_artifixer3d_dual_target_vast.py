@@ -296,6 +296,64 @@ def test_sealed_dual_target_bundle_reopens_with_physical_and_training_counts(
     assert validated["task_training_record_counts"] == {"task_1": 4}
 
 
+def test_dual_target_receipt_selects_paired_target_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dual_root, _source_candidate, _teachers, _dual = _dual_candidate(
+        tmp_path / "candidate", cameras_per_task=2
+    )
+    candidate = dual_root / "public_scene_artifixer3d_dual_target_inputs.v1.json"
+    attestation = tmp_path / "attestation.json"
+    materialize_artifixer3d_use_attestation(
+        candidate_inputs_receipt_path=candidate,
+        output_path=attestation,
+        authorized_by="fixture_user",
+    )
+    artifixer_root = tmp_path / "artifixer"
+    artifixer_root.mkdir()
+    source, commit, tree = _source(artifixer_root)
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    monkeypatch.setattr(subject, "ARTIFIXER_COMMIT", commit)
+    monkeypatch.setattr(subject, "ARTIFIXER_TREE", tree)
+    monkeypatch.setattr(
+        subject,
+        "rehearse_provider_bundle_entrypoint",
+        lambda **_kwargs: {
+            "status": "passed",
+            "provider_mutations_performed": 0,
+            "paid_inference_performed": False,
+            "gpu_runtime_started": False,
+        },
+    )
+
+    receipt = build_artifixer3d_bundle(
+        candidate_inputs_receipt_path=candidate,
+        use_attestation_path=attestation,
+        artifixer_source_directory=source,
+        output_root=tmp_path / "bundle",
+        repository_root=_repository(tmp_path),
+        artifixer3d_steps=10,
+    )
+
+    assert receipt["pipeline_mode"] == DUAL_TARGET_PIPELINE_MODE
+    assert receipt["direct_editor_backend"] == "none"
+    assert receipt["semantic_editor_only"] is False
+    with zipfile.ZipFile(receipt["bundle"]["path"]) as archive:
+        request = json.loads(
+            archive.read("provider_runtime/artifixer3d_runtime_request.json")
+        )
+    assert request["pipeline_mode"] == DUAL_TARGET_PIPELINE_MODE
+    assert request["direct_editor_backend"] == "none"
+    assert "artifixer3d_plus" not in request
+    assert request["phases"] == [
+        "dual_target_input_validation",
+        "artifixer3d_distillation",
+        "artifixer3d_review_render",
+        "external_visual_and_multiview_review",
+    ]
+
+
 def test_render_only_bundle_seals_zero_closed_checkpoint_and_source_receipts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

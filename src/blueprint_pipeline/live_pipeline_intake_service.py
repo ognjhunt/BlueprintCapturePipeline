@@ -53,6 +53,10 @@ from .live_pipeline_control_plane import (
     WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
     WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
 )
+from .public_scene_artifixer3d_bundle import (
+    DEFAULT_REMOVAL_PIPELINE_POLICY,
+    DUAL_TARGET_PIPELINE_MODE,
+)
 from .live_pipeline_input_intake import (
     DECISION_EVIDENCE_QUEUE_CONTRACT,
     build_live_pipeline_input_intake,
@@ -1805,6 +1809,12 @@ def create_app() -> FastAPI:
             "commit_proven": commit_proven,
             "source_commit": source_commit if commit_proven else None,
             "claim_ceiling": "deployed_service_identity_only",
+            "default_object_removal": {
+                "policy": DEFAULT_REMOVAL_PIPELINE_POLICY,
+                "paired_target_pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+                "maximum_replacement_objects": 5,
+                "generated_appearance_is_physical_evidence": False,
+            },
         }
         return JSONResponse(status_code=200 if commit_proven else 503, content=payload)
 

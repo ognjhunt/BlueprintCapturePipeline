@@ -377,6 +377,13 @@ keeps the claim ceiling at `deployed_service_identity_only`. An operator-typed
 commit, a mutable image tag, or a healthy process is not a substitute for this
 response.
 
+The identity response also reports the deployed object-removal default. A
+paired-target candidate receipt selects the whole-frame semantic-teacher plus
+protected-original ArtiFixer3D path, without direct ArtiFixer or automatic 3D+.
+Legacy candidate receipts retain the legacy full-chain behavior for replay
+compatibility. This default supports one to five co-present replacement objects;
+its generated appearance is never physical evidence.
+
 Generate an environment-bound deployment proof only from clean checkouts that
 match `origin/main`:
 
