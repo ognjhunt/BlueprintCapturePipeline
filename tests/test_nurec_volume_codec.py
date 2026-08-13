@@ -60,6 +60,7 @@ def _synthetic_arrays(count: int = 6) -> dict[str, np.ndarray]:
 # --- the proof ---------------------------------------------------------------
 
 
+@pytest.mark.external_data
 def test_the_shipped_volume_round_trips_to_identical_payload_bytes() -> None:
     """Decode then re-encode the real volume and require the original payload.
 
@@ -80,6 +81,7 @@ def test_the_shipped_volume_round_trips_to_identical_payload_bytes() -> None:
     assert gzip.decompress(encode_nurec_bytes(document)) == gzip.decompress(payload)
 
 
+@pytest.mark.external_data
 def test_the_reencoded_header_differs_only_in_the_pinned_mtime() -> None:
     """Bound what the round-trip above is allowed to excuse.
 
@@ -94,6 +96,7 @@ def test_the_reencoded_header_differs_only_in_the_pinned_mtime() -> None:
     assert int.from_bytes(reencoded[4:8], "little") == 0
 
 
+@pytest.mark.external_data
 def test_the_shipped_volume_decodes_to_the_arrays_a_gaussian_layer_needs() -> None:
     arrays = gaussian_arrays(decode_nurec_bytes(_shipped_payload()))
     counts = {name: value.shape[0] for name, value in arrays.items()}
@@ -105,6 +108,7 @@ def test_the_shipped_volume_decodes_to_the_arrays_a_gaussian_layer_needs() -> No
     assert arrays["features_specular"].shape[1] == 45
 
 
+@pytest.mark.external_data
 def test_values_are_stored_pre_activation() -> None:
     """Scales are logs and densities are logits; the renderer activates them.
 
@@ -124,6 +128,7 @@ def test_values_are_stored_pre_activation() -> None:
     assert 1e-4 < float(np.median(activated)) < 1.0
 
 
+@pytest.mark.external_data
 def test_the_container_declares_a_planar_kernel_flag() -> None:
     """The flag is what lets Aura's 2DGS use this format at all.
 
@@ -241,6 +246,7 @@ def _authored():
     return build_aura_nurec_document(_aura_surfels(), template=_shipped_payload())
 
 
+@pytest.mark.external_data
 def test_aura_surfels_author_a_volume_that_round_trips() -> None:
     from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document
 
@@ -251,6 +257,7 @@ def test_aura_surfels_author_a_volume_that_round_trips() -> None:
     assert decoded["scales"].shape == (8, 3)
 
 
+@pytest.mark.external_data
 def test_the_planar_kernel_is_the_one_substantive_override() -> None:
     """Aura's field is planar; the template's is not.
 
@@ -274,6 +281,7 @@ def test_the_planar_kernel_is_the_one_substantive_override() -> None:
     assert document["config"]["renderer"] == template["config"]["renderer"]
 
 
+@pytest.mark.external_data
 def test_the_structural_scale_is_flat_in_log_space() -> None:
     """NuRec stores scales pre-activation, so flat is a large negative log.
 
@@ -291,6 +299,7 @@ def test_the_structural_scale_is_flat_in_log_space() -> None:
     assert described["activated_structural_median_m"] < 1e-3
 
 
+@pytest.mark.external_data
 def test_infinite_opacity_logits_are_clamped_and_counted() -> None:
     """float16 cannot hold +inf as data, and sigmoid is already 1.0 well before.
 
@@ -310,6 +319,7 @@ def test_infinite_opacity_logits_are_clamped_and_counted() -> None:
     assert float(1 / (1 + np.exp(-densities.max()))) > 0.999999
 
 
+@pytest.mark.external_data
 def test_learned_parameters_are_written_unactivated() -> None:
     """Every activation applied here is a chance to be wrong about units."""
 
@@ -333,6 +343,7 @@ def test_a_template_that_is_not_a_gaussian_volume_fails_closed() -> None:
 # --- USDZ packaging ----------------------------------------------------------
 
 
+@pytest.mark.external_data
 def test_the_packaged_usdz_declares_a_default_prim(tmp_path) -> None:
     """A reference into a layer without one resolves to nothing.
 
@@ -351,6 +362,7 @@ def test_the_packaged_usdz_declares_a_default_prim(tmp_path) -> None:
     assert str(stage.GetDefaultPrim().GetPath()) == "/World"
 
 
+@pytest.mark.external_data
 def test_the_packaged_usdz_is_a_nurec_volume(tmp_path) -> None:
     """The Volume composes one level deeper than it is authored.
 
@@ -376,6 +388,7 @@ def test_the_packaged_usdz_is_a_nurec_volume(tmp_path) -> None:
         assert field.GetAttribute("filePath").Get() is not None
 
 
+@pytest.mark.external_data
 def test_the_world_rotation_is_identity_not_the_shipped_mirror(tmp_path) -> None:
     """InteriorGS mirrors because its positions are in a NuRec-internal frame.
 
@@ -404,6 +417,7 @@ def test_the_world_rotation_is_identity_not_the_shipped_mirror(tmp_path) -> None
             assert matrix[row][col] == (1.0 if row == col else 0.0)
 
 
+@pytest.mark.external_data
 def test_the_extent_is_taken_from_the_data_not_the_template(tmp_path) -> None:
     """A copied extent would crop the field to someone else's room."""
 
@@ -416,6 +430,7 @@ def test_the_extent_is_taken_from_the_data_not_the_template(tmp_path) -> None:
     np.testing.assert_allclose(receipt["extent_max"], positions.max(axis=0), rtol=1e-5)
 
 
+@pytest.mark.external_data
 def test_the_payload_round_trips_out_of_the_package(tmp_path) -> None:
     from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
 
@@ -431,6 +446,7 @@ def test_the_payload_round_trips_out_of_the_package(tmp_path) -> None:
     assert gaussian_arrays(decode_nurec_bytes(payload))["positions"].shape[0] == 8
 
 
+@pytest.mark.external_data
 def test_the_composed_prim_tree_matches_the_shipped_package(tmp_path) -> None:
     """Shape-for-shape against the package Isaac has actually rendered.
 
@@ -459,6 +475,7 @@ def test_the_composed_prim_tree_matches_the_shipped_package(tmp_path) -> None:
 # --- Z-order ------------------------------------------------------------------
 
 
+@pytest.mark.external_data
 def test_the_shipped_payload_is_not_z_ordered() -> None:
     """And the trap that made it look like it was.
 
@@ -484,12 +501,14 @@ def test_the_unsigned_diff_trap_is_what_it_looks_like() -> None:
     assert float((np.diff(descending.astype(np.int64)) >= 0).mean()) == 0.0
 
 
+@pytest.mark.external_data
 def test_authored_volumes_are_not_z_ordered_by_default() -> None:
     """Matching the shipped payload, which is the only known-rendering shape."""
 
     assert _authored()["_blueprint_authoring"]["z_ordered"] is False
 
 
+@pytest.mark.external_data
 def test_every_array_is_permuted_by_the_same_index() -> None:
     """Otherwise the parameters stop corresponding to each other.
 
@@ -515,6 +534,7 @@ def test_every_array_is_permuted_by_the_same_index() -> None:
         )
 
 
+@pytest.mark.external_data
 def test_z_order_can_be_enabled_for_a_controlled_comparison() -> None:
     from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document
 
@@ -534,6 +554,7 @@ def test_a_degenerate_axis_does_not_divide_by_zero() -> None:
     assert morton_order(flat).shape == (5,)
 
 
+@pytest.mark.external_data
 def test_precision_can_be_raised_for_a_finer_field() -> None:
     """float16 displaces an Aura surfel by more than its own width.
 
@@ -560,6 +581,7 @@ def test_precision_can_be_raised_for_a_finer_field() -> None:
     assert a32["positions"].shape == a16["positions"].shape
 
 
+@pytest.mark.external_data
 def test_float32_preserves_positions_that_float16_rounds_away() -> None:
     from blueprint_pipeline.aura_nurec_volume import build_aura_nurec_document
 
@@ -578,6 +600,7 @@ def test_float32_preserves_positions_that_float16_rounds_away() -> None:
     np.testing.assert_allclose(stored + centre, exact, rtol=0, atol=1e-6)
 
 
+@pytest.mark.external_data
 def test_recentring_halves_the_quantisation_error() -> None:
     """float16 resolution is relative to magnitude.
 
@@ -617,6 +640,7 @@ def test_recentring_halves_the_quantisation_error() -> None:
     assert any(centred["_blueprint_authoring"]["centre_offset_m"])
 
 
+@pytest.mark.external_data
 def test_the_offset_is_carried_as_a_translation_on_the_volume(tmp_path) -> None:
     """Or the room renders correctly, sharply, and metres from the arm."""
 
@@ -638,6 +662,7 @@ def test_the_offset_is_carried_as_a_translation_on_the_volume(tmp_path) -> None:
             assert matrix[r][c] == (1.0 if r == c else 0.0)
 
 
+@pytest.mark.external_data
 def test_exposure_is_applied_at_render_not_baked_into_the_coefficients(tmp_path) -> None:
     """The learned coefficients are sealed capture data.
 
@@ -666,6 +691,7 @@ def test_exposure_is_applied_at_render_not_baked_into_the_coefficients(tmp_path)
     assert abs(field.GetAttribute("omni:nurec:ccmB").Get()[2] - 0.689) < 1e-5
 
 
+@pytest.mark.external_data
 def test_the_default_exposure_matches_the_shipped_identity(tmp_path) -> None:
     """Unscaled unless asked, so the default stays the reference behaviour."""
 

@@ -30,6 +30,7 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
+from blueprint_pipeline.task_evaluation_live_profile import shared_control_surface
 from blueprint_pipeline.task_evaluation_profile_preflight import (
     RELEASE_SCHEMA_VERSION,
     REQUEST_SCHEMA_VERSION,
@@ -287,24 +288,11 @@ def build_live_profile_release(
             },
             "blockers": [],
         },
-        "reconciliation": {"required_providers": ["vast"], "max_guard_age_seconds": 300},
-        "webapp_sync": {"max_attempts": 20},
-        "terminal_contract": {
-            "result_path": f"{LAUNCH_RUN_ROOT_PLACEHOLDER}/allocator/result.json",
-            "success_statuses": ["completed"],
-            "required_values": {"continuing_spend_from_this_run": False, "retry_cap": 0},
-            "required_path_fields": ["teardown_manifest_path", "artifact_manifest_path"],
-        },
-        "required_controls": {
-            "canonical_allocator": CANONICAL_ALLOCATOR_ENTRYPOINT,
-            "secret_profile_id": "canonical-vast-adp",
-            "watchdog_required": True,
-            "artifact_storage_required": True,
-            "teardown_required": True,
-            "provider_zero_required": True,
-            "webapp_status_sync_required": True,
-            "retry_cap": 0,
-        },
+        # This lane's inputs are a preflight request and release evidence rather
+        # than a receipt-resolved archive, so it does not share the full
+        # skeleton in `task_evaluation_live_profile`. It shares the part that
+        # decides whether a run is provable, because two copies of that drift.
+        **shared_control_surface(),
         "claim_ceiling": "development_only",
     }
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")

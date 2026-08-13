@@ -21,6 +21,27 @@ def test_single_instance_response_is_not_split_at_nested_provider_fields() -> No
             "status": None,
             "intended_status": None,
             "dph_total": None,
+            # How an instance says which lane created it. Without it the
+            # prelaunch guard can only ask "is anything running", never "is
+            # anything of *mine* running", and a concurrent operator's instance
+            # is indistinguishable from an orphan of ours (#473).
+            "label": None,
             "raw_status_normalized": "running",
         }
     ]
+
+
+def test_the_sanitized_row_carries_the_label_that_identifies_its_owner() -> None:
+    """The guard scopes itself by label prefix, so the label has to survive."""
+
+    rows = vpa._active_instance_rows_from_payload(
+        {
+            "instances": {
+                "id": 47605330,
+                "actual_status": "running",
+                "label": "blueprint-adp-content-agents-run-1",
+            }
+        }
+    )
+
+    assert [row["label"] for row in rows] == ["blueprint-adp-content-agents-run-1"]
