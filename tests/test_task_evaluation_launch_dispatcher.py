@@ -1413,3 +1413,105 @@ def test_prelaunch_skill_failure_blocks_before_canonical_allocator(tmp_path: Pat
     assert receipt["prelaunch_skill_execution"]["status"] == "blocked"
     assert "prelaunch_skill_execution_blocked" in receipt["blockers"]
     assert (tmp_path / "state" / request["launch_id"] / "prelaunch_skills" / "execution.json").is_file()
+
+
+def _standing_authorization(profile: dict, *, max_launches: int) -> dict:
+    return {
+        "schema_version": "task_evaluation_standing_launch_authorization.v1",
+        "profile_id": profile["profile_id"],
+        "profile_digest": profile["profile_digest"],
+        "max_launches": max_launches,
+        "max_total_spend_usd": 500.0,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+    }
+
+
+def test_a_standing_authorization_bound_to_one_launch_admits_only_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`max_launches` was declared and never counted.
+
+    Nothing in production called ``record_launch``, so consumption stayed at
+    zero forever and an authorization for one launch admitted every launch. The
+    bound exists only if each admission is written down before the allocator
+    runs.
+    """
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False)
+    profile = _profile(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    state_root = tmp_path / "control-plane" / "state"
+    state_root.mkdir(parents=True)
+    standing_dir = state_root.parent / "standing-authorizations"
+    _write(
+        standing_dir / f"{profile['profile_id']}.json",
+        _standing_authorization(profile, max_launches=1),
+    )
+    calls: list[list[str]] = []
+
+    receipts = []
+    for index in (1, 2):
+        request = _request(profile)
+        request["launch_id"] = f"launch-standing-{index}"
+        request["run_id"] = f"run-standing-{index}"
+        request["idempotency_key"] = f"launch-standing-{index}"
+        request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+        request_path = tmp_path / f"request-{index}.json"
+        _write(request_path, request)
+        receipts.append(
+            dispatch_launch_request(
+                request_path=request_path,
+                profile_dir=profile_dir,
+                state_root=state_root,
+                execute=True,
+                allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+            )
+        )
+
+    # The first launch is admitted with no copied launch id -- the point of the
+    # standing authorization -- and the second is refused by its own bound.
+    assert "execute_launch_id_required" not in receipts[0]["blockers"]
+    assert len(calls) == 1, "the second launch must not reach the allocator"
+    assert "execute_launch_id_required" in receipts[1]["blockers"]
+    assert any(
+        "standing_authorization_launch" in blocker for blocker in receipts[1]["blockers"]
+    ), receipts[1]["blockers"]
+    assert receipts[1]["provider_mutation_attempted"] is False
+
+
+def test_an_unconfigured_host_still_finds_its_standing_authorizations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deployed control plane never set the directory variable, so the
+    capability could not admit anything there."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False)
+    profile = _profile(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    state_root = tmp_path / "control-plane" / "state"
+    state_root.mkdir(parents=True)
+    _write(
+        state_root.parent / "standing-authorizations" / f"{profile['profile_id']}.json",
+        _standing_authorization(profile, max_launches=3),
+    )
+    request = _request(profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=state_root,
+        execute=True,
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert "execute_launch_id_required" not in receipt["blockers"]
+    assert len(calls) == 1

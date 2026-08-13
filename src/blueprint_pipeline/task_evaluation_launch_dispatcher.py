@@ -25,6 +25,7 @@ from .task_evaluation_standing_launch_authorization import (
     STANDING_AUTHORIZATION_DIR_ENV,
     StandingAuthorizationError,
     consumption_totals,
+    record_launch,
     standing_authorization_admits,
 )
 
@@ -77,13 +78,34 @@ class TaskEvaluationLaunchError(ValueError):
     """Raised when a launch request or profile fails closed."""
 
 
+def standing_authorization_directory(state_root: str | Path) -> str:
+    """Where this host keeps standing authorizations.
+
+    The environment variable stays authoritative, but it is not required. The
+    deployed control plane never set it, so the standing authorization shipped
+    in #462 could not admit anything there: the dispatcher read an unset
+    variable and fell straight back to the per-run `--execute-launch-id`
+    handshake it was meant to replace. Deriving a default beside the launch
+    state root is what makes the capability work on a host restored from an
+    image, which runs no installer and applies no remembered env edit.
+
+    Defaulting is safe in the direction that matters: a host with no
+    authorization on disk is still refused, with no blocker of its own.
+    """
+
+    configured = str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip()
+    if configured:
+        return configured
+    return str(Path(state_root).expanduser().resolve().parent / "standing-authorizations")
+
+
 def _standing_authorization_decision(
-    profile: Mapping[str, Any], live_requested: bool
+    profile: Mapping[str, Any], live_requested: bool, state_root: str | Path
 ) -> dict[str, Any]:
     """Consult the standing per-profile authorization, if this host has one."""
     if not live_requested:
         return {"admitted": False, "blockers": []}
-    directory = str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip()
+    directory = standing_authorization_directory(state_root)
     if not directory:
         return {"admitted": False, "blockers": []}
     profile_id = str(profile.get("profile_id") or "")
@@ -823,7 +845,7 @@ def dispatch_launch_request(
     # run. It is consulted only when the per-launch handshake is not satisfied,
     # so a launch carrying a matching id is admitted exactly as before and a
     # launch carrying neither is still refused.
-    standing = _standing_authorization_decision(profile, live_requested)
+    standing = _standing_authorization_decision(profile, live_requested, state_root)
     if live_requested and not standing.get("admitted"):
         if not execution_scope_launch_id:
             blockers.append("execute_launch_id_required")
@@ -936,6 +958,26 @@ def dispatch_launch_request(
     allocator_exit_code: int | None = None
     stdout_text = ""
     stderr_text = ""
+    if not blockers and profile and live_requested and standing.get("admitted"):
+        # Count the launch before the allocator runs, not after. The bounds are
+        # read back from these records on every later admission, so a run that
+        # dies mid-flight must still count: over-counting refuses a launch that
+        # might have been allowed, under-counting spends past an approval.
+        # Nothing recorded these until now -- `max_launches` and
+        # `max_total_spend_usd` were declared and never consumed, which made a
+        # bounded authorization unbounded in practice.
+        try:
+            record_launch(
+                directory=standing_authorization_directory(state_root),
+                profile_id=str(profile.get("profile_id") or ""),
+                launch_id=str(request.get("launch_id") or ""),
+                max_spend_usd=float(
+                    _mapping(profile.get("allocator")).get("max_spend_usd") or 0.0
+                ),
+            )
+        except (OSError, StandingAuthorizationError, TypeError, ValueError):
+            blockers.append("standing_authorization_consumption_not_recorded")
+
     if not blockers and profile:
         allocator = _mapping(profile.get("allocator"))
         argv = [
