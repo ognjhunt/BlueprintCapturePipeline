@@ -371,6 +371,94 @@ def test_paid_authority_adds_content_agents_same_goal_spend(
     ] == 0.387839
 
 
+def _preallocation_closeout(tmp_path: Path) -> dict[str, Path]:
+    root = tmp_path / "preallocation-closeout"
+    root.mkdir()
+    authority = {"schema_version": vast.PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION}
+    authority.update(
+        {
+            "authorization_digest": "",
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    result = {
+        "schema_version": vast.RESULT_SCHEMA_VERSION,
+        "status": "blocked",
+        "provider_mutations_performed": 0,
+        "authorization_consumption": {
+            "status": "consumed",
+            "authorization_digest": authority["authorization_digest"],
+        },
+        "all_staged_objects_absent": True,
+        "blockers": ["paired_target_native_import_watchdog_not_armed"],
+    }
+    watchdog = {
+        "schema_version": "vast_independent_watchdog_handoff.v1",
+        "status": "blocked",
+        "watchdog_armed_before_allocation": False,
+        "provider_mutations_performed": 0,
+    }
+    cleanup = {
+        "schema_version": "wam_provider_object_store_cleanup.v1",
+        "all_objects_absent": True,
+        "signed_url_files_removed": True,
+    }
+    zero = {
+        "schema_version": "adp_paid_provider_zero.v1",
+        "provider": "vast",
+        "api_confirmed": True,
+        "global_live_resource_count": 0,
+        "provider_zero": True,
+        "inventory": [],
+        "provider_zero_digest": "",
+    }
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+    values = {
+        "attempt_authority": authority,
+        "terminal_result": result,
+        "watchdog_handoff": watchdog,
+        "object_store_cleanup": cleanup,
+        "api_provider_zero": zero,
+    }
+    paths = {}
+    for key, value in values.items():
+        paths[key] = root / f"{key}.json"
+        write_json(paths[key], value)
+    return paths
+
+
+def test_consumed_preallocation_failure_is_zero_closed_and_reopened(
+    tmp_path: Path,
+) -> None:
+    paths = _preallocation_closeout(tmp_path)
+    output = tmp_path / "preallocation-zero.json"
+    receipt = vast.materialize_paired_target_native_import_preallocation_provider_zero(
+        attempt_authority_path=paths["attempt_authority"],
+        result_path=paths["terminal_result"],
+        watchdog_handoff_path=paths["watchdog_handoff"],
+        cleanup_path=paths["object_store_cleanup"],
+        api_provider_zero_path=paths["api_provider_zero"],
+        output_path=output,
+    )
+    assert receipt["attempt_cost_usd"] == 0.0
+    assert receipt["provider_mutations_performed"] == 0
+    assert receipt["independent_watchdog_armed"] is False
+    assert vast._validate_preallocation_provider_zero(output) == receipt
+
+    result = json.loads(paths["terminal_result"].read_text())
+    result["provider_mutations_performed"] = 1
+    write_json(paths["terminal_result"], result)
+    with pytest.raises(
+        ValueError,
+        match="preallocation_provider_zero_(invalid|unbound)",
+    ):
+        vast._validate_preallocation_provider_zero(output)
+
+
 def test_bundle_reopen_and_provider_contract_cover_dynamic_assets(tmp_path: Path) -> None:
     _, bundle = _bundle(tmp_path)
     with zipfile.ZipFile(bundle["bundle_path"]) as archive:

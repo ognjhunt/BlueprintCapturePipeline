@@ -54,6 +54,9 @@ POST_ATTEMPT_PROVIDER_ZERO_SCHEMA_VERSION = (
 SUPPLEMENTAL_SPEND_SCHEMA_VERSION = (
     "paired_target_native_import_supplemental_spend_reconciliation.v1"
 )
+PREALLOCATION_ZERO_SCHEMA_VERSION = (
+    "paired_target_native_import_preallocation_provider_zero.v1"
+)
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/paired-target-native-import"
 INSTANCE_LABEL_PREFIX = "blueprint-adp-paired-native-import-"
 MIN_TTL_SECONDS = 1_800
@@ -332,6 +335,130 @@ def _validate_supplemental_spend_reconciliation(
     return value, total
 
 
+def _validated_preallocation_payload(records: Mapping[str, Any]) -> dict[str, Any]:
+    required = {
+        "attempt_authority",
+        "terminal_result",
+        "watchdog_handoff",
+        "object_store_cleanup",
+        "api_provider_zero",
+    }
+    if set(records) != required:
+        raise ValueError("paired_target_preallocation_provider_zero_invalid")
+    paths = {
+        key: _bound_record(
+            records.get(key), "paired_target_preallocation_provider_zero_unbound"
+        )[0]
+        for key in required
+    }
+    values = {
+        key: _read(path, f"paired_target_preallocation_{key}_unreadable")
+        for key, path in paths.items()
+    }
+    authority = values["attempt_authority"]
+    result = values["terminal_result"]
+    watchdog = values["watchdog_handoff"]
+    cleanup = values["object_store_cleanup"]
+    zero = values["api_provider_zero"]
+    if (
+        authority.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION
+        or authority.get("authorization_digest")
+        != canonical_digest(authority, digest_field="authorization_digest")
+        or result.get("schema_version") != RESULT_SCHEMA_VERSION
+        or result.get("status") != "blocked"
+        or result.get("provider_mutations_performed") != 0
+        or result.get("authorization_consumption", {}).get("status") != "consumed"
+        or result.get("authorization_consumption", {}).get("authorization_digest")
+        != authority.get("authorization_digest")
+        or result.get("all_staged_objects_absent") is not True
+        or result.get("blockers") != ["paired_target_native_import_watchdog_not_armed"]
+        or watchdog.get("schema_version") != "vast_independent_watchdog_handoff.v1"
+        or watchdog.get("status") != "blocked"
+        or watchdog.get("watchdog_armed_before_allocation") is not False
+        or watchdog.get("provider_mutations_performed") != 0
+        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or zero.get("schema_version") != "adp_paid_provider_zero.v1"
+        or zero.get("provider") != "vast"
+        or zero.get("api_confirmed") is not True
+        or zero.get("global_live_resource_count") != 0
+        or zero.get("provider_zero") is not True
+        or zero.get("inventory") != []
+        or zero.get("provider_zero_digest")
+        != canonical_digest(zero, digest_field="provider_zero_digest")
+    ):
+        raise ValueError("paired_target_preallocation_provider_zero_invalid")
+    return {
+        "schema_version": PREALLOCATION_ZERO_SCHEMA_VERSION,
+        "status": "blocked_before_provider_allocation_and_provider_zero",
+        "attempt_authority_digest": authority["authorization_digest"],
+        "provider_mutations_performed": 0,
+        "attempt_cost_usd": 0.0,
+        "provider_zero_confirmed": True,
+        "independent_watchdog_armed": False,
+        "records": {key: _record(path) for key, path in paths.items()},
+    }
+
+
+def materialize_paired_target_native_import_preallocation_provider_zero(
+    *,
+    attempt_authority_path: str | Path,
+    result_path: str | Path,
+    watchdog_handoff_path: str | Path,
+    cleanup_path: str | Path,
+    api_provider_zero_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Close one consumed authority that stopped before provider allocation."""
+
+    paths = {
+        "attempt_authority": Path(attempt_authority_path).expanduser().resolve(),
+        "terminal_result": Path(result_path).expanduser().resolve(),
+        "watchdog_handoff": Path(watchdog_handoff_path).expanduser().resolve(),
+        "object_store_cleanup": Path(cleanup_path).expanduser().resolve(),
+        "api_provider_zero": Path(api_provider_zero_path).expanduser().resolve(),
+    }
+    records = {key: _record(path) for key, path in paths.items()}
+    value: dict[str, Any] = {
+        **_validated_preallocation_payload(records),
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise ValueError("paired_target_preallocation_provider_zero_output_exists")
+    ensure_dir(output.parent)
+    write_json(output, value)
+    return value
+
+
+def _validate_preallocation_provider_zero(path: Path) -> dict[str, Any]:
+    value = _read(path, "paired_target_preallocation_provider_zero_unreadable")
+    if (
+        value.get("schema_version") != PREALLOCATION_ZERO_SCHEMA_VERSION
+        or value.get("status")
+        != "blocked_before_provider_allocation_and_provider_zero"
+        or value.get("provider_mutations_performed") != 0
+        or value.get("attempt_cost_usd") != 0.0
+        or value.get("provider_zero_confirmed") is not True
+        or value.get("independent_watchdog_armed") is not False
+        or value.get("receipt_digest")
+        != canonical_digest(value, digest_field="receipt_digest")
+    ):
+        raise ValueError("paired_target_preallocation_provider_zero_invalid")
+    records = value.get("records")
+    if not isinstance(records, Mapping):
+        raise ValueError("paired_target_preallocation_provider_zero_invalid")
+    expected = {
+        **_validated_preallocation_payload(records),
+        "receipt_digest": value["receipt_digest"],
+    }
+    if value != expected:
+        raise ValueError("paired_target_preallocation_provider_zero_invalid")
+    return value
+
+
 def materialize_paired_target_native_import_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
@@ -340,6 +467,7 @@ def materialize_paired_target_native_import_paid_attempt_authority(
     prior_artifixer_cleanup_path: str | Path,
     prior_artifixer_provider_zero_path: str | Path,
     supplemental_prior_spend_reconciliation_path: str | Path | None = None,
+    prior_native_preallocation_provider_zero_path: str | Path | None = None,
     authorization_reference: str,
     authorized_by: str,
     authorized_on: str,
@@ -374,6 +502,18 @@ def materialize_paired_target_native_import_paid_attempt_authority(
             "total_cost_usd": supplemental_cost,
         }
         prior_spend = round(prior_spend + supplemental_cost, 6)
+    prior_native: dict[str, Any] | None = None
+    if prior_native_preallocation_provider_zero_path is not None:
+        native_zero_path = Path(
+            prior_native_preallocation_provider_zero_path
+        ).expanduser().resolve()
+        native_zero = _validate_preallocation_provider_zero(native_zero_path)
+        prior_native = {
+            **_record(native_zero_path),
+            "receipt_digest": native_zero["receipt_digest"],
+            "attempt_authority_digest": native_zero["attempt_authority_digest"],
+            "attempt_cost_usd": 0.0,
+        }
     aggregate_cap = min(
         AGGREGATE_GOAL_SPEND_CAP_USD,
         float(terminal["aggregate_goal_spend_cap_usd"]),
@@ -427,6 +567,7 @@ def materialize_paired_target_native_import_paid_attempt_authority(
             "lineage_cost_usd": terminal["lineage_cost_usd"],
         },
         "supplemental_prior_spend_reconciliation": supplemental,
+        "prior_native_preallocation_attempt": prior_native,
         "active_instance_allowlist": {
             "external_provider_owned": list(allowed),
             "same_goal_concurrent": [],
@@ -557,6 +698,20 @@ def validate_paired_target_native_import_paid_attempt_authority(
                 or supplemental_bound.get("sha256") != _sha256(supplemental_path)
             ):
                 errors.append("supplemental_prior_spend_mismatch")
+        prior_native_record = value.get("prior_native_preallocation_attempt")
+        if prior_native_record is not None:
+            native_path, _ = _bound_record(
+                prior_native_record, "prior_native_preallocation_attempt_unbound"
+            )
+            native_zero = _validate_preallocation_provider_zero(native_path)
+            if (
+                prior_native_record.get("receipt_digest")
+                != native_zero.get("receipt_digest")
+                or prior_native_record.get("attempt_authority_digest")
+                != native_zero.get("attempt_authority_digest")
+                or prior_native_record.get("attempt_cost_usd") != 0.0
+            ):
+                errors.append("prior_native_preallocation_attempt_mismatch")
         if (
             predecessor.get("authority_digest") != terminal["authority_digest"]
             or predecessor.get("attempt_cost_usd") != terminal["attempt_cost_usd"]
@@ -958,9 +1113,11 @@ __all__ = [
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
     "SUPPLEMENTAL_SPEND_SCHEMA_VERSION",
+    "PREALLOCATION_ZERO_SCHEMA_VERSION",
     "consume_paired_target_native_import_authority_once",
     "materialize_paired_target_native_import_paid_attempt_authority",
     "materialize_paired_target_native_import_provider_zero",
+    "materialize_paired_target_native_import_preallocation_provider_zero",
     "materialize_paired_target_native_import_supplemental_spend_reconciliation",
     "run_paired_target_native_import_vast",
     "validate_paired_target_native_import_paid_attempt_authority",
