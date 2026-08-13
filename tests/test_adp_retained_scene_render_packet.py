@@ -1009,3 +1009,183 @@ def test_a_run_names_the_terminal_artifacts_its_own_contract_requires(
         row["relative_path"].endswith("artifact_manifest.json")
         for row in manifest["artifacts"]
     )
+def _portable_request(
+    *, candidate: str, authority: str, vendor: str, lanes: list[dict[str, object]]
+) -> dict[str, object]:
+    return build_retained_scene_gpu_render_request(
+        {
+            "schema_version": "adp009d_retained_scene_gpu_render_request.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009D",
+            "frozen_before_render_execution": True,
+            "learned_policy_outcomes_accessed": False,
+            "candidate_set_path": candidate,
+            "execution_authority_path": authority,
+            "renderer_vendor_root": vendor,
+            "task_lanes": lanes,
+            "private_upload_policy": {
+                "raw_dataset_bytes_upload": False,
+                "private_derived_upload": True,
+                "provider_training": False,
+                "publication": False,
+                "retention": "bounded_to_goal_then_provider_zero",
+            },
+        }
+    )
+
+
+def _repo_with_internal_inputs(tmp_path: Path) -> Path:
+    """A checkout carrying the authority and the vendored renderer, as the real
+    one does. The scene bytes stay outside it: they are private and large."""
+
+    repo, vendor = _repo(tmp_path)
+    _authority(repo / "docs" / "authority.json")
+    internal_vendor = repo / "tools" / "splat_render" / "node_modules"
+    shutil.copytree(vendor, internal_vendor)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo),
+            "-c", "user.name=fixture",
+            "-c", "user.email=fixture@example.test",
+            "commit", "-m", "inputs",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return repo
+
+
+def test_a_request_naming_relative_inputs_rebuilds_against_a_staged_scene_root(
+    tmp_path: Path,
+) -> None:
+    """The committed v1 request pointed at two deleted /private/tmp directories,
+    so the lane could not be rebuilt anywhere. A relative request says what it
+    needs; the invocation says where."""
+
+    candidate, inputs = _inputs(tmp_path)
+    repo = _repo_with_internal_inputs(tmp_path)
+    lanes = [
+        {
+            "task_id": str(lane["task_id"]),
+            "camera_contract_path": str(
+                Path(str(lane["camera_contract_path"])).relative_to(tmp_path)
+            ),
+        }
+        for lane in inputs["lanes"]
+    ]
+    request_path = tmp_path / "portable_request.json"
+    _write_json(
+        request_path,
+        _portable_request(
+            candidate=str(candidate.relative_to(tmp_path)),
+            authority="docs/authority.json",
+            vendor="tools/splat_render/node_modules",
+            lanes=lanes,
+        ),
+    )
+
+    receipt = build_retained_scene_gpu_render_bundle(
+        request_path=request_path,
+        repo_root=repo,
+        job_dir=tmp_path / "portable_job",
+        scene_input_root=tmp_path,
+    )
+
+    assert receipt["status"] == "ready"
+    assert receipt["blockers"] == []
+    # The staged pair resolves wherever it lands, so the receipt travels with it.
+    assert receipt["bundle_relative_path"] == "adp_retained_scene_gpu_render_bundle.zip"
+    assert receipt["execution_authority"]["relative_path"] == (
+        "provider_runtime/execution_authority.json"
+    )
+    assert receipt["request"]["relative_path"] == "provider_runtime/source_request_manifest.json"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    assert "provider_runtime/source_request_manifest.json" in names
+    assert "provider_runtime/execution_authority.json" in names
+
+
+def test_a_relative_request_input_cannot_escape_its_roots(tmp_path: Path) -> None:
+    candidate, inputs = _inputs(tmp_path)
+    repo = _repo_with_internal_inputs(tmp_path)
+    request_path = tmp_path / "escaping_request.json"
+    _write_json(
+        request_path,
+        _portable_request(
+            candidate="../" + candidate.relative_to(tmp_path).as_posix(),
+            authority="docs/authority.json",
+            vendor="tools/splat_render/node_modules",
+            lanes=[
+                {
+                    "task_id": str(lane["task_id"]),
+                    "camera_contract_path": str(
+                        Path(str(lane["camera_contract_path"])).relative_to(tmp_path)
+                    ),
+                }
+                for lane in inputs["lanes"]
+            ],
+        ),
+    )
+
+    with pytest.raises(RetainedSceneRenderPacketError, match="candidate_set_missing"):
+        build_retained_scene_gpu_render_bundle(
+            request_path=request_path,
+            repo_root=repo,
+            job_dir=tmp_path / "escaping_job",
+            scene_input_root=tmp_path,
+        )
+
+
+def test_a_relative_scene_input_without_a_scene_root_fails_closed(tmp_path: Path) -> None:
+    candidate, inputs = _inputs(tmp_path)
+    repo = _repo_with_internal_inputs(tmp_path)
+    request_path = tmp_path / "rootless_request.json"
+    _write_json(
+        request_path,
+        _portable_request(
+            candidate=str(candidate.relative_to(tmp_path)),
+            authority="docs/authority.json",
+            vendor="tools/splat_render/node_modules",
+            lanes=[
+                {
+                    "task_id": str(lane["task_id"]),
+                    "camera_contract_path": str(
+                        Path(str(lane["camera_contract_path"])).relative_to(tmp_path)
+                    ),
+                }
+                for lane in inputs["lanes"]
+            ],
+        ),
+    )
+
+    with pytest.raises(RetainedSceneRenderPacketError, match="candidate_set_missing"):
+        build_retained_scene_gpu_render_bundle(
+            request_path=request_path,
+            repo_root=repo,
+            job_dir=tmp_path / "rootless_job",
+        )
+
+
+def test_the_committed_portable_request_resolves_its_repository_inputs() -> None:
+    """The manifest the live lane is rebuilt from must not name a path that
+    exists only on one workstation."""
+
+    checkout = Path(__file__).resolve().parents[1]
+    manifest = json.loads(
+        (
+            checkout
+            / "docs/arm_decision_proof_v1/manifests"
+            / "third_scene_840920_retained_scene_gpu_render_request.v2.json"
+        ).read_text(encoding="utf-8")
+    )
+    request = build_retained_scene_gpu_render_request(manifest)
+
+    assert request["request_digest"] == manifest["request_digest"]
+    for key in ("candidate_set_path", "execution_authority_path", "renderer_vendor_root"):
+        assert not str(manifest[key]).startswith("/"), key
+    for lane in manifest["task_lanes"]:
+        assert not str(lane["camera_contract_path"]).startswith("/")
+    # The repository-side inputs must resolve in this checkout; the scene-side
+    # ones are private bytes staged separately and are not asserted here.
+    assert (checkout / manifest["execution_authority_path"]).is_file()
