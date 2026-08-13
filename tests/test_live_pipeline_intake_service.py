@@ -522,6 +522,10 @@ def test_deployment_identity_fails_closed_without_exact_source_commit(
 ) -> None:
     client = TestClient(create_app())
 
+    # "No identity" now has to be arranged rather than assumed: the endpoint has
+    # two sources, and a CI checkout is detached at a real commit, which the
+    # service is right to report.
+    monkeypatch.setattr(service, "running_source_commit", lambda *_a, **_k: "")
     monkeypatch.delenv(service.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
     missing = client.get("/api/live-pipeline/version")
     assert missing.status_code == 503
@@ -530,6 +534,10 @@ def test_deployment_identity_fails_closed_without_exact_source_commit(
         "service_schema_version": service.INTAKE_SCHEMA_VERSION,
         "commit_proven": False,
         "source_commit": None,
+        # The payload now says where the answer came from, and a development
+        # checkout on a branch is not a release worktree to read a commit from.
+        "source_commit_source": "none",
+        "blockers": ["deployment_identity_source_commit_unavailable"],
         "claim_ceiling": "deployed_service_identity_only",
     }
 
@@ -2060,3 +2068,117 @@ def test_live_pipeline_intake_service_records_blocked_closure_evidence(
     assert payload["accepted"] is False
     assert "live_closure_evidence:live_closure_evidence_job_id_unsafe" in payload["input_blockers"]
     assert payload["live_closure_evidence_staging"]["performed"] is False
+
+
+def _release_worktree(tmp_path, commit: str):
+    """A release worktree exactly as the activation script leaves it: a `.git`
+    file pointing at a gitdir whose HEAD holds the detached commit."""
+
+    gitdir = tmp_path / "gitdir"
+    gitdir.mkdir()
+    (gitdir / "HEAD").write_text(commit + "\n", encoding="utf-8")
+    checkout = tmp_path / "release"
+    (checkout / "src" / "blueprint_pipeline").mkdir(parents=True)
+    (checkout / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    return checkout / "src" / "blueprint_pipeline" / "live_pipeline_intake_service.py"
+
+
+def test_deployment_identity_reads_the_commit_the_code_came_from(tmp_path, monkeypatch):
+    """Asking the running checkout what it is, instead of asking a variable
+    what someone last declared it to be."""
+
+    from blueprint_pipeline import live_pipeline_intake_service as intake
+
+    monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    module = _release_worktree(tmp_path, "a" * 40)
+
+    payload = intake.deployment_identity_payload(module)
+
+    assert payload["commit_proven"] is True
+    assert payload["source_commit"] == "a" * 40
+    assert payload["source_commit_source"] == "running_checkout"
+    assert payload["blockers"] == []
+
+
+def test_a_declared_commit_that_contradicts_the_running_code_proves_nothing(
+    tmp_path, monkeypatch
+):
+    """Activate release B without updating the variable and the endpoint used
+    to report A while the service ran B."""
+
+    from blueprint_pipeline import live_pipeline_intake_service as intake
+
+    monkeypatch.setenv(intake.PIPELINE_SOURCE_COMMIT_ENV, "b" * 40)
+    module = _release_worktree(tmp_path, "a" * 40)
+
+    payload = intake.deployment_identity_payload(module)
+
+    assert payload["commit_proven"] is False
+    assert payload["source_commit"] is None
+    assert payload["source_commit_source"] == "conflicting"
+    assert payload["blockers"] == [
+        "deployment_identity_declared_commit_conflicts_with_running_checkout"
+    ]
+
+
+def test_the_environment_still_answers_where_there_is_no_checkout(tmp_path, monkeypatch):
+    from blueprint_pipeline import live_pipeline_intake_service as intake
+
+    monkeypatch.setenv(intake.PIPELINE_SOURCE_COMMIT_ENV, "c" * 40)
+    detached = tmp_path / "no-checkout" / "module.py"
+    detached.parent.mkdir(parents=True)
+
+    payload = intake.deployment_identity_payload(detached)
+
+    assert payload["commit_proven"] is True
+    assert payload["source_commit"] == "c" * 40
+    assert payload["source_commit_source"] == "environment"
+
+
+def test_neither_source_available_fails_closed(tmp_path, monkeypatch):
+    from blueprint_pipeline import live_pipeline_intake_service as intake
+
+    monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    detached = tmp_path / "no-checkout" / "module.py"
+    detached.parent.mkdir(parents=True)
+
+    payload = intake.deployment_identity_payload(detached)
+
+    assert payload["commit_proven"] is False
+    assert payload["blockers"] == ["deployment_identity_source_commit_unavailable"]
+
+
+def test_a_branch_checkout_is_not_answered_for(tmp_path, monkeypatch):
+    """A HEAD holding a symbolic ref is a development checkout that can move
+    under the running process; a release worktree is detached at its commit."""
+
+    from blueprint_pipeline import live_pipeline_intake_service as intake
+
+    monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    gitdir = tmp_path / "repo" / ".git"
+    gitdir.mkdir(parents=True)
+    (gitdir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    module = tmp_path / "repo" / "src" / "module.py"
+    module.parent.mkdir(parents=True)
+
+    assert intake.running_source_commit(module) == ""
+    assert intake.deployment_identity_payload(module)["commit_proven"] is False
+
+
+def test_the_endpoint_reports_a_detached_checkout_without_any_variable(
+    tmp_path, monkeypatch
+):
+    """A release worktree knows its own commit, so no deploy-time env edit is
+    needed for the endpoint to answer."""
+
+    from blueprint_pipeline import live_pipeline_intake_service as intake
+
+    monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    monkeypatch.setattr(intake, "running_source_commit", lambda *_a, **_k: "d" * 40)
+    client = TestClient(create_app())
+
+    response = client.get("/api/live-pipeline/version")
+
+    assert response.status_code == 200
+    assert response.json()["source_commit"] == "d" * 40
+    assert response.json()["source_commit_source"] == "running_checkout"
