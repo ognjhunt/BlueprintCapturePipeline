@@ -29,7 +29,10 @@ from .paired_target_native_import_bundle import (
 )
 from .public_scene_artifixer3d_vast import validate_artifixer3d_terminal_spend_chain
 from .spend_authority_consumption_root import consumption_root
-from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .task_evaluation_artifact_manifest import (
+    seal_lane_terminal_artifacts,
+    seal_unallocated_provider_teardown,
+)
 from .vast_independent_watchdog_control import (
     EVIDENCE_NAME as WATCHDOG_EVIDENCE_NAME,
     arm_independent_vast_watchdog,
@@ -984,6 +987,13 @@ def run_paired_target_native_import_vast(
                 f"paired_target_native_import_adapter_failed:{redacted_failure_detail(exc)}"
             ],
         }
+        # The adapter may never have been entered -- resolving a secret or a
+        # staged URL raises before it. Record the absence of any allocation so
+        # the run can close; the sealer declines whenever the evidence does not
+        # support that claim.
+        seal_unallocated_provider_teardown(
+            provider_run, reason="paired_target_native_import_adapter_failed"
+        )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     teardown_path = provider_run / "vast_teardown_manifest.json"

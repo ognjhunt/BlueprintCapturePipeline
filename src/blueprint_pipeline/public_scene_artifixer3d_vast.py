@@ -47,7 +47,10 @@ from .public_scene_artifixer3d_bundle import (
     SCHEMA_VERSION as BUNDLE_SCHEMA_VERSION,
     USE_ATTESTATION_SCHEMA_VERSION,
 )
-from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .task_evaluation_artifact_manifest import (
+    seal_lane_terminal_artifacts,
+    seal_unallocated_provider_teardown,
+)
 from .vast_independent_watchdog_control import (
     EVIDENCE_NAME as WATCHDOG_EVIDENCE_NAME,
     arm_independent_vast_watchdog,
@@ -2037,6 +2040,13 @@ def run_artifixer3d_vast(
             "blockers": [f"artifixer3d_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
+        # The adapter may never have been entered -- resolving a secret or a
+        # staged URL raises before it. Record the absence of any allocation so
+        # the run can close; the sealer declines whenever the evidence does not
+        # support that claim.
+        seal_unallocated_provider_teardown(
+            provider_run, reason="artifixer3d_adapter_failed"
+        )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     teardown_path = provider_run / "vast_teardown_manifest.json"
