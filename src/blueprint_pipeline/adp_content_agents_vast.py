@@ -1999,6 +1999,7 @@ def run_content_agents_vast(
     hard_ttl_seconds: int = 7200,
     public_image: str = DEFAULT_IMAGE,
     allowed_active_instance_ids: Sequence[int] = (),
+    machine_avoidlist_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run one Content Agents attempt and always require provider-zero afterward."""
 
@@ -2105,6 +2106,7 @@ def run_content_agents_vast(
                 prefer_isaac_rt=False,
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 instance_label_prefix="blueprint-adp-content-agents-",
+                machine_avoidlist_path=machine_avoidlist_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )

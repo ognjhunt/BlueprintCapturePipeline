@@ -2336,6 +2336,7 @@ def test_canonical_allocator_issues_grant_only_for_execute(
         == 0
     )
     assert observed["execute"] is execute
+    assert observed["machine_avoidlist_path"] is None
     assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is (
         execute
     )
@@ -2354,6 +2355,54 @@ def test_canonical_allocator_issues_grant_only_for_execute(
         assert list((tmp_path / "consumed").glob("content-agents-*.json"))
     else:
         assert admission["authority"] == "dry_run_no_paid_authority_required"
+
+
+def test_canonical_allocator_reuses_retained_content_agents_bad_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt, receipt_value = _allocator_bundle(tmp_path)
+    preflight = _passing_config_preflight(tmp_path, receipt_value)
+    state_root = tmp_path / "launch-runs"
+    prior = (
+        state_root
+        / "prior-launch"
+        / "allocator"
+        / "content-agents-job"
+        / "vast_machine_avoidlist.json"
+    )
+    write_json(
+        prior,
+        {
+            "schema_version": "vast_machine_avoidlist.v1",
+            "status": "completed",
+            "machine_ids": [51579],
+            "entries": [{"machine_id": 51579, "reason": "no_progress"}],
+            "raw_secret_values_recorded": False,
+        },
+    )
+    current_job = state_root / "current-launch" / "allocator" / "content-agents-job"
+    args = _allocator_args(tmp_path, receipt, preflight, execute=False)
+    args[args.index("--adp-job-dir") + 1] = str(current_job)
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_content_agents_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+
+    assert allocator.main(args) == 0
+    shared = (
+        state_root
+        / "provider-machine-avoidlists"
+        / allocator.CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME
+    )
+    assert observed["machine_avoidlist_path"] == shared
+    assert json.loads(shared.read_text(encoding="utf-8"))["machine_ids"] == [51579]
 
 
 def test_canonical_allocator_discloses_public_sage_bytes(
