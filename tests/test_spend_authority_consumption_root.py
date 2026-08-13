@@ -108,7 +108,10 @@ def test_unconfigured_root_with_unwritable_home_still_fails_closed(
     # The blocker now names the cause. `attempt_authority_consumption_write_failed`
     # said only that a write failed, which sent the last diagnosis after a
     # spend-authority problem when the fault was the filesystem layout.
-    assert outcome["blockers"] == ["spend_authority_consumption_root_unwritable:30"]
+    # The errno is carried for diagnosis and is platform-specific (EACCES on
+    # Linux, EROFS on macOS), so the contract is the named cause, not the number.
+    assert len(outcome["blockers"]) == 1
+    assert outcome["blockers"][0].startswith("spend_authority_consumption_root_unwritable:")
 
 
 def test_a_ledger_directory_left_group_readable_is_tightened_not_refused(
