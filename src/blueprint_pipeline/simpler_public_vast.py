@@ -428,3 +428,46 @@ __all__ = [
     "build_simpler_public_vast_bundle",
     "run_simpler_public_vast",
 ]
+
+def main(argv: list[str] | None = None) -> int:
+    """Build the immutable pinned SIMPLER public-reference bundle.
+
+    Added because the allocator refuses a bundle whose `blueprint_commit` is not
+    the commit the control plane is running, and every deploy moves that commit.
+    A lane whose bundle can only be produced by calling a Python function is
+    launchable exactly once and then never again -- which is the state this lane
+    was in, reading as `ready` everywhere while being unbuildable.
+
+    Performs no provider mutation and rents nothing.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build the immutable pinned SIMPLER public-reference bundle.")
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--job-dir", required=True)
+    args = parser.parse_args(argv)
+    try:
+        receipt = build_simpler_public_vast_bundle(
+            manifest_path=args.manifest,
+            job_dir=args.job_dir,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0 if receipt.get("status") in {"ready", "sealed"} else 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
