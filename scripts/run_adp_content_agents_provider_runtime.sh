@@ -7,6 +7,10 @@ SOURCE_DIR="${SCRIPT_DIR}/content_agents_source"
 RESULT_PATH="${OUTPUT_DIR}/adp_content_agents_vast_result.json"
 mkdir -p "${OUTPUT_DIR}"
 
+progress() {
+  printf 'BLUEPRINT_ADP_CONTENT_AGENTS_PROGRESS:%s\n' "$1"
+}
+
 write_missing_result() {
   local blocker="$1"
   python3 - "${RESULT_PATH}" "${blocker}" <<'PY'
@@ -81,6 +85,7 @@ PY
   exit 0
 fi
 
+progress "runtime_dependency_bootstrap_started"
 python3 -m pip install --disable-pip-version-check --no-cache-dir uv==0.10.7
 uv_rc=$?
 if [ "${uv_rc}" -ne 0 ]; then
@@ -94,6 +99,7 @@ if [ "${python_rc}" -ne 0 ]; then
   write_missing_result "content_agents_python312_install_failed"
   exit "${python_rc}"
 fi
+progress "runtime_python_ready"
 "${UV_BIN}" venv "${SOURCE_DIR}/.venv" --python 3.12
 venv_rc=$?
 if [ "${venv_rc}" -ne 0 ]; then
@@ -101,6 +107,7 @@ if [ "${venv_rc}" -ne 0 ]; then
   exit "${venv_rc}"
 fi
 
+progress "content_agents_install_started"
 "${UV_BIN}" pip install \
   --python "${SOURCE_DIR}/.venv/bin/python" \
   -e "${SOURCE_DIR}" \
@@ -113,9 +120,11 @@ if [ "${install_rc}" -ne 0 ]; then
   write_missing_result "content_agents_dependency_install_failed"
   exit "${install_rc}"
 fi
+progress "content_agents_install_completed"
 
 export WU_OVRTX_VENV_DIR="${SOURCE_DIR}/.ovrtx_venv"
 export WU_OVRTX_AUTO_PROVISION=0
+progress "ovrtx_runtime_install_started"
 "${UV_BIN}" venv "${WU_OVRTX_VENV_DIR}" --python "${SOURCE_DIR}/.venv/bin/python"
 "${UV_BIN}" pip install \
   --python "${WU_OVRTX_VENV_DIR}/bin/python" \
@@ -134,8 +143,10 @@ if [ "${ovrtx_probe_rc}" -ne 0 ]; then
   write_missing_result "content_agents_ovrtx_runtime_probe_failed"
   exit "${ovrtx_probe_rc}"
 fi
+progress "ovrtx_runtime_ready"
 
 if [ -d "${SCRIPT_DIR}/native" ]; then
+  progress "native_ovrtx_install_started"
   NATIVE_OVRTX_ENV="${SOURCE_DIR}/.ovrtx_native_venv"
   "${UV_BIN}" venv "${NATIVE_OVRTX_ENV}" --python "${SOURCE_DIR}/.venv/bin/python"
   native_ovrtx_venv_rc=$?
@@ -163,8 +174,10 @@ if [ -d "${SCRIPT_DIR}/native" ]; then
     write_missing_result "content_agents_native_ovrtx_dependency_closure_failed"
     exit "${native_ovrtx_probe_rc}"
   fi
+  progress "native_ovrtx_ready"
 
   OVPX_ENV="${SOURCE_DIR}/.ovphysx_venv"
+  progress "native_ovphysx_install_started"
   "${UV_BIN}" venv "${OVPX_ENV}" --python "${SOURCE_DIR}/.venv/bin/python"
   ovphysx_venv_rc=$?
   if [ "${ovphysx_venv_rc}" -ne 0 ]; then
@@ -187,6 +200,7 @@ if [ -d "${SCRIPT_DIR}/native" ]; then
     write_missing_result "content_agents_ovphysx_runtime_probe_failed"
     exit "${ovphysx_probe_rc}"
   fi
+  progress "native_ovphysx_ready"
 fi
 
 export BLUEPRINT_ADP_CONTENT_AGENTS_PYTHON="${SOURCE_DIR}/.venv/bin/python"
@@ -195,8 +209,10 @@ Xvfb :99 -screen 0 1920x1080x24 >"${OUTPUT_DIR}/xvfb.log" 2>&1 &
 xvfb_pid=$!
 sleep 2
 
+progress "agent_runner_started"
 "${SOURCE_DIR}/.venv/bin/python" "${SCRIPT_DIR}/adp_content_agents_provider_runner.py"
 runner_rc=$?
+progress "agent_runner_completed"
 kill "${xvfb_pid}" >/dev/null 2>&1 || true
 wait "${xvfb_pid}" >/dev/null 2>&1 || true
 

@@ -17,6 +17,12 @@ SCHEMA_VERSION = "adp_content_agents_vast_result.v1"
 TIMEOUT_SECONDS = 2400
 
 
+def _progress(stage: str) -> None:
+    """Emit a static marker that the provider watchdog recognizes as progress."""
+
+    print(f"BLUEPRINT_ADP_CONTENT_AGENTS_PROGRESS:{stage}", flush=True)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -299,6 +305,7 @@ def _native_probes(
 
 
 def main() -> int:
+    _progress("runner_started")
     runtime_root = Path(__file__).resolve().parent
     output_root = Path(
         os.environ.get(
@@ -324,15 +331,19 @@ def main() -> int:
 
     input_usd, joint_agent_plan = _runtime_input_plan(runtime_root)
 
+    _progress("gpu_probe_started")
     gpu = _run(
         ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
         log_path=output_root / "nvidia-smi.log",
         env=env,
         timeout=60,
     )
+    _progress("gpu_probe_completed")
+    _progress("native_probes_started")
     native, native_blockers = _native_probes(
         runtime_root=runtime_root, output_root=output_root, env=env
     )
+    _progress("native_probes_completed")
     configs = runtime_root / "configs"
     agent_specs = {
         "material": ("material-agent", configs / "material_agent.yaml", configs / ".material"),
@@ -355,6 +366,7 @@ def main() -> int:
         command = [str(bin_dir / executable), "run", str(config)]
         if name in {"material", "physics"}:
             command.append("--clean")
+        _progress(f"{name}_agent_started")
         execution = _run(
             command,
             log_path=output_root / f"{name}-agent.log",
@@ -372,6 +384,7 @@ def main() -> int:
             "produced_artifacts": produced,
             "retry_count": 0,
         }
+        _progress(f"{name}_agent_completed")
 
     validation: dict[str, Any] = {
         "validation_agent_attempted": False,
@@ -402,6 +415,7 @@ def main() -> int:
                 "--format",
                 "json",
             ]
+            _progress("validation_agent_started")
             execution = _run(
                 command,
                 log_path=output_root / "validation-agent.log",
@@ -428,6 +442,7 @@ def main() -> int:
             }
             if not success:
                 blockers.append("validation_agent_static_check_failed")
+            _progress("validation_agent_completed")
         except Exception as exc:  # preserve a typed terminal result
             validation = {
                 "validation_agent_attempted": True,
@@ -480,6 +495,7 @@ def main() -> int:
         "raw_secret_values_recorded": False,
     }
     result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _progress("result_written")
     return 0 if not blockers else 1
 
 
