@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -49,6 +50,9 @@ PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION = (
 )
 POST_ATTEMPT_PROVIDER_ZERO_SCHEMA_VERSION = (
     "paired_target_native_import_provider_zero.v1"
+)
+SUPPLEMENTAL_SPEND_SCHEMA_VERSION = (
+    "paired_target_native_import_supplemental_spend_reconciliation.v1"
 )
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/paired-target-native-import"
 INSTANCE_LABEL_PREFIX = "blueprint-adp-paired-native-import-"
@@ -95,6 +99,239 @@ def _bound_record(value: Any, code: str) -> tuple[Path, dict[str, Any]]:
     return path, dict(value)
 
 
+def _validate_content_agents_spend_entry(
+    records: Mapping[str, Any],
+) -> tuple[dict[str, Any], float]:
+    required = (
+        "authority",
+        "terminal_result",
+        "session_budget",
+        "vast_budget_ledger",
+        "provider_adapter",
+        "object_store_cleanup",
+        "teardown",
+        "post_teardown_provider_zero",
+        "api_zero_guard_snapshot",
+        "provider_output_download_manifest",
+    )
+    paths = {
+        key: _bound_record(
+            records.get(key), f"paired_target_supplemental_{key}_unbound"
+        )[0]
+        for key in required
+    }
+    values = {
+        key: _read(path, f"paired_target_supplemental_{key}_unreadable")
+        for key, path in paths.items()
+    }
+    authority = values["authority"]
+    result = values["terminal_result"]
+    session = values["session_budget"]
+    ledger = values["vast_budget_ledger"]
+    adapter = values["provider_adapter"]
+    cleanup = values["object_store_cleanup"]
+    teardown = values["teardown"]
+    zero = values["post_teardown_provider_zero"]
+    snapshot = values["api_zero_guard_snapshot"]
+    download = values["provider_output_download_manifest"]
+    cost = result.get("estimated_cost_usd")
+    instance_ids = teardown.get("vast_instance_ids")
+    attempts = session.get("attempts")
+    guard = snapshot.get("guard")
+    inventory = guard.get("inventory_results") if isinstance(guard, Mapping) else None
+    vast_rows = [
+        row
+        for row in inventory or []
+        if isinstance(row, Mapping) and row.get("provider") == "vast"
+    ]
+    if (
+        authority.get("schema_version")
+        != "adp_content_agents_paid_attempt_authority.v1"
+        or authority.get("authorization_digest")
+        != canonical_digest(authority, digest_field="authorization_digest")
+        or authority.get("paid_compute_authorized") is not True
+        or authority.get("maximum_paid_attempts") != 1
+        or authority.get("maximum_automatic_retries") != 0
+        or authority.get("automatic_paid_retry_authorized") is not False
+        or authority.get("zero_retry") is not True
+        or result.get("schema_version") != "adp_content_agents_vast_run.v1"
+        or result.get("status") != "completed"
+        or result.get("bundle_sha256") != authority.get("bundle_sha256")
+        or result.get("hard_cap_usd") != authority.get("hard_attempt_spend_cap_usd")
+        or result.get("hard_ttl_seconds")
+        != authority.get("maximum_single_resource_ttl_seconds")
+        or result.get("retry_cap") != 0
+        or result.get("continuing_spend_from_this_run") is not False
+        or result.get("all_staged_objects_absent") is not True
+        or result.get("blockers") != []
+        or isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(float(cost))
+        or float(cost) < 0
+        or session.get("schema_version") != "vast_session_cost_summary.v4"
+        or session.get("status") != "completed"
+        or session.get("attempt_count") != 1
+        or not isinstance(attempts, list)
+        or len(attempts) != 1
+        or session.get("estimated_cost_usd") != cost
+        or attempts[0].get("estimated_cost_usd") != cost
+        or attempts[0].get("continuing_spend_from_this_run") is not False
+        or attempts[0].get("vast_instance_ids") != instance_ids
+        or ledger.get("schema_version") != "vast_budget_ledger.v1"
+        or ledger.get("status") != "completed"
+        or ledger.get("estimated_cost_usd") != cost
+        or ledger.get("hard_cap_usd") != result.get("hard_cap_usd")
+        or ledger.get("continuing_spend_from_this_run") is not False
+        or ledger.get("vast_instance_ids") != instance_ids
+        or adapter.get("schema_version") != "vast_provider_adapter_result.v1"
+        or adapter.get("status") != "completed"
+        or adapter.get("provider_bundle_kind") != "adp_content_agents"
+        or adapter.get("selected_container_image") != authority.get("container_image")
+        or adapter.get("provider_create_attempted") is not True
+        or adapter.get("estimated_cost_usd") != cost
+        or adapter.get("continuing_spend_from_this_run") is not False
+        or adapter.get("vast_instance_ids") != instance_ids
+        or cleanup.get("schema_version") != "wam_provider_object_store_cleanup.v1"
+        or cleanup.get("status") != "completed"
+        or cleanup.get("all_objects_absent") is not True
+        or cleanup.get("signed_url_files_removed") is not True
+        or teardown.get("schema_version") != "vast_teardown_manifest.v1"
+        or teardown.get("status") != "completed"
+        or teardown.get("continuing_spend_from_this_run") is not False
+        or not isinstance(instance_ids, list)
+        or not instance_ids
+        or zero.get("schema_version")
+        != "task_evaluation_post_teardown_provider_zero.v1"
+        or zero.get("status") != "provider_zero_confirmed"
+        or zero.get("required_providers") != ["vast"]
+        or zero.get("provider_zero_verified") is not True
+        or zero.get("continuing_spend_from_this_run") is not False
+        or zero.get("allocator_invoked") is not False
+        or zero.get("provider_mutation_performed") is not False
+        or zero.get("automatic_retry_performed") is not False
+        or zero.get("blockers") != []
+        or zero.get("provider_zero_receipt_digest")
+        != canonical_digest(zero, digest_field="provider_zero_receipt_digest")
+        or zero.get("teardown_manifest", {}).get("digest") != _sha256(paths["teardown"])
+        or zero.get("independent_guard_snapshot", {}).get("snapshot_digest")
+        != snapshot.get("snapshot_digest")
+        or snapshot.get("schema_version")
+        != "task_evaluation_provider_zero_guard_snapshot.v1"
+        or snapshot.get("snapshot_digest")
+        != canonical_digest(snapshot, digest_field="snapshot_digest")
+        or not isinstance(guard, Mapping)
+        or guard.get("provider_zero_verified") is not True
+        or guard.get("live_instance_count") != 0
+        or guard.get("total_burn_per_hour_usd") != 0
+        or len(vast_rows) != 1
+        or vast_rows[0].get("status") != "succeeded"
+        or vast_rows[0].get("row_count") != 0
+        or download.get("schema_version") != "vast_provider_output_download.v1"
+        or download.get("status") != "completed"
+        or download.get("provider_upload_marker_seen") is not True
+        or download.get("output_zip_present_after_download") is not True
+        or not isinstance(download.get("output_zip_size_bytes"), int)
+        or download.get("output_zip_size_bytes", 0) <= 0
+    ):
+        raise ValueError("paired_target_content_agents_supplemental_spend_invalid")
+    return {
+        "kind": "content_agents_terminal_closeout",
+        "authority_digest": authority["authorization_digest"],
+        "provider": "vast",
+        "instance_ids": list(instance_ids),
+        "cost_usd": round(float(cost), 6),
+        "independent_watchdog_receipt_present": False,
+        "independent_watchdog_typed_gap": (
+            "content_agents_lane_did_not_arm_separate_independent_watchdog"
+        ),
+        "records": {key: _record(path) for key, path in paths.items()},
+    }, round(float(cost), 6)
+
+
+def materialize_paired_target_native_import_supplemental_spend_reconciliation(
+    *,
+    content_agents_attempts: Sequence[Mapping[str, str | Path]],
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Bind terminal same-goal CAD spend without upgrading its scientific claims."""
+
+    entries: list[dict[str, Any]] = []
+    required = {
+        "authority",
+        "terminal_result",
+        "session_budget",
+        "vast_budget_ledger",
+        "provider_adapter",
+        "object_store_cleanup",
+        "teardown",
+        "post_teardown_provider_zero",
+        "api_zero_guard_snapshot",
+        "provider_output_download_manifest",
+    }
+    for row in content_agents_attempts:
+        if set(row) != required:
+            raise ValueError("paired_target_supplemental_spend_entries_invalid")
+        records = {
+            key: _record(Path(value).expanduser().resolve())
+            for key, value in row.items()
+        }
+        entry, _ = _validate_content_agents_spend_entry(records)
+        entries.append(entry)
+    identities = [str(row["authority_digest"]) for row in entries]
+    if not entries or len(identities) != len(set(identities)):
+        raise ValueError("paired_target_supplemental_spend_entries_invalid")
+    value: dict[str, Any] = {
+        "schema_version": SUPPLEMENTAL_SPEND_SCHEMA_VERSION,
+        "status": "all_supplemental_spend_terminal_and_provider_zero",
+        "entries": entries,
+        "total_cost_usd": round(sum(float(row["cost_usd"]) for row in entries), 6),
+        "continuing_spend": False,
+        "provider_zero_confirmed_for_every_entry": True,
+        "scientific_claims_upgraded": False,
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    output = Path(output_path).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise ValueError("paired_target_supplemental_spend_output_exists")
+    ensure_dir(output.parent)
+    write_json(output, value)
+    return value
+
+
+def _validate_supplemental_spend_reconciliation(
+    path: Path,
+) -> tuple[dict[str, Any], float]:
+    value = _read(path, "paired_target_supplemental_spend_unreadable")
+    entries = value.get("entries")
+    if (
+        value.get("schema_version") != SUPPLEMENTAL_SPEND_SCHEMA_VERSION
+        or value.get("status") != "all_supplemental_spend_terminal_and_provider_zero"
+        or value.get("receipt_digest")
+        != canonical_digest(value, digest_field="receipt_digest")
+        or value.get("continuing_spend") is not False
+        or value.get("provider_zero_confirmed_for_every_entry") is not True
+        or value.get("scientific_claims_upgraded") is not False
+        or not isinstance(entries, list)
+        or not entries
+    ):
+        raise ValueError("paired_target_supplemental_spend_invalid")
+    total = 0.0
+    identities: list[str] = []
+    for row in entries:
+        if not isinstance(row, Mapping):
+            raise ValueError("paired_target_supplemental_spend_invalid")
+        expected, cost = _validate_content_agents_spend_entry(row.get("records") or {})
+        if dict(row) != expected:
+            raise ValueError("paired_target_supplemental_spend_entry_mismatch")
+        identities.append(expected["authority_digest"])
+        total += cost
+    total = round(total, 6)
+    if len(identities) != len(set(identities)) or total != value.get("total_cost_usd"):
+        raise ValueError("paired_target_supplemental_spend_total_mismatch")
+    return value, total
+
+
 def materialize_paired_target_native_import_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
@@ -102,6 +339,7 @@ def materialize_paired_target_native_import_paid_attempt_authority(
     prior_artifixer_result_path: str | Path,
     prior_artifixer_cleanup_path: str | Path,
     prior_artifixer_provider_zero_path: str | Path,
+    supplemental_prior_spend_reconciliation_path: str | Path | None = None,
     authorization_reference: str,
     authorized_by: str,
     authorized_on: str,
@@ -122,6 +360,20 @@ def materialize_paired_target_native_import_paid_attempt_authority(
         provider_zero_path=prior_artifixer_provider_zero_path,
     )
     prior_spend = float(terminal["aggregate_goal_spend_after_attempt_usd"])
+    supplemental: dict[str, Any] | None = None
+    if supplemental_prior_spend_reconciliation_path is not None:
+        supplemental_path = Path(
+            supplemental_prior_spend_reconciliation_path
+        ).expanduser().resolve()
+        supplemental, supplemental_cost = _validate_supplemental_spend_reconciliation(
+            supplemental_path
+        )
+        supplemental = {
+            **_record(supplemental_path),
+            "receipt_digest": supplemental["receipt_digest"],
+            "total_cost_usd": supplemental_cost,
+        }
+        prior_spend = round(prior_spend + supplemental_cost, 6)
     aggregate_cap = min(
         AGGREGATE_GOAL_SPEND_CAP_USD,
         float(terminal["aggregate_goal_spend_cap_usd"]),
@@ -174,6 +426,7 @@ def materialize_paired_target_native_import_paid_attempt_authority(
             "attempt_cost_usd": terminal["attempt_cost_usd"],
             "lineage_cost_usd": terminal["lineage_cost_usd"],
         },
+        "supplemental_prior_spend_reconciliation": supplemental,
         "active_instance_allowlist": {
             "external_provider_owned": list(allowed),
             "same_goal_concurrent": [],
@@ -288,12 +541,34 @@ def validate_paired_target_native_import_paid_attempt_authority(
             cleanup_path=paths["object_store_cleanup"],
             provider_zero_path=paths["provider_zero"],
         )
+        supplemental_cost = 0.0
+        supplemental_record = value.get("supplemental_prior_spend_reconciliation")
+        if supplemental_record is not None:
+            supplemental_path, supplemental_bound = _bound_record(
+                supplemental_record, "supplemental_prior_spend_unbound"
+            )
+            supplemental, supplemental_cost = _validate_supplemental_spend_reconciliation(
+                supplemental_path
+            )
+            if (
+                supplemental_record.get("receipt_digest")
+                != supplemental.get("receipt_digest")
+                or supplemental_record.get("total_cost_usd") != supplemental_cost
+                or supplemental_bound.get("sha256") != _sha256(supplemental_path)
+            ):
+                errors.append("supplemental_prior_spend_mismatch")
         if (
             predecessor.get("authority_digest") != terminal["authority_digest"]
             or predecessor.get("attempt_cost_usd") != terminal["attempt_cost_usd"]
             or predecessor.get("lineage_cost_usd") != terminal["lineage_cost_usd"]
             or value.get("aggregate_goal_spend_before_attempt_usd")
-            != terminal["aggregate_goal_spend_after_attempt_usd"]
+            != round(
+                terminal["aggregate_goal_spend_after_attempt_usd"]
+                + supplemental_cost,
+                6,
+            )
+            or value.get("aggregate_goal_spend_cap_usd")
+            != terminal["aggregate_goal_spend_cap_usd"]
         ):
             errors.append("prior_terminal_spend_mismatch")
     except ValueError:
@@ -682,9 +957,11 @@ __all__ = [
     "PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",
+    "SUPPLEMENTAL_SPEND_SCHEMA_VERSION",
     "consume_paired_target_native_import_authority_once",
     "materialize_paired_target_native_import_paid_attempt_authority",
     "materialize_paired_target_native_import_provider_zero",
+    "materialize_paired_target_native_import_supplemental_spend_reconciliation",
     "run_paired_target_native_import_vast",
     "validate_paired_target_native_import_paid_attempt_authority",
 ]
