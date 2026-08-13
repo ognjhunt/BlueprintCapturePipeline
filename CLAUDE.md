@@ -23,12 +23,17 @@ Key rules (full text and precedents in `AGENTS.md`):
   and physically adjudicated.
 - Every task must name the ADP backlog item and day gate it unblocks. Existing
   captures/scenes may exercise downstream seams only as `development_only`.
-- ADP-008 is observed complete. Complete ADP-009 with exact Inpaint360GS author
-  smoke; InFusion as the primary adapter and AuraFusion360 as the quality
-  challenger on one exact rights-admitted InteriorGS/SAGE-3D pair; targeted
-  ScanNet++ real measured transfer after access; one exact SimReady USD; and a bounded
-  NVIDIA USD Content Agents comparison before the fresh-site phase. Paper-only
-  methods and unrecorded rights fail closed.
+- ADP-008 is observed complete. Complete ADP-009 with **artifixer3D+ with
+  `gpt-image-2` as the appearance path**; targeted ScanNet++ real measured
+  transfer after access; one exact SimReady USD; and a bounded NVIDIA USD
+  Content Agents comparison before the fresh-site phase. Paper-only methods and
+  unrecorded rights fail closed.
+- **Inpaint360GS and AuraFusion360 are retired as appearance methods**
+  (2026-08-13): a real artifixer3D + `gpt-image-2` run produced materially
+  better results, so neither is needed as a primary adapter or a quality
+  challenger. Their lanes, bundles, and allocator branches stay in the tree; no
+  launch profile will be built for them and no further rights work is required.
+  See `docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md`.
 - Humanoid, deformable, five-policy/general-ranking, world-model, provider
   bakeoff, post-training, multi-site, and unrelated product work is frozen.
 - Keep world-model backends swappable behind stable contracts.

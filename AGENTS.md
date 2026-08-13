@@ -73,10 +73,16 @@ dependent step as blocked instead of guessing.
   task truth, registration, task physics, observation-domain match, sim-to-real
   fidelity, or partner value. Never copy fixture data into qualified evidence.
 - ADP-008 is observed complete. The 2026-08-06 ADP-009 transition accepts the
-  bounded AuraFusion360/InteriorGS/SAGE/SimReady construction rehearsal while
-  preserving the historical suite at `7/10`; Inpaint360GS and InFusion remain
-  nonblocking typed abstentions, and fresh Raw V3.2 capture replaces ScanNet++
-  as the required real metric transfer. Before fresh capture, direct engineering
+  bounded InteriorGS/SAGE/SimReady construction rehearsal while preserving the
+  historical suite at `7/10`, and fresh Raw V3.2 capture replaces ScanNet++ as
+  the required real metric transfer.
+- **2026-08-13: artifixer3D+ with `gpt-image-2` is the appearance path.** A real
+  run beat both prior candidates, so AuraFusion360 is retired as the quality
+  challenger and Inpaint360GS as the author smoke; neither is a nonblocking
+  abstention any longer because neither is required. Their lanes, bundles, and
+  allocator branches remain in the tree and are simply not launched — no launch
+  profile, and no outstanding rights work. Recorded with what each would have
+  needed in `docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md`. Before fresh capture, direct engineering
   work to one development-only basic Franka pick-and-place rehearsal on the
   exact sealed public scene with exactly two frozen runnable learned-policy
   candidates, complete lossless policy-input media, deterministic non-policy
