@@ -26,9 +26,17 @@ LEGACY_INPUT_FILENAME = f"{LEGACY_INPUT_SCHEMA}.json"
 DUAL_TARGET_INPUT_SCHEMA = "public_scene_artifixer3d_dual_target_inputs.v1"
 DUAL_TARGET_INPUT_FILENAME = f"{DUAL_TARGET_INPUT_SCHEMA}.json"
 DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
+DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE = "dual_target_artifixer3d_render_only"
+CHECKPOINT_REUSE_SCHEMA = "public_scene_artifixer3d_checkpoint_reuse.v1"
 DUAL_TARGET_PHASES = [
     "dual_target_input_validation",
     "artifixer3d_distillation",
+    "artifixer3d_review_render",
+    "external_visual_and_multiview_review",
+]
+DUAL_TARGET_RENDER_ONLY_PHASES = [
+    "reused_checkpoint_validation",
+    "deterministic_distillation_input_replay",
     "artifixer3d_review_render",
     "external_visual_and_multiview_review",
 ]
@@ -149,13 +157,29 @@ def _read_task_progress(path: Path) -> dict[str, Any] | None:
 def _completed_task_is_bound(task: Any) -> bool:
     if not isinstance(task, Mapping):
         return False
-    if task.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE:
-        return (
+    pipeline_mode = task.get("pipeline_mode")
+    if pipeline_mode in {
+        DUAL_TARGET_PIPELINE_MODE,
+        DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+    }:
+        dual_bound = (
             task.get("outside_support_invariance_status")
             == "deferred_until_final_soft_composite"
             and task.get("outside_exact_support_invariance_proven") is False
             and task.get("outside_support_changed_pixels_total") is None
         )
+        if pipeline_mode == DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE:
+            return (
+                dual_bound
+                and task.get("checkpoint_reused") is True
+                and task.get("training_executed") is False
+                and task.get("direct_artifixer_executed") is False
+                and task.get("artifixer3d_plus_executed") is False
+                and str(task.get("checkpoint_reuse_digest") or "").startswith(
+                    "sha256:"
+                )
+            )
+        return dual_bound
     return task.get("outside_support_changed_pixels_total") == 0
 
 
@@ -202,6 +226,175 @@ def _dual_target_request_is_bound(request: Mapping[str, Any]) -> bool:
         and isinstance(artifixer3d.get("config_name"), str)
         and bool(artifixer3d["config_name"])
     )
+
+
+def _same_file_record(left: Any, right: Any) -> bool:
+    return (
+        isinstance(left, Mapping)
+        and isinstance(right, Mapping)
+        and left.get("size_bytes") == right.get("size_bytes")
+        and left.get("sha256") == right.get("sha256")
+    )
+
+
+def _render_only_request_is_bound(
+    request: Mapping[str, Any], *, candidate: Mapping[str, Any], input_root: Path
+) -> bool:
+    """Validate the zero-closed checkpoint lineage and every reused byte."""
+
+    artifixer3d = request.get("artifixer3d")
+    reuse = artifixer3d.get("checkpoint_reuse") if isinstance(artifixer3d, Mapping) else None
+    if (
+        request.get("pipeline_mode") != DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE
+        or request.get("direct_editor_backend") != "none"
+        or request.get("semantic_editor") is not None
+        or request.get("semantic_editor_only") is not False
+        or request.get("model") is not None
+        or request.get("wan_base") is not None
+        or request.get("direct_inference") is not None
+        or request.get("direct_model_weights_required") is not False
+        or request.get("phases") != DUAL_TARGET_RENDER_ONLY_PHASES
+        or request.get("outside_exact_support_changed_pixels_permitted")
+        != "unconstrained_for_raw_representation_review"
+        or request.get("outside_support_invariance_gate")
+        != "deferred_until_final_soft_composite"
+        or not isinstance(artifixer3d, Mapping)
+        or artifixer3d.get("loss_overrides") != DUAL_TARGET_LOSS_OVERRIDES
+        or artifixer3d.get("anchor_mask_reduction") != "full_frame_mean"
+        or artifixer3d.get("training_permitted") is not False
+        or artifixer3d.get("distillation_input_replay_only") is not True
+        or not isinstance(artifixer3d.get("steps"), int)
+        or isinstance(artifixer3d.get("steps"), bool)
+        or artifixer3d["steps"] <= 0
+        or not isinstance(artifixer3d.get("config_name"), str)
+        or not artifixer3d["config_name"]
+        or not isinstance(reuse, Mapping)
+        or reuse.get("schema_version") != CHECKPOINT_REUSE_SCHEMA
+        or reuse.get("reuse_digest") != _canonical_digest(reuse, "reuse_digest")
+        or reuse.get("source_pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+        or reuse.get("source_candidate_input_receipt_digest")
+        != candidate.get("receipt_digest")
+        or reuse.get("training_reexecution_permitted") is not False
+        or reuse.get("direct_inference_permitted") is not False
+        or reuse.get("artifixer3d_plus_permitted") is not False
+        or reuse.get("provider_zero_confirmed_before_reuse") is not True
+    ):
+        return False
+
+    try:
+        authority_path = _bound(
+            input_root,
+            reuse.get("source_attempt_authority"),
+            "artifixer3d_checkpoint_reuse_authority_unbound",
+        )
+        attempt_path = _bound(
+            input_root,
+            reuse.get("source_attempt_result"),
+            "artifixer3d_checkpoint_reuse_attempt_unbound",
+        )
+        zero_path = _bound(
+            input_root,
+            reuse.get("source_provider_zero"),
+            "artifixer3d_checkpoint_reuse_zero_unbound",
+        )
+        runtime_path = _bound(
+            input_root,
+            reuse.get("source_runtime_result"),
+            "artifixer3d_checkpoint_reuse_runtime_unbound",
+        )
+        authority = _read(authority_path, "artifixer3d_checkpoint_reuse_authority_invalid")
+        attempt = _read(attempt_path, "artifixer3d_checkpoint_reuse_attempt_invalid")
+        zero = _read(zero_path, "artifixer3d_checkpoint_reuse_zero_invalid")
+        runtime = _read(runtime_path, "artifixer3d_checkpoint_reuse_runtime_invalid")
+    except ValueError:
+        return False
+
+    authority_digest = authority.get("authorization_digest")
+    runtime_tasks = runtime.get("tasks")
+    task_ids = [str(task.get("task_id") or "") for task in candidate["tasks"]]
+    if (
+        authority.get("schema_version")
+        != "public_scene_artifixer3d_paid_attempt_authority.v1"
+        or authority_digest != _canonical_digest(authority, "authorization_digest")
+        or reuse.get("source_attempt_authority_digest") != authority_digest
+        or attempt.get("schema_version") != "public_scene_artifixer3d_vast_run.v1"
+        or attempt.get("status") not in {"blocked", "completed"}
+        or reuse.get("source_attempt_terminal_status") != attempt.get("status")
+        or attempt.get("authorization_consumption", {}).get("status") != "consumed"
+        or attempt.get("authorization_consumption", {}).get("authorization_digest")
+        != authority_digest
+        or attempt.get("continuing_spend_from_this_run") is not False
+        or attempt.get("all_staged_objects_absent") is not True
+        or zero.get("schema_version") != "artifixer3d_postblocked_provider_zero.v1"
+        or zero.get("receipt_digest") != _canonical_digest(zero, "receipt_digest")
+        or zero.get("attempt_authority_digest") != authority_digest
+        or zero.get("attempt_terminal_status") != attempt.get("status")
+        or zero.get("provider_zero_confirmed") is not True
+        or zero.get("continuing_spend_from_attempt") is not False
+        or zero.get("all_staged_objects_absent") is not True
+        or zero.get("inventory", {}).get("api_confirmed") is not True
+        or zero.get("inventory", {}).get("live_resource_count") != 0
+        or not _same_file_record(
+            zero.get("attempt_authority"),
+            {
+                "size_bytes": authority_path.stat().st_size,
+                "sha256": _sha256(authority_path),
+            },
+        )
+        or not _same_file_record(
+            zero.get("attempt_result"),
+            {
+                "size_bytes": attempt_path.stat().st_size,
+                "sha256": _sha256(attempt_path),
+            },
+        )
+        or runtime.get("schema_version") != RESULT_SCHEMA
+        or runtime.get("status")
+        != "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
+        or runtime.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+        or runtime.get("candidate_input_receipt_digest") != candidate.get("receipt_digest")
+        or runtime.get("task_ids") != task_ids
+        or runtime.get("artifixer3d_distillation_executed") is not True
+        or runtime.get("artifixer_direct_inference_executed") is not False
+        or runtime.get("semantic_editor_inference_executed") is not False
+        or runtime.get("artifixer3d_plus_inference_executed") is not False
+        or runtime.get("manifest_digest") != reuse.get("source_manifest_digest")
+        or runtime.get("runtime_request_digest")
+        != reuse.get("source_runtime_request_digest")
+        or attempt.get("manifest_digest") != runtime.get("manifest_digest")
+        or attempt.get("runtime_request_digest") != runtime.get("runtime_request_digest")
+        or not isinstance(runtime_tasks, list)
+        or len(runtime_tasks) != len(task_ids)
+    ):
+        return False
+
+    checkpoints = reuse.get("checkpoints")
+    if not isinstance(checkpoints, list) or len(checkpoints) != len(task_ids):
+        return False
+    for task_id, source_task, row in zip(task_ids, runtime_tasks, checkpoints):
+        if not isinstance(source_task, Mapping) or not isinstance(row, Mapping):
+            return False
+        source_checkpoint = source_task.get("artifixer3d_checkpoint")
+        try:
+            checkpoint = _bound(
+                input_root,
+                row.get("checkpoint"),
+                "artifixer3d_checkpoint_reuse_checkpoint_unbound",
+            )
+        except ValueError:
+            return False
+        if (
+            source_task.get("task_id") != task_id
+            or source_task.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+            or row.get("task_id") != task_id
+            or row.get("steps") != artifixer3d.get("steps")
+            or not isinstance(row.get("source_provider_zip_member"), str)
+            or not row["source_provider_zip_member"]
+            or not _same_file_record(source_checkpoint, row.get("checkpoint"))
+            or checkpoint.stat().st_size <= 0
+        ):
+            return False
+    return True
 
 
 def _dual_target_candidate_is_bound(candidate: Mapping[str, Any]) -> bool:
@@ -280,7 +473,11 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
     runtime = root / "provider_runtime"
     manifest = _read(runtime / "artifixer3d_bundle_manifest.json", "artifixer3d_manifest_unreadable")
     request = _read(runtime / "artifixer3d_runtime_request.json", "artifixer3d_request_unreadable")
-    dual_target = request.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+    render_only = request.get("pipeline_mode") == DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE
+    dual_target = request.get("pipeline_mode") in {
+        DUAL_TARGET_PIPELINE_MODE,
+        DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+    }
     candidate_filename = (
         DUAL_TARGET_INPUT_FILENAME if dual_target else LEGACY_INPUT_FILENAME
     )
@@ -308,9 +505,25 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
         != candidate["receipt_digest"]
         or request.get("candidate_input_receipt_digest") != candidate["receipt_digest"]
         or manifest.get("contains_raw_dataset_bytes") is not False
-        or manifest.get("contains_model_weights") is not False
+        or manifest.get("contains_model_weights") is not render_only
+        or manifest.get(
+            "contains_reused_private_derived_3dgrut_checkpoint", False
+        )
+        is not render_only
+        or manifest.get("contains_released_direct_model_weights", False) is not False
         or request.get("source_object_restoration_permitted") is not False
-        or (dual_target and not _dual_target_request_is_bound(request))
+        or (
+            request.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+            and not _dual_target_request_is_bound(request)
+        )
+        or (
+            render_only
+            and not _render_only_request_is_bound(
+                request,
+                candidate=candidate,
+                input_root=runtime / "input",
+            )
+        )
         or (
             not dual_target
             and (
@@ -344,9 +557,17 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
     if dual_target:
         if (
             backend != "none"
-            or manifest.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+            or manifest.get("pipeline_mode") != request.get("pipeline_mode")
             or manifest.get("direct_editor_backend") != "none"
             or manifest.get("semantic_editor_model_identity") is not None
+            or (
+                render_only
+                and manifest.get("checkpoint_reuse")
+                != request.get("artifixer3d", {}).get("checkpoint_reuse")
+            )
+            or (
+                not render_only and manifest.get("checkpoint_reuse") is not None
+            )
         ):
             raise ValueError("artifixer3d_dual_target_binding_invalid")
     elif backend != "artifixer":
@@ -765,26 +986,23 @@ def _normalize_dual_target_review_frames(
     return rows
 
 
-def _dual_target_task_runtime(
+def _prepare_dual_target_distillation_replay(
     *,
     task: Mapping[str, Any],
     input_root: Path,
-    source_root: Path,
-    output_root: Path,
+    task_output: Path,
     request: Mapping[str, Any],
+    log: Path,
 ) -> dict[str, Any]:
-    """Train one paired-target 3DGRUT candidate and stop at raw review renders."""
+    """Replay the deterministic camera/input preparation shared by train and render."""
+
     from data_processing import artifixer3d
-    from data_processing import threedgrut_training
 
     task_id = str(task["task_id"])
     staged_task = input_root / task_id
-    task_output = output_root / "tasks" / task_id
-    logs = task_output / "logs"
-    log = logs / "artifixer3d_dual_target.log"
     if task_output.exists():
         raise ValueError("artifixer3d_dual_target_task_output_exists")
-    logs.mkdir(parents=True)
+    log.parent.mkdir(parents=True)
     _zero_prompt(staged_task / "captions" / "unconditioned_zero_prompt.h5")
     teacher_root, teacher_rows = _prepare_dual_target_teacher_frames(
         task=task,
@@ -840,6 +1058,44 @@ def _dual_target_task_runtime(
         staged_task=staged_task,
         distillation_input_dir=paths.distillation_input_dir,
     )
+    return {
+        "task_id": task_id,
+        "staged_task": staged_task,
+        "teacher_rows": teacher_rows,
+        "review_trajectory": review_trajectory,
+        "scene": scene,
+        "steps": steps,
+        "paths": paths,
+        "anchor_mask_rows": anchor_mask_rows,
+    }
+
+
+def _dual_target_task_runtime(
+    *,
+    task: Mapping[str, Any],
+    input_root: Path,
+    source_root: Path,
+    output_root: Path,
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Train one paired-target 3DGRUT candidate and stop at raw review renders."""
+    from data_processing import artifixer3d
+    from data_processing import threedgrut_training
+
+    task_id = str(task["task_id"])
+    task_output = output_root / "tasks" / task_id
+    log = task_output / "logs" / "artifixer3d_dual_target.log"
+    prepared = _prepare_dual_target_distillation_replay(
+        task=task,
+        input_root=input_root,
+        task_output=task_output,
+        request=request,
+        log=log,
+    )
+    staged_task = prepared["staged_task"]
+    scene = prepared["scene"]
+    steps = prepared["steps"]
+    paths = prepared["paths"]
     overrides = [
         f"path={paths.distillation_input_dir}",
         f"out_dir={paths.run_root}",
@@ -874,7 +1130,7 @@ def _dual_target_task_runtime(
                 checkpoint=checkpoint,
                 checkpoint_reused=False,
                 replace=False,
-                render_trajectory_path=review_trajectory,
+                render_trajectory_path=prepared["review_trajectory"],
             )
     review_rows = _normalize_dual_target_review_frames(
         task=task,
@@ -890,8 +1146,88 @@ def _dual_target_task_runtime(
         "training_record_count": task["training_record_count"],
         "selected_anchor_indices": task["selected_anchor_indices"],
         "semantic_teacher_indices": task["semantic_teacher_indices"],
-        "semantic_teacher_frames": teacher_rows,
-        "anchor_loss_masks": anchor_mask_rows,
+        "semantic_teacher_frames": prepared["teacher_rows"],
+        "anchor_loss_masks": prepared["anchor_mask_rows"],
+        "anchor_mask_reduction": request["artifixer3d"]["anchor_mask_reduction"],
+        "loss_overrides": request["artifixer3d"]["loss_overrides"],
+        "artifixer3d_checkpoint": _file_record(checkpoint),
+        "artifixer3d_log_sha256": _sha256(log),
+        "artifixer3d_plus_log_sha256": None,
+        "artifixer3d_review_frames": review_rows,
+        "final_candidate_frames": review_rows,
+        "raw_representation_review_only": True,
+        "outside_support_invariance_status": "deferred_until_final_soft_composite",
+        "outside_exact_support_invariance_proven": False,
+        "outside_support_changed_pixels_total": None,
+        "semantic_object_free_review_passed": False,
+        "multiview_consistency_review_passed": False,
+    }
+
+
+def _dual_target_render_only_task_runtime(
+    *,
+    task: Mapping[str, Any],
+    input_root: Path,
+    output_root: Path,
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Render one sealed checkpoint without invoking any training or polish pass."""
+
+    from data_processing import artifixer3d
+
+    task_id = str(task["task_id"])
+    task_output = output_root / "tasks" / task_id
+    log = task_output / "logs" / "artifixer3d_render_only.log"
+    prepared = _prepare_dual_target_distillation_replay(
+        task=task,
+        input_root=input_root,
+        task_output=task_output,
+        request=request,
+        log=log,
+    )
+    reuse = request["artifixer3d"]["checkpoint_reuse"]
+    checkpoint_rows = [
+        row for row in reuse["checkpoints"] if row.get("task_id") == task_id
+    ]
+    if len(checkpoint_rows) != 1:
+        raise ValueError("artifixer3d_checkpoint_reuse_task_ambiguous")
+    checkpoint = _bound(
+        input_root,
+        checkpoint_rows[0]["checkpoint"],
+        "artifixer3d_checkpoint_reuse_checkpoint_unbound",
+    )
+    with log.open("a", encoding="utf-8") as stream:
+        with redirect_stdout(stream), redirect_stderr(stream):
+            review_dir = artifixer3d.render_artifixer3d(
+                prepared["scene"],
+                prepared["paths"],
+                checkpoint=checkpoint,
+                checkpoint_reused=True,
+                replace=False,
+                render_trajectory_path=prepared["review_trajectory"],
+            )
+    review_rows = _normalize_dual_target_review_frames(
+        task=task,
+        staged_task=prepared["staged_task"],
+        review_dir=review_dir,
+        task_output=task_output,
+    )
+    if len(review_rows) != task["physical_camera_count"]:
+        raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
+    return {
+        "task_id": task_id,
+        "pipeline_mode": DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+        "source_pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+        "checkpoint_reused": True,
+        "checkpoint_reuse_digest": reuse["reuse_digest"],
+        "training_executed": False,
+        "direct_artifixer_executed": False,
+        "artifixer3d_plus_executed": False,
+        "training_record_count": task["training_record_count"],
+        "selected_anchor_indices": task["selected_anchor_indices"],
+        "semantic_teacher_indices": task["semantic_teacher_indices"],
+        "semantic_teacher_frames": prepared["teacher_rows"],
+        "anchor_loss_masks": prepared["anchor_mask_rows"],
         "anchor_mask_reduction": request["artifixer3d"]["anchor_mask_reduction"],
         "loss_overrides": request["artifixer3d"]["loss_overrides"],
         "artifixer3d_checkpoint": _file_record(checkpoint),
@@ -1009,6 +1345,13 @@ def _task_runtime(
     semantic_editor_root: Path | None,
     request: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if request.get("pipeline_mode") == DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE:
+        return _dual_target_render_only_task_runtime(
+            task=task,
+            input_root=input_root,
+            output_root=output_root,
+            request=request,
+        )
     if request.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE:
         return _dual_target_task_runtime(
             task=task,
@@ -1251,7 +1594,11 @@ def _task_runtime(
 
 def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[str, Any]:
     manifest, request, candidate = _validate_bundle(bundle_root)
-    dual_target = request.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+    render_only = request.get("pipeline_mode") == DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE
+    dual_target = request.get("pipeline_mode") in {
+        DUAL_TARGET_PIPELINE_MODE,
+        DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+    }
     base: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA,
         "runtime_request_digest": request["runtime_request_digest"],
@@ -1270,6 +1617,13 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
         ),
         "provider_zero_required_after_return": True,
         "physical_or_deployment_evidence": False,
+        "checkpoint_reuse_digest": (
+            request.get("artifixer3d", {})
+            .get("checkpoint_reuse", {})
+            .get("reuse_digest")
+            if render_only
+            else None
+        ),
     }
     if rehearsal:
         return {
@@ -1346,8 +1700,15 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
             not dual_target and request["direct_editor_backend"] != "artifixer"
         ),
         "artifixer3d_distillation_executed": (
-            dual_target or request.get("semantic_editor_only") is not True
+            (
+                not render_only
+                and (
+                    dual_target
+                    or request.get("semantic_editor_only") is not True
+                )
+            )
         ),
+        "artifixer3d_checkpoint_reused": render_only,
         "artifixer3d_plus_inference_executed": (
             not dual_target and request.get("semantic_editor_only") is not True
         ),

@@ -2599,10 +2599,10 @@ def _blueprint_bundle_preflight(
                                     "provider_runtime/artifixer3d_runtime_request.json"
                                 ).decode("utf-8")
                             )
-                            if (
-                                artifixer3d_request.get("pipeline_mode")
-                                == "dual_target_artifixer3d_only"
-                            ):
+                            if artifixer3d_request.get("pipeline_mode") in {
+                                "dual_target_artifixer3d_only",
+                                "dual_target_artifixer3d_render_only",
+                            }:
                                 required_entries.add(
                                     "provider_runtime/input/"
                                     "public_scene_artifixer3d_dual_target_inputs.v1.json"

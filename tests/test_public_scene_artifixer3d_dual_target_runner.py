@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import shutil
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -235,4 +237,201 @@ def test_dual_target_execute_skips_all_direct_model_downloads_and_3d_plus(
     assert result["artifixer3d_distillation_executed"] is True
     assert result["artifixer3d_plus_inference_executed"] is False
     assert result["outside_exact_support_invariance_proven"] is False
+    assert result["tasks"] == [completed]
+
+
+def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner_module()
+    task_id = "task_a"
+    staged_task = tmp_path / "input" / task_id
+    staged_task.mkdir(parents=True)
+    frames: list[dict[str, object]] = []
+    for index in range(8):
+        anchor = staged_task / f"anchor_{index:05d}.png"
+        Image.new("RGB", (12, 10), (index, index, index)).save(anchor)
+        frames.append(
+            {
+                "physical_camera_index": index,
+                "camera_id": f"task_a_camera_{index:05d}",
+                "anchor_rgb": {
+                    "relative_path": anchor.relative_to(staged_task).as_posix(),
+                    "size_bytes": anchor.stat().st_size,
+                    "sha256": runner._sha256(anchor),
+                },
+            }
+        )
+    checkpoint = tmp_path / "input/checkpoint_reuse/checkpoint_00000.pt"
+    checkpoint.parent.mkdir()
+    checkpoint.write_bytes(b"sealed-checkpoint-bytes")
+    checkpoint_record = {
+        "relative_path": checkpoint.relative_to(tmp_path / "input").as_posix(),
+        "size_bytes": checkpoint.stat().st_size,
+        "sha256": runner._sha256(checkpoint),
+    }
+    review_trajectory = staged_task / "review_transforms.json"
+    review_trajectory.write_text("{}\n", encoding="utf-8")
+    native_review = tmp_path / "native_review"
+    renders = native_review / "renders"
+
+    def render_artifixer3d(
+        _scene,
+        _paths,
+        *,
+        checkpoint: Path,
+        checkpoint_reused: bool,
+        replace: bool,
+        render_trajectory_path: Path,
+    ) -> Path:
+        assert checkpoint.read_bytes() == b"sealed-checkpoint-bytes"
+        assert runner._sha256(checkpoint) == checkpoint_record["sha256"]
+        assert checkpoint_reused is True
+        assert replace is False
+        assert render_trajectory_path == review_trajectory
+        renders.mkdir(parents=True)
+        for index in range(8):
+            Image.new("RGB", (12, 10), (index, index, index)).save(
+                renders / f"{index:05d}.png"
+            )
+        return native_review
+
+    data_processing = ModuleType("data_processing")
+    artifixer3d = ModuleType("data_processing.artifixer3d")
+    artifixer3d.render_artifixer3d = render_artifixer3d
+    data_processing.artifixer3d = artifixer3d
+    monkeypatch.setitem(sys.modules, "data_processing", data_processing)
+    monkeypatch.setitem(sys.modules, "data_processing.artifixer3d", artifixer3d)
+
+    def prepared_replay(**_kwargs):
+        (tmp_path / "runtime_output/tasks/task_a/logs").mkdir(parents=True)
+        return {
+            "staged_task": staged_task,
+            "teacher_rows": [],
+            "review_trajectory": review_trajectory,
+            "scene": object(),
+            "paths": SimpleNamespace(),
+            "anchor_mask_rows": [],
+        }
+
+    monkeypatch.setattr(
+        runner,
+        "_prepare_dual_target_distillation_replay",
+        prepared_replay,
+    )
+    request = {
+        "artifixer3d": {
+            "checkpoint_reuse": {
+                "reuse_digest": "sha256:" + "a" * 64,
+                "checkpoints": [
+                    {"task_id": task_id, "checkpoint": checkpoint_record}
+                ],
+            },
+            "anchor_mask_reduction": "full_frame_mean",
+            "loss_overrides": runner.DUAL_TARGET_LOSS_OVERRIDES,
+        }
+    }
+    result = runner._dual_target_render_only_task_runtime(
+        task={
+            "task_id": task_id,
+            "physical_camera_count": 8,
+            "training_record_count": 16,
+            "selected_anchor_indices": list(range(0, 16, 2)),
+            "semantic_teacher_indices": list(range(1, 16, 2)),
+            "frames": frames,
+        },
+        input_root=tmp_path / "input",
+        output_root=tmp_path / "runtime_output",
+        request=request,
+    )
+
+    assert result["training_executed"] is False
+    assert result["direct_artifixer_executed"] is False
+    assert result["artifixer3d_plus_executed"] is False
+    assert result["checkpoint_reused"] is True
+    assert result["artifixer3d_checkpoint"]["sha256"] == checkpoint_record["sha256"]
+    assert [row["camera_id"] for row in result["artifixer3d_review_frames"]] == [
+        frame["camera_id"] for frame in frames
+    ]
+    normalized = (
+        tmp_path / "runtime_output/tasks/task_a/artifixer3d_review_frames"
+    )
+    assert [path.name for path in sorted(normalized.iterdir())] == [
+        f"{index:05d}.png" for index in range(8)
+    ]
+
+
+def test_render_only_execute_skips_training_direct_and_3d_plus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner_module()
+    reuse_digest = "sha256:" + "a" * 64
+    request = {
+        **_request(runner),
+        "pipeline_mode": runner.DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+        "phases": runner.DUAL_TARGET_RENDER_ONLY_PHASES,
+        "runtime_request_digest": "sha256:" + "1" * 64,
+        "task_ids": ["task_a"],
+    }
+    request["artifixer3d"] = {
+        **request["artifixer3d"],
+        "training_permitted": False,
+        "distillation_input_replay_only": True,
+        "checkpoint_reuse": {"reuse_digest": reuse_digest},
+    }
+    candidate = {
+        "receipt_digest": "sha256:" + "2" * 64,
+        "replacement_object_count": 1,
+        "tasks": [{"task_id": "task_a"}],
+    }
+    manifest = {"manifest_digest": "sha256:" + "3" * 64}
+    review_rows = [
+        {"frame_index": index, "camera_id": f"task_a_camera_{index:05d}"}
+        for index in range(8)
+    ]
+    completed = {
+        "task_id": "task_a",
+        "pipeline_mode": runner.DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+        "checkpoint_reused": True,
+        "checkpoint_reuse_digest": reuse_digest,
+        "training_executed": False,
+        "direct_artifixer_executed": False,
+        "artifixer3d_plus_executed": False,
+        "artifixer3d_review_frames": review_rows,
+        "final_candidate_frames": review_rows,
+        "outside_support_invariance_status": (
+            "deferred_until_final_soft_composite"
+        ),
+        "outside_exact_support_invariance_proven": False,
+        "outside_support_changed_pixels_total": None,
+    }
+    monkeypatch.setattr(
+        runner,
+        "_validate_bundle",
+        lambda _root: (manifest, request, candidate),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_download_models",
+        lambda *_args, **_kwargs: pytest.fail("direct weights must not download"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_download_semantic_editor",
+        lambda *_args, **_kwargs: pytest.fail("editor weights must not download"),
+    )
+    monkeypatch.setattr(runner, "_task_runtime", lambda **_kwargs: completed)
+
+    result = runner.execute(
+        bundle_root=tmp_path / "bundle",
+        output_root=tmp_path / "output",
+        rehearsal=False,
+    )
+    assert result["pipeline_mode"] == runner.DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE
+    assert result["checkpoint_reuse_digest"] == reuse_digest
+    assert result["artifixer3d_checkpoint_reused"] is True
+    assert result["artifixer3d_distillation_executed"] is False
+    assert result["artifixer_direct_inference_executed"] is False
+    assert result["semantic_editor_inference_executed"] is False
+    assert result["artifixer3d_plus_inference_executed"] is False
     assert result["tasks"] == [completed]

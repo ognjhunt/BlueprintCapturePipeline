@@ -89,7 +89,8 @@ PY
 direct_editor_backend="${runtime_mode[0]:-}"
 semantic_editor_only="${runtime_mode[1]:-}"
 pipeline_mode="${runtime_mode[2]:-}"
-if [[ "${pipeline_mode}" == "dual_target_artifixer3d_only" ]]; then
+if [[ "${pipeline_mode}" == "dual_target_artifixer3d_only" \
+      || "${pipeline_mode}" == "dual_target_artifixer3d_render_only" ]]; then
   if [[ "${direct_editor_backend}" != "none" \
         || "${semantic_editor_only}" != "false" ]]; then
     write_missing_result "artifixer3d_dual_target_mode_invalid"

@@ -43,6 +43,8 @@ DUAL_TARGET_INPUT_RECEIPT = (
 )
 FULL_PIPELINE_MODE = "full_artifixer3d_plus"
 DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
+DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE = "dual_target_artifixer3d_render_only"
+CHECKPOINT_REUSE_SCHEMA_VERSION = "public_scene_artifixer3d_checkpoint_reuse.v1"
 
 ARTIFIXER_REPOSITORY = "https://github.com/nv-tlabs/ArtiFixer.git"
 ARTIFIXER_COMMIT = "a392c4dfe17459ef9952407accdb9fcdcdddba98"
@@ -604,6 +606,220 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.write_text(canonical_json(value) + "\n", encoding="utf-8")
 
 
+def _same_file_record(left: Any, right: Any) -> bool:
+    """Compare immutable file identity while deliberately ignoring local paths."""
+
+    return (
+        isinstance(left, Mapping)
+        and isinstance(right, Mapping)
+        and left.get("size_bytes") == right.get("size_bytes")
+        and left.get("sha256") == right.get("sha256")
+    )
+
+
+def _checkpoint_reuse_source(
+    *,
+    candidate: Mapping[str, Any],
+    source_provider_output_zip_path: str | Path,
+    source_provider_zero_path: str | Path,
+    artifixer3d_steps: int,
+) -> dict[str, Any]:
+    """Re-open one zero-closed training attempt and locate its exact checkpoints.
+
+    The provider ZIP is the byte authority for both the runtime result and each
+    checkpoint.  The zero receipt closes the paid-attempt lineage.  Callers do
+    not identify checkpoint paths independently, which prevents mixing a valid
+    closeout with bytes from some other training run.
+    """
+
+    provider_zip = _file(
+        source_provider_output_zip_path,
+        code="artifixer3d_checkpoint_reuse_provider_zip_missing",
+    )
+    provider_zero_path = _file(
+        source_provider_zero_path,
+        code="artifixer3d_checkpoint_reuse_provider_zero_missing",
+    )
+    provider_zero = _read(
+        provider_zero_path,
+        code="artifixer3d_checkpoint_reuse_provider_zero_unreadable",
+    )
+    authority_path, authority = _absolute_bound(
+        provider_zero.get("attempt_authority"),
+        code="artifixer3d_checkpoint_reuse_authority_invalid",
+    )
+    attempt_result_path, attempt_result = _absolute_bound(
+        provider_zero.get("attempt_result"),
+        code="artifixer3d_checkpoint_reuse_attempt_result_invalid",
+    )
+    inventory = provider_zero.get("inventory")
+    authority_digest = authority.get("authorization_digest")
+    if (
+        provider_zero.get("schema_version")
+        != "artifixer3d_postblocked_provider_zero.v1"
+        or provider_zero.get("receipt_digest")
+        != canonical_digest(provider_zero, digest_field="receipt_digest")
+        or provider_zero.get("provider_zero_confirmed") is not True
+        or provider_zero.get("continuing_spend_from_attempt") is not False
+        or provider_zero.get("all_staged_objects_absent") is not True
+        or not isinstance(inventory, Mapping)
+        or inventory.get("api_confirmed") is not True
+        or inventory.get("live_resource_count") != 0
+        or authority.get("schema_version")
+        != "public_scene_artifixer3d_paid_attempt_authority.v1"
+        or authority_digest
+        != canonical_digest(authority, digest_field="authorization_digest")
+        or provider_zero.get("attempt_authority_digest") != authority_digest
+        or not _same_file_record(
+            provider_zero.get("attempt_authority"), _record(authority_path)
+        )
+        or not _same_file_record(
+            provider_zero.get("attempt_result"), _record(attempt_result_path)
+        )
+        or attempt_result.get("schema_version")
+        != "public_scene_artifixer3d_vast_run.v1"
+        or attempt_result.get("status") not in {"blocked", "completed"}
+        or provider_zero.get("attempt_terminal_status")
+        != attempt_result.get("status")
+        or attempt_result.get("authorization_consumption", {}).get("status")
+        != "consumed"
+        or attempt_result.get("authorization_consumption", {}).get(
+            "authorization_digest"
+        )
+        != authority_digest
+        or attempt_result.get("continuing_spend_from_this_run") is not False
+        or attempt_result.get("all_staged_objects_absent") is not True
+    ):
+        raise ArtiFixer3DBundleError(
+            ["artifixer3d_checkpoint_reuse_source_attempt_invalid"]
+        )
+
+    runtime_result_path = _file(
+        attempt_result.get("execution_result_path") or "",
+        code="artifixer3d_checkpoint_reuse_runtime_result_missing",
+    )
+    runtime_result_bytes = runtime_result_path.read_bytes()
+    try:
+        with zipfile.ZipFile(provider_zip) as archive:
+            if archive.testzip() is not None:
+                raise ArtiFixer3DBundleError(
+                    ["artifixer3d_checkpoint_reuse_provider_zip_invalid"]
+                )
+            try:
+                archived_runtime_bytes = archive.read(
+                    "public_scene_artifixer3d_runtime_result.json"
+                )
+            except KeyError as exc:
+                raise ArtiFixer3DBundleError(
+                    ["artifixer3d_checkpoint_reuse_runtime_result_missing"]
+                ) from exc
+            if archived_runtime_bytes != runtime_result_bytes:
+                raise ArtiFixer3DBundleError(
+                    ["artifixer3d_checkpoint_reuse_runtime_result_mismatch"]
+                )
+            try:
+                runtime_result = json.loads(runtime_result_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ArtiFixer3DBundleError(
+                    ["artifixer3d_checkpoint_reuse_runtime_result_invalid"]
+                ) from exc
+            if not isinstance(runtime_result, Mapping):
+                raise ArtiFixer3DBundleError(
+                    ["artifixer3d_checkpoint_reuse_runtime_result_invalid"]
+                )
+            task_ids = [str(task.get("task_id") or "") for task in candidate["tasks"]]
+            runtime_tasks = runtime_result.get("tasks")
+            if (
+                runtime_result.get("schema_version")
+                != RUNTIME_RESULT_SCHEMA_VERSION
+                or runtime_result.get("status")
+                != "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
+                or runtime_result.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+                or runtime_result.get("candidate_input_receipt_digest")
+                != candidate.get("receipt_digest")
+                or runtime_result.get("task_ids") != task_ids
+                or runtime_result.get("artifixer3d_distillation_executed") is not True
+                or runtime_result.get("artifixer_direct_inference_executed") is not False
+                or runtime_result.get("semantic_editor_inference_executed") is not False
+                or runtime_result.get("artifixer3d_plus_inference_executed") is not False
+                or not isinstance(runtime_tasks, list)
+                or len(runtime_tasks) != len(task_ids)
+                or attempt_result.get("manifest_digest")
+                != runtime_result.get("manifest_digest")
+                or attempt_result.get("runtime_request_digest")
+                != runtime_result.get("runtime_request_digest")
+            ):
+                raise ArtiFixer3DBundleError(
+                    ["artifixer3d_checkpoint_reuse_runtime_result_invalid"]
+                )
+
+            checkpoints: list[dict[str, Any]] = []
+            for index, (task_id, task) in enumerate(zip(task_ids, runtime_tasks)):
+                if not isinstance(task, Mapping):
+                    raise ArtiFixer3DBundleError(
+                        ["artifixer3d_checkpoint_reuse_checkpoint_invalid"]
+                    )
+                checkpoint = task.get("artifixer3d_checkpoint")
+                provider_path = str(
+                    checkpoint.get("path") if isinstance(checkpoint, Mapping) else ""
+                ).replace("\\", "/")
+                marker = "/runtime_output/"
+                if (
+                    task.get("task_id") != task_id
+                    or task.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+                    or marker not in provider_path
+                    or not isinstance(checkpoint, Mapping)
+                ):
+                    raise ArtiFixer3DBundleError(
+                        ["artifixer3d_checkpoint_reuse_checkpoint_invalid"]
+                    )
+                member = provider_path.split(marker, 1)[1]
+                if Path(member).name != f"ckpt_{artifixer3d_steps}.pt":
+                    raise ArtiFixer3DBundleError(
+                        ["artifixer3d_checkpoint_reuse_checkpoint_invalid"]
+                    )
+                try:
+                    info = archive.getinfo(member)
+                except KeyError as exc:
+                    raise ArtiFixer3DBundleError(
+                        ["artifixer3d_checkpoint_reuse_checkpoint_missing"]
+                    ) from exc
+                if (
+                    info.is_dir()
+                    or info.file_size != checkpoint.get("size_bytes")
+                    or info.file_size <= 0
+                    or info.file_size > MAX_MEMBER_BYTES
+                ):
+                    raise ArtiFixer3DBundleError(
+                        ["artifixer3d_checkpoint_reuse_checkpoint_invalid"]
+                    )
+                checkpoints.append(
+                    {
+                        "task_id": task_id,
+                        "source_member": member,
+                        "source_record": dict(checkpoint),
+                        "archive_index": index,
+                    }
+                )
+    except zipfile.BadZipFile as exc:
+        raise ArtiFixer3DBundleError(
+            ["artifixer3d_checkpoint_reuse_provider_zip_invalid"]
+        ) from exc
+
+    return {
+        "provider_output_zip_path": provider_zip,
+        "provider_zero_path": provider_zero_path,
+        "authority_path": authority_path,
+        "attempt_result_path": attempt_result_path,
+        "runtime_result_path": runtime_result_path,
+        "provider_zero": provider_zero,
+        "authority": authority,
+        "attempt_result": attempt_result,
+        "runtime_result": runtime_result,
+        "checkpoints": checkpoints,
+    }
+
+
 def build_artifixer3d_bundle(
     *,
     candidate_inputs_receipt_path: str | Path,
@@ -617,6 +833,8 @@ def build_artifixer3d_bundle(
     direct_editor_backend: str = "artifixer",
     semantic_editor_only: bool = False,
     pipeline_mode: str = FULL_PIPELINE_MODE,
+    reused_checkpoint_provider_output_zip_path: str | Path | None = None,
+    reused_checkpoint_source_provider_zero_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build and locally rehearse one immutable no-upload provider bundle."""
 
@@ -633,6 +851,11 @@ def build_artifixer3d_bundle(
     )
     source = Path(artifixer_source_directory).expanduser().resolve()
     repo = Path(repository_root).expanduser().resolve()
+    render_only = pipeline_mode == DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE
+    reuse_inputs_present = (
+        reused_checkpoint_provider_output_zip_path is not None,
+        reused_checkpoint_source_provider_zero_path is not None,
+    )
     if (
         source.is_symlink()
         or not source.is_dir()
@@ -644,13 +867,19 @@ def build_artifixer3d_bundle(
         or not 1 <= artifixer3d_steps <= 30_000
         or not isinstance(random_seed, int)
         or isinstance(random_seed, bool)
-        or pipeline_mode not in {FULL_PIPELINE_MODE, DUAL_TARGET_PIPELINE_MODE}
+        or pipeline_mode
+        not in {
+            FULL_PIPELINE_MODE,
+            DUAL_TARGET_PIPELINE_MODE,
+            DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+        }
         or (
             pipeline_mode == FULL_PIPELINE_MODE
             and direct_editor_backend not in DIRECT_EDITOR_BACKENDS
         )
         or (
-            pipeline_mode == DUAL_TARGET_PIPELINE_MODE
+            pipeline_mode
+            in {DUAL_TARGET_PIPELINE_MODE, DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE}
             and direct_editor_backend != NO_DIRECT_EDITOR
         )
         or not isinstance(semantic_editor_only, bool)
@@ -664,24 +893,45 @@ def build_artifixer3d_bundle(
             and direct_editor_backend == "vibe_image_edit"
             and not semantic_editor_only
         )
-        or (pipeline_mode == DUAL_TARGET_PIPELINE_MODE and semantic_editor_only)
+        or (
+            pipeline_mode
+            in {DUAL_TARGET_PIPELINE_MODE, DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE}
+            and semantic_editor_only
+        )
         or (
             pipeline_mode == FULL_PIPELINE_MODE
             and candidate.get("schema_version") != CANDIDATE_INPUT_SCHEMA
         )
         or (
-            pipeline_mode == DUAL_TARGET_PIPELINE_MODE
+            pipeline_mode
+            in {DUAL_TARGET_PIPELINE_MODE, DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE}
             and (
                 candidate.get("schema_version") != DUAL_TARGET_INPUT_SCHEMA
                 or candidate.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
             )
         )
+        or (render_only and not all(reuse_inputs_present))
+        or (not render_only and any(reuse_inputs_present))
         or any(
             not isinstance(value, int) or isinstance(value, bool) or value <= 0
             for value in allowed_active_instance_ids
         )
     ):
         raise ArtiFixer3DBundleError(["artifixer3d_bundle_configuration_invalid"])
+    checkpoint_reuse_source = (
+        _checkpoint_reuse_source(
+            candidate=candidate,
+            source_provider_output_zip_path=str(
+                reused_checkpoint_provider_output_zip_path
+            ),
+            source_provider_zero_path=str(
+                reused_checkpoint_source_provider_zero_path
+            ),
+            artifixer3d_steps=artifixer3d_steps,
+        )
+        if render_only
+        else None
+    )
     repository_identity = _repository_identity(repo)
     output = Path(output_root).expanduser().resolve()
     if output.exists() and any(output.iterdir()):
@@ -697,6 +947,90 @@ def build_artifixer3d_bundle(
     shutil.copyfile(repo / "scripts" / Path(ENTRYPOINT).name, runtime / Path(ENTRYPOINT).name)
     shutil.copyfile(repo / "scripts" / Path(RUNNER).name, runtime / Path(RUNNER).name)
     shutil.copyfile(attestation_path, runtime / "artifixer3d_use_attestation.json")
+
+    checkpoint_reuse: dict[str, Any] | None = None
+    if checkpoint_reuse_source is not None:
+        reuse_root = input_root / "checkpoint_reuse"
+        reuse_root.mkdir()
+        copied_receipts: dict[str, Path] = {}
+        for name, source_path in (
+            ("source_attempt_authority", checkpoint_reuse_source["authority_path"]),
+            ("source_attempt_result", checkpoint_reuse_source["attempt_result_path"]),
+            ("source_provider_zero", checkpoint_reuse_source["provider_zero_path"]),
+            ("source_runtime_result", checkpoint_reuse_source["runtime_result_path"]),
+        ):
+            destination = reuse_root / f"{name}.json"
+            shutil.copyfile(source_path, destination)
+            copied_receipts[name] = destination
+        checkpoint_rows: list[dict[str, Any]] = []
+        with zipfile.ZipFile(
+            checkpoint_reuse_source["provider_output_zip_path"]
+        ) as archive:
+            for source_row in checkpoint_reuse_source["checkpoints"]:
+                index = int(source_row["archive_index"])
+                destination = reuse_root / f"checkpoint_{index:05d}.pt"
+                with archive.open(source_row["source_member"]) as source_stream:
+                    with destination.open("wb") as destination_stream:
+                        shutil.copyfileobj(
+                            source_stream, destination_stream, length=1024 * 1024
+                        )
+                source_record = source_row["source_record"]
+                if (
+                    destination.stat().st_size != source_record.get("size_bytes")
+                    or _sha256(destination) != source_record.get("sha256")
+                ):
+                    raise ArtiFixer3DBundleError(
+                        ["artifixer3d_checkpoint_reuse_checkpoint_mismatch"]
+                    )
+                checkpoint_rows.append(
+                    {
+                        "task_id": source_row["task_id"],
+                        "steps": artifixer3d_steps,
+                        "checkpoint": _record(destination, root=input_root),
+                        "source_provider_zip_member": source_row["source_member"],
+                    }
+                )
+        checkpoint_reuse = {
+            "schema_version": CHECKPOINT_REUSE_SCHEMA_VERSION,
+            "source_pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+            "source_candidate_input_receipt_digest": candidate["receipt_digest"],
+            "source_manifest_digest": checkpoint_reuse_source["runtime_result"][
+                "manifest_digest"
+            ],
+            "source_runtime_request_digest": checkpoint_reuse_source[
+                "runtime_result"
+            ]["runtime_request_digest"],
+            "source_attempt_terminal_status": checkpoint_reuse_source[
+                "attempt_result"
+            ]["status"],
+            "source_attempt_authority_digest": checkpoint_reuse_source["authority"][
+                "authorization_digest"
+            ],
+            "source_provider_output_zip": _record(
+                checkpoint_reuse_source["provider_output_zip_path"]
+            ),
+            "source_attempt_authority": _record(
+                copied_receipts["source_attempt_authority"], root=input_root
+            ),
+            "source_attempt_result": _record(
+                copied_receipts["source_attempt_result"], root=input_root
+            ),
+            "source_provider_zero": _record(
+                copied_receipts["source_provider_zero"], root=input_root
+            ),
+            "source_runtime_result": _record(
+                copied_receipts["source_runtime_result"], root=input_root
+            ),
+            "checkpoints": checkpoint_rows,
+            "training_reexecution_permitted": False,
+            "direct_inference_permitted": False,
+            "artifixer3d_plus_permitted": False,
+            "provider_zero_confirmed_before_reuse": True,
+            "reuse_digest": "",
+        }
+        checkpoint_reuse["reuse_digest"] = canonical_digest(
+            checkpoint_reuse, digest_field="reuse_digest"
+        )
 
     runtime_request: dict[str, Any] = {
         "schema_version": RUNTIME_REQUEST_SCHEMA_VERSION,
@@ -768,7 +1102,10 @@ def build_artifixer3d_bundle(
         ],
         "runtime_request_digest": "",
     }
-    if pipeline_mode == DUAL_TARGET_PIPELINE_MODE:
+    if pipeline_mode in {
+        DUAL_TARGET_PIPELINE_MODE,
+        DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+    }:
         runtime_request.update(
             {
                 "repair_target": (
@@ -813,6 +1150,28 @@ def build_artifixer3d_bundle(
                 "artifixer3d_plus_bypassed": True,
             }
         )
+        if render_only:
+            runtime_request.update(
+                {
+                    "repair_target": (
+                        "render_only_replay_of_zero_closed_dual_target_"
+                        "artifixer3d_checkpoint"
+                    ),
+                    "phases": [
+                        "reused_checkpoint_validation",
+                        "deterministic_distillation_input_replay",
+                        "artifixer3d_review_render",
+                        "external_visual_and_multiview_review",
+                    ],
+                }
+            )
+            runtime_request["artifixer3d"].update(
+                {
+                    "checkpoint_reuse": checkpoint_reuse,
+                    "training_permitted": False,
+                    "distillation_input_replay_only": True,
+                }
+            )
     if (
         pipeline_mode == FULL_PIPELINE_MODE
         and direct_editor_backend != "artifixer"
@@ -906,14 +1265,21 @@ def build_artifixer3d_bundle(
         "allowed_active_instance_ids": sorted(set(allowed_active_instance_ids)),
         "contains_raw_dataset_bytes": False,
         "contains_private_derived_inputs": True,
-        "contains_model_weights": False,
+        "contains_model_weights": render_only,
+        "contains_reused_private_derived_3dgrut_checkpoint": render_only,
+        "contains_released_direct_model_weights": False,
         "provider_mutations_performed": 0,
         "expected_runtime_result_schema": RUNTIME_RESULT_SCHEMA_VERSION,
         "manifest_digest": "",
     }
-    if pipeline_mode == DUAL_TARGET_PIPELINE_MODE:
+    if pipeline_mode in {
+        DUAL_TARGET_PIPELINE_MODE,
+        DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
+    }:
         manifest["model_identity"] = None
         manifest["wan_base_identity"] = None
+    if render_only:
+        manifest["checkpoint_reuse"] = checkpoint_reuse
     manifest["manifest_digest"] = canonical_digest(
         manifest, digest_field="manifest_digest"
     )
@@ -954,6 +1320,9 @@ def build_artifixer3d_bundle(
         "direct_editor_backend": direct_editor_backend,
         "semantic_editor_only": semantic_editor_only,
         "pipeline_mode": pipeline_mode,
+        "checkpoint_reuse_digest": (
+            checkpoint_reuse["reuse_digest"] if checkpoint_reuse else None
+        ),
         "container_image": DEFAULT_IMAGE,
         "blueprint_source_identity": repository_identity,
         "use_attestation_digest": attestation["attestation_digest"],
@@ -982,6 +1351,8 @@ __all__ = [
     "DEFAULT_IMAGE",
     "DUAL_TARGET_INPUT_RECEIPT",
     "DUAL_TARGET_PIPELINE_MODE",
+    "DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE",
+    "CHECKPOINT_REUSE_SCHEMA_VERSION",
     "DIRECT_EDITOR_BACKENDS",
     "FULL_PIPELINE_MODE",
     "NO_DIRECT_EDITOR",
