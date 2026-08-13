@@ -1507,8 +1507,17 @@ def _materialize_remote_configs(
             elif name == "texture_agent.yaml":
                 payload["texture"]["uv_target_prim_paths"] = mesh_paths
                 payload["target_prims"] = mesh_paths
+                # Keyed by the material's USD path, because that is the only
+                # thing the texture agent's planner looks it up by. It resolves
+                # `material_textures` against the material's alias paths and
+                # then its name; a descriptive label matches neither, so the
+                # material is skipped as `not_requested`, the plan contains zero
+                # jobs, and the run is rejected -- after the GPU is already
+                # rented. `material_path` inside the entry is only a guard the
+                # planner uses to reject a name-keyed entry pointing elsewhere;
+                # it is never what finds the entry.
                 payload["material_textures"] = {
-                    "agent_cad_visible_surfaces": {
+                    material_path: {
                         "prompt": (
                             "neutral realistic surface texture consistent with "
                             "the supplied observed reference image, no branding, "

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import io
 import json
 import subprocess
@@ -678,9 +679,21 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
         "/Asset/links/body/geometry/shell",
         "/Asset/links/door/geometry/panel",
     ]
-    assert texture["material_textures"]["agent_cad_visible_surfaces"][
-        "material_path"
-    ] == "/Asset/materials/agent_input_neutral"
+    # Keyed by the material's USD path, because that is what the texture
+    # agent's planner resolves the mapping by. A label here selects nothing.
+    assert texture["material_textures"] == {
+        "/Asset/materials/agent_input_neutral": {
+            "prompt": texture["material_textures"][
+                "/Asset/materials/agent_input_neutral"
+            ]["prompt"],
+            "opacity": 1.0,
+            "material_path": "/Asset/materials/agent_input_neutral",
+            "prim_paths": [
+                "/Asset/links/body/geometry/shell",
+                "/Asset/links/door/geometry/panel",
+            ],
+        }
+    }
     assert texture["input"]["reference_images"] == [
         "../input/reference.png",
         "../input/reference_0002.png",
@@ -3678,3 +3691,90 @@ def test_an_unadmitted_image_id_is_still_refused() -> None:
             "platform": "linux/amd64",
         }
     ) is False
+
+
+def test_the_texture_spec_is_keyed_by_the_path_its_planner_looks_up(
+    tmp_path: Path,
+) -> None:
+    """A label key is a plan with zero jobs, discovered only on a rented GPU.
+
+    `texture_agent.planning.planner._matching_spec` resolves `material_textures`
+    against the material's alias paths and then its name. A descriptive key
+    matches neither, so the only material in the scene is skipped as
+    `not_requested` and the run is rejected as
+    `The plan contains zero executable texture-generation jobs.` -- which is
+    exactly what `adp-content-agents-live-20260813T054343Z` paid $0.123 to find
+    out, having rendered nothing.
+    """
+
+    from blueprint_pipeline import adp_content_agents_vast as lane
+
+    source = inspect.getsource(lane)
+    marker = 'payload["material_textures"] = {'
+    assert marker in source
+    keyed = source[source.index(marker) + len(marker):].lstrip()
+    assert keyed.startswith("material_path:"), (
+        "the texture spec must be keyed by the material's USD path, not a label: "
+        f"{keyed.splitlines()[0]!r}"
+    )
+
+
+def test_the_preflight_refuses_a_texture_key_the_planner_cannot_resolve(
+    tmp_path: Path,
+) -> None:
+    """This has to fail before the GPU, which is the whole point of a preflight."""
+
+    import yaml
+
+    from blueprint_pipeline import adp_content_agents_bundle_preflight as pf
+
+    bundle = tmp_path / "mislabelled.zip"
+    configs = {
+        "input": {"usd_path": "../input/source_asset.usda"},
+        "material_textures": {
+            "agent_cad_visible_surfaces": {
+                "material_path": "/Asset/materials/agent_input_neutral",
+                "prim_paths": ["/Asset/links/body/geometry/cabinet_shell"],
+            }
+        },
+    }
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for member in pf.CONFIG_MEMBERS.values():
+            archive.writestr(member, yaml.safe_dump(configs))
+
+    with pytest.raises(pf.ContentAgentsBundlePreflightError) as excinfo:
+        pf._bundle_config_semantics(bundle)
+
+    assert str(excinfo.value).startswith(
+        "bundle_static_config_material_texture_key_unresolvable:"
+    )
+    assert "agent_cad_visible_surfaces" in str(excinfo.value)
+
+
+def test_the_preflight_accepts_a_path_keyed_or_name_keyed_texture_spec(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    from blueprint_pipeline import adp_content_agents_bundle_preflight as pf
+
+    for key in ("/Asset/materials/agent_input_neutral", "agent_input_neutral"):
+        bundle = tmp_path / f"ok-{key.rsplit('/', 1)[-1]}-{len(key)}.zip"
+        configs = {
+            "input": {"usd_path": "../input/source_asset.usda"},
+            "material_textures": {
+                key: {
+                    "material_path": "/Asset/materials/agent_input_neutral",
+                    "prim_paths": ["/Asset/links/body/geometry/cabinet_shell"],
+                }
+            },
+        }
+        with zipfile.ZipFile(bundle, "w") as archive:
+            for member in pf.CONFIG_MEMBERS.values():
+                archive.writestr(member, yaml.safe_dump(configs))
+
+        # Reaches the later checks rather than refusing the key.
+        try:
+            pf._bundle_config_semantics(bundle)
+        except pf.ContentAgentsBundlePreflightError as exc:
+            assert "material_texture_key_unresolvable" not in str(exc)
