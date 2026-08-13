@@ -198,3 +198,16 @@ def test_no_paid_lane_reads_a_bundle_path_off_an_unresolved_receipt() -> None:
         "bundle_path is the one that resolved here"
     )
     assert "_host_resident_bundle" in allocator
+
+
+def test_the_content_agents_preflight_resolves_its_bundle_host_side() -> None:
+    """The preflight is a local dry-run receipt, so it has to be producible
+    where the bundle now lives. Reading  off the receipt sent it
+    looking on the machine that built the bundle."""
+
+    preflight = (
+        SOURCE_ROOT / "adp_content_agents_bundle_preflight.py"
+    ).read_text(encoding="utf-8")
+
+    assert "bundle_receipt = _read_json(receipt_path)" not in preflight
+    assert "_host_resident_receipt" in preflight

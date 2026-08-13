@@ -22,6 +22,7 @@ from .adp_content_agents_vast import (
     SOURCE_COMMIT,
     SOURCE_TREE,
 )
+from .host_resident_launch_inputs import resolve_host_resident_bundle_receipt
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .hosted_image_generation_preflight import (
@@ -550,6 +551,24 @@ def _inspect_input_usd_static(bundle_path: Path, target_prim_paths: Sequence[str
         }
 
 
+def _host_resident_receipt(receipt_path: Path) -> dict[str, Any]:
+    """Read a bundle receipt and resolve its archive against this host.
+
+    The receipt records the absolute path of the machine that built the bundle,
+    so reading `bundle_path` straight off it looks for the archive where it was
+    authored. That is the whole reason this preflight could not be regenerated
+    on the control plane: the bundle was staged there, digest-verified, and the
+    receipt still pointed at a workstation.
+
+    A receipt that cannot resolve comes back with its recorded path untouched
+    and a status of `not_host_resident`, which every caller's existing
+    `status != "ready"` check refuses.
+    """
+
+    resolution = resolve_host_resident_bundle_receipt(receipt_path)
+    return dict(resolution["receipt"])
+
+
 def materialize_static_bundle_config_preflight(
     *,
     bundle_receipt_path: str | Path,
@@ -563,7 +582,7 @@ def materialize_static_bundle_config_preflight(
     if output.exists() and any(output.iterdir()):
         raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
     ensure_dir(output)
-    bundle_receipt = _read_json(receipt_path)
+    bundle_receipt = _host_resident_receipt(receipt_path)
     bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
     if (
         bundle_receipt.get("status") != "ready"
@@ -630,7 +649,7 @@ def materialize_bundle_config_preflight(
     if output.exists() and any(output.iterdir()):
         raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
     ensure_dir(output)
-    bundle_receipt = _read_json(receipt_path)
+    bundle_receipt = _host_resident_receipt(receipt_path)
     bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
     if (
         bundle_receipt.get("status") != "ready"
@@ -913,7 +932,7 @@ def materialize_blocked_local_bundle_config_preflight(
     if output.exists() and any(output.iterdir()):
         raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
     ensure_dir(output)
-    bundle_receipt = _read_json(receipt_path)
+    bundle_receipt = _host_resident_receipt(receipt_path)
     bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
     if (
         bundle_receipt.get("status") != "ready"
