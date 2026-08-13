@@ -365,12 +365,12 @@ def materialize_paired_target_interaction_affordance_candidate(
     pinch_span = sum(
         abs(pinch_axis_local[index]) * spans[index] for index in range(3)
     )
-    contact_paths = sorted(
+    measured_collision_paths = sorted(
         str(prim.GetPath())
         for prim in Usd.PrimRange(link)
         if prim.IsA(UsdGeom.Boundable) and bool(UsdPhysics.CollisionAPI(prim))
     )
-    if not contact_paths:
+    if not measured_collision_paths:
         raise PairedTargetInteractionAffordanceError(
             "paired_target_affordance_collision_region_missing"
         )
@@ -407,7 +407,10 @@ def materialize_paired_target_interaction_affordance_candidate(
             "link_id": link_id,
             "link_prim_path": link_path,
             "target_joint_id": target_joint_id,
-            "contact_body_prim_paths": contact_paths,
+            # Contact sensors attach to rigid bodies, not collision-mesh
+            # children.  Preserve the measured collision region separately.
+            "contact_body_prim_paths": [link_path],
+            "measured_collision_prim_paths": measured_collision_paths,
             "contact_point_link_m": contact_local,
             "contact_point_registered_stage_m": contact_world,
             "approach_unit_registered_stage": approach,

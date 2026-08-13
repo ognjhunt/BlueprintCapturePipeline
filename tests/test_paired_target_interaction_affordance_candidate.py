@@ -148,6 +148,7 @@ def _usd(path: Path, *, articulated: bool) -> Path:
                 point3f physics:localPos0 = (0, 0, 0.3)
                 point3f physics:localPos1 = (0, 0, 0.3)
                 quatf physics:localRot0 = (0.70710677, 0, -0.70710677, 0)
+                quatf physics:localRot1 = (0.70710677, 0, -0.70710677, 0)
                 float physics:lowerLimit = 0
                 float physics:upperLimit = 60
             }
@@ -221,6 +222,12 @@ def test_graph_roles_select_geometry_without_object_names(
     assert result["selection_contract"]["method"] == expected_method
     assert result["selection_contract"]["object_label_or_task_id_geometry_shortcut_used"] is False
     assert result["candidate"]["link_id"] == expected_link
+    assert result["candidate"]["contact_body_prim_paths"] == [
+        f"/Asset/links/{expected_link}"
+    ]
+    assert result["candidate"]["measured_collision_prim_paths"] == [
+        f"/Asset/links/{expected_link}/collision"
+    ]
     assert result["candidate"]["pinch_span_within_stroke"] is True
     contact = result["candidate"]["contact_point_registered_stage_m"]
     # The selected point must remain on the transformed selected-link envelope;
