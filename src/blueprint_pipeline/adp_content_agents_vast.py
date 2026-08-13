@@ -18,6 +18,7 @@ from typing import Any, Mapping, Sequence
 import yaml
 from pxr import Usd, UsdGeom, UsdPhysics
 
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 from .common import ensure_dir, utc_now_iso, write_json
 from .adp_content_agents_bundle_matrix import (
     SCHEMA_VERSION as AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA,
@@ -2117,6 +2118,20 @@ def run_content_agents_vast(
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
+    # Seal the two terminal artifacts every production launch profile asks
+    # this result for. Without them the run ends
+    # `allocator_terminal_artifact_missing:` whatever happened on the provider.
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="adp_content_agents",
+        binding={
+            "bundle_sha256": bundle.get("bundle_sha256")
+            if isinstance(bundle, Mapping)
+            else None,
+            "provider": "vast",
+        },
+    )
     write_json(job / "adp_content_agents_vast_result.json", result)
     return result
 

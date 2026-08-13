@@ -18,6 +18,7 @@ from typing import Any, Mapping, Sequence
 from packaging.tags import compatible_tags, cpython_tags
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
@@ -1509,6 +1510,20 @@ def run_gaussian_excision_vast(
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
+    # Seal the two terminal artifacts every production launch profile asks
+    # this result for. Without them the run ends
+    # `allocator_terminal_artifact_missing:` whatever happened on the provider.
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="adp_gaussian_excision",
+        binding={
+            "bundle_sha256": bundle.get("bundle_sha256")
+            if isinstance(bundle, Mapping)
+            else None,
+            "provider": "vast",
+        },
+    )
     write_json(job / "gaussian_excision_vast_result.json", result)
     return result
 
