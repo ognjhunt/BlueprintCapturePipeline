@@ -86,3 +86,44 @@ def test_timeout_terminates_the_entire_pytest_process_group(monkeypatch) -> None
 
     assert status == 124
     assert signals == [(12345, signal.SIGTERM)]
+
+
+def test_a_script_test_that_loads_its_subject_by_name_is_not_invisible(tmp_path: Path) -> None:
+    """Otherwise every live-profile edit escalates to the full suite.
+
+    Script tests in this repository import their subject with
+    `_load("<stem>")` rather than by path, so the selector saw no link between
+    `scripts/build_artifixer3d_live_profile.py` and the test that covers it,
+    reported `unmapped_executable_surface`, and demanded the full suite for a
+    change one file already tested.
+    """
+
+    root = tmp_path
+    (root / "scripts").mkdir()
+    (root / "tests").mkdir()
+    (root / "scripts" / "build_widget_live_profile.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "tests" / "test_widget_live_lane.py").write_text(
+        'builder = _load("build_widget_live_profile")\n', encoding="utf-8"
+    )
+
+    plan = MODULE.build_plan(root, ["scripts/build_widget_live_profile.py"])
+
+    assert "tests/test_widget_live_lane.py" in plan["selected_tests"]
+    assert plan["requires_full_suite"] is False
+
+
+def test_a_bare_stem_inside_a_longer_name_does_not_count_as_coverage(tmp_path: Path) -> None:
+    """Matching an unquoted stem would map a script to tests that never load it."""
+
+    root = tmp_path
+    (root / "scripts").mkdir()
+    (root / "tests").mkdir()
+    (root / "scripts" / "build_widget.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "tests" / "test_unrelated.py").write_text(
+        'name = "build_widget_live_profile"\n', encoding="utf-8"
+    )
+
+    plan = MODULE.build_plan(root, ["scripts/build_widget.py"])
+
+    assert "tests/test_unrelated.py" not in plan["selected_tests"]
+    assert plan["requires_full_suite"] is True

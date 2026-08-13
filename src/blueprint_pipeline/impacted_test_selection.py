@@ -124,6 +124,13 @@ def _matching_tests(
         tokens.add(module)
     elif changed_path.startswith("scripts/"):
         tokens.add(f"scripts/{path.name}")
+        # A script test loads its subject by bare module name --
+        # `_load("build_artifixer3d_live_profile")` -- which mentions neither
+        # the path nor the filename, so the test was invisible here and every
+        # such edit escalated to the full suite. Match the *quoted* stem: it is
+        # exactly how the load is written, and it will not match a stem that
+        # merely appears inside a longer identifier.
+        tokens.update({f'"{stem}"', f"'{stem}'"})
     elif changed_path.startswith("tests/fixtures/"):
         tokens.add(path.parent.name)
 
