@@ -61,14 +61,31 @@ def sync_launch_progress_to_webapp(
         with urllib_request.urlopen(  # nosec B310 - URL is pinned to validated HTTPS
             outbound, timeout=max(0.1, timeout_seconds)
         ) as response:
-            response.read()
+            raw = response.read().decode("utf-8")
     except urllib_error.HTTPError as exc:
         return {**common, "status": "failed", "reason": f"http_error:{exc.code}"}
     except urllib_error.URLError as exc:
         return {**common, "status": "failed", "reason": f"url_error:{exc.reason}"}
     except (TimeoutError, ValueError) as exc:
         return {**common, "status": "failed", "reason": type(exc).__name__.lower()}
-    return {**common, "status": "succeeded"}
+    try:
+        response = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {**common, "status": "failed", "reason": "invalid_json"}
+    if not isinstance(response, Mapping) or any(
+        response.get(field) != common[field]
+        for field in ("launch_id", "run_id", "request_digest")
+    ):
+        return {**common, "status": "failed", "reason": "response_binding_mismatch"}
+    if response.get("schema_version") != (
+        "task_evaluation_launch_progress_web_sync_receipt.v1"
+    ):
+        return {**common, "status": "failed", "reason": "response_schema_mismatch"}
+    if response.get("status") not in {"recorded", "ignored_terminal"}:
+        return {**common, "status": "failed", "reason": "response_status_invalid"}
+    if response.get("phase") != payload.get("phase"):
+        return {**common, "status": "failed", "reason": "response_phase_mismatch"}
+    return {**common, "status": "succeeded", "response": dict(response)}
 
 
 def sync_launch_receipt_to_webapp(
@@ -172,8 +189,10 @@ def sync_launch_supervision_to_webapp(
 
 
 __all__ = [
+    "LAUNCH_PROGRESS_WEBAPP_URL_ENV",
     "LAUNCH_SUPERVISION_WEBAPP_URL_ENV",
     "LAUNCH_WEBAPP_URL_ENV",
+    "sync_launch_progress_to_webapp",
     "sync_launch_receipt_to_webapp",
     "sync_launch_supervision_to_webapp",
 ]

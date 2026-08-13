@@ -1167,12 +1167,37 @@ def test_task_evaluation_launch_is_immutably_queued_before_async_dispatch(
     monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, raising=False)
     monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
     systemctl_calls: list[list[str]] = []
+    binding_checks: list[dict[str, object]] = []
+
+    def fake_webapp_record_binding(*, progress):
+        binding_checks.append(dict(progress))
+        return {
+            "status": "succeeded",
+            "launch_id": progress["launch_id"],
+            "run_id": progress["run_id"],
+            "request_digest": progress["request_digest"],
+            "response": {
+                "schema_version": (
+                    "task_evaluation_launch_progress_web_sync_receipt.v1"
+                ),
+                "status": "recorded",
+                "launch_id": progress["launch_id"],
+                "run_id": progress["run_id"],
+                "request_digest": progress["request_digest"],
+                "phase": progress["phase"],
+            },
+        }
 
     def fake_run(argv, **_kwargs):
         systemctl_calls.append(list(argv))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(service.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        service,
+        "sync_launch_progress_to_webapp",
+        fake_webapp_record_binding,
+    )
     payload = _task_evaluation_launch_request()
     body = json.dumps(payload, separators=(",", ":"))
     response = TestClient(create_app()).post(
@@ -1190,6 +1215,11 @@ def test_task_evaluation_launch_is_immutably_queued_before_async_dispatch(
     assert response.json()["status"] == "accepted"
     assert response.json()["provider_mutation_performed_inside_http_request"] is False
     assert response.json()["canonical_allocator_required"] is True
+    assert response.json()["webapp_record_bound"] is True
+    assert response.json()["website_trigger_proven_at_intake"] is True
+    assert [item["phase"] for item in binding_checks] == [
+        "intake_webapp_record_binding"
+    ]
     queued = list((queue_root / "pending").glob("*.json"))
     assert len(queued) == 1
     assert json.loads(queued[0].read_text(encoding="utf-8"))["request_digest"] == payload[
@@ -1203,6 +1233,56 @@ def test_task_evaluation_launch_is_immutably_queued_before_async_dispatch(
             "blueprint-task-evaluation-launch-dispatcher.service",
         ]
     ]
+
+
+def test_task_evaluation_launch_refuses_missing_webapp_record_before_queue_or_trigger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "launch-queue"
+    catalog_path = tmp_path / "published-launch-profiles.json"
+    _write_json(catalog_path, [_public_task_evaluation_launch_profile()])
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "control.json"))
+    monkeypatch.setenv(
+        service.INTAKE_CLIENT_SECRETS_ENV,
+        json.dumps({"blueprint-webapp": "token"}),
+    )
+    monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV, str(queue_root))
+    monkeypatch.setenv(
+        service.TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV,
+        str(catalog_path),
+    )
+    systemctl_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda argv, **_kwargs: systemctl_calls.append(list(argv)),
+    )
+    monkeypatch.setattr(
+        service,
+        "sync_launch_progress_to_webapp",
+        lambda **_kwargs: {"status": "failed", "reason": "http_error:404"},
+    )
+    payload = _task_evaluation_launch_request()
+    body = json.dumps(payload, separators=(",", ":"))
+
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launches",
+        data=body,
+        headers=_signed_intake_headers(
+            "token",
+            body,
+            nonce="task-launch-missing-webapp-record",
+            client_id="blueprint-webapp",
+        ),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["blockers"] == ["webapp_launch_record_missing"]
+    assert response.json()["accepted"] is False
+    assert response.json()["webapp_record_bound"] is False
+    assert response.json()["website_trigger_proven"] is False
+    assert not list(queue_root.rglob("*.json"))
+    assert systemctl_calls == []
 
 
 def test_task_evaluation_launch_rejects_tampering_before_trigger(

@@ -96,6 +96,7 @@ from .task_evaluation_launch_dispatcher import (
     validate_launch_request,
     validate_launch_request_against_public_catalog,
 )
+from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .task_evaluation_terminal_resource_release_contract import (
     TerminalResourceReleaseError,
     stage_terminal_resource_release_request,
@@ -2310,6 +2311,39 @@ def create_app() -> FastAPI:
                 )
             if catalog_blockers:
                 raise TaskEvaluationLaunchError(",".join(catalog_blockers))
+            webapp_record_binding = await run_in_threadpool(
+                sync_launch_progress_to_webapp,
+                progress={
+                    "schema_version": "task_evaluation_launch_progress.v1",
+                    "launch_id": payload.get("launch_id"),
+                    "run_id": payload.get("run_id"),
+                    "request_digest": payload.get("request_digest"),
+                    "phase": "intake_webapp_record_binding",
+                    "phase_status": "verified",
+                    "observed_at_iso": datetime.now(timezone.utc).isoformat(),
+                    "elapsed_seconds": 0.0,
+                }
+            )
+            if webapp_record_binding.get("status") != "succeeded":
+                reason = str(webapp_record_binding.get("reason") or "unknown")
+                missing = reason == "http_error:404"
+                return JSONResponse(
+                    status_code=409 if missing else 503,
+                    content={
+                        "schema_version": "task_evaluation_launch_intake_receipt.v1",
+                        "status": "blocked",
+                        "accepted": False,
+                        "blockers": [
+                            "webapp_launch_record_missing"
+                            if missing
+                            else f"webapp_launch_record_binding_unavailable:{reason}"
+                        ],
+                        "webapp_record_bound": False,
+                        "website_trigger_proven": False,
+                        "provider_mutation_performed_inside_http_request": False,
+                        "canonical_allocator_required": True,
+                    },
+                )
             queued = stage_launch_request(
                 value=payload,
                 queue_root=_task_evaluation_launch_queue_root(manifest_path),
@@ -2329,6 +2363,9 @@ def create_app() -> FastAPI:
             "status": "accepted" if trigger.get("performed") else "queued_dispatch_blocked",
             "accepted": True,
             "queue": queued,
+            "webapp_record_binding": webapp_record_binding,
+            "webapp_record_bound": True,
+            "website_trigger_proven_at_intake": True,
             "dispatcher_trigger": trigger,
             "provider_mutation_performed_inside_http_request": False,
             "canonical_allocator_required": True,
