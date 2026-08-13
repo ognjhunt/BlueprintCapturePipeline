@@ -417,6 +417,47 @@ def _native_import_result(path: Path, preflight: dict) -> Path:
     return path
 
 
+def _interaction_candidate(path: Path, record: dict) -> Path:
+    freeze = json.loads(Path(record["task_freeze_path"]).read_text())
+    registered_path = Path(record["registered_replacement_asset_receipt_path"])
+    registered = json.loads(registered_path.read_text())
+    placement = json.loads(Path(record["franka_placement_packet_path"]).read_text())
+    value = {
+        "schema_version": "paired_target_interaction_affordance_candidate.v1",
+        "status": "candidate_geometry_materialized_requires_native_contact",
+        "scene_id": registered["scene_id"],
+        "task_id": record["task_id"],
+        "asset_id": registered["asset_id"],
+        "task_freeze": {
+            "path": record["task_freeze_path"],
+            "task_freeze_digest": freeze["task_freeze_digest"],
+        },
+        "registered_asset": {
+            "path": str(registered_path),
+            "receipt_digest": registered["receipt_digest"],
+        },
+        "robot_base_position_world_m": placement["placement"][
+            "robot_pose_xyzyaw_collision_stage"
+        ][:3],
+        "selection_contract": {
+            "method": "rigid_root_thinnest_axis_pinch",
+            "object_label_or_task_id_geometry_shortcut_used": False,
+            "candidate_geometry_authored_or_modified": False,
+        },
+        "candidate": {
+            "link_id": "base",
+            "pinch_span_m": 0.02,
+            "pinch_span_within_stroke": True,
+        },
+        "native_contact_execution_authorized": False,
+        "native_contact_executed": False,
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
 def test_manipulation_preflight_binds_available_proof_and_types_missing_arena(
     tmp_path: Path,
 ) -> None:
@@ -443,9 +484,11 @@ def test_manipulation_preflight_binds_available_proof_and_types_missing_arena(
     assert result["maximum_replacement_objects"] == 5
     assert result["native_import_qualified"] is True
     assert result["calibrated_review_camera_requests_bound"] is True
-    assert result["status"] == "blocked_pending_native_task_arena_requests"
+    assert result["status"] == "blocked_pending_native_manipulation_inputs"
     assert result["blockers"] == [
+        "task_a:interaction_affordance_candidate_missing",
         "task_a:native_task_arena_packet_request_missing",
+        "task_b:interaction_affordance_candidate_missing",
         "task_b:native_task_arena_packet_request_missing",
     ]
     assert all(row["review_camera_count"] == 8 for row in result["tasks"])
@@ -476,8 +519,64 @@ def test_manipulation_preflight_scales_to_five_distinct_objects(tmp_path: Path) 
     )
 
     assert result["replacement_object_count"] == 5
-    assert len(result["blockers"]) == 5
+    assert len(result["blockers"]) == 10
     assert all(row["native_arena_packet_materialization_ready"] is False for row in result["tasks"])
+
+
+def test_manipulation_preflight_binds_interaction_candidates_before_arena(
+    tmp_path: Path,
+) -> None:
+    records = [_fixture(tmp_path, "task_a"), _fixture(tmp_path, "task_b")]
+    for record in records:
+        record["interaction_affordance_candidate_path"] = str(
+            _interaction_candidate(
+                tmp_path / f"{record['task_id']}_affordance.json", record
+            )
+        )
+    collision = tmp_path / "collision.usda"
+    collision.write_text("#usda 1.0", encoding="utf-8")
+    preflight_path = tmp_path / "preflight.json"
+    preflight = materialize_paired_target_native_preflight(
+        scene_id="840920",
+        task_records=records,
+        collision_scene_path=collision,
+        output_path=preflight_path,
+    )
+    native_import = _native_import_result(tmp_path / "native_import.json", preflight)
+
+    result = materialize_paired_target_native_manipulation_preflight(
+        paired_target_preflight_path=preflight_path,
+        native_import_result_path=native_import,
+        task_records=records,
+        output_path=tmp_path / "manipulation.json",
+    )
+
+    assert result["blockers"] == [
+        "task_a:native_task_arena_packet_request_missing",
+        "task_b:native_task_arena_packet_request_missing",
+    ]
+    assert all(
+        row["interaction_affordance_candidate"]["pinch_span_m"] == 0.02
+        for row in result["tasks"]
+    )
+
+    candidate_path = Path(records[0]["interaction_affordance_candidate_path"])
+    candidate = json.loads(candidate_path.read_text())
+    candidate["robot_base_position_world_m"][0] += 0.5
+    candidate["receipt_digest"] = canonical_digest(
+        candidate, digest_field="receipt_digest"
+    )
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    with pytest.raises(
+        PairedTargetNativeManipulationPreflightError,
+        match="interaction_affordance_invalid:task_a",
+    ):
+        materialize_paired_target_native_manipulation_preflight(
+            paired_target_preflight_path=preflight_path,
+            native_import_result_path=native_import,
+            task_records=records,
+            output_path=tmp_path / "tampered.json",
+        )
 
 
 def test_manipulation_preflight_rejects_import_or_placement_mismatch(

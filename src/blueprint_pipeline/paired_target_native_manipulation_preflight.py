@@ -31,6 +31,9 @@ from .dual_task_rehearsal_contract import (
     validate_task_freeze_set,
 )
 from .native_task_arena_packet import REQUEST_SCHEMA_VERSION as ARENA_REQUEST_SCHEMA
+from .paired_target_interaction_affordance_candidate import (
+    SCHEMA_VERSION as INTERACTION_AFFORDANCE_SCHEMA,
+)
 
 
 SCHEMA_VERSION = "paired_target_native_manipulation_preflight.v1"
@@ -171,6 +174,60 @@ def _validate_arena_request(
         request_digest=request["request_digest"],
         camera_roles=roles,
         replacement_asset_ids=sorted(replacement_ids),
+    )
+
+
+def _validate_interaction_affordance_candidate(
+    *,
+    path: Path,
+    candidate: Mapping[str, Any],
+    scene_id: str,
+    task_id: str,
+    asset_id: str,
+    task_freeze_digest: str,
+    registered_asset: Mapping[str, Any],
+    robot_base_pose_world: Mapping[str, Any],
+) -> dict[str, Any]:
+    registered_record = candidate.get("registered_asset")
+    if (
+        candidate.get("schema_version") != INTERACTION_AFFORDANCE_SCHEMA
+        or candidate.get("receipt_digest")
+        != canonical_digest(candidate, digest_field="receipt_digest")
+        or candidate.get("status")
+        != "candidate_geometry_materialized_requires_native_contact"
+        or candidate.get("scene_id") != scene_id
+        or candidate.get("task_id") != task_id
+        or candidate.get("asset_id") != asset_id
+        or candidate.get("native_contact_execution_authorized") is not False
+        or candidate.get("native_contact_executed") is not False
+        or not isinstance(registered_record, Mapping)
+        or registered_record.get("receipt_digest")
+        != registered_asset.get("receipt_digest")
+        or candidate.get("task_freeze", {}).get("task_freeze_digest")
+        != task_freeze_digest
+        or not _same_vector(
+            candidate.get("robot_base_position_world_m"),
+            robot_base_pose_world.get("position_world_m"),
+        )
+        or candidate.get("selection_contract", {}).get(
+            "object_label_or_task_id_geometry_shortcut_used"
+        )
+        is not False
+        or candidate.get("selection_contract", {}).get(
+            "candidate_geometry_authored_or_modified"
+        )
+        is not False
+        or candidate.get("candidate", {}).get("pinch_span_within_stroke") is not True
+    ):
+        raise PairedTargetNativeManipulationPreflightError(
+            f"paired_target_manipulation_interaction_affordance_invalid:{task_id}"
+        )
+    return _record(
+        path,
+        receipt_digest=candidate["receipt_digest"],
+        selection_method=candidate["selection_contract"]["method"],
+        candidate_link_id=candidate["candidate"]["link_id"],
+        pinch_span_m=candidate["candidate"]["pinch_span_m"],
     )
 
 
@@ -351,6 +408,7 @@ def materialize_paired_target_native_manipulation_preflight(
                 {
                     "task_id": task_id,
                     "asset_id": str(preflight_task["asset_id"]),
+                    "registered_asset": registered,
                     "task_freeze": _record(
                         freeze_path, task_freeze_digest=freeze["task_freeze_digest"]
                     ),
@@ -382,9 +440,28 @@ def materialize_paired_target_native_manipulation_preflight(
     tasks: list[dict[str, Any]] = []
     blockers: list[str] = []
     for raw, row in opened:
+        affordance_path_value = raw.get("interaction_affordance_candidate_path")
         arena_path_value = raw.get("native_task_arena_request_path")
         task_blockers: list[str] = []
+        affordance_record: dict[str, Any] | None = None
         arena_record: dict[str, Any] | None = None
+        if affordance_path_value in (None, ""):
+            task_blockers.append("interaction_affordance_candidate_missing")
+        else:
+            affordance_path, affordance = _read(
+                affordance_path_value,
+                f"paired_target_manipulation_interaction_affordance_invalid:{row['task_id']}",
+            )
+            affordance_record = _validate_interaction_affordance_candidate(
+                path=affordance_path,
+                candidate=affordance,
+                scene_id=scene_id,
+                task_id=row["task_id"],
+                asset_id=row["asset_id"],
+                task_freeze_digest=row["task_freeze"]["task_freeze_digest"],
+                registered_asset=row["registered_asset"],
+                robot_base_pose_world=row["robot_base_pose_world"],
+            )
         if arena_path_value in (None, ""):
             task_blockers.append("native_task_arena_packet_request_missing")
         else:
@@ -401,11 +478,12 @@ def materialize_paired_target_native_manipulation_preflight(
                 expected_asset_ids=expected_asset_ids,
                 robot_base_pose_world=row["robot_base_pose_world"],
             )
-        qualified = arena_record is not None
+        qualified = arena_record is not None and affordance_record is not None
         task_row = {
-            **row,
+            **{key: value for key, value in row.items() if key != "registered_asset"},
             "review_camera_count": len(row["review_camera_ids"]),
             "calibrated_review_camera_set_bound": len(row["review_camera_ids"]) == 8,
+            "interaction_affordance_candidate": affordance_record,
             "native_task_arena_request": arena_record,
             "policy_camera_and_interaction_contract_bound": qualified,
             "native_arena_packet_materialization_ready": qualified,
@@ -421,7 +499,7 @@ def materialize_paired_target_native_manipulation_preflight(
         "status": (
             "ready_for_native_arena_packet_materialization"
             if not blockers
-            else "blocked_pending_native_task_arena_requests"
+            else "blocked_pending_native_manipulation_inputs"
         ),
         "program_id": "arm-decision-proof-v1",
         "scene_id": scene_id,
