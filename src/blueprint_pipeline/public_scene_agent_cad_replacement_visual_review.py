@@ -341,16 +341,23 @@ def materialize_agent_cad_replacement_visual_review(
             not isinstance(dual_tasks, list)
             or len(dual_tasks) != 1
             or not isinstance(final_tasks, list)
-            or len(final_tasks) != 1
+            or not 1 <= len(final_tasks) <= MAX_REPLACEMENT_OBJECTS
             or not isinstance(dual_tasks[0], Mapping)
-            or not isinstance(final_tasks[0], Mapping)
+            or any(not isinstance(row, Mapping) for row in final_tasks)
         ):
             raise AgentCadReplacementVisualReviewError(
                 "replacement_visual_task_inventory_invalid"
             )
         dual_task = dual_tasks[0]
-        final_task = final_tasks[0]
         task_id = str(dual_task.get("task_id") or "")
+        matching_final_tasks = [
+            row for row in final_tasks if row.get("task_id") == task_id
+        ]
+        if len(matching_final_tasks) != 1:
+            raise AgentCadReplacementVisualReviewError(
+                "replacement_visual_task_inventory_invalid"
+            )
+        final_task = matching_final_tasks[0]
         this_scene = str(dual.get("publisher_scene_id") or "")
         if (
             not task_id

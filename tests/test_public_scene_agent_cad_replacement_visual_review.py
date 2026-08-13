@@ -315,6 +315,33 @@ def test_accepts_reusable_five_task_inventory(
     assert len(result["tasks"]) == 5
 
 
+def test_selects_exact_task_from_shared_final_composite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _admit_fixture_composition(monkeypatch)
+    a = _task_fixture(tmp_path / "a", task_id="task_a")
+    b = _task_fixture(tmp_path / "b", task_id="task_b")
+    shared = json.loads(a[1].read_text(encoding="utf-8"))
+    other = json.loads(b[1].read_text(encoding="utf-8"))
+    shared["replacement_object_count"] = 2
+    shared["tasks"].extend(other["tasks"])
+    shared["receipt_digest"] = canonical_digest(
+        shared, digest_field="receipt_digest"
+    )
+    shared_path = _write_json(tmp_path / "shared_final.json", shared)
+
+    result = materialize_agent_cad_replacement_visual_review(
+        dual_input_receipt_paths=[a[0]],
+        final_composite_receipt_paths=[shared_path],
+        visual_composition_receipt_paths=[a[2]],
+        output_root=tmp_path / "review",
+        renderer_executable=_fake_renderer(tmp_path),
+        renderer_plugin="Fixture",
+    )
+
+    assert [row["task_id"] for row in result["tasks"]] == ["task_a"]
+
+
 @pytest.mark.parametrize("alpha_kind", ["empty", "full"])
 def test_rejects_invalid_replacement_alpha(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alpha_kind: str
