@@ -180,6 +180,15 @@ from .public_scene_simready_isaac_vast import (
     run_simready_isaac_vast,
     validate_simready_isaac_paid_attempt_authority,
 )
+from .paired_target_native_import_bundle import (
+    PairedTargetNativeImportBundleError,
+    validate_paired_target_native_import_bundle,
+)
+from .paired_target_native_import_vast import (
+    PROBE_KIND as PAIRED_TARGET_NATIVE_IMPORT_PROBE_KIND,
+    run_paired_target_native_import_vast,
+    validate_paired_target_native_import_paid_attempt_authority,
+)
 from .adp_content_agents_vast import (
     DEFAULT_IMAGE as ADP_CONTENT_AGENTS_IMAGE,
     PROBE_KIND as ADP_CONTENT_AGENTS_PROBE_KIND,
@@ -235,6 +244,14 @@ from .public_scene_aura_exact_residual_vast import (
     run_aura_exact_residual_vast,
     validate_aura_exact_residual_paid_attempt_authority,
     validate_aura_exact_residual_bundle,
+)
+from .public_scene_artifixer3d_vast import (
+    MAX_HARD_CAP_USD as ARTIFIXER3D_MAX_HARD_CAP_USD,
+    MAX_TTL_SECONDS as ARTIFIXER3D_MAX_TTL_SECONDS,
+    PROBE_KIND as ADP_ARTIFIXER3D_PROBE_KIND,
+    run_artifixer3d_vast,
+    validate_artifixer3d_bundle,
+    validate_artifixer3d_paid_attempt_authority,
 )
 from .public_scene_execution_authority import (
     PublicSceneExecutionAuthorityError,
@@ -1232,6 +1249,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
+            PAIRED_TARGET_NATIVE_IMPORT_PROBE_KIND,
             ADP_CONTENT_AGENTS_PROBE_KIND,
             ADP_JOINT_AGENT_PROBE_KIND,
             ADP_GAUSSIAN_EXCISION_PROBE_KIND,
@@ -1239,6 +1257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,
             ADP_AURA_EXACT_RESIDUAL_PROBE_KIND,
+            ADP_ARTIFIXER3D_PROBE_KIND,
             ADP_INPAINT360_INTERIORGS_PROBE_KIND,
             TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND,
         ),
@@ -1397,6 +1416,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp009d-aura-source-root")
     gpu.add_argument("--adp-simready-isaac-bundle-receipt")
     gpu.add_argument("--adp-simready-isaac-attempt-authority")
+    gpu.add_argument("--paired-target-native-import-bundle-receipt")
+    gpu.add_argument("--paired-target-native-import-attempt-authority")
     gpu.add_argument("--adp-job-dir")
     gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
     gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
@@ -1424,6 +1445,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adp-aura-interiorgs-bundle-receipt")
     gpu.add_argument("--adp-aura-exact-residual-bundle-receipt")
     gpu.add_argument("--adp-aura-attempt-authority")
+    gpu.add_argument("--adp-artifixer3d-bundle-receipt")
+    gpu.add_argument("--adp-artifixer3d-attempt-authority")
     gpu.add_argument("--adp-inpaint360-bundle-receipt")
     gpu.add_argument(
         "--reconstruction-refresh-preflight",
@@ -3041,6 +3064,244 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
+        if args.probe_kind == ADP_ARTIFIXER3D_PROBE_KIND:
+            missing = [
+                name
+                for name, value in (
+                    (
+                        "adp_artifixer3d_bundle_receipt",
+                        args.adp_artifixer3d_bundle_receipt,
+                    ),
+                    ("adp_job_dir", args.adp_job_dir),
+                    ("admission_out", args.admission_out),
+                    ("adapter_output", args.adapter_output),
+                )
+                if not value
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
+            if args.provider != "vast":
+                blockers.append("artifixer3d_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("artifixer3d_budget_invalid")
+            if args.adp_max_spend_usd > ARTIFIXER3D_MAX_HARD_CAP_USD:
+                blockers.append("artifixer3d_hard_cap_exceeds_authority")
+            if not 7200 <= args.adp_hard_ttl_seconds <= ARTIFIXER3D_MAX_TTL_SECONDS:
+                blockers.append("artifixer3d_hard_ttl_invalid")
+            if (
+                args.adp_hard_ttl_seconds
+                * args.adp_max_hourly_rate_usd
+                / 3600
+                > args.adp_max_spend_usd
+            ):
+                blockers.append("artifixer3d_runtime_cost_exceeds_hard_cap")
+            if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
+                blockers.append("artifixer3d_allowed_active_vast_instance_id_invalid")
+            prepared_bundle: dict[str, Any] | None = None
+            paid_attempt_authority: dict[str, Any] | None = None
+            authority_path: Path | None = None
+            authority_sha256: str | None = None
+            if args.adp_artifixer3d_bundle_receipt:
+                try:
+                    prepared_bundle = validate_artifixer3d_bundle(
+                        args.adp_artifixer3d_bundle_receipt
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("artifixer3d_bundle_binding_invalid")
+            if prepared_bundle is not None:
+                observed_allowed = sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                )
+                if observed_allowed != prepared_bundle["allowed_active_instance_ids"]:
+                    blockers.append("artifixer3d_external_instance_allowlist_mismatch")
+                if set(observed_allowed) & set(
+                    prepared_bundle["forbidden_external_instance_ids"]
+                ):
+                    blockers.append("artifixer3d_forbidden_external_instance_allowed")
+                if (
+                    expected_source_commit
+                    and prepared_bundle["blueprint_source_identity"]["commit"]
+                    != expected_source_commit
+                ):
+                    blockers.append("artifixer3d_bundle_source_commit_mismatch")
+            if args.adp_artifixer3d_attempt_authority:
+                if prepared_bundle is None:
+                    blockers.append("artifixer3d_paid_attempt_authority_bundle_missing")
+                else:
+                    authority_path = Path(
+                        args.adp_artifixer3d_attempt_authority
+                    ).expanduser().resolve()
+                    try:
+                        raw_authority = _load(authority_path)
+                        paid_attempt_authority = (
+                            validate_artifixer3d_paid_attempt_authority(
+                                raw_authority,
+                                prepared_bundle=prepared_bundle,
+                                max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                                hard_cap_usd=args.adp_max_spend_usd,
+                                hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                                allowed_active_instance_ids=prepared_bundle[
+                                    "allowed_active_instance_ids"
+                                ],
+                            )
+                        )
+                        authority_sha256 = "sha256:" + hashlib.sha256(
+                            authority_path.read_bytes()
+                        ).hexdigest()
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        blockers.append("artifixer3d_paid_attempt_authority_invalid")
+            elif args.execute:
+                blockers.append("artifixer3d_paid_attempt_authority_missing")
+            avoidlist_path: Path | None = None
+            avoidlist_sha256: str | None = None
+            if args.adp_machine_avoidlist:
+                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                try:
+                    avoidlist = _load(avoidlist_path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("artifixer3d_machine_avoidlist_invalid")
+                else:
+                    if (
+                        avoidlist.get("schema_version") != "vast_machine_avoidlist.v1"
+                        or not isinstance(avoidlist.get("machine_ids"), list)
+                        or any(
+                            not isinstance(machine_id, int) or machine_id <= 0
+                            for machine_id in avoidlist["machine_ids"]
+                        )
+                    ):
+                        blockers.append("artifixer3d_machine_avoidlist_invalid")
+                    avoidlist_sha256 = "sha256:" + hashlib.sha256(
+                        avoidlist_path.read_bytes()
+                    ).hexdigest()
+            allocation_binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": args.probe_kind,
+                "orchestrator_source_commit": control_identity.get(
+                    "orchestrator_source_commit"
+                ),
+                "expected_source_commit": expected_source_commit or None,
+                "bundle_receipt_sha256": (
+                    prepared_bundle.get("receipt_sha256")
+                    if prepared_bundle
+                    else None
+                ),
+                "bundle_sha256": (
+                    prepared_bundle.get("bundle_sha256")
+                    if prepared_bundle
+                    else None
+                ),
+                "manifest_digest": (
+                    prepared_bundle.get("manifest_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "runtime_request_digest": (
+                    prepared_bundle.get("runtime_request_digest")
+                    if prepared_bundle
+                    else None
+                ),
+                "paid_attempt_authority_digest": (
+                    paid_attempt_authority.get("authorization_digest")
+                    if paid_attempt_authority
+                    else None
+                ),
+                "paid_attempt_authority_file_sha256": authority_sha256,
+                "container_image": (
+                    prepared_bundle.get("container_image")
+                    if prepared_bundle
+                    else None
+                ),
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
+                "forbidden_external_instance_ids": (
+                    prepared_bundle.get("forbidden_external_instance_ids")
+                    if prepared_bundle
+                    else None
+                ),
+                "machine_avoidlist_sha256": avoidlist_sha256,
+                "retry_cap": 0,
+            }
+            allocation_binding_digest = "sha256:" + hashlib.sha256(
+                json.dumps(
+                    allocation_binding, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter",
+                blockers=sorted(set(blockers)),
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": args.probe_kind,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "private_derived_upload_only": True,
+                    "raw_interiorgs_upload_authorized": False,
+                    "raw_dataset_bytes_upload_authorized": False,
+                    "provider_training_authorized": False,
+                    "commercial_use_authorized": False,
+                    "internal_noncommercial_research_only": True,
+                    "exact_mask_only_edits_required": True,
+                    "source_object_restoration_authorized": False,
+                    "generated_output_is_physical_evidence": False,
+                    "allocation_binding": allocation_binding,
+                    "allocation_binding_digest": allocation_binding_digest,
+                }
+            )
+            if args.admission_out:
+                write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": exc.blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    if args.adapter_output:
+                        write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if blockers or prepared_bundle is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_artifixer3d_vast(
+                    job_dir=args.adp_job_dir,
+                    paid_resource_admission_grant=grant,
+                    execute=args.execute,
+                    prepared_bundle=prepared_bundle,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    machine_avoidlist_path=avoidlist_path,
+                    paid_attempt_authority=paid_attempt_authority,
+                )
+            if args.adapter_output:
+                write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == ADP_CONTENT_AGENTS_PROBE_KIND:
             missing = [
                 name
@@ -3298,6 +3559,164 @@ def main(argv: Sequence[str] | None = None) -> int:
                     public_image=ADP_CONTENT_AGENTS_IMAGE,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                     machine_avoidlist_path=content_agents_machine_avoidlist,
+                )
+            write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == PAIRED_TARGET_NATIVE_IMPORT_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "paired_target_native_import_bundle_receipt",
+                    "adp_job_dir",
+                )
+                if not getattr(args, name, None)
+            ]
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            source_blockers, expected_source_commit = _adp_expected_source_commit_blockers(
+                args.expected_source_commit or "", control_identity
+            )
+            blockers = [*missing, *control_blockers, *source_blockers]
+            if args.provider != "vast":
+                blockers.append("paired_target_native_import_provider_must_be_vast")
+            if not 0 < args.adp_max_hourly_rate_usd <= args.adp_max_spend_usd:
+                blockers.append("paired_target_native_import_budget_invalid")
+            if not 1800 <= args.adp_hard_ttl_seconds <= 7200:
+                blockers.append("paired_target_native_import_ttl_invalid")
+            if any(value <= 0 for value in args.adp_allowed_active_vast_instance_id):
+                blockers.append("paired_target_native_import_allowlist_invalid")
+            prepared_bundle: dict[str, Any] | None = None
+            if args.paired_target_native_import_bundle_receipt:
+                try:
+                    prepared_bundle = validate_paired_target_native_import_bundle(
+                        args.paired_target_native_import_bundle_receipt
+                    )
+                    if prepared_bundle.get("implementation_commit") != expected_source_commit:
+                        blockers.append("paired_target_native_import_commit_mismatch")
+                except (OSError, ValueError, PairedTargetNativeImportBundleError):
+                    blockers.append("paired_target_native_import_bundle_invalid")
+            authority: dict[str, Any] | None = None
+            if args.paired_target_native_import_attempt_authority:
+                try:
+                    authority = _load(
+                        Path(args.paired_target_native_import_attempt_authority)
+                        .expanduser()
+                        .resolve()
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    blockers.append("paired_target_native_import_authority_invalid")
+            elif args.execute:
+                blockers.append("paired_target_native_import_authority_missing")
+            if authority is not None and prepared_bundle is not None:
+                try:
+                    validate_paired_target_native_import_paid_attempt_authority(
+                        authority,
+                        prepared_bundle=prepared_bundle,
+                        max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                        hard_cap_usd=args.adp_max_spend_usd,
+                        hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                        allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                    )
+                except ValueError:
+                    blockers.append("paired_target_native_import_authority_invalid")
+            avoidlist_sha256 = None
+            if args.adp_machine_avoidlist:
+                avoidlist = Path(args.adp_machine_avoidlist).expanduser().resolve()
+                if not avoidlist.is_file():
+                    blockers.append("paired_target_native_import_machine_avoidlist_missing")
+                else:
+                    avoidlist_sha256 = (
+                        "sha256:" + hashlib.sha256(avoidlist.read_bytes()).hexdigest()
+                    )
+            binding = {
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": PAIRED_TARGET_NATIVE_IMPORT_PROBE_KIND,
+                "orchestrator_source_commit": control_identity.get(
+                    "orchestrator_source_commit"
+                ),
+                "expected_source_commit": expected_source_commit or None,
+                "bundle_sha256": prepared_bundle.get("bundle_sha256")
+                if prepared_bundle
+                else None,
+                "request_digest": prepared_bundle.get("request_digest")
+                if prepared_bundle
+                else None,
+                "replacement_count": prepared_bundle.get("replacement_count")
+                if prepared_bundle
+                else None,
+                "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "hard_cap_usd": args.adp_max_spend_usd,
+                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                "allowed_active_vast_instance_ids": sorted(
+                    set(args.adp_allowed_active_vast_instance_id)
+                ),
+                "machine_avoidlist_sha256": avoidlist_sha256,
+                "retry_cap": 0,
+                "paid_attempt_authority_digest": authority.get("authorization_digest")
+                if authority
+                else None,
+            }
+            binding_digest = "sha256:" + hashlib.sha256(
+                json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            paid_admission = build_paid_lane_admission(
+                resource_class="vast_provider_adapter", blockers=sorted(set(blockers))
+            )
+            paid_admission.update(
+                {
+                    "program_id": "arm-decision-proof-v1",
+                    "probe_kind": PAIRED_TARGET_NATIVE_IMPORT_PROBE_KIND,
+                    "control_plane_identity": control_identity,
+                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "hard_cap_usd": args.adp_max_spend_usd,
+                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
+                    "retry_cap": 0,
+                    "authority": "explicit_file_backed_single_use_goal_authority",
+                    "paid_attempt_authority_required_for_execute": True,
+                    "private_data_uploaded": False,
+                    "candidate_policy_queried": False,
+                    "physical_success_established": False,
+                    "allocation_binding": binding,
+                    "allocation_binding_digest": binding_digest,
+                }
+            )
+            write_json(Path(args.admission_out), paid_admission)
+            grant = None
+            if args.execute:
+                try:
+                    grant = require_paid_resource_admission(
+                        paid_admission,
+                        resource_class="vast_provider_adapter",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+                except PaidResourceAdmissionBlocked as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": sorted(set([*exc.blockers, *blockers])),
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
+            if prepared_bundle is None or blockers:
+                result = {
+                    "status": "blocked",
+                    "blockers": sorted(set(blockers)),
+                    "provider_mutations_performed": 0,
+                }
+            else:
+                result = run_paired_target_native_import_vast(
+                    job_dir=args.adp_job_dir,
+                    prepared_bundle=prepared_bundle,
+                    paid_resource_admission_grant=grant,
+                    paid_attempt_authority=authority,
+                    execute=args.execute,
+                    machine_avoidlist_path=args.adp_machine_avoidlist,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}

@@ -53,6 +53,10 @@ from .live_pipeline_control_plane import (
     WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
     WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
 )
+from .public_scene_artifixer3d_bundle import (
+    DEFAULT_REMOVAL_PIPELINE_POLICY,
+    DUAL_TARGET_PIPELINE_MODE,
+)
 from .live_pipeline_input_intake import (
     DECISION_EVIDENCE_QUEUE_CONTRACT,
     build_live_pipeline_input_intake,
@@ -1862,6 +1866,12 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
     """
 
     declared = _string(os.getenv(PIPELINE_SOURCE_COMMIT_ENV)).lower()
+    removal_default = {
+        "policy": DEFAULT_REMOVAL_PIPELINE_POLICY,
+        "paired_target_pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+        "maximum_replacement_objects": 5,
+        "generated_appearance_is_physical_evidence": False,
+    }
     declared_valid = re.fullmatch(r"[0-9a-f]{40}", declared) is not None
     observed = running_source_commit(module_path)
     if observed and declared_valid and observed != declared:
@@ -1873,6 +1883,7 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
             "source_commit_source": "conflicting",
             "blockers": ["deployment_identity_declared_commit_conflicts_with_running_checkout"],
             "claim_ceiling": "deployed_service_identity_only",
+            "default_object_removal": removal_default,
         }
     if observed:
         source_commit, source, proven = observed, "running_checkout", True
@@ -1888,6 +1899,7 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
         "source_commit_source": source,
         "blockers": [] if proven else ["deployment_identity_source_commit_unavailable"],
         "claim_ceiling": "deployed_service_identity_only",
+        "default_object_removal": removal_default,
     }
 
 

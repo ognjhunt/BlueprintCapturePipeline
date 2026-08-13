@@ -356,8 +356,11 @@ def seal_lane_terminal_artifacts(
             },
             output_path=destination,
         )
-    except TaskEvaluationArtifactManifestError as exc:
-        blockers = [*(sealed.get("blockers") or []), f"terminal_artifact_manifest_invalid:{exc}"]
+    except (OSError, TaskEvaluationArtifactManifestError) as exc:
+        blockers = [
+            *(sealed.get("blockers") or []),
+            f"terminal_artifact_manifest_invalid:{type(exc).__name__}",
+        ]
         sealed["blockers"] = sorted(set(str(item) for item in blockers))
         sealed["status"] = "blocked"
         return sealed
