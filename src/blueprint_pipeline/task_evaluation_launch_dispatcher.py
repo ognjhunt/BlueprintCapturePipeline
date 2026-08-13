@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .task_evaluation_standing_launch_authorization import (
     STANDING_AUTHORIZATION_DIR_ENV,
     StandingAuthorizationError,
@@ -786,6 +787,11 @@ def dispatch_launch_request(
     if profile:
         blockers.extend(validate_launch_profile(profile))
         blockers.extend(verify_profile_immutable_inputs(profile))
+        # Existence is not residency. The 2026-08-12 retained-scene run passed
+        # every existence check and still reached the provider with two
+        # authoring paths in argv, because the authoring tree had been
+        # recreated on the host by hand.
+        blockers.extend(launch_profile_residency_blockers(profile))
         if request.get("launch_profile_digest") != profile.get("profile_digest"):
             blockers.append("launch_profile_binding_mismatch")
         if _canonical_json(_mapping(request.get("source_bundle"))) != _canonical_json(

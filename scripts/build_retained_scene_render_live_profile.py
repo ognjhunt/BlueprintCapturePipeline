@@ -33,6 +33,11 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from blueprint_pipeline.host_resident_launch_inputs import (
+    HostResidentInputError,
+    launch_profile_residency_blockers,
+    resolve_host_resident_bundle_receipt,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     canonical_digest,
@@ -76,9 +81,20 @@ def build_retained_scene_render_live_profile(
     receipt_path = Path(bundle_receipt_path).expanduser().resolve()
     request_path = Path(request_manifest_path).expanduser().resolve()
     authority_path = Path(attempt_authority_path).expanduser().resolve()
-    receipt = _read(receipt_path)
 
+    # The receipt names the paths of the machine that built it. Resolve it
+    # against this host first: a profile built from an unresolvable receipt
+    # would publish those paths into argv, and argv is what the allocator
+    # actually opens.
     blockers: list[str] = []
+    try:
+        resolution = resolve_host_resident_bundle_receipt(receipt_path)
+    except HostResidentInputError as exc:
+        raise TaskEvaluationLaunchError(str(exc)) from exc
+    blockers.extend(resolution["blockers"])
+    receipt = resolution["receipt"]
+    resolutions = resolution["resolutions"]
+
     if receipt.get("status") != "ready":
         blockers.append(f"bundle_receipt_not_ready:{receipt.get('status')}")
     if receipt.get("probe_kind") != PROBE_KIND:
@@ -108,7 +124,9 @@ def build_retained_scene_render_live_profile(
     if not isinstance(authority_record, Mapping):
         blockers.append("bundle_execution_authority_missing")
     else:
-        authority_source = Path(str(authority_record.get("path") or "")).expanduser()
+        authority_source = Path(
+            str((resolutions.get("execution_authority") or {}).get("path") or "")
+        ).expanduser()
         if not authority_source.is_file():
             blockers.append("bundle_execution_authority_unreadable")
         else:
@@ -196,7 +214,9 @@ def build_retained_scene_render_live_profile(
             },
             {
                 "name": "retained_scene_render_bundle",
-                "path": str(receipt.get("bundle_path") or ""),
+                # The path the receipt resolved to here, not the one it was
+                # built at.
+                "path": str(resolutions["bundle"]["path"]),
                 "digest": str(receipt.get("bundle_sha256") or ""),
             },
         ],
@@ -222,7 +242,13 @@ def build_retained_scene_render_live_profile(
     }
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
 
-    validation = [*validate_launch_profile(profile), *verify_profile_immutable_inputs(profile)]
+    validation = [
+        *validate_launch_profile(profile),
+        *verify_profile_immutable_inputs(profile),
+        # A profile is published once and read on every later launch, so the
+        # last chance to catch an authoring path is before it is written.
+        *launch_profile_residency_blockers(profile),
+    ]
     if validation:
         raise TaskEvaluationLaunchError(",".join(sorted(set(validation))))
     return profile

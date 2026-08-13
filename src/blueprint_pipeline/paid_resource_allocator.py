@@ -211,6 +211,10 @@ from .adp_retained_scene_render_vast import (
     validate_retained_scene_render_bundle,
     validate_retained_scene_render_paid_attempt_authority,
 )
+from .host_resident_launch_inputs import (
+    HostResidentInputError,
+    resolve_host_resident_bundle_receipt,
+)
 from .adp_aura_author_smoke_vast import (
     DEFAULT_IMAGE as ADP_AURA_SMOKE_IMAGE,
     PREREQUISITE_RECEIPT_DIGEST as ADP_AURA_PREREQUISITE_RECEIPT_DIGEST,
@@ -1661,13 +1665,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not receipt_path.is_file():
                     blockers.append("retained_scene_render_bundle_receipt_missing")
                 else:
+                    # A receipt records the absolute paths of the machine that
+                    # built it. Resolving here, by digest and against the
+                    # control plane's own directories, is what stops an
+                    # authoring path from reaching the provider boundary: an
+                    # unresolvable receipt comes back as ``not_host_resident``
+                    # and the bundle validator refuses anything but ``ready``.
                     try:
-                        prepared_bundle = _load(receipt_path)
-                        validate_retained_scene_render_bundle(
-                            prepared_bundle, expected_commit=expected_source_commit or None
-                        )
-                    except (OSError, ValueError, json.JSONDecodeError):
-                        blockers.append("retained_scene_render_bundle_binding_invalid")
+                        resolution = resolve_host_resident_bundle_receipt(receipt_path)
+                    except HostResidentInputError:
+                        blockers.append("retained_scene_render_bundle_receipt_missing")
+                        resolution = None
+                    if resolution is not None:
+                        blockers.extend(resolution["blockers"])
+                        prepared_bundle = resolution["receipt"]
+                        try:
+                            validate_retained_scene_render_bundle(
+                                prepared_bundle,
+                                expected_commit=expected_source_commit or None,
+                            )
+                        except (OSError, ValueError, json.JSONDecodeError):
+                            blockers.append("retained_scene_render_bundle_binding_invalid")
             execution_authority: dict[str, Any] | None = None
             allowed_active_instance_ids: list[int] = []
             if prepared_bundle is not None:

@@ -16,6 +16,7 @@ from .spend_authority_ledger_migration import (
     SpendAuthorityLedgerError,
     reconcile_spend_authority_ledger,
 )
+from .host_resident_launch_inputs import published_profile_residency_report
 from .task_evaluation_launch_catalog import LaunchCatalogError, reconcile_public_catalog
 
 LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
@@ -168,11 +169,38 @@ def _check_launch_profile_catalog(
     return (receipt, [])
 
 
+def _check_launch_input_residency(
+    source: Mapping[str, str],
+    residency_report: Callable[[str], dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Block a live profile that binds a filesystem this host does not own.
+
+    A host restored from an image runs no installer and remembers no manual
+    ``mkdir``. The 2026-08-12 retained-scene profile passed every existence
+    check on the live control plane only because someone had recreated the
+    authoring machine's directory tree there; on a rebuilt host the same
+    profile is still published, still live-enabled, and now points at nothing.
+    Checking at start-up is what makes that visible before a launch instead of
+    after a provider is already running.
+    """
+
+    profile_dir = str(source.get(LAUNCH_PROFILE_DIR_ENV) or "").strip()
+    if not profile_dir:
+        return {"status": "not_configured"}, []
+    report = (
+        published_profile_residency_report(profile_dir)
+        if residency_report is None
+        else residency_report(profile_dir)
+    )
+    return report, list(report.get("blockers") or [])
+
+
 def build_production_runtime_env_guard(
     env: Mapping[str, str] | None = None,
     import_module: Callable[[str], Any] | None = None,
     reconcile_spend_authority: Callable[[], dict[str, Any]] | None = None,
     reconcile_launch_catalog: Callable[[], dict[str, Any]] | None = None,
+    residency_report: Callable[[str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = os.environ if env is None else env
     blockers: list[str] = []
@@ -210,6 +238,9 @@ def build_production_runtime_env_guard(
     )
     blockers.extend(catalog_blockers)
 
+    residency, residency_blockers = _check_launch_input_residency(source, residency_report)
+    blockers.extend(residency_blockers)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -220,13 +251,16 @@ def build_production_runtime_env_guard(
         "control_plane_entrypoints": entrypoints,
         "spend_authority_ledger": ledger,
         "launch_profile_catalog": catalog,
+        "launch_input_residency": residency,
         "claim_boundary": (
             "This guard verifies production fail-closed runtime posture, that "
             "every control-plane entrypoint imports, that no spend-authority "
-            "ledger is stranded at a previous root, and that the served launch "
-            "catalog matches the published profile directory. It is not proof of "
-            "deployed health, Pub/Sub message consumption, WebApp forwarding, "
-            "buyer delivery, simulator execution, or live provider success."
+            "ledger is stranded at a previous root, that the served launch "
+            "catalog matches the published profile directory, and that no "
+            "live-enabled profile binds inputs outside this host's own "
+            "directories. It is not proof of deployed health, Pub/Sub message "
+            "consumption, WebApp forwarding, buyer delivery, simulator "
+            "execution, or live provider success."
         ),
     }
 
