@@ -522,6 +522,10 @@ def test_deployment_identity_fails_closed_without_exact_source_commit(
 ) -> None:
     client = TestClient(create_app())
 
+    # "No identity" now has to be arranged rather than assumed: the endpoint has
+    # two sources, and a CI checkout is detached at a real commit, which the
+    # service is right to report.
+    monkeypatch.setattr(service, "running_source_commit", lambda *_a, **_k: "")
     monkeypatch.delenv(service.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
     missing = client.get("/api/live-pipeline/version")
     assert missing.status_code == 503
@@ -2159,3 +2163,22 @@ def test_a_branch_checkout_is_not_answered_for(tmp_path, monkeypatch):
 
     assert intake.running_source_commit(module) == ""
     assert intake.deployment_identity_payload(module)["commit_proven"] is False
+
+
+def test_the_endpoint_reports_a_detached_checkout_without_any_variable(
+    tmp_path, monkeypatch
+):
+    """A release worktree knows its own commit, so no deploy-time env edit is
+    needed for the endpoint to answer."""
+
+    from blueprint_pipeline import live_pipeline_intake_service as intake
+
+    monkeypatch.delenv(intake.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    monkeypatch.setattr(intake, "running_source_commit", lambda *_a, **_k: "d" * 40)
+    client = TestClient(create_app())
+
+    response = client.get("/api/live-pipeline/version")
+
+    assert response.status_code == 200
+    assert response.json()["source_commit"] == "d" * 40
+    assert response.json()["source_commit_source"] == "running_checkout"
