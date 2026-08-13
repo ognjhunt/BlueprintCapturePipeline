@@ -17,9 +17,10 @@ probe comes back empty. Two unrelated-looking admission blockers
 expected commit compared against was the empty string) had that one cause.
 
 So the check that matters is not "did the command succeed" but "does every
-surface now answer `git rev-parse HEAD` with the same commit". A surface that
-cannot answer at all is the exact defect above and fails here rather than at
-the paid boundary.
+surface now answer `git rev-parse HEAD` with the same commit, and does the
+restarted intake process report that commit from its version endpoint". A
+surface that cannot answer at all, or a service still bound to an archived
+checkout by its environment file, fails here rather than at the paid boundary.
 
 Runs Git and systemd on this host. Contacts no provider, reads no credential,
 and rents nothing.
@@ -31,7 +32,14 @@ import argparse
 import contextlib
 import fcntl
 import json
+import os
+import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -52,6 +60,12 @@ SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
 DEFAULT_PAID_LAUNCH_LOCKS = (
     "/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
 )
+DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
+DEFAULT_INTAKE_RUNTIME_DROP_IN = (
+    "/etc/systemd/system/blueprint-pipeline-intake.service.d/"
+    "90-blueprint-deploy-identity.conf"
+)
+DEFAULT_INTAKE_VERSION_URL = "http://127.0.0.1:8765/api/live-pipeline/version"
 
 
 class ControlPlaneDeployError(ValueError):
@@ -183,6 +197,11 @@ def _move_source_checkout(repo: Path, commit: str) -> None:
 
 
 def _restart_units(units: Sequence[str]) -> list[dict[str, Any]]:
+    reload_result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+        ["systemctl", "daemon-reload"], capture_output=True, text=True, check=False
+    )
+    if reload_result.returncode != 0:
+        raise ControlPlaneDeployError("deploy_systemd_daemon_reload_failed")
     restarted: list[dict[str, Any]] = []
     for unit in units:
         result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
@@ -200,6 +219,122 @@ def _restart_units(units: Sequence[str]) -> list[dict[str, Any]]:
     return restarted
 
 
+def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
+    """The intake restart is mandatory; callers may only add units."""
+
+    required = list(DEFAULT_RESTART_UNITS)
+    for unit in units:
+        if unit not in required:
+            required.append(unit)
+    return tuple(required)
+
+
+def _install_intake_runtime_identity_drop_in(
+    drop_in: Path, *, source_repo: Path, source_commit: str
+) -> dict[str, Any]:
+    """Install a non-secret override without opening the credential env file."""
+
+    if drop_in.is_symlink():
+        raise ControlPlaneDeployError("deploy_intake_runtime_drop_in_symlink")
+    if drop_in.exists() and not stat.S_ISREG(drop_in.stat().st_mode):
+        raise ControlPlaneDeployError("deploy_intake_runtime_drop_in_not_regular")
+    if any(character.isspace() for character in str(source_repo)):
+        raise ControlPlaneDeployError("deploy_intake_source_repo_contains_whitespace")
+    if len(source_commit) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in source_commit
+    ):
+        raise ControlPlaneDeployError("deploy_intake_source_commit_invalid")
+    content = (
+        "# Managed by scripts/deploy_control_plane_commit.py.\n"
+        "# Contains deployment identity only; no credentials.\n"
+        "[Service]\n"
+        f"Environment=BLUEPRINT_PIPELINE_REPO={source_repo}\n"
+        f"Environment=BLUEPRINT_SOURCE_COMMIT={source_commit}\n"
+    )
+    temp_path: Path | None = None
+    try:
+        drop_in.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=drop_in.parent,
+            prefix=f".{drop_in.name}.",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, 0o644)
+        os.replace(temp_path, drop_in)
+        directory_fd = os.open(drop_in.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        temp_path = None
+    except OSError as exc:
+        raise ControlPlaneDeployError("deploy_intake_runtime_drop_in_update_failed") from exc
+    finally:
+        if temp_path is not None:
+            with contextlib.suppress(OSError):
+                temp_path.unlink()
+    return {
+        "path": str(drop_in),
+        "source_repo": str(source_repo),
+        "source_commit": source_commit,
+        "credential_environment_file_opened": False,
+        "credential_values_recorded": False,
+    }
+
+
+def _verify_intake_runtime(
+    url: str,
+    *,
+    expected_commit: str,
+    attempts: int = 30,
+    retry_delay_seconds: float = 1.0,
+) -> dict[str, Any]:
+    """Require the restarted process—not just its files—to report the SHA."""
+
+    parsed = urllib.parse.urlparse(url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ControlPlaneDeployError("deploy_intake_version_url_not_loopback_http")
+    if attempts < 1:
+        raise ControlPlaneDeployError("deploy_intake_version_probe_attempts_invalid")
+    payload: Any = None
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=15) as response:  # nosec B310
+                payload = json.load(response)
+            break
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(retry_delay_seconds)
+    else:
+        raise ControlPlaneDeployError("deploy_intake_version_probe_failed") from last_error
+    if not isinstance(payload, Mapping):
+        raise ControlPlaneDeployError("deploy_intake_version_payload_invalid")
+    observed = str(payload.get("source_commit") or "")
+    if payload.get("commit_proven") is not True or observed != expected_commit:
+        raise ControlPlaneDeployError(
+            f"deploy_intake_runtime_commit_mismatch:{observed or 'missing'}"
+        )
+    return {
+        "url": url,
+        "commit_proven": True,
+        "source_commit": observed,
+        "service_schema_version": payload.get("service_schema_version"),
+    }
+
+
 def deploy_control_plane_commit(
     *,
     source_repo: str | Path,
@@ -207,8 +342,10 @@ def deploy_control_plane_commit(
     release_root: str | Path,
     state_root: str | Path,
     active_link: str | Path,
-    restart_units: Sequence[str] = (),
+    restart_units: Sequence[str] = DEFAULT_RESTART_UNITS,
     paid_launch_locks: Sequence[str] = DEFAULT_PAID_LAUNCH_LOCKS,
+    intake_runtime_drop_in: str | Path = DEFAULT_INTAKE_RUNTIME_DROP_IN,
+    intake_version_url: str = DEFAULT_INTAKE_VERSION_URL,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
 
@@ -227,25 +364,33 @@ def deploy_control_plane_commit(
             active_link=active,
             activate=True,
         )
-    commit = str(release["source_commit"])
+        commit = str(release["source_commit"])
 
-    surfaces = {
-        "source_checkout": source,
-        "active_release": active.resolve(),
-    }
-    observed: dict[str, str] = {}
-    for name, path in surfaces.items():
-        observed[name] = _surface_commit(path, name=name)
-    disagreeing = sorted(
-        name for name, head in observed.items() if head != commit
-    )
-    if disagreeing:
-        # The whole point. One surface moving is not a deploy.
-        raise ControlPlaneDeployError(
-            "deploy_surfaces_disagree:" + ",".join(disagreeing)
+        surfaces = {
+            "source_checkout": source,
+            "active_release": active.resolve(),
+        }
+        observed: dict[str, str] = {}
+        for name, path in surfaces.items():
+            observed[name] = _surface_commit(path, name=name)
+        disagreeing = sorted(
+            name for name, head in observed.items() if head != commit
         )
+        if disagreeing:
+            # The whole point. One surface moving is not a deploy.
+            raise ControlPlaneDeployError(
+                "deploy_surfaces_disagree:" + ",".join(disagreeing)
+            )
 
-    restarted = _restart_units(restart_units)
+        runtime_binding = _install_intake_runtime_identity_drop_in(
+            Path(intake_runtime_drop_in).expanduser(),
+            source_repo=source,
+            source_commit=commit,
+        )
+        restarted = _restart_units(_required_restart_units(restart_units))
+        runtime = _verify_intake_runtime(
+            intake_version_url, expected_commit=commit
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -258,6 +403,8 @@ def deploy_control_plane_commit(
         "release_path": release["release_path"],
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
+        "intake_runtime_binding": runtime_binding,
+        "intake_runtime": runtime,
         # Every slot actually held, not the one base path the caller named.
         # The lock is an N-slot semaphore, so recording the input would
         # under-report what this deploy was exclusive with -- and a receipt
@@ -269,10 +416,12 @@ def deploy_control_plane_commit(
         "provider_mutation_performed": False,
         "raw_secret_values_recorded": False,
         "claim_boundary": (
-            "This receipt proves every named surface reports this commit and is "
-            "clean. It says nothing about whether any launch profile, bundle, or "
-            "preflight built at an earlier commit is still valid -- those bind "
-            "the deployed commit and are rebuilt after a deploy, not before."
+            "This receipt proves every named filesystem surface reports this "
+            "commit and is clean, and that the restarted intake process reports "
+            "the same commit. It says nothing about whether any launch profile, "
+            "bundle, or preflight built at an earlier commit is still valid -- "
+            "those bind the deployed commit and are rebuilt after a deploy, not "
+            "before."
         ),
     }
 
@@ -287,8 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--restart-unit",
         action="append",
-        default=[],
-        help="A systemd unit to restart and confirm active. Repeatable.",
+        default=None,
+        help=(
+            "An additional systemd unit to restart and confirm active. "
+            "Repeatable; the canonical intake unit is always restarted."
+        ),
     )
     parser.add_argument(
         "--paid-launch-lock",
@@ -300,6 +452,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--receipt-out")
+    parser.add_argument(
+        "--intake-runtime-drop-in", default=DEFAULT_INTAKE_RUNTIME_DROP_IN
+    )
+    parser.add_argument("--intake-version-url", default=DEFAULT_INTAKE_VERSION_URL)
     args = parser.parse_args(argv)
 
     try:
@@ -309,8 +465,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             release_root=args.release_root,
             state_root=args.state_root,
             active_link=args.active_link,
-            restart_units=tuple(args.restart_unit),
+            restart_units=tuple(args.restart_unit or ()),
             paid_launch_locks=tuple(args.paid_launch_lock or DEFAULT_PAID_LAUNCH_LOCKS),
+            intake_runtime_drop_in=args.intake_runtime_drop_in,
+            intake_version_url=args.intake_version_url,
         )
     except (OSError, ControlPlaneDeployError, ControlPlaneReleaseError) as exc:
         print(
