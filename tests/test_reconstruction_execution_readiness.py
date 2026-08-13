@@ -395,6 +395,31 @@ def test_capture_reconstruction_continuation_rejects_unbound_and_forbidden_conte
         )
 
 
+def test_capture_reconstruction_continuation_accepts_fresh_scene_registered_binding(
+    tmp_path: Path,
+) -> None:
+    _capture_build(tmp_path)
+    status = {
+        "schema_version": "fresh_scene_paired_target_preparation.v1",
+        "status": "blocked",
+        "task_count": 1,
+        "task_ids": ["task_a"],
+        "first_blocker": "fresh_scene_sam31_task_inputs_missing",
+        "next_required_stage": "sam31_task_inputs",
+        "status_digest": "",
+    }
+    status["status_digest"] = canonical_digest(status, digest_field="status_digest")
+    receipt = run_capture_reconstruction_supervisor_continuation(
+        capture_root=tmp_path / "capture_intake_envelope.json",
+        control_plane_inspection=_inspection(authorized=True, executed=False),
+        requested_tool_ids=["inspect_fresh_scene_preparation"],
+        context_bindings={"fresh_scene_preparation_status": status},
+        source_commit_sha=SOURCE_COMMIT,
+    )
+    assert receipt["bound_tool_ids"] == ["inspect_fresh_scene_preparation"]
+    assert receipt["actions_executed"] is False
+
+
 def test_reconstruction_continuation_receipt_refuses_proof_mutation(tmp_path: Path) -> None:
     _capture_build(tmp_path)
     receipt = run_capture_reconstruction_supervisor_continuation(

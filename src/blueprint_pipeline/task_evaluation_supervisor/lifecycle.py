@@ -79,6 +79,9 @@ _RECONSTRUCTION_CONTEXT_FIELDS = {
     "camera_rig_validation_request",
     "metric_scale_validation_request",
     "generated_repair_candidate_request",
+    "fresh_scene_preparation_status",
+    "fresh_scene_sam31_task_input_request",
+    "fresh_scene_calibrated_mask_request",
 }
 
 
@@ -740,12 +743,23 @@ def run_capture_reconstruction_supervisor_continuation(
         for row in readiness["stages"]
         if row["stage_id"] in requested
     }
+    # Fresh-scene preparation tools are support producers layered on the
+    # capture route, not reconstruction-method stages selected by that route.
+    # Their runtime availability was already established above from the
+    # registered, digest-bound context. Do not require them to masquerade as a
+    # reconstruction stage merely to pass readiness.
+    route_independent_tools = {
+        "inspect_fresh_scene_preparation",
+        "materialize_sam31_task_inputs",
+        "materialize_calibrated_object_masks",
+    }
     not_ready = sorted(
         tool_id
         for tool_id in requested
-        if tool_id not in requested_stages
+        if tool_id not in route_independent_tools
+        and (tool_id not in requested_stages
         or requested_stages[tool_id]["readiness_status"]
-        not in {"ready_for_bounded_tool_call", "recorded_support_completed"}
+        not in {"ready_for_bounded_tool_call", "recorded_support_completed"})
     )
     if not_ready:
         raise ValueError(
