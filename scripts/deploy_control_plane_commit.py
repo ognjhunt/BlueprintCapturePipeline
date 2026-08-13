@@ -28,8 +28,9 @@ and rents nothing.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
-import os
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -57,52 +58,70 @@ class ControlPlaneDeployError(ValueError):
     """A surface did not reach the requested commit, or cannot say that it did."""
 
 
-def _paid_launch_in_flight(lock_paths: Sequence[str]) -> list[dict[str, Any]]:
-    """Which paid launches are holding a provider right now.
+@contextlib.contextmanager
+def _holding_paid_launch_locks(lock_paths: Sequence[str]):
+    """Hold the provider's own launch lock for the whole deploy.
 
-    Activating the release symlink swaps the tree a running allocator was
-    started from, while that allocator is holding a rented GPU. The process has
-    already imported its modules, so the swap is not certain to break it -- but
-    "not certain to break it" is not a property to rely on with an instance
-    billing by the second, and a lane that reads any file from that path later
-    reads bytes from a different commit than the one it was admitted under.
+    Checking whether a lock is held and then deploying is two steps, and a
+    launch can start between them -- which is exactly what happened on
+    2026-08-13: the check passed and the parallel lane acquired the lock 20
+    seconds later, mid-deploy.
 
-    A held lock is a running paid attempt, and a deploy waits for it.
+    `vast_provider_adapter` guards a paid launch with `fcntl.flock` on this
+    file, so taking the same lock makes deploy and launch genuinely exclusive
+    rather than politely sequenced. While the deploy holds it a launch refuses
+    with `vast_paid_launch_lock_busy`, which is the correct outcome: a run must
+    not start against a release that is being swapped underneath it.
+
+    Opened read-only and never created. The adapter creates this file as the
+    service account at 0600; a deploy running as root that created it first
+    would leave a file the service can never open again, taking every paid lane
+    down. A lock that does not exist yet means no adapter has ever launched
+    here, so there is nothing to be exclusive with.
     """
 
-    held: list[dict[str, Any]] = []
-    for raw in lock_paths:
-        path = Path(raw).expanduser()
-        try:
-            if not path.is_file():
-                continue
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            # An unreadable lock is not proof of absence. Treat it as held.
-            held.append({"lock_path": str(path), "holder": "unreadable"})
-            continue
-        if not isinstance(record, Mapping):
-            held.append({"lock_path": str(path), "holder": "unreadable"})
-            continue
-        pid = record.get("pid")
-        if isinstance(pid, int) and not isinstance(pid, bool):
+    handles: list[Any] = []
+    try:
+        for raw in lock_paths:
+            path = Path(raw).expanduser()
             try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                # The holder is gone. A stale lock is the paid-lane reaper's
-                # problem, not a reason to refuse a deploy.
+                handle = path.open("r", encoding="utf-8")
+            except FileNotFoundError:
                 continue
-            except PermissionError:
-                pass
-        held.append(
-            {
-                "lock_path": str(path),
-                "pid": pid,
-                "acquired_at": record.get("acquired_at"),
-                "job_dir": record.get("job_dir"),
-            }
-        )
-    return held
+            except OSError as exc:
+                raise ControlPlaneDeployError(
+                    f"deploy_paid_launch_lock_unreadable:{path.name}"
+                ) from exc
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.seek(0)
+                holder = handle.read(1000)
+                handle.close()
+                for other in handles:
+                    other.close()
+                raise ControlPlaneDeployError(
+                    "deploy_refused_paid_launch_in_flight:" + _holder_summary(holder)
+                ) from None
+            handles.append(handle)
+        yield
+    finally:
+        for handle in handles:
+            with contextlib.suppress(OSError):
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+
+
+def _holder_summary(holder: str) -> str:
+    """Name the run that holds the lock, not the file that records it."""
+
+    try:
+        record = json.loads(holder)
+    except (ValueError, json.JSONDecodeError):
+        return "unparseable_holder"
+    if not isinstance(record, Mapping):
+        return "unparseable_holder"
+    return str(record.get("job_dir") or record.get("pid") or "unknown_holder")
 
 
 def _git(repo: Path, *arguments: str) -> tuple[int, str]:
@@ -175,22 +194,18 @@ def deploy_control_plane_commit(
     source = Path(source_repo).expanduser().resolve()
     active = Path(active_link).expanduser()
 
-    in_flight = _paid_launch_in_flight(paid_launch_locks)
-    if in_flight:
-        raise ControlPlaneDeployError(
-            "deploy_refused_paid_launch_in_flight:"
-            + ",".join(str(row.get("job_dir") or row.get("lock_path")) for row in in_flight)
+    # Held for the whole deploy, not sampled before it: a launch that starts
+    # mid-deploy would read a release being swapped underneath it.
+    with _holding_paid_launch_locks(paid_launch_locks):
+        _move_source_checkout(source, source_commit)
+        release = stage_task_evaluation_control_plane_release(
+            source_repo=source,
+            source_commit=source_commit,
+            release_root=release_root,
+            state_root=state_root,
+            active_link=active,
+            activate=True,
         )
-
-    _move_source_checkout(source, source_commit)
-    release = stage_task_evaluation_control_plane_release(
-        source_repo=source,
-        source_commit=source_commit,
-        release_root=release_root,
-        state_root=state_root,
-        active_link=active,
-        activate=True,
-    )
     commit = str(release["source_commit"])
 
     surfaces = {
