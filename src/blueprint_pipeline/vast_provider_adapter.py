@@ -2354,6 +2354,9 @@ def _blueprint_bundle_preflight(
     runner_text = ""
     eval_manifest: dict[str, Any] = {}
     eval_manifest_parse_error: str | None = None
+    #: The Content Agents bundle declares its own runtime inputs, so the zip is
+    #: checked against that declaration rather than against a fixed count.
+    content_agents_manifest: dict[str, Any] = {}
     readiness_path = (
         bundle_path.parent / readiness_name if bundle_path else job_dir / readiness_name
     )
@@ -2579,6 +2582,23 @@ def _blueprint_bundle_preflight(
                         ):
                             blockers.append("adp_gaussian_excision_dependency_wheelhouse_invalid")
                     if (
+                        provider_bundle_kind == "adp_content_agents"
+                        and "provider_runtime/adp_content_agents_provider_manifest.json"
+                        in zip_entries
+                    ):
+                        try:
+                            payload = json.loads(
+                                archive.read(
+                                    "provider_runtime/"
+                                    "adp_content_agents_provider_manifest.json"
+                                ).decode("utf-8", errors="replace")
+                            )
+                            content_agents_manifest = (
+                                dict(payload) if isinstance(payload, Mapping) else {}
+                            )
+                        except (ValueError, KeyError, json.JSONDecodeError):
+                            content_agents_manifest = {}
+                    if (
                         provider_bundle_kind in {"isaac", "adp_simready_isaac"}
                         and "provider_runtime/isaac_provider_eval_manifest.json" in zip_entries
                     ):
@@ -2601,19 +2621,78 @@ def _blueprint_bundle_preflight(
                 )
             missing_entries = sorted(required_entries - set(zip_entries))
             if provider_bundle_kind == "adp_content_agents":
-                input_usds = [
+                # This used to require exactly one reference image. The bundle
+                # format grew plural, digest-bound reference bindings and this
+                # did not, so every valid bundle since was refused for carrying
+                # the images it was built to carry -- the blocker naming a
+                # missing `.usda` that was present all along.
+                #
+                # The count was never the point. What matters is that the zip
+                # holds exactly the inputs the bundle's own manifest declares:
+                # an undeclared image riding along and a declared one missing
+                # are both refusals, and neither is a matter of how many.
+                declared_usd = str(
+                    (content_agents_manifest.get("runtime_input_binding") or {}).get(
+                        "relative_path"
+                    )
+                    or ""
+                )
+                declared_references = {
+                    str(row.get("relative_path") or "")
+                    for row in content_agents_manifest.get(
+                        "runtime_reference_image_bindings"
+                    )
+                    or []
+                    if isinstance(row, Mapping)
+                }
+                observed_usds = {
                     entry
                     for entry in zip_entries
-                    if entry.startswith("provider_runtime/input/") and entry.endswith(".usda")
-                ]
-                input_references = [
+                    if entry.startswith("provider_runtime/input/")
+                    and entry.endswith(".usda")
+                }
+                observed_references = {
                     entry
                     for entry in zip_entries
-                    if entry.startswith("provider_runtime/input/") and entry.endswith(".png")
-                ]
-                if len(input_usds) != 1 or len(input_references) != 1:
+                    if entry.startswith("provider_runtime/input/")
+                    and entry.endswith(".png")
+                }
+                if not declared_usd or not declared_references:
+                    # No declaration to check against is itself the failure: a
+                    # bundle whose manifest does not say what it runs on cannot
+                    # be verified by counting.
                     missing_entries = sorted(
-                        {*missing_entries, "provider_runtime/input/<variant>.usda"}
+                        {
+                            *missing_entries,
+                            "provider_runtime/adp_content_agents_provider_manifest.json"
+                            "#runtime_input_binding",
+                        }
+                    )
+                elif observed_usds != {f"provider_runtime/{declared_usd}"} or (
+                    observed_references
+                    != {f"provider_runtime/{name}" for name in declared_references}
+                ):
+                    missing_entries = sorted(
+                        {
+                            *missing_entries,
+                            f"provider_runtime/{declared_usd}",
+                            *(f"provider_runtime/{name}" for name in declared_references),
+                        }
+                        - set(zip_entries)
+                        | (
+                            {
+                                f"undeclared:{entry}"
+                                for entry in observed_usds | observed_references
+                                if entry
+                                not in {
+                                    f"provider_runtime/{declared_usd}",
+                                    *(
+                                        f"provider_runtime/{name}"
+                                        for name in declared_references
+                                    ),
+                                }
+                            }
+                        )
                     )
             wam_registered_alternative_present = (
                 provider_bundle_kind == "wam"
