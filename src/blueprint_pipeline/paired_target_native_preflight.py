@@ -234,8 +234,8 @@ def materialize_paired_target_native_preflight(
             or static.get("task_id") != task_id
             or static.get("asset_id") != cad.get("asset_id")
             or static.get("authored_structure_statically_qualified") is not True
-            or static.get("replacement_usd", {}).get("sha256")
-            != cad.get("output_usd", {}).get("sha256")
+            or static.get("authoring_receipt", {}).get("receipt_digest")
+            != cad.get("receipt_digest")
         ):
             raise PairedTargetNativePreflightError("native_preflight_cad_invalid")
         cad_usd = Path(cad["output_usd"]["path"]).expanduser().resolve()
@@ -261,6 +261,16 @@ def materialize_paired_target_native_preflight(
         visual_usd = Path(registered["output_usd"]["path"]).expanduser().resolve()
         if _record(visual_usd) != registered["output_usd"]:
             raise PairedTargetNativePreflightError("native_preflight_registered_asset_invalid")
+        if (
+            static.get("replacement_usd") != registered.get("output_usd")
+            or static.get("registered_replacement_asset", {}).get("receipt_digest")
+            != registered.get("receipt_digest")
+            or static.get("registered_visual_readback", {}).get(
+                "asset_frame_registration_digest"
+            )
+            != registered.get("frame_registration", {}).get("registration_digest")
+        ):
+            raise PairedTargetNativePreflightError("native_preflight_registered_static_invalid")
 
         registration_path, registration = _read(
             raw.get("asset_frame_registration_path", ""),
@@ -328,6 +338,10 @@ def materialize_paired_target_native_preflight(
                 "registered_replacement_asset_receipt": {
                     **_record(registered_path),
                     "receipt_digest": registered["receipt_digest"],
+                },
+                "registered_static_qualification": {
+                    **_record(static_path),
+                    "receipt_digest": static["receipt_digest"],
                 },
                 "registered_replacement_usd": _record(visual_usd),
                 "appearance_contract": {

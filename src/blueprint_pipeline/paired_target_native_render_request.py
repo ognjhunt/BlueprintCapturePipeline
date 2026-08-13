@@ -278,9 +278,17 @@ def materialize_paired_target_native_render_request(
                 f"paired_target_native_visual_invalid:{task_id}",
             )
             registration = task.get("asset_frame_registration")
+            registered_static_path, registered_static = _verified_file_record(
+                task.get("registered_static_qualification"),
+                f"paired_target_native_registered_static_invalid:{task_id}",
+            )
+            registered_static["receipt_digest"] = task.get(
+                "registered_static_qualification", {}
+            ).get("receipt_digest")
             appearance_contract = task.get("appearance_contract")
             if (
                 not isinstance(registration, Mapping)
+                or not isinstance(registered_static, Mapping)
                 or not isinstance(appearance_contract, Mapping)
                 or appearance_contract.get("agent_authored_display_colors_preserved") is not True
                 or appearance_contract.get("neutral_fallback_permitted") is not False
@@ -306,6 +314,8 @@ def materialize_paired_target_native_render_request(
                     "visual_usd": visual,
                     "visual_source_path": visual_path,
                     "asset_frame_registration": dict(registration),
+                    "registered_static_qualification": dict(registered_static),
+                    "registered_static_source_path": registered_static_path,
                 }
             )
         for task in tasks:
@@ -352,6 +362,9 @@ def materialize_paired_target_native_render_request(
                     "simready_usd": simready,
                     "visual_usd": active_replacement["visual_usd"],
                     "asset_frame_registration": active_replacement["asset_frame_registration"],
+                    "registered_static_qualification": active_replacement[
+                        "registered_static_qualification"
+                    ],
                     "co_present_replacements": [
                         {
                             "task_id": row["task_id"],
@@ -359,6 +372,9 @@ def materialize_paired_target_native_render_request(
                             "simready_usd": row["simready_usd"],
                             "visual_usd": row["visual_usd"],
                             "asset_frame_registration": row["asset_frame_registration"],
+                            "registered_static_qualification": row[
+                                "registered_static_qualification"
+                            ],
                             "task_subject": row["task_id"] == task_id,
                             "passive_co_present": row["task_id"] != task_id,
                         }
@@ -409,6 +425,18 @@ def materialize_paired_target_native_render_request(
                     raise PairedTargetNativeRenderRequestError(
                         "paired_target_native_source_changed:"
                         f"{task_id}:co_present_visual:{row['asset_id']}"
+                    )
+                registered_static_source_path = row["registered_static_source_path"]
+                registered_static_record = row["registered_static_qualification"]
+                if (
+                    registered_static_source_path.stat().st_size
+                    != registered_static_record["size_bytes"]
+                    or _sha256(registered_static_source_path)
+                    != registered_static_record["sha256"]
+                ):
+                    raise PairedTargetNativeRenderRequestError(
+                        "paired_target_native_source_changed:"
+                        f"{task_id}:registered_static:{row['asset_id']}"
                     )
 
         result: dict[str, Any] = {

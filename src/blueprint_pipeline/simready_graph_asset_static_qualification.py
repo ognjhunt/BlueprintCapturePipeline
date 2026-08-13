@@ -19,6 +19,10 @@ from typing import Any
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .registered_replacement_asset import (
+    RegisteredReplacementAssetError,
+    validate_registered_replacement_asset,
+)
 from .simready_graph_asset import (
     RECEIPT_SCHEMA as ASSET_RECEIPT_SCHEMA,
     SimReadyGraphAssetError,
@@ -145,6 +149,7 @@ def qualify_simready_graph_asset_static(
     *,
     spec: Mapping[str, Any],
     authoring_receipt_path: str | Path,
+    registered_replacement_asset_receipt_path: str | Path | None = None,
     output_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Re-open and compare every authored graph field against its sealed spec."""
@@ -172,16 +177,50 @@ def qualify_simready_graph_asset_static(
             ["graph_asset_static_authoring_receipt_binding_mismatch"]
         )
     output_usd = receipt.get("output_usd") or {}
-    usd_path = Path(str(output_usd.get("path") or "")).expanduser().resolve()
+    authored_usd_path = Path(str(output_usd.get("path") or "")).expanduser().resolve()
     if (
-        not usd_path.is_file()
-        or usd_path.is_symlink()
-        or usd_path.stat().st_size != output_usd.get("size_bytes")
-        or _sha256(usd_path) != output_usd.get("sha256")
+        not authored_usd_path.is_file()
+        or authored_usd_path.is_symlink()
+        or authored_usd_path.stat().st_size != output_usd.get("size_bytes")
+        or _sha256(authored_usd_path) != output_usd.get("sha256")
     ):
         raise SimReadyGraphAssetStaticQualificationError(
             ["graph_asset_static_usd_bytes_changed"]
         )
+    registered_path: Path | None = None
+    registered: dict[str, Any] | None = None
+    usd_path = authored_usd_path
+    if registered_replacement_asset_receipt_path is not None:
+        registered_path = (
+            Path(registered_replacement_asset_receipt_path).expanduser().resolve()
+        )
+        try:
+            raw_registered = json.loads(registered_path.read_text(encoding="utf-8"))
+            registered = validate_registered_replacement_asset(raw_registered)
+        except (OSError, json.JSONDecodeError, RegisteredReplacementAssetError) as exc:
+            raise SimReadyGraphAssetStaticQualificationError(
+                ["graph_asset_static_registered_replacement_invalid"]
+            ) from exc
+        if (
+            registered_path.is_symlink()
+            or registered.get("task_id") != admitted["task_id"]
+            or registered.get("asset_id") != admitted["asset_id"]
+            or registered.get("task_freeze_digest") != admitted["task_freeze_digest"]
+        ):
+            raise SimReadyGraphAssetStaticQualificationError(
+                ["graph_asset_static_registered_replacement_binding_mismatch"]
+            )
+        final_record = registered["output_usd"]
+        usd_path = Path(str(final_record["path"])).expanduser().resolve()
+        if (
+            usd_path.is_symlink()
+            or not usd_path.is_file()
+            or usd_path.stat().st_size != final_record.get("size_bytes")
+            or _sha256(usd_path) != final_record.get("sha256")
+        ):
+            raise SimReadyGraphAssetStaticQualificationError(
+                ["graph_asset_static_registered_replacement_bytes_changed"]
+            )
     stage = Usd.Stage.Open(str(usd_path), load=Usd.Stage.LoadAll)
     if stage is None:
         raise SimReadyGraphAssetStaticQualificationError(
@@ -204,15 +243,40 @@ def qualify_simready_graph_asset_static(
     ):
         findings.append("graph_asset_static_root_binding_mismatch")
     root_order, root_ops = _xform_ops(root)
-    if root_order != ["xformOp:translate", "xformOp:orient"]:
-        findings.append("graph_asset_static_root_xform_order_mismatch")
-    if not _close(
-        root_ops.get("xformOp:translate"), admitted["world_pose"]["translation_m"]
-    ) or not _close(
-        _quat_xyzw(root_ops.get("xformOp:orient")),
-        admitted["world_pose"]["orientation_xyzw"],
-    ):
-        findings.append("graph_asset_static_world_pose_mismatch")
+    if registered is None:
+        if root_order != ["xformOp:translate", "xformOp:orient"]:
+            findings.append("graph_asset_static_root_xform_order_mismatch")
+        if not _close(
+            root_ops.get("xformOp:translate"), admitted["world_pose"]["translation_m"]
+        ) or not _close(
+            _quat_xyzw(root_ops.get("xformOp:orient")),
+            admitted["world_pose"]["orientation_xyzw"],
+        ):
+            findings.append("graph_asset_static_world_pose_mismatch")
+    else:
+        expected_matrix = np.asarray(
+            registered["T_observed_world_axes_from_asset_local_axes"], dtype=np.float64
+        )
+        expected_matrix[3, :3] = np.asarray(
+            registered["source_root_translation_preserved"], dtype=np.float64
+        )
+        actual_matrix = root_ops.get("xformOp:transform:assetFrameRegistration")
+        try:
+            actual_values = np.asarray(actual_matrix, dtype=np.float64)
+        except (TypeError, ValueError):
+            actual_values = np.empty((0, 0), dtype=np.float64)
+        if root_order != ["xformOp:transform:assetFrameRegistration"]:
+            findings.append("graph_asset_static_registered_root_xform_order_mismatch")
+        if actual_values.shape != (4, 4) or not np.allclose(
+            actual_values, expected_matrix, atol=1e-7, rtol=0.0
+        ):
+            findings.append("graph_asset_static_registered_world_pose_mismatch")
+        if (
+            _custom(root, "blueprint:assetFrameRegistrationDigest")
+            != registered["frame_registration"]["registration_digest"]
+            or _custom(root, "blueprint:identityOrientationAssumed") is not False
+        ):
+            findings.append("graph_asset_static_registered_frame_binding_mismatch")
 
     graph_links = {
         row["link_id"]: row for row in admitted["articulation_graph"]["links"]
@@ -554,9 +618,47 @@ def qualify_simready_graph_asset_static(
             "collision_pair_matrix_incomplete:"
             f"declared={len(declared_pairs)}:required={len(all_pairs)}"
         )
+    visual_readback: dict[str, Any] | None = None
+    if registered is None:
+        contract_blockers.append("visual_material_artifact_unbound")
+    else:
+        visual_meshes = [
+            prim
+            for prim in stage.Traverse()
+            if prim.IsA(UsdGeom.Mesh)
+            and str(UsdGeom.Imageable(prim).ComputePurpose()).lower() == "default"
+            and str(UsdGeom.Imageable(prim).ComputeVisibility()).lower() != "invisible"
+        ]
+        bound_material_count = sum(
+            bool(UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0])
+            for prim in visual_meshes
+        )
+        authored_color_count = sum(
+            _custom(prim, "blueprint:agentAuthoredDisplayColorRgba") is not None
+            for prim in visual_meshes
+        )
+        composition_path = Path(
+            str(registered["visual_composition_receipt"]["path"])
+        ).expanduser().resolve()
+        composition = json.loads(composition_path.read_text(encoding="utf-8"))
+        expected_visual_count = int(composition["visual_mesh_count"])
+        visual_readback = {
+            "render_visible_visual_mesh_count": len(visual_meshes),
+            "bound_material_visual_mesh_count": bound_material_count,
+            "agent_authored_color_visual_mesh_count": authored_color_count,
+            "expected_visual_mesh_count": expected_visual_count,
+            "asset_frame_registration_digest": registered["frame_registration"][
+                "registration_digest"
+            ],
+        }
+        if len(visual_meshes) != expected_visual_count:
+            findings.append("graph_asset_static_registered_visual_mesh_set_mismatch")
+        if bound_material_count != len(visual_meshes):
+            findings.append("graph_asset_static_registered_visual_materials_missing")
+        if authored_color_count != len(visual_meshes):
+            findings.append("graph_asset_static_registered_visual_colors_missing")
     contract_blockers.extend(
         [
-            "visual_material_artifact_unbound",
             "texture_artifact_unbound",
             "collision_approximation_contract_unbound",
             "native_simulator_import_unexecuted",
@@ -580,6 +682,15 @@ def qualify_simready_graph_asset_static(
             "sha256": _sha256(receipt_path),
             "receipt_digest": receipt["receipt_digest"],
         },
+        "registered_replacement_asset": (
+            {
+                "path": str(registered_path),
+                "sha256": _sha256(registered_path),
+                "receipt_digest": registered["receipt_digest"],
+            }
+            if registered is not None and registered_path is not None
+            else None
+        ),
         "replacement_usd": {
             "path": str(usd_path),
             "size_bytes": usd_path.stat().st_size,
@@ -595,6 +706,7 @@ def qualify_simready_graph_asset_static(
             "complete_pair_count": len(all_pairs),
             "filtered_pairs": [list(pair) for pair in sorted(filtered_pairs)],
         },
+        "registered_visual_readback": visual_readback,
         "claim_boundary": {
             "authored_usd_structure_only": True,
             "native_simulator_import_qualified": False,

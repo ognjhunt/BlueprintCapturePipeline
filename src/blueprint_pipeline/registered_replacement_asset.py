@@ -74,6 +74,7 @@ def validate_registered_replacement_asset(
         payload.get("schema_version") != SCHEMA_VERSION
         or payload.get("status") != "registered_replacement_materialized_pending_native_import"
         or payload.get("receipt_digest") != canonical_digest(payload, digest_field="receipt_digest")
+        or not str(payload.get("task_freeze_digest") or "").startswith("sha256:")
         or payload.get("agent_authored_display_colors_preserved") is not True
         or payload.get("generated_texture_maps_present") is not False
         or payload.get("neutral_fallback_present") is not False
@@ -110,6 +111,8 @@ def validate_registered_replacement_asset(
                 for payload_value in (registration_value, composition_value)
                 for field in ("scene_id", "task_id", "asset_id")
             )
+            or payload.get("task_freeze_digest")
+            != composition_value.get("task_freeze_digest")
         ):
             raise RegisteredReplacementAssetError("registered_replacement_bound_receipt_invalid")
     return payload
@@ -191,6 +194,7 @@ def materialize_registered_replacement_asset(
         "scene_id": composition["scene_id"],
         "task_id": composition["task_id"],
         "asset_id": composition["asset_id"],
+        "task_freeze_digest": composition["task_freeze_digest"],
         "visual_composition_receipt": {
             **_record(composition_path),
             "receipt_digest": composition["receipt_digest"],

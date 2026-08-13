@@ -293,6 +293,8 @@ def validate_simready_replacement_native_import_execution(
         errors.append("simready_replacement_native_import_execution_physical_claim_invalid")
     if not _digest(payload.get("replacement_asset_sha256")):
         errors.append("simready_replacement_native_import_execution_asset_digest_invalid")
+    if not _digest(payload.get("registered_static_qualification_digest")):
+        errors.append("simready_replacement_native_import_execution_static_digest_invalid")
     import_identity = payload.get("simulator_import_identity")
     if not isinstance(import_identity, Mapping) or not str(
         import_identity.get("runtime") or ""
@@ -335,6 +337,8 @@ def validate_simready_replacement_native_import_probe_result(
         errors.append("simready_replacement_native_import_probe_policy_queried")
     if not _digest(payload.get("replacement_asset_sha256")):
         errors.append("simready_replacement_native_import_probe_asset_digest_invalid")
+    if not _digest(payload.get("registered_static_qualification_digest")):
+        errors.append("simready_replacement_native_import_probe_static_digest_invalid")
     if not str(payload.get("asset_id") or ""):
         errors.append("simready_replacement_native_import_probe_asset_id_missing")
     import_identity = payload.get("simulator_import_identity")
@@ -360,6 +364,7 @@ def materialize_simready_replacement_native_import_execution(
     *,
     static_qualification_receipt_path: str | Path,
     native_import_probe_result_path: str | Path,
+    expected_registered_static_qualification_digest: str | None = None,
     output_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Derive an import execution receipt from a retained native probe result."""
@@ -402,6 +407,11 @@ def materialize_simready_replacement_native_import_execution(
         )
     if probe.get("asset_id") != static.get("asset_id"):
         errors.append("simready_replacement_native_import_execution_asset_id_mismatch")
+    expected_static_digest = (
+        expected_registered_static_qualification_digest or static.get("receipt_digest")
+    )
+    if probe.get("registered_static_qualification_digest") != expected_static_digest:
+        errors.append("simready_replacement_native_import_execution_static_digest_mismatch")
     if errors:
         raise SimReadyReplacementNativeQualificationError(errors)
     result: dict[str, Any] = {
@@ -409,6 +419,9 @@ def materialize_simready_replacement_native_import_execution(
         "status": "completed",
         "asset_id": str(probe["asset_id"]),
         "replacement_asset_sha256": str(probe["replacement_asset_sha256"]),
+        "registered_static_qualification_digest": str(
+            probe["registered_static_qualification_digest"]
+        ),
         "native_isaac_executed": True,
         "native_simulator_import_qualified": True,
         "physical_equivalence_claimed": False,

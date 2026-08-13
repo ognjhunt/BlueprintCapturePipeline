@@ -30,6 +30,20 @@ def _source_request(tmp_path: Path) -> Path:
     import hashlib
 
     sha = "sha256:" + hashlib.sha256(asset.read_bytes()).hexdigest()
+    static_path = tmp_path / "registered_static.json"
+    static = {
+        "schema_version": "simready_graph_asset_static_qualification.v1",
+        "authored_structure_statically_qualified": True,
+        "replacement_usd": {
+            "path": str(asset),
+            "size_bytes": asset.stat().st_size,
+            "sha256": sha,
+        },
+        "receipt_digest": "",
+    }
+    static["receipt_digest"] = canonical_digest(static, digest_field="receipt_digest")
+    write_json(static_path, static)
+    static_sha = "sha256:" + hashlib.sha256(static_path.read_bytes()).hexdigest()
     source = {
         "schema_version": "paired_target_native_render_request.v1",
         "status": "native_render_requests_materialized_pending_isaac_execution",
@@ -50,7 +64,15 @@ def _source_request(tmp_path: Path) -> Path:
                             "size_bytes": asset.stat().st_size,
                             "sha256": sha,
                         },
-                        "asset_frame_registration": {"registration_digest": "sha256:" + "b" * 64},
+                        "asset_frame_registration": {
+                            "registration_digest": "sha256:" + "b" * 64
+                        },
+                        "registered_static_qualification": {
+                            "path": str(static_path),
+                            "size_bytes": static_path.stat().st_size,
+                            "sha256": static_sha,
+                            "receipt_digest": static["receipt_digest"],
+                        },
                         "task_subject": True,
                         "passive_co_present": False,
                     }
@@ -126,7 +148,9 @@ def _authority(bundle: dict) -> dict:
             "sha256": vast._sha256(receipt_path),
         }
     )
-    value["authorization_digest"] = canonical_digest(value, digest_field="authorization_digest")
+    value["authorization_digest"] = canonical_digest(
+        value, digest_field="authorization_digest"
+    )
     return value
 
 
@@ -136,15 +160,14 @@ def test_bundle_reopen_and_provider_contract_cover_dynamic_assets(tmp_path: Path
         entrypoint = archive.read(
             "provider_runtime/run_paired_target_native_import_probe.sh"
         ).decode()
-        runner = archive.read("provider_runtime/run_paired_target_native_import_probe.py").decode()
-    assert (
-        provider_runtime_contract_blockers(
-            provider_bundle_kind="paired_target_native_import",
-            entrypoint_text=entrypoint,
-            runner_text=runner,
-        )
-        == []
-    )
+        runner = archive.read(
+            "provider_runtime/run_paired_target_native_import_probe.py"
+        ).decode()
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="paired_target_native_import",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
         generated_at="2026-08-13T00:00:00Z",
@@ -167,7 +190,9 @@ def test_output_inspector_recognizes_paired_result(tmp_path: Path) -> None:
     }
     output = tmp_path / "output.zip"
     with zipfile.ZipFile(output, "w") as archive:
-        archive.writestr("paired_target_native_import_runtime_result.v1.json", json.dumps(result))
+        archive.writestr(
+            "paired_target_native_import_runtime_result.v1.json", json.dumps(result)
+        )
     inspected = inspect_provider_runtime_output_zip(output, expected_video_count=0)
     assert inspected["runtime_result_present"] is True
     assert inspected["runtime_result_status"] == "completed"
@@ -277,9 +302,7 @@ def test_live_run_requires_qualified_runtime_watchdog_cleanup_and_zero(
         }
 
     monkeypatch.setattr(vast, "stage_wam_provider_bundle_object_store", fake_stage)
-    monkeypatch.setattr(
-        vast, "arm_independent_vast_watchdog", lambda **kwargs: ({"status": "armed"}, Handle())
-    )
+    monkeypatch.setattr(vast, "arm_independent_vast_watchdog", lambda **kwargs: ({"status": "armed"}, Handle()))
     monkeypatch.setattr(vast, "run_vast_provider_adapter", fake_adapter)
     monkeypatch.setattr(
         vast,
