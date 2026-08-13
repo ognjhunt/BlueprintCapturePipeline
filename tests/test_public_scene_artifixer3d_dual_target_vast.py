@@ -273,4 +273,8 @@ def test_provider_output_allowlist_retains_raw_artifixer3d_review_frames() -> No
         enable_isaac_smoke=False,
         provider_bundle_kind="adp_artifixer3d",
     )
-    assert "/artifixer3d_review_frames/" in shell
+    normalized_review_predicate = (
+        "'/artifixer3d_review_frames/' in '/' + relative"
+    )
+    assert normalized_review_predicate in shell
+    assert "parts[0] == 'tasks'" in shell

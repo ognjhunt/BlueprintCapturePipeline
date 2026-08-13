@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import shutil
 
 import pytest
+from PIL import Image
 
 from tests.test_public_scene_artifixer3d_dual_target_inputs import _dual_candidate
 
@@ -92,6 +94,91 @@ def test_actual_materialized_dual_target_contract_and_masks_are_accepted(
     ]
     assert not (images / "frame_00001_mask.png").exists()
     assert not (images / "frame_00003_mask.png").exists()
+
+
+def test_native_review_layout_is_byte_copied_to_provider_retained_directory(
+    tmp_path: Path,
+) -> None:
+    runner = _runner_module()
+    _dual_root, _source, _semantic, dual = _dual_candidate(
+        tmp_path / "candidate", cameras_per_task=2
+    )
+    task = dual["tasks"][0]
+    staged_task = Path(task["scene_directory"])
+    task_output = tmp_path / "runtime_output" / "tasks" / task["task_id"]
+    native_review = (
+        task_output
+        / "artifixer3d"
+        / "recon_results"
+        / task["task_id"]
+        / "artifixer3d"
+        / task["task_id"]
+        / "ours_10"
+        / "review_transforms"
+    )
+    renders = native_review / "renders"
+    renders.mkdir(parents=True)
+    source_bytes: list[bytes] = []
+    for frame in task["frames"]:
+        source = staged_task / frame["anchor_rgb"]["relative_path"]
+        destination = renders / f"{frame['physical_camera_index']:05d}.png"
+        shutil.copyfile(source, destination)
+        source_bytes.append(destination.read_bytes())
+
+    rows = runner._normalize_dual_target_review_frames(
+        task=task,
+        staged_task=staged_task,
+        review_dir=native_review,
+        task_output=task_output,
+    )
+
+    normalized = task_output / "artifixer3d_review_frames"
+    assert [Path(row["path"]) for row in rows] == [
+        normalized / "00000.png",
+        normalized / "00001.png",
+    ]
+    assert [path.read_bytes() for path in sorted(normalized.iterdir())] == source_bytes
+    assert [row["frame_index"] for row in rows] == [0, 1]
+    assert [row["camera_id"] for row in rows] == [
+        frame["camera_id"] for frame in task["frames"]
+    ]
+
+
+@pytest.mark.parametrize("failure", ["missing", "extra", "order", "size"])
+def test_review_normalization_fails_closed_on_invalid_native_output(
+    tmp_path: Path, failure: str
+) -> None:
+    runner = _runner_module()
+    _dual_root, _source, _semantic, dual = _dual_candidate(
+        tmp_path / "candidate", cameras_per_task=2
+    )
+    task = dual["tasks"][0]
+    staged_task = Path(task["scene_directory"])
+    task_output = tmp_path / "runtime_output" / "tasks" / task["task_id"]
+    native_review = task_output / "native" / "review_transforms"
+    renders = native_review / "renders"
+    renders.mkdir(parents=True)
+    for frame in task["frames"]:
+        source = staged_task / frame["anchor_rgb"]["relative_path"]
+        shutil.copyfile(
+            source, renders / f"{frame['physical_camera_index']:05d}.png"
+        )
+    if failure == "missing":
+        (renders / "00001.png").unlink()
+    elif failure == "extra":
+        shutil.copyfile(renders / "00000.png", renders / "00002.png")
+    elif failure == "order":
+        task["frames"] = list(reversed(task["frames"]))
+    else:
+        Image.new("RGB", (1, 1), "black").save(renders / "00001.png")
+
+    with pytest.raises(ValueError, match="artifixer3d_dual_target_review_"):
+        runner._normalize_dual_target_review_frames(
+            task=task,
+            staged_task=staged_task,
+            review_dir=native_review,
+            task_output=task_output,
+        )
 
 
 def test_dual_target_execute_skips_all_direct_model_downloads_and_3d_plus(

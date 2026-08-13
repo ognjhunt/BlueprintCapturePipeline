@@ -680,6 +680,91 @@ def _stage_dual_target_anchor_masks(
     return rows
 
 
+def _normalize_dual_target_review_frames(
+    *,
+    task: Mapping[str, Any],
+    staged_task: Path,
+    review_dir: Path,
+    task_output: Path,
+) -> list[dict[str, Any]]:
+    """Byte-copy the native 3DGRUT renders into the provider-retained layout."""
+    from PIL import Image
+
+    frames = task["frames"]
+    camera_count = int(task["physical_camera_count"])
+    if (
+        len(frames) != camera_count
+        or [int(frame["physical_camera_index"]) for frame in frames]
+        != list(range(camera_count))
+    ):
+        raise ValueError("artifixer3d_dual_target_review_camera_order_invalid")
+
+    render_root = review_dir / "renders"
+    if (
+        review_dir.is_symlink()
+        or render_root.is_symlink()
+        or not render_root.is_dir()
+    ):
+        raise ValueError("artifixer3d_dual_target_review_frame_set_invalid")
+    expected_names = [f"{index:05d}.png" for index in range(camera_count)]
+    rendered_entries = sorted(render_root.iterdir(), key=lambda path: path.name)
+    if [path.name for path in rendered_entries] != expected_names or any(
+        path.is_symlink() or not path.is_file() or path.stat().st_size <= 0
+        for path in rendered_entries
+    ):
+        raise ValueError("artifixer3d_dual_target_review_frame_set_invalid")
+
+    normalized_root = task_output / "artifixer3d_review_frames"
+    if normalized_root.exists() or normalized_root.is_symlink():
+        raise ValueError("artifixer3d_dual_target_review_destination_exists")
+    normalized_root.mkdir()
+    rows: list[dict[str, Any]] = []
+    for frame, rendered in zip(frames, rendered_entries):
+        index = int(frame["physical_camera_index"])
+        anchor = _bound(
+            staged_task,
+            frame["anchor_rgb"],
+            "artifixer3d_dual_target_anchor_rgb_unbound",
+        )
+        try:
+            with Image.open(anchor) as anchor_image:
+                expected_size = anchor_image.size
+            with Image.open(rendered) as rendered_image:
+                if rendered_image.format != "PNG":
+                    raise ValueError
+                rendered_size = rendered_image.size
+                rendered_image.verify()
+        except (OSError, SyntaxError, ValueError) as exc:
+            raise ValueError(
+                "artifixer3d_dual_target_review_frame_invalid"
+            ) from exc
+        if rendered_size != expected_size:
+            raise ValueError("artifixer3d_dual_target_review_frame_size_invalid")
+
+        normalized = normalized_root / f"{index:05d}.png"
+        shutil.copyfile(rendered, normalized)
+        if (
+            normalized.is_symlink()
+            or not normalized.is_file()
+            or normalized.stat().st_size != rendered.stat().st_size
+            or _sha256(normalized) != _sha256(rendered)
+        ):
+            raise ValueError("artifixer3d_dual_target_review_frame_copy_invalid")
+        rows.append(
+            {
+                "frame_index": index,
+                "camera_id": frame["camera_id"],
+                **_file_record(normalized),
+            }
+        )
+    if (
+        len(rows) != camera_count
+        or sorted(path.name for path in normalized_root.iterdir()) != expected_names
+    ):
+        raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
+    return rows
+
+
 def _dual_target_task_runtime(
     *,
     task: Mapping[str, Any],
@@ -791,19 +876,12 @@ def _dual_target_task_runtime(
                 replace=False,
                 render_trajectory_path=review_trajectory,
             )
-    review_rows: list[dict[str, Any]] = []
-    for frame in task["frames"]:
-        index = int(frame["physical_camera_index"])
-        rendered = review_dir / "renders" / f"{index:05d}.png"
-        if not rendered.is_file() or rendered.is_symlink():
-            raise ValueError("artifixer3d_dual_target_review_frame_missing")
-        review_rows.append(
-            {
-                "frame_index": index,
-                "camera_id": frame["camera_id"],
-                **_file_record(rendered),
-            }
-        )
+    review_rows = _normalize_dual_target_review_frames(
+        task=task,
+        staged_task=staged_task,
+        review_dir=review_dir,
+        task_output=task_output,
+    )
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
     return {
