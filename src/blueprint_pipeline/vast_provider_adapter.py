@@ -5428,7 +5428,16 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
     )
 
 
-def _log_result_has_container_missing(log_result: Mapping[str, Any]) -> bool:
+def _log_result_saw_container_missing(log_result: Mapping[str, Any]) -> bool:
+    """Did any poll see "No such container"?
+
+    This answers a transport question -- *should we try another channel* -- and
+    any sighting is the right trigger for that, including one during startup.
+    It deliberately does not answer whether the container died; see
+    `_log_result_container_vanished_after_output`, which is the one a blocker
+    may rely on.
+    """
+
     attempts = log_result.get("log_poll_attempts")
     if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
         return False
@@ -5436,6 +5445,40 @@ def _log_result_has_container_missing(log_result: Mapping[str, Any]) -> bool:
         isinstance(item, Mapping) and bool(item.get("container_missing_marker_observed"))
         for item in attempts
     )
+
+
+def _log_result_container_vanished_after_output(log_result: Mapping[str, Any]) -> bool:
+    """Did the container go missing *after* we watched it working?
+
+    "No such container" before the first byte of output is a startup race, not
+    a dead container: the poll simply arrived before Docker created it. Treating
+    that as terminal kills runs that are about to work.
+
+    That is not hypothetical. `adp-gaussian-excision-live-20260813T160321Z` was
+    torn down four minutes in on `vast_heartbeat_container_missing`, having
+    compiled and installed three CUDA rasterizer extensions -- the whole log
+    ends on `Successfully installed`, with no error and no terminal marker,
+    because the workload was still going. The final fetched log contains zero
+    occurrences of the marker the blocker is named for.
+
+    So the marker only counts once output has been seen. After that, a missing
+    container is a real one: it was there, and now it is not. The same shape as
+    the transport-failure and instance-exited blockers beside it, both of which
+    were misattributions until they were made to corroborate.
+    """
+
+    attempts = log_result.get("log_poll_attempts")
+    if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
+        return False
+    seen_output = False
+    for item in attempts:
+        if not isinstance(item, Mapping):
+            continue
+        if seen_output and bool(item.get("container_missing_marker_observed")):
+            return True
+        if int(item.get("output_size_bytes") or 0) > 0:
+            seen_output = True
+    return False
 
 
 def _log_text_has_success_marker(text: str, markers: Sequence[str]) -> bool:
@@ -7479,7 +7522,7 @@ def run_vast_provider_adapter(
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         if not _log_text_has_success_marker(
             heartbeat_text, log_success_markers
-        ) and _log_result_has_container_missing(onstart_logs):
+        ) and _log_result_saw_container_missing(onstart_logs):
             if _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV):
                 execute_logs = _execute_and_fetch(
                     instance_id=instance_id,
@@ -7553,7 +7596,7 @@ def run_vast_provider_adapter(
                 heartbeat_blockers.append("vast_heartbeat_instance_exited")
             if heartbeat_no_progress_timeout and not heartbeat_log_transport_failed:
                 heartbeat_blockers.append("vast_heartbeat_no_log_progress_timeout")
-            if _log_result_has_container_missing(onstart_logs):
+            if _log_result_container_vanished_after_output(onstart_logs):
                 heartbeat_blockers.append("vast_heartbeat_container_missing")
             heartbeat_blockers.append("vast_heartbeat_output_missing_success_marker")
             heartbeat_blockers = _dedupe(heartbeat_blockers)
