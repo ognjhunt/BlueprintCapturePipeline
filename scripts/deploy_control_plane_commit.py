@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import sys
 
@@ -44,9 +45,64 @@ from stage_task_evaluation_control_plane_release import (  # noqa: E402
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
 
+#: The single-flight guard a lane holds for the whole life of a paid instance.
+#: `vast_provider_adapter` writes it before the launch API call and clears it on
+#: teardown, and it records the holding pid and job directory.
+DEFAULT_PAID_LAUNCH_LOCKS = (
+    "/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
+)
+
 
 class ControlPlaneDeployError(ValueError):
     """A surface did not reach the requested commit, or cannot say that it did."""
+
+
+def _paid_launch_in_flight(lock_paths: Sequence[str]) -> list[dict[str, Any]]:
+    """Which paid launches are holding a provider right now.
+
+    Activating the release symlink swaps the tree a running allocator was
+    started from, while that allocator is holding a rented GPU. The process has
+    already imported its modules, so the swap is not certain to break it -- but
+    "not certain to break it" is not a property to rely on with an instance
+    billing by the second, and a lane that reads any file from that path later
+    reads bytes from a different commit than the one it was admitted under.
+
+    A held lock is a running paid attempt, and a deploy waits for it.
+    """
+
+    held: list[dict[str, Any]] = []
+    for raw in lock_paths:
+        path = Path(raw).expanduser()
+        try:
+            if not path.is_file():
+                continue
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            # An unreadable lock is not proof of absence. Treat it as held.
+            held.append({"lock_path": str(path), "holder": "unreadable"})
+            continue
+        if not isinstance(record, Mapping):
+            held.append({"lock_path": str(path), "holder": "unreadable"})
+            continue
+        pid = record.get("pid")
+        if isinstance(pid, int) and not isinstance(pid, bool):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                # The holder is gone. A stale lock is the paid-lane reaper's
+                # problem, not a reason to refuse a deploy.
+                continue
+            except PermissionError:
+                pass
+        held.append(
+            {
+                "lock_path": str(path),
+                "pid": pid,
+                "acquired_at": record.get("acquired_at"),
+                "job_dir": record.get("job_dir"),
+            }
+        )
+    return held
 
 
 def _git(repo: Path, *arguments: str) -> tuple[int, str]:
@@ -112,11 +168,19 @@ def deploy_control_plane_commit(
     state_root: str | Path,
     active_link: str | Path,
     restart_units: Sequence[str] = (),
+    paid_launch_locks: Sequence[str] = DEFAULT_PAID_LAUNCH_LOCKS,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
 
     source = Path(source_repo).expanduser().resolve()
     active = Path(active_link).expanduser()
+
+    in_flight = _paid_launch_in_flight(paid_launch_locks)
+    if in_flight:
+        raise ControlPlaneDeployError(
+            "deploy_refused_paid_launch_in_flight:"
+            + ",".join(str(row.get("job_dir") or row.get("lock_path")) for row in in_flight)
+        )
 
     _move_source_checkout(source, source_commit)
     release = stage_task_evaluation_control_plane_release(
@@ -158,6 +222,7 @@ def deploy_control_plane_commit(
         "release_path": release["release_path"],
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
+        "paid_launch_locks_checked": list(paid_launch_locks),
         "provider_mutation_performed": False,
         "raw_secret_values_recorded": False,
         "claim_boundary": (
@@ -182,6 +247,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="A systemd unit to restart and confirm active. Repeatable.",
     )
+    parser.add_argument(
+        "--paid-launch-lock",
+        action="append",
+        default=None,
+        help=(
+            "A provider single-flight lock to check before activating. "
+            "Repeatable. Defaults to the canonical Vast paid-launch lock."
+        ),
+    )
     parser.add_argument("--receipt-out")
     args = parser.parse_args(argv)
 
@@ -193,6 +267,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             state_root=args.state_root,
             active_link=args.active_link,
             restart_units=tuple(args.restart_unit),
+            paid_launch_locks=tuple(args.paid_launch_lock or DEFAULT_PAID_LAUNCH_LOCKS),
         )
     except (OSError, ControlPlaneDeployError, ControlPlaneReleaseError) as exc:
         print(
