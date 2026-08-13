@@ -487,8 +487,10 @@ def test_manipulation_preflight_binds_available_proof_and_types_missing_arena(
     assert result["status"] == "blocked_pending_native_manipulation_inputs"
     assert result["blockers"] == [
         "task_a:interaction_affordance_candidate_missing",
+        "task_a:native_camera_rig_candidate_missing",
         "task_a:native_task_arena_packet_request_missing",
         "task_b:interaction_affordance_candidate_missing",
+        "task_b:native_camera_rig_candidate_missing",
         "task_b:native_task_arena_packet_request_missing",
     ]
     assert all(row["review_camera_count"] == 8 for row in result["tasks"])
@@ -519,7 +521,7 @@ def test_manipulation_preflight_scales_to_five_distinct_objects(tmp_path: Path) 
     )
 
     assert result["replacement_object_count"] == 5
-    assert len(result["blockers"]) == 10
+    assert len(result["blockers"]) == 15
     assert all(row["native_arena_packet_materialization_ready"] is False for row in result["tasks"])
 
 
@@ -552,7 +554,9 @@ def test_manipulation_preflight_binds_interaction_candidates_before_arena(
     )
 
     assert result["blockers"] == [
+        "task_a:native_camera_rig_candidate_missing",
         "task_a:native_task_arena_packet_request_missing",
+        "task_b:native_camera_rig_candidate_missing",
         "task_b:native_task_arena_packet_request_missing",
     ]
     assert all(

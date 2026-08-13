@@ -34,6 +34,9 @@ from .native_task_arena_packet import REQUEST_SCHEMA_VERSION as ARENA_REQUEST_SC
 from .paired_target_interaction_affordance_candidate import (
     SCHEMA_VERSION as INTERACTION_AFFORDANCE_SCHEMA,
 )
+from .paired_target_native_camera_rig_candidate import (
+    SCHEMA_VERSION as CAMERA_RIG_SCHEMA,
+)
 
 
 SCHEMA_VERSION = "paired_target_native_manipulation_preflight.v1"
@@ -132,6 +135,8 @@ def _validate_arena_request(
     task_freeze_digest: str,
     expected_asset_ids: set[str],
     robot_base_pose_world: Mapping[str, Any],
+    expected_cameras: Sequence[Mapping[str, Any]],
+    expected_robot_reset: Mapping[str, Any],
 ) -> dict[str, Any]:
     assets = request.get("assets")
     cameras = request.get("cameras")
@@ -165,6 +170,8 @@ def _validate_arena_request(
         or not _same_vector(
             base.get("orientation_xyzw"), robot_base_pose_world.get("orientation_xyzw")
         )
+        or cameras != list(expected_cameras)
+        or request.get("robot_joint_reset_positions_rad") != dict(expected_robot_reset)
     ):
         raise PairedTargetNativeManipulationPreflightError(
             f"paired_target_manipulation_arena_request_mismatch:{task_id}"
@@ -174,6 +181,64 @@ def _validate_arena_request(
         request_digest=request["request_digest"],
         camera_roles=roles,
         replacement_asset_ids=sorted(replacement_ids),
+    )
+
+
+def _validate_camera_rig_candidate(
+    *,
+    path: Path,
+    candidate: Mapping[str, Any],
+    scene_id: str,
+    task_id: str,
+    affordance_record: Mapping[str, Any],
+    placement_digest: str,
+    robot_base_pose_world: Mapping[str, Any],
+) -> dict[str, Any]:
+    cameras = candidate.get("cameras")
+    reset = candidate.get("robot_joint_reset_positions_rad")
+    roles = [
+        str(row.get("role") or "")
+        for row in cameras or []
+        if isinstance(row, Mapping)
+    ]
+    base = candidate.get("robot_base_pose_world")
+    if (
+        candidate.get("schema_version") != CAMERA_RIG_SCHEMA
+        or candidate.get("receipt_digest")
+        != canonical_digest(candidate, digest_field="receipt_digest")
+        or candidate.get("status")
+        != "native_camera_rig_requested_requires_readback_and_observability"
+        or candidate.get("scene_id") != scene_id
+        or candidate.get("task_id") != task_id
+        or candidate.get("interaction_affordance_candidate", {}).get(
+            "receipt_digest"
+        )
+        != affordance_record.get("receipt_digest")
+        or candidate.get("franka_placement_packet", {}).get("packet_digest")
+        != placement_digest
+        or not isinstance(cameras, list)
+        or roles != ["external", "wrist", "overview"]
+        or not isinstance(reset, Mapping)
+        or not isinstance(base, Mapping)
+        or not _same_vector(
+            base.get("position_world_m"), robot_base_pose_world.get("position_world_m")
+        )
+        or not _same_vector(
+            base.get("orientation_xyzw"), robot_base_pose_world.get("orientation_xyzw")
+        )
+        or candidate.get("native_camera_readback_qualified") is not False
+        or candidate.get("native_semantic_observability_qualified") is not False
+        or candidate.get("overview_review_only") is not True
+    ):
+        raise PairedTargetNativeManipulationPreflightError(
+            f"paired_target_manipulation_camera_rig_invalid:{task_id}"
+        )
+    return _record(
+        path,
+        receipt_digest=candidate["receipt_digest"],
+        camera_roles=roles,
+        policy_input_roles=list(candidate.get("policy_input_roles") or []),
+        requested_camera_readback_qualified=False,
     )
 
 
@@ -441,9 +506,12 @@ def materialize_paired_target_native_manipulation_preflight(
     blockers: list[str] = []
     for raw, row in opened:
         affordance_path_value = raw.get("interaction_affordance_candidate_path")
+        camera_rig_path_value = raw.get("native_camera_rig_candidate_path")
         arena_path_value = raw.get("native_task_arena_request_path")
         task_blockers: list[str] = []
         affordance_record: dict[str, Any] | None = None
+        camera_rig_record: dict[str, Any] | None = None
+        camera_rig: dict[str, Any] | None = None
         arena_record: dict[str, Any] | None = None
         if affordance_path_value in (None, ""):
             task_blockers.append("interaction_affordance_candidate_missing")
@@ -462,6 +530,26 @@ def materialize_paired_target_native_manipulation_preflight(
                 registered_asset=row["registered_asset"],
                 robot_base_pose_world=row["robot_base_pose_world"],
             )
+        if camera_rig_path_value in (None, ""):
+            task_blockers.append("native_camera_rig_candidate_missing")
+        elif affordance_record is None:
+            raise PairedTargetNativeManipulationPreflightError(
+                f"paired_target_manipulation_camera_rig_without_affordance:{row['task_id']}"
+            )
+        else:
+            camera_rig_path, camera_rig = _read(
+                camera_rig_path_value,
+                f"paired_target_manipulation_camera_rig_invalid:{row['task_id']}",
+            )
+            camera_rig_record = _validate_camera_rig_candidate(
+                path=camera_rig_path,
+                candidate=camera_rig,
+                scene_id=scene_id,
+                task_id=row["task_id"],
+                affordance_record=affordance_record,
+                placement_digest=row["franka_placement_packet"]["packet_digest"],
+                robot_base_pose_world=row["robot_base_pose_world"],
+            )
         if arena_path_value in (None, ""):
             task_blockers.append("native_task_arena_packet_request_missing")
         else:
@@ -477,13 +565,23 @@ def materialize_paired_target_native_manipulation_preflight(
                 task_freeze_digest=row["task_freeze"]["task_freeze_digest"],
                 expected_asset_ids=expected_asset_ids,
                 robot_base_pose_world=row["robot_base_pose_world"],
+                expected_cameras=(camera_rig or {}).get("cameras") or [],
+                expected_robot_reset=(camera_rig or {}).get(
+                    "robot_joint_reset_positions_rad"
+                )
+                or {},
             )
-        qualified = arena_record is not None and affordance_record is not None
+        qualified = (
+            arena_record is not None
+            and affordance_record is not None
+            and camera_rig_record is not None
+        )
         task_row = {
             **{key: value for key, value in row.items() if key != "registered_asset"},
             "review_camera_count": len(row["review_camera_ids"]),
             "calibrated_review_camera_set_bound": len(row["review_camera_ids"]) == 8,
             "interaction_affordance_candidate": affordance_record,
+            "native_camera_rig_candidate": camera_rig_record,
             "native_task_arena_request": arena_record,
             "policy_camera_and_interaction_contract_bound": qualified,
             "native_arena_packet_materialization_ready": qualified,
