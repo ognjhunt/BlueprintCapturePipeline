@@ -7661,3 +7661,79 @@ def test_without_a_lane_prefix_the_fleet_wide_rule_stands(
     )
 
     assert guard["status"] == "blocked"
+def test_the_no_progress_watchdog_does_not_end_a_run_it_cannot_measure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"No progress in the logs" measures the workload only when the logs work.
+    A channel that never delivered a byte reports no progress forever, so this
+    watchdog would end a healthy render and name it `no_log_progress_timeout` --
+    blaming the workload for a transport fault."""
+
+    _dead_log_transport(monkeypatch)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(vpa.time, "monotonic", lambda: clock["now"])
+    polls = {"count": 0}
+
+    def _probe() -> bool:
+        polls["count"] += 1
+        # Well past the 60-second no-progress limit before the object lands.
+        clock["now"] += 40.0
+        return polls["count"] >= 6
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "deferred.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=10_000,
+        success_markers=["SUCCESS"],
+        no_progress_seconds=60,
+        log_transport_failure_limit=2,
+        output_probe=_probe,
+    )
+
+    assert result["output_probe_observed"] is True
+    assert result["no_progress_timeout_reached"] is False
+    assert polls["count"] == 6
+
+
+def test_a_readable_log_channel_keeps_its_no_progress_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deferral is only for a channel that never worked; a log channel that
+    delivered bytes and then went quiet is a stalled workload."""
+
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_: (200, {"result_url": "https://logs.example/result"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_a, **_k: "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED\n")
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_kwargs: {"observed": True, "status": "running", "exited": False, "probe_error": None},
+    )
+    clock = {"now": 0.0}
+    monkeypatch.setattr(vpa.time, "monotonic", lambda: clock["now"])
+
+    def _probe() -> bool:
+        clock["now"] += 40.0
+        return False
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "stalled.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=10_000,
+        success_markers=["SUCCESS"],
+        no_progress_seconds=60,
+        output_probe=_probe,
+    )
+
+    assert result["log_bytes_ever_read"] is True
+    assert result["no_progress_timeout_reached"] is True

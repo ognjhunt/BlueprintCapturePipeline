@@ -5130,8 +5130,20 @@ def _request_logs_and_fetch(
         previous_structured_progress = structured_progress or previous_structured_progress
         previous_runtime_phase_count = max(previous_runtime_phase_count, runtime_phase_count)
         no_progress_elapsed_seconds = max(0.0, time.monotonic() - last_progress_monotonic)
+        # "No progress in the logs" measures the workload only when the logs
+        # work. A channel that has never delivered a byte reports no progress
+        # forever, so this watchdog would end a healthy render at twenty
+        # minutes and name it `no_log_progress_timeout` -- blaming the workload
+        # for a transport fault, which is the misattribution #459 set out to
+        # stop. While a second channel is live and answering, the run is bounded
+        # by its deadline, which is the TTL the spend cap was computed against.
+        watching_a_live_second_channel = bool(
+            output_probe is not None and not output_probe_failed and not log_bytes_ever_read
+        )
         no_progress_timeout_reached = bool(
-            no_progress_limit_seconds and no_progress_elapsed_seconds >= no_progress_limit_seconds
+            no_progress_limit_seconds
+            and no_progress_elapsed_seconds >= no_progress_limit_seconds
+            and not watching_a_live_second_channel
         )
         if container_missing:
             container_missing_count += 1
@@ -5267,6 +5279,16 @@ def _request_logs_and_fetch(
         "output_probe_configured": output_probe is not None,
         "output_probe_observed": output_probe_observed,
         "output_probe_failed": output_probe_failed,
+        # A no-progress verdict that was suppressed because the only channel
+        # reporting no progress was the one that never worked.
+        "no_log_progress_deferred_to_output_probe": bool(
+            output_probe is not None
+            and not output_probe_failed
+            and not log_bytes_ever_read
+            and no_progress_limit_seconds
+            and max(0.0, time.monotonic() - last_progress_monotonic)
+            >= no_progress_limit_seconds
+        ),
         # When every channel is silent this is the only way back to an instance
         # we are still paying for. Without it the forensic trail ends at "403"
         # and the next attempt has to buy the same twenty minutes to learn the
