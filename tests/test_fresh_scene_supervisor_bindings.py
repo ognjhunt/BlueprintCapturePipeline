@@ -52,6 +52,31 @@ def _sam_request(root: Path) -> Path:
     return _write(root / "sam-request.json", value)
 
 
+def _mask_request(root: Path) -> Path:
+    for name in ("task.json", "tracks.json", "cameras.json", "review.json"):
+        _write(root / name, {})
+    images = root / "images"
+    images.mkdir(parents=True)
+    (images / "camera_0.png").write_bytes(b"fixture-png")
+    value = {
+        "schema_version": "fresh_scene_calibrated_mask_tool_request.v1",
+        "task_freeze_paths": [str(root / "task.json")],
+        "task_inputs": {
+            "task_a": {
+                "source_track_result_path": str(root / "tracks.json"),
+                "camera_contract_path": str(root / "cameras.json"),
+                "source_image_root": str(images),
+                "camera_frame_map": {"camera_0": "task_a:camera_0"},
+            }
+        },
+        "selected_track_ids_by_task": {"task_a": ["track-a"]},
+        "reviewed_track_selection_receipt_path": str(root / "review.json"),
+        "request_digest": "",
+    }
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    return _write(root / "mask-request.json", value)
+
+
 def test_host_resident_manifest_compiles_exact_agents_sdk_bindings(tmp_path: Path) -> None:
     status = _status(tmp_path / "status.json")
     request = _sam_request(tmp_path / "inputs")
@@ -129,6 +154,26 @@ def test_binding_rejects_changed_request_input_bytes(tmp_path: Path) -> None:
         roots=[tmp_path],
     )
     (tmp_path / "inputs/prompts.json").write_text('{"changed":true}', encoding="utf-8")
+    with pytest.raises(
+        FreshSceneSupervisorBindingError,
+        match="fresh_scene_tool_request_input_bytes_changed",
+    ):
+        compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+
+
+def test_mask_binding_rehashes_human_track_review_receipt(tmp_path: Path) -> None:
+    status = _status(tmp_path / "status.json")
+    request = _mask_request(tmp_path / "mask-inputs")
+    manifest_path = tmp_path / "binding.json"
+    materialize_fresh_scene_supervisor_bindings(
+        preparation_status_path=status,
+        calibrated_mask_request_path=request,
+        output_path=manifest_path,
+        roots=[tmp_path],
+    )
+    (tmp_path / "mask-inputs/review.json").write_text(
+        '{"changed":true}', encoding="utf-8"
+    )
     with pytest.raises(
         FreshSceneSupervisorBindingError,
         match="fresh_scene_tool_request_input_bytes_changed",

@@ -59,6 +59,19 @@ STAGE_CONTRACTS: tuple[dict[str, Any], ...] = (
         "next_blocker": "fresh_scene_sam31_source_tracks_missing",
     },
     {
+        "stage_id": "sam31_track_selection_review",
+        "schemas": ("public_scene_sam31_track_selection_review.v1",),
+        "digest_fields": ("receipt_digest",),
+        "accepted_statuses": ("selected_tracks_human_review_accepted",),
+        "cardinality": "one",
+        "producer": "sam31_track_selection_review",
+        "implementation": (
+            "blueprint_pipeline.public_scene_sam31_track_selection_review"
+        ),
+        "backend": "deterministic selected-mask overlays plus named human acceptance",
+        "next_blocker": "fresh_scene_sam31_track_selection_review_missing",
+    },
+    {
         "stage_id": "calibrated_object_masks",
         "schemas": ("public_scene_calibrated_object_mask_set.v1",),
         "digest_fields": ("receipt_digest",),

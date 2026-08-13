@@ -140,6 +140,17 @@ def _request_input_paths(
                 code="fresh_scene_tool_request_input_not_host_resident:source_image_root",
             )
             paths.extend(sorted(image_root.rglob("*.png")))
+        paths.append(
+            _resident_path(
+                str(request.get("reviewed_track_selection_receipt_path") or ""),
+                roots=roots,
+                kind="file",
+                code=(
+                    "fresh_scene_tool_request_input_not_host_resident:"
+                    "reviewed_track_selection_receipt_path"
+                ),
+            )
+        )
     unique = sorted(set(paths))
     if (
         not unique
@@ -192,11 +203,13 @@ def _validate_request(
         freezes = request.get("task_freeze_paths")
         task_inputs = request.get("task_inputs")
         selected = request.get("selected_track_ids_by_task")
+        review_path = request.get("reviewed_track_selection_receipt_path")
         if (
             not isinstance(freezes, list)
             or not 1 <= len(freezes) <= 5
             or not isinstance(task_inputs, Mapping)
             or not isinstance(selected, Mapping)
+            or not str(review_path or "").strip()
             or set(task_inputs) != set(selected)
             or not 1 <= len(task_inputs) <= 5
         ):
