@@ -180,8 +180,15 @@ def _check_launch_input_residency(
     check on the live control plane only because someone had recreated the
     authoring machine's directory tree there; on a rebuilt host the same
     profile is still published, still live-enabled, and now points at nothing.
-    Checking at start-up is what makes that visible before a launch instead of
-    after a provider is already running.
+    Reporting at start-up is what makes that visible before a launch instead
+    of after a provider is already running.
+
+    This reports and does not block. The guard is an ``ExecStartPre`` for the
+    intake service, so blocking here would answer "one published profile is
+    unusable" with "no launch of any kind can be accepted". Enforcement sits
+    where the consequence is proportionate: the catalog demotes the profile so
+    the website cannot select it, and the dispatcher refuses it if a request
+    reaches one anyway.
     """
 
     profile_dir = str(source.get(LAUNCH_PROFILE_DIR_ENV) or "").strip()
@@ -192,7 +199,7 @@ def _check_launch_input_residency(
         if residency_report is None
         else residency_report(profile_dir)
     )
-    return report, list(report.get("blockers") or [])
+    return report, []
 
 
 def build_production_runtime_env_guard(
@@ -256,11 +263,12 @@ def build_production_runtime_env_guard(
             "This guard verifies production fail-closed runtime posture, that "
             "every control-plane entrypoint imports, that no spend-authority "
             "ledger is stranded at a previous root, that the served launch "
-            "catalog matches the published profile directory, and that no "
-            "live-enabled profile binds inputs outside this host's own "
-            "directories. It is not proof of deployed health, Pub/Sub message "
-            "consumption, WebApp forwarding, buyer delivery, simulator "
-            "execution, or live provider success."
+            "catalog matches the published profile directory. It also reports, "
+            "without blocking, which published profiles bind inputs outside "
+            "this host's own directories; those are demoted in the served "
+            "catalog and refused by the dispatcher. It is not proof of deployed "
+            "health, Pub/Sub message consumption, WebApp forwarding, buyer "
+            "delivery, simulator execution, or live provider success."
         ),
     }
 

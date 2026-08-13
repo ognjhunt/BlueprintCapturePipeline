@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     public_launch_profile_descriptor,
@@ -78,7 +79,22 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             raise LaunchCatalogError(
                 f"published_profile_invalid:{path.name}:" + ",".join(sorted(set(blockers)))
             )
-        descriptors.append(public_launch_profile_descriptor(profile))
+        descriptor = public_launch_profile_descriptor(profile)
+        # A profile whose inputs are not on this host cannot start a run here,
+        # so serving it as live is the lie. Demote it in the projection rather
+        # than refusing the whole catalog: the published bytes stay immutable
+        # evidence, and one stale profile must not make every other profile
+        # unreachable -- the catalog reconciler is an ExecStartPre for intake,
+        # so raising here would take the website path down with it.
+        residency = launch_profile_residency_blockers(profile)
+        if residency:
+            admission = dict(descriptor.get("execution_admission") or {})
+            admission["live_enabled"] = False
+            admission["blockers"] = sorted(
+                {*(admission.get("blockers") or []), *residency}
+            )
+            descriptor["execution_admission"] = admission
+        descriptors.append(descriptor)
 
     return (
         json.dumps(

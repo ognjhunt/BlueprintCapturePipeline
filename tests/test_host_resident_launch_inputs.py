@@ -263,12 +263,23 @@ def test_only_a_live_enabled_profile_blocks_the_startup_report(tmp_path):
     assert not any(":dry" in row for row in report["blockers"])
 
 
-def test_the_startup_guard_blocks_on_a_live_profile_it_cannot_resolve(monkeypatch):
+def test_the_startup_guard_reports_residency_without_taking_intake_down(monkeypatch):
+    """The guard is an ExecStartPre for the intake service. One unusable
+    published profile must not answer "this profile cannot launch" with "no
+    launch of any kind can be accepted"."""
+
     from blueprint_pipeline import production_runtime_env_guard as guard
 
     monkeypatch.setenv(guard.LAUNCH_PROFILE_DIR_ENV, "/etc/blueprint/profiles")
     report = guard.build_production_runtime_env_guard(
-        env={guard.LAUNCH_PROFILE_DIR_ENV: "/etc/blueprint/profiles"},
+        env={
+            guard.LAUNCH_PROFILE_DIR_ENV: "/etc/blueprint/profiles",
+            "BLUEPRINT_LAUNCH_PROOF_MODE": "production",
+            "PRIVACY_PIPELINE_ENABLED": "1",
+            "PRIVACY_FAIL_CLOSED": "1",
+            "PIPELINE_SYNC_REQUIRED": "1",
+            "RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO": "1",
+        },
         import_module=lambda name: object(),
         reconcile_spend_authority=lambda: {"status": "consistent"},
         reconcile_launch_catalog=lambda: {"status": "consistent"},
@@ -278,10 +289,9 @@ def test_the_startup_guard_blocks_on_a_live_profile_it_cannot_resolve(monkeypatc
         },
     )
 
-    assert report["status"] == "blocked"
-    assert (
-        "launch_profile_input_not_host_resident:x:live-profile" in report["blockers"]
-    )
+    assert report["status"] == "ready"
+    assert report["blockers"] == []
+    # Reported, so a rebuilt host surfaces it at every start.
     assert report["launch_input_residency"]["status"] == "blocked"
 
 
@@ -337,3 +347,47 @@ def test_a_fully_resident_profile_directory_reports_ready(tmp_path):
 
     assert report["status"] == "ready"
     assert report["blockers"] == []
+
+
+def test_the_served_catalog_demotes_a_profile_this_host_cannot_run(tmp_path, monkeypatch):
+    """Enforcement where the consequence is proportionate: the profile stops
+    being selectable, every other profile stays reachable."""
+
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_task_evaluation_launch_dispatcher import _profile, _write
+
+    from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
+
+    # The resident profile writes its inputs under tmp_path, so tmp_path is
+    # this fixture's control plane; the foreign one points outside it.
+    monkeypatch.setenv(LAUNCH_INPUT_ROOTS_ENV, str(tmp_path))
+    profile_dir = tmp_path / "profiles"
+    resident = _profile(tmp_path)
+    foreign = json.loads(json.dumps(resident))
+    foreign["profile_id"] = "foreign-inputs-profile"
+    foreign["allocator"]["argv"] = [
+        *foreign["allocator"]["argv"],
+        "--adp-retained-scene-render-bundle-receipt",
+        "/Users/author/workspace/validation/job/receipt.json",
+    ]
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import canonical_digest
+
+    foreign["profile_digest"] = canonical_digest(foreign, digest_field="profile_digest")
+    _write(profile_dir / f"{resident['profile_id']}.json", resident)
+    _write(profile_dir / f"{foreign['profile_id']}.json", foreign)
+
+    rows = {
+        row["profile_id"]: row
+        for row in json.loads(build_catalog_payload(profile_dir).decode("utf-8"))
+    }
+
+    # The whole catalog still projects, and the unusable one is not selectable.
+    assert set(rows) == {resident["profile_id"], "foreign-inputs-profile"}
+    assert rows["foreign-inputs-profile"]["execution_admission"]["live_enabled"] is False
+    assert any(
+        "not_host_resident" in blocker
+        for blocker in rows["foreign-inputs-profile"]["execution_admission"]["blockers"]
+    )
+    assert rows[resident["profile_id"]]["execution_admission"]["live_enabled"] is True
