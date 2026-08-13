@@ -29,10 +29,14 @@ _SPEC.loader.exec_module(stager)
 class _LocalTransport:
     """A control-plane host rooted in a temporary directory."""
 
-    def __init__(self, root: Path, *, corrupt: str | None = None) -> None:
+    def __init__(
+        self, root: Path, *, corrupt: str | None = None, unreadable_for: tuple = ()
+    ) -> None:
         self.root = root
         self.corrupt = corrupt
+        self.unreadable_for = unreadable_for
         self.placed: list[str] = []
+        self.finalized: tuple | None = None
 
     def _local(self, remote: str) -> Path:
         return self.root / remote.lstrip("/")
@@ -48,9 +52,16 @@ class _LocalTransport:
             target.write_bytes(b"truncated-in-flight")
         self.placed.append(remote)
 
-    def digest(self, remote: str) -> str:
+    def finalize(self, remote_dir: str, owner: str) -> None:
+        self.finalized = (remote_dir, owner)
+
+    def digest(self, remote: str, *, as_user: str | None = None) -> str:
         target = self._local(remote)
         if not target.is_file():
+            return ""
+        if as_user and as_user in self.unreadable_for:
+            # The shape that broke staging in production: bytes present, digest
+            # correct for the transfer user, unopenable by the consumer.
             return ""
         return "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
 
@@ -198,6 +209,36 @@ def test_a_receipt_predating_portable_references_still_stages(tmp_path):
         row["relative_path"] == "adp_retained_scene_gpu_render_bundle.zip"
         for row in receipt["staged_files"]
     )
+
+
+def test_staged_bytes_the_control_plane_cannot_read_are_reported(tmp_path):
+    """`scp` preserves the source mode, so a receipt that happened to be 0600
+    on the authoring machine lands 0600 and root-owned. Everything looks
+    correct -- bytes present, digests matching -- while the service account
+    cannot open one of them. Verifying as the transfer user proves nothing
+    about the consumer."""
+
+    job = _job(tmp_path)
+    transport = _LocalTransport(tmp_path / "host", unreadable_for=("blueprint",))
+
+    with pytest.raises(stager.StagingError, match="staging_consumer_cannot_read"):
+        stager.stage_paid_lane_bundle(
+            receipt_path=job / RECEIPT_NAME,
+            lane_id="lane",
+            transport=transport,
+        )
+
+
+def test_the_staged_tree_is_handed_to_the_consuming_account(tmp_path):
+    job = _job(tmp_path)
+    transport = _LocalTransport(tmp_path / "host")
+
+    receipt = stager.stage_paid_lane_bundle(
+        receipt_path=job / RECEIPT_NAME, lane_id="lane", transport=transport
+    )
+
+    assert transport.finalized == (receipt["remote_dir"], "blueprint")
+    assert receipt["verified_readable_as"] == "blueprint"
 
 
 def test_bytes_that_did_not_survive_the_transfer_are_reported(tmp_path):
