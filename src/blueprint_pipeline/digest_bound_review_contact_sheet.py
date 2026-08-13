@@ -23,8 +23,11 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "digest_bound_review_contact_sheets.v1"
-SOURCE_SCHEMA_VERSION = "public_scene_artifixer3d_raw_result.v1"
-FRAME_FIELDS = ("artifixer3d_review_frames", "final_candidate_frames")
+SOURCE_SCHEMA_VERSIONS = {
+    "public_scene_artifixer3d_raw_result.v1",
+    "public_scene_artifixer3d_final_composite.v1",
+}
+FRAME_FIELDS = ("artifixer3d_review_frames", "final_candidate_frames", "frames")
 COLUMNS = 4
 LABEL_HEIGHT = 48
 MAX_TASKS = 5
@@ -266,9 +269,17 @@ def materialize_digest_bound_review_contact_sheets(
     tasks = raw.get("tasks")
     if (
         result_path.is_symlink()
-        or raw.get("schema_version") != SOURCE_SCHEMA_VERSION
-        or raw.get("result_digest")
-        != canonical_digest(raw, digest_field="result_digest")
+        or raw.get("schema_version") not in SOURCE_SCHEMA_VERSIONS
+        or (
+            raw.get("schema_version") == "public_scene_artifixer3d_raw_result.v1"
+            and raw.get("result_digest")
+            != canonical_digest(raw, digest_field="result_digest")
+        )
+        or (
+            raw.get("schema_version") == "public_scene_artifixer3d_final_composite.v1"
+            and raw.get("receipt_digest")
+            != canonical_digest(raw, digest_field="receipt_digest")
+        )
         or raw.get("appearance_repair_qualified") is not False
         or raw.get("generated_output_is_capture_or_physical_evidence") is not False
         or not isinstance(tasks, list)
@@ -306,7 +317,7 @@ def materialize_digest_bound_review_contact_sheets(
         "status": "lossless_contact_sheets_materialized_pending_human_review",
         "source_raw_result": {
             **_file_record(result_path),
-            "result_digest": raw["result_digest"],
+            "result_digest": raw.get("result_digest") or raw.get("receipt_digest"),
             "pipeline_mode": raw.get("pipeline_mode"),
         },
         "layout": {

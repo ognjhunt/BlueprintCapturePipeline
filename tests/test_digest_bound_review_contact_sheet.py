@@ -184,6 +184,29 @@ def test_supports_five_tasks_with_eight_frames_each(tmp_path: Path) -> None:
     assert len(list((tmp_path / "review").glob("*_4col.png"))) == 5
 
 
+def test_accepts_final_composite_frames_without_weakening_qualification(
+    tmp_path: Path,
+) -> None:
+    raw_path, raw = _write_raw_result(tmp_path / "source")
+    raw["schema_version"] = "public_scene_artifixer3d_final_composite.v1"
+    raw["tasks"][0]["frames"] = raw["tasks"][0].pop(
+        "artifixer3d_review_frames"
+    )
+    raw.pop("result_digest")
+    raw["receipt_digest"] = ""
+    raw["receipt_digest"] = canonical_digest(raw, digest_field="receipt_digest")
+    raw_path.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n")
+
+    result = materialize_digest_bound_review_contact_sheets(
+        raw_result_path=raw_path,
+        output_root=tmp_path / "review",
+    )
+
+    assert result["tasks"][0]["source_frame_field"] == "frames"
+    assert result["appearance_repair_qualified"] is False
+    assert result["all_sheet_crops_pixel_identical"] is True
+
+
 def test_fails_closed_for_source_byte_and_raw_digest_tamper(tmp_path: Path) -> None:
     raw_path, raw = _write_raw_result(tmp_path / "source")
     first_frame = Path(raw["tasks"][0]["artifixer3d_review_frames"][0]["path"])
