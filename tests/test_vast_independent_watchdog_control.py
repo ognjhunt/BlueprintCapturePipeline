@@ -162,6 +162,42 @@ def test_watchdog_without_allocation_is_cancelled_without_provider_mutation(
     assert handle.process.poll() == -15
 
 
+def test_watchdog_without_allocation_retains_double_api_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+
+    class Provider:
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
+            return {
+                "status": "available",
+                "name_prefix": name_prefix,
+                "api_confirmed": True,
+                "live_resource_count": 0,
+            }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers.get_render_provider",
+        lambda _provider: Provider(),
+    )
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-13T00:00:00+00:00",
+    )
+    assert handle is not None
+
+    result = control.close_independent_vast_watchdog_without_allocation(
+        job_dir=tmp_path,
+        handle=handle,
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert result["final_global_inventory"]["live_resource_count"] == 0
+    assert result["provider_mutations_performed"] == 0
+
+
 def test_watchdog_stays_armed_when_create_identity_is_ambiguous(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

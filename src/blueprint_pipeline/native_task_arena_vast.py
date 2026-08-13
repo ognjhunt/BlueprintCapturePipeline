@@ -15,6 +15,10 @@ from .native_task_arena_controls_bundle import (
     RESULT_FILENAME as CONTROLS_RESULT_FILENAME,
 )
 from .native_task_arena_policy_bundle import RESULT_FILENAME as POLICY_RESULT_FILENAME
+from .native_task_arena_paid_authority import (
+    consume_native_task_arena_authority_once,
+    validate_native_task_arena_paid_attempt_authority,
+)
 from .paid_resource_admission import PaidResourceAdmissionGrant
 
 
@@ -35,6 +39,7 @@ def run_native_task_arena_vast(
     hard_cap_usd: float = 1.00,
     hard_ttl_seconds: int = 5_400,
     allowed_active_instance_ids: Sequence[int] = (),
+    paid_attempt_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry construction gate through the shared Vast transport."""
 
@@ -50,6 +55,30 @@ def run_native_task_arena_vast(
         raise ValueError("native_task_arena_prepared_bundle_contract_invalid")
     job = Path(job_dir).expanduser().resolve()
     allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
+    authority = (
+        validate_native_task_arena_paid_attempt_authority(
+            paid_attempt_authority,
+            prepared_bundle=prepared_bundle,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+            allowed_active_instance_ids=allowed_ids,
+        )
+        if paid_attempt_authority is not None
+        else None
+    )
+    if execute and authority is None:
+        raise ValueError("native_task_arena_paid_execution_authority_missing")
+    consumption = consume_native_task_arena_authority_once(authority) if execute else None
+    if consumption is not None and consumption.get("status") != "consumed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": consumption,
+            "blockers": list(consumption.get("blockers") or []),
+        }
     return run_arena_native_control_vast(
         approval_path=".",
         job_dir=job_dir,
@@ -75,6 +104,8 @@ def run_native_task_arena_vast(
         candidate_policy_query_expected=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
+        require_independent_watchdog=True,
+        authorization_consumption=consumption,
     )
 
 
@@ -89,6 +120,7 @@ def run_native_task_arena_controls_vast(
     hard_cap_usd: float = 1.00,
     hard_ttl_seconds: int = 5_400,
     allowed_active_instance_ids: Sequence[int] = (),
+    paid_attempt_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry control pair through the same capped transport."""
 
@@ -104,6 +136,30 @@ def run_native_task_arena_controls_vast(
         raise ValueError("native_task_arena_controls_prepared_bundle_contract_invalid")
     job = Path(job_dir).expanduser().resolve()
     allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
+    authority = (
+        validate_native_task_arena_paid_attempt_authority(
+            paid_attempt_authority,
+            prepared_bundle=prepared_bundle,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+            allowed_active_instance_ids=allowed_ids,
+        )
+        if paid_attempt_authority is not None
+        else None
+    )
+    if execute and authority is None:
+        raise ValueError("native_task_arena_paid_execution_authority_missing")
+    consumption = consume_native_task_arena_authority_once(authority) if execute else None
+    if consumption is not None and consumption.get("status") != "consumed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": consumption,
+            "blockers": list(consumption.get("blockers") or []),
+        }
     return run_arena_native_control_vast(
         approval_path=".",
         job_dir=job_dir,
@@ -131,6 +187,8 @@ def run_native_task_arena_controls_vast(
         candidate_policy_query_expected=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
+        require_independent_watchdog=True,
+        authorization_consumption=consumption,
     )
 
 
@@ -145,6 +203,7 @@ def run_native_task_arena_policy_vast(
     hard_cap_usd: float = 1.00,
     hard_ttl_seconds: int = 5_400,
     allowed_active_instance_ids: Sequence[int] = (),
+    paid_attempt_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one admitted candidate through the same zero-retry Vast transport."""
 
@@ -160,6 +219,30 @@ def run_native_task_arena_policy_vast(
         raise ValueError("native_task_arena_policy_prepared_bundle_contract_invalid")
     job = Path(job_dir).expanduser().resolve()
     allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
+    authority = (
+        validate_native_task_arena_paid_attempt_authority(
+            paid_attempt_authority,
+            prepared_bundle=prepared_bundle,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+            allowed_active_instance_ids=allowed_ids,
+        )
+        if paid_attempt_authority is not None
+        else None
+    )
+    if execute and authority is None:
+        raise ValueError("native_task_arena_paid_execution_authority_missing")
+    consumption = consume_native_task_arena_authority_once(authority) if execute else None
+    if consumption is not None and consumption.get("status") != "consumed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": consumption,
+            "blockers": list(consumption.get("blockers") or []),
+        }
     return run_arena_native_control_vast(
         approval_path=".",
         job_dir=job_dir,
@@ -185,6 +268,8 @@ def run_native_task_arena_policy_vast(
         candidate_policy_query_expected=True,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
+        require_independent_watchdog=True,
+        authorization_consumption=consumption,
     )
 
 

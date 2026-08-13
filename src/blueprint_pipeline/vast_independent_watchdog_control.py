@@ -293,6 +293,78 @@ def close_independent_vast_watchdog(
     return result
 
 
+def close_independent_vast_watchdog_without_allocation(
+    *,
+    job_dir: Path,
+    handle: VastWatchdogHandle,
+    wait_seconds: float = 300.0,
+) -> dict[str, Any]:
+    """Close a pre-armed watchdog after proving no instance was allocated.
+
+    This is intentionally stronger than terminating the process locally.  The
+    independent watchdog performs the same double lane-prefix/global API
+    inventory used after an owned teardown and retains those facts in its
+    normal evidence file.  It is only valid when the provider adapter never
+    attempted create and no started-instance id was published.
+    """
+
+    if handle.started_instance_id_path.exists():
+        return {
+            "schema_version": HANDOFF_SCHEMA,
+            "generated_at": utc_now_iso(),
+            "status": "retained_until_hard_ttl",
+            "reason": "provider_allocation_identity_present",
+            "watchdog_armed_before_allocation": True,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+    handle.process.terminate()
+    try:
+        handle.process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        handle.process.kill()
+    try:
+        from .gpu_render_providers import get_render_provider
+
+        provider = get_render_provider("vast")
+        first_lane = provider.billable_inventory(name_prefix=handle.pod_name_prefix)
+        first_global = provider.billable_inventory(name_prefix="")
+        second_lane = provider.billable_inventory(name_prefix=handle.pod_name_prefix)
+        second_global = provider.billable_inventory(name_prefix="")
+    except Exception as exc:  # noqa: BLE001 - retain typed API uncertainty
+        result = {
+            "schema_version": HANDOFF_SCHEMA,
+            "generated_at": utc_now_iso(),
+            "status": "provider_zero_unverified_no_allocation",
+            "watchdog_armed_before_allocation": True,
+            "provider_absence_confirmed": False,
+            "error_type": type(exc).__name__,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+    else:
+        zero = all(
+            row.get("api_confirmed") is True and row.get("live_resource_count") == 0
+            for row in (first_lane, second_lane, first_global, second_global)
+        )
+        result = {
+            "schema_version": HANDOFF_SCHEMA,
+            "generated_at": utc_now_iso(),
+            "status": "provider_terminal" if zero else "provider_zero_unverified_no_allocation",
+            "watchdog_armed_before_allocation": True,
+            "provider_absence_confirmed": zero,
+            "initial_inventory": first_lane,
+            "initial_global_inventory": first_global,
+            "final_inventory": second_lane,
+            "final_global_inventory": second_global,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+    write_json(handle.out_dir / EVIDENCE_NAME, result)
+    write_json(job_dir / HANDOFF_NAME, result)
+    return result
+
+
 def write_started_vast_instance_id(path: str | Path, instance_id: int) -> None:
     """Atomically publish the exact created id to the already-armed watchdog."""
 
