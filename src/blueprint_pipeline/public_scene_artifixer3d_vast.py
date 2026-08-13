@@ -90,12 +90,14 @@ DUAL_TARGET_PHASES = [
     "dual_target_input_validation",
     "artifixer3d_distillation",
     "artifixer3d_review_render",
+    "native_appearance_export",
     "external_visual_and_multiview_review",
 ]
 DUAL_TARGET_RENDER_ONLY_PHASES = [
     "reused_checkpoint_validation",
     "deterministic_distillation_input_replay",
     "artifixer3d_review_render",
+    "native_appearance_export",
     "external_visual_and_multiview_review",
 ]
 
@@ -797,6 +799,7 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         "task_camera_counts": task_camera_counts,
         "task_training_record_counts": task_training_record_counts,
         "pipeline_mode": pipeline_mode or "legacy_exact_support_full_chain",
+        "phases": list(request.get("phases") or []),
         "direct_editor_backend": request["direct_editor_backend"],
         "semantic_editor_only": request.get("semantic_editor_only") is True,
         "checkpoint_reuse_digest": (
@@ -1567,6 +1570,9 @@ def _materialize_raw_result(
         DUAL_TARGET_PIPELINE_MODE,
         DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
     }
+    native_appearance_required = "native_appearance_export" in (
+        bundle.get("phases") or []
+    )
     tasks: list[dict[str, Any]] = []
     seen: set[str] = set()
     for task in execution.get("tasks") or []:
@@ -1619,6 +1625,67 @@ def _materialize_raw_result(
                 )
             frames.append(frame)
         checkpoint_record = task.get("artifixer3d_checkpoint")
+        native_appearance_record = task.get("native_appearance")
+        native_appearance: dict[str, Any] | None = None
+        if dual_target_mode and native_appearance_required:
+            if not isinstance(native_appearance_record, Mapping):
+                raise ValueError("artifixer3d_runtime_native_appearance_missing")
+            coordinate = native_appearance_record.get("coordinate_contract")
+            source_checkpoint = native_appearance_record.get("source_checkpoint")
+            if (
+                native_appearance_record.get("status")
+                != "native_appearance_candidates_exported_pending_native_import_and_multiview_review"
+                or not isinstance(coordinate, Mapping)
+                or coordinate.get("source_coordinate_frame_preserved") is not True
+                or coordinate.get("normalizing_transform_applied") is not False
+                or coordinate.get("transform_matrix")
+                != [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+                or not isinstance(checkpoint_record, Mapping)
+                or not isinstance(source_checkpoint, Mapping)
+                or source_checkpoint.get("size_bytes")
+                != checkpoint_record.get("size_bytes")
+                or source_checkpoint.get("sha256") != checkpoint_record.get("sha256")
+                or native_appearance_record.get("generated_output_is_capture_or_physical_evidence")
+                is not False
+                or native_appearance_record.get("native_import_qualified") is not False
+            ):
+                raise ValueError("artifixer3d_runtime_native_appearance_invalid")
+            exports: dict[str, Any] = {}
+            for field in ("standard_gaussian_ply", "isaac_nurec_usdz"):
+                record = native_appearance_record.get(field)
+                if not isinstance(record, Mapping):
+                    raise ValueError("artifixer3d_runtime_native_appearance_invalid")
+                export = _local_runtime_path(
+                    execution_root,
+                    record.get("path"),
+                    code="artifixer3d_runtime_native_appearance_unbound",
+                )
+                if (
+                    export.stat().st_size != record.get("size_bytes")
+                    or _sha256(export) != record.get("sha256")
+                ):
+                    raise ValueError("artifixer3d_runtime_native_appearance_invalid")
+                exports[field] = _record(export)
+            native_appearance = {
+                "status": native_appearance_record["status"],
+                "source_checkpoint": {
+                    "size_bytes": source_checkpoint["size_bytes"],
+                    "sha256": source_checkpoint["sha256"],
+                },
+                "gaussian_count": native_appearance_record.get("gaussian_count"),
+                "coordinate_contract": dict(coordinate),
+                **exports,
+                "usdz_tensor_precision": native_appearance_record.get(
+                    "usdz_tensor_precision"
+                ),
+                "generated_output_is_capture_or_physical_evidence": False,
+                "native_import_qualified": False,
+            }
         checkpoint: Path | None = None
         reused_checkpoint_record: dict[str, Any] | None = None
         if render_only_mode:
@@ -1716,6 +1783,7 @@ def _materialize_raw_result(
                 if render_only_mode
                 else (_record(checkpoint) if checkpoint is not None else None)
             ),
+            "native_appearance": native_appearance,
             "semantic_object_free_review_passed": False,
             "multiview_consistency_review_passed": False,
         }

@@ -32,12 +32,14 @@ DUAL_TARGET_PHASES = [
     "dual_target_input_validation",
     "artifixer3d_distillation",
     "artifixer3d_review_render",
+    "native_appearance_export",
     "external_visual_and_multiview_review",
 ]
 DUAL_TARGET_RENDER_ONLY_PHASES = [
     "reused_checkpoint_validation",
     "deterministic_distillation_input_replay",
     "artifixer3d_review_render",
+    "native_appearance_export",
     "external_visual_and_multiview_review",
 ]
 DUAL_TARGET_LOSS_OVERRIDES = {
@@ -770,6 +772,143 @@ def _file_record(path: Path) -> dict[str, Any]:
     }
 
 
+class _CheckpointExportModel:
+    """Minimal CPU adapter for the pinned 3DGRUT exporter interface."""
+
+    _TENSOR_FIELDS = (
+        "positions",
+        "rotation",
+        "scale",
+        "density",
+        "features_albedo",
+        "features_specular",
+    )
+
+    def __init__(self, checkpoint: Mapping[str, Any]) -> None:
+        missing = [name for name in self._TENSOR_FIELDS if name not in checkpoint]
+        if missing:
+            raise ValueError("artifixer3d_native_export_checkpoint_fields_missing")
+        for name in self._TENSOR_FIELDS:
+            tensor = checkpoint[name]
+            if not hasattr(tensor, "shape") or not hasattr(tensor, "detach"):
+                raise ValueError("artifixer3d_native_export_checkpoint_tensor_invalid")
+            setattr(self, name, tensor)
+        count = int(self.positions.shape[0])
+        if (
+            count <= 0
+            or tuple(self.positions.shape) != (count, 3)
+            or tuple(self.rotation.shape) != (count, 4)
+            or tuple(self.scale.shape) != (count, 3)
+            or tuple(self.density.shape) != (count, 1)
+            or tuple(self.features_albedo.shape) != (count, 3)
+            or int(self.features_specular.shape[0]) != count
+        ):
+            raise ValueError("artifixer3d_native_export_checkpoint_shape_invalid")
+        self.max_n_features = int(checkpoint.get("max_n_features", -1))
+        self.n_active_features = int(checkpoint.get("n_active_features", -1))
+        expected_specular = ((self.max_n_features + 1) ** 2 - 1) * 3
+        if (
+            not 0 <= self.n_active_features <= self.max_n_features
+            or self.max_n_features < 0
+            or tuple(self.features_specular.shape) != (count, expected_specular)
+        ):
+            raise ValueError("artifixer3d_native_export_checkpoint_features_invalid")
+
+    def get_positions(self):
+        return self.positions
+
+    def get_max_n_features(self) -> int:
+        return self.max_n_features
+
+    def get_n_active_features(self) -> int:
+        return self.n_active_features
+
+    def get_scale(self, preactivation: bool = False):
+        if not preactivation:
+            raise ValueError("artifixer3d_native_export_activation_ambiguous")
+        return self.scale
+
+    def get_rotation(self, preactivation: bool = False):
+        if not preactivation:
+            raise ValueError("artifixer3d_native_export_activation_ambiguous")
+        return self.rotation
+
+    def get_density(self, preactivation: bool = False):
+        if not preactivation:
+            raise ValueError("artifixer3d_native_export_activation_ambiguous")
+        return self.density
+
+    def get_features_albedo(self):
+        return self.features_albedo
+
+    def get_features_specular(self):
+        return self.features_specular
+
+
+def _export_checkpoint_native_appearance(
+    *, checkpoint: Path, task_output: Path
+) -> dict[str, Any]:
+    """Serialize one bound checkpoint to standard PLY and Isaac-ready USDZ.
+
+    The trained coordinates are retained verbatim.  In particular, the pinned
+    USDZ exporter's camera-derived recenter/upright transform is disabled.
+    """
+
+    import torch
+    from threedgrut.export.ply_exporter import PLYExporter
+    from threedgrut.export.usdz_exporter import USDZExporter
+
+    output_root = task_output / "native_appearance"
+    if output_root.exists() or output_root.is_symlink():
+        raise ValueError("artifixer3d_native_export_destination_exists")
+    output_root.mkdir(parents=True)
+    try:
+        checkpoint_value = torch.load(
+            checkpoint, map_location="cpu", weights_only=False
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("artifixer3d_native_export_checkpoint_unreadable") from exc
+    if not isinstance(checkpoint_value, Mapping):
+        raise ValueError("artifixer3d_native_export_checkpoint_invalid")
+    config = checkpoint_value.get("config")
+    try:
+        config.export_usdz.apply_normalizing_transform = False
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise ValueError("artifixer3d_native_export_config_invalid") from exc
+    model = _CheckpointExportModel(checkpoint_value)
+    ply_path = output_root / "repaired_scene.ply"
+    usdz_path = output_root / "repaired_scene.usdz"
+    PLYExporter().export(model, ply_path, dataset=None, conf=config)
+    USDZExporter().export(model, usdz_path, dataset=None, conf=config)
+    if any(
+        path.is_symlink() or not path.is_file() or path.stat().st_size <= 0
+        for path in (ply_path, usdz_path)
+    ):
+        raise ValueError("artifixer3d_native_export_output_invalid")
+    result = {
+        "status": "native_appearance_candidates_exported_pending_native_import_and_multiview_review",
+        "source_checkpoint": _file_record(checkpoint),
+        "gaussian_count": int(model.positions.shape[0]),
+        "coordinate_contract": {
+            "source_coordinate_frame_preserved": True,
+            "normalizing_transform_applied": False,
+            "transform_matrix": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        },
+        "standard_gaussian_ply": _file_record(ply_path),
+        "isaac_nurec_usdz": _file_record(usdz_path),
+        "usdz_tensor_precision": "float16_pinned_upstream_exporter",
+        "generated_output_is_capture_or_physical_evidence": False,
+        "native_import_qualified": False,
+    }
+    del checkpoint_value
+    return result
+
+
 def _hydra_value(value: Any) -> str:
     if value is True:
         return "True"
@@ -1140,6 +1279,9 @@ def _dual_target_task_runtime(
     )
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
+    native_appearance = _export_checkpoint_native_appearance(
+        checkpoint=checkpoint, task_output=task_output
+    )
     return {
         "task_id": task_id,
         "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
@@ -1154,6 +1296,7 @@ def _dual_target_task_runtime(
         "artifixer3d_log_sha256": _sha256(log),
         "artifixer3d_plus_log_sha256": None,
         "artifixer3d_review_frames": review_rows,
+        "native_appearance": native_appearance,
         "final_candidate_frames": review_rows,
         "raw_representation_review_only": True,
         "outside_support_invariance_status": "deferred_until_final_soft_composite",
@@ -1214,6 +1357,9 @@ def _dual_target_render_only_task_runtime(
     )
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
+    native_appearance = _export_checkpoint_native_appearance(
+        checkpoint=checkpoint, task_output=task_output
+    )
     return {
         "task_id": task_id,
         "pipeline_mode": DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
@@ -1234,6 +1380,7 @@ def _dual_target_render_only_task_runtime(
         "artifixer3d_log_sha256": _sha256(log),
         "artifixer3d_plus_log_sha256": None,
         "artifixer3d_review_frames": review_rows,
+        "native_appearance": native_appearance,
         "final_candidate_frames": review_rows,
         "raw_representation_review_only": True,
         "outside_support_invariance_status": "deferred_until_final_soft_composite",

@@ -1163,6 +1163,7 @@ def build_artifixer3d_bundle(
                     "dual_target_input_validation",
                     "artifixer3d_distillation",
                     "artifixer3d_review_render",
+                    "native_appearance_export",
                     "external_visual_and_multiview_review",
                 ],
             }
@@ -1196,6 +1197,7 @@ def build_artifixer3d_bundle(
                         "reused_checkpoint_validation",
                         "deterministic_distillation_input_replay",
                         "artifixer3d_review_render",
+                        "native_appearance_export",
                         "external_visual_and_multiview_review",
                     ],
                 }

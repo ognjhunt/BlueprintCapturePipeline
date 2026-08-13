@@ -4264,7 +4264,7 @@ def _probe_shell_script(
                 "            if path.is_file():\n"
                 "                relative = path.relative_to(output_dir).as_posix()\n"
                 "                parts = relative.split('/')\n"
-                "                required = relative in {'public_scene_artifixer3d_runtime_result.json', 'artifixer3d-pip-freeze.txt'} or (parts and parts[0] == 'tasks' and ('/final_candidate_frames/' in '/' + relative or '/artifixer3d_review_frames/' in '/' + relative or '/repaired_scene/images/' in '/' + relative or '/logs/' in '/' + relative or (path.name.startswith('ckpt_') and path.suffix == '.pt')))\n"
+                "                required = relative in {'public_scene_artifixer3d_runtime_result.json', 'artifixer3d-pip-freeze.txt'} or (parts and parts[0] == 'tasks' and ('/final_candidate_frames/' in '/' + relative or '/artifixer3d_review_frames/' in '/' + relative or '/native_appearance/' in '/' + relative or '/repaired_scene/images/' in '/' + relative or '/logs/' in '/' + relative or (path.name.startswith('ckpt_') and path.suffix == '.pt')))\n"
                 "                if not required:\n"
                 "                    continue\n"
                 "                size = path.stat().st_size\n"

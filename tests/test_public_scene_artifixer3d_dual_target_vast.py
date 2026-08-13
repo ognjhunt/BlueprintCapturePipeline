@@ -510,6 +510,7 @@ def test_dual_target_receipt_selects_paired_target_default(
         "dual_target_input_validation",
         "artifixer3d_distillation",
         "artifixer3d_review_render",
+        "native_appearance_export",
         "external_visual_and_multiview_review",
     ]
 
@@ -944,5 +945,6 @@ def test_provider_output_allowlist_retains_raw_artifixer3d_review_frames() -> No
         "'/artifixer3d_review_frames/' in '/' + relative"
     )
     assert normalized_review_predicate in shell
+    assert "'/native_appearance/' in '/' + relative" in shell
     assert "parts[0] == 'tasks'" in shell
     assert "provider_runtime/input/checkpoint_reuse" not in shell

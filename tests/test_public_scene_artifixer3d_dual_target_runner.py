@@ -319,6 +319,11 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
         "_prepare_dual_target_distillation_replay",
         prepared_replay,
     )
+    monkeypatch.setattr(
+        runner,
+        "_export_checkpoint_native_appearance",
+        lambda **_kwargs: {"status": "test-native-appearance"},
+    )
     request = {
         "artifixer3d": {
             "checkpoint_reuse": {
@@ -350,6 +355,7 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
     assert result["artifixer3d_plus_executed"] is False
     assert result["checkpoint_reused"] is True
     assert result["artifixer3d_checkpoint"]["sha256"] == checkpoint_record["sha256"]
+    assert result["native_appearance"] == {"status": "test-native-appearance"}
     assert [row["camera_id"] for row in result["artifixer3d_review_frames"]] == [
         frame["camera_id"] for frame in frames
     ]
@@ -359,6 +365,84 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
     assert [path.name for path in sorted(normalized.iterdir())] == [
         f"{index:05d}.png" for index in range(8)
     ]
+
+
+def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner_module()
+
+    class Tensor:
+        def __init__(self, shape: tuple[int, ...]) -> None:
+            self.shape = shape
+
+        def detach(self):
+            return self
+
+    config = SimpleNamespace(
+        export_usdz=SimpleNamespace(apply_normalizing_transform=True)
+    )
+    checkpoint_value = {
+        "positions": Tensor((2, 3)),
+        "rotation": Tensor((2, 4)),
+        "scale": Tensor((2, 3)),
+        "density": Tensor((2, 1)),
+        "features_albedo": Tensor((2, 3)),
+        "features_specular": Tensor((2, 45)),
+        "max_n_features": 3,
+        "n_active_features": 3,
+        "config": config,
+    }
+    checkpoint = tmp_path / "ckpt_30000.pt"
+    checkpoint.write_bytes(b"bound-checkpoint")
+
+    torch = ModuleType("torch")
+    torch.load = lambda *args, **kwargs: checkpoint_value
+    threedgrut = ModuleType("threedgrut")
+    export = ModuleType("threedgrut.export")
+    ply_module = ModuleType("threedgrut.export.ply_exporter")
+    usdz_module = ModuleType("threedgrut.export.usdz_exporter")
+
+    class PLYExporter:
+        def export(self, model, output, *, dataset, conf) -> None:
+            assert model.get_positions().shape == (2, 3)
+            assert dataset is None and conf is config
+            output.write_bytes(b"ply")
+
+    class USDZExporter:
+        def export(self, model, output, *, dataset, conf) -> None:
+            assert model.get_n_active_features() == 3
+            assert dataset is None and conf is config
+            assert conf.export_usdz.apply_normalizing_transform is False
+            output.write_bytes(b"usdz")
+
+    ply_module.PLYExporter = PLYExporter
+    usdz_module.USDZExporter = USDZExporter
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "threedgrut", threedgrut)
+    monkeypatch.setitem(sys.modules, "threedgrut.export", export)
+    monkeypatch.setitem(sys.modules, "threedgrut.export.ply_exporter", ply_module)
+    monkeypatch.setitem(sys.modules, "threedgrut.export.usdz_exporter", usdz_module)
+
+    result = runner._export_checkpoint_native_appearance(
+        checkpoint=checkpoint, task_output=tmp_path / "task"
+    )
+
+    assert result["gaussian_count"] == 2
+    assert result["source_checkpoint"]["sha256"] == runner._sha256(checkpoint)
+    assert result["coordinate_contract"] == {
+        "source_coordinate_frame_preserved": True,
+        "normalizing_transform_applied": False,
+        "transform_matrix": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    }
+    assert Path(result["standard_gaussian_ply"]["path"]).read_bytes() == b"ply"
+    assert Path(result["isaac_nurec_usdz"]["path"]).read_bytes() == b"usdz"
+    assert result["native_import_qualified"] is False
 
 
 def test_render_only_execute_skips_training_direct_and_3d_plus(
