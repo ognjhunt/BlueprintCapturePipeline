@@ -4952,25 +4952,39 @@ def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
     the run was abandoned without ever asking the one place the answer would
     have been.
 
-    A HEAD keeps the poll cheap; the body is fetched once, after the wait ends.
+    A one-byte ranged GET, not a HEAD. A presigned URL's signature covers the
+    HTTP method, so a HEAD against a URL signed for GET is rejected as a
+    signature mismatch by S3-compatible stores -- indistinguishable, from here,
+    from "the object is not there yet". The probe would then never fire and the
+    run would sit until its deadline having learned nothing. ``Range:
+    bytes=0-0`` keeps the method the signature was issued for and transfers a
+    single byte.
+
+    The body is fetched in full once, after the wait ends.
     """
 
     if not get_url:
         return None
 
     def _probe() -> bool:
-        request = urllib.request.Request(get_url, method="HEAD")  # noqa: S310 - presigned https
+        request = urllib.request.Request(get_url)  # noqa: S310 - presigned https
         request.add_header("User-Agent", "BlueprintVastProviderAdapter/1.0")
+        request.add_header("Range", "bytes=0-0")
         try:
             with urllib.request.urlopen(request, timeout=20) as response:  # nosec B310
                 return 200 <= int(response.status) < 300
         except urllib.error.HTTPError as exc:
-            # 404 is the normal answer until the workload finishes. Anything
-            # else means this channel is not usable and the caller should stop
-            # relying on it rather than treat silence as "not done yet".
-            if int(exc.code) in {403, 404, 405}:
-                return False
-            raise
+            code = int(exc.code)
+            if code in {401, 403}:
+                # Not "not yet": the signature is wrong or has expired, so this
+                # channel cannot answer at all. Raising disables it, which is
+                # what should happen -- treating an unusable channel as a quiet
+                # one would hold a paid run open waiting for an answer that can
+                # never arrive.
+                raise
+            # 404 until the workload uploads; 416 if the object is empty; 5xx is
+            # the store having a moment. All of those are "ask again".
+            return False
         except OSError:
             return False
 
