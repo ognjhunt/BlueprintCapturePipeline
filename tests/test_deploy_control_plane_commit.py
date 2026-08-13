@@ -39,8 +39,31 @@ _SPEC.loader.exec_module(deploy)
 def test_script_bootstraps_repo_src_for_the_bare_host_interpreter() -> None:
     """The production host runs this script with python3, not an installed CLI."""
 
-    assert str(REPO_ROOT / "src") in sys.path
-    assert sys.path.index(str(REPO_ROOT / "src")) < sys.path.index(
+    probe = "\n".join(
+        (
+            "import importlib.util",
+            "import json",
+            "import sys",
+            "from pathlib import Path",
+            f"repo_root = Path({str(REPO_ROOT)!r})",
+            "spec = importlib.util.spec_from_file_location(",
+            "    'deploy_control_plane_commit_probe',",
+            "    repo_root / 'scripts' / 'deploy_control_plane_commit.py',",
+            ")",
+            "module = importlib.util.module_from_spec(spec)",
+            "spec.loader.exec_module(module)",
+            "print(json.dumps(sys.path))",
+        )
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    isolated_path = json.loads(completed.stdout)
+
+    assert isolated_path.index(str(REPO_ROOT / "src")) < isolated_path.index(
         str(REPO_ROOT / "scripts")
     )
 
