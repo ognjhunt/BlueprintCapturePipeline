@@ -280,8 +280,6 @@ def test_a_malformed_profile_still_fails_the_whole_catalog(tmp_path):
     """A document that cannot be projected is a different problem from a host
     that does not have the bytes it names."""
 
-    import json as _json
-
     import pytest as _pytest
 
     from blueprint_pipeline.task_evaluation_launch_catalog import (
