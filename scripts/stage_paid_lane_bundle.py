@@ -143,6 +143,7 @@ def stage_paid_lane_bundle(
     remote_root: str = DEFAULT_REMOTE_ROOT,
     transport: Any | None = None,
     host: str | None = None,
+    extra_paths: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """Copy the receipt-referenced files to the host and verify them there."""
 
@@ -175,6 +176,18 @@ def stage_paid_lane_bundle(
     relatives = _referenced_relative_paths(
         receipt, receipt_name=receipt_file.name, job=job
     )
+    # Receipts a lane binds but keeps outside the bundle directory -- config
+    # preflights are the case here, and the allocator refuses to run without
+    # one. They are staged flat under their own name so the destination layout
+    # stays a directory of files rather than a copy of somebody's tree.
+    staged_extras: dict[str, Path] = {}
+    for item in extra_paths:
+        extra = Path(item).expanduser().resolve()
+        if extra.is_symlink() or not extra.is_file():
+            raise StagingError(f"staging_extra_file_missing:{extra.name}")
+        if extra.name in relatives or extra.name in staged_extras:
+            raise StagingError(f"staging_extra_file_name_collides:{extra.name}")
+        staged_extras[extra.name] = extra
     link = transport if transport is not None else SshTransport(str(host or ""))
     if transport is None and not host:
         raise StagingError("staging_host_required")
@@ -183,8 +196,8 @@ def stage_paid_lane_bundle(
     link.mkdir(remote_dir)
 
     staged: list[dict[str, Any]] = []
-    for relative in relatives:
-        local = job / relative
+    for relative in [*relatives, *sorted(staged_extras)]:
+        local = staged_extras.get(relative) or (job / relative)
         if local.is_symlink() or not local.is_file():
             raise StagingError(f"staging_local_file_missing:{relative}")
         remote = f"{remote_dir}/{relative}"
@@ -235,6 +248,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lane-id", required=True)
     parser.add_argument("--host", required=True, help="ssh destination, e.g. root@<host>")
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
+    parser.add_argument(
+        "--extra",
+        action="append",
+        default=[],
+        help=(
+            "A receipt the lane binds but keeps outside the bundle directory, "
+            "such as a config preflight. Repeat for each; staged flat by name."
+        ),
+    )
     parser.add_argument("--receipt-out", help="Write the staging receipt here as well.")
     args = parser.parse_args(argv)
 
@@ -244,6 +266,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             lane_id=args.lane_id,
             remote_root=args.remote_root,
             host=args.host,
+            extra_paths=args.extra,
         )
     except (OSError, StagingError, json.JSONDecodeError) as exc:
         print(

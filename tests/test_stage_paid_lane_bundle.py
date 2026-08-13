@@ -221,3 +221,42 @@ def test_a_lane_id_cannot_escape_the_remote_root(tmp_path):
             lane_id="../../etc",
             transport=_LocalTransport(tmp_path / "host"),
         )
+
+
+def test_a_receipt_the_lane_binds_from_outside_the_bundle_directory_is_staged(tmp_path):
+    """The allocator refuses to run a content-agents attempt without its config
+    preflight, and that preflight lives in a sibling directory of the bundle."""
+
+    job = _job(tmp_path)
+    preflight_dir = tmp_path / "local_config_preflight_v1"
+    preflight_dir.mkdir()
+    preflight = preflight_dir / "adp_content_agents_bundle_config_preflight.json"
+    preflight.write_text('{"bundle_receipt_sha256": "sha256:x"}', encoding="utf-8")
+    transport = _LocalTransport(tmp_path / "host")
+
+    receipt = stager.stage_paid_lane_bundle(
+        receipt_path=job / RECEIPT_NAME,
+        lane_id="lane",
+        transport=transport,
+        extra_paths=[preflight],
+    )
+
+    staged = {row["relative_path"] for row in receipt["staged_files"]}
+    # Flat by name, so the destination stays a directory of files rather than a
+    # copy of somebody's tree.
+    assert "adp_content_agents_bundle_config_preflight.json" in staged
+
+
+def test_an_extra_that_would_overwrite_a_bundle_file_is_refused(tmp_path):
+    job = _job(tmp_path)
+    collision = tmp_path / "elsewhere" / RECEIPT_NAME
+    collision.parent.mkdir()
+    collision.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(stager.StagingError, match="staging_extra_file_name_collides"):
+        stager.stage_paid_lane_bundle(
+            receipt_path=job / RECEIPT_NAME,
+            lane_id="lane",
+            transport=_LocalTransport(tmp_path / "host"),
+            extra_paths=[collision],
+        )
