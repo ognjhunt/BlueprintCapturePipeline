@@ -117,13 +117,17 @@ The required agent-facing tools are:
 
 - `inspect_fresh_scene_preparation`: read the status ledger and return the first
   blocker and next legal producer.
+- `materialize_sam31_task_inputs`: produce the calibrated, task-local SAM input
+  packet without uploading bytes or starting paid work.
 - `materialize_calibrated_object_masks`: invoke the deterministic task-local
   camera/frame bridge after explicit track selections are present.
-- `request_fresh_scene_visual_review`: produce review media and a human-review
-  request; it cannot approve its own masks or repaired views.
-- `propose_next_fresh_scene_stage`: propose a registered deterministic producer
-  or a paid authority request. It cannot allocate, retry, alter proof booleans,
-  or promote generated pixels.
+
+`fresh_scene_supervisor_bindings` is the production bridge. It accepts only a
+host-resident, digest-bound status plus the exact available tool request, and
+then runs the existing reconstruction continuation with those registered
+tools. The agent can recommend visual review or the next paid stage in prose,
+but review approval, paid authority, allocation, and retry remain separate
+typed human/control-plane actions rather than SDK tools.
 
 Until those bindings are present in a deployed task-evaluation profile, the
 same modules remain usable through their typed CLIs, but the flow is not yet a

@@ -29,9 +29,9 @@ def test_agents_sdk_can_inspect_but_not_advance_fresh_scene(tmp_path: Path) -> N
         "status": "blocked",
         "first_blocker": "fresh_scene_sam31_source_tracks_missing",
         "next_required_stage": "sam31_source_tracks",
-        "receipt_digest": "",
+        "status_digest": "",
     }
-    status["receipt_digest"] = canonical_digest(status, digest_field="receipt_digest")
+    status["status_digest"] = canonical_digest(status, digest_field="status_digest")
     registry = ToolRegistry.default()
     context = SupervisorContext(
         run_id="fresh-scene-tools-test",
@@ -45,14 +45,14 @@ def test_agents_sdk_can_inspect_but_not_advance_fresh_scene(tmp_path: Path) -> N
             capability="capture_testbed_supervisor",
             context=context,
             registry=registry,
-            authority=_authority(registry, status["receipt_digest"]),
+            authority=_authority(registry, status["status_digest"]),
         )
     }
 
     assert "inspect_fresh_scene_preparation" in bindings
     assert "materialize_calibrated_object_masks" not in bindings
     observation = bindings["inspect_fresh_scene_preparation"].invoke(
-        {"receipt_digest": status["receipt_digest"]}
+        {"status_digest": status["status_digest"]}
     )
     assert observation["status"] == "completed"
     assert observation["typed_result"]["next_required_stage"] == "sam31_source_tracks"

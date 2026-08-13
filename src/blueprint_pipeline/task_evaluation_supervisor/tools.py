@@ -640,8 +640,8 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             "inspect_fresh_scene_preparation",
             "fresh_scene_preparation_inspection",
             expected_artifacts=["fresh_scene_paired_target_preparation.v1"],
-            input_properties={"receipt_digest": {"type": "string"}},
-            required_inputs=["receipt_digest"],
+            input_properties={"status_digest": {"type": "string"}},
+            required_inputs=["status_digest"],
         ),
         _descriptor(
             "materialize_sam31_task_inputs",
@@ -3112,8 +3112,8 @@ def _bound_artifact(
     produced_artifact_references: list[dict[str, Any]] = []
     if tool_id == "inspect_fresh_scene_preparation":
         value = getattr(context, "fresh_scene_preparation_status", None)
-        expected = arguments.get("receipt_digest")
-        actual = value.get("receipt_digest") if isinstance(value, Mapping) else None
+        expected = arguments.get("status_digest")
+        actual = value.get("status_digest") if isinstance(value, Mapping) else None
         typed_result = {
             "contract_present": value is not None,
             "digest_matches": bool(actual and expected == actual),
