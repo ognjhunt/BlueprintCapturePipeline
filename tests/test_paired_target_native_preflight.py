@@ -14,6 +14,10 @@ from blueprint_pipeline.paired_target_native_preflight import (
     PairedTargetNativePreflightError,
     materialize_paired_target_native_preflight,
 )
+from blueprint_pipeline.paired_target_native_manipulation_preflight import (
+    PairedTargetNativeManipulationPreflightError,
+    materialize_paired_target_native_manipulation_preflight,
+)
 from blueprint_pipeline.replacement_asset_frame_registration import (
     seal_replacement_asset_frame_registration,
 )
@@ -26,9 +30,135 @@ def _write(path: Path, value: dict, field: str) -> Path:
     return path
 
 
+def _digest(character: str) -> str:
+    return "sha256:" + character * 64
+
+
+def _task_freeze(task_id: str, *, placement_digest: str, index: int) -> dict:
+    value = {
+        "schema_version": "dual_task_task_freeze.v1",
+        "scene_freeze_digest": _digest("a"),
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "frozen_before_learned_policy_execution": True,
+        "learned_policy_outcomes_accessed": False,
+        "overview_camera_policy_input": False,
+        "overview_camera_deterministic_scoring_input": False,
+        "task_id": task_id,
+        "prompt": "Relocate the observed rigid task object.",
+        "task_kind": "rigid_object_manipulation",
+        "source_object": {
+            "instance_id": f"source_{index}",
+            "semantic_label": f"object_{index}",
+            "observed_bounds_world_m": {
+                "minimum": [float(index), 0.0, 0.0],
+                "maximum": [float(index) + 0.2, 0.2, 0.2],
+            },
+            "observed_pose_world": {
+                "position_world_m": [float(index) + 0.1, 0.1, 0.1],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "support_or_attachment_id": f"support_{index}",
+            "collision_identity_receipt_digest": _digest("b"),
+            "support_receipt_digest": _digest("c"),
+            "franka_placement_packet_digest": placement_digest,
+            "visibility_receipt_digest": _digest("d"),
+        },
+        "removal_plan": {
+            "removal_id": f"removal_{index}",
+            "mask_set_id": f"mask_{index}",
+            "source_collider_prim_path": f"/Root/source_{index}",
+            "collider_deletion_id": f"collider_{index}",
+            "replacement_asset_id": f"replacement_{index}",
+            "replacement_qualification_id": f"qualification_{index}",
+        },
+        "cameras": {
+            "external": f"external_{index}",
+            "wrist": f"wrist_{index}",
+            "overview": f"overview_{index}",
+        },
+        "execution_contract": {
+            "control_frequency_hz": 20,
+            "maximum_steps": 400,
+            "settle_window_steps": 20,
+            "seeds": [3101 + index],
+            "canonical_scenario_cell_id": f"canonical_{index}",
+            "reset_state": {"robot": "home", "object": "source"},
+        },
+        "deterministic_success_predicates": ["released", "settled", "retreated"],
+        "failure_rungs": ["never_moved", "collision_failure"],
+        "target_configuration": {
+            "kind": "pose_volume",
+            "position_bounds_world_m": {
+                "minimum": [float(index) + 0.1, 0.2, 0.0],
+                "maximum": [float(index) + 0.2, 0.3, 0.2],
+            },
+            "orientation_reference_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "maximum_orientation_error_rad": 0.1,
+            "support_id": f"support_{index}",
+            "release_required": True,
+        },
+        "articulation_graph": None,
+        "mechanism_provenance": "observed exterior; no hidden mechanism used",
+        "task_freeze_digest": "",
+    }
+    value["task_freeze_digest"] = canonical_digest(
+        value, digest_field="task_freeze_digest"
+    )
+    return value
+
+
+def _placement(task_id: str, *, index: int) -> dict:
+    value = {
+        "schema_version": "registered_sage_franka_placement_packet.v1",
+        "status": "placement_candidate_materialized",
+        "conversion_receipt_digest": _digest("e"),
+        "request": {"request_digest": _digest("f")},
+        "target_analysis": {
+            "selected_target": {
+                "target_id": f"target_{index}",
+                "target_label": f"object_{index}",
+                "task_family": "rigid_object_relocation_with_locked_internal_joints",
+                "position_m": [float(index) + 0.1, 0.1, 0.1],
+            }
+        },
+        "placement": {
+            "robot_pose_xyzyaw_collision_stage": [
+                float(index),
+                -0.5,
+                0.0,
+                0.0,
+            ]
+        },
+        "render_options": {},
+        "native_contact_reachability_qualified": False,
+        "policy_execution_authorized": False,
+        "blockers": [
+            "franka_native_reset_contact_reachability_missing",
+            "robot_base_and_camera_calibration_native_probe_missing",
+        ],
+        "packet_digest": "",
+    }
+    value["packet_digest"] = canonical_digest(value, digest_field="packet_digest")
+    return value
+
+
 def _fixture(root: Path, task_id: str) -> dict[str, str]:
     task = root / task_id
     task.mkdir(parents=True)
+    if task_id == "task_a":
+        index = 0
+    elif task_id == "task_b":
+        index = 1
+    else:
+        index = int(task_id.rsplit("_", 1)[-1])
+    placement = _placement(task_id, index=index)
+    placement_path = task / "placement.json"
+    placement_path.write_text(json.dumps(placement), encoding="utf-8")
+    freeze = _task_freeze(
+        task_id, placement_digest=placement["packet_digest"], index=index
+    )
+    freeze_path = task / "task_freeze.json"
+    freeze_path.write_text(json.dumps(freeze), encoding="utf-8")
     usdz = task / "scene.usdz"
     buffer = io.BytesIO()
     with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as stream:
@@ -135,7 +265,7 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         "scene_id": "840920",
         "task_id": task_id,
         "asset_id": cad["asset_id"],
-        "task_freeze_digest": "sha256:" + "f" * 64,
+        "task_freeze_digest": freeze["task_freeze_digest"],
         "output_usd": _record(visual_usd),
         "agent_authored_display_colors_preserved": True,
         "neutral_fallback_present": False,
@@ -195,6 +325,7 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         "schema_version": "third_scene_task_scenario_suite.v1",
         "scene_id": "840920",
         "task_id": task_id,
+        "task_freeze_digest": freeze["task_freeze_digest"],
         "candidate_ids": ["pi05_droid", "groot_n17_droid"],
         "required_controls": ["zero_action_negative", "scripted_positive"],
         "initial_execution_order": [f"{task_id}_canonical", f"{task_id}_camera"],
@@ -209,6 +340,8 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         "registered_replacement_asset_receipt_path": str(registered_path),
         "asset_frame_registration_path": str(registration_path),
         "scenario_suite_path": str(scenario_path),
+        "task_freeze_path": str(freeze_path),
+        "franka_placement_packet_path": str(placement_path),
     }
 
 
@@ -254,4 +387,145 @@ def test_preflight_rejects_tampered_bytes_and_six_tasks(tmp_path: Path) -> None:
             task_records=[task] * 6,
             collision_scene_path=collision,
             output_path=tmp_path / "other.json",
+        )
+
+
+def _native_import_result(path: Path, preflight: dict) -> Path:
+    value = {
+        "schema_version": "paired_target_native_import_runtime_result.v1",
+        "status": "completed",
+        "scene_id": preflight["scene_id"],
+        "replacement_count": len(preflight["tasks"]),
+        "replacements": [
+            {
+                "task_id": row["task_id"],
+                "asset_id": row["asset_id"],
+                "native_simulator_import_qualified": True,
+                "blockers": [],
+            }
+            for row in preflight["tasks"]
+        ],
+        "native_isaac_executed": True,
+        "all_replacements_import_qualified": True,
+        "candidate_policy_queried": False,
+        "physical_equivalence_claimed": False,
+        "blockers": [],
+        "result_digest": "",
+    }
+    value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
+def test_manipulation_preflight_binds_available_proof_and_types_missing_arena(
+    tmp_path: Path,
+) -> None:
+    records = [_fixture(tmp_path, "task_a"), _fixture(tmp_path, "task_b")]
+    collision = tmp_path / "collision.usda"
+    collision.write_text("#usda 1.0", encoding="utf-8")
+    preflight_path = tmp_path / "preflight.json"
+    preflight = materialize_paired_target_native_preflight(
+        scene_id="840920",
+        task_records=records,
+        collision_scene_path=collision,
+        output_path=preflight_path,
+    )
+    native_import = _native_import_result(tmp_path / "native_import.json", preflight)
+
+    result = materialize_paired_target_native_manipulation_preflight(
+        paired_target_preflight_path=preflight_path,
+        native_import_result_path=native_import,
+        task_records=records,
+        output_path=tmp_path / "manipulation.json",
+    )
+
+    assert result["replacement_object_count"] == 2
+    assert result["maximum_replacement_objects"] == 5
+    assert result["native_import_qualified"] is True
+    assert result["calibrated_review_camera_requests_bound"] is True
+    assert result["status"] == "blocked_pending_native_task_arena_requests"
+    assert result["blockers"] == [
+        "task_a:native_task_arena_packet_request_missing",
+        "task_b:native_task_arena_packet_request_missing",
+    ]
+    assert all(row["review_camera_count"] == 8 for row in result["tasks"])
+    assert all(
+        row["native_reachability_execution_authorized"] is False
+        for row in result["tasks"]
+    )
+
+
+def test_manipulation_preflight_scales_to_five_distinct_objects(tmp_path: Path) -> None:
+    records = [_fixture(tmp_path, f"object_{index}") for index in range(5)]
+    collision = tmp_path / "collision.usda"
+    collision.write_text("#usda 1.0", encoding="utf-8")
+    preflight_path = tmp_path / "preflight.json"
+    preflight = materialize_paired_target_native_preflight(
+        scene_id="840920",
+        task_records=records,
+        collision_scene_path=collision,
+        output_path=preflight_path,
+    )
+    native_import = _native_import_result(tmp_path / "native_import.json", preflight)
+
+    result = materialize_paired_target_native_manipulation_preflight(
+        paired_target_preflight_path=preflight_path,
+        native_import_result_path=native_import,
+        task_records=records,
+        output_path=tmp_path / "manipulation.json",
+    )
+
+    assert result["replacement_object_count"] == 5
+    assert len(result["blockers"]) == 5
+    assert all(row["native_arena_packet_materialization_ready"] is False for row in result["tasks"])
+
+
+def test_manipulation_preflight_rejects_import_or_placement_mismatch(
+    tmp_path: Path,
+) -> None:
+    record = _fixture(tmp_path, "task_a")
+    collision = tmp_path / "collision.usda"
+    collision.write_text("#usda 1.0", encoding="utf-8")
+    preflight_path = tmp_path / "preflight.json"
+    preflight = materialize_paired_target_native_preflight(
+        scene_id="840920",
+        task_records=[record],
+        collision_scene_path=collision,
+        output_path=preflight_path,
+    )
+    import_path = _native_import_result(tmp_path / "native_import.json", preflight)
+    native_import = json.loads(import_path.read_text())
+    native_import["replacements"][0]["native_simulator_import_qualified"] = False
+    native_import["result_digest"] = canonical_digest(
+        native_import, digest_field="result_digest"
+    )
+    import_path.write_text(json.dumps(native_import), encoding="utf-8")
+    with pytest.raises(
+        PairedTargetNativeManipulationPreflightError,
+        match="native_import_mismatch",
+    ):
+        materialize_paired_target_native_manipulation_preflight(
+            paired_target_preflight_path=preflight_path,
+            native_import_result_path=import_path,
+            task_records=[record],
+            output_path=tmp_path / "bad_import.json",
+        )
+
+    _native_import_result(import_path, preflight)
+    placement_path = Path(record["franka_placement_packet_path"])
+    placement = json.loads(placement_path.read_text())
+    placement["target_analysis"]["selected_target"]["position_m"][0] += 1.0
+    placement["packet_digest"] = canonical_digest(
+        placement, digest_field="packet_digest"
+    )
+    placement_path.write_text(json.dumps(placement), encoding="utf-8")
+    with pytest.raises(
+        PairedTargetNativeManipulationPreflightError,
+        match="franka_placement_mismatch",
+    ):
+        materialize_paired_target_native_manipulation_preflight(
+            paired_target_preflight_path=preflight_path,
+            native_import_result_path=import_path,
+            task_records=[record],
+            output_path=tmp_path / "bad_placement.json",
         )
