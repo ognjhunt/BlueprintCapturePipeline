@@ -511,6 +511,25 @@ def _source_checkout_blockers(
     return blockers, checkout_commit
 
 
+def _host_resident_bundle(receipt_path: Path, blockers: list[str]) -> dict[str, Any]:
+    """Resolve a lane's bundle receipt against this host before anything reads it.
+
+    A receipt records the absolute paths of the machine that built it, so a lane
+    that reads ``bundle_path`` straight off it looks for the archive where it was
+    authored rather than where it is. #464 fixed that for the retained-scene
+    lane; six other lanes still did it, which is why a bundle staged
+    host-resident was still reported as a binding failure.
+
+    The resolved receipt carries the paths that resolved here, and comes back
+    ``not_host_resident`` when they did not -- so each lane's existing status
+    check refuses it without needing to know this function exists.
+    """
+
+    resolution = resolve_host_resident_bundle_receipt(receipt_path)
+    blockers.extend(resolution["blockers"])
+    return resolution["receipt"]
+
+
 def _control_plane_checkout_blockers() -> tuple[list[str], dict[str, object]]:
     """Pin the clean allocator identity without coupling it to the runtime image.
 
@@ -1914,7 +1933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     blockers.append("gaussian_excision_bundle_receipt_missing")
                 else:
                     try:
-                        prepared_bundle = _load(receipt_path)
+                        prepared_bundle = _host_resident_bundle(receipt_path, blockers)
                     except (OSError, ValueError, json.JSONDecodeError):
                         blockers.append("gaussian_excision_bundle_receipt_invalid")
             bundle_path: Path | None = None
@@ -2123,7 +2142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     blockers.append("adp_joint_agent_bundle_receipt_missing")
                 else:
                     try:
-                        prepared_bundle = _load(receipt_path)
+                        prepared_bundle = _host_resident_bundle(receipt_path, blockers)
                     except (OSError, ValueError, json.JSONDecodeError):
                         blockers.append("adp_joint_agent_bundle_receipt_invalid")
             bundle_path: Path | None = None
@@ -2345,7 +2364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     blockers.append("adp_inpaint360_bundle_receipt_missing")
                 else:
                     try:
-                        prepared_bundle = _load(receipt_path)
+                        prepared_bundle = _host_resident_bundle(receipt_path, blockers)
                     except (OSError, ValueError, json.JSONDecodeError):
                         blockers.append("adp_inpaint360_bundle_receipt_invalid")
             bundle_path: Path | None = None
@@ -2571,7 +2590,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     blockers.append("adp_aura_bundle_receipt_missing")
                 else:
                     try:
-                        prepared_bundle = _load(receipt_path)
+                        prepared_bundle = _host_resident_bundle(receipt_path, blockers)
                     except (OSError, ValueError, json.JSONDecodeError):
                         blockers.append("adp_aura_bundle_receipt_invalid")
             bundle_path: Path | None = None
@@ -2978,7 +2997,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     blockers.append("adp_content_agents_bundle_receipt_missing")
                 else:
                     try:
-                        prepared_bundle = _load(receipt_path)
+                        prepared_bundle = _host_resident_bundle(receipt_path, blockers)
                     except (OSError, ValueError, json.JSONDecodeError):
                         blockers.append("adp_content_agents_bundle_receipt_invalid")
             bundle_path: Path | None = None
@@ -3231,7 +3250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.adp_simready_isaac_bundle_receipt:
                 receipt_path = Path(args.adp_simready_isaac_bundle_receipt).expanduser().resolve()
                 try:
-                    prepared_bundle = _load(receipt_path)
+                    prepared_bundle = _host_resident_bundle(receipt_path, blockers)
                 except (OSError, ValueError, json.JSONDecodeError):
                     blockers.append("simready_isaac_bundle_receipt_invalid")
             bundle_path: Path | None = None

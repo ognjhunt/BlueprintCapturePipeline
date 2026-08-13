@@ -179,3 +179,22 @@ def test_an_attempt_that_retained_nothing_is_blocked_by_its_own_manifest(tmp_pat
 
     assert sealed["status"] == "blocked"
     assert sealed["blockers"]
+
+
+def test_no_paid_lane_reads_a_bundle_path_off_an_unresolved_receipt() -> None:
+    """A receipt records the absolute paths of the machine that built it.
+
+    A lane that loads one and reads `bundle_path` straight off it looks for the
+    archive where it was authored rather than where it is, so a bundle staged
+    host-resident is still reported as a binding failure. Six lanes did this
+    after #464 fixed the seventh.
+    """
+
+    allocator = (SOURCE_ROOT / "paid_resource_allocator.py").read_text(encoding="utf-8")
+
+    assert "prepared_bundle = _load(receipt_path)" not in allocator, (
+        "a lane loads its bundle receipt without resolving it against this host; "
+        "use _host_resident_bundle(receipt_path, blockers) so the receipt's "
+        "bundle_path is the one that resolved here"
+    )
+    assert "_host_resident_bundle" in allocator
