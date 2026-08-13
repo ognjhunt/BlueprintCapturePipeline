@@ -93,6 +93,17 @@ def _finite_vector(value: Any, length: int) -> list[float] | None:
     return result
 
 
+def _display_color(value: Any) -> list[float] | None:
+    """Normalize an agent-authored STEP display color without inventing one."""
+
+    if value is None:
+        return None
+    color = _finite_vector(value, 4)
+    if color is None or any(component < 0.0 or component > 1.0 for component in color):
+        return None
+    return color
+
+
 def validate_step_mesh_packet(
     value: Mapping[str, Any], *, verify_files: bool = True
 ) -> dict[str, Any]:
@@ -140,6 +151,10 @@ def validate_step_mesh_packet(
                 )
                 for face in triangles or []
             )
+            or (
+                row.get("agent_authored_display_color_rgba") is not None
+                and _display_color(row.get("agent_authored_display_color_rgba")) is None
+            )
         ):
             errors.append("cad_agent_mesh_packet_row_invalid")
         prim_paths.append(prim_path)
@@ -147,9 +162,7 @@ def validate_step_mesh_packet(
         errors.append("cad_agent_mesh_packet_duplicate_prim")
     if packet.get("mesh_count") != len(rows):
         errors.append("cad_agent_mesh_packet_count_invalid")
-    if packet.get("packet_digest") != canonical_digest(
-        packet, digest_field="packet_digest"
-    ):
+    if packet.get("packet_digest") != canonical_digest(packet, digest_field="packet_digest"):
         errors.append("cad_agent_mesh_packet_digest_invalid")
     if errors:
         raise CadAgentMeshProjectionError(";".join(sorted(set(errors))))
@@ -168,9 +181,7 @@ def extract_step_mesh_packet(
     try:
         from build123d import import_step
     except ImportError as exc:  # pragma: no cover - CAD-tool environment only
-        raise CadAgentMeshProjectionError(
-            "cad_agent_mesh_projection_build123d_missing"
-        ) from exc
+        raise CadAgentMeshProjectionError("cad_agent_mesh_projection_build123d_missing") from exc
     if linear_tolerance_mm <= 0.0 or angular_tolerance_rad <= 0.0:
         raise CadAgentMeshProjectionError("cad_agent_mesh_tolerance_invalid")
     step = _file_record(step_path)
@@ -204,13 +215,9 @@ def extract_step_mesh_packet(
         for leaf_index, (leaf, ancestor_location) in enumerate(leaf_rows):
             solids = list(leaf.solids())
             if len(solids) != 1:
-                raise CadAgentMeshProjectionError(
-                    "cad_agent_mesh_leaf_not_single_solid"
-                )
+                raise CadAgentMeshProjectionError("cad_agent_mesh_leaf_not_single_solid")
             solid = solids[0].moved(ancestor_location)
-            solid_name = _safe_name(
-                getattr(leaf, "label", None), f"solid_{leaf_index:03d}"
-            )
+            solid_name = _safe_name(getattr(leaf, "label", None), f"solid_{leaf_index:03d}")
             base_path = f"/Asset/links/{link_name}/geometry/{solid_name}"
             prim_path = base_path
             suffix = 2
@@ -224,9 +231,7 @@ def extract_step_mesh_packet(
                     angular_tolerance_rad,
                 )
             except Exception as exc:  # pragma: no cover - CAD kernel failure
-                raise CadAgentMeshProjectionError(
-                    "cad_agent_mesh_tessellation_failed"
-                ) from exc
+                raise CadAgentMeshProjectionError("cad_agent_mesh_tessellation_failed") from exc
             points = [[float(v.X), float(v.Y), float(v.Z)] for v in vertices]
             triangles = [[int(i) for i in face] for face in faces]
             rows.append(
@@ -237,6 +242,9 @@ def extract_step_mesh_packet(
                     "assembly_transform_applied": True,
                     "points_mm": points,
                     "triangles": triangles,
+                    "agent_authored_display_color_rgba": _display_color(
+                        list(leaf.color) if getattr(leaf, "color", None) is not None else None
+                    ),
                 }
             )
     payload: dict[str, Any] = {
@@ -257,9 +265,7 @@ def extract_step_mesh_packet(
             "simready_qualified": False,
         },
     }
-    payload["packet_digest"] = canonical_digest(
-        payload, digest_field="packet_digest"
-    )
+    payload["packet_digest"] = canonical_digest(payload, digest_field="packet_digest")
     validated = validate_step_mesh_packet(payload)
     output = Path(output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -294,22 +300,35 @@ def materialize_mesh_usd_projection(
     root = UsdGeom.Xform.Define(stage, "/Asset")
     stage.SetDefaultPrim(root.GetPrim())
     UsdGeom.Scope.Define(stage, "/Asset/links")
-    material = UsdShade.Material.Define(stage, "/Asset/materials/agent_input_neutral")
-    shader = UsdShade.Shader.Define(
-        stage, "/Asset/materials/agent_input_neutral/PreviewSurface"
-    )
-    shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
-        Gf.Vec3f(0.5, 0.5, 0.5)
-    )
-    shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
-    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    materials: dict[tuple[float, float, float, float] | None, Any] = {}
+
+    def material_for(color: list[float] | None) -> Any:
+        key = tuple(color) if color is not None else None
+        if key in materials:
+            return materials[key]
+        index = len(materials)
+        name = f"agent_authored_display_{index:03d}" if key is not None else "neutral_fallback"
+        material = UsdShade.Material.Define(stage, f"/Asset/materials/{name}")
+        shader = UsdShade.Shader.Define(stage, f"/Asset/materials/{name}/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        rgba = color or [0.5, 0.5, 0.5, 1.0]
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*rgba[:3]))
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(float(rgba[3]))
+        shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        materials[key] = material
+        return material
+
     prim_paths: list[str] = []
     total_points = 0
     total_triangles = 0
+    authored_color_mesh_count = 0
+    neutral_fallback_mesh_count = 0
     for row in packet["meshes"]:
         mesh = UsdGeom.Mesh.Define(stage, row["prim_path"])
-        points = [Gf.Vec3f(*(float(value) / 1000.0 for value in point)) for point in row["points_mm"]]
+        points = [
+            Gf.Vec3f(*(float(value) / 1000.0 for value in point)) for point in row["points_mm"]
+        ]
         faces = row["triangles"]
         mesh.CreatePointsAttr(points)
         mesh.CreateFaceVertexCountsAttr([3] * len(faces))
@@ -318,13 +337,20 @@ def materialize_mesh_usd_projection(
         mesh.CreateOrientationAttr(UsdGeom.Tokens.rightHanded)
         mesh.CreatePurposeAttr(UsdGeom.Tokens.default_)
         mesh.CreateDoubleSidedAttr(False)
-        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+        color = _display_color(row.get("agent_authored_display_color_rgba"))
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material_for(color))
+        mesh.GetPrim().SetCustomDataByKey(
+            "blueprint:agentAuthoredDisplayColorRgba",
+            Gf.Vec4f(*(color or [0.5, 0.5, 0.5, 1.0])),
+        )
+        if color is None:
+            neutral_fallback_mesh_count += 1
+        else:
+            authored_color_mesh_count += 1
         mesh.GetPrim().SetCustomDataByKey(
             "blueprint:geometryAuthority", "exact_agent_authored_step"
         )
-        mesh.GetPrim().SetCustomDataByKey(
-            "blueprint:contentAgentsWorkingCopy", True
-        )
+        mesh.GetPrim().SetCustomDataByKey("blueprint:contentAgentsWorkingCopy", True)
         prim_paths.append(row["prim_path"])
         total_points += len(points)
         total_triangles += len(faces)
@@ -345,7 +371,10 @@ def materialize_mesh_usd_projection(
         "mesh_count": len(prim_paths),
         "point_count": total_points,
         "triangle_count": total_triangles,
-        "default_material_path": str(material.GetPath()),
+        "default_material_path": str(material_for(None).GetPath()),
+        "agent_authored_display_color_mesh_count": authored_color_mesh_count,
+        "neutral_fallback_mesh_count": neutral_fallback_mesh_count,
+        "agent_authored_display_colors_preserved": neutral_fallback_mesh_count == 0,
         "content_agents_input_eligible": True,
         "canonical_simulator_asset": False,
         "claim_boundary": {
@@ -357,9 +386,7 @@ def materialize_mesh_usd_projection(
             "physical_equivalence": False,
         },
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return receipt
 
 

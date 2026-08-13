@@ -19,6 +19,9 @@ import zipfile
 from .decision_evidence_contracts import canonical_digest
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 from .nurec_openusd_packaging import validate_safe_usdz_archive
+from .replacement_asset_frame_registration import (
+    validate_replacement_asset_frame_registration,
+)
 
 
 SCHEMA_VERSION = "paired_target_native_preflight.v1"
@@ -26,6 +29,7 @@ APPEARANCE_SCHEMA = "public_scene_artifixer3d_native_appearance_export.v1"
 DUAL_INPUT_SCHEMA = "public_scene_artifixer3d_dual_target_inputs.v1"
 CAD_RECEIPT_SCHEMA = "simready_graph_asset_receipt.v1"
 CAD_STATIC_SCHEMA = "simready_graph_asset_static_qualification.v1"
+REGISTERED_ASSET_SCHEMA = "registered_replacement_asset.v1"
 SCENARIO_SCHEMA = "third_scene_task_scenario_suite.v1"
 FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
 
@@ -74,16 +78,12 @@ def _bound_path(parent: Path, record: Mapping[str, Any], code: str) -> Path:
     path = (parent / relative).resolve()
     if parent.resolve() not in path.parents or path.is_symlink() or not path.is_file():
         raise PairedTargetNativePreflightError(code)
-    if path.stat().st_size != record.get("size_bytes") or _sha256(path) != record.get(
-        "sha256"
-    ):
+    if path.stat().st_size != record.get("size_bytes") or _sha256(path) != record.get("sha256"):
         raise PairedTargetNativePreflightError(code)
     return path
 
 
-def _validate_usdz_contract(
-    path: Path, contract: Any
-) -> list[dict[str, Any]]:
+def _validate_usdz_contract(path: Path, contract: Any) -> list[dict[str, Any]]:
     if (
         not isinstance(contract, Mapping)
         or contract.get("compression") != "stored"
@@ -127,9 +127,7 @@ def _validate_usdz_contract(
                     }
                 )
     except (OSError, ValueError, zipfile.BadZipFile, struct.error) as exc:
-        raise PairedTargetNativePreflightError(
-            "native_preflight_usdz_contract_invalid"
-        ) from exc
+        raise PairedTargetNativePreflightError("native_preflight_usdz_contract_invalid") from exc
     if rows != contract["members"]:
         raise PairedTargetNativePreflightError("native_preflight_usdz_contract_invalid")
     return rows
@@ -163,12 +161,9 @@ def materialize_paired_target_native_preflight(
             appearance.get("schema_version") != APPEARANCE_SCHEMA
             or not _digest_valid(appearance, "export_digest")
             or appearance.get("native_import_qualified") is not False
-            or appearance.get("generated_output_is_capture_or_physical_evidence")
-            is not False
+            or appearance.get("generated_output_is_capture_or_physical_evidence") is not False
         ):
-            raise PairedTargetNativePreflightError(
-                "native_preflight_appearance_receipt_invalid"
-            )
+            raise PairedTargetNativePreflightError("native_preflight_appearance_receipt_invalid")
         usdz_record = appearance.get("isaac_nurec_usdz")
         if not isinstance(usdz_record, Mapping):
             raise PairedTargetNativePreflightError("native_preflight_usdz_invalid")
@@ -196,9 +191,7 @@ def materialize_paired_target_native_preflight(
             or dual.get("selected_task_ids") != [task_id]
             or len(dual.get("tasks") or []) != 1
         ):
-            raise PairedTargetNativePreflightError(
-                "native_preflight_dual_inputs_invalid"
-            )
+            raise PairedTargetNativePreflightError("native_preflight_dual_inputs_invalid")
         dual_task = dual["tasks"][0]
         if (
             dual_task.get("task_id") != task_id
@@ -235,8 +228,7 @@ def materialize_paired_target_native_preflight(
             or not _digest_valid(cad, "receipt_digest")
             or cad.get("task_id") != task_id
             or cad.get("status") != "simready_candidate_authored"
-            or cad.get("claim_boundary", {}).get("native_simulator_import_qualified")
-            is not False
+            or cad.get("claim_boundary", {}).get("native_simulator_import_qualified") is not False
             or static.get("schema_version") != CAD_STATIC_SCHEMA
             or not _digest_valid(static, "receipt_digest")
             or static.get("task_id") != task_id
@@ -250,6 +242,45 @@ def materialize_paired_target_native_preflight(
         if _record(cad_usd)["sha256"] != cad["output_usd"]["sha256"]:
             raise PairedTargetNativePreflightError("native_preflight_cad_invalid")
 
+        registered_path, registered = _read(
+            raw.get("registered_replacement_asset_receipt_path", ""),
+            "native_preflight_registered_asset_invalid",
+        )
+        if (
+            registered.get("schema_version") != REGISTERED_ASSET_SCHEMA
+            or registered.get("receipt_digest")
+            != canonical_digest(registered, digest_field="receipt_digest")
+            or registered.get("task_id") != task_id
+            or registered.get("asset_id") != cad.get("asset_id")
+            or registered.get("agent_authored_display_colors_preserved") is not True
+            or registered.get("neutral_fallback_present") is not False
+            or registered.get("deterministic_pose_composition_only") is not True
+            or registered.get("geometry_generated_or_modified") is not False
+        ):
+            raise PairedTargetNativePreflightError("native_preflight_registered_asset_invalid")
+        visual_usd = Path(registered["output_usd"]["path"]).expanduser().resolve()
+        if _record(visual_usd) != registered["output_usd"]:
+            raise PairedTargetNativePreflightError("native_preflight_registered_asset_invalid")
+
+        registration_path, registration = _read(
+            raw.get("asset_frame_registration_path", ""),
+            "native_preflight_asset_frame_registration_invalid",
+        )
+        try:
+            registration = validate_replacement_asset_frame_registration(registration)
+        except Exception as exc:
+            raise PairedTargetNativePreflightError(
+                "native_preflight_asset_frame_registration_invalid"
+            ) from exc
+        if (
+            registration.get("scene_id") != scene_id
+            or registration.get("task_id") != task_id
+            or registration.get("asset_id") != cad.get("asset_id")
+        ):
+            raise PairedTargetNativePreflightError(
+                "native_preflight_asset_frame_registration_invalid"
+            )
+
         scenario_path, scenario = _read(
             raw.get("scenario_suite_path", ""),
             "native_preflight_scenario_invalid",
@@ -259,8 +290,7 @@ def materialize_paired_target_native_preflight(
             or scenario.get("scene_id") != scene_id
             or scenario.get("task_id") != task_id
             or tuple(scenario.get("candidate_ids") or ()) != FROZEN_CANDIDATES
-            or scenario.get("required_controls")
-            != ["zero_action_negative", "scripted_positive"]
+            or scenario.get("required_controls") != ["zero_action_negative", "scripted_positive"]
             or scenario.get("initial_execution_order") is None
             or len(scenario["initial_execution_order"]) != 2
             or scenario.get("suite_digest")
@@ -295,6 +325,23 @@ def materialize_paired_target_native_preflight(
                     "receipt_digest": static["receipt_digest"],
                 },
                 "simready_usd": _record(cad_usd),
+                "registered_replacement_asset_receipt": {
+                    **_record(registered_path),
+                    "receipt_digest": registered["receipt_digest"],
+                },
+                "registered_replacement_usd": _record(visual_usd),
+                "appearance_contract": {
+                    "agent_authored_display_colors_preserved": True,
+                    "generated_texture_maps_present": False,
+                    "neutral_fallback_permitted": False,
+                },
+                "asset_frame_registration": {
+                    **_record(registration_path),
+                    "registration_digest": registration["registration_digest"],
+                    "T_observed_world_axes_from_asset_local_axes": registered[
+                        "T_observed_world_axes_from_asset_local_axes"
+                    ],
+                },
                 "scenario_suite": {
                     **_record(scenario_path),
                     "suite_digest": scenario["suite_digest"],

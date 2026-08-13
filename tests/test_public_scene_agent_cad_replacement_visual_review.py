@@ -93,7 +93,9 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--fake-rende
     raise SystemExit(0)
 
 
-def _task_fixture(root: Path, *, task_id: str, scene_id: str = "fixture_scene") -> tuple[Path, Path, Path]:
+def _task_fixture(
+    root: Path, *, task_id: str, scene_id: str = "fixture_scene"
+) -> tuple[Path, Path, Path]:
     root.mkdir(parents=True)
     scene = root / "scene"
     scene.mkdir()
@@ -104,9 +106,7 @@ def _task_fixture(root: Path, *, task_id: str, scene_id: str = "fixture_scene") 
     raw_frames = []
     for index, camera_id in enumerate(cameras):
         background_array = np.full((height, width, 3), 20 + index * 10, np.uint8)
-        background = _write_png(
-            root / "backgrounds" / f"{index:05d}.png", background_array, "RGB"
-        )
+        background = _write_png(root / "backgrounds" / f"{index:05d}.png", background_array, "RGB")
         mask_array = np.zeros((height, width), np.uint8)
         mask_array[2:4, 3:5] = 255
         mask = _write_png(root / "masks" / f"{index:05d}.png", mask_array, "L")
@@ -192,10 +192,7 @@ def _task_fixture(root: Path, *, task_id: str, scene_id: str = "fixture_scene") 
                 "physical_camera_count": len(cameras),
                 "outside_support_changed_pixels_total": 0,
                 "outside_support_invariance_proven": True,
-                "frames": [
-                    {**row, "outside_support_changed_pixels": 0}
-                    for row in raw_frames
-                ],
+                "frames": [{**row, "outside_support_changed_pixels": 0} for row in raw_frames],
             }
         ],
         "receipt_digest": "",
@@ -217,19 +214,29 @@ def _task_fixture(root: Path, *, task_id: str, scene_id: str = "fixture_scene") 
         "native_simulator_import_qualified": False,
         "physical_equivalence_proven": False,
     }
+    claim.update(
+        {
+            "agent_authored_display_colors_preserved": True,
+            "generated_texture_maps_present": False,
+        }
+    )
     composition = {
-        "schema_version": "simready_agent_cad_visual_composition.v1",
+        "schema_version": "simready_agent_cad_visual_composition.v2",
         "status": "agent_cad_visuals_composed",
         "scene_id": scene_id,
         "task_id": task_id,
         "asset_id": f"{task_id}_asset",
         "output_usd": _record(candidate),
+        "visual_mesh_count": 1,
+        "visual_meshes": [{"fixture": True}],
+        "agent_authored_display_color_mesh_count": 1,
+        "neutral_fallback_mesh_count": 0,
+        "generated_texture_map_count": 0,
+        "collision_visual_isolation_verified": True,
         "claim_boundary": claim,
         "receipt_digest": "",
     }
-    composition["receipt_digest"] = canonical_digest(
-        composition, digest_field="receipt_digest"
-    )
+    composition["receipt_digest"] = canonical_digest(composition, digest_field="receipt_digest")
     composition_path = _write_json(root / "composition.json", composition)
     return dual_path, final_path, composition_path
 
@@ -240,6 +247,53 @@ def _admit_fixture_composition(monkeypatch: pytest.MonkeyPatch) -> None:
         "validate_agent_cad_visual_composition",
         lambda value, verify_files=True: dict(value),
     )
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_agent_cad_replacement_visual_review."
+        "validate_registered_replacement_asset",
+        lambda value, verify_files=True: dict(value),
+    )
+
+
+def _registered_fixture(composition_path: Path) -> Path:
+    composition = json.loads(composition_path.read_text())
+    source = Path(composition["output_usd"]["path"])
+    registered_usd = composition_path.parent / "registered.usda"
+    registered_usd.write_bytes(source.read_bytes())
+    registration = composition_path.parent / "frame_registration.json"
+    registration.write_text("{}\n", encoding="utf-8")
+    value = {
+        "schema_version": "registered_replacement_asset.v1",
+        "status": "registered_replacement_materialized_pending_native_import",
+        "scene_id": composition["scene_id"],
+        "task_id": composition["task_id"],
+        "asset_id": composition["asset_id"],
+        "visual_composition_receipt": {
+            **_record(composition_path),
+            "receipt_digest": composition["receipt_digest"],
+        },
+        "frame_registration": {
+            **_record(registration),
+            "registration_digest": "sha256:" + "a" * 64,
+        },
+        "output_usd": _record(registered_usd),
+        "T_observed_world_axes_from_asset_local_axes": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "source_root_translation_preserved": [0.0, 0.0, 0.0],
+        "agent_authored_display_colors_preserved": True,
+        "generated_texture_maps_present": False,
+        "neutral_fallback_present": False,
+        "native_import_qualified": False,
+        "deterministic_pose_composition_only": True,
+        "geometry_generated_or_modified": False,
+        "physical_equivalence_proven": False,
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    return _write_json(composition_path.parent / "registered.json", value)
 
 
 def test_materializes_lossless_two_task_review_and_contact_sheets(
@@ -269,10 +323,7 @@ def test_materializes_lossless_two_task_review_and_contact_sheets(
             with Image.open(frame["path"]) as opened:
                 combined = np.asarray(opened.convert("RGB"))
             layer_path = (
-                tmp_path
-                / "review"
-                / task["task_id"]
-                / frame["replacement_layer"]["relative_path"]
+                tmp_path / "review" / task["task_id"] / frame["replacement_layer"]["relative_path"]
             )
             with Image.open(layer_path) as opened:
                 alpha = np.asarray(opened.convert("RGBA"))[:, :, 3]
@@ -285,7 +336,7 @@ def test_materializes_lossless_two_task_review_and_contact_sheets(
             )
             text = wrapper_path.read_text(encoding="utf-8")
             assert "references = @" in text
-            assert "def Camera \"ReviewCamera\"" in text
+            assert 'def Camera "ReviewCamera"' in text
             assert "def Mesh" not in text
 
     sheets = materialize_digest_bound_review_contact_sheets(
@@ -295,13 +346,36 @@ def test_materializes_lossless_two_task_review_and_contact_sheets(
     assert sheets["all_sheet_crops_pixel_identical"] is True
 
 
+def test_review_renders_exact_registered_asset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _admit_fixture_composition(monkeypatch)
+    fixture = _task_fixture(tmp_path / "registered", task_id="task_registered")
+    registered = _registered_fixture(fixture[2])
+    result = materialize_agent_cad_replacement_visual_review(
+        dual_input_receipt_paths=[fixture[0]],
+        final_composite_receipt_paths=[fixture[1]],
+        visual_composition_receipt_paths=[fixture[2]],
+        registered_replacement_receipt_paths=[registered],
+        output_root=tmp_path / "review-registered",
+        renderer_executable=_fake_renderer(tmp_path),
+        renderer_plugin="Fixture",
+    )
+
+    assert result["asset_frame_registration_applied_to_all_tasks"] is True
+    assert result["tasks"][0]["asset_frame_registration_applied"] is True
+    assert (
+        result["inputs"][0]["registered_replacement_asset"]["registration_digest"]
+        == "sha256:" + "a" * 64
+    )
+
+
 def test_accepts_reusable_five_task_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _admit_fixture_composition(monkeypatch)
     fixtures = [
-        _task_fixture(tmp_path / f"task_{index}", task_id=f"task_{index}")
-        for index in range(5)
+        _task_fixture(tmp_path / f"task_{index}", task_id=f"task_{index}") for index in range(5)
     ]
     result = materialize_agent_cad_replacement_visual_review(
         dual_input_receipt_paths=[row[0] for row in fixtures],
@@ -325,9 +399,7 @@ def test_selects_exact_task_from_shared_final_composite(
     other = json.loads(b[1].read_text(encoding="utf-8"))
     shared["replacement_object_count"] = 2
     shared["tasks"].extend(other["tasks"])
-    shared["receipt_digest"] = canonical_digest(
-        shared, digest_field="receipt_digest"
-    )
+    shared["receipt_digest"] = canonical_digest(shared, digest_field="receipt_digest")
     shared_path = _write_json(tmp_path / "shared_final.json", shared)
 
     result = materialize_agent_cad_replacement_visual_review(
@@ -385,9 +457,7 @@ def test_rejects_self_digest_valid_camera_mismatch(
         )
 
 
-def test_rejects_candidate_usd_byte_tamper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_rejects_candidate_usd_byte_tamper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _admit_fixture_composition(monkeypatch)
     fixture = _task_fixture(tmp_path / "task", task_id="task_a")
     composition = json.loads(fixture[2].read_text(encoding="utf-8"))

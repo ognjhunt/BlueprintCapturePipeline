@@ -31,6 +31,7 @@ from .agent_cad_graph_visual_composition import (
 )
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
+from .registered_replacement_asset import validate_registered_replacement_asset
 
 
 SCHEMA_VERSION = "public_scene_agent_cad_replacement_visual_review.v1"
@@ -148,15 +149,18 @@ def _validate_camera(
         # The current camera adapter is deliberately narrow: centered, square-pixel,
         # already-undistorted OPENCV cameras.  Other intrinsics need another proven
         # adapter, not an unreviewed approximation at this seam.
-        raise AgentCadReplacementVisualReviewError(
-            "replacement_visual_camera_adapter_unsupported"
-        )
+        raise AgentCadReplacementVisualReviewError("replacement_visual_camera_adapter_unsupported")
     return width, height, fx, transform
 
 
 def _write_camera_stage(
-    *, asset: Path, destination: Path, width: int, height: int, fx: float,
-    camera_to_world: np.ndarray
+    *,
+    asset: Path,
+    destination: Path,
+    width: int,
+    height: int,
+    fx: float,
+    camera_to_world: np.ndarray,
 ) -> None:
     try:
         from pxr import Gf, Usd, UsdGeom
@@ -166,9 +170,7 @@ def _write_camera_stage(
         ) from exc
     stage = Usd.Stage.CreateNew(str(destination))
     if stage is None:
-        raise AgentCadReplacementVisualReviewError(
-            "replacement_visual_camera_stage_failed"
-        )
+        raise AgentCadReplacementVisualReviewError("replacement_visual_camera_stage_failed")
     asset_prim = stage.DefinePrim("/Asset", "Xform")
     asset_prim.GetReferences().AddReference(asset.as_posix(), "/Asset")
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -200,18 +202,14 @@ def _renderer_identity(renderer: Path) -> dict[str, Any]:
             timeout=30,
         )
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-        raise AgentCadReplacementVisualReviewError(
-            "replacement_visual_renderer_invalid"
-        ) from exc
+        raise AgentCadReplacementVisualReviewError("replacement_visual_renderer_invalid") from exc
     version = (completed.stdout + completed.stderr).strip()
     if not path.is_file() or not version:
         raise AgentCadReplacementVisualReviewError("replacement_visual_renderer_invalid")
     return {**_file_record(path), "version": version}
 
 
-def _render_layer(
-    *, renderer: Path, plugin: str, stage: Path, output: Path, width: int
-) -> None:
+def _render_layer(*, renderer: Path, plugin: str, stage: Path, output: Path, width: int) -> None:
     command = [
         str(renderer),
         "--renderer",
@@ -226,9 +224,7 @@ def _render_layer(
     try:
         subprocess.run(command, check=True, capture_output=True, timeout=300)
     except (OSError, subprocess.SubprocessError) as exc:
-        raise AgentCadReplacementVisualReviewError(
-            "replacement_visual_renderer_failed"
-        ) from exc
+        raise AgentCadReplacementVisualReviewError("replacement_visual_renderer_failed") from exc
     if not output.is_file() or output.is_symlink() or output.stat().st_size <= 0:
         raise AgentCadReplacementVisualReviewError("replacement_visual_layer_invalid")
 
@@ -251,26 +247,28 @@ def materialize_agent_cad_replacement_visual_review(
     dual_input_receipt_paths: Sequence[str | Path],
     final_composite_receipt_paths: Sequence[str | Path],
     visual_composition_receipt_paths: Sequence[str | Path],
+    registered_replacement_receipt_paths: Sequence[str | Path] | None = None,
     output_root: str | Path,
     renderer_executable: str | Path = DEFAULT_RENDERER,
     renderer_plugin: str = DEFAULT_RENDERER_PLUGIN,
 ) -> dict[str, Any]:
     """Render, composite, verify, and seal one to five replacement reviews."""
 
+    registration_paths = (
+        [None] * len(visual_composition_receipt_paths)
+        if registered_replacement_receipt_paths is None
+        else list(registered_replacement_receipt_paths)
+    )
     if (
         not dual_input_receipt_paths
         or len(dual_input_receipt_paths) != len(final_composite_receipt_paths)
-        or len(final_composite_receipt_paths)
-        != len(visual_composition_receipt_paths)
+        or len(final_composite_receipt_paths) != len(visual_composition_receipt_paths)
+        or len(registration_paths) != len(visual_composition_receipt_paths)
         or not 1 <= len(final_composite_receipt_paths) <= MAX_REPLACEMENT_OBJECTS
     ):
-        raise AgentCadReplacementVisualReviewError(
-            "replacement_visual_input_pairing_invalid"
-        )
+        raise AgentCadReplacementVisualReviewError("replacement_visual_input_pairing_invalid")
     output = Path(output_root).expanduser().resolve()
-    if output.exists() and (
-        output.is_symlink() or not output.is_dir() or any(output.iterdir())
-    ):
+    if output.exists() and (output.is_symlink() or not output.is_dir() or any(output.iterdir())):
         raise AgentCadReplacementVisualReviewError("replacement_visual_output_not_empty")
     output.mkdir(parents=True, exist_ok=True)
     renderer = Path(renderer_executable).expanduser()
@@ -283,33 +281,27 @@ def materialize_agent_cad_replacement_visual_review(
     task_results: list[dict[str, Any]] = []
     input_records: list[dict[str, Any]] = []
     seen_tasks: set[str] = set()
-    for dual_value, final_value, composition_value in zip(
+    for dual_value, final_value, composition_value, registered_value in zip(
         dual_input_receipt_paths,
         final_composite_receipt_paths,
         visual_composition_receipt_paths,
+        registration_paths,
         strict=True,
     ):
         dual_path = Path(dual_value).expanduser().resolve()
         final_path = Path(final_value).expanduser().resolve()
         composition_path = Path(composition_value).expanduser().resolve()
         dual = _read(dual_path, code="replacement_visual_dual_input_unreadable")
-        final = _read(
-            final_path, code="replacement_visual_final_composite_unreadable"
-        )
-        composition = _read(
-            composition_path, code="replacement_visual_composition_unreadable"
-        )
+        final = _read(final_path, code="replacement_visual_final_composite_unreadable")
+        composition = _read(composition_path, code="replacement_visual_composition_unreadable")
         if (
             dual.get("schema_version") != DUAL_INPUT_SCHEMA
-            or dual.get("receipt_digest")
-            != canonical_digest(dual, digest_field="receipt_digest")
+            or dual.get("receipt_digest") != canonical_digest(dual, digest_field="receipt_digest")
             or dual.get("status") != _DUAL_STATUS
             or dual.get("pipeline_mode") != "dual_target_artifixer3d_only"
             or final.get("schema_version") != FINAL_COMPOSITE_SCHEMA
-            or final.get("receipt_digest")
-            != canonical_digest(final, digest_field="receipt_digest")
-            or final.get("status")
-            != "final_composite_materialized_pending_human_multiview_review"
+            or final.get("receipt_digest") != canonical_digest(final, digest_field="receipt_digest")
+            or final.get("status") != "final_composite_materialized_pending_human_multiview_review"
             or final.get("appearance_repair_qualified") is not False
             or final.get("outside_support_invariance_proven") is not True
             or final.get("outside_support_changed_pixels_total") != 0
@@ -319,13 +311,9 @@ def materialize_agent_cad_replacement_visual_review(
             != canonical_digest(composition, digest_field="receipt_digest")
             or not _composition_claims_valid(composition)
         ):
-            raise AgentCadReplacementVisualReviewError(
-                "replacement_visual_input_receipt_invalid"
-            )
+            raise AgentCadReplacementVisualReviewError("replacement_visual_input_receipt_invalid")
         try:
-            composition = validate_agent_cad_visual_composition(
-                composition, verify_files=True
-            )
+            composition = validate_agent_cad_visual_composition(composition, verify_files=True)
         except ValueError as exc:
             raise AgentCadReplacementVisualReviewError(
                 "replacement_visual_composition_invalid"
@@ -335,6 +323,35 @@ def materialize_agent_cad_replacement_visual_review(
             root=None,
             code="replacement_visual_candidate_usd_invalid",
         )
+        registered_path: Path | None = None
+        registered: dict[str, Any] | None = None
+        if registered_value is not None:
+            registered_path = Path(registered_value).expanduser().resolve()
+            registered = _read(
+                registered_path,
+                code="replacement_visual_registered_asset_unreadable",
+            )
+            try:
+                registered = validate_registered_replacement_asset(registered)
+            except ValueError as exc:
+                raise AgentCadReplacementVisualReviewError(
+                    "replacement_visual_registered_asset_invalid"
+                ) from exc
+            if (
+                registered.get("scene_id") != composition.get("scene_id")
+                or registered.get("task_id") != composition.get("task_id")
+                or registered.get("asset_id") != composition.get("asset_id")
+                or registered.get("visual_composition_receipt", {}).get("receipt_digest")
+                != composition.get("receipt_digest")
+            ):
+                raise AgentCadReplacementVisualReviewError(
+                    "replacement_visual_registered_asset_binding_invalid"
+                )
+            candidate_usd = _bound_file(
+                registered.get("output_usd"),
+                root=None,
+                code="replacement_visual_registered_asset_invalid",
+            )
         dual_tasks = dual.get("tasks")
         final_tasks = final.get("tasks")
         if (
@@ -345,18 +362,12 @@ def materialize_agent_cad_replacement_visual_review(
             or not isinstance(dual_tasks[0], Mapping)
             or any(not isinstance(row, Mapping) for row in final_tasks)
         ):
-            raise AgentCadReplacementVisualReviewError(
-                "replacement_visual_task_inventory_invalid"
-            )
+            raise AgentCadReplacementVisualReviewError("replacement_visual_task_inventory_invalid")
         dual_task = dual_tasks[0]
         task_id = str(dual_task.get("task_id") or "")
-        matching_final_tasks = [
-            row for row in final_tasks if row.get("task_id") == task_id
-        ]
+        matching_final_tasks = [row for row in final_tasks if row.get("task_id") == task_id]
         if len(matching_final_tasks) != 1:
-            raise AgentCadReplacementVisualReviewError(
-                "replacement_visual_task_inventory_invalid"
-            )
+            raise AgentCadReplacementVisualReviewError("replacement_visual_task_inventory_invalid")
         final_task = matching_final_tasks[0]
         this_scene = str(dual.get("publisher_scene_id") or "")
         if (
@@ -368,9 +379,7 @@ def materialize_agent_cad_replacement_visual_review(
             or final.get("publisher_scene_id") != this_scene
             or (scene_id is not None and scene_id != this_scene)
         ):
-            raise AgentCadReplacementVisualReviewError(
-                "replacement_visual_task_binding_invalid"
-            )
+            raise AgentCadReplacementVisualReviewError("replacement_visual_task_binding_invalid")
         scene_id = this_scene
         scene_directory = Path(str(dual_task.get("scene_directory") or "")).resolve()
         trajectory_path = _bound_file(
@@ -378,9 +387,7 @@ def materialize_agent_cad_replacement_visual_review(
             root=scene_directory,
             code="replacement_visual_trajectory_invalid",
         )
-        trajectory = _read(
-            trajectory_path, code="replacement_visual_trajectory_invalid"
-        )
+        trajectory = _read(trajectory_path, code="replacement_visual_trajectory_invalid")
         trajectory_frames = trajectory.get("frames")
         dual_frames = dual_task.get("frames")
         final_frames = final_task.get("frames")
@@ -398,9 +405,7 @@ def materialize_agent_cad_replacement_visual_review(
             or final_task.get("outside_support_invariance_proven") is not True
             or final_task.get("outside_support_changed_pixels_total") != 0
         ):
-            raise AgentCadReplacementVisualReviewError(
-                "replacement_visual_frame_inventory_invalid"
-            )
+            raise AgentCadReplacementVisualReviewError("replacement_visual_frame_inventory_invalid")
         task_root = output / task_id
         task_root.mkdir()
         review_frames: list[dict[str, Any]] = []
@@ -408,10 +413,7 @@ def materialize_agent_cad_replacement_visual_review(
         for index, (camera_row, dual_frame, final_frame) in enumerate(
             zip(trajectory_frames, dual_frames, final_frames, strict=True)
         ):
-            if not all(
-                isinstance(row, Mapping)
-                for row in (camera_row, dual_frame, final_frame)
-            ):
+            if not all(isinstance(row, Mapping) for row in (camera_row, dual_frame, final_frame)):
                 raise AgentCadReplacementVisualReviewError(
                     "replacement_visual_frame_inventory_invalid"
                 )
@@ -473,9 +475,7 @@ def materialize_agent_cad_replacement_visual_review(
                 output=layer_path,
                 width=width,
             )
-            layer = _load_png(
-                layer_path, mode="RGBA", code="replacement_visual_layer_invalid"
-            )
+            layer = _load_png(layer_path, mode="RGBA", code="replacement_visual_layer_invalid")
             if layer.shape != (height, width, 4):
                 raise AgentCadReplacementVisualReviewError(
                     "replacement_visual_layer_geometry_invalid"
@@ -483,9 +483,7 @@ def materialize_agent_cad_replacement_visual_review(
             alpha = layer[:, :, 3]
             alpha_support = alpha > 0
             if not np.any(alpha_support) or np.all(alpha_support):
-                raise AgentCadReplacementVisualReviewError(
-                    "replacement_visual_layer_alpha_invalid"
-                )
+                raise AgentCadReplacementVisualReviewError("replacement_visual_layer_alpha_invalid")
             alpha16 = alpha.astype(np.uint16)[:, :, None]
             combined = (
                 layer[:, :, :3].astype(np.uint16) * alpha16
@@ -512,18 +510,14 @@ def materialize_agent_cad_replacement_visual_review(
                     "sha256": _sha256(combined_path),
                     "background": _file_record(background_path),
                     "exact_repair_mask": _file_record(exact_mask_path),
-                    "camera_reference_stage": _file_record(
-                        camera_stage, root=task_root
-                    ),
+                    "camera_reference_stage": _file_record(camera_stage, root=task_root),
                     "replacement_layer": _file_record(layer_path, root=task_root),
                     "replacement_alpha_pixel_count": int(np.count_nonzero(alpha_support)),
                     "exact_repair_pixel_count": int(np.count_nonzero(exact_core)),
                     "exact_repair_pixels_occluded_by_replacement": int(
                         np.count_nonzero(exact_core & alpha_support)
                     ),
-                    "outside_replacement_alpha_pixel_count": int(
-                        np.count_nonzero(outside)
-                    ),
+                    "outside_replacement_alpha_pixel_count": int(np.count_nonzero(outside)),
                     "outside_replacement_alpha_changed_pixels": outside_changes,
                 }
             )
@@ -540,6 +534,7 @@ def materialize_agent_cad_replacement_visual_review(
                 "replacement_pose_and_occlusion_human_review": "pending",
                 "native_simulator_import_qualified": False,
                 "contact_support_and_joint_physics_qualified": False,
+                "asset_frame_registration_applied": registered is not None,
             }
         )
         input_records.append(
@@ -559,6 +554,19 @@ def materialize_agent_cad_replacement_visual_review(
                 },
                 "agent_cad_visual_usd": _file_record(candidate_usd),
                 "review_trajectory": _file_record(trajectory_path),
+                **(
+                    {
+                        "registered_replacement_asset": {
+                            **_file_record(registered_path),
+                            "receipt_digest": registered["receipt_digest"],
+                            "registration_digest": registered["frame_registration"][
+                                "registration_digest"
+                            ],
+                        }
+                    }
+                    if registered is not None and registered_path is not None
+                    else {}
+                ),
             }
         )
         seen_tasks.add(task_id)
@@ -582,15 +590,16 @@ def materialize_agent_cad_replacement_visual_review(
         "implementation": {
             "module_source": _file_record(Path(__file__).resolve()),
             "geometry_operations": "reference_existing_candidate_only",
-            "image_operation": (
-                "integer_alpha_composite_over_exact_support_protected_background"
-            ),
+            "image_operation": ("integer_alpha_composite_over_exact_support_protected_background"),
         },
         "tasks": task_results,
         "all_camera_bindings_exact": True,
         "outside_replacement_alpha_changed_pixels_total": 0,
         "outside_replacement_alpha_invariance_proven": True,
         "agent_authored_candidate_geometry_referenced": True,
+        "asset_frame_registration_applied_to_all_tasks": all(
+            task["asset_frame_registration_applied"] for task in task_results
+        ),
         "deterministic_geometry_generator_used": False,
         "replacement_pose_and_occlusion_human_review": "pending",
         "appearance_repair_qualified": False,
@@ -617,6 +626,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dual-input", action="append", required=True)
     parser.add_argument("--final-composite", action="append", required=True)
     parser.add_argument("--visual-composition", action="append", required=True)
+    parser.add_argument("--registered-replacement", action="append")
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--renderer-executable", default=DEFAULT_RENDERER)
     parser.add_argument("--renderer-plugin", default=DEFAULT_RENDERER_PLUGIN)
@@ -625,6 +635,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         dual_input_receipt_paths=args.dual_input,
         final_composite_receipt_paths=args.final_composite,
         visual_composition_receipt_paths=args.visual_composition,
+        registered_replacement_receipt_paths=args.registered_replacement,
         output_root=args.output_root,
         renderer_executable=args.renderer_executable,
         renderer_plugin=args.renderer_plugin,
@@ -636,9 +647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "receipt_path": result["receipt_path"],
                 "receipt_digest": result["receipt_digest"],
                 "display_paths": [
-                    frame["path"]
-                    for task in result["tasks"]
-                    for frame in task["frames"]
+                    frame["path"] for task in result["tasks"] for frame in task["frames"]
                 ],
             }
         )

@@ -74,10 +74,12 @@ def _fixture(tmp_path: Path, *, task_count: int = 2) -> Path:
         task_root.mkdir()
         appearance = task_root / "appearance.usdz"
         simready = task_root / "replacement.usda"
+        visual = task_root / "replacement_visual.usda"
         index_path = task_root / "camera_index.json"
         trajectory_path = task_root / "review_transforms.json"
         appearance.write_bytes(b"usdz" + bytes([task_index]))
         simready.write_text(f"simready {task_index}", encoding="utf-8")
+        visual.write_text(f"visual {task_index}", encoding="utf-8")
         _, camera_ids = _trajectory(trajectory_path, prefix=task_id)
         index_path.write_text(json.dumps({"frames": camera_ids}), encoding="utf-8")
         tasks.append(
@@ -86,6 +88,21 @@ def _fixture(tmp_path: Path, *, task_count: int = 2) -> Path:
                 "asset_id": f"asset_{task_index}",
                 "isaac_nurec_usdz": _record(appearance),
                 "simready_usd": _record(simready),
+                "registered_replacement_usd": _record(visual),
+                "appearance_contract": {
+                    "agent_authored_display_colors_preserved": True,
+                    "generated_texture_maps_present": False,
+                    "neutral_fallback_permitted": False,
+                },
+                "asset_frame_registration": {
+                    "registration_digest": "sha256:" + str(task_index) * 64,
+                    "T_observed_world_axes_from_asset_local_axes": [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                },
                 "camera_trajectory": _record(trajectory_path),
                 "camera_index": _record(index_path, camera_ids=camera_ids),
             }

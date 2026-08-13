@@ -14,6 +14,9 @@ from blueprint_pipeline.paired_target_native_preflight import (
     PairedTargetNativePreflightError,
     materialize_paired_target_native_preflight,
 )
+from blueprint_pipeline.replacement_asset_frame_registration import (
+    seal_replacement_asset_frame_registration,
+)
 
 
 def _write(path: Path, value: dict, field: str) -> Path:
@@ -42,9 +45,7 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
                 if padding:
                     if padding < 4:
                         padding += 64
-                    info.extra = struct.pack("<HH", 0x1986, padding - 4) + b"\0" * (
-                        padding - 4
-                    )
+                    info.extra = struct.pack("<HH", 0x1986, padding - 4) + b"\0" * (padding - 4)
                 archive.writestr(info, body)
     from blueprint_pipeline.paired_target_native_preflight import _record
 
@@ -127,6 +128,43 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         "replacement_usd": {"sha256": cad["output_usd"]["sha256"]},
     }
     static_path = _write(task / "static.json", static, "receipt_digest")
+    visual_usd = task / "replacement_visual.usda"
+    visual_usd.write_text("#usda 1.0", encoding="utf-8")
+    registered = {
+        "schema_version": "registered_replacement_asset.v1",
+        "status": "registered_replacement_materialized_pending_native_import",
+        "scene_id": "840920",
+        "task_id": task_id,
+        "asset_id": cad["asset_id"],
+        "output_usd": _record(visual_usd),
+        "agent_authored_display_colors_preserved": True,
+        "neutral_fallback_present": False,
+        "deterministic_pose_composition_only": True,
+        "geometry_generated_or_modified": False,
+        "T_observed_world_axes_from_asset_local_axes": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    }
+    registered_path = _write(task / "registered.json", registered, "receipt_digest")
+    references = [task / "front.png", task / "oblique.png"]
+    for index, reference in enumerate(references):
+        reference.write_bytes(b"reference" + bytes([index]))
+    registration_path = task / "registration.json"
+    seal_replacement_asset_frame_registration(
+        scene_id="840920",
+        task_id=task_id,
+        asset_id=cad["asset_id"],
+        asset_local_forward_axis=[0, -1, 0],
+        asset_local_up_axis=[0, 0, 1],
+        observed_world_forward_axis=[0, -1, 0],
+        observed_world_up_axis=[0, 0, 1],
+        reference_image_paths=references,
+        reviewed_by="fixture",
+        output_path=registration_path,
+    )
     scenario = {
         "schema_version": "third_scene_task_scenario_suite.v1",
         "scene_id": "840920",
@@ -142,6 +180,8 @@ def _fixture(root: Path, task_id: str) -> dict[str, str]:
         "dual_target_inputs_receipt_path": str(dual_path),
         "simready_asset_receipt_path": str(cad_path),
         "simready_static_qualification_path": str(static_path),
+        "registered_replacement_asset_receipt_path": str(registered_path),
+        "asset_frame_registration_path": str(registration_path),
         "scenario_suite_path": str(scenario_path),
     }
 
