@@ -384,6 +384,24 @@ def _agent_cad_provider_route(output_path: Path) -> Path:
     )
 
 
+def _admitted_image_record() -> dict:
+    """An admitted image and the platform it was admitted for.
+
+    The two are bound per image rather than by a single global platform: the
+    reviewed arm64 builds came from an Apple Silicon workstation, and the
+    control plane a customer's site run goes through is x86_64.
+    """
+
+    image_id = next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS))
+    recipe = bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS[image_id]
+    return {
+        "reference": bundle_preflight.LOCAL_IMAGE,
+        "id": image_id,
+        "recipe": dict(recipe),
+        "platform": recipe["platform"],
+    }
+
+
 def _qualified_model_access() -> dict:
     llm = {
         "schema_version": bundle_preflight.LLM_PREFLIGHT_SCHEMA_VERSION,
@@ -2034,12 +2052,7 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
         "bundle_sha256": bundle_receipt["bundle_sha256"],
         "content_agents_source_commit": content_agents.SOURCE_COMMIT,
         "content_agents_source_tree": content_agents.SOURCE_TREE,
-        "local_container_image": {
-            "reference": bundle_preflight.LOCAL_IMAGE,
-            "id": next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS)),
-            "recipe": dict(bundle_preflight.LOCAL_IMAGE_RECIPE),
-            "platform": bundle_preflight.LOCAL_IMAGE_PLATFORM,
-        },
+        "local_container_image": _admitted_image_record(),
         "model_access": _qualified_model_access(),
         "configs": bundle_preflight._bundle_config_records(
             Path(bundle_receipt["bundle_path"])
@@ -2296,9 +2309,7 @@ def test_canonical_allocator_issues_grant_only_for_execute(
         return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
 
     monkeypatch.setattr(allocator, "run_content_agents_vast", fake_run)
-    monkeypatch.setattr(
-        content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
     assert (
         allocator.main(
             _allocator_args(
@@ -2382,9 +2393,7 @@ def test_content_agents_paid_attempt_authority_is_single_use(
         hard_cap_usd=2.0,
         hard_ttl_seconds=7200,
     )
-    monkeypatch.setattr(
-        content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
 
     first = content_agents.consume_content_agents_paid_attempt_authority_once(
         validated, blueprint_commit="a" * 40
@@ -2557,7 +2566,7 @@ def test_content_agents_consumed_authority_blocks_before_provider_mutation(
     authority_path = tmp_path / "content-agents-attempt-authority.json"
     write_json(authority_path, authority)
     consumed_root = tmp_path / "consumed"
-    monkeypatch.setattr(content_agents, "AUTHORIZATION_CONSUMPTION_ROOT", consumed_root)
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((consumed_root).parent))
     content_agents.consume_content_agents_paid_attempt_authority_once(
         authority, blueprint_commit="a" * 40
     )
@@ -3537,3 +3546,54 @@ def test_articulated_texture_config_targets_a_real_render_material() -> None:
 
     assert "material_path: /Asset/Looks/Render/" in text
     assert "physics_materials" not in text
+
+
+def test_an_admitted_image_is_bound_to_the_platform_it_was_built_for() -> None:
+    """A single pinned platform made one machine's architecture the definition
+    of a valid preflight. The reviewed builds are arm64 because they were made
+    on an Apple Silicon workstation; the control plane a customer's site run
+    goes through is x86_64, so that pin made the lane unrunnable in production
+    while looking like a security check."""
+
+    admitted = bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS
+
+    platforms = {recipe["platform"] for recipe in admitted.values()}
+    assert platforms == {"linux/arm64", "linux/amd64"}
+    # The recipe itself is architecture-neutral, so the same reviewed recipe on
+    # another architecture is the same recipe.
+    for recipe in admitted.values():
+        assert recipe["dockerfile_sha256"] == (
+            bundle_preflight.LOCAL_IMAGE_RECIPE["dockerfile_sha256"]
+        )
+        assert recipe["content_agents_source_tree"] == (
+            bundle_preflight.LOCAL_IMAGE_RECIPE["content_agents_source_tree"]
+        )
+
+
+def test_an_image_running_on_a_platform_it_was_not_admitted_for_is_refused() -> None:
+    """Admitting a second architecture must not become 'any architecture'."""
+
+    image_id = next(iter(bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS))
+    recipe = bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS[image_id]
+    wrong = "linux/amd64" if recipe["platform"] == "linux/arm64" else "linux/arm64"
+
+    assert bundle_preflight._admitted_local_image_record(
+        {
+            "reference": bundle_preflight.LOCAL_IMAGE,
+            "id": image_id,
+            "recipe": dict(recipe),
+            "platform": wrong,
+        }
+    ) is False
+
+
+def test_an_unadmitted_image_id_is_still_refused() -> None:
+    assert bundle_preflight.admitted_image_platform("sha256:" + "0" * 64) is None
+    assert bundle_preflight._admitted_local_image_record(
+        {
+            "reference": bundle_preflight.LOCAL_IMAGE,
+            "id": "sha256:" + "0" * 64,
+            "recipe": dict(bundle_preflight.LOCAL_IMAGE_RECIPE),
+            "platform": "linux/amd64",
+        }
+    ) is False

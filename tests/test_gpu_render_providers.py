@@ -592,7 +592,7 @@ def test_runpod_capacity_preflight_fails_closed_on_query_error(monkeypatch) -> N
 
 def test_runpod_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
     # point secret lookups at an empty dir so no key is found and no network call happens
-    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
+    monkeypatch.setenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR", str(tmp_path))
     res = RunPodRenderProvider().launch(tmp_path, {"imageName": "x"}, cold=True)
     assert res["status"] == "blocked"
     assert "runpod_api_key_missing" in res["blockers"]
@@ -1329,7 +1329,7 @@ def test_vast_build_request_moves_oversize_compressed_bootstrap_to_env(
 
 
 def test_vast_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
+    monkeypatch.setenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR", str(tmp_path))
     res = VastRenderProvider().launch(tmp_path, {"search_payload": {}}, cold=False)
     assert res["status"] == "blocked"
     assert "vast_api_key_missing" in res["blockers"]
@@ -1388,7 +1388,7 @@ def test_vast_offer_search_failure_is_definitive_no_allocation(
 
 
 def test_vast_stop_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
+    monkeypatch.setenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR", str(tmp_path))
     res = VastRenderProvider().stop("12345")
     assert res["status"] == "blocked"
     assert "vast_api_key_missing" in res["blockers"]
@@ -2097,7 +2097,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
 # ----------------------------- availability reflects secrets -----------------------------
 
 def test_availability_reflects_secret_presence(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
+    monkeypatch.setenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR", str(tmp_path))
     assert RunPodRenderProvider().available()["available"] is False
     assert VastRenderProvider().available()["available"] is False
     (tmp_path / "runpod_api_key").write_text("rp-key")
@@ -2602,7 +2602,7 @@ def test_watch_and_collect_terminates_heartbeat_timeout_despite_preserve(
 
 
 def test_runpod_terminate_is_delete_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
+    monkeypatch.setenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR", str(tmp_path))
     res = RunPodRenderProvider().terminate("podabc")
     assert res["status"] == "blocked"  # no key -> no network, fail closed
     assert "runpod_api_key_missing" in res["blockers"]

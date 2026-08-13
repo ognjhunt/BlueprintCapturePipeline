@@ -143,6 +143,9 @@ TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIG
 TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT"
 )
+TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT"
+)
 TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER_SYSTEMD_UNIT"
 )
@@ -216,6 +219,21 @@ def _task_evaluation_terminal_resource_release_queue_root(manifest_path: Path) -
     if configured:
         return Path(configured).expanduser().resolve()
     return _work_dir(manifest_path).expanduser().resolve() / "task_evaluation_terminal_resource_releases"
+
+
+def _task_evaluation_terminal_resource_release_state_root(manifest_path: Path) -> Path:
+    """Where the release worker retains each outcome receipt.
+
+    Supplying this to the staging contract is what lets an explicit operator
+    re-submit re-arm a release that blocked before the provider was contacted.
+    Without it the contract stays strictly idempotent and such a release can
+    never be retried, stranding the resource it names.
+    """
+    configured = _string(os.getenv(TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT_ENV))
+    if configured:
+        return Path(configured).expanduser().resolve()
+    queue_root = _task_evaluation_terminal_resource_release_queue_root(manifest_path)
+    return queue_root.parent / f"{queue_root.name}-state"
 
 
 def _safe_stem(value: str) -> str:
@@ -1796,27 +1814,103 @@ async def _require_admission(
         _release_intake_admission(lease_id)
 
 
+def running_source_commit(module_path: str | Path | None = None) -> str:
+    """The commit of the checkout this process is importing code from.
+
+    A deployment is activated by pointing a symlink at a detached worktree
+    named for its commit, and that worktree's ``HEAD`` is the commit. Reading it
+    asks the running code what it is instead of asking an environment variable
+    what someone last declared it to be.
+
+    Deliberately no ``git`` subprocess: the control-plane units run hardened,
+    and a release worktree's HEAD is a plain file holding the SHA. A HEAD
+    holding a symbolic ref is not a release worktree and is not answered for.
+    """
+
+    start = Path(module_path or __file__).resolve()
+    for candidate in (start, *start.parents):
+        marker = candidate / ".git"
+        if not marker.exists():
+            continue
+        if marker.is_dir():
+            head_path = marker / "HEAD"
+        else:
+            try:
+                pointer = marker.read_text(encoding="utf-8").strip()
+            except OSError:
+                return ""
+            if not pointer.startswith("gitdir:"):
+                return ""
+            head_path = Path(pointer.split(":", 1)[1].strip()) / "HEAD"
+        try:
+            head = head_path.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            return ""
+        return head if re.fullmatch(r"[0-9a-f]{40}", head) else ""
+    return ""
+
+
+def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[str, Any]:
+    """Report which commit is running, and refuse to report a contradicted one.
+
+    The environment variable had been the only source, which made it a claim
+    nobody checked: activate release B without updating it and the endpoint
+    reports A while the service runs B. It also had to be hand-edited on every
+    deploy -- a step a host restored from an image never performs, leaving a
+    confident and wrong answer behind.
+
+    The running checkout is authoritative. The variable is still honoured where
+    there is no checkout to read, and a variable that disagrees with the code it
+    describes proves nothing at all.
+    """
+
+    declared = _string(os.getenv(PIPELINE_SOURCE_COMMIT_ENV)).lower()
+    removal_default = {
+        "policy": DEFAULT_REMOVAL_PIPELINE_POLICY,
+        "paired_target_pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+        "maximum_replacement_objects": 5,
+        "generated_appearance_is_physical_evidence": False,
+    }
+    declared_valid = re.fullmatch(r"[0-9a-f]{40}", declared) is not None
+    observed = running_source_commit(module_path)
+    if observed and declared_valid and observed != declared:
+        return {
+            "schema_version": DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
+            "service_schema_version": INTAKE_SCHEMA_VERSION,
+            "commit_proven": False,
+            "source_commit": None,
+            "source_commit_source": "conflicting",
+            "blockers": ["deployment_identity_declared_commit_conflicts_with_running_checkout"],
+            "claim_ceiling": "deployed_service_identity_only",
+            "default_object_removal": removal_default,
+        }
+    if observed:
+        source_commit, source, proven = observed, "running_checkout", True
+    elif declared_valid:
+        source_commit, source, proven = declared, "environment", True
+    else:
+        source_commit, source, proven = "", "none", False
+    return {
+        "schema_version": DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
+        "service_schema_version": INTAKE_SCHEMA_VERSION,
+        "commit_proven": proven,
+        "source_commit": source_commit or None,
+        "source_commit_source": source,
+        "blockers": [] if proven else ["deployment_identity_source_commit_unavailable"],
+        "claim_ceiling": "deployed_service_identity_only",
+        "default_object_removal": removal_default,
+    }
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Blueprint Live Pipeline Intake", version=INTAKE_SCHEMA_VERSION)
 
     @app.get("/api/live-pipeline/version")
     def deployment_identity() -> JSONResponse:
-        source_commit = _string(os.getenv(PIPELINE_SOURCE_COMMIT_ENV)).lower()
-        commit_proven = re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None
-        payload = {
-            "schema_version": DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
-            "service_schema_version": INTAKE_SCHEMA_VERSION,
-            "commit_proven": commit_proven,
-            "source_commit": source_commit if commit_proven else None,
-            "claim_ceiling": "deployed_service_identity_only",
-            "default_object_removal": {
-                "policy": DEFAULT_REMOVAL_PIPELINE_POLICY,
-                "paired_target_pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
-                "maximum_replacement_objects": 5,
-                "generated_appearance_is_physical_evidence": False,
-            },
-        }
-        return JSONResponse(status_code=200 if commit_proven else 503, content=payload)
+        payload = deployment_identity_payload()
+        return JSONResponse(
+            status_code=200 if payload["commit_proven"] else 503, content=payload
+        )
 
     @app.get("/health")
     def health() -> Dict[str, Any]:
@@ -2272,6 +2366,7 @@ def create_app() -> FastAPI:
             queued = stage_terminal_resource_release_request(
                 value=payload,
                 queue_root=_task_evaluation_terminal_resource_release_queue_root(manifest_path),
+                state_root=_task_evaluation_terminal_resource_release_state_root(manifest_path),
             )
         except TerminalResourceReleaseError as exc:
             raise HTTPException(

@@ -65,13 +65,26 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID" in dispatcher
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in dispatcher
     assert "task-evaluation-launch-profile-catalog.json" in dispatcher
+    # Execution is armed by the execute flag; the launch id narrows the window
+    # when one is set. Coupling them meant a standing per-profile authorization
+    # -- digest-bound, expiring, count- and spend-bounded -- could never admit
+    # anything, because the unit never passed `--execute` without a hand-edited
+    # per-run id.
+    assert "ARGS+=(--execute); if [ -n " in dispatcher
     assert (
-        'ARGS+=(--execute --execute-launch-id '
-        '"$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}")'
+        'ARGS+=(--execute-launch-id "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}")'
     ) in dispatcher
     assert (
         '"$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] '
         '&& [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true'
+    ) in dispatcher
+    # Every credential this unit needs is named on the unit. It runs with
+    # ProtectHome=true and home /nonexistent, so a secret resolved from a
+    # developer home is unreadable here -- which is how the Content Agents
+    # paid preflight came to be unproducible on the deployed host.
+    assert "OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key" in dispatcher
+    assert (
+        "BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets"
     ) in dispatcher
     assert "EnvironmentFile values override Environment=" in dispatcher
     assert "blueprint-gpu-spend-guard.service" in dispatcher

@@ -196,10 +196,7 @@ def test_manual_corrected_attempt_binds_zero_closed_history_and_is_single_use(
     )
     assert validated["prior_goal_spend_usd"] == 0.161624
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.public_scene_aura_exact_residual_vast.AUTHORIZATION_CONSUMPTION_ROOT",
-        tmp_path / "consumed",
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
     first = consume_aura_exact_residual_paid_attempt_authority_once(
         validated, blueprint_commit="f" * 40
     )

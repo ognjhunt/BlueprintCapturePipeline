@@ -18,7 +18,8 @@ from typing import Any, Mapping, Sequence
 from packaging.tags import compatible_tags, cpython_tags
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .paid_attempt_authority import (
@@ -43,6 +44,8 @@ from .wam_provider_object_store import (
     stage_wam_provider_bundle_object_store,
 )
 
+
+from .spend_authority_consumption_root import consumption_root
 
 PROBE_KIND = "adp-gaussian-excision"
 PROVIDER_BUNDLE_KIND = "adp_gaussian_excision"
@@ -94,9 +97,6 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
-AUTHORIZATION_CONSUMPTION_ROOT = (
-    Path.home() / ".blueprint-spend-authority" / "consumed"
-)
 
 
 def _execution_purpose(freeze: Mapping[str, Any]) -> str:
@@ -315,7 +315,7 @@ def consume_gaussian_excision_paid_attempt_authority_once(
             "status": "blocked",
             "blockers": ["gaussian_excision_paid_attempt_authority_identity_invalid"],
         }
-    root = AUTHORIZATION_CONSUMPTION_ROOT
+    root = consumption_root()
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root_stat = root.stat()
@@ -1441,7 +1441,7 @@ def run_gaussian_excision_vast(
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
             "status": "blocked",
-            "blockers": [f"gaussian_excision_vast_adapter_failed:{type(exc).__name__}"],
+            "blockers": [f"gaussian_excision_vast_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
     finally:
@@ -1524,13 +1524,26 @@ def run_gaussian_excision_vast(
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
+    # Seal the two terminal artifacts every production launch profile asks
+    # this result for. Without them the run ends
+    # `allocator_terminal_artifact_missing:` whatever happened on the provider.
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="adp_gaussian_excision",
+        binding={
+            "bundle_sha256": bundle.get("bundle_sha256")
+            if isinstance(bundle, Mapping)
+            else None,
+            "provider": "vast",
+        },
+    )
     write_json(job / "gaussian_excision_vast_result.json", result)
     return result
 
 
 __all__: Sequence[str] = (
     "AUTHORITY_SCHEMA",
-    "AUTHORIZATION_CONSUMPTION_ROOT",
     "DEFAULT_IMAGE",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_KIND",

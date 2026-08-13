@@ -16,13 +16,17 @@ from .adp_retained_scene_render_packet import (
     ENTRYPOINT,
     PROBE_KIND,
 )
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
 from .provider_bundle_rehearsal import provider_bundle_rehearsal_blockers
+from .task_evaluation_artifact_manifest import (
+    TaskEvaluationArtifactManifestError,
+    build_task_evaluation_artifact_manifest,
+)
 from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
@@ -34,12 +38,16 @@ from .wam_provider_object_store import (
 )
 
 
+from .spend_authority_consumption_root import (
+    SpendAuthorityRootError,
+    prepare_consumption_root,
+)
+
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
 RESULT_SCHEMA = "adp009d_retained_scene_gpu_render_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_authority.v1"
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
 OUTPUT_RELOCATION_SCHEMA = "adp009d_retained_scene_gpu_render_output_relocation.v1"
-AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 _VAST_MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _VAST_STALE_OFFER_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
@@ -280,13 +288,16 @@ def consume_retained_scene_render_paid_attempt_authority_once(
     digest = str(authority.get("authorization_digest") or "")
     if not digest.startswith("sha256:") or len(digest) != 71:
         return {"status": "blocked", "blockers": ["attempt_authority_identity_invalid"]}
-    root = AUTHORIZATION_CONSUMPTION_ROOT
     identity = digest.removeprefix("sha256:")
     try:
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        stat_result = root.stat()
-        if root.is_symlink() or stat_result.st_uid != os.getuid() or stat_result.st_mode & 0o077:
-            raise PermissionError
+        # Creates the directory and tightens its mode where we own it, rather
+        # than refusing a too-permissive one it could fix. A refusal there
+        # surfaced as `attempt_authority_consumption_write_failed`, which named
+        # the symptom and not the cause.
+        root = prepare_consumption_root()
+    except SpendAuthorityRootError as exc:
+        return {"status": "blocked", "blockers": [str(exc)]}
+    try:
         destination = root / f"retained-scene-render-{identity}.json"
         record = {
             "schema_version": "retained_scene_render_paid_attempt_consumption.v1",
@@ -640,7 +651,7 @@ def run_retained_scene_render_vast(
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     except (OSError, RuntimeError, ValueError) as exc:
-        adapter = {"status": "blocked", "blockers": [f"vast_adapter_failed:{type(exc).__name__}"]}
+        adapter = {"status": "blocked", "blockers": [f"vast_adapter_failed:{redacted_failure_detail(exc)}"]}
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     teardown_path = provider_run / "vast_teardown_manifest.json"
@@ -677,6 +688,53 @@ def run_retained_scene_render_vast(
         blockers.append("object_store_provider_zero_not_proven")
     if watchdog_close.get("status") not in {"provider_terminal", "cancelled_no_allocation"}:
         blockers.append("independent_watchdog_not_closed")
+    # The terminal contract asks the result for these two paths, and this lane
+    # named neither. Every run therefore ended
+    # `allocator_terminal_artifact_missing:teardown_manifest_path` and
+    # `:artifact_manifest_path` no matter what happened on the provider -- the
+    # teardown manifest had been written next to the adapter result the whole
+    # time, and nothing pointed at it. A teardown that is not referenced cannot
+    # be checked, so provider-zero could never be verified from this lane.
+    # The shared manifest, not a lane-local one. `adp009d_live_readiness` and
+    # every future consumer validate `task_evaluation_artifact_manifest.v1`, so
+    # a second schema here would mean each lane's evidence had to be read by a
+    # reader written for it. Roles also state what coverage is *required*
+    # rather than sweeping whatever happens to be on disk.
+    artifact_manifest_path = job / "artifact_manifest.json"
+    try:
+        artifact_manifest = build_task_evaluation_artifact_manifest(
+            attempt_root=job,
+            artifact_roots={
+                "provider_runtime_evidence": job / "immutable_execution",
+                "allocator_adapter_result": (
+                    provider_run / "vast_provider_adapter_result.json"
+                ),
+                "teardown_manifest": provider_run / "vast_teardown_manifest.json",
+                # Retained but not required: a blocked attempt is diagnosed from
+                # these, and they are exactly what is absent when it failed
+                # early.
+                "provider_run_diagnostics": provider_run,
+            },
+            required_roles=(
+                "provider_runtime_evidence",
+                "allocator_adapter_result",
+                "teardown_manifest",
+            ),
+            binding={
+                "allocator_lane": PROVIDER_BUNDLE_KIND,
+                "blueprint_commit": bundle.get("blueprint_commit"),
+                "bundle_sha256": bundle.get("bundle_sha256"),
+                "provider": "vast",
+                "result_schema_version": RESULT_SCHEMA,
+                "retry_cap": 0,
+            },
+            output_path=artifact_manifest_path,
+        )
+    except TaskEvaluationArtifactManifestError as exc:
+        artifact_manifest = {"status": "blocked", "blockers": [str(exc)]}
+        blockers.append("retained_scene_render_artifact_manifest_invalid")
+    if artifact_manifest.get("status") != "completed":
+        blockers.extend(str(item) for item in artifact_manifest.get("blockers") or [])
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA,
         "generated_at": utc_now_iso(),
@@ -684,6 +742,13 @@ def run_retained_scene_render_vast(
         "bundle_sha256": bundle["bundle_sha256"],
         "authorization_consumption": consumption,
         "provider_adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
+        "artifact_manifest_path": str(artifact_manifest_path)
+        if artifact_manifest_path.is_file()
+        else None,
+        # Null rather than a path that is not there: an unwritten teardown
+        # manifest is the absence of teardown evidence, and naming a
+        # nonexistent file would let a later reader think one was produced.
+        "teardown_manifest_path": str(teardown_path) if teardown_path.is_file() else None,
         "execution_result_path": str(
             job / "immutable_execution/adp009d_retained_scene_gpu_render_result.v1.json"
         ),

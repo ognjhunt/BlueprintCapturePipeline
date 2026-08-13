@@ -18,7 +18,8 @@ from typing import Any, Mapping, Sequence
 import yaml
 from pxr import Usd, UsdGeom, UsdPhysics
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .adp_content_agents_bundle_matrix import (
     SCHEMA_VERSION as AGENT_CAD_BUNDLE_MATRIX_V2_SCHEMA,
     validate_agent_cad_content_agents_bundle_matrix,
@@ -62,6 +63,8 @@ from .wam_provider_object_store import (
 )
 
 
+from .spend_authority_consumption_root import consumption_root
+
 PROBE_KIND = "adp-usd-content-agents"
 RESULT_SCHEMA_VERSION = "adp_content_agents_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_content_agents_paid_attempt_authority.v1"
@@ -103,9 +106,6 @@ _VAST_MUTATION_ENV = (
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 _FORWARDED_SECRET_NAMES = (
     "OPENAI_API_KEY",
-)
-AUTHORIZATION_CONSUMPTION_ROOT = (
-    Path.home() / ".blueprint-spend-authority" / "consumed"
 )
 
 
@@ -670,7 +670,7 @@ def consume_content_agents_paid_attempt_authority_once(
             "status": "blocked",
             "blockers": ["adp_content_agents_paid_attempt_authority_identity_invalid"],
         }
-    root = AUTHORIZATION_CONSUMPTION_ROOT
+    root = consumption_root()
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root_stat = root.stat()
@@ -2086,7 +2086,7 @@ def run_content_agents_vast(
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
             "status": "blocked",
-            "blockers": [f"adp_content_agents_vast_adapter_failed:{type(exc).__name__}"],
+            "blockers": [f"adp_content_agents_vast_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
     finally:
@@ -2118,6 +2118,20 @@ def run_content_agents_vast(
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
+    # Seal the two terminal artifacts every production launch profile asks
+    # this result for. Without them the run ends
+    # `allocator_terminal_artifact_missing:` whatever happened on the provider.
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="adp_content_agents",
+        binding={
+            "bundle_sha256": bundle.get("bundle_sha256")
+            if isinstance(bundle, Mapping)
+            else None,
+            "provider": "vast",
+        },
+    )
     write_json(job / "adp_content_agents_vast_result.json", result)
     return result
 

@@ -118,6 +118,50 @@ def _file(value: str | Path, *, code: str) -> Path:
     return path
 
 
+def _resolve_request_input(
+    value: Any,
+    *,
+    repo: Path,
+    scene_root: Path | None,
+    code: str,
+    directory: bool = False,
+) -> Path:
+    """Resolve a request input against the checkout or the staged scene root.
+
+    A request that names absolute paths can only be rebuilt on the machine that
+    wrote it, which is how the committed v1 manifest ended up pointing at two
+    deleted ``/private/tmp`` directories. A relative input says *what* it needs
+    and leaves *where* to the invocation, so the same manifest rebuilds the
+    bundle on any checkout with the scene bytes staged anywhere. Absolute inputs
+    stay supported: the earlier manifests are frozen evidence.
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        raise RetainedSceneRenderPacketError([code])
+    candidate = Path(text).expanduser()
+    if candidate.is_absolute():
+        return _directory(candidate, code=code) if directory else _file(candidate, code=code)
+    if ".." in candidate.parts:
+        raise RetainedSceneRenderPacketError([code])
+    for base in (repo, scene_root):
+        if base is None:
+            continue
+        resolved = base / candidate
+        if resolved.is_symlink():
+            continue
+        if resolved.is_dir() if directory else resolved.is_file():
+            return _directory(resolved, code=code) if directory else _file(resolved, code=code)
+    raise RetainedSceneRenderPacketError([code])
+
+
+def _directory(value: str | Path, *, code: str) -> Path:
+    path = Path(value).expanduser().resolve()
+    if not path.is_dir() or path.is_symlink():
+        raise RetainedSceneRenderPacketError([code])
+    return path
+
+
 def _absolute_record(value: Any, *, code: str) -> Path:
     if not isinstance(value, Mapping):
         raise RetainedSceneRenderPacketError([code])
@@ -534,9 +578,19 @@ def _write_deterministic_zip(source: Path, destination: Path) -> None:
 
 
 def build_retained_scene_gpu_render_bundle(
-    *, request_path: str | Path, repo_root: str | Path, job_dir: str | Path
+    *,
+    request_path: str | Path,
+    repo_root: str | Path,
+    job_dir: str | Path,
+    scene_input_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Copy verified derived inputs into an immutable, zero-network GPU bundle."""
+    """Copy verified derived inputs into an immutable, zero-network GPU bundle.
+
+    ``scene_input_root`` is where the private scene bytes are staged on this
+    machine. A request that names its inputs relative to that root, and to the
+    checkout, rebuilds anywhere; one that names absolute paths rebuilds only
+    where it was written.
+    """
 
     request_file = _file(request_path, code="retained_scene_render_request_missing")
     request = build_retained_scene_gpu_render_request(
@@ -547,24 +601,37 @@ def build_retained_scene_gpu_render_bundle(
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
         raise RetainedSceneRenderPacketError(["retained_scene_render_job_dir_not_empty"])
-    candidate_path = _file(
+    scene_root = (
+        _directory(scene_input_root, code="retained_scene_render_scene_input_root_invalid")
+        if scene_input_root is not None
+        else None
+    )
+    candidate_path = _resolve_request_input(
         request["candidate_set_path"],
+        repo=repo,
+        scene_root=scene_root,
         code="retained_scene_render_candidate_set_missing",
     )
     candidate, source_ply, deleted_ply, retained_ply, task_paths = _validate_candidate_set(
         candidate_path
     )
-    authority_path = _file(
+    authority_path = _resolve_request_input(
         request["execution_authority_path"],
+        repo=repo,
+        scene_root=scene_root,
         code="retained_scene_render_execution_authority_missing",
     )
     authority = _validate_authority(authority_path)
     requested = {str(row["task_id"]) for row in request["task_lanes"]}
     if requested != set(task_paths):
         raise RetainedSceneRenderPacketError(["retained_scene_render_candidate_task_set_mismatch"])
-    vendor_root = Path(request["renderer_vendor_root"]).expanduser().resolve()
-    if not vendor_root.is_dir() or vendor_root.is_symlink():
-        raise RetainedSceneRenderPacketError(["retained_scene_render_vendor_root_invalid"])
+    vendor_root = _resolve_request_input(
+        request["renderer_vendor_root"],
+        repo=repo,
+        scene_root=scene_root,
+        code="retained_scene_render_vendor_root_invalid",
+        directory=True,
+    )
     job.mkdir(parents=True)
     runtime = job / "provider_runtime"
     input_root = runtime / "input"
@@ -622,8 +689,10 @@ def build_retained_scene_gpu_render_bundle(
     lanes: list[dict[str, Any]] = []
     for lane in sorted(request["task_lanes"], key=lambda row: str(row["task_id"])):
         task_id = str(lane["task_id"])
-        camera_path = _file(
+        camera_path = _resolve_request_input(
             lane["camera_contract_path"],
+            repo=repo,
+            scene_root=scene_root,
             code="retained_scene_render_camera_contract_missing",
         )
         cameras, width, height = _camera_contract(camera_path)
@@ -700,6 +769,10 @@ def build_retained_scene_gpu_render_bundle(
             target.chmod(target.stat().st_mode | stat.S_IXUSR)
     authority_copy = runtime / "execution_authority.json"
     _link_or_copy(authority_path, authority_copy)
+    # The request manifest is copied in for the same reason the authority is:
+    # a receipt read on another host can only resolve what travelled with it.
+    request_copy = runtime / "source_request_manifest.json"
+    _link_or_copy(request_file, request_copy)
     renderer_identity = {
         "repository": identity,
         "harness_sha256": _sha256(renderer / "render_splat.mjs"),
@@ -753,10 +826,17 @@ def build_retained_scene_gpu_render_bundle(
         "container_image": DEFAULT_IMAGE,
         "blueprint_commit": identity["commit"],
         "blueprint_tree": identity["tree"],
-        "request": _record(request_file),
+        # Each of these records both where the bytes were read and where they
+        # sit inside the job directory. The absolute path is provenance; the
+        # relative one is what lets another host resolve the same bytes.
+        "request": {
+            **_record(request_file),
+            "relative_path": request_copy.relative_to(job).as_posix(),
+        },
         "candidate_set_digest": candidate["receipt_digest"],
         "execution_authority": {
             **_record(authority_path),
+            "relative_path": authority_copy.relative_to(job).as_posix(),
             "authority_digest": authority["authority_digest"],
         },
         "source_standard_splat_provenance": render_request[
@@ -811,6 +891,10 @@ def build_retained_scene_gpu_render_bundle(
     receipt = {
         **manifest,
         "bundle_path": str(bundle_path),
+        # The receipt is written beside the archive, so this resolves wherever
+        # the pair is staged. The absolute path above records only where it was
+        # built.
+        "bundle_relative_path": bundle_path.relative_to(job).as_posix(),
         "bundle_sha256": _sha256(bundle_path),
         "bundle_size_bytes": bundle_path.stat().st_size,
         "exact_bundle_entrypoint_rehearsal": rehearsal,

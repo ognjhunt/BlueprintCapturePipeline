@@ -4693,7 +4693,28 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
             "observed": False,
             "status": "unknown",
             "exited": False,
+            "ssh_host": None,
+            "ssh_port": None,
         }
+    return _instance_liveness_from_payload(payload, instance_id=instance_id)
+
+
+def _instance_liveness_from_payload(
+    payload: Mapping[str, Any], *, instance_id: int
+) -> dict[str, Any]:
+    """Read status and the workload-independent access endpoint from one record.
+
+    The endpoint matters because every other way we observe a run requires the
+    workload to cooperate: the provider log store only holds what the container
+    uploaded, the echo endpoint only carries what the workload posted, and
+    worker-endpoint discovery only completes once the runtime reports. A live
+    paid run went twenty minutes with all three silent while the provider
+    reported ``running``, so nothing could reach an instance we were paying for.
+
+    The provider hands the SSH endpoint back on the call the liveness probe
+    already makes; it was being parsed past and dropped.
+    """
+
     rows = _instance_list_rows(payload)
     if not rows:
         if isinstance(payload.get("instances"), list):
@@ -4705,6 +4726,8 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
                 "observed": True,
                 "status": "absent",
                 "exited": True,
+                "ssh_host": None,
+                "ssh_port": None,
             }
         # A successful response with no recognizable status is not an exit.
         # Let the bounded watchdogs retain and name this provider-shape fault.
@@ -4713,6 +4736,8 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
             "observed": False,
             "status": "unknown",
             "exited": False,
+            "ssh_host": None,
+            "ssh_port": None,
         }
     for row in rows:
         row_instance_id = _number(
@@ -4722,11 +4747,16 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
         # endpoint identity then binds this row to ``instance_id``.
         if row_instance_id is None or row_instance_id == float(int(instance_id)):
             status = _instance_status(row).lower()
+            ssh_port = _number(row.get("ssh_port"))
             return {
                 "observed": True,
                 "status": status,
                 "exited": status in {"exited", "stopped_before_start"},
                 "probe_error": None,
+                # Absent rather than invented: a fabricated endpoint would send
+                # a human to a host that is not there.
+                "ssh_host": _string(row.get("ssh_host")) or None,
+                "ssh_port": int(ssh_port) if ssh_port is not None else None,
             }
     # A different id at the per-instance endpoint is an API-shape fault, not
     # evidence that the allocation was destroyed.
@@ -4735,6 +4765,8 @@ def _instance_liveness(*, instance_id: int, api_key: str) -> dict[str, Any]:
         "observed": False,
         "status": "unknown",
         "exited": False,
+        "ssh_host": None,
+        "ssh_port": None,
     }
 
 
@@ -4785,6 +4817,10 @@ def _sanitized_instance_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "status": row.get("status"),
         "intended_status": row.get("intended_status"),
         "dph_total": row.get("dph_total") or row.get("min_bid") or row.get("price_per_hour"),
+        # The label is how an instance says which lane created it. Without it
+        # the guard can only ask "is anything running", never "is anything of
+        # mine running".
+        "label": row.get("label"),
         "raw_status_normalized": _instance_status(row).lower(),
     }
 
@@ -4805,7 +4841,26 @@ def _prelaunch_inventory_guard(
     generated_at: str,
     api_key: str,
     allowed_active_instance_ids: Iterable[Any] = (),
+    lane_label_prefix: str = "",
 ) -> dict[str, Any]:
+    """Refuse to launch beside an instance this lane could mistake for its own.
+
+    The allowlist froze the instance ids that happened to be alive when an
+    authorization was written. A concurrent operator sharing the provider
+    account rotates instances on their own schedule, so the frozen list is stale
+    within hours and the guard then blocks this lane over someone else's work --
+    for which the only "fix" is to keep editing the authorization, or to tear
+    down an instance we do not own.
+
+    What the guard is actually for is narrower: this run must not be confused
+    about which instances are its own. That question is answered by the label
+    prefix this lane stamps on everything it creates. An instance carrying this
+    lane's prefix and not on the allowlist is ours and unaccounted for, and
+    blocks. Anything else is recorded as foreign, left alone, and does not.
+
+    With no prefix supplied the original fleet-wide rule stands, so lanes that
+    have not adopted labelling keep the stricter behaviour.
+    """
     blockers: list[str] = []
     active_instances: list[dict[str, Any]] = []
     status_code: int | None = None
@@ -4836,9 +4891,25 @@ def _prelaunch_inventory_guard(
             blockers.append("vast_prelaunch_inventory_query_failed")
             break
     allowed_ids = _machine_id_set(allowed_active_instance_ids)
-    unexpected_active_instances = [
+    unlisted = [
         row for row in active_instances if int(_number(row.get("id")) or -1) not in allowed_ids
     ]
+    prefix = _string(lane_label_prefix)
+    if prefix:
+        # Ours, or unattributable. An instance carrying this lane's prefix is
+        # ours and unaccounted for. An instance carrying no label at all cannot
+        # be attributed to another lane either, and unattributable spend
+        # immediately before a launch is exactly what this guard is for. Only a
+        # different, non-empty label identifies someone else's work.
+        def _is_this_lane(row: Mapping[str, Any]) -> bool:
+            label = _string(row.get("label"))
+            return not label or label.startswith(prefix)
+
+        unexpected_active_instances = [row for row in unlisted if _is_this_lane(row)]
+        foreign_active_instances = [row for row in unlisted if not _is_this_lane(row)]
+    else:
+        unexpected_active_instances = unlisted
+        foreign_active_instances = []
     if unexpected_active_instances:
         blockers.append("active_vast_instances_detected_before_new_launch")
     manifest = {
@@ -4852,6 +4923,11 @@ def _prelaunch_inventory_guard(
         "allowed_active_instance_ids": sorted(allowed_ids),
         "unexpected_active_instance_count": len(unexpected_active_instances),
         "unexpected_active_instances": unexpected_active_instances,
+        "lane_label_prefix": prefix,
+        # Recorded, never touched. Naming them is what keeps "we left someone
+        # else's instance running" an observation rather than an omission.
+        "foreign_active_instance_count": len(foreign_active_instances),
+        "foreign_active_instances": foreign_active_instances,
         "continuing_spend_detected_before_new_launch": bool(active_instances),
         "query_error": query_error,
         "query_attempt_count": query_attempt_count,
@@ -4974,6 +5050,55 @@ def _semantic_log_text(text: str) -> str:
     return "\n".join(lines)
 
 
+def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
+    """A completion signal that does not travel over Vast's log API.
+
+    The workload uploads its output to object storage with a presigned PUT, and
+    the adapter already holds the matching GET. Asking that object whether it
+    exists is a second, independent channel: on 2026-08-12 every log fetch
+    returned 403 for twenty minutes while the instance reported ``running``, and
+    the run was abandoned without ever asking the one place the answer would
+    have been.
+
+    A one-byte ranged GET, not a HEAD. A presigned URL's signature covers the
+    HTTP method, so a HEAD against a URL signed for GET is rejected as a
+    signature mismatch by S3-compatible stores -- indistinguishable, from here,
+    from "the object is not there yet". The probe would then never fire and the
+    run would sit until its deadline having learned nothing. ``Range:
+    bytes=0-0`` keeps the method the signature was issued for and transfers a
+    single byte.
+
+    The body is fetched in full once, after the wait ends.
+    """
+
+    if not get_url:
+        return None
+
+    def _probe() -> bool:
+        request = urllib.request.Request(get_url)  # noqa: S310 - presigned https
+        request.add_header("User-Agent", "BlueprintVastProviderAdapter/1.0")
+        request.add_header("Range", "bytes=0-0")
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:  # nosec B310
+                return 200 <= int(response.status) < 300
+        except urllib.error.HTTPError as exc:
+            code = int(exc.code)
+            if code in {401, 403}:
+                # Not "not yet": the signature is wrong or has expired, so this
+                # channel cannot answer at all. Raising disables it, which is
+                # what should happen -- treating an unusable channel as a quiet
+                # one would hold a paid run open waiting for an answer that can
+                # never arrive.
+                raise
+            # 404 until the workload uploads; 416 if the object is empty; 5xx is
+            # the store having a moment. All of those are "ask again".
+            return False
+        except OSError:
+            return False
+
+    return _probe
+
+
 def _request_logs_and_fetch(
     *,
     instance_id: int,
@@ -4987,6 +5112,8 @@ def _request_logs_and_fetch(
     success_markers: Sequence[str] = (),
     container_missing_retry_attempts: int = 5,
     no_progress_seconds: int | None = None,
+    log_transport_failure_limit: int = 6,
+    output_probe: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, max_wait_seconds)
     attempts: list[dict[str, Any]] = []
@@ -5017,6 +5144,18 @@ def _request_logs_and_fetch(
     # run; still detects a dead container in about a minute rather than thirty.
     instance_exited_count = 0
     last_instance_liveness: dict[str, Any] = {}
+    # A log channel that has never once delivered bytes is a transport fault,
+    # not a silent workload.  Observed on a live paid run: 34 consecutive polls
+    # returned HTTP 200 with a result_url and every fetch of that URL returned
+    # 403, while the instance reported `running` throughout.  The run burned the
+    # full twenty-minute no-progress window and was then reported as a failed
+    # probe, which named the workload for a fault in reading its output.
+    log_bytes_ever_read = False
+    log_transport_failure_streak = 0
+    last_log_transport_error: str | None = None
+    log_transport_failure_ceiling = max(0, int(log_transport_failure_limit))
+    output_probe_observed = False
+    output_probe_failed = False
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -5044,6 +5183,15 @@ def _request_logs_and_fetch(
             except Exception as exc:  # pragma: no cover - live network dependent.
                 fetch_error = f"{type(exc).__name__}: {str(exc)[:300]}"
         output_text = attempt_text
+        if attempt_text:
+            log_bytes_ever_read = True
+        if fetch_error and not attempt_text:
+            log_transport_failure_streak += 1
+            last_log_transport_error = fetch_error
+        elif not fetch_error:
+            # A successful read proves the channel, even when the workload had
+            # nothing to say yet; later failures are then transient by evidence.
+            log_transport_failure_streak = 0
         # Persist each redacted snapshot immediately.  If the allocator is interrupted
         # or the outer TTL fires during a later poll, the last scientific worker phases
         # must survive teardown instead of disappearing with the provider instance.
@@ -5104,8 +5252,20 @@ def _request_logs_and_fetch(
         previous_structured_progress = structured_progress or previous_structured_progress
         previous_runtime_phase_count = max(previous_runtime_phase_count, runtime_phase_count)
         no_progress_elapsed_seconds = max(0.0, time.monotonic() - last_progress_monotonic)
+        # "No progress in the logs" measures the workload only when the logs
+        # work. A channel that has never delivered a byte reports no progress
+        # forever, so this watchdog would end a healthy render at twenty
+        # minutes and name it `no_log_progress_timeout` -- blaming the workload
+        # for a transport fault, which is the misattribution #459 set out to
+        # stop. While a second channel is live and answering, the run is bounded
+        # by its deadline, which is the TTL the spend cap was computed against.
+        watching_a_live_second_channel = bool(
+            output_probe is not None and not output_probe_failed and not log_bytes_ever_read
+        )
         no_progress_timeout_reached = bool(
-            no_progress_limit_seconds and no_progress_elapsed_seconds >= no_progress_limit_seconds
+            no_progress_limit_seconds
+            and no_progress_elapsed_seconds >= no_progress_limit_seconds
+            and not watching_a_live_second_channel
         )
         if container_missing:
             container_missing_count += 1
@@ -5173,9 +5333,36 @@ def _request_logs_and_fetch(
             attempts[-1]["instance_status"] = confirmed_liveness.get("status")
             attempts[-1]["instance_exited_observed_count"] = instance_exited_count
             attempts[-1]["instance_liveness_probe_error"] = confirmed_liveness.get("probe_error")
+        log_transport_unavailable = bool(
+            log_transport_failure_ceiling
+            and not log_bytes_ever_read
+            and log_transport_failure_streak >= log_transport_failure_ceiling
+        )
         instance_exited = instance_exited_count >= 2
+        # The workload's output lands in object storage, on a channel that has
+        # nothing to do with Vast's log API. Polling it means an unreadable log
+        # channel is a loss of narration, not a loss of the result.
+        output_observed = False
+        if output_probe is not None and not output_probe_failed:
+            try:
+                output_observed = bool(output_probe())
+            except Exception:  # noqa: BLE001 - a probe fault must not end the run
+                output_probe_failed = True
+        if output_observed:
+            output_probe_observed = True
         if marker_found:
             break_reason = "success_marker_found"
+        elif output_observed:
+            break_reason = "provider_output_observed"
+        elif log_transport_unavailable and output_probe is None:
+            # With no second channel there is nothing left to wait for: the
+            # blocker would otherwise blame the workload for output we were
+            # never able to read, and we would keep paying for an instance we
+            # cannot observe. A minute instead of twenty.
+            break_reason = "log_transport_unavailable"
+        elif log_transport_unavailable and output_probe_failed:
+            # The second channel exists but is not answering either.
+            break_reason = "log_transport_unavailable"
         elif instance_exited:
             # Ahead of the generic watchdogs so the reason names the exit rather
             # than blaming absent log progress, which is only its symptom.
@@ -5204,6 +5391,36 @@ def _request_logs_and_fetch(
         "no_progress_timeout_reached": no_progress_timeout_reached,
         "instance_final_status": last_instance_liveness.get("status"),
         "instance_exited_observed": instance_exited_count >= 2,
+        "log_bytes_ever_read": log_bytes_ever_read,
+        "log_transport_failure_streak": log_transport_failure_streak,
+        "log_transport_failure_limit": log_transport_failure_ceiling,
+        "last_log_transport_error": last_log_transport_error,
+        # Which channel ended the wait. A run that finished on the object store
+        # while the log channel stayed dark is a successful run with no
+        # narration, and the receipt should say so rather than imply silence.
+        "output_probe_configured": output_probe is not None,
+        "output_probe_observed": output_probe_observed,
+        "output_probe_failed": output_probe_failed,
+        # A no-progress verdict that was suppressed because the only channel
+        # reporting no progress was the one that never worked.
+        "no_log_progress_deferred_to_output_probe": bool(
+            output_probe is not None
+            and not output_probe_failed
+            and not log_bytes_ever_read
+            and no_progress_limit_seconds
+            and max(0.0, time.monotonic() - last_progress_monotonic)
+            >= no_progress_limit_seconds
+        ),
+        # When every channel is silent this is the only way back to an instance
+        # we are still paying for. Without it the forensic trail ends at "403"
+        # and the next attempt has to buy the same twenty minutes to learn the
+        # same nothing.
+        "instance_ssh_host": last_instance_liveness.get("ssh_host"),
+        "instance_ssh_port": last_instance_liveness.get("ssh_port"),
+        "workload_independent_access_recorded": bool(
+            last_instance_liveness.get("ssh_host")
+            and last_instance_liveness.get("ssh_port")
+        ),
         "break_reason": break_reason,
     }
 
@@ -6675,6 +6892,7 @@ def run_vast_provider_adapter(
         generated_at=generated_at,
         api_key=api_key,
         allowed_active_instance_ids=resolved_allowed_active_instance_ids,
+        lane_label_prefix=resolved_label_prefix,
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
     base_result.update(
@@ -7226,6 +7444,7 @@ def run_vast_provider_adapter(
                 )
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
+            output_probe=_provider_output_probe(_string(provider_output_get_url)),
         )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         if not _log_text_has_success_marker(
@@ -7281,14 +7500,28 @@ def run_vast_provider_adapter(
             onstart_logs.get("instance_exited_observed")
             or heartbeat_log_break_reason == "instance_exited"
         )
+        heartbeat_log_transport_failed = bool(
+            heartbeat_log_break_reason == "log_transport_unavailable"
+            or (
+                onstart_logs.get("log_bytes_ever_read") is False
+                and int(onstart_logs.get("log_transport_failure_streak") or 0) > 0
+            )
+        )
         heartbeat_blockers = []
         if not startup_probe_ok:
+            if heartbeat_log_transport_failed:
+                # Named first, and never alongside the no-progress timeout: we
+                # could not read this workload's output, so we have no evidence
+                # about the workload at all. A live run spent twenty paid
+                # minutes and reported a failed probe when every log fetch had
+                # returned 403 and the instance stayed `running` throughout.
+                heartbeat_blockers.append("vast_heartbeat_log_transport_failed")
             if heartbeat_instance_exited:
                 # Named ahead of the timeout: a frozen log is the symptom of a
                 # dead container, and reporting the symptom sent one run
                 # chasing a render bug that was really a host that died.
                 heartbeat_blockers.append("vast_heartbeat_instance_exited")
-            if heartbeat_no_progress_timeout:
+            if heartbeat_no_progress_timeout and not heartbeat_log_transport_failed:
                 heartbeat_blockers.append("vast_heartbeat_no_log_progress_timeout")
             if _log_result_has_container_missing(onstart_logs):
                 heartbeat_blockers.append("vast_heartbeat_container_missing")
@@ -7309,6 +7542,17 @@ def run_vast_provider_adapter(
             "downstream_provider_marker_seen": downstream_marker_seen,
             "heartbeat_url_kind": "public_echo_endpoint",
             "heartbeat_no_progress_timeout_seconds": resolved_heartbeat_no_progress_seconds,
+            # Retained on every run, not only failures: an operator reading
+            # this manifest after teardown needs to know whether the run was
+            # reachable at all, and a receipt that only records access when
+            # it succeeded cannot answer that.
+            "instance_ssh_host": onstart_logs.get("instance_ssh_host"),
+            "instance_ssh_port": onstart_logs.get("instance_ssh_port"),
+            "workload_independent_access_recorded": bool(
+                onstart_logs.get("workload_independent_access_recorded")
+            ),
+            "log_transport_failed": heartbeat_log_transport_failed,
+            "log_bytes_ever_read": bool(onstart_logs.get("log_bytes_ever_read")),
             "launch_mode_used": launch_mode,
             "disk_gb": resolved_disk_gb,
             "container_image": selected_container_image,
@@ -7578,7 +7822,15 @@ def run_vast_provider_adapter(
                 "output_zip_path": str(output_zip_path),
                 "raw_secret_values_recorded": False,
             }
-            if provider_upload_ok and _string(provider_output_get_url):
+            # Attempt the download whenever a GET URL exists, not only when a
+            # marker was read out of the logs. The upload marker and the object
+            # travel on different channels, and gating the download on the
+            # marker made the log channel a hard dependency for the *result*:
+            # on 2026-08-12 every log fetch returned 403 while the instance ran,
+            # so an output the workload may well have uploaded would never have
+            # been fetched. The object's presence is stronger evidence than a
+            # line claiming it was written.
+            if _string(provider_output_get_url):
                 transfer = download_url_to_file(
                     url=_string(provider_output_get_url),
                     output_path=output_zip_path,
@@ -7624,7 +7876,21 @@ def run_vast_provider_adapter(
                 expected_video_count=_provider_expected_video_count(provider_bundle_kind),
             )
             output_zip_received = output_zip_inspection.get("zip_present") is True
-            provider_runtime_output_zip_produced = provider_upload_ok and output_zip_received
+            # The object arriving is what proves the workload produced output.
+            # Requiring the log marker as well meant a readable object and an
+            # unreadable log channel added up to "no output".
+            provider_runtime_output_zip_produced = output_zip_received
+            output_download_manifest["provider_output_observed_via"] = (
+                "log_marker_and_object_store"
+                if provider_upload_ok and output_zip_received
+                else "object_store_only"
+                if output_zip_received
+                else "none"
+            )
+            write_json(
+                resolved_job_dir / "vast_provider_output_download_manifest.json",
+                output_download_manifest,
+            )
             runtime_result_present = output_zip_inspection.get("runtime_result_present") is True
             video_smoke_proven = output_zip_inspection.get("video_smoke_proven") is True
             mp4_validation = _mapping(output_zip_inspection.get("mp4_validation"))
@@ -7649,7 +7915,9 @@ def run_vast_provider_adapter(
                     provider_completed_or_blocked=provider_completed_or_blocked,
                 )
             )
-            if not provider_upload_ok:
+            if not provider_upload_ok and not output_zip_received:
+                # Only a blocker when the object is also absent: the marker is
+                # corroboration for an upload, not the upload itself.
                 completion_blockers.append("provider_output_upload_marker_missing")
             if not output_zip_received:
                 completion_blockers.append("provider_runtime_output_zip_not_received_locally")

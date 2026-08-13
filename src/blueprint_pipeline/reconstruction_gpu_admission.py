@@ -52,6 +52,7 @@ CAPTURE_PROFILES = {
     "public_provider_sample",
     "user_managed_provider_export",
     "synthetic_measurement",
+    "external_generated_asset",
 }
 OPERATIONS = {
     "worker_smoke",
@@ -99,8 +100,10 @@ _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 
 
 def _expected_runtime_result_schema(
-    operation: str, requested_adapter: Any
+    operation: str, requested_adapter: Any, capture_profile: Any = None
 ) -> str | None:
+    if operation == "measurement_isaac_canary" and capture_profile == "external_generated_asset":
+        return "lightwheel_sink_isaac_runtime_result.v1"
     if (
         operation == "trainer_canary"
         and requested_adapter == CANONICAL_SPLATFACTO_VAST_ADAPTER_ID
@@ -136,7 +139,32 @@ def build_reconstruction_gpu_canary_request(
     ):
         if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
             errors.append(f"reconstruction_gpu_{key}_invalid")
-    if operation in EXTERNAL_DERIVED_ISAAC_OPERATIONS:
+    lightwheel_sink = (
+        operation == "measurement_isaac_canary"
+        and source.get("capture_profile") == "external_generated_asset"
+    )
+    if lightwheel_sink:
+        for key in (
+            "source_model_digest",
+            "texture_manifest_digest",
+            "wrapper_digest",
+            "test_configuration_digest",
+        ):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                errors.append(f"reconstruction_gpu_{key}_invalid")
+        for key in ("reconstruction_dataset_digest", "frozen_split_digest", "calibration_digest"):
+            if key in source:
+                errors.append(f"reconstruction_gpu_external_asset_capture_binding_forbidden:{key}")
+        for key, expected in {
+            "source_relationship_to_blueprint_raw_capture": "none",
+            "external_derived_support_asset": True,
+            "blueprint_raw_capture_truth": False,
+            "remote_upload_authorized": True,
+            "paid_compute_authorized": True,
+        }.items():
+            if source.get(key) != expected:
+                errors.append(f"reconstruction_gpu_external_asset_boundary_invalid:{key}")
+    elif operation in EXTERNAL_DERIVED_ISAAC_OPERATIONS:
         required_external_digests = (
             ("external_import_receipt_digest", "provider_qualification_report_digest")
             if operation == PROVIDER_NUREC_ISAAC_OPERATION
@@ -189,7 +217,7 @@ def build_reconstruction_gpu_canary_request(
             if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
                 errors.append(f"reconstruction_gpu_{key}_invalid")
     if source.get("expected_runtime_result_schema") != _expected_runtime_result_schema(
-        operation, source.get("requested_execution_adapter_id")
+        operation, source.get("requested_execution_adapter_id"), source.get("capture_profile")
     ):
         errors.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
     if source.get("candidate_may_read_hidden_heldout") is not False:
@@ -404,6 +432,7 @@ def build_reconstruction_gpu_canary_admission(
     expected_result_schema = _expected_runtime_result_schema(
         str(source.get("operation") or ""),
         source.get("requested_execution_adapter_id"),
+        source.get("capture_profile"),
     )
     if source.get("expected_runtime_result_schema") != expected_result_schema:
         blockers.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
@@ -428,7 +457,32 @@ def build_reconstruction_gpu_canary_admission(
         if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
             blockers.append(f"reconstruction_gpu_{key}_invalid")
     operation = str(source.get("operation") or "")
-    if operation in EXTERNAL_DERIVED_ISAAC_OPERATIONS:
+    lightwheel_sink = (
+        operation == "measurement_isaac_canary"
+        and source.get("capture_profile") == "external_generated_asset"
+    )
+    if lightwheel_sink:
+        for key in (
+            "source_model_digest",
+            "texture_manifest_digest",
+            "wrapper_digest",
+            "test_configuration_digest",
+        ):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                blockers.append(f"reconstruction_gpu_{key}_invalid")
+        for key in ("reconstruction_dataset_digest", "frozen_split_digest", "calibration_digest"):
+            if key in source:
+                blockers.append(f"reconstruction_gpu_external_asset_capture_binding_forbidden:{key}")
+        for key, expected in {
+            "source_relationship_to_blueprint_raw_capture": "none",
+            "external_derived_support_asset": True,
+            "blueprint_raw_capture_truth": False,
+            "remote_upload_authorized": True,
+            "paid_compute_authorized": True,
+        }.items():
+            if source.get(key) != expected:
+                blockers.append(f"reconstruction_gpu_external_asset_boundary_invalid:{key}")
+    elif operation in EXTERNAL_DERIVED_ISAAC_OPERATIONS:
         required_external_digests = (
             ("external_import_receipt_digest", "provider_qualification_report_digest")
             if operation == PROVIDER_NUREC_ISAAC_OPERATION

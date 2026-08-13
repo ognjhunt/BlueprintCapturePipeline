@@ -651,9 +651,7 @@ def test_paid_attempt_authority_consumption_is_single_use(
 ) -> None:
     bundle = _prepared_excision_bundle(tmp_path)
     authority = _paid_attempt_authority(bundle)
-    monkeypatch.setattr(
-        excision_vast, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
 
     first = excision_vast.consume_gaussian_excision_paid_attempt_authority_once(
         authority, blueprint_commit=str(bundle["blueprint_commit"])
@@ -1031,9 +1029,7 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
         return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.2}
 
     monkeypatch.setattr(excision_vast, "_remaining_minutes", lambda **kwargs: 60)
-    monkeypatch.setattr(
-        excision_vast, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
     monkeypatch.setattr(excision_vast, "stage_wam_provider_bundle_object_store", fake_stage)
     monkeypatch.setattr(excision_vast, "arm_independent_vast_watchdog", fake_arm)
     monkeypatch.setattr(excision_vast, "run_vast_provider_adapter", fake_adapter)

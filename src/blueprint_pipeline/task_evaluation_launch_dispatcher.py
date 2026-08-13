@@ -20,12 +20,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .host_resident_launch_inputs import launch_profile_residency_blockers
+from .task_evaluation_standing_launch_authorization import (
+    STANDING_AUTHORIZATION_DIR_ENV,
+    StandingAuthorizationError,
+    consumption_totals,
+    record_launch,
+    standing_authorization_admits,
+)
+
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
 LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION = "task_evaluation_launch_profile_catalog.v1"
 CANONICAL_ALLOCATOR_ENTRYPOINT = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
+
 EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
 EXECUTE_LAUNCH_ID_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID"
 SECRET_PROFILE_ID_ENV = "BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID"
@@ -66,6 +76,50 @@ PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
 
 class TaskEvaluationLaunchError(ValueError):
     """Raised when a launch request or profile fails closed."""
+
+
+def standing_authorization_directory(state_root: str | Path) -> str:
+    """Where this host keeps standing authorizations.
+
+    The environment variable stays authoritative, but it is not required. The
+    deployed control plane never set it, so the standing authorization shipped
+    in #462 could not admit anything there: the dispatcher read an unset
+    variable and fell straight back to the per-run `--execute-launch-id`
+    handshake it was meant to replace. Deriving a default beside the launch
+    state root is what makes the capability work on a host restored from an
+    image, which runs no installer and applies no remembered env edit.
+
+    Defaulting is safe in the direction that matters: a host with no
+    authorization on disk is still refused, with no blocker of its own.
+    """
+
+    configured = str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip()
+    if configured:
+        return configured
+    return str(Path(state_root).expanduser().resolve().parent / "standing-authorizations")
+
+
+def _standing_authorization_decision(
+    profile: Mapping[str, Any], live_requested: bool, state_root: str | Path
+) -> dict[str, Any]:
+    """Consult the standing per-profile authorization, if this host has one."""
+    if not live_requested:
+        return {"admitted": False, "blockers": []}
+    directory = standing_authorization_directory(state_root)
+    if not directory:
+        return {"admitted": False, "blockers": []}
+    profile_id = str(profile.get("profile_id") or "")
+    try:
+        launches, spend = consumption_totals(directory=directory, profile_id=profile_id)
+    except StandingAuthorizationError as exc:
+        # Spend we cannot account for must not be treated as zero.
+        return {"admitted": False, "blockers": [str(exc)]}
+    return standing_authorization_admits(
+        profile=profile,
+        directory=directory,
+        launches_consumed=launches,
+        spend_consumed_usd=spend,
+    )
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -708,7 +762,17 @@ def _terminal_evidence(
                 blockers.append(f"allocator_terminal_value_mismatch:{field}")
         artifacts: dict[str, Any] = {}
         for field in terminal.get("required_path_fields") or []:
-            artifact_path = Path(str(result.get(field) or "")).expanduser().resolve()
+            raw = str(result.get(field) or "").strip()
+            if not raw:
+                # `Path("").resolve()` is the process working directory, so an
+                # unset field used to be recorded as a descriptor naming the
+                # release checkout -- evidence that a reader could mistake for
+                # a real artifact that had merely gone missing. A field the
+                # result never set has no path.
+                artifacts[str(field)] = {"path": None, "exists": False, "digest": None}
+                blockers.append(f"allocator_terminal_artifact_missing:{field}")
+                continue
+            artifact_path = Path(raw).expanduser().resolve()
             artifacts[str(field)] = _artifact(artifact_path)
             if not artifact_path.is_file():
                 blockers.append(f"allocator_terminal_artifact_missing:{field}")
@@ -755,6 +819,11 @@ def dispatch_launch_request(
     if profile:
         blockers.extend(validate_launch_profile(profile))
         blockers.extend(verify_profile_immutable_inputs(profile))
+        # Existence is not residency. The 2026-08-12 retained-scene run passed
+        # every existence check and still reached the provider with two
+        # authoring paths in argv, because the authoring tree had been
+        # recreated on the host by hand.
+        blockers.extend(launch_profile_residency_blockers(profile))
         if request.get("launch_profile_digest") != profile.get("profile_digest"):
             blockers.append("launch_profile_binding_mismatch")
         if _canonical_json(_mapping(request.get("source_bundle"))) != _canonical_json(
@@ -781,13 +850,23 @@ def dispatch_launch_request(
 
     live_requested = bool(execute)
     execution_scope_launch_id = str(execute_launch_id or "").strip()
-    if live_requested:
+    # A standing per-profile authorization is the alternative to copying a
+    # freshly minted launch id into the host's environment file before every
+    # run. It is consulted only when the per-launch handshake is not satisfied,
+    # so a launch carrying a matching id is admitted exactly as before and a
+    # launch carrying neither is still refused.
+    standing = _standing_authorization_decision(profile, live_requested, state_root)
+    if live_requested and not standing.get("admitted"):
         if not execution_scope_launch_id:
             blockers.append("execute_launch_id_required")
         elif not _is_identifier(execution_scope_launch_id):
             blockers.append("execute_launch_id_invalid")
         elif execution_scope_launch_id != request.get("launch_id"):
             blockers.append("execute_launch_scope_mismatch")
+        # Only surface authorization faults when one was actually present:
+        # a host with none is refused for the missing id, not for a document
+        # it was never asked to have.
+        blockers.extend(standing.get("blockers") or [])
     live_allowed = _is_truthy(os.getenv(EXECUTE_ENV))
     if live_requested and not live_allowed:
         blockers.append(f"missing_env_{EXECUTE_ENV}")
@@ -889,6 +968,26 @@ def dispatch_launch_request(
     allocator_exit_code: int | None = None
     stdout_text = ""
     stderr_text = ""
+    if not blockers and profile and live_requested and standing.get("admitted"):
+        # Count the launch before the allocator runs, not after. The bounds are
+        # read back from these records on every later admission, so a run that
+        # dies mid-flight must still count: over-counting refuses a launch that
+        # might have been allowed, under-counting spends past an approval.
+        # Nothing recorded these until now -- `max_launches` and
+        # `max_total_spend_usd` were declared and never consumed, which made a
+        # bounded authorization unbounded in practice.
+        try:
+            record_launch(
+                directory=standing_authorization_directory(state_root),
+                profile_id=str(profile.get("profile_id") or ""),
+                launch_id=str(request.get("launch_id") or ""),
+                max_spend_usd=float(
+                    _mapping(profile.get("allocator")).get("max_spend_usd") or 0.0
+                ),
+            )
+        except (OSError, StandingAuthorizationError, TypeError, ValueError):
+            blockers.append("standing_authorization_consumption_not_recorded")
+
     if not blockers and profile:
         allocator = _mapping(profile.get("allocator"))
         argv = [
@@ -1031,7 +1130,16 @@ def process_launch_queue(
     pending.mkdir(parents=True, exist_ok=True)
     processing.mkdir(parents=True, exist_ok=True)
     execution_scope_launch_id = str(execute_launch_id or "").strip()
-    if execute and not _is_identifier(execution_scope_launch_id):
+    armed = _is_identifier(execution_scope_launch_id)
+    # A standing per-profile authorization is the other way a paid launch is
+    # admitted. It was unreachable from here: the queue refused for a missing
+    # launch id before `dispatch_launch_request` -- the only place that reads a
+    # standing authorization -- was ever called. So every paid run still needed
+    # the hand-edited env var the standing authorization exists to replace, and
+    # a stale one silently filtered every newer request out of the queue.
+    standing_root = Path(standing_authorization_directory(state_root)).expanduser()
+    standing_present = standing_root.is_dir() and any(standing_root.glob("*.json"))
+    if execute and not armed and not standing_present:
         return {
             "schema_version": QUEUE_RUN_SCHEMA_VERSION,
             "status": "blocked",
@@ -1043,10 +1151,12 @@ def process_launch_queue(
             "automatic_retry_performed": False,
         }
     sources = sorted(pending.glob("*.json"))
-    if execute:
-        # A paid dispatcher activation is deliberately scoped to a single
-        # immutable launch ID.  Do not claim, dry-run, or mutate any other
-        # pending request while the one-shot execution window is armed.
+    if execute and armed:
+        # A paid activation scoped to one immutable launch ID stays scoped to
+        # it: do not claim, dry-run, or mutate any other pending request while
+        # that one-shot window is open. With no ID armed there is no such window
+        # to protect, and `dispatch_launch_request` still refuses any launch its
+        # profile's standing authorization does not admit.
         sources = [
             source
             for source in sources
@@ -1061,7 +1171,7 @@ def process_launch_queue(
                 profile_dir=profile_dir,
                 state_root=state_root,
                 execute=execute,
-                execute_launch_id=execution_scope_launch_id if execute else None,
+                execute_launch_id=execution_scope_launch_id if execute and armed else None,
                 public_catalog_path=public_catalog_path,
                 allocator_runner=allocator_runner,
             )

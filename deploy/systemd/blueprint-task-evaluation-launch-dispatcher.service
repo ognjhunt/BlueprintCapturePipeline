@@ -44,8 +44,13 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipel
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
-# A paid execution window must name its one immutable launch ID.  A true
-# global --execute is intentionally unavailable to the queue worker.
+# A paid execution window names one immutable launch ID, or is admitted by a
+# standing per-profile authorization -- which is digest-bound, expiring, and
+# bounded in launch count and spend. Requiring the ID unconditionally made
+# that authorization unreachable: the queue worker refused before the
+# dispatcher could consult it, so every paid run still needed a hand-edited
+# env var and a unit restart. A bare --execute is still not a blanket
+# authority; the dispatcher refuses a launch carrying neither.
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID=
 # The hardened service cannot read a user home. Bind every allocator/runtime
 # credential to the canonical read-only secret directory. The allocator still
@@ -56,6 +61,15 @@ Environment=NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key
 Environment=DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username
 Environment=DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat
 Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
+# The Content Agents config preflight proves live model access before that
+# lane may allocate. This unit runs with ProtectHome=true and home
+# /nonexistent, so a secret resolved from a developer home cannot be read
+# here; name it the way every other credential on this unit is named.
+Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key
+# The configured directory is authoritative, so a key that exists only on
+# somebody's workstation cannot stand in for one the deployment never
+# installed. Three sibling units already declare it.
+Environment=BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
 Environment=BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_access_key_id
 Environment=BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_secret_access_key
 Environment=BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url
@@ -67,4 +81,4 @@ WorkingDirectory=/
 # file still permits execution.  EnvironmentFile values override Environment=
 # values in systemd, so a separate positive dry interlock is required; never
 # rely on an Environment=...EXECUTE=false drop-in as a spend stop.
-ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_dispatcher --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --public-catalog "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --max-messages 10) && if [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] && [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true ] && [ -n "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID:-}" ]; then ARGS+=(--execute --execute-launch-id "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}"); fi; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_dispatcher --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --public-catalog "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --max-messages 10) && if [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] && [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true ]; then ARGS+=(--execute); if [ -n "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID:-}" ]; then ARGS+=(--execute-launch-id "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}"); fi; fi; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'

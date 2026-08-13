@@ -207,9 +207,7 @@ def test_live_run_requires_all_four_native_probes_and_provider_zero(
     authority = _paid_attempt_authority(
         prepared_bundle, bundle_receipt_sha256=bundle_receipt_sha256
     )
-    monkeypatch.setattr(
-        runtime, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
 
     def fake_stage(**kwargs):
         staging = Path(kwargs["job_dir"])
@@ -268,9 +266,7 @@ def test_live_run_consumes_paid_attempt_authority_once_before_staging(
     authority = _paid_attempt_authority(
         prepared_bundle, bundle_receipt_sha256=bundle_receipt_sha256
     )
-    monkeypatch.setattr(
-        runtime, "AUTHORIZATION_CONSUMPTION_ROOT", tmp_path / "consumed"
-    )
+    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
     stage_calls = 0
 
     def fake_stage(**kwargs):

@@ -8,6 +8,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from pathlib import Path
 from typing import Any, Mapping, Tuple
 
@@ -18,6 +19,7 @@ from typing import Any, Mapping, Tuple
 MAXIMUM_HIDDEN_ZONE_BOUND = 0.35
 
 __all__ = [
+    "redacted_failure_detail",
     "GCSUri",
     "MAXIMUM_HIDDEN_ZONE_BOUND",
     "PipelineError",
@@ -326,3 +328,39 @@ def parse_bool(value: Any, *, default: bool = False) -> bool:
 
 def flatten_scene_paths(storage_root: Path, *relative_paths: str) -> Tuple[Path, ...]:
     return tuple(storage_root / rel for rel in relative_paths)
+
+
+_FAILURE_DETAIL_MAX_CHARS = 300
+# Anything that looks like a credential or a signed URL. A failure message is
+# written into a retained receipt, so it must carry the cause without carrying
+# a secret that happened to be in the exception's text.
+_FAILURE_DETAIL_REDACTIONS = re.compile(
+    r"(?i)(?:"
+    r"[?&](?:x-amz-[a-z0-9-]+|signature|token|key|secret|password)=[^\s&]+"
+    r"|(?:sk|pk|ghp|gho|xox[abps])-[A-Za-z0-9_-]{8,}"
+    r"|Bearer\s+[A-Za-z0-9._-]{8,}"
+    r")"
+)
+
+
+def redacted_failure_detail(exc: BaseException) -> str:
+    """Describe a caught failure by its cause, not only its type.
+
+    Ten paid lanes recorded `..._failed:{type(exc).__name__}` and discarded the
+    message, so a blocked run said `ValueError` and nothing about which value.
+    Diagnosing that costs another attempt at minimum, and a paid one whenever
+    the failure only happens on the execute path.
+
+    The message is bounded and redacted because it lands in a retained receipt:
+    signed URLs and API keys turn up in exception text, and a receipt is exactly
+    the artifact that gets copied around later.
+    """
+
+    name = type(exc).__name__
+    detail = _FAILURE_DETAIL_REDACTIONS.sub("<redacted>", str(exc)).strip()
+    detail = " ".join(detail.split())
+    if not detail:
+        return name
+    if len(detail) > _FAILURE_DETAIL_MAX_CHARS:
+        detail = detail[:_FAILURE_DETAIL_MAX_CHARS] + "..."
+    return f"{name}:{detail}"

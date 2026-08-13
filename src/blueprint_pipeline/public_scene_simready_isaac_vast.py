@@ -12,6 +12,7 @@ import shutil
 from typing import Any, Mapping, Sequence
 import zipfile
 
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_attempt_authority import (
@@ -29,14 +30,13 @@ from .wam_provider_object_store import (
 )
 
 
+from .spend_authority_consumption_root import consumption_root
+
 PROBE_KIND = "adp009b-exact-simready-isaac"
 RESULT_SCHEMA_VERSION = "adp009b_simready_isaac_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_simready_isaac_paid_attempt_authority.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/exact-simready-isaac"
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
-AUTHORIZATION_CONSUMPTION_ROOT = (
-    Path.home() / ".blueprint-spend-authority" / "consumed"
-)
 
 
 def _sha256(path: Path) -> str:
@@ -366,7 +366,7 @@ def consume_simready_isaac_paid_attempt_authority_once(
             "status": "blocked",
             "blockers": ["simready_isaac_paid_attempt_authority_identity_invalid"],
         }
-    root = AUTHORIZATION_CONSUMPTION_ROOT
+    root = consumption_root()
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root_stat = root.stat()
@@ -650,6 +650,15 @@ def run_simready_isaac_vast(
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     write_json(attempt_root / "adp009b_simready_isaac_vast_result.json", result)
+    # Seal the two terminal artifacts every production launch profile asks
+    # this result for. Without them the run ends
+    # `allocator_terminal_artifact_missing:` whatever happened on the provider.
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="public_scene_simready_isaac",
+        binding={"provider": "vast"},
+    )
     write_json(job / "adp009b_simready_isaac_vast_result.json", result)
     return result
 

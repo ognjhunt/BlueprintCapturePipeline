@@ -18,7 +18,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .vast_provider_adapter import run_vast_provider_adapter
 from .wam_provider_object_store import (
@@ -215,7 +216,7 @@ def _extract_provider_output(path: Path, destination: Path) -> dict[str, Any]:
             if not blockers:
                 archive.extractall(destination)
     except (OSError, zipfile.BadZipFile) as exc:
-        blockers.append(f"adp_provider_output_zip_invalid:{type(exc).__name__}")
+        blockers.append(f"adp_provider_output_zip_invalid:{redacted_failure_detail(exc)}")
     execution_path = destination / "adp_simpler_closed_loop_execution.json"
     execution = _read_json(execution_path)
     if not execution:
@@ -407,6 +408,15 @@ def run_simpler_public_vast(
         "claim_ceiling": "development_only",
         "raw_secret_values_recorded": False,
     }
+    # Seal the two terminal artifacts every production launch profile asks
+    # this result for. Without them the run ends
+    # `allocator_terminal_artifact_missing:` whatever happened on the provider.
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="adp_simpler",
+        binding={"provider": "vast"},
+    )
     write_json(job / "adp_simpler_vast_result.json", result)
     return result
 

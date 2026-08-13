@@ -19,7 +19,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
@@ -37,6 +38,8 @@ from .wam_provider_object_store import (
     stage_wam_provider_bundle_object_store,
 )
 
+
+from .spend_authority_consumption_root import consumption_root
 
 PROBE_KIND = "adp-aurafusion360-exact-residual"
 PROVIDER_BUNDLE_KIND = "adp_aura_exact_residual"
@@ -560,15 +563,15 @@ def consume_aura_exact_residual_paid_attempt_authority_once(
         return {"status": "blocked", "blockers": ["aura_exact_residual_authority_identity_invalid"]}
     identity = digest.removeprefix("sha256:")
     try:
-        AUTHORIZATION_CONSUMPTION_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
-        root_stat = AUTHORIZATION_CONSUMPTION_ROOT.stat()
+        consumption_root().mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = consumption_root().stat()
         if (
-            AUTHORIZATION_CONSUMPTION_ROOT.is_symlink()
+            consumption_root().is_symlink()
             or root_stat.st_uid != os.getuid()
             or root_stat.st_mode & 0o077
         ):
             raise PermissionError
-        destination = AUTHORIZATION_CONSUMPTION_ROOT / f"aura-exact-residual-{identity}.json"
+        destination = consumption_root() / f"aura-exact-residual-{identity}.json"
         record = {
             "schema_version": "aura_exact_residual_paid_attempt_consumption.v1",
             "authorization_digest": digest,
@@ -578,7 +581,7 @@ def consume_aura_exact_residual_paid_attempt_authority_once(
             "consumed_at": utc_now_iso(),
         }
         raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        temporary = AUTHORIZATION_CONSUMPTION_ROOT / f".{identity}.{os.getpid()}.tmp"
+        temporary = consumption_root() / f".{identity}.{os.getpid()}.tmp"
         descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
             with os.fdopen(descriptor, "wb") as stream:
@@ -586,7 +589,7 @@ def consume_aura_exact_residual_paid_attempt_authority_once(
                 stream.flush()
                 os.fsync(stream.fileno())
             os.link(temporary, destination)
-            directory_descriptor = os.open(AUTHORIZATION_CONSUMPTION_ROOT, os.O_RDONLY)
+            directory_descriptor = os.open(consumption_root(), os.O_RDONLY)
             try:
                 os.fsync(directory_descriptor)
             finally:
@@ -1177,7 +1180,7 @@ def run_aura_exact_residual_vast(
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     except (OSError, RuntimeError, ValueError) as exc:
-        adapter = {"status": "blocked", "blockers": [f"aura_exact_residual_adapter_failed:{type(exc).__name__}"],
+        adapter = {"status": "blocked", "blockers": [f"aura_exact_residual_adapter_failed:{redacted_failure_detail(exc)}"],
                    "raw_secret_values_recorded": False}
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
@@ -1243,7 +1246,7 @@ def run_aura_exact_residual_vast(
             raw_path = job / "public_scene_aura_exact_residual_raw_result.json"
             write_json(raw_path, raw)
         except (OSError, ValueError, KeyError) as exc:
-            blockers.append(f"aura_exact_residual_raw_result_materialization_failed:{type(exc).__name__}")
+            blockers.append(f"aura_exact_residual_raw_result_materialization_failed:{redacted_failure_detail(exc)}")
     result = {"schema_version": RESULT_SCHEMA_VERSION, "generated_at": utc_now_iso(),
               "status": "completed" if not blockers else "blocked", "bundle_sha256": bundle["bundle_sha256"],
               "preflight_digest": bundle["preflight_digest"], "execution_result_path": str(execution_root / "public_scene_aura_exact_residual_runtime_result.json"),
@@ -1257,6 +1260,20 @@ def run_aura_exact_residual_vast(
               "authorization_consumption": authorization_consumption,
               "independent_watchdog": watchdog, "blockers": sorted(set(str(item) for item in blockers if str(item))),
               "raw_secret_values_recorded": False}
+    # Seal the two terminal artifacts every production launch profile asks
+    # this result for. Without them the run ends
+    # `allocator_terminal_artifact_missing:` whatever happened on the provider.
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="public_scene_aura_exact_residual",
+        binding={
+            "bundle_sha256": bundle.get("bundle_sha256")
+            if isinstance(bundle, Mapping)
+            else None,
+            "provider": "vast",
+        },
+    )
     write_json(job / "public_scene_aura_exact_residual_vast_result.json", result)
     return result
 

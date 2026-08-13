@@ -1332,6 +1332,10 @@ def test_instance_liveness_rejects_unrecognized_payload_as_exit(
         "status": "unknown",
         "exited": False,
         "probe_error": "provider_instance_listing_unrecognized",
+        # Every return path carries the same keys, so a caller never has to know
+        # which branch it came from before testing one.
+        "ssh_host": None,
+        "ssh_port": None,
     }
 
 
@@ -7073,3 +7077,733 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     assert ngc_missing["status"] == "completed"
     isaac = _read_json(tmp_path / "ngc-missing" / "vast_isaac_smoke_result.json")
     assert "ngc_api_key_file_missing_or_empty_for_required_ngc_login" in isaac["blockers"]
+
+
+def _running_liveness(**_kwargs):  # type: ignore[no-untyped-def]
+    return {"observed": True, "status": "running", "exited": False, "probe_error": None}
+
+
+@pytest.fixture
+def _no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The poll loop sleeps a floor of one second plus five before each fetch."""
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_a, **_k: None)
+
+
+def test_request_logs_aborts_when_the_log_channel_never_works(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """A log transport that never once succeeded is not a silent workload.
+
+    Observed on a live paid run: 34 consecutive polls returned HTTP 200 from the
+    Vast API with a result_url, and every fetch of that URL returned 403. The
+    instance reported ``running`` for the entire twenty-minute window, so the
+    workload was never shown to have failed -- but the run was torn down and
+    reported as ``vast_probe_failed``, which named the workload.
+    """
+    fetches = {"count": 0}
+
+    def fake_fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        fetches["count"] += 1
+        raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch)
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=999,
+        no_progress_seconds=1200,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=6,
+    )
+
+    assert result["break_reason"] == "log_transport_unavailable"
+    assert result["log_bytes_ever_read"] is False
+    assert result["log_transport_failure_streak"] == 6
+    assert "403" in str(result["last_log_transport_error"])
+    # Six polls, not the full no-progress window: the paid instance is torn down
+    # in about a minute instead of twenty.
+    assert fetches["count"] == 6
+
+
+def test_request_logs_tolerates_a_transient_transport_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """One API glitch must not kill a run whose logs are otherwise readable."""
+    texts = iter(["", "", "BLUEPRINT_VAST_ONSTART_DONE"])
+
+    def fake_fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        value = next(texts)
+        if value == "":
+            raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+        return value
+
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch)
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=6,
+    )
+
+    assert result["break_reason"] == "success_marker_found"
+
+
+def test_request_logs_does_not_abort_on_a_readable_but_empty_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """A working channel over a quiet workload is the no-progress watchdog's job."""
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_a, **_k: "")
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=30,
+        no_progress_seconds=1,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=6,
+    )
+
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["log_transport_failure_streak"] == 0
+
+
+def test_request_logs_streak_resets_once_bytes_are_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """After a successful read the channel is proven; later 403s are not fatal."""
+    steps = iter(["BLUEPRINT_WAM_RUNTIME_PHASE: start", None, None, None, None, None, None, None])
+
+    def fake_fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        value = next(steps)
+        if value is None:
+            raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+        return value
+
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch)
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=30,
+        no_progress_seconds=1,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=6,
+    )
+
+    assert result["log_bytes_ever_read"] is True
+    assert result["break_reason"] == "no_log_progress_timeout"
+
+
+def test_instance_liveness_retains_the_provider_ssh_endpoint() -> None:
+    """The one observation path that does not require the workload to cooperate.
+
+    A live paid run went twenty minutes with every observation channel silent --
+    log fetch 403, echo endpoint unmarked, worker endpoint discovery pending --
+    while the instance reported `running`. All three depend on the workload
+    phoning home, so a workload that never starts is unobservable and the run
+    reports a verdict about a render that may never have run.
+
+    The provider hands us an SSH endpoint on the same call the liveness probe
+    already makes. It was being discarded.
+    """
+    payload = {
+        "instances": [
+            {
+                "id": 47574163,
+                "actual_status": "running",
+                "ssh_host": "ssh5.vast.ai",
+                "ssh_port": 41234,
+            }
+        ]
+    }
+
+    liveness = vpa._instance_liveness_from_payload(payload, instance_id=47574163)
+
+    assert liveness["status"] == "running"
+    assert liveness["ssh_host"] == "ssh5.vast.ai"
+    assert liveness["ssh_port"] == 41234
+
+
+def test_instance_liveness_endpoint_is_absent_not_invented() -> None:
+    """A provider row without an endpoint must not fabricate one."""
+    payload = {"instances": [{"id": 1, "actual_status": "running"}]}
+
+    liveness = vpa._instance_liveness_from_payload(payload, instance_id=1)
+
+    assert liveness["ssh_host"] is None
+    assert liveness["ssh_port"] is None
+
+
+def test_request_logs_reports_the_endpoint_for_an_unobservable_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """When we abort on a dead log channel, hand back the way in."""
+
+    def fake_fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("HTTPError: HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch)
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_k: {
+            "observed": True,
+            "status": "running",
+            "exited": False,
+            "probe_error": None,
+            "ssh_host": "ssh5.vast.ai",
+            "ssh_port": 41234,
+        },
+    )
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=47574163,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=30,
+        no_progress_seconds=1200,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        log_transport_failure_limit=3,
+    )
+
+    assert result["break_reason"] == "log_transport_unavailable"
+    # Without this a human has no way to reach an instance we are still paying
+    # for, and the forensic trail ends at "403".
+    assert result["instance_ssh_host"] == "ssh5.vast.ai"
+    assert result["instance_ssh_port"] == 41234
+    assert result["workload_independent_access_recorded"] is True
+
+
+def test_request_logs_marks_access_unrecorded_when_the_provider_omits_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _no_sleep: None,
+) -> None:
+    """An unobservable instance with no way in is a distinct, worse state."""
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_k: (200, {"result_url": "https://example.invalid/log.txt"})
+    )
+    monkeypatch.setattr(
+        vpa, "_fetch_text", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("403"))
+    )
+    monkeypatch.setattr(vpa, "_instance_liveness", _running_liveness)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=1,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=0,
+        max_wait_seconds=30,
+        no_progress_seconds=1200,
+        success_markers=["done"],
+        log_transport_failure_limit=3,
+    )
+
+    assert result["workload_independent_access_recorded"] is False
+    assert result["instance_ssh_host"] is None
+
+
+def _dead_log_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exactly the 2026-08-12 shape: HTTP 200 with a result_url, every fetch of
+    that url 403s, instance reports running throughout."""
+
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_: (200, {"result_url": "https://logs.example/result"}),
+    )
+
+    def _forbidden(*_args, **_kwargs):
+        raise OSError("HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(vpa, "_fetch_text", _forbidden)
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_kwargs: {
+            "observed": True,
+            "status": "running",
+            "exited": False,
+            "probe_error": None,
+            "ssh_host": "ssh.example",
+            "ssh_port": 22,
+        },
+    )
+
+
+def test_an_unreadable_log_channel_no_longer_ends_a_run_that_has_a_second_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The workload's output lands in object storage, on a channel that has
+    nothing to do with Vast's log API. A dead log channel is a loss of
+    narration, not a loss of the result."""
+
+    _dead_log_transport(monkeypatch)
+    polls = {"count": 0}
+
+    def _probe() -> bool:
+        polls["count"] += 1
+        # Absent while the render runs, present once it uploads.
+        return polls["count"] >= 4
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "dead-logs.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=600,
+        success_markers=["SUCCESS"],
+        log_transport_failure_limit=2,
+        output_probe=_probe,
+    )
+
+    assert result["output_probe_configured"] is True
+    assert result["output_probe_observed"] is True
+    assert result["output_probe_failed"] is False
+    # It waited for the object instead of abandoning the run at the log fault.
+    assert polls["count"] == 4
+    assert result["log_bytes_ever_read"] is False
+
+
+def test_a_dead_log_channel_with_no_second_one_still_aborts_quickly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing else to wait for, keeping the instance is paying to watch a
+    black screen."""
+
+    _dead_log_transport(monkeypatch)
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "dead-logs-no-probe.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=600,
+        success_markers=["SUCCESS"],
+        log_transport_failure_limit=2,
+        output_probe=None,
+    )
+
+    assert result["output_probe_configured"] is False
+    assert len(result["log_poll_attempts"]) == 2
+    assert result["log_transport_failure_streak"] >= 2
+
+
+def test_a_second_channel_that_faults_does_not_hold_a_run_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dead_log_transport(monkeypatch)
+
+    def _probe() -> bool:
+        raise RuntimeError("object store unreachable")
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "dead-both.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=600,
+        success_markers=["SUCCESS"],
+        log_transport_failure_limit=2,
+        output_probe=_probe,
+    )
+
+    assert result["output_probe_failed"] is True
+    assert result["output_probe_observed"] is False
+    assert len(result["log_poll_attempts"]) == 2
+
+
+def test_the_output_probe_treats_a_not_yet_uploaded_object_as_not_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    probe = vpa._provider_output_probe("https://objects.example/output.zip?signed")
+    assert probe is not None
+
+    def _missing(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://objects.example/output.zip", 404, "Not Found", {}, None
+        )
+
+    monkeypatch.setattr(vpa.urllib.request, "urlopen", _missing)
+    assert probe() is False
+
+    assert vpa._provider_output_probe("") is None
+
+
+def test_the_output_probe_keeps_the_method_its_signature_was_issued_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A presigned URL's signature covers the HTTP method. A HEAD against a
+    URL signed for GET is rejected as a signature mismatch, which from here is
+    indistinguishable from "not there yet" -- the probe would never fire and the
+    run would sit until its deadline having learned nothing."""
+
+    seen: dict[str, object] = {}
+
+    class _Response:
+        status = 206
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def _capture(request, *_args, **_kwargs):
+        seen["method"] = request.get_method()
+        seen["range"] = request.get_header("Range")
+        return _Response()
+
+    monkeypatch.setattr(vpa.urllib.request, "urlopen", _capture)
+    probe = vpa._provider_output_probe("https://objects.example/output.zip?signed")
+
+    assert probe is not None
+    assert probe() is True
+    assert seen["method"] == "GET"
+    # One byte, so polling costs nothing meaningful.
+    assert seen["range"] == "bytes=0-0"
+
+
+def test_a_signature_that_cannot_answer_disables_the_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treating an unusable channel as a quiet one would hold a paid run open
+    waiting for an answer that can never arrive."""
+
+    import urllib.error
+
+    def _forbidden(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://objects.example/output.zip", 403, "SignatureDoesNotMatch", {}, None
+        )
+
+    monkeypatch.setattr(vpa.urllib.request, "urlopen", _forbidden)
+    probe = vpa._provider_output_probe("https://objects.example/output.zip?signed")
+
+    assert probe is not None
+    with pytest.raises(urllib.error.HTTPError):
+        probe()
+
+
+def test_a_store_having_a_moment_is_asked_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+
+    def _unavailable(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://objects.example/output.zip", 503, "Slow Down", {}, None
+        )
+
+    monkeypatch.setattr(vpa.urllib.request, "urlopen", _unavailable)
+    probe = vpa._provider_output_probe("https://objects.example/output.zip?signed")
+
+    assert probe is not None
+    assert probe() is False
+
+
+def _inventory(rows):
+    def _api(**kwargs):
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": rows}
+        raise AssertionError(f"unexpected Vast API call: {kwargs}")
+
+    return _api
+
+
+def test_another_lane_s_running_instance_does_not_block_this_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Observed live: a concurrent operator sharing the provider account had
+    `blueprint-groot-oscar-canary-...` running, which is not on this lane's
+    frozen allowlist and never will be. Blocking on it leaves only two moves --
+    keep editing the authorization, or tear down an instance we do not own."""
+
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [
+                {
+                    "id": 47588731,
+                    "machine_id": 456,
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "label": "blueprint-groot-oscar-canary-adp-artifixer3d-1786581301",
+                    "dph_total": 1.04,
+                }
+            ]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "foreign",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[],
+        lane_label_prefix="blueprint-adp-retained-render-",
+    )
+
+    assert guard["status"] == "passed"
+    assert guard["blockers"] == []
+    # Recorded and left alone, so it is an observation rather than an omission.
+    assert guard["foreign_active_instance_count"] == 1
+    assert guard["unexpected_active_instance_count"] == 0
+
+
+def test_this_lane_s_own_stray_instance_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The case the guard exists for: a previous attempt of this lane still
+    running and unaccounted for."""
+
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [
+                {
+                    "id": 99,
+                    "machine_id": 1,
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "label": "blueprint-adp-retained-render-1786500000",
+                    "dph_total": 0.4,
+                }
+            ]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "own-stray",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[],
+        lane_label_prefix="blueprint-adp-retained-render-",
+    )
+
+    assert guard["status"] == "blocked"
+    assert "active_vast_instances_detected_before_new_launch" in guard["blockers"]
+    assert guard["foreign_active_instance_count"] == 0
+
+
+def test_an_unlabelled_instance_is_unattributable_and_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It cannot be attributed to another lane either, and unattributable spend
+    immediately before a launch is what this guard is for."""
+
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [{"id": 123, "machine_id": 456, "actual_status": "loading", "cur_state": "running"}]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "unlabelled",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[],
+        lane_label_prefix="blueprint-adp-retained-render-",
+    )
+
+    assert guard["status"] == "blocked"
+
+
+def test_an_allowlisted_instance_is_still_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [
+                {
+                    "id": 47373597,
+                    "machine_id": 1,
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "label": "blueprint-adp-retained-render-old",
+                }
+            ]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "allowlisted",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[47373597],
+        lane_label_prefix="blueprint-adp-retained-render-",
+    )
+
+    assert guard["status"] == "passed"
+
+
+def test_without_a_lane_prefix_the_fleet_wide_rule_stands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lanes that have not adopted labelling keep the stricter behaviour."""
+
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [
+                {
+                    "id": 47588731,
+                    "machine_id": 456,
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "label": "some-other-lane",
+                }
+            ]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "no-prefix",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[],
+    )
+
+    assert guard["status"] == "blocked"
+def test_the_no_progress_watchdog_does_not_end_a_run_it_cannot_measure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"No progress in the logs" measures the workload only when the logs work.
+    A channel that never delivered a byte reports no progress forever, so this
+    watchdog would end a healthy render and name it `no_log_progress_timeout` --
+    blaming the workload for a transport fault."""
+
+    _dead_log_transport(monkeypatch)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(vpa.time, "monotonic", lambda: clock["now"])
+    polls = {"count": 0}
+
+    def _probe() -> bool:
+        polls["count"] += 1
+        # Well past the 60-second no-progress limit before the object lands.
+        clock["now"] += 40.0
+        return polls["count"] >= 6
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "deferred.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=10_000,
+        success_markers=["SUCCESS"],
+        no_progress_seconds=60,
+        log_transport_failure_limit=2,
+        output_probe=_probe,
+    )
+
+    assert result["output_probe_observed"] is True
+    assert result["no_progress_timeout_reached"] is False
+    assert polls["count"] == 6
+
+
+def test_a_readable_log_channel_keeps_its_no_progress_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deferral is only for a channel that never worked; a log channel that
+    delivered bytes and then went quiet is a stalled workload."""
+
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa, "_api_json", lambda **_: (200, {"result_url": "https://logs.example/result"})
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_a, **_k: "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED\n")
+    monkeypatch.setattr(
+        vpa,
+        "_instance_liveness",
+        lambda **_kwargs: {"observed": True, "status": "running", "exited": False, "probe_error": None},
+    )
+    clock = {"now": 0.0}
+    monkeypatch.setattr(vpa.time, "monotonic", lambda: clock["now"])
+
+    def _probe() -> bool:
+        clock["now"] += 40.0
+        return False
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=42,
+        api_key="secret",
+        output_log_path=tmp_path / "stalled.log",
+        secret_values=[],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=10_000,
+        success_markers=["SUCCESS"],
+        no_progress_seconds=60,
+        output_probe=_probe,
+    )
+
+    assert result["log_bytes_ever_read"] is True
+    assert result["no_progress_timeout_reached"] is True

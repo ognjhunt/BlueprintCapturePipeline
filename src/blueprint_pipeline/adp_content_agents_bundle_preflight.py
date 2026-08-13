@@ -22,7 +22,9 @@ from .adp_content_agents_vast import (
     SOURCE_COMMIT,
     SOURCE_TREE,
 )
+from .host_resident_launch_inputs import resolve_host_resident_bundle_receipt
 from .common import ensure_dir, utc_now_iso, write_json
+from .gpu_render_providers import _read_secret as _read_provider_secret
 from .decision_evidence_contracts import canonical_digest
 from .hosted_image_generation_preflight import (
     SCHEMA_VERSION as IMAGE_PREFLIGHT_SCHEMA_VERSION,
@@ -41,7 +43,6 @@ SCHEMA_VERSION = "adp_content_agents_bundle_config_preflight.v2"
 LOCAL_SCHEMA_VERSION = "adp_content_agents_local_bundle_config_preflight.v1"
 STATIC_SCHEMA_VERSION = "adp_content_agents_static_bundle_config_preflight.v1"
 LOCAL_IMAGE = "blueprint/adp009a-content-agents:0.5.2"
-LOCAL_IMAGE_PLATFORM = "linux/arm64"
 # A container build is not bit-reproducible: the base tag moves and uv
 # re-resolves. Pinning one build output made the gate unrepeatable once that
 # image was gone. Each admitted image ID is therefore recorded together with
@@ -60,16 +61,44 @@ LOCAL_IMAGE_RECIPE = {
     "base_image": "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
     "content_agents_source_tree": "d36ddaed4c3ea44ab81c9f8178ab40d2eb0f8fe3",
 }
+# Each admitted image records the platform it was actually built for. A single
+# pinned platform made one machine's architecture the definition of a valid
+# preflight: the reviewed builds are arm64 because they were made on an Apple
+# Silicon workstation, and the control plane a customer's site run goes through
+# is x86_64. The recipe above is architecture-neutral -- a uv base image, a
+# copy, and an install -- so the same reviewed recipe on a different
+# architecture is the same recipe, and is admitted as its own reviewed build
+# rather than by relaxing the check.
 LOCAL_IMAGE_ADMITTED_IDS = {
     # Original reviewed build (2026-08-06 tranche).
-    "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574": (
-        LOCAL_IMAGE_RECIPE
-    ),
+    "sha256:459fc2a13688d198a3c81faecd4e511ac14701d0e284e9a7bdf57587debea574": {
+        **LOCAL_IMAGE_RECIPE,
+        "platform": "linux/arm64",
+    },
     # Rebuild of the same recipe on 2026-08-09 after the first image was gone.
-    "sha256:574b6650842081226da7e63e403e535bd7258aaa83b4f1b805882d067d181703": (
-        LOCAL_IMAGE_RECIPE
-    ),
+    "sha256:574b6650842081226da7e63e403e535bd7258aaa83b4f1b805882d067d181703": {
+        **LOCAL_IMAGE_RECIPE,
+        "platform": "linux/arm64",
+    },
+    # Built on the x86_64 control plane on 2026-08-13, from this same recipe
+    # and the Content Agents source sealed inside the staged bundle, after the
+    # Dockerfile was verified against `dockerfile_sha256` on that host.
+    # Admitted by nijelhunt_1 so a customer's site run does not depend on an
+    # image that exists only on one workstation. No bit-identical reproduction
+    # of the arm64 builds is claimed and none is possible: this is a distinct
+    # reviewed build of the same reviewed recipe.
+    "sha256:f131ddbb2b7103c039547f2764f8052bcf5adcf48ad87d095544ae73b1384d4c": {
+        **LOCAL_IMAGE_RECIPE,
+        "platform": "linux/amd64",
+    },
 }
+
+
+def admitted_image_platform(image_id: str) -> str | None:
+    """The platform an admitted image was built for, or None if unadmitted."""
+
+    recipe = LOCAL_IMAGE_ADMITTED_IDS.get(str(image_id))
+    return str(recipe["platform"]) if recipe else None
 SECRET_ENV_NAMES = ("OPENAI_API_KEY",)
 REQUIRED_MODELS = (CONTENT_LLM_MODEL, CONTENT_IMAGE_MODEL)
 ORCHESTRATOR_REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -151,12 +180,25 @@ def _safe_extract(archive_path: Path, destination: Path) -> None:
 
 
 def _secret() -> str:
+    """Resolve the model-access secret for a service first, a shell second.
+
+    This resolved only the environment and `~/.blueprint-secrets`. Every
+    control-plane unit runs as `blueprint` with `ProtectHome=true` and home
+    `/nonexistent`, so on the deployed host neither path exists and the paid
+    preflight can never prove model access -- the same defect PR #449 fixed for
+    provider keys, in the module that gates this lane's paid admission.
+
+    `_read_secret` already encodes the resolution the units describe:
+    `<NAME>_FILE` first, then the configured secrets directory, and a developer
+    home only when no directory is configured. Reusing it means one answer to
+    "where do secrets live" rather than a third variant of it.
+    """
+
     for name in SECRET_ENV_NAMES:
         value = str(os.getenv(name) or "").strip()
         if value:
             return value
-    path = Path("~/.blueprint-secrets/openai_api_key").expanduser()
-    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    return str(_read_provider_secret("openai_api_key") or "")
 
 
 def _probe_model_access(secret: str, output: Path) -> dict[str, Any]:
@@ -252,7 +294,8 @@ def _admitted_local_image_record(value: Any) -> bool:
     return bool(
         recipe is not None
         and value.get("reference") == LOCAL_IMAGE
-        and value.get("platform") == LOCAL_IMAGE_PLATFORM
+        # The platform this image was admitted for, not one global platform.
+        and value.get("platform") == recipe.get("platform")
         and dict(value.get("recipe") or {}) == dict(recipe)
     )
 
@@ -275,7 +318,7 @@ def _inspect_image(*, docker: str, image: str) -> dict[str, Any]:
     value = dict(values[0])
     platform = f"{value.get('Os')}/{value.get('Architecture')}"
     recipe = LOCAL_IMAGE_ADMITTED_IDS.get(str(value.get("Id")))
-    if recipe is None or platform != LOCAL_IMAGE_PLATFORM:
+    if recipe is None or platform != recipe.get("platform"):
         raise ContentAgentsBundlePreflightError("local_preflight_image_identity_mismatch")
     return {
         "reference": image,
@@ -522,6 +565,24 @@ def _inspect_input_usd_static(bundle_path: Path, target_prim_paths: Sequence[str
         }
 
 
+def _host_resident_receipt(receipt_path: Path) -> dict[str, Any]:
+    """Read a bundle receipt and resolve its archive against this host.
+
+    The receipt records the absolute path of the machine that built the bundle,
+    so reading `bundle_path` straight off it looks for the archive where it was
+    authored. That is the whole reason this preflight could not be regenerated
+    on the control plane: the bundle was staged there, digest-verified, and the
+    receipt still pointed at a workstation.
+
+    A receipt that cannot resolve comes back with its recorded path untouched
+    and a status of `not_host_resident`, which every caller's existing
+    `status != "ready"` check refuses.
+    """
+
+    resolution = resolve_host_resident_bundle_receipt(receipt_path)
+    return dict(resolution["receipt"])
+
+
 def materialize_static_bundle_config_preflight(
     *,
     bundle_receipt_path: str | Path,
@@ -535,7 +596,7 @@ def materialize_static_bundle_config_preflight(
     if output.exists() and any(output.iterdir()):
         raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
     ensure_dir(output)
-    bundle_receipt = _read_json(receipt_path)
+    bundle_receipt = _host_resident_receipt(receipt_path)
     bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
     if (
         bundle_receipt.get("status") != "ready"
@@ -602,7 +663,7 @@ def materialize_bundle_config_preflight(
     if output.exists() and any(output.iterdir()):
         raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
     ensure_dir(output)
-    bundle_receipt = _read_json(receipt_path)
+    bundle_receipt = _host_resident_receipt(receipt_path)
     bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
     if (
         bundle_receipt.get("status") != "ready"
@@ -614,6 +675,9 @@ def materialize_bundle_config_preflight(
         raise ContentAgentsBundlePreflightError("bundle_receipt_binding_invalid")
     config_records = _bundle_config_records(bundle_path)
     image_record = _inspect_image(docker=docker, image=image)
+    # Run the image on the platform it was admitted for. Naming one global
+    # platform meant an admitted amd64 image would still be run as arm64.
+    image_platform = str(image_record["platform"])
     source_identity = _orchestrator_source_identity()
     if require_paid_model_access:
         secret = _secret()
@@ -653,7 +717,7 @@ def materialize_bundle_config_preflight(
                 "run",
                 "--rm",
                 "--platform",
-                LOCAL_IMAGE_PLATFORM,
+                image_platform,
                 *(["--network", "none"] if not require_paid_model_access else []),
                 "-v",
                 f"{expanded}:/bundle",
@@ -710,7 +774,7 @@ def materialize_bundle_config_preflight(
             "run",
                 "--rm",
                 "--platform",
-                LOCAL_IMAGE_PLATFORM,
+                image_platform,
                 *(["--network", "none"] if not require_paid_model_access else []),
                 "-v",
                 f"{expanded}:/bundle",
@@ -765,7 +829,7 @@ def materialize_bundle_config_preflight(
             "run",
                 "--rm",
                 "--platform",
-                LOCAL_IMAGE_PLATFORM,
+                image_platform,
                 *(["--network", "none"] if not require_paid_model_access else []),
                 "-v",
                 f"{expanded}:/bundle",
@@ -882,7 +946,7 @@ def materialize_blocked_local_bundle_config_preflight(
     if output.exists() and any(output.iterdir()):
         raise ContentAgentsBundlePreflightError("preflight_evidence_dir_not_empty")
     ensure_dir(output)
-    bundle_receipt = _read_json(receipt_path)
+    bundle_receipt = _host_resident_receipt(receipt_path)
     bundle_path = Path(str(bundle_receipt.get("bundle_path") or "")).expanduser().resolve()
     if (
         bundle_receipt.get("status") != "ready"

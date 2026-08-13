@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -554,11 +555,46 @@ def test_retained_scene_render_reissue_binds_prior_terminal_spend(
         )
 
 
+def test_egl_graphics_arguments_are_pinned_without_running_node() -> None:
+    """The flag contract, pinned hermetically so CI always enforces it.
+
+    The subprocess test below skips wherever the renderer's dependencies are not
+    installed, which is every CI runner -- so on its own it left this contract
+    unenforced exactly where enforcement matters. This reads the source instead
+    and runs everywhere.
+
+    The flags matter: ``--use-gl=egl`` alone can leave WebGL disabled in
+    headless Chromium even on a container exposing an NVIDIA GPU, and dropping
+    ``--disable-software-rasterizer`` lets a run silently fall back to software
+    and report a render that never touched the GPU.
+    """
+    renderer = Path(__file__).resolve().parents[1] / "tools/splat_render/render_splat.mjs"
+    source = renderer.read_text(encoding="utf-8")
+    egl_block = source.split('if (backend === "egl")', 1)[1].split("return [", 1)[1]
+    egl_block = egl_block.split("]", 1)[0]
+    flags = re.findall(r'"([^"]+)"', egl_block)
+
+    assert flags == [
+        "--use-gl=angle",
+        "--use-angle=gl-egl",
+        "--ignore-gpu-blocklist",
+        "--disable-software-rasterizer",
+        "--enable-webgl",
+    ]
+
+
 def test_egl_renderer_uses_angle_gl_egl_without_software_fallback() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node unavailable")
     renderer = Path(__file__).resolve().parents[1] / "tools/splat_render/render_splat.mjs"
+    # `node_modules` is not committed, so on a runner that never installed them
+    # the renderer exits before printing anything. That is the same class of
+    # environmental absence as a missing `node`, but it was surfacing as a bare
+    # CalledProcessError -- which failed CI on every PR touching this lane and
+    # said nothing about the flags this test exists to pin.
+    if not (renderer.parent / "node_modules").is_dir():
+        pytest.skip("splat renderer dependencies not installed")
     completed = subprocess.run(
         [
             node,
@@ -569,9 +605,14 @@ def test_egl_renderer_uses_angle_gl_egl_without_software_fallback() -> None:
             "--out",
             str(Path.cwd()),
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
+    )
+    # An installed renderer that cannot report its flags is a real regression,
+    # so report what it said rather than raising an opaque subprocess error.
+    assert completed.returncode == 0, (
+        f"renderer exited {completed.returncode}: {completed.stderr.strip()[:500]}"
     )
 
     assert json.loads(completed.stdout) == [
@@ -1137,3 +1178,267 @@ def test_rejects_more_than_five_task_lanes() -> None:
     }
     with pytest.raises(RetainedSceneRenderPacketError, match="task_lane_count_invalid"):
         build_retained_scene_gpu_render_request(request)
+
+
+def test_a_run_inventories_its_evidence_in_the_shared_manifest_schema(
+    tmp_path: Path,
+) -> None:
+    """The profile's terminal contract asks the result for
+    `teardown_manifest_path` and `artifact_manifest_path`. This lane named
+    neither, so every run ended `allocator_terminal_artifact_missing:` for both
+    regardless of what happened on the provider.
+
+    It uses the shared `task_evaluation_artifact_manifest.v1`, not a lane-local
+    schema: `adp009d_live_readiness` and every future consumer validate that
+    one, and a second schema would mean each lane's evidence needed a reader
+    written for it."""
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        SCHEMA_VERSION,
+        build_task_evaluation_artifact_manifest,
+    )
+
+    job = tmp_path / "job"
+    (job / "immutable_execution" / "renders").mkdir(parents=True)
+    (job / "immutable_execution" / "renders" / "front.png").write_bytes(b"frame")
+    provider_run = job / "vast_provider_run"
+    provider_run.mkdir()
+    (provider_run / "vast_provider_adapter_result.json").write_text("{}", encoding="utf-8")
+    (provider_run / "vast_teardown_manifest.json").write_text(
+        '{"continuing_spend_from_this_run": false}', encoding="utf-8"
+    )
+
+    manifest = build_task_evaluation_artifact_manifest(
+        attempt_root=job,
+        artifact_roots={
+            "provider_runtime_evidence": job / "immutable_execution",
+            "allocator_adapter_result": provider_run / "vast_provider_adapter_result.json",
+            "teardown_manifest": provider_run / "vast_teardown_manifest.json",
+        },
+        required_roles=(
+            "provider_runtime_evidence",
+            "allocator_adapter_result",
+            "teardown_manifest",
+        ),
+        binding={"allocator_lane": "adp_retained_scene_render", "retry_cap": 0},
+        output_path=job / "artifact_manifest.json",
+    )
+
+    assert manifest["schema_version"] == SCHEMA_VERSION
+    assert manifest["status"] == "completed"
+    assert manifest["blockers"] == []
+    assert {row["relative_path"] for row in manifest["files"]} == {
+        "immutable_execution/renders/front.png",
+        "vast_provider_run/vast_provider_adapter_result.json",
+        "vast_provider_run/vast_teardown_manifest.json",
+    }
+    # Each file carries the roles it satisfies, so a reader can tell render
+    # evidence from teardown evidence without knowing this lane's layout.
+    roles = {row["relative_path"]: row["roles"] for row in manifest["files"]}
+    assert roles["vast_provider_run/vast_teardown_manifest.json"] == ["teardown_manifest"]
+
+
+def test_a_missing_required_role_blocks_the_manifest(tmp_path: Path) -> None:
+    """Roles state what coverage is required, rather than sweeping whatever
+    happens to be on disk and calling the result complete."""
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        build_task_evaluation_artifact_manifest,
+    )
+
+    job = tmp_path / "job"
+    (job / "immutable_execution").mkdir(parents=True)
+    (job / "immutable_execution" / "result.json").write_text("{}", encoding="utf-8")
+
+    manifest = build_task_evaluation_artifact_manifest(
+        attempt_root=job,
+        artifact_roots={"provider_runtime_evidence": job / "immutable_execution"},
+        required_roles=("provider_runtime_evidence", "teardown_manifest"),
+        binding={"allocator_lane": "adp_retained_scene_render", "retry_cap": 0},
+        output_path=job / "artifact_manifest.json",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "task_evaluation_artifact_role_missing:teardown_manifest" in manifest["blockers"]
+
+
+def _portable_request(
+    *, candidate: str, authority: str, vendor: str, lanes: list[dict[str, object]]
+) -> dict[str, object]:
+    return build_retained_scene_gpu_render_request(
+        {
+            "schema_version": "adp009d_retained_scene_gpu_render_request.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009D",
+            "frozen_before_render_execution": True,
+            "learned_policy_outcomes_accessed": False,
+            "candidate_set_path": candidate,
+            "execution_authority_path": authority,
+            "renderer_vendor_root": vendor,
+            "task_lanes": lanes,
+            "private_upload_policy": {
+                "raw_dataset_bytes_upload": False,
+                "private_derived_upload": True,
+                "provider_training": False,
+                "publication": False,
+                "retention": "bounded_to_goal_then_provider_zero",
+            },
+        }
+    )
+
+
+def _repo_with_internal_inputs(tmp_path: Path) -> Path:
+    """A checkout carrying the authority and the vendored renderer, as the real
+    one does. The scene bytes stay outside it: they are private and large."""
+
+    repo, vendor = _repo(tmp_path)
+    _authority(repo / "docs" / "authority.json")
+    internal_vendor = repo / "tools" / "splat_render" / "node_modules"
+    shutil.copytree(vendor, internal_vendor)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo),
+            "-c", "user.name=fixture",
+            "-c", "user.email=fixture@example.test",
+            "commit", "-m", "inputs",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return repo
+
+
+def test_a_request_naming_relative_inputs_rebuilds_against_a_staged_scene_root(
+    tmp_path: Path,
+) -> None:
+    """The committed v1 request pointed at two deleted /private/tmp directories,
+    so the lane could not be rebuilt anywhere. A relative request says what it
+    needs; the invocation says where."""
+
+    candidate, inputs = _inputs(tmp_path)
+    repo = _repo_with_internal_inputs(tmp_path)
+    lanes = [
+        {
+            "task_id": str(lane["task_id"]),
+            "camera_contract_path": str(
+                Path(str(lane["camera_contract_path"])).relative_to(tmp_path)
+            ),
+        }
+        for lane in inputs["lanes"]
+    ]
+    request_path = tmp_path / "portable_request.json"
+    _write_json(
+        request_path,
+        _portable_request(
+            candidate=str(candidate.relative_to(tmp_path)),
+            authority="docs/authority.json",
+            vendor="tools/splat_render/node_modules",
+            lanes=lanes,
+        ),
+    )
+
+    receipt = build_retained_scene_gpu_render_bundle(
+        request_path=request_path,
+        repo_root=repo,
+        job_dir=tmp_path / "portable_job",
+        scene_input_root=tmp_path,
+    )
+
+    assert receipt["status"] == "ready"
+    assert receipt["blockers"] == []
+    # The staged pair resolves wherever it lands, so the receipt travels with it.
+    assert receipt["bundle_relative_path"] == "adp_retained_scene_gpu_render_bundle.zip"
+    assert receipt["execution_authority"]["relative_path"] == (
+        "provider_runtime/execution_authority.json"
+    )
+    assert receipt["request"]["relative_path"] == "provider_runtime/source_request_manifest.json"
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    assert "provider_runtime/source_request_manifest.json" in names
+    assert "provider_runtime/execution_authority.json" in names
+
+
+def test_a_relative_request_input_cannot_escape_its_roots(tmp_path: Path) -> None:
+    candidate, inputs = _inputs(tmp_path)
+    repo = _repo_with_internal_inputs(tmp_path)
+    request_path = tmp_path / "escaping_request.json"
+    _write_json(
+        request_path,
+        _portable_request(
+            candidate="../" + candidate.relative_to(tmp_path).as_posix(),
+            authority="docs/authority.json",
+            vendor="tools/splat_render/node_modules",
+            lanes=[
+                {
+                    "task_id": str(lane["task_id"]),
+                    "camera_contract_path": str(
+                        Path(str(lane["camera_contract_path"])).relative_to(tmp_path)
+                    ),
+                }
+                for lane in inputs["lanes"]
+            ],
+        ),
+    )
+
+    with pytest.raises(RetainedSceneRenderPacketError, match="candidate_set_missing"):
+        build_retained_scene_gpu_render_bundle(
+            request_path=request_path,
+            repo_root=repo,
+            job_dir=tmp_path / "escaping_job",
+            scene_input_root=tmp_path,
+        )
+
+
+def test_a_relative_scene_input_without_a_scene_root_fails_closed(tmp_path: Path) -> None:
+    candidate, inputs = _inputs(tmp_path)
+    repo = _repo_with_internal_inputs(tmp_path)
+    request_path = tmp_path / "rootless_request.json"
+    _write_json(
+        request_path,
+        _portable_request(
+            candidate=str(candidate.relative_to(tmp_path)),
+            authority="docs/authority.json",
+            vendor="tools/splat_render/node_modules",
+            lanes=[
+                {
+                    "task_id": str(lane["task_id"]),
+                    "camera_contract_path": str(
+                        Path(str(lane["camera_contract_path"])).relative_to(tmp_path)
+                    ),
+                }
+                for lane in inputs["lanes"]
+            ],
+        ),
+    )
+
+    with pytest.raises(RetainedSceneRenderPacketError, match="candidate_set_missing"):
+        build_retained_scene_gpu_render_bundle(
+            request_path=request_path,
+            repo_root=repo,
+            job_dir=tmp_path / "rootless_job",
+        )
+
+
+def test_the_committed_portable_request_resolves_its_repository_inputs() -> None:
+    """The manifest the live lane is rebuilt from must not name a path that
+    exists only on one workstation."""
+
+    checkout = Path(__file__).resolve().parents[1]
+    manifest = json.loads(
+        (
+            checkout
+            / "docs/arm_decision_proof_v1/manifests"
+            / "third_scene_840920_retained_scene_gpu_render_request.v2.json"
+        ).read_text(encoding="utf-8")
+    )
+    request = build_retained_scene_gpu_render_request(manifest)
+
+    assert request["request_digest"] == manifest["request_digest"]
+    for key in ("candidate_set_path", "execution_authority_path", "renderer_vendor_root"):
+        assert not str(manifest[key]).startswith("/"), key
+    for lane in manifest["task_lanes"]:
+        assert not str(lane["camera_contract_path"]).startswith("/")
+    # The repository-side inputs must resolve in this checkout; the scene-side
+    # ones are private bytes staged separately and are not asserted here.
+    assert (checkout / manifest["execution_authority_path"]).is_file()
