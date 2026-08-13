@@ -1798,10 +1798,16 @@ def test_vast_adapter_blocks_paid_launch_when_launch_lock_busy(
     _configure_live_gates(tmp_path, monkeypatch)
     lock_path = tmp_path / "busy-vast-paid-launch.lock"
     monkeypatch.setenv(vpa.VAST_LAUNCH_LOCK_FILE_ENV, str(lock_path))
-    lock_handle = lock_path.open("a+", encoding="utf-8")
-    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    lock_handle.write('{"pid":123,"purpose":"test-holder"}\n')
-    lock_handle.flush()
+    # The lock is an N-slot semaphore, so "busy" means every slot is taken.
+    # Holding one used to be enough; under the authorized concurrency policy a
+    # single held slot is capacity to use, not a refusal.
+    lock_handles = []
+    for slot in vpa.vast_launch_lock_paths(lock_path):
+        handle = slot.open("a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        handle.write('{"pid":123,"purpose":"test-holder"}\n')
+        handle.flush()
+        lock_handles.append(handle)
 
     def fail_if_called(**kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError(f"unexpected Vast API call: {kwargs}")
@@ -1818,8 +1824,9 @@ def test_vast_adapter_blocks_paid_launch_when_launch_lock_busy(
             session_max_live_minutes=None,
         )
     finally:
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-        lock_handle.close()
+        for handle in lock_handles:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
     assert result["status"] == "blocked"
     assert result["reason"] == "vast_paid_launch_lock_blocked"

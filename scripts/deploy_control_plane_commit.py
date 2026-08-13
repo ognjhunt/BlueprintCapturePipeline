@@ -58,6 +58,26 @@ class ControlPlaneDeployError(ValueError):
     """A surface did not reach the requested commit, or cannot say that it did."""
 
 
+def _expanded_slots(lock_paths: Sequence[str]) -> list[Path]:
+    """Every concurrency slot, not just slot 0.
+
+    The launch lock became an N-slot semaphore so lanes stop queueing behind
+    the slowest run. A deploy that held only the historical filename would be
+    exclusive with slot 0 and blind to the rest -- which is worse than the
+    check it replaced, because it would look correct while swapping the release
+    under two live GPUs.
+    """
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+
+    expanded: list[Path] = []
+    for raw in lock_paths:
+        for slot in vast_launch_lock_paths(Path(raw).expanduser()):
+            if slot not in expanded:
+                expanded.append(slot)
+    return expanded
+
+
 @contextlib.contextmanager
 def _holding_paid_launch_locks(lock_paths: Sequence[str]):
     """Hold the provider's own launch lock for the whole deploy.
@@ -82,8 +102,7 @@ def _holding_paid_launch_locks(lock_paths: Sequence[str]):
 
     handles: list[Any] = []
     try:
-        for raw in lock_paths:
-            path = Path(raw).expanduser()
+        for path in _expanded_slots(lock_paths):
             try:
                 handle = path.open("r", encoding="utf-8")
             except FileNotFoundError:
@@ -98,8 +117,10 @@ def _holding_paid_launch_locks(lock_paths: Sequence[str]):
                 handle.seek(0)
                 holder = handle.read(1000)
                 handle.close()
-                for other in handles:
-                    other.close()
+                # Slots already taken are released by the `finally` below.
+                # Closing them here too made the unlock operate on a closed
+                # file, which raises ValueError -- not the OSError the cleanup
+                # suppresses -- so a refusal crashed instead of refusing.
                 raise ControlPlaneDeployError(
                     "deploy_refused_paid_launch_in_flight:" + _holder_summary(holder)
                 ) from None
