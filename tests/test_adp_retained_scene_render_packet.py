@@ -969,3 +969,43 @@ def test_rejects_more_than_five_task_lanes() -> None:
     }
     with pytest.raises(RetainedSceneRenderPacketError, match="task_lane_count_invalid"):
         build_retained_scene_gpu_render_request(request)
+
+
+def test_a_run_names_the_terminal_artifacts_its_own_contract_requires(
+    tmp_path: Path,
+) -> None:
+    """The profile's terminal contract asks the result for
+    `teardown_manifest_path` and `artifact_manifest_path`. This lane named
+    neither, so every run ended `allocator_terminal_artifact_missing:` for both
+    regardless of what happened on the provider -- and a teardown that is not
+    referenced cannot be checked, so provider-zero could never be verified."""
+
+    from blueprint_pipeline.adp_retained_scene_render_vast import (
+        ARTIFACT_MANIFEST_SCHEMA,
+        _write_retained_artifact_manifest,
+    )
+
+    job = tmp_path / "job"
+    (job / "immutable_execution").mkdir(parents=True)
+    (job / "immutable_execution" / "result.json").write_text('{"a":1}', encoding="utf-8")
+    (job / "provider_run").mkdir()
+    (job / "provider_run" / "vast_teardown_manifest.json").write_text(
+        '{"continuing_spend_from_this_run": false}', encoding="utf-8"
+    )
+
+    path = _write_retained_artifact_manifest(job, bundle_sha256="sha256:" + "a" * 64)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+
+    assert path.name == "adp_retained_scene_render_artifact_manifest.json"
+    assert manifest["schema_version"] == ARTIFACT_MANIFEST_SCHEMA
+    assert manifest["artifact_count"] == 2
+    assert {row["relative_path"] for row in manifest["artifacts"]} == {
+        "immutable_execution/result.json",
+        "provider_run/vast_teardown_manifest.json",
+    }
+    assert all(row["sha256"].startswith("sha256:") for row in manifest["artifacts"])
+    # The manifest never lists itself.
+    assert not any(
+        row["relative_path"].endswith("artifact_manifest.json")
+        for row in manifest["artifacts"]
+    )

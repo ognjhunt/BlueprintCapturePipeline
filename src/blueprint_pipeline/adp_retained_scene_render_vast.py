@@ -37,6 +37,7 @@ from .wam_provider_object_store import (
 from .spend_authority_consumption_root import consumption_root
 
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
+ARTIFACT_MANIFEST_SCHEMA = "adp009d_retained_scene_gpu_render_artifact_manifest.v1"
 RESULT_SCHEMA = "adp009d_retained_scene_gpu_render_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_authority.v1"
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
@@ -444,6 +445,50 @@ def _extract_provider_output(
     return result, blockers, relocation
 
 
+def _write_retained_artifact_manifest(job: Path, *, bundle_sha256: str) -> Path:
+    """List every artifact this run retained, with digests.
+
+    ``artifact_storage_required`` is one of the profile's required controls and
+    the terminal contract asks the result for an ``artifact_manifest_path``.
+    This lane never produced one, so the check could only ever report it
+    missing -- the run's own evidence existed on disk and nothing pointed at it.
+
+    Written for a blocked run too. What was retained is exactly what a failed
+    attempt leaves to diagnose from, and a manifest that only appears on success
+    is absent whenever it is most needed.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for path in sorted(job.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.name == "adp_retained_scene_render_artifact_manifest.json":
+            continue
+        rows.append(
+            {
+                "relative_path": path.relative_to(job).as_posix(),
+                "sha256": _sha256(path),
+                "size_bytes": path.stat().st_size,
+            }
+        )
+    manifest = {
+        "schema_version": ARTIFACT_MANIFEST_SCHEMA,
+        "generated_at": utc_now_iso(),
+        "bundle_sha256": bundle_sha256,
+        "artifact_count": len(rows),
+        "artifacts": rows,
+        "raw_secret_values_recorded": False,
+        "claim_boundary": (
+            "This manifest lists the bytes this run retained and their digests. "
+            "It is not proof that a render completed, that a provider was "
+            "released, or that any control passed."
+        ),
+    }
+    path = job / "adp_retained_scene_render_artifact_manifest.json"
+    write_json(path, manifest)
+    return path
+
+
 @contextmanager
 def _authority_environment():
     environment_names = (*_VAST_MUTATION_ENV, _VAST_STALE_OFFER_RETRY_ENV)
@@ -650,6 +695,16 @@ def run_retained_scene_render_vast(
         blockers.append("object_store_provider_zero_not_proven")
     if watchdog_close.get("status") not in {"provider_terminal", "cancelled_no_allocation"}:
         blockers.append("independent_watchdog_not_closed")
+    # The terminal contract asks the result for these two paths, and this lane
+    # named neither. Every run therefore ended
+    # `allocator_terminal_artifact_missing:teardown_manifest_path` and
+    # `:artifact_manifest_path` no matter what happened on the provider -- the
+    # teardown manifest had been written next to the adapter result the whole
+    # time, and nothing pointed at it. A teardown that is not referenced cannot
+    # be checked, so provider-zero could never be verified from this lane.
+    artifact_manifest = _write_retained_artifact_manifest(
+        job, bundle_sha256=str(bundle["bundle_sha256"])
+    )
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA,
         "generated_at": utc_now_iso(),
@@ -657,6 +712,11 @@ def run_retained_scene_render_vast(
         "bundle_sha256": bundle["bundle_sha256"],
         "authorization_consumption": consumption,
         "provider_adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
+        "artifact_manifest_path": str(artifact_manifest),
+        # Null rather than a path that is not there: an unwritten teardown
+        # manifest is the absence of teardown evidence, and naming a
+        # nonexistent file would let a later reader think one was produced.
+        "teardown_manifest_path": str(teardown_path) if teardown_path.is_file() else None,
         "execution_result_path": str(
             job / "immutable_execution/adp009d_retained_scene_gpu_render_result.v1.json"
         ),
