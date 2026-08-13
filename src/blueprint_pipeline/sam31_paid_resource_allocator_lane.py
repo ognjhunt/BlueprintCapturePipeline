@@ -400,6 +400,14 @@ def run_sam31_paid_resource_allocator_lane(
         / "sam31_vast_source_track_canary"
         / "provider_runtime_result.json"
     )
+    normalized_tracks_path = (
+        adapter_path.parent
+        / "sam31_vast_source_track_canary"
+        / "semantic_source_track_import_result.v1.json"
+    )
+    result["source_track_import_result_path"] = (
+        str(normalized_tracks_path) if normalized_tracks_path.is_file() else None
+    )
     result["retry_cap"] = 0
     result["all_staged_objects_absent"] = cleanup.get("all_objects_absent")
     result["watchdog_receipt_path"] = str(
@@ -422,6 +430,7 @@ def run_sam31_paid_resource_allocator_lane(
     result["blockers"] = sorted(set(result.get("blockers") or []))
     extra_artifact_roots = {
         "sam31_runtime_result": runtime_artifact_path,
+        "sam31_normalized_source_tracks": normalized_tracks_path,
         "sam31_source_teardown_receipt": teardown_path,
         "sam31_watchdog_receipt": Path(result["watchdog_receipt_path"]),
         "sam31_object_store_cleanup": Path(result["object_store_cleanup_path"]),

@@ -15,6 +15,10 @@ from PIL import Image
 from .common import read_json_any, sha256_file, write_json
 from .decision_evidence_contracts import canonical_digest
 from .sam31_source_track_provider_stage import run_sam31_source_track_stage
+from .scene_placement.semantic_source_track_import import (
+    RESULT_SCHEMA_VERSION as SOURCE_TRACK_RESULT_SCHEMA_VERSION,
+    import_semantic_source_tracks,
+)
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 
 
@@ -330,8 +334,20 @@ def run_sam31_source_track_canary_worker(
     )
     provider_result = _object(provider_path) if provider_path.is_file() else None
     import_request = _object(import_path) if import_path.is_file() else None
+    normalized_source_tracks = (
+        import_semantic_source_tracks(import_request, provider_result)
+        if isinstance(import_request, Mapping) and isinstance(provider_result, Mapping)
+        else None
+    )
     runtime = _runtime_facts()
     blockers = list(stage.get("blockers") or [])
+    if (
+        not isinstance(normalized_source_tracks, Mapping)
+        or normalized_source_tracks.get("schema_version")
+        != SOURCE_TRACK_RESULT_SCHEMA_VERSION
+        or normalized_source_tracks.get("status") not in {"completed", "abstained"}
+    ):
+        blockers.append("sam31_normalized_source_tracks_invalid")
     if runtime.get("cuda_available") is not True:
         blockers.append("sam31_gpu_cuda_runtime_unavailable")
     status = (
@@ -350,6 +366,7 @@ def run_sam31_source_track_canary_worker(
         "stage_run_result": stage,
         "provider_result": provider_result,
         "source_track_import_request": import_request,
+        "normalized_source_tracks": normalized_source_tracks,
         "blockers": sorted(set(blockers)),
         "source_frame_bytes_returned": False,
         "raw_secret_values_recorded": False,
