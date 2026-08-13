@@ -140,3 +140,20 @@ def test_the_deploy_does_not_move_a_surface_while_refusing(tmp_path: Path, monke
         fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
 
     assert moved == []
+
+
+def test_the_receipt_records_every_slot_it_was_exclusive_with(tmp_path: Path) -> None:
+    """A receipt that under-reports its own guarantee misleads its reader.
+
+    The lock is an N-slot semaphore; recording the single base path the caller
+    named would say "1 lock checked" for a deploy that actually held three.
+    """
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+
+    base = tmp_path / "locks" / "vast_paid_launch.lock"
+    held = deploy._expanded_slots([str(base)])
+
+    assert held == vast_launch_lock_paths(base)
+    assert len(held) > 1, "the semaphore should expand to more than the base path"
+    assert held[0] == base

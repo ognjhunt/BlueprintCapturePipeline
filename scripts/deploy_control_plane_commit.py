@@ -258,7 +258,14 @@ def deploy_control_plane_commit(
         "release_path": release["release_path"],
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
-        "paid_launch_locks_checked": list(paid_launch_locks),
+        # Every slot actually held, not the one base path the caller named.
+        # The lock is an N-slot semaphore, so recording the input would
+        # under-report what this deploy was exclusive with -- and a receipt
+        # that under-reports its own guarantee is the thing a later reader
+        # trusts.
+        "paid_launch_locks_held": [
+            str(path) for path in _expanded_slots(paid_launch_locks)
+        ],
         "provider_mutation_performed": False,
         "raw_secret_values_recorded": False,
         "claim_boundary": (
