@@ -7490,3 +7490,174 @@ def test_the_output_probe_treats_a_not_yet_uploaded_object_as_not_done(
     assert probe() is False
 
     assert vpa._provider_output_probe("") is None
+
+
+def _inventory(rows):
+    def _api(**kwargs):
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": rows}
+        raise AssertionError(f"unexpected Vast API call: {kwargs}")
+
+    return _api
+
+
+def test_another_lane_s_running_instance_does_not_block_this_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Observed live: a concurrent operator sharing the provider account had
+    `blueprint-groot-oscar-canary-...` running, which is not on this lane's
+    frozen allowlist and never will be. Blocking on it leaves only two moves --
+    keep editing the authorization, or tear down an instance we do not own."""
+
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [
+                {
+                    "id": 47588731,
+                    "machine_id": 456,
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "label": "blueprint-groot-oscar-canary-adp-artifixer3d-1786581301",
+                    "dph_total": 1.04,
+                }
+            ]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "foreign",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[],
+        lane_label_prefix="blueprint-adp-retained-render-",
+    )
+
+    assert guard["status"] == "passed"
+    assert guard["blockers"] == []
+    # Recorded and left alone, so it is an observation rather than an omission.
+    assert guard["foreign_active_instance_count"] == 1
+    assert guard["unexpected_active_instance_count"] == 0
+
+
+def test_this_lane_s_own_stray_instance_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The case the guard exists for: a previous attempt of this lane still
+    running and unaccounted for."""
+
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [
+                {
+                    "id": 99,
+                    "machine_id": 1,
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "label": "blueprint-adp-retained-render-1786500000",
+                    "dph_total": 0.4,
+                }
+            ]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "own-stray",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[],
+        lane_label_prefix="blueprint-adp-retained-render-",
+    )
+
+    assert guard["status"] == "blocked"
+    assert "active_vast_instances_detected_before_new_launch" in guard["blockers"]
+    assert guard["foreign_active_instance_count"] == 0
+
+
+def test_an_unlabelled_instance_is_unattributable_and_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It cannot be attributed to another lane either, and unattributable spend
+    immediately before a launch is what this guard is for."""
+
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [{"id": 123, "machine_id": 456, "actual_status": "loading", "cur_state": "running"}]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "unlabelled",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[],
+        lane_label_prefix="blueprint-adp-retained-render-",
+    )
+
+    assert guard["status"] == "blocked"
+
+
+def test_an_allowlisted_instance_is_still_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [
+                {
+                    "id": 47373597,
+                    "machine_id": 1,
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "label": "blueprint-adp-retained-render-old",
+                }
+            ]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "allowlisted",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[47373597],
+        lane_label_prefix="blueprint-adp-retained-render-",
+    )
+
+    assert guard["status"] == "passed"
+
+
+def test_without_a_lane_prefix_the_fleet_wide_rule_stands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lanes that have not adopted labelling keep the stricter behaviour."""
+
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        _inventory(
+            [
+                {
+                    "id": 47588731,
+                    "machine_id": 456,
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "label": "some-other-lane",
+                }
+            ]
+        ),
+    )
+
+    guard = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / "no-prefix",
+        generated_at="2026-08-13T01:00:00Z",
+        api_key="secret",
+        allowed_active_instance_ids=[],
+    )
+
+    assert guard["status"] == "blocked"
