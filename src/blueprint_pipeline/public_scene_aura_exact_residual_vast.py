@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
@@ -994,7 +994,7 @@ def run_aura_exact_residual_vast(
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
     except (OSError, RuntimeError, ValueError) as exc:
-        adapter = {"status": "blocked", "blockers": [f"aura_exact_residual_adapter_failed:{type(exc).__name__}"],
+        adapter = {"status": "blocked", "blockers": [f"aura_exact_residual_adapter_failed:{redacted_failure_detail(exc)}"],
                    "raw_secret_values_recorded": False}
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
@@ -1060,7 +1060,7 @@ def run_aura_exact_residual_vast(
             raw_path = job / "public_scene_aura_exact_residual_raw_result.json"
             write_json(raw_path, raw)
         except (OSError, ValueError, KeyError) as exc:
-            blockers.append(f"aura_exact_residual_raw_result_materialization_failed:{type(exc).__name__}")
+            blockers.append(f"aura_exact_residual_raw_result_materialization_failed:{redacted_failure_detail(exc)}")
     result = {"schema_version": RESULT_SCHEMA_VERSION, "generated_at": utc_now_iso(),
               "status": "completed" if not blockers else "blocked", "bundle_sha256": bundle["bundle_sha256"],
               "preflight_digest": bundle["preflight_digest"], "execution_result_path": str(execution_root / "public_scene_aura_exact_residual_runtime_result.json"),

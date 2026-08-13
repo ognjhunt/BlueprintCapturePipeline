@@ -142,6 +142,25 @@ TEARDOWN_MANIFEST_NAME = "vast_teardown_manifest.json"
 ADAPTER_RESULT_NAME = "vast_provider_adapter_result.json"
 
 
+def _without_absent_teardown(
+    result: Mapping[str, Any], teardown: Path
+) -> dict[str, Any]:
+    """Null a teardown path that names a file nobody wrote."""
+
+    sealed = dict(result)
+    named = str(sealed.get("teardown_manifest_path") or "").strip()
+    if named and not Path(named).is_file():
+        sealed["teardown_manifest_path"] = None
+    elif "teardown_manifest_path" not in sealed and teardown.is_file():
+        # Only fill a field the lane left out when there is real evidence to
+        # name. Introducing a null into a result that never mentioned teardown
+        # would change a dry run's shape for nothing.
+        sealed["teardown_manifest_path"] = str(teardown)
+    elif not sealed.get("teardown_manifest_path") and teardown.is_file():
+        sealed["teardown_manifest_path"] = str(teardown)
+    return sealed
+
+
 def seal_lane_terminal_artifacts(
     result: Mapping[str, Any],
     *,
@@ -172,18 +191,24 @@ def seal_lane_terminal_artifacts(
     root = Path(attempt_root).expanduser().resolve()
     provider_run = root / PROVIDER_RUN_DIRNAME
     evidence = root / PROVIDER_EVIDENCE_DIRNAME
+    teardown = provider_run / TEARDOWN_MANIFEST_NAME
     if not provider_run.is_dir() and not evidence.is_dir():
         # No attempt reached a provider, so there is nothing to inventory. A
         # dry run has no terminal artifacts to seal and must not be made to
         # look like a live one that lost them.
-        return dict(result)
+        #
+        # A teardown path is still corrected. Lanes name theirs unconditionally
+        # as `<provider_run>/vast_teardown_manifest.json`, so a run that failed
+        # before the provider run directory existed reports a path to a file
+        # that was never written -- which reads as teardown evidence that has
+        # gone missing rather than teardown that never happened.
+        return _without_absent_teardown(result, teardown)
     roots: dict[str, str | Path] = {}
     if evidence.is_dir():
         roots["provider_runtime_evidence"] = evidence
     adapter_result = provider_run / ADAPTER_RESULT_NAME
     if adapter_result.is_file():
         roots["allocator_adapter_result"] = adapter_result
-    teardown = provider_run / TEARDOWN_MANIFEST_NAME
     if teardown.is_file():
         roots["teardown_manifest"] = teardown
     if provider_run.is_dir():
@@ -229,12 +254,7 @@ def seal_lane_terminal_artifacts(
         sealed["blockers"] = sorted(set(str(item) for item in blockers))
         sealed["status"] = "blocked"
     sealed["artifact_manifest_path"] = str(destination) if destination.is_file() else None
-    # Null, not a path to a file that is not there: an unwritten teardown
-    # manifest is the absence of teardown evidence, and naming a nonexistent
-    # file invites a later reader to think one was produced.
-    if not sealed.get("teardown_manifest_path"):
-        sealed["teardown_manifest_path"] = str(teardown) if teardown.is_file() else None
-    return sealed
+    return _without_absent_teardown(sealed, teardown)
 
 
 __all__ = [
