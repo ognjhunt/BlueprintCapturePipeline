@@ -13,10 +13,9 @@ import json
 import shutil
 from pathlib import Path
 
-RECEIPT_NAME = "adp_retained_scene_gpu_render_bundle_receipt.json"
-
 import pytest
 
+RECEIPT_NAME = "adp_retained_scene_gpu_render_bundle_receipt.json"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
     "stage_paid_lane_bundle",
