@@ -263,6 +263,33 @@ def materialize_paired_target_native_render_request(
     task_rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     try:
+        replacement_assets: list[dict[str, Any]] = []
+        for task in tasks:
+            if not isinstance(task, Mapping):
+                raise PairedTargetNativeRenderRequestError("paired_target_native_task_invalid")
+            task_id = str(task.get("task_id") or "")
+            asset_id = str(task.get("asset_id") or "")
+            simready_path, simready = _verified_file_record(
+                task.get("simready_usd"),
+                f"paired_target_native_simready_invalid:{task_id}",
+            )
+            if (
+                not task_id
+                or not asset_id
+                or task_id in {row["task_id"] for row in replacement_assets}
+                or asset_id in {row["asset_id"] for row in replacement_assets}
+            ):
+                raise PairedTargetNativeRenderRequestError(
+                    "paired_target_native_replacement_set_invalid"
+                )
+            replacement_assets.append(
+                {
+                    "task_id": task_id,
+                    "asset_id": asset_id,
+                    "simready_usd": simready,
+                    "source_path": simready_path,
+                }
+            )
         for task in tasks:
             if not isinstance(task, Mapping):
                 raise PairedTargetNativeRenderRequestError("paired_target_native_task_invalid")
@@ -274,10 +301,11 @@ def materialize_paired_target_native_render_request(
                 task.get("isaac_nurec_usdz"),
                 f"paired_target_native_appearance_invalid:{task_id}",
             )
-            simready_path, simready = _verified_file_record(
-                task.get("simready_usd"),
-                f"paired_target_native_simready_invalid:{task_id}",
+            active_replacement = next(
+                row for row in replacement_assets if row["task_id"] == task_id
             )
+            simready_path = active_replacement["source_path"]
+            simready = active_replacement["simready_usd"]
             trajectory_path, trajectory = _verified_file_record(
                 task.get("camera_trajectory"),
                 f"paired_target_native_camera_trajectory_invalid:{task_id}",
@@ -304,6 +332,16 @@ def materialize_paired_target_native_render_request(
                     "asset_id": str(task.get("asset_id") or ""),
                     "appearance_usdz": appearance,
                     "simready_usd": simready,
+                    "co_present_replacements": [
+                        {
+                            "task_id": row["task_id"],
+                            "asset_id": row["asset_id"],
+                            "simready_usd": row["simready_usd"],
+                            "task_subject": row["task_id"] == task_id,
+                            "passive_co_present": row["task_id"] != task_id,
+                        }
+                        for row in replacement_assets
+                    ],
                     "collision_scene": collision,
                     "source_camera_trajectory": trajectory,
                     "source_camera_index": camera_index,
@@ -328,6 +366,17 @@ def materialize_paired_target_native_render_request(
                 if path.stat().st_size != record["size_bytes"] or _sha256(path) != record["sha256"]:
                     raise PairedTargetNativeRenderRequestError(
                         f"paired_target_native_source_changed:{task_id}:{code}"
+                    )
+            for row in replacement_assets:
+                source_path = row["source_path"]
+                record = row["simready_usd"]
+                if (
+                    source_path.stat().st_size != record["size_bytes"]
+                    or _sha256(source_path) != record["sha256"]
+                ):
+                    raise PairedTargetNativeRenderRequestError(
+                        "paired_target_native_source_changed:"
+                        f"{task_id}:co_present:{row['asset_id']}"
                     )
 
         result: dict[str, Any] = {

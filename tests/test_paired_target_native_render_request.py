@@ -131,6 +131,13 @@ def test_materializes_two_task_calibrated_requests_without_copying_assets(
     assert not list(output.rglob("*.usdz"))
     assert not list(output.rglob("*.usda"))
     for task in result["tasks"]:
+        assert len(task["co_present_replacements"]) == 2
+        assert sum(row["task_subject"] is True for row in task["co_present_replacements"]) == 1
+        assert (
+            sum(row["passive_co_present"] is True for row in task["co_present_replacements"]) == 1
+        )
+        subject = next(row for row in task["co_present_replacements"] if row["task_subject"])
+        assert subject["task_id"] == task["task_id"]
         spec_path = output / task["fixed_camera_spec"]["relative_path"]
         rows = json.loads(spec_path.read_text())
         assert len(rows) == 8
@@ -156,6 +163,11 @@ def test_scales_to_five_and_rejects_tampered_or_ambiguous_cameras(tmp_path: Path
         output_root=tmp_path / "five",
     )
     assert len(result["tasks"]) == 5
+    assert all(len(task["co_present_replacements"]) == 5 for task in result["tasks"])
+    assert all(
+        sum(row["task_subject"] is True for row in task["co_present_replacements"]) == 1
+        for task in result["tasks"]
+    )
 
     other = tmp_path / "tamper"
     other.mkdir()
