@@ -1556,3 +1556,107 @@ def test_an_unset_terminal_path_field_is_not_recorded_as_the_working_directory(
     for field in ("teardown_manifest_path", "artifact_manifest_path"):
         assert artifacts[field] == {"path": None, "exists": False, "digest": None}
         assert f"allocator_terminal_artifact_missing:{field}" in receipt["blockers"]
+
+
+def test_a_standing_authorization_admits_a_queued_launch_with_no_env_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The queue refused for a missing launch id before `dispatch_launch_request`
+    -- the only place that reads a standing authorization -- was ever called. So
+    every paid run still needed the hand-edited env var the standing
+    authorization exists to replace."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False)
+    profile = _profile(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    state_root = tmp_path / "control-plane" / "state"
+    state_root.mkdir(parents=True)
+    _write(
+        state_root.parent / "standing-authorizations" / f"{profile['profile_id']}.json",
+        _standing_authorization(profile, max_launches=2),
+    )
+    queue_root = tmp_path / "queue"
+    request = _request(profile)
+    _write(queue_root / "pending" / f"{request['launch_id']}-abcd1234.json", request)
+    calls: list[list[str]] = []
+
+    report = process_launch_queue(
+        queue_root=queue_root,
+        profile_dir=profile_dir,
+        state_root=state_root,
+        execute=True,
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert report["processed_count"] == 1
+    assert len(calls) == 1
+    assert "--execute" in calls[0]
+
+
+def test_without_either_authority_the_queue_still_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False)
+    profile = _profile(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    state_root = tmp_path / "control-plane" / "state"
+    state_root.mkdir(parents=True)
+    queue_root = tmp_path / "queue"
+    request = _request(profile)
+    _write(queue_root / "pending" / f"{request['launch_id']}-abcd1234.json", request)
+    calls: list[list[str]] = []
+
+    report = process_launch_queue(
+        queue_root=queue_root,
+        profile_dir=profile_dir,
+        state_root=state_root,
+        execute=True,
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert report["status"] == "blocked"
+    assert report["blockers"] == ["execute_launch_id_required"]
+    assert calls == []
+
+
+def test_an_armed_launch_id_still_scopes_the_window_to_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale armed id silently filtered every newer request out of the queue,
+    which is how a fresh launch sat pending while the dispatcher reported
+    `processed_count: 0`. Scoping is still correct when an id is armed -- it
+    just must not be the only way in."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False)
+    profile = _profile(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    state_root = tmp_path / "control-plane" / "state"
+    state_root.mkdir(parents=True)
+    _write(
+        state_root.parent / "standing-authorizations" / f"{profile['profile_id']}.json",
+        _standing_authorization(profile, max_launches=5),
+    )
+    queue_root = tmp_path / "queue"
+    request = _request(profile)
+    _write(queue_root / "pending" / f"{request['launch_id']}-abcd1234.json", request)
+    calls: list[list[str]] = []
+
+    report = process_launch_queue(
+        queue_root=queue_root,
+        profile_dir=profile_dir,
+        state_root=state_root,
+        execute=True,
+        execute_launch_id="some-other-launch-id",
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert report["processed_count"] == 0
+    assert calls == []

@@ -1130,7 +1130,16 @@ def process_launch_queue(
     pending.mkdir(parents=True, exist_ok=True)
     processing.mkdir(parents=True, exist_ok=True)
     execution_scope_launch_id = str(execute_launch_id or "").strip()
-    if execute and not _is_identifier(execution_scope_launch_id):
+    armed = _is_identifier(execution_scope_launch_id)
+    # A standing per-profile authorization is the other way a paid launch is
+    # admitted. It was unreachable from here: the queue refused for a missing
+    # launch id before `dispatch_launch_request` -- the only place that reads a
+    # standing authorization -- was ever called. So every paid run still needed
+    # the hand-edited env var the standing authorization exists to replace, and
+    # a stale one silently filtered every newer request out of the queue.
+    standing_root = Path(standing_authorization_directory(state_root)).expanduser()
+    standing_present = standing_root.is_dir() and any(standing_root.glob("*.json"))
+    if execute and not armed and not standing_present:
         return {
             "schema_version": QUEUE_RUN_SCHEMA_VERSION,
             "status": "blocked",
@@ -1142,10 +1151,12 @@ def process_launch_queue(
             "automatic_retry_performed": False,
         }
     sources = sorted(pending.glob("*.json"))
-    if execute:
-        # A paid dispatcher activation is deliberately scoped to a single
-        # immutable launch ID.  Do not claim, dry-run, or mutate any other
-        # pending request while the one-shot execution window is armed.
+    if execute and armed:
+        # A paid activation scoped to one immutable launch ID stays scoped to
+        # it: do not claim, dry-run, or mutate any other pending request while
+        # that one-shot window is open. With no ID armed there is no such window
+        # to protect, and `dispatch_launch_request` still refuses any launch its
+        # profile's standing authorization does not admit.
         sources = [
             source
             for source in sources
@@ -1160,7 +1171,7 @@ def process_launch_queue(
                 profile_dir=profile_dir,
                 state_root=state_root,
                 execute=execute,
-                execute_launch_id=execution_scope_launch_id if execute else None,
+                execute_launch_id=execution_scope_launch_id if execute and armed else None,
                 public_catalog_path=public_catalog_path,
                 allocator_runner=allocator_runner,
             )
