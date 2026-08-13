@@ -60,6 +60,8 @@ def _write_zip_file(
     info = zipfile.ZipInfo(archive_path, date_time=(1980, 1, 1, 0, 0, 0))
     info.create_system = 3
     info.external_attr = (source.stat().st_mode & 0xFFFF) << 16
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info._compresslevel = 6
     with source.open("rb") as input_stream, archive.open(info, "w") as output_stream:
         shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
 
