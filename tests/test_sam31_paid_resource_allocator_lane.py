@@ -42,6 +42,26 @@ def _write_private(path: Path, value: str) -> None:
     path.chmod(0o600)
 
 
+class _ReadOnlyProvider:
+    def capacity_preflight(self, _request):
+        return {
+            "status": "available",
+            "selected_offer": {
+                "gpu_name": "L40S",
+                "gpu_ram_mb": 48_000,
+                "on_demand_price_usd_per_hour": 0.5,
+            },
+        }
+
+    def billable_inventory(self, *, name_prefix: str):
+        return {
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+            "name_prefix": name_prefix,
+        }
+
+
 def test_sam31_allocator_lane_routes_exact_private_inputs(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -72,14 +92,27 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
 
     def execute(**kwargs):
         observed["execute"] = kwargs
+        canary_root = Path(kwargs["job_dir"])
+        canary_root.mkdir(parents=True, exist_ok=True)
+        write_json(canary_root / "provider_runtime_result.json", {"status": "passed"})
+        write_json(
+            canary_root / "teardown_receipt.json",
+            {
+                "status": "PASS",
+                "instance_id": "123",
+                "provider_zero_verified": True,
+                "teardown_receipt_digest": "sha256:" + "d" * 64,
+            },
+        )
         return {
             "status": "completed",
+            "instance_id": "123",
             "provider_mutations_performed": 2,
             "provider_zero_verified": True,
             "comparative_policy_ranking_verdict": "thesis_not_supported",
         }
 
-    provider = object()
+    provider = _ReadOnlyProvider()
     started = tmp_path / "watchdog" / "started.txt"
 
     def arm(**_kwargs):
@@ -115,7 +148,15 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
             "signed_url_files_removed": True,
         },
         arm_watchdog=arm,
-        close_watchdog=lambda **_kwargs: {"status": "provider_terminal"},
+        close_watchdog=lambda **kwargs: (
+            write_json(
+                Path(kwargs["job_dir"])
+                / "independent_vast_watchdog"
+                / "groot_oscar_runpod_canary_watchdog.json",
+                {"status": "provider_terminal"},
+            )
+            or {"status": "provider_terminal"}
+        ),
     )
     assert result["status"] == "completed"
     assert observed["prepare"]["execution_adapter_qualified"] is True
@@ -126,6 +167,20 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
     assert result["all_staged_objects_absent"] is True
     assert result["continuing_spend_from_this_run"] is False
     assert result["authorization_consumption"]["status"] == "consumed"
+    assert Path(result["artifact_manifest_path"]).is_file()
+    assert Path(result["teardown_manifest_path"]).is_file()
+    teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())
+    assert teardown["continuing_spend_from_this_run"] is False
+    manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
+    assert manifest["status"] == "completed"
+    assert manifest["binding"]["allocator_lane"] == "semantic_sam31_source_tracks"
+    assert {
+        "allocator_adapter_result",
+        "sam31_runtime_result",
+        "sam31_source_teardown_receipt",
+        "sam31_watchdog_receipt",
+        "teardown_manifest",
+    }.issubset(set(manifest["observed_roles"]))
     assert result["execution_result_digest"] == canonical_digest(
         result, digest_field="execution_result_digest"
     )
@@ -168,7 +223,7 @@ def test_sam31_allocator_lane_refuses_nonprivate_token_before_provider(
             write_json(Path(kwargs["bound_request_out"]), {"bound": True})
             or {"status": "execute_ready", "blockers": []}
         ),
-        provider_factory=lambda _name: (_ for _ in ()).throw(AssertionError("provider accessed")),
+        provider_factory=lambda _name: _ReadOnlyProvider(),
         execute_canary=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("canary executed")),
         arm_watchdog=lambda **_kwargs: (
             {
@@ -183,9 +238,12 @@ def test_sam31_allocator_lane_refuses_nonprivate_token_before_provider(
     assert result["status"] == "blocked"
     assert "sam31_hf_token_file_permissions_not_0600" in result["blockers"]
     assert result["provider_mutations_performed"] == 0
+    assert Path(result["artifact_manifest_path"]).is_file()
+    assert Path(result["teardown_manifest_path"]).is_file()
+    assert result["continuing_spend_from_this_run"] is False
 
 
-def test_sam31_allocator_closes_watchdog_when_preflight_is_unreadable(
+def test_sam31_allocator_closes_watchdog_when_live_capacity_is_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
     args = _args(tmp_path, execute=True)
@@ -193,18 +251,25 @@ def test_sam31_allocator_closes_watchdog_when_preflight_is_unreadable(
     write_json(Path(args.sam31_attempt_authority), {"request_authority_id": "fixture-authority"})
     write_json(Path(args.sam31_input_bundle_receipt), {"receipt": True})
     Path(args.sam31_input_bundle).write_bytes(b"bundle")
-    Path(args.preflight_bundle).write_text("not-json", encoding="utf-8")
     monkeypatch.setattr(
         "blueprint_pipeline.sam31_paid_resource_allocator_lane.validate_sam31_paid_attempt_authority",
         lambda *_args, **_kwargs: {},
     )
     closed: list[bool] = []
     handle = SimpleNamespace(started_instance_id_path=tmp_path / "started.txt")
+
+    class NoCapacity(_ReadOnlyProvider):
+        def capacity_preflight(self, _request):
+            return {"status": "unavailable", "selected_offer": None}
+
     result = run_sam31_paid_resource_allocator_lane(
         args,
         checkout_commit="c" * 40,
-        prepare=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("prepare reached")),
-        provider_factory=lambda _name: (_ for _ in ()).throw(AssertionError("provider reached")),
+        prepare=lambda **_kwargs: {
+            "status": "blocked",
+            "blockers": ["sam31_gpu_provider_api_not_verified"],
+        },
+        provider_factory=lambda _name: NoCapacity(),
         arm_watchdog=lambda **_kwargs: (
             {
                 "watchdog_pid": 123,
@@ -218,7 +283,41 @@ def test_sam31_allocator_closes_watchdog_when_preflight_is_unreadable(
         ),
     )
     assert result["status"] == "blocked"
-    assert result["blockers"] == ["sam31_preflight_bundle_invalid"]
+    assert "sam31_gpu_provider_api_not_verified" in result["blockers"]
+    assert closed == [True]
+
+
+def test_sam31_allocator_closes_watchdog_when_live_preflight_raises(
+    tmp_path: Path, monkeypatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    write_json(Path(args.provider_launch_request), {"request": True})
+    write_json(Path(args.sam31_attempt_authority), {"request_authority_id": "fixture-authority"})
+    write_json(Path(args.sam31_input_bundle_receipt), {"receipt": True})
+    Path(args.sam31_input_bundle).write_bytes(b"bundle")
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.validate_sam31_paid_attempt_authority",
+        lambda *_args, **_kwargs: {},
+    )
+    closed: list[bool] = []
+    handle = SimpleNamespace(started_instance_id_path=tmp_path / "started.txt")
+    result = run_sam31_paid_resource_allocator_lane(
+        args,
+        checkout_commit="c" * 40,
+        provider_factory=lambda _name: (_ for _ in ()).throw(RuntimeError("offline")),
+        arm_watchdog=lambda **_kwargs: (
+            {
+                "watchdog_pid": 123,
+                "watchdog_deadline_epoch": 9_999_999_999,
+                "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
+            },
+            handle,
+        ),
+        close_watchdog_without_allocation=lambda **_kwargs: (
+            closed.append(True) or {"status": "provider_terminal"}
+        ),
+    )
+    assert result["blockers"] == ["sam31_live_preflight_collection_failed"]
     assert closed == [True]
 
 

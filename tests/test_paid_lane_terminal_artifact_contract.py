@@ -37,9 +37,11 @@ PAID_LANE_MODULES = (
     "adp_joint_agent_vast.py",
     "adp_retained_scene_render_vast.py",
     "native_task_arena_vast.py",
+    "paired_target_native_import_vast.py",
     "public_scene_aura_exact_residual_vast.py",
     "public_scene_artifixer3d_vast.py",
     "public_scene_simready_isaac_vast.py",
+    "sam31_paid_resource_allocator_lane.py",
     "simpler_public_vast.py",
 )
 

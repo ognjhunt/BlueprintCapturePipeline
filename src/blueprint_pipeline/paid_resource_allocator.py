@@ -1682,7 +1682,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             required = (
                 "provider_launch_request",
-                "preflight_bundle",
                 "admission_out",
                 "bound_request_out",
                 "adapter_output",
@@ -1697,6 +1696,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "sam31_attempt_authority",
                         "sam31_hf_token_file",
                         "sam31_max_hourly_rate_usd",
+                        "preflight_bundle",
                     )
                     if not getattr(args, name, None)
                 )
