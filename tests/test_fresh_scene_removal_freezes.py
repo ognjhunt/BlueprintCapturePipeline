@@ -14,6 +14,10 @@ from blueprint_pipeline.fresh_scene_removal_freezes import (
     FreshSceneRemovalFreezeError,
     materialize_fresh_scene_removal_freezes,
 )
+from blueprint_pipeline.public_scene_segment_contribution_cutout import (
+    SWEEP_KIND,
+    materialize_segment_contribution_sweep_freeze,
+)
 
 from tests.test_adp009d_gaussian_excision_audit import POLICY, _camera, _splat
 from tests.test_public_scene_calibrated_object_masks import _task
@@ -202,3 +206,31 @@ def test_rejects_mask_bytes_changed_after_review(tmp_path: Path) -> None:
         materialize_fresh_scene_removal_freezes(
             request=fixture["request"], output_root=tmp_path / "output"
         )
+
+
+def test_segment_sweep_uses_all_frozen_cameras(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    result = materialize_fresh_scene_removal_freezes(
+        request=fixture["request"], output_root=tmp_path / "output"
+    )
+    sweep_record = result["tasks"][0]["segment_sweep_freeze"]
+    sweep_path = tmp_path / "output" / sweep_record["relative_path"]
+    sweep = json.loads(sweep_path.read_text())
+
+    assert sweep["camera_split"]["camera_count"] == 5
+    assert sweep["camera_split"]["calibration_camera_count"] == 5
+    assert sweep["camera_split"]["heldout_camera_count"] == 0
+    assert sweep["camera_split"]["method"] == "all_frozen_segment_views.v1"
+    assert sweep["segment_contribution_sweep"]["kind"] == SWEEP_KIND
+    assert sweep["learned_policy_outcomes_observed"] is False
+
+    replay_root = tmp_path / "replayed-sweep"
+    replay = materialize_segment_contribution_sweep_freeze(
+        excision_freeze_path=(
+            tmp_path
+            / "output"
+            / result["tasks"][0]["excision_freeze"]["relative_path"]
+        ),
+        output_root=replay_root,
+    )
+    assert replay == sweep
