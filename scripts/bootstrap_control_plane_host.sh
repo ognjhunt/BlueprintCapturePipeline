@@ -47,7 +47,12 @@ if [[ "${SKIP_APT}" != "true" ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   # git/python build the checkout and venv; libgl1 and libglib2.0-0 are what
-  # OpenCV needs on a headless server image.
+  # OpenCV needs on a headless server image. docker.io is what the Content
+  # Agents config preflight shells out to: that preflight is a
+  # network-disabled dry run of the agent configs, and it must run where the
+  # bundle it describes is going to run. Without it the lane can be staged,
+  # profiled, and published, and is then refused at the paid boundary for
+  # evidence that only exists on somebody's workstation.
   apt-get install -y -qq \
     git \
     python3-venv \
@@ -55,8 +60,10 @@ if [[ "${SKIP_APT}" != "true" ]]; then
     build-essential \
     curl \
     ca-certificates \
+    docker.io \
     libgl1 \
     libglib2.0-0
+  systemctl enable --now docker >/dev/null 2>&1 || true
   # Caddy terminates TLS for the public hostname. The intake service binds
   # 127.0.0.1 only, so without an edge the control plane is unreachable.
   if ! command -v caddy >/dev/null 2>&1; then
