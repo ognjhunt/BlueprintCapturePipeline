@@ -650,6 +650,27 @@ def test_runtime_preserves_five_copresent_replacements_and_one_subject() -> None
     }
 
 
+def test_digest_bound_replacement_asset_id_may_begin_with_scene_number() -> None:
+    fixture = _five_replacement_fixture()
+    asset = next(
+        row
+        for row in fixture["assets"]
+        if row.get("asset_id") == "replacement_0"
+    )
+    asset["asset_id"] = "840920_replacement_0"
+    fixture["task_spec"]["subject_asset_id"] = asset["asset_id"]
+    fixture["construction_bindings"]["bindings"][0]["asset_id"] = asset["asset_id"]
+    fixture["construction_bindings"]["construction_digest"] = canonical_digest(
+        fixture["construction_bindings"], digest_field="construction_digest"
+    )
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    subject = next(row for row in contract["objects"] if row["task_subject"])
+    assert subject["asset_id"] == "840920_replacement_0"
+    assert subject["runtime_name"] == "task_object"
+
+
 def test_runtime_accepts_single_repeatable_replacement_with_construction_binding() -> None:
     fixture = _five_replacement_fixture()
     fixture["assets"] = [

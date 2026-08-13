@@ -219,7 +219,6 @@ def _asset_rows(
             any(
                 not asset_id
                 or not asset_id.replace("_", "a").isalnum()
-                or asset_id[0].isdigit()
                 for asset_id in replacement_ids
             )
             or len(replacement_ids) != len(set(replacement_ids))
