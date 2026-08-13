@@ -18,7 +18,10 @@ from typing import Any, Mapping, Sequence
 import yaml
 from pxr import Usd, UsdGeom, UsdPhysics
 
-from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .task_evaluation_artifact_manifest import (
+    seal_lane_terminal_artifacts,
+    seal_unallocated_provider_teardown,
+)
 from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .gpu_render_providers import _read_secret as _read_provider_secret
 from .adp_content_agents_bundle_matrix import (
@@ -2102,6 +2105,13 @@ def run_content_agents_vast(
             "blockers": [f"adp_content_agents_vast_adapter_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
         }
+        # The adapter may never have been entered -- resolving a secret or a
+        # staged URL raises before it. Record the absence of any allocation so
+        # the run can close; the sealer declines whenever the evidence does not
+        # support that claim.
+        seal_unallocated_provider_teardown(
+            provider_run, reason="adp_content_agents_vast_adapter_failed"
+        )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     extracted = _extract(output_zip, job / "immutable_execution")

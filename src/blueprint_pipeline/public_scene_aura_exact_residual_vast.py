@@ -18,7 +18,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
-from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .task_evaluation_artifact_manifest import (
+    seal_lane_terminal_artifacts,
+    seal_unallocated_provider_teardown,
+)
 from .common import ensure_dir, utc_now_iso, write_json, redacted_failure_detail
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import (
@@ -996,6 +999,13 @@ def run_aura_exact_residual_vast(
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {"status": "blocked", "blockers": [f"aura_exact_residual_adapter_failed:{redacted_failure_detail(exc)}"],
                    "raw_secret_values_recorded": False}
+        # The adapter may never have been entered -- resolving a secret or a
+        # staged URL raises before it. Record the absence of any allocation so
+        # the run can close; the sealer declines whenever the evidence does not
+        # support that claim.
+        seal_unallocated_provider_teardown(
+            provider_run, reason="aura_exact_residual_adapter_failed"
+        )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     teardown_path = provider_run / "vast_teardown_manifest.json"

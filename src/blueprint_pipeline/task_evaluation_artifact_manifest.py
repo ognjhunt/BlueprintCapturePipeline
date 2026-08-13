@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
+from .common import utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -159,6 +159,77 @@ def _without_absent_teardown(
     elif not sealed.get("teardown_manifest_path") and teardown.is_file():
         sealed["teardown_manifest_path"] = str(teardown)
     return sealed
+
+
+#: The teardown status a lane writes when it never obtained a provider
+#: resource. The provider adapter already uses this prefix for its own early
+#: exits (`not_required_blueprint_bundle_preflight_blocked` and siblings), so
+#: this stays one vocabulary rather than two.
+UNALLOCATED_TEARDOWN_STATUS = "not_required_provider_adapter_never_invoked"
+
+
+def seal_unallocated_provider_teardown(
+    provider_run: str | Path,
+    *,
+    reason: str,
+    generated_at: str | None = None,
+) -> Path | None:
+    """Record that nothing was allocated, when the lane failed before allocating.
+
+    A lane that raises before it enters its provider adapter -- resolving a
+    credential, reading a staged URL -- writes no teardown manifest at all,
+    because from its own point of view no teardown happened. The launch then
+    sits at `provider_zero_pending` forever waiting on a manifest that will
+    never be written for a resource that was never obtained, and the reconciler
+    fails on every sweep after that. A provider-zero signal that is permanently
+    red is not a strict one; it is one nobody can read, which is worse than
+    useless on the day something really does leak.
+
+    This refuses to be the thing that lies. It writes only when the run's own
+    evidence shows no resource was obtained:
+
+    * an existing teardown manifest is left exactly as it is -- if the adapter
+      wrote one, that one is the truth;
+    * an adapter result naming any instance id means an instance existed, and a
+      real teardown is the only acceptable closure. The launch stays pending,
+      which is the correct outcome.
+
+    Returns the path written, or None when it declined -- never raises, because
+    a lane is already failing when it calls this.
+    """
+
+    run = Path(provider_run).expanduser()
+    teardown = run / TEARDOWN_MANIFEST_NAME
+    try:
+        if teardown.exists():
+            return None
+        adapter = run / ADAPTER_RESULT_NAME
+        if adapter.is_file():
+            recorded = json.loads(adapter.read_text(encoding="utf-8"))
+            if not isinstance(recorded, Mapping):
+                return None
+            for field in ("vast_instance_ids", "instance_ids"):
+                if recorded.get(field):
+                    return None
+        run.mkdir(parents=True, exist_ok=True)
+        write_json(
+            teardown,
+            {
+                "schema_version": "vast_teardown_manifest.v1",
+                "generated_at": generated_at or utc_now_iso(),
+                "status": UNALLOCATED_TEARDOWN_STATUS,
+                "vast_instance_ids": [],
+                "teardown_actions_performed": [],
+                "continuing_spend_from_this_run": False,
+                "zero_continuing_spend_scope": (
+                    "The lane failed before entering the provider adapter, so no "
+                    "provider resource was ever requested: " + str(reason)
+                ),
+            },
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return teardown
 
 
 def seal_lane_terminal_artifacts(
