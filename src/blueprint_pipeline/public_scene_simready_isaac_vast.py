@@ -655,7 +655,11 @@ def run_simready_isaac_vast(
     # `allocator_terminal_artifact_missing:` whatever happened on the provider.
     result = seal_lane_terminal_artifacts(
         result,
-        attempt_root=job,
+        # The provider run lives under this attempt, not under the job root:
+        # this lane numbers its attempts. Sealing the job root found nothing
+        # and said nothing, so the first live run reported `completed` with a
+        # torn-down instance and no terminal artifacts.
+        attempt_root=attempt_root,
         lane="public_scene_simready_isaac",
         binding={"provider": "vast"},
     )

@@ -349,3 +349,93 @@ def test_no_module_resolves_a_credential_only_from_a_developer_home() -> None:
         "these resolve a credential only from a developer home, which is "
         f"unreadable under ProtectHome=true: {home_only}"
     )
+
+
+def test_a_lane_that_reached_a_provider_cannot_seal_an_empty_root(tmp_path) -> None:
+    """The defect the first live SimReady run exposed.
+
+    It rented a GPU, ran the probe, tore the instance down with a 200 from the
+    provider API, and reported `completed` with `blockers: []` -- while its own
+    terminal contract went unmet, because it sealed the job root and its
+    provider run lives under `attempts/attempt_001/`. The sealer found nothing
+    and said nothing.
+    """
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        seal_lane_terminal_artifacts,
+    )
+
+    sealed = seal_lane_terminal_artifacts(
+        {"status": "completed", "blockers": [], "estimated_cost_usd": 0.065277},
+        attempt_root=tmp_path,
+        lane="contract_probe",
+    )
+
+    assert sealed["status"] == "blocked"
+    assert any(
+        item.startswith("terminal_artifacts_not_found_under_attempt_root:")
+        for item in sealed["blockers"]
+    )
+
+
+def test_a_dry_run_that_never_reached_a_provider_still_seals_quietly(tmp_path) -> None:
+    """A dry run has nothing to inventory and must not look like a lost one."""
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        seal_lane_terminal_artifacts,
+    )
+
+    sealed = seal_lane_terminal_artifacts(
+        {"status": "dry_run_ready", "blockers": [], "estimated_cost_usd": None},
+        attempt_root=tmp_path,
+        lane="contract_probe",
+    )
+
+    assert sealed["status"] == "dry_run_ready"
+    assert sealed["blockers"] == []
+
+
+def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
+    """Calling the sealer is not enough; it has to be pointed at the evidence.
+
+    Rediscovered from source: whatever expression a lane builds
+    `<root>/vast_provider_run` from is the expression it must pass as
+    `attempt_root`.
+    """
+
+    mismatched: list[str] = []
+    for module in PAID_LANE_MODULES:
+        path = SOURCE_ROOT / module
+        source = path.read_text(encoding="utf-8")
+        if "seal_lane_terminal_artifacts(" not in source:
+            continue
+        tree = ast.parse(source)
+        provider_roots = {
+            ast.unparse(node.value.left)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == "provider_run" for t in node.targets)
+            and isinstance(node.value, ast.BinOp)
+            and isinstance(node.value.right, ast.Constant)
+            and node.value.right.value == "vast_provider_run"
+        }
+        if not provider_roots:
+            continue
+        sealed_roots = {
+            ast.unparse(keyword.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "seal_lane_terminal_artifacts"
+            for keyword in node.keywords
+            if keyword.arg == "attempt_root"
+        }
+        if sealed_roots and not (sealed_roots & provider_roots):
+            mismatched.append(
+                f"{module}: seals {sorted(sealed_roots)} but its provider run is "
+                f"under {sorted(provider_roots)}"
+            )
+
+    assert not mismatched, (
+        "these seal a root their terminal evidence is not under, so they report "
+        f"a terminal status their artifacts do not support: {mismatched}"
+    )
