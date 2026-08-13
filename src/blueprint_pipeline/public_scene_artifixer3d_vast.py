@@ -18,6 +18,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import struct
 import zipfile
 from typing import Any
 
@@ -55,6 +56,9 @@ PROBE_KIND = "adp-artifixer3d-exact-support"
 PROVIDER_BUNDLE_KIND = "adp_artifixer3d"
 RESULT_SCHEMA_VERSION = "public_scene_artifixer3d_vast_run.v1"
 RAW_RESULT_SCHEMA_VERSION = "public_scene_artifixer3d_raw_result.v1"
+NATIVE_APPEARANCE_EXPORT_SCHEMA = (
+    "public_scene_artifixer3d_native_appearance_export.v1"
+)
 PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION = (
     "public_scene_artifixer3d_paid_attempt_authority.v1"
 )
@@ -1556,6 +1560,50 @@ def _local_runtime_path(root: Path, provider_path: Any, *, code: str) -> Path:
     return path
 
 
+def _validate_native_usdz_archive(
+    path: Path, archive_contract: Mapping[str, Any]
+) -> None:
+    expected = archive_contract.get("members")
+    if not isinstance(expected, list):
+        raise ValueError("artifixer3d_runtime_native_appearance_invalid")
+    observed: list[dict[str, Any]] = []
+    try:
+        with path.open("rb") as handle, zipfile.ZipFile(path, "r") as archive:
+            infos = archive.infolist()
+            if [info.filename for info in infos] != [
+                "default.usda",
+                "repaired_scene.nurec",
+                "gauss.usda",
+            ]:
+                raise ValueError
+            for info in infos:
+                handle.seek(info.header_offset)
+                header = handle.read(30)
+                if len(header) != 30:
+                    raise ValueError
+                fields = struct.unpack("<IHHHHHIIIHH", header)
+                data_offset = info.header_offset + 30 + fields[-2] + fields[-1]
+                body = archive.read(info)
+                if (
+                    info.compress_type != zipfile.ZIP_STORED
+                    or data_offset % 64
+                    or len(body) != info.file_size
+                ):
+                    raise ValueError
+                observed.append(
+                    {
+                        "filename": info.filename,
+                        "size_bytes": info.file_size,
+                        "data_offset_bytes": data_offset,
+                        "sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+                    }
+                )
+    except (OSError, ValueError, zipfile.BadZipFile, struct.error) as exc:
+        raise ValueError("artifixer3d_runtime_native_appearance_invalid") from exc
+    if observed != expected:
+        raise ValueError("artifixer3d_runtime_native_appearance_invalid")
+
+
 def _materialize_raw_result(
     *,
     execution: Mapping[str, Any],
@@ -1682,7 +1730,32 @@ def _materialize_raw_result(
                 ):
                     raise ValueError("artifixer3d_runtime_native_appearance_invalid")
                 exports[field] = _record(export)
+            archive_contract = native_appearance_record.get(
+                "isaac_nurec_usdz_archive_contract"
+            )
+            if (
+                not isinstance(archive_contract, Mapping)
+                or archive_contract.get("compression") != "stored"
+                or archive_contract.get("payload_alignment_bytes") != 64
+                or archive_contract.get("all_payload_offsets_aligned") is not True
+                or not isinstance(archive_contract.get("members"), list)
+                or len(archive_contract["members"]) != 3
+            ):
+                raise ValueError("artifixer3d_runtime_native_appearance_invalid")
+            if (
+                native_appearance_record.get("schema_version")
+                != NATIVE_APPEARANCE_EXPORT_SCHEMA
+                or native_appearance_record.get("export_digest")
+                != canonical_digest(
+                    native_appearance_record, digest_field="export_digest"
+                )
+            ):
+                raise ValueError("artifixer3d_runtime_native_appearance_invalid")
+            _validate_native_usdz_archive(
+                Path(exports["isaac_nurec_usdz"]["path"]), archive_contract
+            )
             native_appearance = {
+                "schema_version": native_appearance_record["schema_version"],
                 "status": native_appearance_record["status"],
                 "source_checkpoint": {
                     "size_bytes": source_checkpoint["size_bytes"],
@@ -1691,11 +1764,13 @@ def _materialize_raw_result(
                 "gaussian_count": native_appearance_record.get("gaussian_count"),
                 "coordinate_contract": dict(coordinate),
                 **exports,
+                "isaac_nurec_usdz_archive_contract": dict(archive_contract),
                 "usdz_tensor_precision": native_appearance_record.get(
                     "usdz_tensor_precision"
                 ),
                 "generated_output_is_capture_or_physical_evidence": False,
                 "native_import_qualified": False,
+                "source_export_digest": native_appearance_record["export_digest"],
             }
         checkpoint: Path | None = None
         reused_checkpoint_record: dict[str, Any] | None = None

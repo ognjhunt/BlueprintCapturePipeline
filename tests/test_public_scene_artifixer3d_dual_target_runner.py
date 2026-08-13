@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import sys
 from types import ModuleType, SimpleNamespace
+import zipfile
 
 import pytest
 from PIL import Image
@@ -414,7 +415,10 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
             assert model.get_n_active_features() == 3
             assert dataset is None and conf is config
             assert conf.export_usdz.apply_normalizing_transform is False
-            output.write_bytes(b"usdz")
+            with zipfile.ZipFile(output, "w") as archive:
+                archive.writestr("default.usda", b"default")
+                archive.writestr("repaired_scene.nurec", b"nurec")
+                archive.writestr("gauss.usda", b"gauss")
 
     ply_module.PLYExporter = PLYExporter
     usdz_module.USDZExporter = USDZExporter
@@ -450,7 +454,19 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
         ),
     }
     assert Path(result["standard_gaussian_ply"]["path"]).read_bytes() == b"ply"
-    assert Path(result["isaac_nurec_usdz"]["path"]).read_bytes() == b"usdz"
+    assert result["isaac_nurec_usdz_archive_contract"][
+        "all_payload_offsets_aligned"
+    ] is True
+    assert all(
+        row["data_offset_bytes"] % 64 == 0
+        for row in result["isaac_nurec_usdz_archive_contract"]["members"]
+    )
+    with zipfile.ZipFile(result["isaac_nurec_usdz"]["path"]) as archive:
+        assert archive.namelist() == [
+            "default.usda",
+            "repaired_scene.nurec",
+            "gauss.usda",
+        ]
     assert result["native_import_qualified"] is False
 
 

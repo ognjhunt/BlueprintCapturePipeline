@@ -10,10 +10,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import time
 from typing import Any, Mapping, Sequence
+import zipfile
 
 
 MANIFEST_SCHEMA = "public_scene_artifixer3d_bundle.v1"
@@ -28,6 +30,9 @@ DUAL_TARGET_INPUT_FILENAME = f"{DUAL_TARGET_INPUT_SCHEMA}.json"
 DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
 DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE = "dual_target_artifixer3d_render_only"
 CHECKPOINT_REUSE_SCHEMA = "public_scene_artifixer3d_checkpoint_reuse.v1"
+NATIVE_APPEARANCE_EXPORT_SCHEMA = (
+    "public_scene_artifixer3d_native_appearance_export.v1"
+)
 DUAL_TARGET_PHASES = [
     "dual_target_input_validation",
     "artifixer3d_distillation",
@@ -880,12 +885,14 @@ def _export_checkpoint_native_appearance(
     usdz_path = output_root / "repaired_scene.usdz"
     PLYExporter().export(model, ply_path, dataset=None, conf=config)
     USDZExporter().export(model, usdz_path, dataset=None, conf=config)
+    usdz_members = _align_and_validate_usdz(usdz_path)
     if any(
         path.is_symlink() or not path.is_file() or path.stat().st_size <= 0
         for path in (ply_path, usdz_path)
     ):
         raise ValueError("artifixer3d_native_export_output_invalid")
     result = {
+        "schema_version": NATIVE_APPEARANCE_EXPORT_SCHEMA,
         "status": "native_appearance_candidates_exported_pending_native_import_and_multiview_review",
         "source_checkpoint": _file_record(checkpoint),
         "gaussian_count": int(model.positions.shape[0]),
@@ -910,12 +917,89 @@ def _export_checkpoint_native_appearance(
         },
         "standard_gaussian_ply": _file_record(ply_path),
         "isaac_nurec_usdz": _file_record(usdz_path),
+        "isaac_nurec_usdz_archive_contract": {
+            "compression": "stored",
+            "payload_alignment_bytes": 64,
+            "all_payload_offsets_aligned": True,
+            "members": usdz_members,
+        },
         "usdz_tensor_precision": "float16_pinned_upstream_exporter",
         "generated_output_is_capture_or_physical_evidence": False,
         "native_import_qualified": False,
     }
+    result["export_digest"] = _canonical_digest(result, "export_digest")
     del checkpoint_value
     return result
+
+
+def _align_and_validate_usdz(path: Path) -> list[dict[str, Any]]:
+    """Repack a USDZ with stored, 64-byte-aligned member payloads."""
+
+    try:
+        with zipfile.ZipFile(path, "r") as source:
+            infos = source.infolist()
+            names = [info.filename for info in infos]
+            if (
+                not infos
+                or len(names) != len(set(names))
+                or any(info.is_dir() or info.flag_bits & 0x1 for info in infos)
+            ):
+                raise ValueError
+            members = [(info.filename, source.read(info)) for info in infos]
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise ValueError("artifixer3d_native_export_usdz_invalid") from exc
+    temporary = path.with_name(path.name + ".aligned.tmp")
+    if temporary.exists() or temporary.is_symlink():
+        raise ValueError("artifixer3d_native_export_usdz_temporary_exists")
+    try:
+        with temporary.open("wb") as handle:
+            with zipfile.ZipFile(
+                handle,
+                "w",
+                compression=zipfile.ZIP_STORED,
+                allowZip64=True,
+            ) as archive:
+                for name, body in members:
+                    info = zipfile.ZipInfo(name)
+                    info.compress_type = zipfile.ZIP_STORED
+                    header_size = 30 + len(name.encode("utf-8"))
+                    padding = (-(handle.tell() + header_size)) % 64
+                    if padding:
+                        if padding < 4:
+                            padding += 64
+                        info.extra = (
+                            struct.pack("<HH", 0x1986, padding - 4)
+                            + b"\0" * (padding - 4)
+                        )
+                    archive.writestr(info, body)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open("rb") as handle, zipfile.ZipFile(path, "r") as archive:
+            for info in archive.infolist():
+                handle.seek(info.header_offset)
+                header = handle.read(30)
+                if len(header) != 30:
+                    raise ValueError
+                fields = struct.unpack("<IHHHHHIIIHH", header)
+                data_offset = info.header_offset + 30 + fields[-2] + fields[-1]
+                if info.compress_type != zipfile.ZIP_STORED or data_offset % 64:
+                    raise ValueError
+                rows.append(
+                    {
+                        "filename": info.filename,
+                        "size_bytes": info.file_size,
+                        "data_offset_bytes": data_offset,
+                        "sha256": "sha256:"
+                        + hashlib.sha256(archive.read(info)).hexdigest(),
+                    }
+                )
+    except (OSError, ValueError, zipfile.BadZipFile, struct.error) as exc:
+        raise ValueError("artifixer3d_native_export_usdz_alignment_invalid") from exc
+    return rows
 
 
 def _hydra_value(value: Any) -> str:
