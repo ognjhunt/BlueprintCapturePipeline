@@ -208,6 +208,7 @@ def test_runtime_identity_drop_in_is_atomic_and_contains_no_credentials(
     )
     assert f"BLUEPRINT_SOURCE_COMMIT={'b' * 40}" in env_content
     assert f"BLUEPRINT_PIPELINE_REPO={tmp_path / 'repo'}" in env_content
+    assert f"PYTHONPATH={tmp_path / 'repo' / 'src'}" in env_content
     # Environment= loses to the base unit's EnvironmentFile= regardless of
     # drop-in order.  The regression is specifically that this must be a later
     # EnvironmentFile, not merely a later Environment directive.
@@ -217,6 +218,7 @@ def test_runtime_identity_drop_in_is_atomic_and_contains_no_credentials(
     assert drop_in.stat().st_mode & 0o777 == 0o644
     assert identity_env.stat().st_mode & 0o777 == 0o644
     assert receipt["identity_environment_file"] == str(identity_env)
+    assert receipt["pythonpath"] == str(tmp_path / "repo" / "src")
     assert receipt["credential_environment_file_opened"] is False
     assert receipt["credential_values_recorded"] is False
 

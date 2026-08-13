@@ -241,7 +241,8 @@ def _install_intake_runtime_identity_drop_in(
     first production version of this deploy guard therefore restarted the
     service while the archived checkout named in the credential env file still
     won.  Load a second, identity-only env file last so it overrides those two
-    non-secret keys while leaving every credential in the original file alone.
+    non-secret identity and import-path keys while leaving every credential in
+    the original file alone.
     """
 
     if drop_in.is_symlink():
@@ -264,6 +265,7 @@ def _install_intake_runtime_identity_drop_in(
         "# Contains deployment identity only; no credentials.\n"
         f"BLUEPRINT_PIPELINE_REPO={source_repo}\n"
         f"BLUEPRINT_SOURCE_COMMIT={source_commit}\n"
+        f"PYTHONPATH={source_repo / 'src'}\n"
     )
     drop_in_content = (
         "# Managed by scripts/deploy_control_plane_commit.py.\n"
@@ -313,6 +315,7 @@ def _install_intake_runtime_identity_drop_in(
         "identity_environment_file": str(identity_env),
         "source_repo": str(source_repo),
         "source_commit": source_commit,
+        "pythonpath": str(source_repo / "src"),
         "credential_environment_file_opened": False,
         "credential_values_recorded": False,
     }
