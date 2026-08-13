@@ -222,6 +222,7 @@ _LOCAL_SEALED_RETAINED = (
 
 
 @pytest.mark.slow
+@pytest.mark.external_data
 @pytest.mark.skipif(
     not _LOCAL_SEALED_RETAINED.is_file(),
     reason="840796 sealed retained scene not present locally",
@@ -279,6 +280,7 @@ def test_840796_payload_is_byte_identical_to_the_sealed_retained_scene(
 
 
 @pytest.mark.slow
+@pytest.mark.external_data
 @pytest.mark.skipif(
     not _LOCAL_SEALED_RETAINED.is_file(),
     reason="840796 sealed retained scene not present locally",

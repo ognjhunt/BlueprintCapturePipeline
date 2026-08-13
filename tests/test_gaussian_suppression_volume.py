@@ -362,6 +362,7 @@ _LOCAL_SEALED = (
 
 
 @pytest.mark.slow
+@pytest.mark.external_data
 @pytest.mark.skipif(
     not _LOCAL_SCAN.is_file(), reason="840796 canonical scan not present locally"
 )
