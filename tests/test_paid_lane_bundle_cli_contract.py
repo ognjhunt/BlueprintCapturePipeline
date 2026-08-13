@@ -286,12 +286,31 @@ def _bundle_cli_calls() -> list[tuple[str, str, set[str], set[str]]]:
     return rows
 
 
+BUNDLE_CLI_CALLS = _bundle_cli_calls()
+
+
+def _bundle_cli_case_id(row: tuple[str, str, set[str], set[str]]) -> str:
+    """Name a CLI contract without unordered parameter-set representations."""
+
+    module, builder, _, _ = row
+    return f"{module}-{builder}"
+
+
 def test_bundle_cli_calls_are_discoverable() -> None:
-    assert len(_bundle_cli_calls()) >= 5
+    assert len(BUNDLE_CLI_CALLS) >= 5
+
+
+def test_bundle_cli_case_ids_are_unique_and_hash_seed_independent() -> None:
+    ids = [_bundle_cli_case_id(row) for row in BUNDLE_CLI_CALLS]
+
+    assert len(ids) == len(set(ids))
+    assert all("{" not in case_id and "}" not in case_id for case_id in ids)
 
 
 @pytest.mark.parametrize(
-    "module,builder,parameters,supplied", _bundle_cli_calls(), ids=lambda v: str(v)[:40]
+    "module,builder,parameters,supplied",
+    BUNDLE_CLI_CALLS,
+    ids=[_bundle_cli_case_id(row) for row in BUNDLE_CLI_CALLS],
 )
 def test_a_bundle_cli_can_supply_every_parameter_of_what_it_builds(
     module: str, builder: str, parameters: set[str], supplied: set[str]
@@ -322,7 +341,7 @@ def test_no_recorded_exemption_outlives_its_parameter() -> None:
 
     live = {
         f"{module}.{name}"
-        for module, _, parameters, _ in _bundle_cli_calls()
+        for module, _, parameters, _ in BUNDLE_CLI_CALLS
         for name in parameters
     }
 
