@@ -157,4 +157,3 @@ def test_rejects_tampered_calibrated_image(tmp_path: Path) -> None:
             output_root=tmp_path / "output",
             ffmpeg_executable=fixture["ffmpeg"],
         )
-
