@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import json
 import os
@@ -20,7 +21,26 @@ REQUEST_SCHEMA = "public_scene_artifixer3d_runtime_request.v1"
 RESULT_SCHEMA = "public_scene_artifixer3d_runtime_result.v1"
 TASK_PROGRESS_SCHEMA = "public_scene_artifixer3d_task_progress.v1"
 TASK_PROGRESS_FILENAME = "public_scene_artifixer3d_task_progress.json"
-INPUT_SCHEMA = "public_scene_artifixer3d_candidate_inputs.v3"
+LEGACY_INPUT_SCHEMA = "public_scene_artifixer3d_candidate_inputs.v3"
+LEGACY_INPUT_FILENAME = f"{LEGACY_INPUT_SCHEMA}.json"
+DUAL_TARGET_INPUT_SCHEMA = "public_scene_artifixer3d_dual_target_inputs.v1"
+DUAL_TARGET_INPUT_FILENAME = f"{DUAL_TARGET_INPUT_SCHEMA}.json"
+DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
+DUAL_TARGET_PHASES = [
+    "dual_target_input_validation",
+    "artifixer3d_distillation",
+    "artifixer3d_review_render",
+    "external_visual_and_multiview_review",
+]
+DUAL_TARGET_LOSS_OVERRIDES = {
+    "loss.use_ssim": False,
+    "loss.use_l1": True,
+    "loss.lambda_l1": 1.0,
+    "loss.use_l2": False,
+    "loss.use_lpips_override": True,
+    "loss.lambda_lpips_override": 0.1,
+    "loss.lambda_reconlosses_override": 0.0,
+}
 DIRECT_EDITOR_BACKENDS = {
     "artifixer",
     "qwen_image_edit_2511",
@@ -117,17 +137,26 @@ def _read_task_progress(path: Path) -> dict[str, Any] | None:
         or result.get("completed_task_count") != len(tasks)
         or completed_task_ids
         != [str(task.get("task_id")) for task in tasks if isinstance(task, Mapping)]
-        or any(
-            not isinstance(task, Mapping)
-            or task.get("outside_support_changed_pixels_total") != 0
-            for task in tasks
-        )
+        or any(not _completed_task_is_bound(task) for task in tasks)
         or result.get("semantic_object_free_review_passed") is not False
         or result.get("multiview_consistency_review_passed") is not False
         or result.get("physical_or_deployment_evidence") is not False
     ):
         return None
     return result
+
+
+def _completed_task_is_bound(task: Any) -> bool:
+    if not isinstance(task, Mapping):
+        return False
+    if task.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE:
+        return (
+            task.get("outside_support_invariance_status")
+            == "deferred_until_final_soft_composite"
+            and task.get("outside_exact_support_invariance_proven") is False
+            and task.get("outside_support_changed_pixels_total") is None
+        )
+    return task.get("outside_support_changed_pixels_total") == 0
 
 
 def _bound(root: Path, record: Any, code: str) -> Path:
@@ -148,12 +177,118 @@ def _bound(root: Path, record: Any, code: str) -> Path:
     return path
 
 
+def _dual_target_request_is_bound(request: Mapping[str, Any]) -> bool:
+    artifixer3d = request.get("artifixer3d")
+    return (
+        request.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+        and request.get("direct_editor_backend") == "none"
+        and request.get("semantic_editor") is None
+        and request.get("semantic_editor_only") is False
+        and request.get("model") is None
+        and request.get("wan_base") is None
+        and request.get("direct_inference") is None
+        and request.get("direct_model_weights_required") is False
+        and request.get("phases") == DUAL_TARGET_PHASES
+        and request.get("outside_exact_support_changed_pixels_permitted")
+        == "unconstrained_for_raw_representation_review"
+        and request.get("outside_support_invariance_gate")
+        == "deferred_until_final_soft_composite"
+        and isinstance(artifixer3d, Mapping)
+        and artifixer3d.get("loss_overrides") == DUAL_TARGET_LOSS_OVERRIDES
+        and artifixer3d.get("anchor_mask_reduction") == "full_frame_mean"
+        and isinstance(artifixer3d.get("steps"), int)
+        and not isinstance(artifixer3d.get("steps"), bool)
+        and artifixer3d["steps"] > 0
+        and isinstance(artifixer3d.get("config_name"), str)
+        and bool(artifixer3d["config_name"])
+    )
+
+
+def _dual_target_candidate_is_bound(candidate: Mapping[str, Any]) -> bool:
+    tasks = candidate.get("tasks")
+    if (
+        candidate.get("schema_version") != DUAL_TARGET_INPUT_SCHEMA
+        or candidate.get("status")
+        != "paired_target_inputs_prepared_no_model_no_execution"
+        or candidate.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+        or not isinstance(tasks, list)
+        or not 1 <= len(tasks) <= 5
+        or candidate.get("replacement_object_count") != len(tasks)
+    ):
+        return False
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            return False
+        physical_count = task.get("physical_camera_count")
+        training_count = task.get("training_record_count")
+        frames = task.get("frames")
+        selected = task.get("selected_anchor_indices")
+        teachers = task.get("semantic_teacher_indices")
+        if (
+            not isinstance(physical_count, int)
+            or isinstance(physical_count, bool)
+            or physical_count <= 0
+            or training_count != 2 * physical_count
+            or not isinstance(frames, list)
+            or len(frames) != physical_count
+            or not isinstance(selected, list)
+            or not isinstance(teachers, list)
+            or len(selected) != physical_count
+            or len(teachers) != physical_count
+        ):
+            return False
+        frame_anchor_indices: list[int] = []
+        frame_teacher_indices: list[int] = []
+        for physical_index, frame in enumerate(frames):
+            if not isinstance(frame, Mapping):
+                return False
+            anchor_index = frame.get("anchor_training_index")
+            teacher_index = frame.get("semantic_teacher_training_index")
+            if (
+                frame.get("physical_camera_index") != physical_index
+                or anchor_index != 2 * physical_index
+                or teacher_index != 2 * physical_index + 1
+                or not isinstance(frame.get("camera_id"), str)
+                or any(
+                    not isinstance(frame.get(field), Mapping)
+                    for field in (
+                        "anchor_rgb",
+                        "exact_repair_mask",
+                        "anchor_loss_mask",
+                        "semantic_teacher_rgb",
+                        "semantic_teacher_override_rgb",
+                    )
+                )
+                or frame.get("teacher_loss_mask_materialized") is not False
+                or frame.get("pair_pose_and_intrinsics_exactly_equal") is not True
+            ):
+                return False
+            frame_anchor_indices.append(anchor_index)
+            frame_teacher_indices.append(teacher_index)
+        if (
+            selected != frame_anchor_indices
+            or teachers != frame_teacher_indices
+            or sorted(selected + teachers) != list(range(training_count))
+            or not isinstance(task.get("selected_anchor_indices_file"), Mapping)
+            or not isinstance(task.get("review_trajectory"), Mapping)
+        ):
+            return False
+    return True
+
+
 def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     runtime = root / "provider_runtime"
     manifest = _read(runtime / "artifixer3d_bundle_manifest.json", "artifixer3d_manifest_unreadable")
     request = _read(runtime / "artifixer3d_runtime_request.json", "artifixer3d_request_unreadable")
+    dual_target = request.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+    candidate_filename = (
+        DUAL_TARGET_INPUT_FILENAME if dual_target else LEGACY_INPUT_FILENAME
+    )
+    expected_candidate_schema = (
+        DUAL_TARGET_INPUT_SCHEMA if dual_target else LEGACY_INPUT_SCHEMA
+    )
     candidate = _read(
-        runtime / "input" / "public_scene_artifixer3d_candidate_inputs.v3.json",
+        runtime / "input" / candidate_filename,
         "artifixer3d_candidate_unreadable",
     )
     attestation = _read(
@@ -165,7 +300,7 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
         or manifest.get("manifest_digest") != _canonical_digest(manifest, "manifest_digest")
         or request.get("schema_version") != REQUEST_SCHEMA
         or request.get("runtime_request_digest") != _canonical_digest(request, "runtime_request_digest")
-        or candidate.get("schema_version") != INPUT_SCHEMA
+        or candidate.get("schema_version") != expected_candidate_schema
         or candidate.get("receipt_digest") != _canonical_digest(candidate, "receipt_digest")
         or manifest.get("runtime_request", {}).get("runtime_request_digest")
         != request["runtime_request_digest"]
@@ -175,8 +310,15 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
         or manifest.get("contains_raw_dataset_bytes") is not False
         or manifest.get("contains_model_weights") is not False
         or request.get("source_object_restoration_permitted") is not False
-        or request.get("outside_exact_support_changed_pixels_permitted") != 0
-        or request.get("direct_editor_backend") not in DIRECT_EDITOR_BACKENDS
+        or (dual_target and not _dual_target_request_is_bound(request))
+        or (
+            not dual_target
+            and (
+                request.get("outside_exact_support_changed_pixels_permitted") != 0
+                or request.get("direct_editor_backend") not in DIRECT_EDITOR_BACKENDS
+            )
+        )
+        or (dual_target and not _dual_target_candidate_is_bound(candidate))
         or manifest.get("blueprint_source_identity")
         != request.get("blueprint_source_identity")
         or attestation.get("attestation_digest")
@@ -199,7 +341,15 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
     if manifest.get("direct_editor_backend") != backend:
         raise ValueError("artifixer3d_bundle_binding_invalid")
     semantic = request.get("semantic_editor")
-    if backend != "artifixer":
+    if dual_target:
+        if (
+            backend != "none"
+            or manifest.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+            or manifest.get("direct_editor_backend") != "none"
+            or manifest.get("semantic_editor_model_identity") is not None
+        ):
+            raise ValueError("artifixer3d_dual_target_binding_invalid")
+    elif backend != "artifixer":
         if (
             not isinstance(semantic, Mapping)
             or semantic.get("backend") != backend
@@ -391,6 +541,295 @@ def _copy_scene(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, symlinks=False)
 
 
+def _file_record(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _hydra_value(value: Any) -> str:
+    if value is True:
+        return "True"
+    if value is False:
+        return "False"
+    return str(value)
+
+
+def _prepare_dual_target_teacher_frames(
+    *, task: Mapping[str, Any], staged_task: Path, task_output: Path
+) -> tuple[Path, list[dict[str, Any]]]:
+    """Bind and stage only the seamless teacher frames for odd training records."""
+    from PIL import Image
+
+    teacher_root = task_output / "paired_semantic_teachers"
+    if teacher_root.exists():
+        raise ValueError("artifixer3d_dual_target_teacher_root_exists")
+    teacher_root.mkdir(parents=True)
+    rows: list[dict[str, Any]] = []
+    for frame in task["frames"]:
+        physical_index = int(frame["physical_camera_index"])
+        teacher_index = int(frame["semantic_teacher_training_index"])
+        original = _bound(
+            staged_task,
+            frame["anchor_rgb"],
+            "artifixer3d_dual_target_original_unbound",
+        )
+        teacher = _bound(
+            staged_task,
+            frame["semantic_teacher_override_rgb"],
+            "artifixer3d_dual_target_teacher_unbound",
+        )
+        teacher_copy = _bound(
+            staged_task,
+            frame["semantic_teacher_rgb"],
+            "artifixer3d_dual_target_teacher_unbound",
+        )
+        if _sha256(teacher) != _sha256(teacher_copy):
+            raise ValueError("artifixer3d_dual_target_teacher_copy_mismatch")
+        with Image.open(original) as original_image, Image.open(teacher) as teacher_image:
+            if original_image.size != teacher_image.size:
+                raise ValueError("artifixer3d_dual_target_teacher_shape_invalid")
+            image_size = list(original_image.size)
+        output = teacher_root / f"{teacher_index:05d}.png"
+        shutil.copyfile(teacher, output)
+        rows.append(
+            {
+                "frame_index": physical_index,
+                "camera_id": frame["camera_id"],
+                "semantic_teacher_training_index": teacher_index,
+                "image_size": image_size,
+                "source": _file_record(teacher),
+                "staged": _file_record(output),
+            }
+        )
+    if sorted(path.name for path in teacher_root.iterdir()) != [
+        f"{int(index):05d}.png" for index in task["semantic_teacher_indices"]
+    ]:
+        raise ValueError("artifixer3d_dual_target_teacher_coverage_invalid")
+    return teacher_root, rows
+
+
+def _stage_dual_target_anchor_masks(
+    *, task: Mapping[str, Any], staged_task: Path, distillation_input_dir: Path
+) -> list[dict[str, Any]]:
+    """Stage exact-sized binary trust masks next to selected anchor images."""
+    import numpy as np
+    from PIL import Image
+
+    image_root = distillation_input_dir / "images"
+    rows: list[dict[str, Any]] = []
+    for frame in task["frames"]:
+        anchor_index = int(frame["anchor_training_index"])
+        matches = [
+            path
+            for path in image_root.glob(f"frame_{anchor_index:05d}.*")
+            if not path.name.endswith("_mask.png")
+        ]
+        if len(matches) != 1 or matches[0].is_symlink() is False:
+            raise ValueError("artifixer3d_dual_target_anchor_image_invalid")
+        anchor = matches[0]
+        mask = _bound(
+            staged_task,
+            frame["anchor_loss_mask"],
+            "artifixer3d_dual_target_anchor_mask_unbound",
+        )
+        exact_mask = _bound(
+            staged_task,
+            frame["exact_repair_mask"],
+            "artifixer3d_dual_target_exact_mask_unbound",
+        )
+        with Image.open(anchor) as anchor_image:
+            anchor_size = anchor_image.size
+        with Image.open(mask) as mask_image:
+            if mask_image.mode != "L" or mask_image.size != anchor_size:
+                raise ValueError("artifixer3d_dual_target_anchor_mask_shape_invalid")
+            trust = np.asarray(mask_image, dtype=np.uint8)
+        with Image.open(exact_mask) as exact_image:
+            if exact_image.size != anchor_size:
+                raise ValueError("artifixer3d_dual_target_exact_mask_shape_invalid")
+            exact_support = np.asarray(exact_image.convert("L"), dtype=np.uint8) > 0
+        if not np.all((trust == 0) | (trust == 255)):
+            raise ValueError("artifixer3d_dual_target_anchor_mask_not_binary")
+        if np.any(trust[exact_support] != 0):
+            raise ValueError("artifixer3d_dual_target_anchor_mask_misses_exact_support")
+        output = anchor.with_name(anchor.stem + "_mask.png")
+        if output.exists() or output.is_symlink():
+            raise ValueError("artifixer3d_dual_target_anchor_mask_destination_exists")
+        shutil.copyfile(mask, output)
+        rows.append(
+            {
+                "physical_camera_index": int(frame["physical_camera_index"]),
+                "camera_id": frame["camera_id"],
+                "anchor_training_index": anchor_index,
+                "trusted_pixel_count": int(np.count_nonzero(trust)),
+                "excluded_pixel_count": int(trust.size - np.count_nonzero(trust)),
+                "source": _file_record(mask),
+                "staged": _file_record(output),
+            }
+        )
+    staged_masks = sorted(image_root.glob("frame_*_mask.png"))
+    if len(staged_masks) != len(task["selected_anchor_indices"]):
+        raise ValueError("artifixer3d_dual_target_anchor_mask_coverage_invalid")
+    if any(
+        (image_root / f"frame_{int(index):05d}_mask.png").exists()
+        for index in task["semantic_teacher_indices"]
+    ):
+        raise ValueError("artifixer3d_dual_target_teacher_mask_forbidden")
+    return rows
+
+
+def _dual_target_task_runtime(
+    *,
+    task: Mapping[str, Any],
+    input_root: Path,
+    source_root: Path,
+    output_root: Path,
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Train one paired-target 3DGRUT candidate and stop at raw review renders."""
+    from data_processing import artifixer3d
+    from data_processing import threedgrut_training
+
+    task_id = str(task["task_id"])
+    staged_task = input_root / task_id
+    task_output = output_root / "tasks" / task_id
+    logs = task_output / "logs"
+    log = logs / "artifixer3d_dual_target.log"
+    if task_output.exists():
+        raise ValueError("artifixer3d_dual_target_task_output_exists")
+    logs.mkdir(parents=True)
+    _zero_prompt(staged_task / "captions" / "unconditioned_zero_prompt.h5")
+    teacher_root, teacher_rows = _prepare_dual_target_teacher_frames(
+        task=task,
+        staged_task=staged_task,
+        task_output=task_output,
+    )
+    transforms_path = _bound(
+        staged_task,
+        task["transforms"],
+        "artifixer3d_dual_target_transforms_unbound",
+    )
+    selected_path = _bound(
+        staged_task,
+        task["selected_anchor_indices_file"],
+        "artifixer3d_dual_target_selected_indices_unbound",
+    )
+    try:
+        selected_values = json.loads(selected_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("artifixer3d_dual_target_selected_indices_invalid") from exc
+    if selected_values != task["selected_anchor_indices"]:
+        raise ValueError("artifixer3d_dual_target_selected_indices_invalid")
+    review_trajectory = _bound(
+        staged_task,
+        task["review_trajectory"],
+        "artifixer3d_dual_target_review_trajectory_unbound",
+    )
+    split_path = staged_task / "split.dual_target_distill.json"
+    _write(
+        split_path,
+        {
+            "test": {
+                task_id: {
+                    "transforms_path": transforms_path.relative_to(staged_task).as_posix(),
+                    "image_root": ".",
+                    "selected_indices_path": selected_path.relative_to(staged_task).as_posix(),
+                    "prompt_path": "captions/unconditioned_zero_prompt.h5",
+                    "camera_scale": 1.0,
+                    "has_gt": False,
+                }
+            }
+        },
+    )
+    artifixer3d_root = task_output / "artifixer3d"
+    scene = artifixer3d.load_prepared_scene(staged_task, split_path, task_id)
+    steps = int(request["artifixer3d"]["steps"])
+    paths = artifixer3d.artifixer3d_paths(scene, artifixer3d_root, None, steps)
+    with log.open("w", encoding="utf-8") as stream:
+        with redirect_stdout(stream), redirect_stderr(stream):
+            artifixer3d.materialize_distillation_input(scene, paths, teacher_root)
+    anchor_mask_rows = _stage_dual_target_anchor_masks(
+        task=task,
+        staged_task=staged_task,
+        distillation_input_dir=paths.distillation_input_dir,
+    )
+    overrides = [
+        f"path={paths.distillation_input_dir}",
+        f"out_dir={paths.run_root}",
+        f"selected_indices_file={paths.distillation_selected_indices_path}",
+        f"image_path_override={paths.override_image_dir.name}",
+        "test_last=False",
+        "export_ingp.enabled=False",
+        f"experiment_name={scene.scene_id}",
+        f"n_iterations={steps}",
+        "use_wandb=False",
+        f"checkpoint.iterations=[{steps}]",
+    ]
+    overrides.extend(
+        f"{name}={_hydra_value(value)}"
+        for name, value in request["artifixer3d"]["loss_overrides"].items()
+    )
+    with log.open("a", encoding="utf-8") as stream:
+        with redirect_stdout(stream), redirect_stderr(stream):
+            threedgrut_training.train_3dgrut(
+                request["artifixer3d"]["config_name"],
+                overrides,
+                threedgrut_training.DEFAULT_THREEDGRUT_CONFIG_DIR,
+            )
+    checkpoint = artifixer3d.artifixer3d_checkpoint(scene, paths, steps)
+    if not checkpoint.is_file():
+        raise ValueError("artifixer3d_checkpoint_missing_or_ambiguous")
+    with log.open("a", encoding="utf-8") as stream:
+        with redirect_stdout(stream), redirect_stderr(stream):
+            review_dir = artifixer3d.render_artifixer3d(
+                scene,
+                paths,
+                checkpoint=checkpoint,
+                checkpoint_reused=False,
+                replace=False,
+                render_trajectory_path=review_trajectory,
+            )
+    review_rows: list[dict[str, Any]] = []
+    for frame in task["frames"]:
+        index = int(frame["physical_camera_index"])
+        rendered = review_dir / "renders" / f"{index:05d}.png"
+        if not rendered.is_file() or rendered.is_symlink():
+            raise ValueError("artifixer3d_dual_target_review_frame_missing")
+        review_rows.append(
+            {
+                "frame_index": index,
+                "camera_id": frame["camera_id"],
+                **_file_record(rendered),
+            }
+        )
+    if len(review_rows) != task["physical_camera_count"]:
+        raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
+    return {
+        "task_id": task_id,
+        "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+        "training_record_count": task["training_record_count"],
+        "selected_anchor_indices": task["selected_anchor_indices"],
+        "semantic_teacher_indices": task["semantic_teacher_indices"],
+        "semantic_teacher_frames": teacher_rows,
+        "anchor_loss_masks": anchor_mask_rows,
+        "anchor_mask_reduction": request["artifixer3d"]["anchor_mask_reduction"],
+        "loss_overrides": request["artifixer3d"]["loss_overrides"],
+        "artifixer3d_checkpoint": _file_record(checkpoint),
+        "artifixer3d_log_sha256": _sha256(log),
+        "artifixer3d_plus_log_sha256": None,
+        "artifixer3d_review_frames": review_rows,
+        "final_candidate_frames": review_rows,
+        "raw_representation_review_only": True,
+        "outside_support_invariance_status": "deferred_until_final_soft_composite",
+        "outside_exact_support_invariance_proven": False,
+        "outside_support_changed_pixels_total": None,
+        "semantic_object_free_review_passed": False,
+        "multiview_consistency_review_passed": False,
+    }
+
+
 def _semantic_editor_predictions(
     *,
     task: Mapping[str, Any],
@@ -492,6 +931,14 @@ def _task_runtime(
     semantic_editor_root: Path | None,
     request: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if request.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE:
+        return _dual_target_task_runtime(
+            task=task,
+            input_root=input_root,
+            source_root=source_root,
+            output_root=output_root,
+            request=request,
+        )
     task_id = str(task["task_id"])
     staged_task = input_root / task_id
     task_output = output_root / "tasks" / task_id
@@ -726,6 +1173,7 @@ def _task_runtime(
 
 def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[str, Any]:
     manifest, request, candidate = _validate_bundle(bundle_root)
+    dual_target = request.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
     base: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA,
         "runtime_request_digest": request["runtime_request_digest"],
@@ -734,7 +1182,14 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
         "replacement_object_count": candidate["replacement_object_count"],
         "task_ids": request["task_ids"],
         "source_object_restoration_permitted": False,
-        "outside_exact_support_changed_pixels_permitted": 0,
+        "pipeline_mode": request.get("pipeline_mode"),
+        "phases": request.get("phases"),
+        "outside_exact_support_changed_pixels_permitted": (
+            "unconstrained_for_raw_representation_review" if dual_target else 0
+        ),
+        "outside_support_invariance_gate": (
+            "deferred_until_final_soft_composite" if dual_target else None
+        ),
         "provider_zero_required_after_return": True,
         "physical_or_deployment_evidence": False,
     }
@@ -747,17 +1202,24 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
             "candidate_input_receipt_digest": candidate["receipt_digest"],
             "replacement_object_count": candidate["replacement_object_count"],
             "task_ids": request["task_ids"],
+            "pipeline_mode": request.get("pipeline_mode"),
+            "phases": request.get("phases"),
             "paid_inference_performed": False,
             "gpu_runtime_started": False,
             "provider_mutations_performed": 0,
             "blockers": [],
         }
     cache = bundle_root.parent / "artifixer3d_model_cache"
-    semantic_editor_root = _download_semantic_editor(request, cache)
-    if request.get("semantic_editor_only") is True:
+    if dual_target:
+        semantic_editor_root = None
+        checkpoint = Path("unused-dual-target-artifixer3d-only")
+        wan_root = Path("unused-dual-target-artifixer3d-only")
+    else:
+        semantic_editor_root = _download_semantic_editor(request, cache)
+    if not dual_target and request.get("semantic_editor_only") is True:
         checkpoint = Path("unused-semantic-editor-only")
         wan_root = Path("unused-semantic-editor-only")
-    else:
+    elif not dual_target:
         checkpoint, wan_root = _download_models(request, cache)
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -785,25 +1247,33 @@ def execute(*, bundle_root: Path, output_root: Path, rehearsal: bool) -> dict[st
                 expected_task_count=expected_task_count,
             ),
         )
-    if any(task["outside_support_changed_pixels_total"] != 0 for task in tasks):
+    if dual_target:
+        if any(not _completed_task_is_bound(task) for task in tasks):
+            raise ValueError("artifixer3d_dual_target_deferred_invariance_invalid")
+    elif any(task["outside_support_changed_pixels_total"] != 0 for task in tasks):
         raise ValueError("artifixer3d_outside_support_change")
     return {
         **base,
-        "status": "candidate_completed_requires_visual_and_multiview_review",
+        "status": (
+            "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
+            if dual_target
+            else "candidate_completed_requires_visual_and_multiview_review"
+        ),
         "tasks": tasks,
         "model_loaded": True,
         "artifixer_direct_inference_executed": (
-            request["direct_editor_backend"] == "artifixer"
+            not dual_target and request["direct_editor_backend"] == "artifixer"
         ),
         "semantic_editor_inference_executed": (
-            request["direct_editor_backend"] != "artifixer"
+            not dual_target and request["direct_editor_backend"] != "artifixer"
         ),
         "artifixer3d_distillation_executed": (
-            request.get("semantic_editor_only") is not True
+            dual_target or request.get("semantic_editor_only") is not True
         ),
         "artifixer3d_plus_inference_executed": (
-            request.get("semantic_editor_only") is not True
+            not dual_target and request.get("semantic_editor_only") is not True
         ),
+        "outside_exact_support_invariance_proven": False if dual_target else True,
         "provider_mutations_performed": 1,
         "blockers": [
             "semantic_object_free_visual_review_required",

@@ -2218,7 +2218,6 @@ def _blueprint_bundle_preflight(
         "provider_runtime/public_scene_artifixer3d_runner.py",
         "provider_runtime/artifixer3d_bundle_manifest.json",
         "provider_runtime/artifixer3d_runtime_request.json",
-        "provider_runtime/input/public_scene_artifixer3d_candidate_inputs.v3.json",
         "provider_runtime/artifixer3d_use_attestation.json",
     }
     adp_inpaint360_required_entries = {
@@ -2593,6 +2592,33 @@ def _blueprint_bundle_preflight(
                             json.JSONDecodeError,
                         ):
                             blockers.append("adp_gaussian_excision_dependency_wheelhouse_invalid")
+                    if provider_bundle_kind == "adp_artifixer3d":
+                        try:
+                            artifixer3d_request = json.loads(
+                                archive.read(
+                                    "provider_runtime/artifixer3d_runtime_request.json"
+                                ).decode("utf-8")
+                            )
+                            if (
+                                artifixer3d_request.get("pipeline_mode")
+                                == "dual_target_artifixer3d_only"
+                            ):
+                                required_entries.add(
+                                    "provider_runtime/input/"
+                                    "public_scene_artifixer3d_dual_target_inputs.v1.json"
+                                )
+                            else:
+                                required_entries.add(
+                                    "provider_runtime/input/"
+                                    "public_scene_artifixer3d_candidate_inputs.v3.json"
+                                )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            json.JSONDecodeError,
+                        ):
+                            blockers.append("adp_artifixer3d_runtime_request_invalid")
                     if (
                         provider_bundle_kind in {"isaac", "adp_simready_isaac"}
                         and "provider_runtime/isaac_provider_eval_manifest.json" in zip_entries
@@ -4159,7 +4185,7 @@ def _probe_shell_script(
                 "            if path.is_file():\n"
                 "                relative = path.relative_to(output_dir).as_posix()\n"
                 "                parts = relative.split('/')\n"
-                "                required = relative in {'public_scene_artifixer3d_runtime_result.json', 'artifixer3d-pip-freeze.txt'} or (parts and parts[0] == 'tasks' and ('/final_candidate_frames/' in '/' + relative or '/repaired_scene/images/' in '/' + relative or '/logs/' in '/' + relative or (path.name.startswith('ckpt_') and path.suffix == '.pt')))\n"
+                "                required = relative in {'public_scene_artifixer3d_runtime_result.json', 'artifixer3d-pip-freeze.txt'} or (parts and parts[0] == 'tasks' and ('/final_candidate_frames/' in '/' + relative or '/artifixer3d_review_frames/' in '/' + relative or '/repaired_scene/images/' in '/' + relative or '/logs/' in '/' + relative or (path.name.startswith('ckpt_') and path.suffix == '.pt')))\n"
                 "                if not required:\n"
                 "                    continue\n"
                 "                size = path.stat().st_size\n"

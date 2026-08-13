@@ -83,11 +83,19 @@ from pathlib import Path
 request = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 print(request.get("direct_editor_backend", ""))
 print("true" if request.get("semantic_editor_only") is True else "false")
+print(request.get("pipeline_mode", ""))
 PY
 )
 direct_editor_backend="${runtime_mode[0]:-}"
 semantic_editor_only="${runtime_mode[1]:-}"
-if [[ "${direct_editor_backend}" != "artifixer" \
+pipeline_mode="${runtime_mode[2]:-}"
+if [[ "${pipeline_mode}" == "dual_target_artifixer3d_only" ]]; then
+  if [[ "${direct_editor_backend}" != "none" \
+        || "${semantic_editor_only}" != "false" ]]; then
+    write_missing_result "artifixer3d_dual_target_mode_invalid"
+    exit 2
+  fi
+elif [[ "${direct_editor_backend}" != "artifixer" \
       && "${direct_editor_backend}" != "qwen_image_edit_2511" \
       && "${direct_editor_backend}" != "vibe_image_edit" ]]; then
   write_missing_result "artifixer3d_direct_editor_backend_invalid"

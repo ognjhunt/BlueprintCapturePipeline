@@ -76,6 +76,19 @@ GPU_SELECTION_POLICY = {
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
+DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
+DUAL_TARGET_CANDIDATE_MEMBER = (
+    "provider_runtime/input/public_scene_artifixer3d_dual_target_inputs.v1.json"
+)
+LEGACY_CANDIDATE_MEMBER = (
+    "provider_runtime/input/public_scene_artifixer3d_candidate_inputs.v3.json"
+)
+DUAL_TARGET_PHASES = [
+    "dual_target_input_validation",
+    "artifixer3d_distillation",
+    "artifixer3d_review_render",
+    "external_visual_and_multiview_review",
+]
 
 
 def inspect_artifixer3d_container_image(
@@ -416,16 +429,6 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
             if archive.testzip() is not None:
                 raise ValueError("artifixer3d_bundle_zip_integrity_failed")
             names = set(archive.namelist())
-            required = {
-                "provider_runtime/run_public_scene_artifixer3d.sh",
-                "provider_runtime/public_scene_artifixer3d_runner.py",
-                "provider_runtime/artifixer3d_bundle_manifest.json",
-                "provider_runtime/artifixer3d_runtime_request.json",
-                "provider_runtime/input/public_scene_artifixer3d_candidate_inputs.v3.json",
-                "provider_runtime/artifixer3d_use_attestation.json",
-            }
-            if not required.issubset(names):
-                raise ValueError("artifixer3d_bundle_required_entries_missing")
             manifest = _zip_json(
                 archive,
                 "provider_runtime/artifixer3d_bundle_manifest.json",
@@ -436,9 +439,25 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
                 "provider_runtime/artifixer3d_runtime_request.json",
                 code="artifixer3d_bundle_request_invalid",
             )
+            pipeline_mode = str(request.get("pipeline_mode") or "")
+            candidate_member = (
+                DUAL_TARGET_CANDIDATE_MEMBER
+                if pipeline_mode == DUAL_TARGET_PIPELINE_MODE
+                else LEGACY_CANDIDATE_MEMBER
+            )
+            required = {
+                "provider_runtime/run_public_scene_artifixer3d.sh",
+                "provider_runtime/public_scene_artifixer3d_runner.py",
+                "provider_runtime/artifixer3d_bundle_manifest.json",
+                "provider_runtime/artifixer3d_runtime_request.json",
+                candidate_member,
+                "provider_runtime/artifixer3d_use_attestation.json",
+            }
+            if not required.issubset(names):
+                raise ValueError("artifixer3d_bundle_required_entries_missing")
             candidate = _zip_json(
                 archive,
-                "provider_runtime/input/public_scene_artifixer3d_candidate_inputs.v3.json",
+                candidate_member,
                 code="artifixer3d_bundle_candidate_invalid",
             )
             attestation = _zip_json(
@@ -465,6 +484,33 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         raise ValueError("artifixer3d_bundle_runtime_contract_invalid")
     identity = manifest.get("blueprint_source_identity")
     tasks = candidate.get("tasks")
+    pipeline_mode = str(request.get("pipeline_mode") or "")
+    dual_target_mode = pipeline_mode == DUAL_TARGET_PIPELINE_MODE
+    legacy_request_valid = (
+        pipeline_mode in {"", "full_artifixer3d_plus"}
+        and request.get("outside_exact_support_changed_pixels_permitted") == 0
+        and request.get("repair_target")
+        == "plausible_object_free_background_inside_exact_support_only"
+        and request.get("direct_editor_backend")
+        in {"artifixer", "qwen_image_edit_2511", "vibe_image_edit"}
+    )
+    dual_target_request_valid = (
+        dual_target_mode
+        and candidate.get("schema_version")
+        == "public_scene_artifixer3d_dual_target_inputs.v1"
+        and candidate.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+        and manifest.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+        and receipt.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+        and request.get("direct_editor_backend") == "none"
+        and request.get("semantic_editor_only") is False
+        and request.get("phases") == DUAL_TARGET_PHASES
+        and request.get("outside_exact_support_changed_pixels_permitted")
+        in {None, "unconstrained_for_raw_representation_review"}
+        and request.get("outside_support_invariance_gate")
+        == "deferred_until_final_soft_composite"
+        and request.get("repair_target")
+        == "whole_frame_semantic_empty_scene_distillation_with_original_outside_support_anchors"
+    )
     if (
         manifest.get("schema_version") != BUNDLE_SCHEMA_VERSION
         or manifest.get("manifest_digest")
@@ -480,11 +526,7 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         or len(tasks) != receipt.get("replacement_object_count")
         or request.get("task_ids") != receipt.get("task_ids")
         or request.get("source_object_restoration_permitted") is not False
-        or request.get("outside_exact_support_changed_pixels_permitted") != 0
-        or request.get("repair_target")
-        != "plausible_object_free_background_inside_exact_support_only"
-        or request.get("direct_editor_backend")
-        not in {"artifixer", "qwen_image_edit_2511", "vibe_image_edit"}
+        or not (legacy_request_valid or dual_target_request_valid)
         or manifest.get("direct_editor_backend")
         != request.get("direct_editor_backend")
         or receipt.get("direct_editor_backend")
@@ -516,22 +558,47 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         raise ValueError("artifixer3d_bundle_binding_invalid")
     task_ids: list[str] = []
     task_camera_counts: dict[str, int] = {}
+    task_training_record_counts: dict[str, int] = {}
     for task in tasks:
         if not isinstance(task, Mapping):
             raise ValueError("artifixer3d_bundle_task_invalid")
         task_id = str(task.get("task_id") or "")
-        camera_count = task.get("camera_count")
+        camera_count = (
+            task.get("physical_camera_count")
+            if dual_target_mode
+            else task.get("camera_count")
+        )
+        training_record_count = (
+            task.get("training_record_count") if dual_target_mode else camera_count
+        )
+        training_records = task.get("training_records")
         if (
             not task_id
             or task_id in task_camera_counts
             or isinstance(camera_count, bool)
             or not isinstance(camera_count, int)
             or camera_count < 2
-            or len(task.get("frames") or []) != camera_count
+            or isinstance(training_record_count, bool)
+            or not isinstance(training_record_count, int)
+            or training_record_count != (2 * camera_count if dual_target_mode else camera_count)
+            or (
+                dual_target_mode
+                and training_records is not None
+                and len(training_records) != training_record_count
+            )
+            or (
+                dual_target_mode
+                and len(task.get("frames") or []) != camera_count
+            )
+            or (
+                not dual_target_mode
+                and len(task.get("frames") or []) != camera_count
+            )
         ):
             raise ValueError("artifixer3d_bundle_task_invalid")
         task_ids.append(task_id)
         task_camera_counts[task_id] = camera_count
+        task_training_record_counts[task_id] = training_record_count
     if task_ids != receipt.get("task_ids"):
         raise ValueError("artifixer3d_bundle_task_order_invalid")
     publisher_scene_id = str(candidate.get("publisher_scene_id") or "")
@@ -575,6 +642,8 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
         "replacement_object_count": receipt["replacement_object_count"],
         "task_ids": task_ids,
         "task_camera_counts": task_camera_counts,
+        "task_training_record_counts": task_training_record_counts,
+        "pipeline_mode": pipeline_mode or "legacy_exact_support_full_chain",
         "direct_editor_backend": request["direct_editor_backend"],
         "semantic_editor_only": request.get("semantic_editor_only") is True,
     }
@@ -1293,6 +1362,7 @@ def _materialize_raw_result(
     bundle: Mapping[str, Any],
     closeout: Mapping[str, Any],
 ) -> dict[str, Any]:
+    dual_target_mode = bundle.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
     tasks: list[dict[str, Any]] = []
     seen: set[str] = set()
     for task in execution.get("tasks") or []:
@@ -1301,7 +1371,13 @@ def _materialize_raw_result(
             raise ValueError("artifixer3d_runtime_task_invalid")
         seen.add(task_id)
         frames: list[dict[str, Any]] = []
-        for row in task.get("final_candidate_frames") or []:
+        frame_field = (
+            "artifixer3d_review_frames"
+            if dual_target_mode
+            else "final_candidate_frames"
+        )
+        frame_rows = task.get(frame_field) or []
+        for row in frame_rows:
             path = _local_runtime_path(
                 execution_root,
                 row.get("path"),
@@ -1310,18 +1386,34 @@ def _materialize_raw_result(
             if (
                 path.stat().st_size != row.get("size_bytes")
                 or _sha256(path) != row.get("sha256")
-                or row.get("outside_support_changed_pixels") != 0
+                or (
+                    not dual_target_mode
+                    and row.get("outside_support_changed_pixels") != 0
+                )
             ):
                 raise ValueError("artifixer3d_runtime_frame_invalid")
-            frames.append(
-                {
-                    "frame_index": row.get("frame_index"),
-                    "camera_id": row.get("camera_id"),
-                    "repair_pixel_count": row.get("repair_pixel_count"),
-                    "outside_support_changed_pixels": 0,
-                    **_record(path),
-                }
-            )
+            frame = {
+                "frame_index": row.get("frame_index"),
+                "camera_id": row.get("camera_id"),
+                **_record(path),
+            }
+            if dual_target_mode:
+                frame.update(
+                    {
+                        "outside_support_invariance_status": (
+                            "deferred_until_final_soft_composite"
+                        ),
+                        "outside_support_invariance_proven": False,
+                    }
+                )
+            else:
+                frame.update(
+                    {
+                        "repair_pixel_count": row.get("repair_pixel_count"),
+                        "outside_support_changed_pixels": 0,
+                    }
+                )
+            frames.append(frame)
         checkpoint_record = task.get("artifixer3d_checkpoint")
         checkpoint: Path | None = None
         if checkpoint_record is not None:
@@ -1338,35 +1430,96 @@ def _materialize_raw_result(
                     or _sha256(checkpoint) != checkpoint_record.get("sha256")
                 )
             )
-            or (checkpoint is None) != (bundle.get("semantic_editor_only") is True)
+            or (
+                dual_target_mode
+                and checkpoint is None
+            )
+            or (
+                not dual_target_mode
+                and (checkpoint is None)
+                != (bundle.get("semantic_editor_only") is True)
+            )
             or len(frames) != bundle["task_camera_counts"][task_id]
-            or task.get("outside_support_changed_pixels_total") != 0
+            or (
+                dual_target_mode
+                and (
+                    task.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+                    or task.get("training_record_count")
+                    != bundle["task_training_record_counts"][task_id]
+                    or any(
+                        isinstance(row.get("frame_index"), bool)
+                        or not isinstance(row.get("frame_index"), int)
+                        or not str(row.get("camera_id") or "")
+                        for row in frames
+                    )
+                    or sorted(row.get("frame_index") for row in frames)
+                    != list(range(bundle["task_camera_counts"][task_id]))
+                    or len({row.get("camera_id") for row in frames})
+                    != bundle["task_camera_counts"][task_id]
+                )
+            )
+            or (
+                dual_target_mode
+                and (
+                    task.get("outside_support_invariance_status")
+                    != "deferred_until_final_soft_composite"
+                    or task.get("outside_support_changed_pixels_total") is not None
+                )
+            )
+            or (
+                not dual_target_mode
+                and task.get("outside_support_changed_pixels_total") != 0
+            )
         ):
             raise ValueError("artifixer3d_runtime_task_outputs_invalid")
-        tasks.append(
-            {
-                "task_id": task_id,
-                "final_candidate_frames": frames,
-                "artifixer3d_checkpoint": (
-                    _record(checkpoint) if checkpoint is not None else None
-                ),
-                "outside_support_changed_pixels_total": 0,
-                "semantic_object_free_review_passed": False,
-                "multiview_consistency_review_passed": False,
-            }
-        )
+        task_result = {
+            "task_id": task_id,
+            frame_field: frames,
+            "artifixer3d_checkpoint": (
+                _record(checkpoint) if checkpoint is not None else None
+            ),
+            "semantic_object_free_review_passed": False,
+            "multiview_consistency_review_passed": False,
+        }
+        if dual_target_mode:
+            task_result.update(
+                {
+                    "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+                    "physical_camera_count": bundle["task_camera_counts"][task_id],
+                    "training_record_count": bundle["task_training_record_counts"][task_id],
+                    "outside_support_invariance_status": (
+                        "deferred_until_final_soft_composite"
+                    ),
+                    "outside_support_invariance_proven": False,
+                    "outside_support_changed_pixels_total": None,
+                }
+            )
+        else:
+            task_result["outside_support_changed_pixels_total"] = 0
+        tasks.append(task_result)
     if seen != set(bundle["task_ids"]):
         raise ValueError("artifixer3d_runtime_task_coverage_invalid")
     raw: dict[str, Any] = {
         "schema_version": RAW_RESULT_SCHEMA_VERSION,
-        "status": "candidate_frames_ready_for_external_visual_and_multiview_review",
+        "status": (
+            "raw_artifixer3d_review_frames_ready_for_external_visual_and_multiview_review"
+            if dual_target_mode
+            else "candidate_frames_ready_for_external_visual_and_multiview_review"
+        ),
+        "pipeline_mode": bundle.get("pipeline_mode"),
         "bundle_sha256": bundle["bundle_sha256"],
         "manifest_digest": bundle["manifest_digest"],
         "runtime_request_digest": bundle["runtime_request_digest"],
         "replacement_object_count": bundle["replacement_object_count"],
         "tasks": tasks,
         "source_object_restoration_permitted": False,
-        "outside_exact_support_changed_pixels_total": 0,
+        "outside_exact_support_changed_pixels_total": (
+            None if dual_target_mode else 0
+        ),
+        "outside_support_invariance_status": (
+            "deferred_until_final_soft_composite" if dual_target_mode else "proven"
+        ),
+        "outside_support_invariance_proven": not dual_target_mode,
         "appearance_repair_qualified": False,
         "simready_or_policy_gate_unlocked": False,
         "generated_output_is_capture_or_physical_evidence": False,
@@ -1607,22 +1760,45 @@ def run_artifixer3d_vast(
         blockers.append("artifixer3d_object_store_zero_not_proven")
     if watchdog.get("status") != "provider_terminal":
         blockers.append("artifixer3d_watchdog_not_terminal")
-    if (
-        execution.get("schema_version") != RUNTIME_RESULT_SCHEMA_VERSION
-        or execution.get("status")
-        != "candidate_completed_requires_visual_and_multiview_review"
-        or execution.get("model_loaded") is not True
-        or execution.get("artifixer_direct_inference_executed")
-        != (bundle["direct_editor_backend"] == "artifixer")
-        or execution.get("semantic_editor_inference_executed")
-        != (bundle["direct_editor_backend"] != "artifixer")
-        or execution.get("artifixer3d_distillation_executed")
-        != (not bundle["semantic_editor_only"])
-        or execution.get("artifixer3d_plus_inference_executed")
-        != (not bundle["semantic_editor_only"])
-        or execution.get("provider_zero_required_after_return") is not True
-        or execution.get("source_object_restoration_permitted") is not False
-        or execution.get("outside_exact_support_changed_pixels_permitted") != 0
+    dual_target_mode = bundle.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+    common_runtime_valid = (
+        execution.get("schema_version") == RUNTIME_RESULT_SCHEMA_VERSION
+        and execution.get("status")
+        == (
+            "raw_artifixer3d_candidate_completed_requires_visual_and_multiview_review"
+            if dual_target_mode
+            else "candidate_completed_requires_visual_and_multiview_review"
+        )
+        and execution.get("model_loaded") is True
+        and execution.get("provider_zero_required_after_return") is True
+        and execution.get("source_object_restoration_permitted") is False
+    )
+    dual_target_runtime_valid = (
+        dual_target_mode
+        and execution.get("pipeline_mode") == DUAL_TARGET_PIPELINE_MODE
+        and execution.get("artifixer_direct_inference_executed") is False
+        and execution.get("semantic_editor_inference_executed") is False
+        and execution.get("artifixer3d_distillation_executed") is True
+        and execution.get("artifixer3d_plus_inference_executed") is False
+        and execution.get("outside_exact_support_changed_pixels_permitted")
+        == "unconstrained_for_raw_representation_review"
+        and execution.get("outside_support_invariance_gate")
+        == "deferred_until_final_soft_composite"
+    )
+    legacy_runtime_valid = (
+        not dual_target_mode
+        and execution.get("artifixer_direct_inference_executed")
+        == (bundle["direct_editor_backend"] == "artifixer")
+        and execution.get("semantic_editor_inference_executed")
+        == (bundle["direct_editor_backend"] != "artifixer")
+        and execution.get("artifixer3d_distillation_executed")
+        == (not bundle["semantic_editor_only"])
+        and execution.get("artifixer3d_plus_inference_executed")
+        == (not bundle["semantic_editor_only"])
+        and execution.get("outside_exact_support_changed_pixels_permitted") == 0
+    )
+    if not common_runtime_valid or not (
+        dual_target_runtime_valid or legacy_runtime_valid
     ):
         blockers.append("artifixer3d_runtime_not_completed")
     raw_path: Path | None = None

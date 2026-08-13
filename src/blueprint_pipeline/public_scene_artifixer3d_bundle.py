@@ -25,6 +25,9 @@ from .provider_bundle_rehearsal import rehearse_provider_bundle_entrypoint
 from .public_scene_artifixer3d_candidate_inputs import (
     SCHEMA_VERSION as CANDIDATE_INPUT_SCHEMA,
 )
+from .public_scene_artifixer3d_dual_target_inputs import (
+    SCHEMA_VERSION as DUAL_TARGET_INPUT_SCHEMA,
+)
 
 
 SCHEMA_VERSION = "public_scene_artifixer3d_bundle.v1"
@@ -35,6 +38,11 @@ RUNNER = "provider_runtime/public_scene_artifixer3d_runner.py"
 MANIFEST = "provider_runtime/artifixer3d_bundle_manifest.json"
 RUNTIME_REQUEST = "provider_runtime/artifixer3d_runtime_request.json"
 INPUT_RECEIPT = "provider_runtime/input/public_scene_artifixer3d_candidate_inputs.v3.json"
+DUAL_TARGET_INPUT_RECEIPT = (
+    "provider_runtime/input/public_scene_artifixer3d_dual_target_inputs.v1.json"
+)
+FULL_PIPELINE_MODE = "full_artifixer3d_plus"
+DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
 
 ARTIFIXER_REPOSITORY = "https://github.com/nv-tlabs/ArtiFixer.git"
 ARTIFIXER_COMMIT = "a392c4dfe17459ef9952407accdb9fcdcdddba98"
@@ -61,6 +69,7 @@ VIBE_SOURCE_LICENSE_SHA256 = (
 DIRECT_EDITOR_BACKENDS = frozenset(
     {"artifixer", "qwen_image_edit_2511", "vibe_image_edit"}
 )
+NO_DIRECT_EDITOR = "none"
 MODEL_LICENSE_URL = (
     "https://developer.download.nvidia.com/licenses/"
     "NVIDIA-OneWay-Noncommercial-License-22Mar2022.pdf"
@@ -238,6 +247,86 @@ def _portable(value: str) -> PurePosixPath:
 def _candidate_receipt(path: Path) -> dict[str, Any]:
     value = _read(path, code="artifixer3d_bundle_candidate_receipt_unreadable")
     tasks = value.get("tasks")
+    if value.get("schema_version") == DUAL_TARGET_INPUT_SCHEMA:
+        if (
+            value.get("status")
+            != "paired_target_inputs_prepared_no_model_no_execution"
+            or value.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+            or value.get("receipt_digest")
+            != canonical_digest(value, digest_field="receipt_digest")
+            or not isinstance(tasks, list)
+            or not 1 <= len(tasks) <= 5
+            or value.get("replacement_object_count") != len(tasks)
+            or value.get("execution", {}).get("provider_mutations_performed") != 0
+            or value.get("claim_boundary", {}).get(
+                "semantic_teacher_object_absence_reviewed"
+            )
+            is not False
+            or value.get("claim_boundary", {}).get("appearance_repair_qualified")
+            is not False
+        ):
+            raise ArtiFixer3DBundleError(
+                ["artifixer3d_bundle_dual_target_candidate_receipt_invalid"]
+            )
+        transition = value.get("transition_support")
+        if (
+            not isinstance(transition, Mapping)
+            or not isinstance(transition.get("radius_pixels"), int)
+            or isinstance(transition.get("radius_pixels"), bool)
+            or transition["radius_pixels"] < 0
+            or transition.get("anchor_loss_mask_outside_support") != 255
+            or transition.get("anchor_loss_mask_inside_support") != 0
+            or transition.get("semantic_teacher_loss_mask") is not None
+        ):
+            raise ArtiFixer3DBundleError(
+                ["artifixer3d_bundle_dual_target_transition_invalid"]
+            )
+        for task in tasks:
+            physical = task.get("physical_camera_count") if isinstance(task, Mapping) else None
+            training = task.get("training_record_count") if isinstance(task, Mapping) else None
+            frames = task.get("frames") if isinstance(task, Mapping) else None
+            anchors = task.get("selected_anchor_indices") if isinstance(task, Mapping) else None
+            teachers = task.get("semantic_teacher_indices") if isinstance(task, Mapping) else None
+            if (
+                not isinstance(task, Mapping)
+                or not isinstance(physical, int)
+                or isinstance(physical, bool)
+                or physical <= 0
+                or training != 2 * physical
+                or not isinstance(frames, list)
+                or len(frames) != physical
+                or anchors != list(range(0, training, 2))
+                or teachers != list(range(1, training, 2))
+                or set(anchors) & set(teachers)
+                or task.get("loss_contract", {}).get(
+                    "same_pose_and_intrinsics_per_pair"
+                )
+                is not True
+                or task.get("loss_contract", {}).get("direct_artifixer_required")
+                is not False
+                or task.get("loss_contract", {}).get(
+                    "artifixer3d_plus_required_for_this_packet"
+                )
+                is not False
+            ):
+                raise ArtiFixer3DBundleError(
+                    ["artifixer3d_bundle_dual_target_candidate_task_invalid"]
+                )
+            for index, frame in enumerate(frames):
+                if (
+                    not isinstance(frame, Mapping)
+                    or frame.get("physical_camera_index") != index
+                    or frame.get("anchor_training_index") != 2 * index
+                    or frame.get("semantic_teacher_training_index") != 2 * index + 1
+                    or frame.get("teacher_loss_mask_materialized") is not False
+                    or frame.get("pair_pose_and_intrinsics_exactly_equal") is not True
+                    or not isinstance(frame.get("anchor_loss_mask"), Mapping)
+                    or not isinstance(frame.get("semantic_teacher_rgb"), Mapping)
+                ):
+                    raise ArtiFixer3DBundleError(
+                        ["artifixer3d_bundle_dual_target_candidate_frame_invalid"]
+                    )
+        return value
     semantics = value.get("repair_target_semantics")
     if (
         value.get("schema_version") != CANDIDATE_INPUT_SCHEMA
@@ -527,6 +616,7 @@ def build_artifixer3d_bundle(
     random_seed: int = 840_920,
     direct_editor_backend: str = "artifixer",
     semantic_editor_only: bool = False,
+    pipeline_mode: str = FULL_PIPELINE_MODE,
 ) -> dict[str, Any]:
     """Build and locally rehearse one immutable no-upload provider bundle."""
 
@@ -554,10 +644,38 @@ def build_artifixer3d_bundle(
         or not 1 <= artifixer3d_steps <= 30_000
         or not isinstance(random_seed, int)
         or isinstance(random_seed, bool)
-        or direct_editor_backend not in DIRECT_EDITOR_BACKENDS
+        or pipeline_mode not in {FULL_PIPELINE_MODE, DUAL_TARGET_PIPELINE_MODE}
+        or (
+            pipeline_mode == FULL_PIPELINE_MODE
+            and direct_editor_backend not in DIRECT_EDITOR_BACKENDS
+        )
+        or (
+            pipeline_mode == DUAL_TARGET_PIPELINE_MODE
+            and direct_editor_backend != NO_DIRECT_EDITOR
+        )
         or not isinstance(semantic_editor_only, bool)
-        or (semantic_editor_only and direct_editor_backend == "artifixer")
-        or (direct_editor_backend == "vibe_image_edit" and not semantic_editor_only)
+        or (
+            pipeline_mode == FULL_PIPELINE_MODE
+            and semantic_editor_only
+            and direct_editor_backend == "artifixer"
+        )
+        or (
+            pipeline_mode == FULL_PIPELINE_MODE
+            and direct_editor_backend == "vibe_image_edit"
+            and not semantic_editor_only
+        )
+        or (pipeline_mode == DUAL_TARGET_PIPELINE_MODE and semantic_editor_only)
+        or (
+            pipeline_mode == FULL_PIPELINE_MODE
+            and candidate.get("schema_version") != CANDIDATE_INPUT_SCHEMA
+        )
+        or (
+            pipeline_mode == DUAL_TARGET_PIPELINE_MODE
+            and (
+                candidate.get("schema_version") != DUAL_TARGET_INPUT_SCHEMA
+                or candidate.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+            )
+        )
         or any(
             not isinstance(value, int) or isinstance(value, bool) or value <= 0
             for value in allowed_active_instance_ids
@@ -634,6 +752,7 @@ def build_artifixer3d_bundle(
             "use_wandb": False,
         },
         "random_seed": random_seed,
+        "pipeline_mode": pipeline_mode,
         "direct_editor_backend": direct_editor_backend,
         "phases": [
             (
@@ -649,7 +768,55 @@ def build_artifixer3d_bundle(
         ],
         "runtime_request_digest": "",
     }
-    if direct_editor_backend != "artifixer":
+    if pipeline_mode == DUAL_TARGET_PIPELINE_MODE:
+        runtime_request.update(
+            {
+                "repair_target": (
+                    "whole_frame_semantic_empty_scene_distillation_with_"
+                    "original_outside_support_anchors"
+                ),
+                "outside_exact_support_changed_pixels_permitted": (
+                    "unconstrained_for_raw_representation_review"
+                ),
+                "outside_support_invariance_gate": (
+                    "deferred_until_final_soft_composite"
+                ),
+                "semantic_editor_only": False,
+                "model": None,
+                "wan_base": None,
+                "direct_inference": None,
+                "semantic_editor": None,
+                "direct_model_weights_required": False,
+                "phases": [
+                    "dual_target_input_validation",
+                    "artifixer3d_distillation",
+                    "artifixer3d_review_render",
+                    "external_visual_and_multiview_review",
+                ],
+            }
+        )
+        runtime_request["artifixer3d"].update(
+            {
+                "loss_overrides": {
+                    "loss.use_l1": True,
+                    "loss.lambda_l1": 1.0,
+                    "loss.use_l2": False,
+                    "loss.use_ssim": False,
+                    "loss.use_lpips_override": True,
+                    "loss.lambda_lpips_override": 0.1,
+                    "loss.lambda_reconlosses_override": 0.0,
+                },
+                "whole_semantic_teacher_unmasked": True,
+                "anchor_mask_reduction": "full_frame_mean",
+                "direct_artifixer_bypassed": True,
+                "hard_exact_support_composite_bypassed": True,
+                "artifixer3d_plus_bypassed": True,
+            }
+        )
+    if (
+        pipeline_mode == FULL_PIPELINE_MODE
+        and direct_editor_backend != "artifixer"
+    ):
         semantic_editor = {
             "backend": direct_editor_backend,
             "input_role": "black_exact_mask_hole_with_original_context",
@@ -725,8 +892,10 @@ def build_artifixer3d_bundle(
         "source_identity": runtime_request["artifixer"],
         "model_identity": runtime_request["model"],
         "wan_base_identity": runtime_request["wan_base"],
+        "direct_model_weights_required": pipeline_mode == FULL_PIPELINE_MODE,
         "direct_editor_backend": direct_editor_backend,
         "semantic_editor_only": semantic_editor_only,
+        "pipeline_mode": pipeline_mode,
         "semantic_editor_model_identity": runtime_request.get("semantic_editor"),
         "container_image": DEFAULT_IMAGE,
         "blueprint_source_identity": repository_identity,
@@ -742,6 +911,9 @@ def build_artifixer3d_bundle(
         "expected_runtime_result_schema": RUNTIME_RESULT_SCHEMA_VERSION,
         "manifest_digest": "",
     }
+    if pipeline_mode == DUAL_TARGET_PIPELINE_MODE:
+        manifest["model_identity"] = None
+        manifest["wan_base_identity"] = None
     manifest["manifest_digest"] = canonical_digest(
         manifest, digest_field="manifest_digest"
     )
@@ -767,8 +939,21 @@ def build_artifixer3d_bundle(
         "candidate_input_receipt_digest": candidate["receipt_digest"],
         "replacement_object_count": candidate["replacement_object_count"],
         "task_ids": runtime_request["task_ids"],
+        "task_camera_counts": {
+            str(task["task_id"]): int(
+                task.get("physical_camera_count") or task.get("camera_count")
+            )
+            for task in candidate["tasks"]
+        },
+        "task_training_record_counts": {
+            str(task["task_id"]): int(
+                task.get("training_record_count") or task.get("camera_count")
+            )
+            for task in candidate["tasks"]
+        },
         "direct_editor_backend": direct_editor_backend,
         "semantic_editor_only": semantic_editor_only,
+        "pipeline_mode": pipeline_mode,
         "container_image": DEFAULT_IMAGE,
         "blueprint_source_identity": repository_identity,
         "use_attestation_digest": attestation["attestation_digest"],
@@ -795,7 +980,11 @@ __all__ = [
     "ARTIFIXER_TREE",
     "ArtiFixer3DBundleError",
     "DEFAULT_IMAGE",
+    "DUAL_TARGET_INPUT_RECEIPT",
+    "DUAL_TARGET_PIPELINE_MODE",
     "DIRECT_EDITOR_BACKENDS",
+    "FULL_PIPELINE_MODE",
+    "NO_DIRECT_EDITOR",
     "QWEN_IMAGE_EDIT_LARGE_FILES",
     "QWEN_IMAGE_EDIT_REPOSITORY",
     "QWEN_IMAGE_EDIT_REVISION",
