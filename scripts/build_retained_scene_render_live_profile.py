@@ -183,7 +183,13 @@ def build_retained_scene_render_live_profile(
                     )
                 ],
             ],
-            "max_spend_usd": float(cap),
+            # What this profile can actually spend -- rate times TTL -- not the
+            # bundle's lifetime ceiling. The two were the same number, which
+            # made every standing authorization reserve the whole bundle cap
+            # for a single launch and put the loop back to writing one
+            # authorization per attempt. The bundle cap still bounds this: a
+            # worst case above it is refused above.
+            "max_spend_usd": round(worst_case, 6),
             "hard_ttl_seconds": hard_ttl_seconds,
             "retry_cap": 0,
         },

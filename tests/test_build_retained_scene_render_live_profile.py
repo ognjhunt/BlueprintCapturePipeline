@@ -143,10 +143,27 @@ def test_source_bundle_manifest_records_the_request_path(tmp_path: Path) -> None
     assert set(inputs) >= {"source_bundle_manifest", "evaluation_run_spec"}
 
 
-def test_spend_cap_comes_from_the_bundle_not_the_builder(tmp_path: Path) -> None:
+def test_declared_spend_is_the_worst_case_this_profile_can_reach(tmp_path: Path) -> None:
+    """Rate times TTL, not the bundle's lifetime ceiling. They used to be the
+    same number, so a standing authorization reserved the whole bundle cap for
+    one launch -- which put the loop back to writing one authorization per
+    attempt, the thing the standing authorization exists to remove."""
+
     profile = _build(_fixture(tmp_path, cap=7.5), max_hourly_rate_usd=1.0, hard_ttl_seconds=3600)
 
-    assert profile["allocator"]["max_spend_usd"] == 7.5
+    assert profile["allocator"]["max_spend_usd"] == 1.0
+
+    second = tmp_path / "b"
+    second.mkdir()
+    longer = _build(
+        _fixture(second, cap=7.5), max_hourly_rate_usd=2.0, hard_ttl_seconds=10_800
+    )
+    assert longer["allocator"]["max_spend_usd"] == 6.0
+
+
+def test_the_bundle_cap_still_bounds_the_declared_spend(tmp_path: Path) -> None:
+    with pytest.raises(TaskEvaluationLaunchError, match="worst_case_spend_exceeds_bundle_cap"):
+        _build(_fixture(tmp_path, cap=5.0), max_hourly_rate_usd=2.0, hard_ttl_seconds=10_800)
 
 
 def test_refuses_a_worst_case_exceeding_the_bundle_cap(tmp_path: Path) -> None:
