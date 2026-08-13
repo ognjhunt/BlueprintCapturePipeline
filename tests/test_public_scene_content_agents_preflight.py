@@ -234,3 +234,50 @@ def test_preflight_rejects_caller_asserted_status(
 
     with pytest.raises(ContentAgentsPreflightError, match="caller_asserted_status_forbidden"):
         _run(paths)
+
+
+def test_the_model_secret_is_resolved_the_way_the_deployment_installs_it(
+    tmp_path, monkeypatch
+) -> None:
+    """Control-plane units run as `blueprint` with ProtectHome=true and home
+    `/nonexistent`, so resolving only the environment and `~/.blueprint-secrets`
+    meant the paid preflight could never prove model access on the deployed
+    host -- the same defect PR #449 fixed for provider keys."""
+
+    from blueprint_pipeline import adp_content_agents_bundle_preflight as preflight
+    from blueprint_pipeline.gpu_render_providers import PROVIDER_SECRETS_DIR_ENV
+
+    for name in preflight.SECRET_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    secrets_dir = tmp_path / "provider-secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "openai_api_key").write_text("k-from-the-deployment\n", encoding="utf-8")
+    monkeypatch.setenv(PROVIDER_SECRETS_DIR_ENV, str(secrets_dir))
+
+    assert preflight._secret() == "k-from-the-deployment"
+
+
+def test_an_explicit_secret_file_override_wins(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline import adp_content_agents_bundle_preflight as preflight
+
+    for name in preflight.SECRET_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    explicit = tmp_path / "elsewhere.key"
+    explicit.write_text("k-explicit\n", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY_FILE", str(explicit))
+
+    assert preflight._secret() == "k-explicit"
+
+
+def test_no_secret_anywhere_resolves_empty_rather_than_raising(monkeypatch) -> None:
+    """An absent secret is a blocked preflight, not a crash."""
+
+    from blueprint_pipeline import adp_content_agents_bundle_preflight as preflight
+    from blueprint_pipeline.gpu_render_providers import PROVIDER_SECRETS_DIR_ENV
+
+    for name in preflight.SECRET_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
+    monkeypatch.setenv(PROVIDER_SECRETS_DIR_ENV, "/nonexistent-secrets-dir")
+
+    assert preflight._secret() == ""
