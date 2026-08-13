@@ -4709,6 +4709,10 @@ def _sanitized_instance_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "status": row.get("status"),
         "intended_status": row.get("intended_status"),
         "dph_total": row.get("dph_total") or row.get("min_bid") or row.get("price_per_hour"),
+        # The label is how an instance says which lane created it. Without it
+        # the guard can only ask "is anything running", never "is anything of
+        # mine running".
+        "label": row.get("label"),
         "raw_status_normalized": _instance_status(row).lower(),
     }
 
@@ -4729,7 +4733,26 @@ def _prelaunch_inventory_guard(
     generated_at: str,
     api_key: str,
     allowed_active_instance_ids: Iterable[Any] = (),
+    lane_label_prefix: str = "",
 ) -> dict[str, Any]:
+    """Refuse to launch beside an instance this lane could mistake for its own.
+
+    The allowlist froze the instance ids that happened to be alive when an
+    authorization was written. A concurrent operator sharing the provider
+    account rotates instances on their own schedule, so the frozen list is stale
+    within hours and the guard then blocks this lane over someone else's work --
+    for which the only "fix" is to keep editing the authorization, or to tear
+    down an instance we do not own.
+
+    What the guard is actually for is narrower: this run must not be confused
+    about which instances are its own. That question is answered by the label
+    prefix this lane stamps on everything it creates. An instance carrying this
+    lane's prefix and not on the allowlist is ours and unaccounted for, and
+    blocks. Anything else is recorded as foreign, left alone, and does not.
+
+    With no prefix supplied the original fleet-wide rule stands, so lanes that
+    have not adopted labelling keep the stricter behaviour.
+    """
     blockers: list[str] = []
     active_instances: list[dict[str, Any]] = []
     status_code: int | None = None
@@ -4760,9 +4783,25 @@ def _prelaunch_inventory_guard(
             blockers.append("vast_prelaunch_inventory_query_failed")
             break
     allowed_ids = _machine_id_set(allowed_active_instance_ids)
-    unexpected_active_instances = [
+    unlisted = [
         row for row in active_instances if int(_number(row.get("id")) or -1) not in allowed_ids
     ]
+    prefix = _string(lane_label_prefix)
+    if prefix:
+        # Ours, or unattributable. An instance carrying this lane's prefix is
+        # ours and unaccounted for. An instance carrying no label at all cannot
+        # be attributed to another lane either, and unattributable spend
+        # immediately before a launch is exactly what this guard is for. Only a
+        # different, non-empty label identifies someone else's work.
+        def _is_this_lane(row: Mapping[str, Any]) -> bool:
+            label = _string(row.get("label"))
+            return not label or label.startswith(prefix)
+
+        unexpected_active_instances = [row for row in unlisted if _is_this_lane(row)]
+        foreign_active_instances = [row for row in unlisted if not _is_this_lane(row)]
+    else:
+        unexpected_active_instances = unlisted
+        foreign_active_instances = []
     if unexpected_active_instances:
         blockers.append("active_vast_instances_detected_before_new_launch")
     manifest = {
@@ -4776,6 +4815,11 @@ def _prelaunch_inventory_guard(
         "allowed_active_instance_ids": sorted(allowed_ids),
         "unexpected_active_instance_count": len(unexpected_active_instances),
         "unexpected_active_instances": unexpected_active_instances,
+        "lane_label_prefix": prefix,
+        # Recorded, never touched. Naming them is what keeps "we left someone
+        # else's instance running" an observation rather than an omission.
+        "foreign_active_instance_count": len(foreign_active_instances),
+        "foreign_active_instances": foreign_active_instances,
         "continuing_spend_detected_before_new_launch": bool(active_instances),
         "query_error": query_error,
         "query_attempt_count": query_attempt_count,
@@ -6703,6 +6747,7 @@ def run_vast_provider_adapter(
         generated_at=generated_at,
         api_key=api_key,
         allowed_active_instance_ids=resolved_allowed_active_instance_ids,
+        lane_label_prefix=resolved_label_prefix,
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
     base_result.update(
