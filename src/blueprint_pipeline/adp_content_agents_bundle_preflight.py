@@ -24,6 +24,7 @@ from .adp_content_agents_vast import (
 )
 from .host_resident_launch_inputs import resolve_host_resident_bundle_receipt
 from .common import ensure_dir, utc_now_iso, write_json
+from .gpu_render_providers import _read_secret as _read_provider_secret
 from .decision_evidence_contracts import canonical_digest
 from .hosted_image_generation_preflight import (
     SCHEMA_VERSION as IMAGE_PREFLIGHT_SCHEMA_VERSION,
@@ -179,12 +180,25 @@ def _safe_extract(archive_path: Path, destination: Path) -> None:
 
 
 def _secret() -> str:
+    """Resolve the model-access secret for a service first, a shell second.
+
+    This resolved only the environment and `~/.blueprint-secrets`. Every
+    control-plane unit runs as `blueprint` with `ProtectHome=true` and home
+    `/nonexistent`, so on the deployed host neither path exists and the paid
+    preflight can never prove model access -- the same defect PR #449 fixed for
+    provider keys, in the module that gates this lane's paid admission.
+
+    `_read_secret` already encodes the resolution the units describe:
+    `<NAME>_FILE` first, then the configured secrets directory, and a developer
+    home only when no directory is configured. Reusing it means one answer to
+    "where do secrets live" rather than a third variant of it.
+    """
+
     for name in SECRET_ENV_NAMES:
         value = str(os.getenv(name) or "").strip()
         if value:
             return value
-    path = Path("~/.blueprint-secrets/openai_api_key").expanduser()
-    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    return str(_read_provider_secret("openai_api_key") or "")
 
 
 def _probe_model_access(secret: str, output: Path) -> dict[str, Any]:
