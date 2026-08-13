@@ -66,6 +66,40 @@ def _receipt_path(job: Path) -> Path:
     return job / "adp_retained_scene_gpu_render_bundle_receipt.json"
 
 
+def _artifixer_job(root: Path, *, pipeline_mode: str = "dual_target_artifixer3d_only") -> Path:
+    job = root / "artifixer3d-job"
+    job.mkdir(parents=True)
+    archive = job / "public_scene_artifixer3d_provider_bundle.zip"
+    archive.write_bytes(b"paired-artifixer3d-bundle")
+    receipt = {
+        "schema_version": "public_scene_artifixer3d_bundle.v1",
+        "status": "sealed_rehearsal_passed_no_upload_no_execution",
+        "blueprint_source_identity": {
+            "commit": "a" * 40,
+            "tracked_files_clean": True,
+        },
+        "bundle": {
+            "path": "/Users/author/job/public_scene_artifixer3d_provider_bundle.zip",
+            "sha256": _digest(archive.read_bytes()),
+            "size_bytes": archive.stat().st_size,
+        },
+        "pipeline_mode": pipeline_mode,
+        "direct_editor_backend": "none",
+        "semantic_editor_only": False,
+        "provider_mutations_performed": 0,
+        "local_rehearsal": {
+            "status": "passed",
+            "pipeline_mode": pipeline_mode,
+            "provider_mutations_performed": 0,
+            "paid_inference_performed": False,
+            "gpu_runtime_started": False,
+        },
+    }
+    receipt_path = job / "public_scene_artifixer3d_bundle_receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    return receipt_path
+
+
 def test_receipt_resolves_against_its_own_directory_not_its_recorded_paths(tmp_path):
     job = _job(tmp_path)
 
@@ -81,6 +115,36 @@ def test_receipt_resolves_against_its_own_directory_not_its_recorded_paths(tmp_p
     )
     assert resolution["receipt"]["execution_authority"]["path"].endswith(
         "provider_runtime/execution_authority.json"
+    )
+
+
+def test_paired_artifixer_native_receipt_projects_onto_the_live_launch_contract(tmp_path):
+    receipt_path = _artifixer_job(tmp_path)
+
+    resolution = resolve_host_resident_bundle_receipt(receipt_path, roots=[tmp_path])
+
+    assert resolution["status"] == "ready"
+    assert resolution["blockers"] == []
+    projected = resolution["receipt"]
+    assert projected["status"] == "ready"
+    assert projected["native_receipt_status"] == (
+        "sealed_rehearsal_passed_no_upload_no_execution"
+    )
+    assert projected["implementation_commit"] == "a" * 40
+    assert projected["bundle_sha256"] == projected["bundle"]["sha256"]
+    assert projected["bundle_path"] == str(
+        (receipt_path.parent / "public_scene_artifixer3d_provider_bundle.zip").resolve()
+    )
+
+
+def test_nonpaired_artifixer_receipt_does_not_become_live_ready(tmp_path):
+    receipt_path = _artifixer_job(tmp_path, pipeline_mode="broad_repair")
+
+    resolution = resolve_host_resident_bundle_receipt(receipt_path, roots=[tmp_path])
+
+    assert resolution["status"] == "ready"
+    assert resolution["receipt"]["status"] == (
+        "sealed_rehearsal_passed_no_upload_no_execution"
     )
 
 
