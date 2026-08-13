@@ -61,9 +61,6 @@ ARTIFIXER_MODEL_REPOSITORY = "nvidia/ArtiFixer"
 ARTIFIXER_MODEL_REVISION = "f96352ad72c84a628d5844b6543e94ae8c4479b3"
 WAN_MODEL_REPOSITORY = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 WAN_MODEL_REVISION = "0fad780a534b6463e45facd96134c9f345acfa5b"
-QWEN_IMAGE_EDIT_REPOSITORY = "Qwen/Qwen-Image-Edit-2511"
-QWEN_IMAGE_EDIT_REVISION = "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9"
-QWEN_IMAGE_EDIT_LICENSE = "Apache-2.0"
 VIBE_IMAGE_EDIT_REPOSITORY = "iitolstykh/VIBE-Image-Edit"
 VIBE_IMAGE_EDIT_REVISION = "d670fc5220d9806dd95e3d27508aaa66e7415c45"
 VIBE_IMAGE_EDIT_LICENSE = "Apache-2.0"
@@ -136,58 +133,6 @@ WAN_RUNTIME_FILES = (
         "path": "vae/diffusion_pytorch_model.safetensors",
         "size_bytes": 507_591_892,
         "sha256": "sha256:d6e524b3fffede1787a74e81b30976dce5400c4439ba64222168e607ed19e793",
-    },
-)
-QWEN_IMAGE_EDIT_LARGE_FILES = (
-    {
-        "path": "text_encoder/model-00001-of-00004.safetensors",
-        "size_bytes": 4_968_243_304,
-        "sha256": "sha256:d725335e4ea2399be706469e4b8807716a8fa64bd03468252e9f7acf2415fee4",
-    },
-    {
-        "path": "text_encoder/model-00002-of-00004.safetensors",
-        "size_bytes": 4_991_495_816,
-        "sha256": "sha256:b1830db6908dcc76df3a71492acbcf2b8cac130114cf1f3c2d9edae8de8c6de3",
-    },
-    {
-        "path": "text_encoder/model-00003-of-00004.safetensors",
-        "size_bytes": 4_932_751_040,
-        "sha256": "sha256:09c1807c6d00d7cab94f7db39d4c02ebb8537225ccde383861ac48db97945aa6",
-    },
-    {
-        "path": "text_encoder/model-00004-of-00004.safetensors",
-        "size_bytes": 1_691_924_384,
-        "sha256": "sha256:5dd068336d14d45ffb43cef374d286cc6ba9d8741b028f90a7d040d847961f4a",
-    },
-    {
-        "path": "transformer/diffusion_pytorch_model-00001-of-00005.safetensors",
-        "size_bytes": 9_973_578_592,
-        "sha256": "sha256:2a0c30c9ba44a5f11c21ca139e37951430bbde814ff4e0b5b1a68b80530e7a1a",
-    },
-    {
-        "path": "transformer/diffusion_pytorch_model-00002-of-00005.safetensors",
-        "size_bytes": 9_987_326_072,
-        "sha256": "sha256:54ec249b07b4376e19cf16b764054f03ca03ae2cfbd9939453e2085f4e9bd259",
-    },
-    {
-        "path": "transformer/diffusion_pytorch_model-00003-of-00005.safetensors",
-        "size_bytes": 9_987_307_440,
-        "sha256": "sha256:c55157843525653161e8f6af5acc670ba3aceff04284f7cf657199d24d065e16",
-    },
-    {
-        "path": "transformer/diffusion_pytorch_model-00004-of-00005.safetensors",
-        "size_bytes": 9_930_685_712,
-        "sha256": "sha256:ffcfb5a4895702635890a67bad183591e0ae515d794bdcb26e217b27a7f6d12d",
-    },
-    {
-        "path": "transformer/diffusion_pytorch_model-00005-of-00005.safetensors",
-        "size_bytes": 982_130_472,
-        "sha256": "sha256:2b2556b736629e10a5a0dfa14606f2057f4f81c2ba53f94103682c7ac42d4940",
-    },
-    {
-        "path": "vae/diffusion_pytorch_model.safetensors",
-        "size_bytes": 253_806_966,
-        "sha256": "sha256:0c8bc8b758c649abef9ea407b95408389a3b2f610d0d10fcb054fe171d0a8344",
     },
 )
 VIBE_IMAGE_EDIT_LARGE_FILES = (
@@ -1120,45 +1065,28 @@ def build_artifixer3d_bundle(
             "prompt_policy": "generic_object_absent_background_completion_v1",
             "output_must_be_exact_support_composited": True,
         }
-        if direct_editor_backend == "qwen_image_edit_2511":
-            semantic_editor.update(
-                {
-                    "repository": QWEN_IMAGE_EDIT_REPOSITORY,
-                    "revision": QWEN_IMAGE_EDIT_REVISION,
-                    "license": QWEN_IMAGE_EDIT_LICENSE,
-                    "large_files": list(QWEN_IMAGE_EDIT_LARGE_FILES),
-                    "torch_version": "2.11.0",
-                    "diffusers_version": "0.37.1",
-                    "transformers_version": "5.5.0",
-                    "num_inference_steps": 40,
-                    "true_cfg_scale": 4.0,
-                    "guidance_scale": 1.0,
-                    "enable_model_cpu_offload": True,
-                }
-            )
-        else:
-            semantic_editor.update(
-                {
-                    "repository": VIBE_IMAGE_EDIT_REPOSITORY,
-                    "revision": VIBE_IMAGE_EDIT_REVISION,
-                    "license": VIBE_IMAGE_EDIT_LICENSE,
-                    "large_files": list(VIBE_IMAGE_EDIT_LARGE_FILES),
-                    "source": {
-                        "repository": VIBE_SOURCE_REPOSITORY,
-                        "commit": VIBE_SOURCE_COMMIT,
-                        "tree": VIBE_SOURCE_TREE,
-                        "license_sha256": VIBE_SOURCE_LICENSE_SHA256,
-                    },
-                    "torch_version": "2.6.0",
-                    "diffusers_version": "0.33.1",
-                    "transformers_version": "4.57.1",
-                    "num_inference_steps": 20,
-                    "image_guidance_scale": 1.2,
-                    "guidance_scale": 4.5,
-                    "enable_model_cpu_offload": False,
-                    "maximum_expected_vram_gib": 24,
-                }
-            )
+        semantic_editor.update(
+            {
+                "repository": VIBE_IMAGE_EDIT_REPOSITORY,
+                "revision": VIBE_IMAGE_EDIT_REVISION,
+                "license": VIBE_IMAGE_EDIT_LICENSE,
+                "large_files": list(VIBE_IMAGE_EDIT_LARGE_FILES),
+                "source": {
+                    "repository": VIBE_SOURCE_REPOSITORY,
+                    "commit": VIBE_SOURCE_COMMIT,
+                    "tree": VIBE_SOURCE_TREE,
+                    "license_sha256": VIBE_SOURCE_LICENSE_SHA256,
+                },
+                "torch_version": "2.6.0",
+                "diffusers_version": "0.33.1",
+                "transformers_version": "4.57.1",
+                "num_inference_steps": 20,
+                "image_guidance_scale": 1.2,
+                "guidance_scale": 4.5,
+                "enable_model_cpu_offload": False,
+                "maximum_expected_vram_gib": 24,
+            }
+        )
         runtime_request["semantic_editor"] = semantic_editor
         runtime_request["semantic_editor_only"] = semantic_editor_only
         if semantic_editor_only:
@@ -1282,9 +1210,6 @@ __all__ = [
     "DIRECT_EDITOR_BACKENDS",
     "FULL_PIPELINE_MODE",
     "NO_DIRECT_EDITOR",
-    "QWEN_IMAGE_EDIT_LARGE_FILES",
-    "QWEN_IMAGE_EDIT_REPOSITORY",
-    "QWEN_IMAGE_EDIT_REVISION",
     "SCHEMA_VERSION",
     "VIBE_IMAGE_EDIT_LARGE_FILES",
     "VIBE_IMAGE_EDIT_REPOSITORY",

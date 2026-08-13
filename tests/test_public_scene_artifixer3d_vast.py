@@ -224,11 +224,11 @@ def test_semantic_editor_only_bundle_reopens_for_paid_admission(
     receipt_path, receipt = _bundle(
         tmp_path,
         monkeypatch,
-        direct_editor_backend="qwen_image_edit_2511",
+        direct_editor_backend="vibe_image_edit",
         semantic_editor_only=True,
     )
     validated = validate_artifixer3d_bundle(receipt_path)
-    assert validated["direct_editor_backend"] == "qwen_image_edit_2511"
+    assert validated["direct_editor_backend"] == "vibe_image_edit"
     assert validated["semantic_editor_only"] is True
     assert validated["replacement_object_count"] == 2
     bundle = Path(receipt["bundle"]["path"])

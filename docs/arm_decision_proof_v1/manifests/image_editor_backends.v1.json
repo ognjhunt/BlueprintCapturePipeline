@@ -12,22 +12,13 @@
    "notes": "Upstream bundles several components; treat as non-commercial until each is cleared individually."
   },
   {
-   "backend_id": "qwen_image_edit_2511",
-   "model_identity": "Qwen-Image-Edit 2511",
-   "license": "Apache-2.0",
-   "license_url": "https://huggingface.co/Qwen/Qwen-Image-Edit",
-   "commercial_use_permitted": true,
-   "recorded_on": "2026-08-13",
-   "notes": "Locally hosted weights, NOT the hosted-API path. Retiring it is not a row deletion: the bundle pins QWEN_IMAGE_EDIT_REPOSITORY, QWEN_IMAGE_EDIT_REVISION and a large-files download list, so removing it means removing that weights path and its tests."
-  },
-  {
    "backend_id": "vibe_image_edit",
-   "model_identity": "hosted whole-frame semantic editor",
-   "license": "provider terms of service",
-   "license_url": "https://openai.com/policies/terms-of-use",
+   "model_identity": "VIBE-Image-Edit (iitolstykh/VIBE-Image-Edit)",
+   "license": "Apache-2.0",
+   "license_url": "https://github.com/ai-forever/VIBE",
    "commercial_use_permitted": true,
    "recorded_on": "2026-08-13",
-   "notes": "No implementation is bound to this id -- it is the allowlist token meaning 'a hosted API editor produced these frames', which is the APIs-on-our-own-captures path. Which model, and on whose terms, is recorded per run in editor_identity, so following a newer hosted model needs no change here. The name is inherited from the frozenset this registry replaced and names nothing on its own."
+   "notes": "Locally hosted open weights from ai-forever/VIBE, pinned by repository, revision and license in the bundle module. NOT a hosted API -- an earlier version of this row said 'provider terms of service' and linked OpenAI's terms, which was wrong. For an API editor run against our own captures, add a row whose terms are the provider's and record the model per run in editor_identity."
   }
  ]
 }

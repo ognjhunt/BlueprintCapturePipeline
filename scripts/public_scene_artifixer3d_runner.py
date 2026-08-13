@@ -568,11 +568,6 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
             or manifest.get("semantic_editor_model_identity") != semantic
         ):
             raise ValueError("artifixer3d_semantic_editor_binding_invalid")
-        if (
-            backend == "qwen_image_edit_2511"
-            and semantic.get("enable_model_cpu_offload") is not True
-        ):
-            raise ValueError("artifixer3d_semantic_editor_binding_invalid")
         if backend == "vibe_image_edit" and (
             request.get("semantic_editor_only") is not True
             or semantic.get("enable_model_cpu_offload") is not False
@@ -1466,17 +1461,7 @@ def _semantic_editor_predictions(
 
     semantic = request["semantic_editor"]
     backend = request["direct_editor_backend"]
-    if backend == "qwen_image_edit_2511":
-        from diffusers import QwenImageEditPlusPipeline
-
-        editor = QwenImageEditPlusPipeline.from_pretrained(
-            str(model_root),
-            torch_dtype=torch.bfloat16,
-            local_files_only=True,
-        )
-        editor.enable_model_cpu_offload()
-        editor.set_progress_bar_config(disable=None)
-    elif backend == "vibe_image_edit":
+    if backend == "vibe_image_edit":
         from vibe.editor import ImageEditor
 
         editor = ImageEditor(
@@ -1498,33 +1483,14 @@ def _semantic_editor_predictions(
         with Image.open(source) as image:
             condition = image.convert("RGB")
         seed = int(request["random_seed"]) + index
-        if backend == "qwen_image_edit_2511":
-            generator = torch.Generator(device="cpu").manual_seed(seed)
-            generated = (
-                editor(
-                    image=condition,
-                    prompt=SEMANTIC_EDITOR_PROMPT,
-                    negative_prompt=(
-                        "object, appliance, laptop, notebook, silhouette, blank panel, "
-                        "solid white patch, blurry patch, floating geometry"
-                    ),
-                    true_cfg_scale=float(semantic["true_cfg_scale"]),
-                    guidance_scale=float(semantic["guidance_scale"]),
-                    num_inference_steps=int(semantic["num_inference_steps"]),
-                    generator=generator,
-                )
-                .images[0]
-                .convert("RGB")
-            )
-        else:
-            generated = editor.generate_edited_image(
-                SEMANTIC_EDITOR_PROMPT,
-                conditioning_image=condition,
-                randomize_seed=False,
-                seed=seed,
-                num_images_per_prompt=1,
-                do_revert_resize=True,
-            )[0].convert("RGB")
+        generated = editor.generate_edited_image(
+            SEMANTIC_EDITOR_PROMPT,
+            conditioning_image=condition,
+            randomize_seed=False,
+            seed=seed,
+            num_images_per_prompt=1,
+            do_revert_resize=True,
+        )[0].convert("RGB")
         if generated.size != condition.size:
             generated = generated.resize(condition.size, Image.Resampling.LANCZOS)
         output = output_root / f"{index:05d}.png"
