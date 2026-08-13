@@ -21,6 +21,10 @@ from typing import Any, Mapping, Sequence
 import zipfile
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .image_editor_backend_registry import (
+    NO_DIRECT_EDITOR as REGISTRY_NO_DIRECT_EDITOR,
+    registered_backend_ids,
+)
 from .provider_bundle_rehearsal import rehearse_provider_bundle_entrypoint
 from .public_scene_artifixer3d_candidate_inputs import (
     SCHEMA_VERSION as CANDIDATE_INPUT_SCHEMA,
@@ -69,8 +73,13 @@ VIBE_SOURCE_TREE = "208f31e15a70de8a8b58e20acd6aba465ac1fcbc"
 VIBE_SOURCE_LICENSE_SHA256 = (
     "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 )
-DIRECT_EDITOR_BACKENDS = frozenset({"artifixer", "qwen_image_edit_2511", "vibe_image_edit"})
-NO_DIRECT_EDITOR = "none"
+# Read from the registry rather than pinned here: the best image-editing models
+# change every few months, and a frozenset in code meant adopting one required a
+# release. The registry records each backend's terms alongside its name, so the
+# seam stays open for the next model without opening it for a model nobody
+# checked the license on. See `image_editor_backend_registry`.
+DIRECT_EDITOR_BACKENDS = registered_backend_ids()
+NO_DIRECT_EDITOR = REGISTRY_NO_DIRECT_EDITOR
 
 
 def resolve_default_removal_pipeline(candidate_schema_version: str) -> dict[str, str]:

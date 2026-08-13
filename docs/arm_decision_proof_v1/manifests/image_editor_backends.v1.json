@@ -1,0 +1,32 @@
+{
+ "schema_version": "image_editor_backend_registry.v1",
+ "note": "Adding a newly released image editor is a row here, not a code change. Every row records the terms the model may be used under, because these artifacts reach customers. An entry without recorded terms is refused rather than defaulted.",
+ "backends": [
+  {
+   "backend_id": "artifixer",
+   "model_identity": "ArtiFixer3D paired appearance repair",
+   "license": "see upstream ArtiFixer3D THIRD-PARTY-NOTICES",
+   "license_url": "https://github.com/artifixer/artifixer3d",
+   "commercial_use_permitted": false,
+   "recorded_on": "2026-08-13",
+   "notes": "Upstream bundles several components; treat as non-commercial until each is cleared individually."
+  },
+  {
+   "backend_id": "qwen_image_edit_2511",
+   "model_identity": "Qwen-Image-Edit 2511",
+   "license": "Apache-2.0",
+   "license_url": "https://huggingface.co/Qwen/Qwen-Image-Edit",
+   "commercial_use_permitted": true,
+   "recorded_on": "2026-08-13"
+  },
+  {
+   "backend_id": "vibe_image_edit",
+   "model_identity": "hosted whole-frame semantic editor",
+   "license": "provider terms of service",
+   "license_url": "https://openai.com/policies/terms-of-use",
+   "commercial_use_permitted": true,
+   "recorded_on": "2026-08-13",
+   "notes": "Hosted API. The specific model is recorded per run in editor_identity, so a newer hosted model does not need a new backend_id."
+  }
+ ]
+}
