@@ -61,6 +61,15 @@ Environment=NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key
 Environment=DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username
 Environment=DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat
 Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
+# The Content Agents config preflight proves live model access before that
+# lane may allocate. This unit runs with ProtectHome=true and home
+# /nonexistent, so a secret resolved from a developer home cannot be read
+# here; name it the way every other credential on this unit is named.
+Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key
+# The configured directory is authoritative, so a key that exists only on
+# somebody's workstation cannot stand in for one the deployment never
+# installed. Three sibling units already declare it.
+Environment=BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
 Environment=BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_access_key_id
 Environment=BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_secret_access_key
 Environment=BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url
