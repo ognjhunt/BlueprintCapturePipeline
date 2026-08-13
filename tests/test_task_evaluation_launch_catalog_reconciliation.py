@@ -233,3 +233,67 @@ def test_a_symlinked_profile_fails_closed(tmp_path: Path) -> None:
         reconcile_public_catalog(
             profile_dir=tmp_path / "profiles", catalog_path=tmp_path / "catalog.json"
         )
+
+
+def test_a_profile_whose_inputs_are_missing_is_demoted_not_fatal(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    """Raising here is a total outage on exactly the host that most needs to
+    keep accepting launches. A host restored from an image has none of the
+    inputs a previous host accumulated, and the catalog reconciler is an
+    ExecStartPre for the intake service."""
+
+    import json as _json
+
+    from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
+    from test_task_evaluation_launch_dispatcher import _profile, _write
+
+    profile_dir = tmp_path / "profiles"
+    intact = _profile(tmp_path)
+    stale = _json.loads(_json.dumps(intact))
+    stale["profile_id"] = "inputs-since-deleted"
+    # Same declared inputs, one of them no longer on this host -- the shape a
+    # rebuilt host produces, not a malformed document.
+    stale["immutable_inputs"] = [dict(row) for row in intact["immutable_inputs"]]
+    stale["immutable_inputs"][0]["path"] = str(tmp_path / "deleted-by-a-host-rebuild.json")
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import canonical_digest
+
+    stale["profile_digest"] = canonical_digest(stale, digest_field="profile_digest")
+    _write(profile_dir / f"{intact['profile_id']}.json", intact)
+    _write(profile_dir / f"{stale['profile_id']}.json", stale)
+
+    rows = {
+        row["profile_id"]: row
+        for row in _json.loads(build_catalog_payload(profile_dir).decode("utf-8"))
+    }
+
+    # The whole catalog still projects.
+    assert set(rows) == {intact["profile_id"], "inputs-since-deleted"}
+    demoted = rows["inputs-since-deleted"]["execution_admission"]
+    assert demoted["live_enabled"] is False
+    assert any("immutable_input_missing" in b for b in demoted["blockers"])
+    assert rows[intact["profile_id"]]["execution_admission"]["live_enabled"] is True
+
+
+def test_a_malformed_profile_still_fails_the_whole_catalog(tmp_path):
+    """A document that cannot be projected is a different problem from a host
+    that does not have the bytes it names."""
+
+    import json as _json
+
+    import pytest as _pytest
+
+    from blueprint_pipeline.task_evaluation_launch_catalog import (
+        LaunchCatalogError,
+        build_catalog_payload,
+    )
+    from test_task_evaluation_launch_dispatcher import _profile, _write
+
+    profile_dir = tmp_path / "profiles"
+    broken = _profile(tmp_path)
+    broken.pop("required_controls")
+    _write(profile_dir / "broken.json", broken)
+
+    with _pytest.raises(LaunchCatalogError):
+        build_catalog_payload(profile_dir)
