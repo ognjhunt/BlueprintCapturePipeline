@@ -22,6 +22,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,15 @@ _SPEC = importlib.util.spec_from_file_location(
 deploy = importlib.util.module_from_spec(_SPEC)
 assert _SPEC.loader is not None
 _SPEC.loader.exec_module(deploy)
+
+
+def test_script_bootstraps_repo_src_for_the_bare_host_interpreter() -> None:
+    """The production host runs this script with python3, not an installed CLI."""
+
+    assert str(REPO_ROOT / "src") in sys.path
+    assert sys.path.index(str(REPO_ROOT / "src")) < sys.path.index(
+        str(REPO_ROOT / "scripts")
+    )
 
 
 def _lock(tmp_path: Path, **overrides) -> Path:
@@ -188,12 +198,25 @@ def test_runtime_identity_drop_in_is_atomic_and_contains_no_credentials(
     )
 
     content = drop_in.read_text(encoding="utf-8")
-    assert "[Service]" in content
-    assert f"Environment=BLUEPRINT_SOURCE_COMMIT={'b' * 40}" in content
-    assert f"Environment=BLUEPRINT_PIPELINE_REPO={tmp_path / 'repo'}" in content
-    assert "TOKEN" not in content
-    assert "SECRET" not in content
+    identity_env = drop_in.with_suffix(".env")
+    env_content = identity_env.read_text(encoding="utf-8")
+    assert content == (
+        "# Managed by scripts/deploy_control_plane_commit.py.\n"
+        "# Loaded after the base unit credential EnvironmentFile.\n"
+        "[Service]\n"
+        f"EnvironmentFile={identity_env}\n"
+    )
+    assert f"BLUEPRINT_SOURCE_COMMIT={'b' * 40}" in env_content
+    assert f"BLUEPRINT_PIPELINE_REPO={tmp_path / 'repo'}" in env_content
+    # Environment= loses to the base unit's EnvironmentFile= regardless of
+    # drop-in order.  The regression is specifically that this must be a later
+    # EnvironmentFile, not merely a later Environment directive.
+    assert "\nEnvironment=" not in content
+    assert "TOKEN" not in content + env_content
+    assert "SECRET" not in content + env_content
     assert drop_in.stat().st_mode & 0o777 == 0o644
+    assert identity_env.stat().st_mode & 0o777 == 0o644
+    assert receipt["identity_environment_file"] == str(identity_env)
     assert receipt["credential_environment_file_opened"] is False
     assert receipt["credential_values_recorded"] is False
 
