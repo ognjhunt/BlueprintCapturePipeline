@@ -60,9 +60,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     "task-evaluation-profile-preflight": "not_a_website_lane",
     # Real debt: executable, not retired, not frozen, and unreachable.
     "adp-isaac-lab-arena-native-control": "awaiting_builder",
-    "native-task-arena-construction": "awaiting_builder",
-    "native-task-arena-controls": "awaiting_builder",
-    "native-task-arena-policy": "awaiting_builder",
     "new-site-diagnostic-canary": "awaiting_builder",
     "new-site-native-camera": "awaiting_builder",
     "reconstruction-worker-smoke": "awaiting_builder",
@@ -114,17 +111,31 @@ def _builder_probe_kinds() -> dict[str, str]:
         assert spec.loader is not None
         sys.modules[path.stem] = module
         spec.loader.exec_module(module)
-        kind = getattr(getattr(module, "SPEC", None), "probe_kind", None) or getattr(
-            module, "PROBE_KIND", None
-        )
-        if kind is None:
+        found: set[str] = set()
+        for attribute in vars(module).values():
+            # A single-lane builder declares one SPEC. A chain builder declares
+            # several links, and reading only SPEC would report its whole
+            # family as unreachable -- which it did, silently, until the
+            # Arena builder landed and this gate stayed green.
+            candidates = (
+                attribute.values()
+                if isinstance(attribute, dict)
+                else attribute
+                if isinstance(attribute, (list, tuple, set))
+                else [attribute]
+            )
+            for candidate in candidates:
+                kind = getattr(candidate, "probe_kind", None)
+                if isinstance(kind, str):
+                    found.add(kind)
+        if isinstance(getattr(module, "PROBE_KIND", None), str):
+            found.add(module.PROBE_KIND)
+        if not found:
             # The two builders that predate the shared skeleton pass the kind
             # as an argv literal rather than declaring it.
             source = path.read_text(encoding="utf-8")
-            kind = next(
-                (k for k in _dispatched_probe_kinds() if f'"{k}"' in source), None
-            )
-        if isinstance(kind, str):
+            found = {k for k in _dispatched_probe_kinds() if f'"{k}"' in source}
+        for kind in found:
             emitted[kind] = path.stem
     return emitted
 
@@ -199,7 +210,7 @@ def test_the_reachability_debt_is_stated_rather_than_implied() -> None:
         if reason == "awaiting_builder"
     )
 
-    assert len(debt) <= 7, (
+    assert len(debt) <= 4, (
         f"unreachable executable probe kinds grew to {len(debt)}: {debt}. "
         "Lower this bound as builders land; do not raise it to make it pass."
     )

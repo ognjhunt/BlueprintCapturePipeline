@@ -183,9 +183,15 @@ The 22 unreachable kinds are not one problem:
 | `retired_appearance_approach` | 7 | Superseded by the GPT-teacher/ArtiFixer3D path. Not to be relaunched; receipts retained as spend anchors. |
 | `frozen_program` | 7 | Frozen by the active-program contract in `CLAUDE.md`. |
 | `not_a_website_lane` | 1 | The profile preflight, which the allocator runs itself. |
-| `awaiting_builder` | 7 | Real debt: executable, not retired, not frozen, unreachable. |
+| `awaiting_builder` | 4 | Real debt: executable, not retired, not frozen, unreachable. |
 
-Only the last row is work. It is the Arena family (construction, controls,
-policy, and the Isaac Lab Arena native control), the two fresh-site probes, and
-the reconstruction worker smoke. The contract caps that row at its current size,
-so it can shrink but not silently grow.
+Only the last row is work. The Arena chain (construction -> controls -> policy)
+came off it when `build_native_task_arena_live_profile.py` landed, leaving the
+Isaac Lab Arena native control, the two fresh-site probes, and the
+reconstruction worker smoke. The contract caps that row at its current size, so
+it can shrink but not silently grow.
+
+Reading only a builder's `SPEC` under-reported this: a chain builder declares
+several links and no module-level `SPEC`, so the whole Arena family read as
+unreachable even after its builder existed, and the gate stayed green. The
+extraction now walks every module-level object that carries a `probe_kind`.
