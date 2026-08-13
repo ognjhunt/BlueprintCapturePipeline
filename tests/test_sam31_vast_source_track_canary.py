@@ -136,6 +136,7 @@ class _Provider:
         }
 
     def build_request(self, spec, job_dir):
+        assert spec.name.startswith("blueprint-sam31-source-tracks-")
         assert spec.image == IMAGE
         assert spec.requires_rtx is False
         assert spec.env["HF_TOKEN"] == TOKEN
@@ -203,6 +204,7 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
     assert result["provider_zero_verified"] is True
     assert result["provider_mutations_performed"] == 2
     assert result["comparative_policy_ranking_verdict"] == "thesis_not_supported"
+    assert provider.requests[0]["create_payload"]["env"]
     persisted = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in tmp_path.rglob("*")

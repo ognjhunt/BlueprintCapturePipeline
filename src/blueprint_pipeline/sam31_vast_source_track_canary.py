@@ -36,6 +36,7 @@ from .sam31_gpu_admission import (
     OPERATION,
 )
 from .sam31_source_track_canary_worker import RUNTIME_RESULT_SCHEMA_VERSION
+from .vast_independent_watchdog_control import write_started_vast_instance_id
 
 
 EXECUTION_SCHEMA_VERSION = "semantic_sam31_vast_source_track_execution.v1"
@@ -92,7 +93,9 @@ def _watchdog_valid(
     if (
         watchdog.get("status") != "armed"
         or watchdog.get("independent_process") is not True
-        or str(watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or "") != NAME_PREFIX
+        or not str(
+            watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or ""
+        ).startswith(NAME_PREFIX)
         or pid <= 0
         or deadline < now_epoch + hard_ttl_seconds
     ):
@@ -290,7 +293,6 @@ def run_sam31_vast_source_track_canary(
     ensure_dir(lease_dir)
     request_digest = str(request.get("request_digest") or "")
     image = str(request.get("worker_image_digest") or "")
-    name = f"{NAME_PREFIX}{request_digest.removeprefix('sha256:')[:12]}"
     started_at = float(clock())
     watchdog = preflight.get("watchdog")
     watchdog = watchdog if isinstance(watchdog, Mapping) else {}
@@ -299,6 +301,10 @@ def run_sam31_vast_source_track_canary(
     )
     if not validator(watchdog, started_at, hard_ttl):
         raise Sam31VastCanaryError("sam31_independent_watchdog_not_live")
+    watchdog_prefix = str(
+        watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or ""
+    )
+    name = f"{watchdog_prefix}{request_digest.removeprefix('sha256:')[:12]}"
     scoped_before = provider.billable_inventory(name_prefix=NAME_PREFIX)
     global_before = provider.billable_inventory(name_prefix="")
     if not all(
@@ -407,6 +413,13 @@ def run_sam31_vast_source_track_canary(
             instance_id = str(launch_result["instance_id"])
             provider_mutations += 1
             bind_pending_teardown_instance(pending_path, instance_id)
+            watchdog_instance_value = str(watchdog.get("started_instance_id_path") or "")
+            if watchdog_instance_value:
+                watchdog_instance_path = Path(watchdog_instance_value).expanduser()
+                if not watchdog_instance_path.is_absolute() or watchdog_instance_path.is_symlink():
+                    blockers.append("sam31_watchdog_instance_binding_path_invalid")
+                else:
+                    write_started_vast_instance_id(watchdog_instance_path, int(instance_id))
             raw_result: dict[str, Any] | None = None
             while float(clock()) - started_at <= hard_ttl:
                 try:

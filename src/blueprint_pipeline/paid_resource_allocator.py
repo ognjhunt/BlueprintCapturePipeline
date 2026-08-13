@@ -110,6 +110,8 @@ from . import measurement_dlo_lab_paid_allocator
 from .reconstruction_paid_transport import prepare_reconstruction_paid_transport
 from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
+from .sam31_gpu_admission import PROBE_KIND as SAM31_SOURCE_TRACKS_PROBE_KIND
+from .sam31_paid_resource_allocator_lane import run_sam31_paid_resource_allocator_lane
 from .gpu_render_providers import get_render_provider
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
@@ -1243,6 +1245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
+            SAM31_SOURCE_TRACKS_PROBE_KIND,
             ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
@@ -1328,6 +1331,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-hard-ttl-seconds", type=int)
     gpu.add_argument("--reconstruction-retry-cap", type=int)
     gpu.add_argument("--reconstruction-authority-id")
+    gpu.add_argument("--sam31-max-spend-usd", type=float)
+    gpu.add_argument("--sam31-max-hourly-rate-usd", type=float)
+    gpu.add_argument("--sam31-hard-ttl-seconds", type=int)
+    gpu.add_argument("--sam31-retry-cap", type=int, default=0)
+    gpu.add_argument("--sam31-authority-id")
+    gpu.add_argument("--sam31-input-bundle")
+    gpu.add_argument("--sam31-input-bundle-receipt")
+    gpu.add_argument("--sam31-attempt-authority")
+    gpu.add_argument(
+        "--sam31-allowed-active-vast-instance-id",
+        type=int,
+        action="append",
+        default=[],
+    )
+    gpu.add_argument("--sam31-hf-token-file")
     gpu.add_argument("--adp-public-reference-manifest")
     gpu.add_argument("--adp-arena-approval")
     gpu.add_argument("--adp009d-approved-can")
@@ -1725,6 +1743,63 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             write_json(output, result)
             success = result.get("status") == "completed"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == SAM31_SOURCE_TRACKS_PROBE_KIND:
+            checkout_blockers, checkout_commit = _source_checkout_blockers(
+                args.expected_source_commit or "",
+                allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
+            )
+            required = (
+                "provider_launch_request",
+                "preflight_bundle",
+                "admission_out",
+                "bound_request_out",
+                "adapter_output",
+            )
+            missing = [name for name in required if not getattr(args, name, None)]
+            if args.execute:
+                missing.extend(
+                    name
+                    for name in (
+                        "sam31_input_bundle",
+                        "sam31_input_bundle_receipt",
+                        "sam31_attempt_authority",
+                        "sam31_hf_token_file",
+                        "sam31_max_hourly_rate_usd",
+                    )
+                    if not getattr(args, name, None)
+                )
+            blockers = sorted(
+                set(
+                    [
+                        *checkout_blockers,
+                        *[
+                            f"{name}_missing" if name.startswith("sam31_") else f"sam31_{name}_missing"
+                            for name in missing
+                        ],
+                    ]
+                )
+            )
+            if blockers:
+                result = {
+                    "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
+                    "status": "blocked",
+                    "blockers": blockers,
+                    "provider_mutations_performed": 0,
+                    "paid_execution_started": False,
+                    "proof_effect": "none",
+                }
+                for name in ("admission_out", "adapter_output"):
+                    value = getattr(args, name, None)
+                    if value:
+                        write_json(Path(value), result)
+            else:
+                result = run_sam31_paid_resource_allocator_lane(
+                    args,
+                    checkout_commit=checkout_commit,
+                )
+            success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == TASK_EVALUATION_PROFILE_PREFLIGHT_PROBE_KIND:
