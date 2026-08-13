@@ -73,25 +73,33 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             raise LaunchCatalogError(
                 f"published_profile_invalid:{path.name}:unparseable"
             ) from exc
+        # A malformed profile cannot be projected at all and still fails the
+        # whole catalog. Missing bytes are a different kind of problem: the
+        # document is well formed and this host simply does not have what it
+        # names. Raising on that meant one stale profile stopped every other
+        # profile from being served -- and worse, it is guaranteed on a host
+        # restored from an image, where none of the inputs a previous host
+        # accumulated exist yet. The catalog reconciler is an ExecStartPre for
+        # intake, so that is a total outage with no obvious cause.
         blockers = validate_launch_profile(profile)
-        blockers.extend(verify_profile_immutable_inputs(profile))
         if blockers:
             raise LaunchCatalogError(
                 f"published_profile_invalid:{path.name}:" + ",".join(sorted(set(blockers)))
             )
         descriptor = public_launch_profile_descriptor(profile)
+        unavailable = verify_profile_immutable_inputs(profile)
         # A profile whose inputs are not on this host cannot start a run here,
         # so serving it as live is the lie. Demote it in the projection rather
         # than refusing the whole catalog: the published bytes stay immutable
         # evidence, and one stale profile must not make every other profile
         # unreachable -- the catalog reconciler is an ExecStartPre for intake,
         # so raising here would take the website path down with it.
-        residency = launch_profile_residency_blockers(profile)
-        if residency:
+        unrunnable = [*unavailable, *launch_profile_residency_blockers(profile)]
+        if unrunnable:
             admission = dict(descriptor.get("execution_admission") or {})
             admission["live_enabled"] = False
             admission["blockers"] = sorted(
-                {*(admission.get("blockers") or []), *residency}
+                {*(admission.get("blockers") or []), *unrunnable}
             )
             descriptor["execution_admission"] = admission
         descriptors.append(descriptor)
