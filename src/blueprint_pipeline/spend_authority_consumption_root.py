@@ -67,6 +67,45 @@ def consumption_root() -> Path:
     return spend_authority_root() / _CONSUMED_DIRECTORY_NAME
 
 
+def prepare_consumption_root() -> Path:
+    """Return the consumption directory, created and tightened to 0o700.
+
+    Two components disagreed about this directory's mode. The ledger
+    reconciler created it with the process umask -- 0o755 on the deployed host
+    -- while every paid lane refuses a consumption root with any group or other
+    bit set. ``mkdir(mode=0o700, exist_ok=True)`` does not change an existing
+    directory, so on any host where the reconciler ran first, which is every
+    deployed host, every paid attempt was refused.
+
+    The mode check exists so nothing but this process can read or alter the
+    ledger that stops one authorization funding repeated allocations. Where we
+    own the directory, tightening it enforces that property; refusing instead
+    leaves a state we could have fixed and could not act on, reported as a
+    write failure that names the symptom rather than the cause. Ownership is
+    still required, and a symlink is still refused outright: those we cannot
+    make safe.
+    """
+
+    root = consumption_root()
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SpendAuthorityRootError(f"spend_authority_consumption_root_unwritable:{exc.errno}")
+    if root.is_symlink():
+        raise SpendAuthorityRootError("spend_authority_consumption_root_is_symlink")
+    stat_result = root.stat()
+    if hasattr(os, "getuid") and stat_result.st_uid != os.getuid():
+        raise SpendAuthorityRootError("spend_authority_consumption_root_not_owned")
+    if stat_result.st_mode & 0o077:
+        try:
+            root.chmod(0o700)
+        except OSError:
+            raise SpendAuthorityRootError(
+                "spend_authority_consumption_root_permissions_unsafe"
+            ) from None
+    return root
+
+
 def authorizations_root() -> Path:
     """Return the directory holding externally supplied authorizations."""
     return spend_authority_root() / _AUTHORIZATIONS_DIRECTORY_NAME
@@ -77,5 +116,6 @@ __all__ = [
     "SpendAuthorityRootError",
     "authorizations_root",
     "consumption_root",
+    "prepare_consumption_root",
     "spend_authority_root",
 ]

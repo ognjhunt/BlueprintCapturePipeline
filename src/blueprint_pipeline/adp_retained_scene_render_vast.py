@@ -34,7 +34,10 @@ from .wam_provider_object_store import (
 )
 
 
-from .spend_authority_consumption_root import consumption_root
+from .spend_authority_consumption_root import (
+    SpendAuthorityRootError,
+    prepare_consumption_root,
+)
 
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
 ARTIFACT_MANIFEST_SCHEMA = "adp009d_retained_scene_gpu_render_artifact_manifest.v1"
@@ -261,13 +264,16 @@ def consume_retained_scene_render_paid_attempt_authority_once(
     digest = str(authority.get("authorization_digest") or "")
     if not digest.startswith("sha256:") or len(digest) != 71:
         return {"status": "blocked", "blockers": ["attempt_authority_identity_invalid"]}
-    root = consumption_root()
     identity = digest.removeprefix("sha256:")
     try:
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        stat_result = root.stat()
-        if root.is_symlink() or stat_result.st_uid != os.getuid() or stat_result.st_mode & 0o077:
-            raise PermissionError
+        # Creates the directory and tightens its mode where we own it, rather
+        # than refusing a too-permissive one it could fix. A refusal there
+        # surfaced as `attempt_authority_consumption_write_failed`, which named
+        # the symptom and not the cause.
+        root = prepare_consumption_root()
+    except SpendAuthorityRootError as exc:
+        return {"status": "blocked", "blockers": [str(exc)]}
+    try:
         destination = root / f"retained-scene-render-{identity}.json"
         record = {
             "schema_version": "retained_scene_render_paid_attempt_consumption.v1",
