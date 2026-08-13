@@ -75,10 +75,15 @@ provider-zero closure.
      zero retry, hard cap/TTL, independent watchdog, cleanup, and API-zero.
 7. `segment_cutout_set`
    - Implementation: `public_scene_segment_contribution_cutout`.
+   - Production supervisor tool: `materialize_fresh_scene_segment_cutout`.
    - Union every Gaussian with renderer-detectable contribution to the exact
      task-object segments across all calibrated views and repetitions.
    - Write only a derived, byte-accounted, digest-bound retained PLY; never
      mutate canonical InteriorGS.
+   - The host-resident request inventory includes every task freeze, all-camera
+     sweep, contribution manifest, and raw repetition array. The tool rejects
+     any changed byte and reports that neither an agent nor simulator selected
+     Gaussian indices.
 8. `segment_repair_preflight` and `artifixer_candidate_inputs`
    - Bind exact repair support, rights, cameras, original frames, task freezes,
      and the derived retained PLY. A missing upstream input must remain an
@@ -179,6 +184,10 @@ The required agent-facing tools are:
   mask set into per-task excision and all-camera segment-sweep freezes. This is
   a non-spend producer; only the later Gaussian-contribution profile may enter
   the paid allocator.
+- `materialize_fresh_scene_segment_cutout`: after the separately authorized
+  Gaussian-contribution run closes, deterministically materialize every
+  task-local cutout plus the shared retained-scene PLY. This tool is non-spend
+  and cannot alter canonical InteriorGS.
 
 `fresh_scene_supervisor_bindings` is the production bridge. It accepts only a
 host-resident, digest-bound status plus the exact available tool request, and

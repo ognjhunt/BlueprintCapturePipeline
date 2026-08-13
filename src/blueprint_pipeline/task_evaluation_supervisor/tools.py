@@ -160,6 +160,24 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "materialize_fresh_scene_segment_cutout": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "receipt_digest": {"type": "string"},
+            "status": {
+                "const": (
+                    "repair_supported_segment_contribution_cutout_materialized_"
+                    "pending_full_deleted_layer_projection"
+                )
+            },
+            "task_count": {"type": "integer"},
+            "canonical_source_altered": {"const": False},
+            "agent_selected_gaussian_indices": {"const": False},
+            "paid_execution_started": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "materialize_sam31_task_inputs": _output_schema(
         {
             "contract_present": {"const": True},
@@ -694,6 +712,18 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             minimum_mode="execute_non_spend",
             timeout_seconds=600.0,
             idempotency="content_addressed_reviewed_mask_removal_freezes",
+        ),
+        _descriptor(
+            "materialize_fresh_scene_segment_cutout",
+            "fresh_scene_segment_cutout_materialization",
+            expected_artifacts=["adp009d_segment_contribution_cutout_set.v1"],
+            input_properties={"request_digest": {"type": "string"}},
+            required_inputs=["request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=600.0,
+            idempotency="content_addressed_all_view_segment_cutout_set",
         ),
         _descriptor(
             "inspect_capture_build",
@@ -1404,6 +1434,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "materialize_sam31_task_inputs",
         "materialize_calibrated_object_masks",
         "materialize_fresh_scene_removal_freezes",
+        "materialize_fresh_scene_segment_cutout",
         "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
@@ -3160,6 +3191,7 @@ def _bound_artifact(
         "materialize_sam31_task_inputs",
         "materialize_calibrated_object_masks",
         "materialize_fresh_scene_removal_freezes",
+        "materialize_fresh_scene_segment_cutout",
     }:
         root_value = getattr(context, "supervisor_output_dir", None)
         if tool_id == "materialize_sam31_task_inputs":
@@ -3184,7 +3216,7 @@ def _bound_artifact(
 
                 materializer = materialize_calibrated_object_mask_set_from_tool_request
             output_name = "calibrated_object_masks"
-        else:
+        elif tool_id == "materialize_fresh_scene_removal_freezes":
             source = getattr(context, "fresh_scene_removal_freeze_request", None)
             materializer = getattr(
                 context, "fresh_scene_removal_freeze_materializer", None
@@ -3196,6 +3228,18 @@ def _bound_artifact(
 
                 materializer = materialize_fresh_scene_removal_freezes
             output_name = "removal_freezes"
+        else:
+            source = getattr(context, "fresh_scene_segment_cutout_request", None)
+            materializer = getattr(
+                context, "fresh_scene_segment_cutout_materializer", None
+            )
+            if not callable(materializer):
+                from ..public_scene_segment_contribution_cutout import (
+                    materialize_segment_contribution_cutout_set_from_tool_request,
+                )
+
+                materializer = materialize_segment_contribution_cutout_set_from_tool_request
+            output_name = "segment_cutout_set"
         if not isinstance(root_value, str) or not root_value:
             raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
         if not isinstance(source, Mapping) or not callable(materializer):
@@ -3280,6 +3324,47 @@ def _bound_artifact(
                     "artifact_path": str(receipt_path.relative_to(Path(root_value))),
                     "artifact_digest": result["receipt_digest"],
                     "artifact_type": "fresh_scene_removal_freeze_set.v1",
+                }
+            ]
+        if tool_id == "materialize_fresh_scene_segment_cutout":
+            status = (
+                "repair_supported_segment_contribution_cutout_materialized_"
+                "pending_full_deleted_layer_projection"
+            )
+            boundary = result.get("claim_boundary") if isinstance(result, Mapping) else None
+            if (
+                not isinstance(result, Mapping)
+                or result.get("schema_version")
+                != "adp009d_segment_contribution_cutout_set.v1"
+                or result.get("status") != status
+                or result.get("receipt_digest")
+                != canonical_digest(result, digest_field="receipt_digest")
+                or not isinstance(result.get("task_candidates"), list)
+                or not 1 <= len(result["task_candidates"]) <= 5
+                or not isinstance(boundary, Mapping)
+                or boundary.get("canonical_source_altered") is not False
+            ):
+                raise ValueError("fresh_scene_segment_cutout_result_invalid")
+            receipt_path = write_phase2_artifact(
+                root_value,
+                "generated/segment_cutout_set/tool_receipt.json",
+                result,
+            )
+            return {
+                "contract_present": True,
+                "digest_matches": True,
+                "receipt_digest": result["receipt_digest"],
+                "status": status,
+                "task_count": len(result["task_candidates"]),
+                "canonical_source_altered": False,
+                "agent_selected_gaussian_indices": False,
+                "paid_execution_started": False,
+                "proof_state_changed": False,
+            }, [
+                {
+                    "artifact_path": str(receipt_path.relative_to(Path(root_value))),
+                    "artifact_digest": result["receipt_digest"],
+                    "artifact_type": "adp009d_segment_contribution_cutout_set.v1",
                 }
             ]
         if (
@@ -3560,6 +3645,12 @@ def non_spend_tool_bindings(
         if tool_id == "materialize_fresh_scene_removal_freezes" and (
             not isinstance(
                 getattr(context, "fresh_scene_removal_freeze_request", None), Mapping
+            )
+        ):
+            continue
+        if tool_id == "materialize_fresh_scene_segment_cutout" and (
+            not isinstance(
+                getattr(context, "fresh_scene_segment_cutout_request", None), Mapping
             )
         ):
             continue

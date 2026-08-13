@@ -136,6 +136,36 @@ def _removal_request(root: Path) -> Path:
     return _write(root / "removal-request.json", value)
 
 
+def _cutout_request(root: Path) -> Path:
+    for name in ("scene.ply", "task.json", "sweep.json"):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(b"fixture")
+    arrays = []
+    for index in range(2):
+        path = root / f"contribution-{index}.npz"
+        path.write_bytes(f"fixture-{index}".encode())
+        import hashlib
+
+        arrays.append(
+            {
+                "relative_path": path.name,
+                "size_bytes": path.stat().st_size,
+                "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    manifest = _write(root / "manifest.json", {"repetitions": arrays})
+    value = {
+        "schema_version": "fresh_scene_segment_cutout_tool_request.v1",
+        "source_standard_splat_path": str(root / "scene.ply"),
+        "task_freeze_paths": [str(root / "task.json")],
+        "sweep_freeze_paths_by_task": {"task_a": str(root / "sweep.json")},
+        "contribution_manifest_paths_by_task": {"task_a": str(manifest)},
+        "request_digest": "",
+    }
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    return _write(root / "cutout-request.json", value)
+
+
 def test_host_resident_manifest_compiles_exact_agents_sdk_bindings(tmp_path: Path) -> None:
     status = _status(tmp_path / "status.json")
     request = _sam_request(tmp_path / "inputs")
@@ -261,6 +291,34 @@ def test_removal_binding_rehashes_all_scientific_inputs(tmp_path: Path) -> None:
         ]
     ) == 9
     (tmp_path / "removal-inputs/scene.ply").write_bytes(b"changed")
+    with pytest.raises(
+        FreshSceneSupervisorBindingError,
+        match="fresh_scene_tool_request_input_bytes_changed",
+    ):
+        compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+
+
+def test_cutout_binding_rehashes_contribution_arrays(tmp_path: Path) -> None:
+    status = _status(tmp_path / "status.json")
+    request = _cutout_request(tmp_path / "cutout-inputs")
+    manifest_path = tmp_path / "binding.json"
+    manifest = materialize_fresh_scene_supervisor_bindings(
+        preparation_status_path=status,
+        segment_cutout_request_path=request,
+        output_path=manifest_path,
+        roots=[tmp_path],
+    )
+    compiled = compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+    assert compiled["requested_tool_ids"] == [
+        "inspect_fresh_scene_preparation",
+        "materialize_fresh_scene_segment_cutout",
+    ]
+    assert len(
+        manifest["tool_requests"]["fresh_scene_segment_cutout_request"][
+            "input_inventory"
+        ]
+    ) == 6
+    (tmp_path / "cutout-inputs/contribution-0.npz").write_bytes(b"changed")
     with pytest.raises(
         FreshSceneSupervisorBindingError,
         match="fresh_scene_tool_request_input_bytes_changed",
