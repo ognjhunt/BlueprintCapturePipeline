@@ -21,6 +21,7 @@ from .paid_resource_admission import PaidResourceAdmissionGrant
 from .task_evaluation_artifact_manifest import (
     TaskEvaluationArtifactManifestError,
     build_task_evaluation_artifact_manifest,
+    seal_unallocated_provider_teardown,
 )
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
@@ -335,6 +336,8 @@ def run_arena_native_control_vast(
         "RTX A5000",
         "RTX 3090",
     ),
+    require_independent_watchdog: bool = False,
+    authorization_consumption: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena native-control acquisition on Vast."""
 
@@ -419,6 +422,36 @@ def run_arena_native_control_vast(
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     local_avoidlist = _stage_machine_avoidlist(job, machine_avoidlist_path)
     adapter: dict[str, Any] = {}
+    watchdog_handoff: dict[str, Any] = {"status": "not_required"}
+    watchdog_close: dict[str, Any] = {"status": "not_required"}
+    watchdog_handle = None
+    if require_independent_watchdog:
+        from .vast_independent_watchdog_control import arm_independent_vast_watchdog
+
+        watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
+            job_dir=attempt_root,
+            max_live_minutes=remaining_live_minutes,
+            generated_at=generated,
+            allowed_active_instance_ids=allowed_active_instance_ids,
+            pod_name_prefix=instance_label_prefix,
+        )
+        if watchdog_handle is None:
+            cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+            result = {
+                "schema_version": result_schema_version,
+                "generated_at": generated,
+                "status": "blocked",
+                "attempt_number": attempt_number,
+                "attempt_root": str(attempt_root),
+                "provider_mutations_performed": 0,
+                "retry_cap": 0,
+                "authorization_consumption": authorization_consumption,
+                "independent_watchdog": watchdog_handoff,
+                "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+                "blockers": [f"{blocker_prefix}_independent_watchdog_not_armed"],
+            }
+            _write_run_result(job, attempt_root, result)
+            return result
     try:
         with _vast_authority_environment(
             gated_backbone_authorized=forward_hf_token
@@ -462,12 +495,37 @@ def run_arena_native_control_vast(
                 preferred_gpu_keywords=preferred_gpu_keywords,
                 prefer_isaac_rt=True,
                 machine_avoidlist_path=local_avoidlist,
-                instance_label_prefix=instance_label_prefix,
+                instance_label_prefix=(
+                    watchdog_handle.pod_name_prefix
+                    if watchdog_handle is not None
+                    else instance_label_prefix
+                ),
+                started_instance_id_path=(
+                    watchdog_handle.started_instance_id_path
+                    if watchdog_handle is not None
+                    else None
+                ),
                 forward_hf_token=forward_hf_token,
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 vast_launch_lock_file=vast_launch_lock_file,
                 paid_resource_admission_grant=paid_resource_admission_grant,
             )
+    except (OSError, RuntimeError, ValueError) as exc:
+        adapter = {
+            "status": "blocked",
+            "blockers": [
+                f"{blocker_prefix}_vast_adapter_failed:{redacted_failure_detail(exc)}"
+            ],
+            "provider_create_attempted": False,
+            "continuing_spend_from_this_run": False,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(provider_run / "vast_provider_adapter_result.json", adapter)
+        seal_unallocated_provider_teardown(
+            provider_run,
+            reason=f"{blocker_prefix}_vast_adapter_failed",
+            generated_at=generated,
+        )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     extracted = _extract_provider_output(
@@ -478,6 +536,32 @@ def run_arena_native_control_vast(
     )
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")
+    if watchdog_handle is not None:
+        from .vast_independent_watchdog_control import (
+            close_independent_vast_watchdog,
+            close_independent_vast_watchdog_without_allocation,
+        )
+
+        instance_ids = [
+            int(value)
+            for value in teardown.get("vast_instance_ids") or []
+            if isinstance(value, int) and value > 0
+        ]
+        if not instance_ids and adapter.get("provider_create_attempted") is not True:
+            watchdog_close = close_independent_vast_watchdog_without_allocation(
+                job_dir=attempt_root,
+                handle=watchdog_handle,
+            )
+        else:
+            watchdog_close = close_independent_vast_watchdog(
+                job_dir=attempt_root,
+                handle=watchdog_handle,
+                instance_ids=instance_ids,
+                provider_teardown_completed=(
+                    teardown.get("continuing_spend_from_this_run") is False
+                ),
+                provider_allocation_impossible=False,
+            )
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
     if execution.get("status") != "completed":
         blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
@@ -492,6 +576,10 @@ def run_arena_native_control_vast(
         blockers.append(f"{blocker_prefix}_vast_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
         blockers.append(f"{blocker_prefix}_object_store_provider_zero_not_proven")
+    if require_independent_watchdog and watchdog_close.get("status") not in {
+        "provider_terminal",
+    }:
+        blockers.append(f"{blocker_prefix}_independent_watchdog_not_terminal")
     artifact_manifest_path = attempt_root / "artifact_manifest.json"
     try:
         artifact_manifest = build_task_evaluation_artifact_manifest(
@@ -539,6 +627,20 @@ def run_arena_native_control_vast(
         "hard_ttl_seconds": hard_ttl_seconds,
         "attempt_max_live_minutes": remaining_live_minutes,
         "retry_cap": 0,
+        "authorization_consumption": authorization_consumption,
+        "independent_watchdog": watchdog_close,
+        "watchdog_receipt_path": (
+            str(
+                attempt_root
+                / "independent_vast_watchdog"
+                / "groot_oscar_runpod_canary_watchdog.json"
+            )
+            if require_independent_watchdog
+            else None
+        ),
+        "object_store_cleanup_path": str(
+            staging_dir / "wam_provider_object_store_cleanup.json"
+        ),
         "candidate_policy_query_expected": bool(candidate_policy_query_expected),
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),

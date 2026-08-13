@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline.common import write_json
 from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
 )
@@ -1078,6 +1079,16 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         "5400",
     ]
     if execute:
+        authority_path = tmp_path / "native-task-arena-authority.json"
+        write_json(
+            authority_path,
+            {"authorization_digest": "sha256:" + "9" * 64},
+        )
+        monkeypatch.setattr(
+            allocator,
+            "validate_native_task_arena_paid_attempt_authority",
+            lambda authority, **_kwargs: authority,
+        )
         args.extend(
             [
                 "--native-task-arena-bundle-receipt",
@@ -1085,6 +1096,8 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
                     tmp_path
                     / "frozen-bundle/native_task_arena_provider_bundle_receipt.v1.json"
                 ),
+                "--native-task-arena-attempt-authority",
+                str(authority_path),
                 "--execute",
             ]
         )
@@ -1098,6 +1111,9 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         assert (
             observed["prepared_bundle"]["bundle_sha256"]
             == frozen_bundle["bundle_sha256"]
+        )
+        assert observed["paid_attempt_authority"]["authorization_digest"].startswith(
+            "sha256:"
         )
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["private_data_uploaded"] is True
@@ -1176,6 +1192,16 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
         "5400",
     ]
     if execute:
+        authority_path = tmp_path / "native-task-arena-controls-authority.json"
+        write_json(
+            authority_path,
+            {"authorization_digest": "sha256:" + "8" * 64},
+        )
+        monkeypatch.setattr(
+            allocator,
+            "validate_native_task_arena_paid_attempt_authority",
+            lambda authority, **_kwargs: authority,
+        )
         args.extend(
             [
                 "--native-task-arena-bundle-receipt",
@@ -1183,6 +1209,8 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
                     tmp_path
                     / "frozen-controls-bundle/native_task_arena_provider_bundle_receipt.v1.json"
                 ),
+                "--native-task-arena-attempt-authority",
+                str(authority_path),
                 "--execute",
             ]
         )

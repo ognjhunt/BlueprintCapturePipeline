@@ -123,6 +123,15 @@ class SupervisorContext:
     camera_rig_validation_request: Mapping[str, Any] | None = None
     metric_scale_validation_request: Mapping[str, Any] | None = None
     generated_repair_candidate_request: Mapping[str, Any] | None = None
+    # Fresh-scene paired-target preparation is agent-coordinated but remains
+    # deterministic at every evidence-producing seam. The model sees only the
+    # immutable request/status digest; paths and implementations remain trusted
+    # runtime state.
+    fresh_scene_preparation_status: Mapping[str, Any] | None = None
+    fresh_scene_sam31_task_input_request: Mapping[str, Any] | None = None
+    fresh_scene_sam31_task_input_materializer: Any | None = None
+    fresh_scene_calibrated_mask_request: Mapping[str, Any] | None = None
+    fresh_scene_calibrated_mask_materializer: Any | None = None
 
 
 class SupervisorCapability(Protocol):

@@ -118,6 +118,46 @@ def _output_schema(
 
 
 _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "inspect_fresh_scene_preparation": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "status": {"type": "string"},
+            "first_blocker": {},
+            "next_required_stage": {},
+            "agent_advanced_stage": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "materialize_calibrated_object_masks": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "receipt_digest": {"type": "string"},
+            "status": {
+                "const": "calibrated_inferred_object_masks_materialized_pending_review"
+            },
+            "task_count": {"type": "integer"},
+            "camera_count_total": {"type": "integer"},
+            "masks_are_model_inferred_candidates": {"const": True},
+            "agent_selected_unreviewed_tracks": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "materialize_sam31_task_inputs": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "receipt_digest": {"type": "string"},
+            "status": {"const": "prepared_no_upload_no_execution"},
+            "task_id": {"type": "string"},
+            "camera_count": {"type": "integer"},
+            "paid_execution_started": {"const": False},
+            "provider_mutations_performed": {"const": 0},
+            "agent_authored_frame_registry": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "inspect_capture_build": _output_schema(
         {
             "contract_present": {"const": True},
@@ -596,6 +636,37 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     """
 
     return (
+        _descriptor(
+            "inspect_fresh_scene_preparation",
+            "fresh_scene_preparation_inspection",
+            expected_artifacts=["fresh_scene_paired_target_preparation.v1"],
+            input_properties={"status_digest": {"type": "string"}},
+            required_inputs=["status_digest"],
+        ),
+        _descriptor(
+            "materialize_sam31_task_inputs",
+            "fresh_scene_sam31_task_input_materialization",
+            expected_artifacts=["public_scene_sam31_task_input_packet.v1"],
+            input_properties={"request_digest": {"type": "string"}},
+            required_inputs=["request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=600.0,
+            idempotency="content_addressed_calibrated_sam31_packet_materialization",
+        ),
+        _descriptor(
+            "materialize_calibrated_object_masks",
+            "fresh_scene_calibrated_object_mask_materialization",
+            expected_artifacts=["public_scene_calibrated_object_mask_set.v1"],
+            input_properties={"request_digest": {"type": "string"}},
+            required_inputs=["request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=300.0,
+            idempotency="content_addressed_calibrated_track_mask_materialization",
+        ),
         _descriptor(
             "inspect_capture_build",
             "capture_build_inspection",
@@ -1301,6 +1372,9 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "materialize_clarification_request",
     ),
     "capture_testbed_supervisor": (
+        "inspect_fresh_scene_preparation",
+        "materialize_sam31_task_inputs",
+        "materialize_calibrated_object_masks",
         "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
@@ -3036,7 +3110,135 @@ def _bound_artifact(
     arguments: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     produced_artifact_references: list[dict[str, Any]] = []
-    if tool_id == "validate_proposed_claim_graph":
+    if tool_id == "inspect_fresh_scene_preparation":
+        value = getattr(context, "fresh_scene_preparation_status", None)
+        expected = arguments.get("status_digest")
+        actual = value.get("status_digest") if isinstance(value, Mapping) else None
+        typed_result = {
+            "contract_present": value is not None,
+            "digest_matches": bool(actual and expected == actual),
+            "status": value.get("status") if isinstance(value, Mapping) else "unavailable",
+            "first_blocker": value.get("first_blocker")
+            if isinstance(value, Mapping)
+            else None,
+            "next_required_stage": value.get("next_required_stage")
+            if isinstance(value, Mapping)
+            else None,
+            "agent_advanced_stage": False,
+            "proof_state_changed": False,
+        }
+    elif tool_id in {
+        "materialize_sam31_task_inputs",
+        "materialize_calibrated_object_masks",
+    }:
+        root_value = getattr(context, "supervisor_output_dir", None)
+        if tool_id == "materialize_sam31_task_inputs":
+            source = getattr(context, "fresh_scene_sam31_task_input_request", None)
+            materializer = getattr(
+                context, "fresh_scene_sam31_task_input_materializer", None
+            )
+            if not callable(materializer):
+                from ..public_scene_sam31_task_inputs import (
+                    materialize_public_scene_sam31_task_inputs_from_tool_request,
+                )
+
+                materializer = materialize_public_scene_sam31_task_inputs_from_tool_request
+            output_name = "sam31_task_inputs"
+        else:
+            source = getattr(context, "fresh_scene_calibrated_mask_request", None)
+            materializer = getattr(context, "fresh_scene_calibrated_mask_materializer", None)
+            if not callable(materializer):
+                from ..public_scene_calibrated_object_masks import (
+                    materialize_calibrated_object_mask_set_from_tool_request,
+                )
+
+                materializer = materialize_calibrated_object_mask_set_from_tool_request
+            output_name = "calibrated_object_masks"
+        if not isinstance(root_value, str) or not root_value:
+            raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
+        if not isinstance(source, Mapping) or not callable(materializer):
+            raise ValueError(f"fresh_scene_runtime_not_injected:{tool_id}")
+        expected = arguments.get("request_digest")
+        actual = source.get("request_digest")
+        if not actual or expected != actual or canonical_digest(
+            source, digest_field="request_digest"
+        ) != actual:
+            raise ValueError(
+                f"registered_tool_source_digest_mismatch:{tool_id}"
+            )
+        output_root = Path(root_value) / "generated" / output_name
+        result = materializer(request=dict(source), output_root=output_root)
+        if tool_id == "materialize_sam31_task_inputs":
+            if (
+                not isinstance(result, Mapping)
+                or result.get("schema_version")
+                != "public_scene_sam31_task_input_packet.v1"
+                or result.get("status") != "prepared_no_upload_no_execution"
+                or result.get("receipt_digest")
+                != canonical_digest(result, digest_field="receipt_digest")
+                or result.get("paid_execution_started") is not False
+                or result.get("provider_mutations_performed") != 0
+            ):
+                raise ValueError("fresh_scene_sam31_task_input_result_invalid")
+            receipt_path = write_phase2_artifact(
+                root_value,
+                "generated/sam31_task_inputs/tool_receipt.json",
+                result,
+            )
+            return {
+                "contract_present": True,
+                "digest_matches": True,
+                "receipt_digest": result["receipt_digest"],
+                "status": result["status"],
+                "task_id": result["task_id"],
+                "camera_count": int(result["camera_count"]),
+                "paid_execution_started": False,
+                "provider_mutations_performed": 0,
+                "agent_authored_frame_registry": False,
+                "proof_state_changed": False,
+            }, [
+                {
+                    "artifact_path": str(receipt_path.relative_to(Path(root_value))),
+                    "artifact_digest": result["receipt_digest"],
+                    "artifact_type": "public_scene_sam31_task_input_packet.v1",
+                }
+            ]
+        if (
+            not isinstance(result, Mapping)
+            or result.get("schema_version")
+            != "public_scene_calibrated_object_mask_set.v1"
+            or result.get("status")
+            != "calibrated_inferred_object_masks_materialized_pending_review"
+            or result.get("receipt_digest")
+            != canonical_digest(result, digest_field="receipt_digest")
+            or not isinstance(result.get("claim_boundary"), Mapping)
+            or result["claim_boundary"].get("masks_are_model_inferred_candidates")
+            is not True
+        ):
+            raise ValueError("fresh_scene_calibrated_mask_result_invalid")
+        receipt_path = write_phase2_artifact(
+            root_value,
+            "generated/calibrated_object_masks/tool_receipt.json",
+            result,
+        )
+        return {
+            "contract_present": True,
+            "digest_matches": True,
+            "receipt_digest": result["receipt_digest"],
+            "status": result["status"],
+            "task_count": int(result["task_count"]),
+            "camera_count_total": int(result["camera_count_total"]),
+            "masks_are_model_inferred_candidates": True,
+            "agent_selected_unreviewed_tracks": False,
+            "proof_state_changed": False,
+        }, [
+            {
+                "artifact_path": str(receipt_path.relative_to(Path(root_value))),
+                "artifact_digest": result["receipt_digest"],
+                "artifact_type": "public_scene_calibrated_object_mask_set.v1",
+            }
+        ]
+    elif tool_id == "validate_proposed_claim_graph":
         value = context.decision_request
         digest_key = "request_digest"
         expected = arguments.get(digest_key)
@@ -3260,6 +3462,22 @@ def non_spend_tool_bindings(
         return ()
     bindings: list[RegisteredToolBinding] = []
     for tool_id in _CAPABILITY_TOOL_IDS.get(capability, ()):
+        if tool_id == "inspect_fresh_scene_preparation" and not isinstance(
+            getattr(context, "fresh_scene_preparation_status", None), Mapping
+        ):
+            continue
+        if tool_id == "materialize_sam31_task_inputs" and (
+            not isinstance(
+                getattr(context, "fresh_scene_sam31_task_input_request", None), Mapping
+            )
+        ):
+            continue
+        if tool_id == "materialize_calibrated_object_masks" and (
+            not isinstance(
+                getattr(context, "fresh_scene_calibrated_mask_request", None), Mapping
+            )
+        ):
+            continue
         if tool_id == "compile_frozen_frame_dataset" and not callable(
             getattr(context, "reconstruction_dataset_compiler", None)
         ):

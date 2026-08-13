@@ -409,6 +409,7 @@ blueprint-build-production-gpu-launch-qualification = "blueprint_pipeline.produc
 blueprint-run-production-gpu-rollback-drill = "blueprint_pipeline.production_gpu_rollback_drill:main"
 blueprint-run-production-gpu-replenishment-probe = "blueprint_pipeline.production_gpu_replenishment_probe:main"
 blueprint-qualify-capture-reconstruction = "blueprint_pipeline.capture_reconstruction_qualification:main"
+blueprint-run-fresh-scene-supervisor = "blueprint_pipeline.fresh_scene_supervisor_bindings:main"
 
 [project.urls]
 Homepage = "https://tryblueprint.io"
