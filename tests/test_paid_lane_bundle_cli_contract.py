@@ -238,3 +238,93 @@ def test_an_authority_can_be_minted_from_a_command_line(path: Path, function: st
         "its lane cannot be authorized from a production path. Give it a CLI, or "
         "add it to AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT with a reason."
     )
+
+
+#: Builder parameters a bundle CLI deliberately does not offer, and why.
+#: Reasons are load-bearing: `generated_at` stamps the receipt and defaulting
+#: it to now is the intended behaviour, whereas a parameter that selects *what
+#: gets built* is never safe to fix at its default.
+CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED: dict[str, str] = {
+    "ctrl_world_provider_bundle.generated_at": "receipt timestamp defaults to now",
+    "oscar_wam_provider_bundle.generated_at": "receipt timestamp defaults to now",
+    "public_scene_simready_isaac_bundle.generated_at": "receipt timestamp defaults to now",
+}
+
+
+def _bundle_cli_calls() -> list[tuple[str, str, set[str], set[str]]]:
+    """(module, builder, builder parameters, parameters the CLI can supply)."""
+
+    import ast as _ast
+
+    rows: list[tuple[str, str, set[str], set[str]]] = []
+    for path in sorted(SOURCE_ROOT.glob("*_bundle.py")):
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        mains = [n for n in tree.body if isinstance(n, _ast.FunctionDef) and n.name == "main"]
+        builders = {
+            node.name: {arg.arg for arg in node.args.kwonlyargs}
+            for node in tree.body
+            if isinstance(node, _ast.FunctionDef) and node.name.startswith("build_")
+        }
+        if not mains or not builders:
+            continue
+        for call in _ast.walk(mains[0]):
+            if (
+                isinstance(call, _ast.Call)
+                and isinstance(call.func, _ast.Name)
+                and call.func.id in builders
+            ):
+                supplied = {kw.arg for kw in call.keywords if kw.arg}
+                # A `**` spread carries its keys as string literals, which may
+                # be inline or in a dict built earlier in the same function.
+                # Naming a parameter anywhere in `main` is the wiring.
+                if any(kw.arg is None for kw in call.keywords):
+                    supplied.update(
+                        node.value
+                        for node in _ast.walk(mains[0])
+                        if isinstance(node, _ast.Constant) and isinstance(node.value, str)
+                    )
+                rows.append((path.stem, call.func.id, builders[call.func.id], supplied))
+    return rows
+
+
+def test_bundle_cli_calls_are_discoverable() -> None:
+    assert len(_bundle_cli_calls()) >= 5
+
+
+@pytest.mark.parametrize(
+    "module,builder,parameters,supplied", _bundle_cli_calls(), ids=lambda v: str(v)[:40]
+)
+def test_a_bundle_cli_can_supply_every_parameter_of_what_it_builds(
+    module: str, builder: str, parameters: set[str], supplied: set[str]
+) -> None:
+    """A flag that does not exist is a decision silently fixed at its default.
+
+    `public_scene_artifixer3d_bundle` offered eight flags for a thirteen
+    parameter builder, so its CLI could not select an editor backend at all and
+    could only ever build whatever the input schema defaulted to -- on the lane
+    the appearance approach depends on.
+    """
+
+    missing = {
+        name
+        for name in parameters - supplied
+        if f"{module}.{name}" not in CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED
+    }
+
+    assert not missing, (
+        f"{module}.{builder} cannot be given {sorted(missing)} from its command "
+        "line. Add flags, or record each in "
+        "CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED with a reason."
+    )
+
+
+def test_no_recorded_exemption_outlives_its_parameter() -> None:
+    """An exemption for a parameter that no longer exists hides a real gap."""
+
+    live = {
+        f"{module}.{name}"
+        for module, _, parameters, _ in _bundle_cli_calls()
+        for name in parameters
+    }
+
+    assert not set(CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED) - live
