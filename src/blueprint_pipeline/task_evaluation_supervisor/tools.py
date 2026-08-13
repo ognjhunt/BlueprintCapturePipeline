@@ -144,6 +144,22 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "materialize_fresh_scene_removal_freezes": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "receipt_digest": {"type": "string"},
+            "status": {
+                "const": "excision_and_segment_sweep_freezes_materialized_no_execution"
+            },
+            "task_count": {"type": "integer"},
+            "paid_execution_started": {"const": False},
+            "provider_mutations_performed": {"const": 0},
+            "agent_selected_gaussian_indices": {"const": False},
+            "canonical_source_altered": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "materialize_sam31_task_inputs": _output_schema(
         {
             "contract_present": {"const": True},
@@ -666,6 +682,18 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             minimum_mode="execute_non_spend",
             timeout_seconds=300.0,
             idempotency="content_addressed_calibrated_track_mask_materialization",
+        ),
+        _descriptor(
+            "materialize_fresh_scene_removal_freezes",
+            "fresh_scene_removal_freeze_materialization",
+            expected_artifacts=["fresh_scene_removal_freeze_set.v1"],
+            input_properties={"request_digest": {"type": "string"}},
+            required_inputs=["request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=600.0,
+            idempotency="content_addressed_reviewed_mask_removal_freezes",
         ),
         _descriptor(
             "inspect_capture_build",
@@ -1375,6 +1403,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "inspect_fresh_scene_preparation",
         "materialize_sam31_task_inputs",
         "materialize_calibrated_object_masks",
+        "materialize_fresh_scene_removal_freezes",
         "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
@@ -3130,6 +3159,7 @@ def _bound_artifact(
     elif tool_id in {
         "materialize_sam31_task_inputs",
         "materialize_calibrated_object_masks",
+        "materialize_fresh_scene_removal_freezes",
     }:
         root_value = getattr(context, "supervisor_output_dir", None)
         if tool_id == "materialize_sam31_task_inputs":
@@ -3144,7 +3174,7 @@ def _bound_artifact(
 
                 materializer = materialize_public_scene_sam31_task_inputs_from_tool_request
             output_name = "sam31_task_inputs"
-        else:
+        elif tool_id == "materialize_calibrated_object_masks":
             source = getattr(context, "fresh_scene_calibrated_mask_request", None)
             materializer = getattr(context, "fresh_scene_calibrated_mask_materializer", None)
             if not callable(materializer):
@@ -3154,6 +3184,18 @@ def _bound_artifact(
 
                 materializer = materialize_calibrated_object_mask_set_from_tool_request
             output_name = "calibrated_object_masks"
+        else:
+            source = getattr(context, "fresh_scene_removal_freeze_request", None)
+            materializer = getattr(
+                context, "fresh_scene_removal_freeze_materializer", None
+            )
+            if not callable(materializer):
+                from ..fresh_scene_removal_freezes import (
+                    materialize_fresh_scene_removal_freezes,
+                )
+
+                materializer = materialize_fresh_scene_removal_freezes
+            output_name = "removal_freezes"
         if not isinstance(root_value, str) or not root_value:
             raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
         if not isinstance(source, Mapping) or not callable(materializer):
@@ -3201,6 +3243,43 @@ def _bound_artifact(
                     "artifact_path": str(receipt_path.relative_to(Path(root_value))),
                     "artifact_digest": result["receipt_digest"],
                     "artifact_type": "public_scene_sam31_task_input_packet.v1",
+                }
+            ]
+        if tool_id == "materialize_fresh_scene_removal_freezes":
+            if (
+                not isinstance(result, Mapping)
+                or result.get("schema_version") != "fresh_scene_removal_freeze_set.v1"
+                or result.get("status")
+                != "excision_and_segment_sweep_freezes_materialized_no_execution"
+                or result.get("receipt_digest")
+                != canonical_digest(result, digest_field="receipt_digest")
+                or result.get("paid_execution_started") is not False
+                or result.get("provider_mutations_performed") != 0
+                or result.get("agent_selected_gaussian_indices") is not False
+                or result.get("canonical_source_altered") is not False
+            ):
+                raise ValueError("fresh_scene_removal_freeze_result_invalid")
+            receipt_path = write_phase2_artifact(
+                root_value,
+                "generated/removal_freezes/tool_receipt.json",
+                result,
+            )
+            return {
+                "contract_present": True,
+                "digest_matches": True,
+                "receipt_digest": result["receipt_digest"],
+                "status": result["status"],
+                "task_count": int(result["task_count"]),
+                "paid_execution_started": False,
+                "provider_mutations_performed": 0,
+                "agent_selected_gaussian_indices": False,
+                "canonical_source_altered": False,
+                "proof_state_changed": False,
+            }, [
+                {
+                    "artifact_path": str(receipt_path.relative_to(Path(root_value))),
+                    "artifact_digest": result["receipt_digest"],
+                    "artifact_type": "fresh_scene_removal_freeze_set.v1",
                 }
             ]
         if (
@@ -3475,6 +3554,12 @@ def non_spend_tool_bindings(
         if tool_id == "materialize_calibrated_object_masks" and (
             not isinstance(
                 getattr(context, "fresh_scene_calibrated_mask_request", None), Mapping
+            )
+        ):
+            continue
+        if tool_id == "materialize_fresh_scene_removal_freezes" and (
+            not isinstance(
+                getattr(context, "fresh_scene_removal_freeze_request", None), Mapping
             )
         ):
             continue

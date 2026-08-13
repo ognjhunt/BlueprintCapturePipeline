@@ -30,6 +30,7 @@ SCHEMA_VERSION = "fresh_scene_supervisor_bindings.v1"
 STATUS_SCHEMA = "fresh_scene_paired_target_preparation.v1"
 SAM_REQUEST_SCHEMA = "fresh_scene_sam31_task_input_tool_request.v1"
 MASK_REQUEST_SCHEMA = "fresh_scene_calibrated_mask_tool_request.v1"
+REMOVAL_FREEZE_REQUEST_SCHEMA = "fresh_scene_removal_freeze_tool_request.v1"
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAX_BOUND_INPUT_FILES = 1024
 MAX_BOUND_INPUT_BYTES = 2 * 1024**3
@@ -113,7 +114,7 @@ def _request_input_paths(
                     ),
                 )
             )
-    else:
+    elif schema == MASK_REQUEST_SCHEMA:
         for value in request.get("task_freeze_paths") or []:
             paths.append(
                 _resident_path(
@@ -151,6 +152,97 @@ def _request_input_paths(
                 ),
             )
         )
+    else:
+        removal_inputs: dict[str, Path] = {}
+        for key in (
+            "source_standard_splat_path",
+            "source_collision_path",
+            "registered_frame_receipt_path",
+            "calibrated_mask_set_receipt_path",
+        ):
+            resident = _resident_path(
+                    str(request.get(key) or ""),
+                    roots=roots,
+                    kind="file",
+                    code=f"fresh_scene_tool_request_input_not_host_resident:{key}",
+            )
+            paths.append(resident)
+            removal_inputs[key] = resident
+        for task in (request.get("tasks") or {}).values():
+            if isinstance(task, Mapping) and task.get("render_input_receipt_path"):
+                paths.append(
+                    _resident_path(
+                        str(task["render_input_receipt_path"]),
+                        roots=roots,
+                        kind="file",
+                        code=(
+                            "fresh_scene_tool_request_input_not_host_resident:"
+                            "render_input_receipt_path"
+                        ),
+                    )
+                )
+        mask_receipt_path = removal_inputs["calibrated_mask_set_receipt_path"]
+        mask_receipt = _read_object(
+            mask_receipt_path, code="fresh_scene_removal_mask_receipt_invalid"
+        )
+        mask_tasks = mask_receipt.get("tasks")
+        if not isinstance(mask_tasks, list) or not 1 <= len(mask_tasks) <= 5:
+            raise FreshSceneSupervisorBindingError(
+                "fresh_scene_removal_mask_receipt_invalid"
+            )
+        for task in mask_tasks:
+            if not isinstance(task, Mapping):
+                raise FreshSceneSupervisorBindingError(
+                    "fresh_scene_removal_mask_receipt_invalid"
+                )
+            for record in (
+                task.get("task_freeze"),
+                task.get("source_track_result"),
+                task.get("camera_contract"),
+            ):
+                if not isinstance(record, Mapping):
+                    raise FreshSceneSupervisorBindingError(
+                        "fresh_scene_removal_mask_receipt_invalid"
+                    )
+                relative = record.get("relative_path")
+                referenced = (
+                    mask_receipt_path.parent / str(relative)
+                    if relative
+                    else Path(str(record.get("path") or ""))
+                )
+                paths.append(
+                    _resident_path(
+                        referenced,
+                        roots=roots,
+                        kind="file",
+                        code="fresh_scene_removal_transitive_input_not_host_resident",
+                    )
+                )
+            for collection, key in (
+                (task.get("source_images"), "image"),
+                (task.get("masks"), "mask"),
+            ):
+                if not isinstance(collection, list):
+                    raise FreshSceneSupervisorBindingError(
+                        "fresh_scene_removal_mask_receipt_invalid"
+                    )
+                for row in collection:
+                    record = row.get(key) if isinstance(row, Mapping) else None
+                    if not isinstance(record, Mapping):
+                        raise FreshSceneSupervisorBindingError(
+                            "fresh_scene_removal_mask_receipt_invalid"
+                        )
+                    relative = str(record.get("relative_path") or "")
+                    paths.append(
+                        _resident_path(
+                            mask_receipt_path.parent / relative,
+                            roots=roots,
+                            kind="file",
+                            code=(
+                                "fresh_scene_removal_transitive_input_not_host_resident"
+                            ),
+                        )
+                    )
     unique = sorted(set(paths))
     if (
         not unique
@@ -199,7 +291,7 @@ def _validate_request(
         raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
     if schema == SAM_REQUEST_SCHEMA:
         _request_input_paths(request, schema=schema, roots=roots)
-    else:
+    elif schema == MASK_REQUEST_SCHEMA:
         freezes = request.get("task_freeze_paths")
         task_inputs = request.get("task_inputs")
         selected = request.get("selected_track_ids_by_task")
@@ -218,6 +310,21 @@ def _validate_request(
             if not isinstance(raw, Mapping) or not str(task_id).strip():
                 raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
         _request_input_paths(request, schema=schema, roots=roots)
+    else:
+        tasks = request.get("tasks")
+        if not isinstance(tasks, Mapping) or not 1 <= len(tasks) <= 5:
+            raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+        for task_id, raw in tasks.items():
+            if (
+                not str(task_id).strip()
+                or not isinstance(raw, Mapping)
+                or not str(raw.get("target_collision_prim_path") or "").startswith("/")
+                or not isinstance(raw.get("scene"), Mapping)
+                or not isinstance(raw.get("policy"), Mapping)
+                or not isinstance(raw.get("historical_baseline"), Mapping)
+            ):
+                raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+        _request_input_paths(request, schema=schema, roots=roots)
     return request
 
 
@@ -227,6 +334,7 @@ def materialize_fresh_scene_supervisor_bindings(
     output_path: str | Path,
     sam31_task_input_request_path: str | Path | None = None,
     calibrated_mask_request_path: str | Path | None = None,
+    removal_freeze_request_path: str | Path | None = None,
     roots: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     """Seal the exact non-spend tool inputs available on this host."""
@@ -258,6 +366,12 @@ def materialize_fresh_scene_supervisor_bindings(
             "materialize_calibrated_object_masks",
             MASK_REQUEST_SCHEMA,
             calibrated_mask_request_path,
+        ),
+        (
+            "fresh_scene_removal_freeze_request",
+            "materialize_fresh_scene_removal_freezes",
+            REMOVAL_FREEZE_REQUEST_SCHEMA,
+            removal_freeze_request_path,
         ),
     ):
         if raw_path is None:
@@ -359,6 +473,7 @@ def compile_fresh_scene_supervisor_bindings(
     schema_by_field = {
         "fresh_scene_sam31_task_input_request": SAM_REQUEST_SCHEMA,
         "fresh_scene_calibrated_mask_request": MASK_REQUEST_SCHEMA,
+        "fresh_scene_removal_freeze_request": REMOVAL_FREEZE_REQUEST_SCHEMA,
     }
     records = manifest.get("tool_requests")
     if not isinstance(records, Mapping) or set(records) - set(schema_by_field):
@@ -366,6 +481,7 @@ def compile_fresh_scene_supervisor_bindings(
     tool_by_field = {
         "fresh_scene_sam31_task_input_request": "materialize_sam31_task_inputs",
         "fresh_scene_calibrated_mask_request": "materialize_calibrated_object_masks",
+        "fresh_scene_removal_freeze_request": "materialize_fresh_scene_removal_freezes",
     }
     expected_tools = {"inspect_fresh_scene_preparation"}
     for field, raw in records.items():
@@ -416,6 +532,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build.add_argument("--preparation-status", required=True)
     build.add_argument("--sam31-task-input-request")
     build.add_argument("--calibrated-mask-request")
+    build.add_argument("--removal-freeze-request")
     build.add_argument("--output", required=True)
     run = commands.add_parser("run")
     run.add_argument("--binding-manifest", required=True)
@@ -430,6 +547,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             preparation_status_path=args.preparation_status,
             sam31_task_input_request_path=args.sam31_task_input_request,
             calibrated_mask_request_path=args.calibrated_mask_request,
+            removal_freeze_request_path=args.removal_freeze_request,
             output_path=args.output,
         )
     else:
