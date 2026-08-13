@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 from PIL import Image
@@ -13,6 +15,12 @@ from blueprint_pipeline.dual_task_rehearsal_contract import validate_task_freeze
 from blueprint_pipeline.public_scene_calibrated_object_masks import (
     CalibratedObjectMaskError,
     materialize_calibrated_object_mask_set,
+)
+from blueprint_pipeline.public_scene_sam31_track_selection_review import (
+    Sam31TrackSelectionReviewError,
+    materialize_sam31_track_selection_review_candidate,
+    seal_sam31_track_selection_review,
+    validate_sam31_track_selection_review,
 )
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     canonical_json_digest,
@@ -248,15 +256,43 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
     }
 
 
+def _review(
+    tmp_path: Path,
+    fixture: dict[str, object],
+    selected: dict[str, list[str]],
+) -> Path:
+    candidate_root = tmp_path / "review-candidate"
+    materialize_sam31_track_selection_review_candidate(
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task=selected,
+        output_root=candidate_root,
+    )
+    receipt = tmp_path / "review-receipt.json"
+    seal_sam31_track_selection_review(
+        candidate_path=(
+            candidate_root
+            / "public_scene_sam31_track_selection_review_candidate.v1.json"
+        ),
+        reviewed_by="fixture-reviewer",
+        reviewed_on="2026-08-13",
+        output_path=receipt,
+    )
+    return receipt
+
+
 def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
+    selected = {
+        "task_a": ["washer-track"],
+        "task_b": ["laptop-track"],
+    }
+    review = _review(tmp_path, fixture, selected)
     result = materialize_calibrated_object_mask_set(
         task_freeze_paths=fixture["tasks"],
         task_inputs=fixture["task_inputs"],
-        selected_track_ids_by_task={
-            "task_a": ["washer-track"],
-            "task_b": ["laptop-track"],
-        },
+        selected_track_ids_by_task=selected,
+        reviewed_track_selection_receipt_path=review,
         output_root=tmp_path / "output",
     )
 
@@ -264,6 +300,9 @@ def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Pat
     assert result["camera_count_total"] == 4
     assert result["claim_boundary"]["masks_are_model_inferred_candidates"] is True
     assert result["selection_authority"]["mask_dilation_pixels"] == 0
+    assert result["selection_authority"][
+        "all_selected_tracks_human_review_accepted"
+    ] is True
     mask = np.asarray(
         Image.open(tmp_path / "output/tasks/task_a/masks/camera_0.png"),
         dtype=np.uint8,
@@ -276,11 +315,16 @@ def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Pat
 
 def test_rejects_unbound_camera_and_missing_selected_track(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
+    selected = {
+        "task_a": ["washer-track"],
+        "task_b": ["laptop-track"],
+    }
+    review = _review(tmp_path, fixture, selected)
     cameras = json.loads(fixture["cameras"].read_text())
     cameras[0]["intrinsics"]["fx"] = 9.0
     fixture["cameras"].write_text(json.dumps(cameras), encoding="utf-8")
     with pytest.raises(
-        CalibratedObjectMaskError, match="calibrated_masks_camera_source_binding_invalid"
+        CalibratedObjectMaskError, match="calibrated_masks_review_receipt_invalid"
     ):
         materialize_calibrated_object_mask_set(
             task_freeze_paths=fixture["tasks"],
@@ -289,12 +333,18 @@ def test_rejects_unbound_camera_and_missing_selected_track(tmp_path: Path) -> No
                 "task_a": ["washer-track"],
                 "task_b": ["laptop-track"],
             },
+            reviewed_track_selection_receipt_path=review,
             output_root=tmp_path / "bad-output",
         )
 
     fixture = _fixture(tmp_path / "second")
+    second_review = _review(
+        tmp_path / "second-review",
+        fixture,
+        {"task_a": ["washer-track"], "task_b": ["laptop-track"]},
+    )
     with pytest.raises(
-        CalibratedObjectMaskError, match="calibrated_masks_selected_tracks_invalid"
+        CalibratedObjectMaskError, match="calibrated_masks_review_receipt_invalid"
     ):
         materialize_calibrated_object_mask_set(
             task_freeze_paths=fixture["tasks"],
@@ -303,5 +353,147 @@ def test_rejects_unbound_camera_and_missing_selected_track(tmp_path: Path) -> No
                 "task_a": ["missing-track"],
                 "task_b": ["laptop-track"],
             },
+            reviewed_track_selection_receipt_path=second_review,
             output_root=tmp_path / "second-output",
         )
+
+
+def test_review_candidate_supports_five_tasks_and_receipt_rejects_tamper(
+    tmp_path: Path,
+) -> None:
+    base = _fixture(tmp_path / "base")
+    tasks: list[Path] = []
+    task_inputs: dict[str, dict] = {}
+    selected: dict[str, list[str]] = {}
+    for index in range(1, 6):
+        task_id = f"task_{index}"
+        task = _task(task_id, 1 if index == 1 else 2)
+        task["source_object"]["instance_id"] = f"source-{index}"
+        task["removal_plan"]["removal_id"] = f"removal-{index}"
+        task["removal_plan"]["mask_set_id"] = f"masks-{index}"
+        task["task_freeze_digest"] = canonical_digest(
+            task, digest_field="task_freeze_digest"
+        )
+        path = tmp_path / f"{task_id}.json"
+        path.write_text(json.dumps(task), encoding="utf-8")
+        tasks.append(path)
+        task_inputs[task_id] = dict(base["task_inputs"]["task_b"])
+        selected[task_id] = ["laptop-track"]
+    candidate_root = tmp_path / "five-review"
+    candidate = materialize_sam31_track_selection_review_candidate(
+        task_freeze_paths=tasks,
+        task_inputs=task_inputs,
+        selected_track_ids_by_task=selected,
+        output_root=candidate_root,
+    )
+    assert candidate["task_count"] == 5
+    assert len(candidate["review_media"]) == 5
+    receipt_path = tmp_path / "five-review.json"
+    seal_sam31_track_selection_review(
+        candidate_path=(
+            candidate_root
+            / "public_scene_sam31_track_selection_review_candidate.v1.json"
+        ),
+        reviewed_by="fixture-reviewer",
+        reviewed_on="2026-08-13",
+        output_path=receipt_path,
+    )
+    tampered = json.loads(receipt_path.read_text())
+    tampered["selection_bindings"][0]["selected_track_ids"] = ["washer-track"]
+    receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(Sam31TrackSelectionReviewError, match="receipt_invalid"):
+        validate_sam31_track_selection_review(
+            receipt_path=receipt_path,
+            task_freeze_paths=tasks,
+            task_inputs=task_inputs,
+            selected_track_ids_by_task=selected,
+        )
+
+
+def test_review_acceptance_rehashes_exact_overlay_bytes(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    selected = {"task_a": ["washer-track"], "task_b": ["laptop-track"]}
+    candidate_root = tmp_path / "review-candidate"
+    materialize_sam31_track_selection_review_candidate(
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task=selected,
+        output_root=candidate_root,
+    )
+    overlay = candidate_root / "review_media/task_a/camera_0.png"
+    with Image.open(overlay) as image:
+        changed = np.asarray(image.convert("RGB")).copy()
+    changed[0, 0] = [1, 2, 3]
+    Image.fromarray(changed, mode="RGB").save(overlay)
+    with pytest.raises(Sam31TrackSelectionReviewError, match="media_record_invalid"):
+        seal_sam31_track_selection_review(
+            candidate_path=(
+                candidate_root
+                / "public_scene_sam31_track_selection_review_candidate.v1.json"
+            ),
+            reviewed_by="fixture-reviewer",
+            reviewed_on="2026-08-13",
+            output_path=tmp_path / "must-not-exist.json",
+        )
+
+
+def test_review_candidate_and_accept_clis(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    task_inputs_path = tmp_path / "task-inputs.json"
+    selected_path = tmp_path / "selected-tracks.json"
+    task_inputs_path.write_text(json.dumps(fixture["task_inputs"]), encoding="utf-8")
+    selected_path.write_text(
+        json.dumps({"task_a": ["washer-track"], "task_b": ["laptop-track"]}),
+        encoding="utf-8",
+    )
+    candidate_root = tmp_path / "cli-candidate"
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.public_scene_sam31_track_selection_review",
+        "candidate",
+    ]
+    for path in fixture["tasks"]:
+        command.extend(["--task-freeze", str(path)])
+    command.extend(
+        [
+            "--task-inputs",
+            str(task_inputs_path),
+            "--selected-tracks",
+            str(selected_path),
+            "--output-root",
+            str(candidate_root),
+        ]
+    )
+    subprocess.run(command, check=True)
+    candidate_path = (
+        candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
+    )
+    receipt_path = tmp_path / "cli-review.json"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blueprint_pipeline.public_scene_sam31_track_selection_review",
+            "accept",
+            "--candidate",
+            str(candidate_path),
+            "--reviewed-by",
+            "cli-reviewer",
+            "--reviewed-on",
+            "2026-08-13",
+            "--output",
+            str(receipt_path),
+        ],
+        check=True,
+    )
+    receipt = validate_sam31_track_selection_review(
+        receipt_path=receipt_path,
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task={
+            "task_a": ["washer-track"],
+            "task_b": ["laptop-track"],
+        },
+    )
+    assert receipt["reviewed_by"] == "cli-reviewer"

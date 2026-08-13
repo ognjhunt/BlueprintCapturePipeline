@@ -222,6 +222,7 @@ def materialize_calibrated_object_mask_set(
     task_freeze_paths: Sequence[str | Path],
     task_inputs: Mapping[str, Mapping[str, Any]],
     selected_track_ids_by_task: Mapping[str, Sequence[str]],
+    reviewed_track_selection_receipt_path: str | Path | None = None,
     output_root: str | Path,
 ) -> dict[str, Any]:
     """Materialize task-local calibrated images and inferred object masks."""
@@ -251,6 +252,23 @@ def materialize_calibrated_object_mask_set(
         or any(not isinstance(task_inputs[task_id], Mapping) for task_id in task_ids)
     ):
         raise CalibratedObjectMaskError(["calibrated_masks_task_track_map_invalid"])
+    if reviewed_track_selection_receipt_path is None:
+        raise CalibratedObjectMaskError(["calibrated_masks_review_receipt_missing"])
+    try:
+        from .public_scene_sam31_track_selection_review import (
+            validate_sam31_track_selection_review,
+        )
+
+        review = validate_sam31_track_selection_review(
+            receipt_path=reviewed_track_selection_receipt_path,
+            task_freeze_paths=task_paths,
+            task_inputs=task_inputs,
+            selected_track_ids_by_task=selected_track_ids_by_task,
+        )
+    except ValueError as exc:
+        raise CalibratedObjectMaskError(
+            ["calibrated_masks_review_receipt_invalid"]
+        ) from exc
 
     output.mkdir(parents=True)
 
@@ -394,6 +412,11 @@ def materialize_calibrated_object_mask_set(
         "tasks": task_rows,
         "selection_authority": {
             "track_ids_explicitly_declared": True,
+            "review_receipt_path": str(
+                Path(reviewed_track_selection_receipt_path).expanduser().resolve()
+            ),
+            "review_receipt_digest": review["receipt_digest"],
+            "all_selected_tracks_human_review_accepted": True,
             "cross_prompt_instance_deduplication_inferred": False,
             "mask_dilation_pixels": 0,
             "mask_values": [0, 255],
@@ -426,12 +449,16 @@ def materialize_calibrated_object_mask_set_from_tool_request(
         or not isinstance(request.get("task_freeze_paths"), list)
         or not isinstance(request.get("task_inputs"), Mapping)
         or not isinstance(request.get("selected_track_ids_by_task"), Mapping)
+        or not str(request.get("reviewed_track_selection_receipt_path") or "").strip()
     ):
         raise CalibratedObjectMaskError(["calibrated_masks_tool_request_invalid"])
     return materialize_calibrated_object_mask_set(
         task_freeze_paths=[str(path) for path in request["task_freeze_paths"]],
         task_inputs=request["task_inputs"],
         selected_track_ids_by_task=request["selected_track_ids_by_task"],
+        reviewed_track_selection_receipt_path=str(
+            request["reviewed_track_selection_receipt_path"]
+        ),
         output_root=output_root,
     )
 
@@ -453,6 +480,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="JSON object mapping each task_id to one or more exact SAM track IDs.",
     )
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--reviewed-track-selection-receipt", required=True)
     args = parser.parse_args(argv)
     selected_path = _file(
         args.selected_tracks_json, code="calibrated_masks_selected_track_map_missing"
@@ -470,6 +498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         task_freeze_paths=args.task_freeze,
         task_inputs=task_inputs,
         selected_track_ids_by_task=selected,
+        reviewed_track_selection_receipt_path=args.reviewed_track_selection_receipt,
         output_root=args.output_root,
     )
     return 0

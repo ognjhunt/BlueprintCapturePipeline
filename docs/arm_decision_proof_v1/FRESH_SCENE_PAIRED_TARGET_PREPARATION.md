@@ -41,10 +41,15 @@ provider-zero closure.
    - Run one task-local packet for each preregistered object so every object can
      use its own calibrated target-visible camera set. Output is compact
      persistent RLE mask tracks only. No geometry or identity qualification.
-4. `calibrated_object_masks`
-   - Implementation: `public_scene_calibrated_object_masks`.
-   - An operator or review agent explicitly selects the track ID or track-ID
-     union corresponding to each preregistered task object.
+4. `sam31_track_selection_review` and `calibrated_object_masks`
+   - Implementations: `public_scene_sam31_track_selection_review` and
+     `public_scene_calibrated_object_masks`.
+   - An operator or review agent proposes the track ID or track-ID union
+     corresponding to each preregistered task object. The deterministic
+     `public_scene_sam31_track_selection_review` producer renders the exact
+     selected pixels in magenta over every calibrated camera. A human then
+     accepts that immutable packet. The calibrated-mask materializer reopens
+     the file-backed receipt and refuses a naked digest or agent-only approval.
    - The materializer verifies exact source-frame and camera-record digests,
      requires an explicit one-to-one camera-to-SAM-frame map, decodes the RLE,
      and writes one undilated binary PNG per calibrated camera. It never assumes
@@ -118,6 +123,32 @@ digest-bound track file is the direct input to the reviewed calibrated-mask
 request; the production handoff never returns or redistributes source-frame
 bytes.
 
+Generate and accept the review packet on the deployed control-plane host with
+the repository CLI. `task-inputs.json` maps every frozen task ID to its exact
+host-resident source-track result, camera contract, calibrated image root, and
+camera-to-source-frame map. `selected-tracks.json` maps each task ID to the
+proposed SAM track-ID union. Repeat `--task-freeze` once per task (one to five):
+
+```bash
+python -m blueprint_pipeline.public_scene_sam31_track_selection_review candidate \
+  --task-freeze /path/task_a.json \
+  --task-freeze /path/task_b.json \
+  --task-inputs /path/task-inputs.json \
+  --selected-tracks /path/selected-tracks.json \
+  --output-root /path/review-candidate
+
+# After the named human has inspected every overlay in review_media/:
+python -m blueprint_pipeline.public_scene_sam31_track_selection_review accept \
+  --candidate /path/review-candidate/public_scene_sam31_track_selection_review_candidate.v1.json \
+  --reviewed-by authorized-reviewer \
+  --reviewed-on 2026-08-13 \
+  --output /path/public_scene_sam31_track_selection_review.v1.json
+```
+
+The acceptance command re-hashes and reopens every source image, binary mask,
+and overlay before sealing. Pass that exact receipt path, not merely its digest,
+to `materialize_calibrated_object_masks`.
+
 ## Agents SDK orchestration
 
 The repository already pins `openai-agents` and the production control plane
@@ -136,7 +167,8 @@ The required agent-facing tools are:
 - `materialize_sam31_task_inputs`: produce the calibrated, task-local SAM input
   packet without uploading bytes or starting paid work.
 - `materialize_calibrated_object_masks`: invoke the deterministic task-local
-  camera/frame bridge after explicit track selections are present.
+  camera/frame bridge after explicit track selections and their human review
+  receipt are present.
 
 `fresh_scene_supervisor_bindings` is the production bridge. It accepts only a
 host-resident, digest-bound status plus the exact available tool request, and
