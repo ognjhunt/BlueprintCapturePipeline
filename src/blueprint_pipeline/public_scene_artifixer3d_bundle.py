@@ -1299,6 +1299,15 @@ def main(argv: list[str] | None = None) -> int:
     exactly once and then never again -- which is the state this was in, with a
     `status: ready` receipt pinned to a commit the host had long since left.
 
+    The first cut of this entry point offered eight flags for a builder that
+    takes thirteen, which quietly fixed five decisions at their defaults. Three
+    of them are not incidental: the editor backend and `--semantic-editor-only`
+    choose *which* removal pipeline is built, so the CLI could only ever
+    produce whatever the input schema happens to default to; the two
+    checkpoint-reuse paths are how a rebuild avoids paying for a checkpoint it
+    already has; and the instance allowlist decides whether an already-running
+    instance is one this bundle may proceed alongside.
+
     Performs no provider mutation and rents nothing.
     """
 
@@ -1313,6 +1322,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifixer3d-steps", type=int)
     parser.add_argument("--random-seed", type=int)
     parser.add_argument("--pipeline-mode")
+    parser.add_argument(
+        "--direct-editor-backend",
+        choices=sorted(DIRECT_EDITOR_BACKENDS | {NO_DIRECT_EDITOR}),
+        help="Defaults to whatever the candidate input schema implies.",
+    )
+    parser.add_argument(
+        "--semantic-editor-only",
+        action="store_true",
+        default=None,
+        help="Pairs with the editor backend; the builder refuses invalid pairs.",
+    )
+    parser.add_argument("--reused-checkpoint-provider-output-zip")
+    parser.add_argument("--reused-checkpoint-source-provider-zero")
+    parser.add_argument(
+        "--allow-active-instance",
+        action="append",
+        type=int,
+        default=[],
+        help="Repeatable. Instances that may already be running.",
+    )
+    parser.add_argument("--generated-at", help="Defaults to now; set for a reproducible receipt.")
+    args = parser.parse_args(argv)
+    optional = {
+        "artifixer3d_steps": args.artifixer3d_steps,
+        "random_seed": args.random_seed,
+        "pipeline_mode": args.pipeline_mode,
+        "direct_editor_backend": args.direct_editor_backend,
+        "semantic_editor_only": args.semantic_editor_only,
+        "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
+        "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
+        "generated_at": args.generated_at,
+    }
     args = parser.parse_args(argv)
     try:
         receipt = build_artifixer3d_bundle(
@@ -1321,6 +1362,8 @@ def main(argv: list[str] | None = None) -> int:
             artifixer_source_directory=args.artifixer_source,
             output_root=args.output_root,
             repository_root=args.repository_root,
+            allowed_active_instance_ids=tuple(args.allow_active_instance or ()),
+            **{key: value for key, value in optional.items() if value is not None},
             **({"artifixer3d_steps": args.artifixer3d_steps} if args.artifixer3d_steps is not None else {}),
             **({"random_seed": args.random_seed} if args.random_seed is not None else {}),
             **({"pipeline_mode": args.pipeline_mode} if args.pipeline_mode is not None else {}),

@@ -74,6 +74,36 @@ and do not. They cover staging URL files and handoff capabilities the code
 chmods itself; provider secrets are read through `_read_secret`, which does not
 check mode. No change was made.
 
+## The appearance chain is ordered, not parallel
+
+`public_scene_artifixer3d_vast` and `paired_target_native_import_vast` are not
+two independent lanes. The import gate's attempt authority validates a
+`prior_terminal_artifixer` chain -- the predecessor's authority, terminal
+result, object store cleanup, and provider-zero receipt -- and carries its
+`aggregate_goal_spend_before_attempt_usd` forward against a **$12 campaign
+cap** shared by both.
+
+    public_scene_artifixer3d_vast  --terminal spend chain-->  paired_target_native_import_vast
+      cap $10, TTL 7200..21600                                  TTL 1800..7200
+
+So firing the import gate first is not slower, it is impossible: there is
+nothing to authorize it against. ArtiFixer3D runs first, and its spend reduces
+what remains for the gate.
+
+Both now have live profile builders. The paired-target bundle is already built
+at a deployed commit and staged host-resident, waiting only on its predecessor.
+
+Both links can now be authorized from a command line via
+`scripts/issue_appearance_chain_paid_attempt_authority.py`, which was the third
+scope of the missing-entry-point class after #512 (lanes) and #520 (bundle
+modules): modules that mint an authority rather than seal a bundle.
+
+**Do not delete the retired AuraFusion360 receipts.** A prior Aura authority and
+terminal result are what the ArtiFixer3D authority anchors its campaign spend
+on. Retiring the lane means no new launch profile and no new attempt; it does
+not mean the historical artifacts are disposable. Deleting them would strand the
+appearance chain with no anchor.
+
 ## Rehearse before firing
 
 `scripts/rehearse_lane_terminal_contract.py` asks the launch's own terminal
@@ -131,3 +161,37 @@ decision here retires it outright rather than leaving it frozen-but-pending.
 
 Its bundle CLI landed in #512 anyway. Retired means we do not run it, not that
 it should stay a landmine for whoever unfreezes it.
+
+## The denominator is 30, not 14
+
+Counting `*_vast.py` lane modules understated the gap. A `*_vast.py` is
+transport, and several probe kinds have no lane module of their own -- the two
+oldest builders emit kinds (`adp009d-franka-native-microcheck`,
+`adp-retained-scene-gpu-render`) that appear in no lane module at all.
+
+The allocator dispatches on **probe kind**, so that is the unit. Read from its
+own `if args.probe_kind == ...` branches: **30 probe kinds are executable, and
+8 are reachable from a live profile builder.** `tests/test_website_reachable_probe_kinds.py`
+rediscovers that set from the allocator on every run, so a new branch there
+cannot become the next unreachable lane without either a builder or a named
+reason.
+
+The 22 unreachable kinds are not one problem:
+
+| Reason | Count | Meaning |
+| --- | --- | --- |
+| `retired_appearance_approach` | 7 | Superseded by the GPT-teacher/ArtiFixer3D path. Not to be relaunched; receipts retained as spend anchors. |
+| `frozen_program` | 7 | Frozen by the active-program contract in `CLAUDE.md`. |
+| `not_a_website_lane` | 1 | The profile preflight, which the allocator runs itself. |
+| `awaiting_builder` | 4 | Real debt: executable, not retired, not frozen, unreachable. |
+
+Only the last row is work. The Arena chain (construction -> controls -> policy)
+came off it when `build_native_task_arena_live_profile.py` landed, leaving the
+Isaac Lab Arena native control, the two fresh-site probes, and the
+reconstruction worker smoke. The contract caps that row at its current size, so
+it can shrink but not silently grow.
+
+Reading only a builder's `SPEC` under-reported this: a chain builder declares
+several links and no module-level `SPEC`, so the whole Arena family read as
+unreachable even after its builder existed, and the gate stayed green. The
+extraction now walks every module-level object that carries a `probe_kind`.
