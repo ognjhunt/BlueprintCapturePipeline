@@ -21,7 +21,7 @@ import subprocess
 import zipfile
 from typing import Any
 
-from .common import ensure_dir, utc_now_iso, write_json
+from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
@@ -38,6 +38,7 @@ from .public_scene_artifixer3d_bundle import (
     SCHEMA_VERSION as BUNDLE_SCHEMA_VERSION,
     USE_ATTESTATION_SCHEMA_VERSION,
 )
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 from .vast_independent_watchdog_control import (
     EVIDENCE_NAME as WATCHDOG_EVIDENCE_NAME,
     arm_independent_vast_watchdog,
@@ -120,7 +121,9 @@ def inspect_artifixer3d_container_image(
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         completed = None
-        blockers.append(f"artifixer3d_container_registry_probe_failed:{type(exc).__name__}")
+        blockers.append(
+            f"artifixer3d_container_registry_probe_failed:{redacted_failure_detail(exc)}"
+        )
     if completed is not None:
         if completed.returncode != 0:
             blockers.append("artifixer3d_container_image_not_registry_resolvable")
@@ -1512,7 +1515,9 @@ def _extract_output(path: Path | None, destination: Path) -> tuple[dict[str, Any
                     raise ValueError("artifixer3d_provider_output_too_large")
             archive.extractall(destination)
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
-        return {}, [f"artifixer3d_provider_output_extract_failed:{type(exc).__name__}"]
+        return {}, [
+            f"artifixer3d_provider_output_extract_failed:{redacted_failure_detail(exc)}"
+        ]
     result_path = destination / "public_scene_artifixer3d_runtime_result.json"
     if not result_path.is_file():
         blockers.append("artifixer3d_runtime_result_missing")
@@ -1931,7 +1936,9 @@ def run_artifixer3d_vast(
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
             "status": "blocked",
-            "blockers": [f"artifixer3d_adapter_failed:{type(exc).__name__}"],
+            "blockers": [
+                f"artifixer3d_adapter_failed:{redacted_failure_detail(exc)}"
+            ],
             "raw_secret_values_recorded": False,
         }
     finally:
@@ -2045,7 +2052,8 @@ def run_artifixer3d_vast(
             write_json(raw_path, raw)
         except (OSError, ValueError, KeyError) as exc:
             blockers.append(
-                f"artifixer3d_raw_result_materialization_failed:{type(exc).__name__}"
+                "artifixer3d_raw_result_materialization_failed:"
+                f"{redacted_failure_detail(exc)}"
             )
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -2078,6 +2086,11 @@ def run_artifixer3d_vast(
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="public_scene_artifixer3d",
+    )
     write_json(result_path, result)
     return result
 
