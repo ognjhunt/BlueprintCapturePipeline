@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 from .common import ensure_dir, utc_now_iso, write_json
 from .content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
@@ -1174,6 +1175,20 @@ def run_joint_agent_vast(
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
+    # Seal the two terminal artifacts every production launch profile asks
+    # this result for. Without them the run ends
+    # `allocator_terminal_artifact_missing:` whatever happened on the provider.
+    result = seal_lane_terminal_artifacts(
+        result,
+        attempt_root=job,
+        lane="adp_joint_agent",
+        binding={
+            "bundle_sha256": bundle.get("bundle_sha256")
+            if isinstance(bundle, Mapping)
+            else None,
+            "provider": "vast",
+        },
+    )
     write_json(job / "adp_joint_agent_vast_result.json", result)
     return result
 
