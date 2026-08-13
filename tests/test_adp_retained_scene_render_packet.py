@@ -971,44 +971,88 @@ def test_rejects_more_than_five_task_lanes() -> None:
         build_retained_scene_gpu_render_request(request)
 
 
-def test_a_run_names_the_terminal_artifacts_its_own_contract_requires(
+def test_a_run_inventories_its_evidence_in_the_shared_manifest_schema(
     tmp_path: Path,
 ) -> None:
     """The profile's terminal contract asks the result for
     `teardown_manifest_path` and `artifact_manifest_path`. This lane named
     neither, so every run ended `allocator_terminal_artifact_missing:` for both
-    regardless of what happened on the provider -- and a teardown that is not
-    referenced cannot be checked, so provider-zero could never be verified."""
+    regardless of what happened on the provider.
 
-    from blueprint_pipeline.adp_retained_scene_render_vast import (
-        ARTIFACT_MANIFEST_SCHEMA,
-        _write_retained_artifact_manifest,
+    It uses the shared `task_evaluation_artifact_manifest.v1`, not a lane-local
+    schema: `adp009d_live_readiness` and every future consumer validate that
+    one, and a second schema would mean each lane's evidence needed a reader
+    written for it."""
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        SCHEMA_VERSION,
+        build_task_evaluation_artifact_manifest,
+    )
+
+    job = tmp_path / "job"
+    (job / "immutable_execution" / "renders").mkdir(parents=True)
+    (job / "immutable_execution" / "renders" / "front.png").write_bytes(b"frame")
+    provider_run = job / "vast_provider_run"
+    provider_run.mkdir()
+    (provider_run / "vast_provider_adapter_result.json").write_text("{}", encoding="utf-8")
+    (provider_run / "vast_teardown_manifest.json").write_text(
+        '{"continuing_spend_from_this_run": false}', encoding="utf-8"
+    )
+
+    manifest = build_task_evaluation_artifact_manifest(
+        attempt_root=job,
+        artifact_roots={
+            "provider_runtime_evidence": job / "immutable_execution",
+            "allocator_adapter_result": provider_run / "vast_provider_adapter_result.json",
+            "teardown_manifest": provider_run / "vast_teardown_manifest.json",
+        },
+        required_roles=(
+            "provider_runtime_evidence",
+            "allocator_adapter_result",
+            "teardown_manifest",
+        ),
+        binding={"allocator_lane": "adp_retained_scene_render", "retry_cap": 0},
+        output_path=job / "artifact_manifest.json",
+    )
+
+    assert manifest["schema_version"] == SCHEMA_VERSION
+    assert manifest["status"] == "completed"
+    assert manifest["blockers"] == []
+    assert {row["relative_path"] for row in manifest["files"]} == {
+        "immutable_execution/renders/front.png",
+        "vast_provider_run/vast_provider_adapter_result.json",
+        "vast_provider_run/vast_teardown_manifest.json",
+    }
+    # Each file carries the roles it satisfies, so a reader can tell render
+    # evidence from teardown evidence without knowing this lane's layout.
+    roles = {row["relative_path"]: row["roles"] for row in manifest["files"]}
+    assert roles["vast_provider_run/vast_teardown_manifest.json"] == ["teardown_manifest"]
+
+
+def test_a_missing_required_role_blocks_the_manifest(tmp_path: Path) -> None:
+    """Roles state what coverage is required, rather than sweeping whatever
+    happens to be on disk and calling the result complete."""
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        build_task_evaluation_artifact_manifest,
     )
 
     job = tmp_path / "job"
     (job / "immutable_execution").mkdir(parents=True)
-    (job / "immutable_execution" / "result.json").write_text('{"a":1}', encoding="utf-8")
-    (job / "provider_run").mkdir()
-    (job / "provider_run" / "vast_teardown_manifest.json").write_text(
-        '{"continuing_spend_from_this_run": false}', encoding="utf-8"
+    (job / "immutable_execution" / "result.json").write_text("{}", encoding="utf-8")
+
+    manifest = build_task_evaluation_artifact_manifest(
+        attempt_root=job,
+        artifact_roots={"provider_runtime_evidence": job / "immutable_execution"},
+        required_roles=("provider_runtime_evidence", "teardown_manifest"),
+        binding={"allocator_lane": "adp_retained_scene_render", "retry_cap": 0},
+        output_path=job / "artifact_manifest.json",
     )
 
-    path = _write_retained_artifact_manifest(job, bundle_sha256="sha256:" + "a" * 64)
-    manifest = json.loads(path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "blocked"
+    assert "task_evaluation_artifact_role_missing:teardown_manifest" in manifest["blockers"]
 
-    assert path.name == "adp_retained_scene_render_artifact_manifest.json"
-    assert manifest["schema_version"] == ARTIFACT_MANIFEST_SCHEMA
-    assert manifest["artifact_count"] == 2
-    assert {row["relative_path"] for row in manifest["artifacts"]} == {
-        "immutable_execution/result.json",
-        "provider_run/vast_teardown_manifest.json",
-    }
-    assert all(row["sha256"].startswith("sha256:") for row in manifest["artifacts"])
-    # The manifest never lists itself.
-    assert not any(
-        row["relative_path"].endswith("artifact_manifest.json")
-        for row in manifest["artifacts"]
-    )
+
 def _portable_request(
     *, candidate: str, authority: str, vendor: str, lanes: list[dict[str, object]]
 ) -> dict[str, object]:

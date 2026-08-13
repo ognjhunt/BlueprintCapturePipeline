@@ -23,6 +23,10 @@ from .paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 from .provider_bundle_rehearsal import provider_bundle_rehearsal_blockers
+from .task_evaluation_artifact_manifest import (
+    TaskEvaluationArtifactManifestError,
+    build_task_evaluation_artifact_manifest,
+)
 from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
@@ -40,7 +44,6 @@ from .spend_authority_consumption_root import (
 )
 
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
-ARTIFACT_MANIFEST_SCHEMA = "adp009d_retained_scene_gpu_render_artifact_manifest.v1"
 RESULT_SCHEMA = "adp009d_retained_scene_gpu_render_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_authority.v1"
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
@@ -451,50 +454,6 @@ def _extract_provider_output(
     return result, blockers, relocation
 
 
-def _write_retained_artifact_manifest(job: Path, *, bundle_sha256: str) -> Path:
-    """List every artifact this run retained, with digests.
-
-    ``artifact_storage_required`` is one of the profile's required controls and
-    the terminal contract asks the result for an ``artifact_manifest_path``.
-    This lane never produced one, so the check could only ever report it
-    missing -- the run's own evidence existed on disk and nothing pointed at it.
-
-    Written for a blocked run too. What was retained is exactly what a failed
-    attempt leaves to diagnose from, and a manifest that only appears on success
-    is absent whenever it is most needed.
-    """
-
-    rows: list[dict[str, Any]] = []
-    for path in sorted(job.rglob("*")):
-        if path.is_symlink() or not path.is_file():
-            continue
-        if path.name == "adp_retained_scene_render_artifact_manifest.json":
-            continue
-        rows.append(
-            {
-                "relative_path": path.relative_to(job).as_posix(),
-                "sha256": _sha256(path),
-                "size_bytes": path.stat().st_size,
-            }
-        )
-    manifest = {
-        "schema_version": ARTIFACT_MANIFEST_SCHEMA,
-        "generated_at": utc_now_iso(),
-        "bundle_sha256": bundle_sha256,
-        "artifact_count": len(rows),
-        "artifacts": rows,
-        "raw_secret_values_recorded": False,
-        "claim_boundary": (
-            "This manifest lists the bytes this run retained and their digests. "
-            "It is not proof that a render completed, that a provider was "
-            "released, or that any control passed."
-        ),
-    }
-    path = job / "adp_retained_scene_render_artifact_manifest.json"
-    write_json(path, manifest)
-    return path
-
-
 @contextmanager
 def _authority_environment():
     environment_names = (*_VAST_MUTATION_ENV, _VAST_STALE_OFFER_RETRY_ENV)
@@ -708,9 +667,46 @@ def run_retained_scene_render_vast(
     # teardown manifest had been written next to the adapter result the whole
     # time, and nothing pointed at it. A teardown that is not referenced cannot
     # be checked, so provider-zero could never be verified from this lane.
-    artifact_manifest = _write_retained_artifact_manifest(
-        job, bundle_sha256=str(bundle["bundle_sha256"])
-    )
+    # The shared manifest, not a lane-local one. `adp009d_live_readiness` and
+    # every future consumer validate `task_evaluation_artifact_manifest.v1`, so
+    # a second schema here would mean each lane's evidence had to be read by a
+    # reader written for it. Roles also state what coverage is *required*
+    # rather than sweeping whatever happens to be on disk.
+    artifact_manifest_path = job / "artifact_manifest.json"
+    try:
+        artifact_manifest = build_task_evaluation_artifact_manifest(
+            attempt_root=job,
+            artifact_roots={
+                "provider_runtime_evidence": job / "immutable_execution",
+                "allocator_adapter_result": (
+                    provider_run / "vast_provider_adapter_result.json"
+                ),
+                "teardown_manifest": provider_run / "vast_teardown_manifest.json",
+                # Retained but not required: a blocked attempt is diagnosed from
+                # these, and they are exactly what is absent when it failed
+                # early.
+                "provider_run_diagnostics": provider_run,
+            },
+            required_roles=(
+                "provider_runtime_evidence",
+                "allocator_adapter_result",
+                "teardown_manifest",
+            ),
+            binding={
+                "allocator_lane": PROVIDER_BUNDLE_KIND,
+                "blueprint_commit": bundle.get("blueprint_commit"),
+                "bundle_sha256": bundle.get("bundle_sha256"),
+                "provider": "vast",
+                "result_schema_version": RESULT_SCHEMA,
+                "retry_cap": 0,
+            },
+            output_path=artifact_manifest_path,
+        )
+    except TaskEvaluationArtifactManifestError as exc:
+        artifact_manifest = {"status": "blocked", "blockers": [str(exc)]}
+        blockers.append("retained_scene_render_artifact_manifest_invalid")
+    if artifact_manifest.get("status") != "completed":
+        blockers.extend(str(item) for item in artifact_manifest.get("blockers") or [])
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA,
         "generated_at": utc_now_iso(),
@@ -718,7 +714,9 @@ def run_retained_scene_render_vast(
         "bundle_sha256": bundle["bundle_sha256"],
         "authorization_consumption": consumption,
         "provider_adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
-        "artifact_manifest_path": str(artifact_manifest),
+        "artifact_manifest_path": str(artifact_manifest_path)
+        if artifact_manifest_path.is_file()
+        else None,
         # Null rather than a path that is not there: an unwritten teardown
         # manifest is the absence of teardown evidence, and naming a
         # nonexistent file would let a later reader think one was produced.
