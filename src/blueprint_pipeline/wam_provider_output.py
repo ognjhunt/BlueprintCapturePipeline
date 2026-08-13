@@ -27,6 +27,7 @@ RUNTIME_RESULT_FILENAMES = (
     "adp_aura_author_smoke_result.json",
     "adp_aura_interiorgs_result.json",
     "public_scene_aura_exact_residual_runtime_result.json",
+    "public_scene_artifixer3d_runtime_result.json",
     "adp_inpaint360_interiorgs_result.json",
     "adp009d_native_microcheck.json",
     "adp009d_ovrtx_live_camera_result.json",

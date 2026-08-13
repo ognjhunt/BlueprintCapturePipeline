@@ -75,6 +75,28 @@ def test_provider_output_recognizes_adp009d_ovrtx_result(tmp_path: Path) -> None
     assert result["runtime_result"]["blockers"] == ["render_failed"]
 
 
+def test_provider_output_recognizes_artifixer3d_result(tmp_path: Path) -> None:
+    output_zip = tmp_path / "artifixer3d-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "public_scene_artifixer3d_runtime_result.json",
+            json.dumps(
+                {
+                    "schema_version": "public_scene_artifixer3d_runtime_result.v1",
+                    "status": "candidate_completed_requires_visual_and_multiview_review",
+                    "blockers": ["semantic_object_free_visual_review_required"],
+                }
+            ),
+        )
+
+    result = inspect_provider_runtime_output_zip(output_zip)
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == (
+        "candidate_completed_requires_visual_and_multiview_review"
+    )
+
+
 def test_runtime_summary_adds_evaluator_fields_only_for_attributable_result() -> None:
     summary = summarize_runtime_result(
         {
