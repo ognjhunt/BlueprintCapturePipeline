@@ -68,9 +68,10 @@ def _backend(root: Path, backend_id: str) -> dict[str, object]:
     commit = "1" * 40
     archive = root / f"{backend_id}.zip"
     archive.parent.mkdir(parents=True, exist_ok=True)
-    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as source:
-        source.comment = commit.encode("ascii")
-        source.writestr("LICENSE", "MIT\n")
+    if not archive.exists():
+        with ZipFile(archive, "w", compression=ZIP_DEFLATED) as source:
+            source.comment = commit.encode("ascii")
+            source.writestr("LICENSE", "MIT\n")
     return {
         "backend_id": backend_id,
         "execution_mode": (
