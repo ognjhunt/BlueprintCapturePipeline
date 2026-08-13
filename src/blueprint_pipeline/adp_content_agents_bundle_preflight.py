@@ -487,10 +487,27 @@ def _bundle_config_semantics(bundle_path: Path) -> dict[str, Any]:
                         target_paths.update(str(value) for value in values)
                 material_textures = config.get("material_textures")
                 if isinstance(material_textures, Mapping):
-                    for row in material_textures.values():
-                        if isinstance(row, Mapping) and isinstance(
-                            row.get("target_prim_paths"), list
-                        ):
+                    for key, row in material_textures.items():
+                        if not isinstance(row, Mapping):
+                            continue
+                        # The texture agent's planner resolves this mapping by
+                        # the material's USD path first and its name second. A
+                        # descriptive label matches neither, so the material is
+                        # skipped as `not_requested`, the plan contains zero
+                        # jobs, and the run is rejected -- on the GPU, after it
+                        # is rented, which is what a real run cost. `material_path`
+                        # inside the entry is a guard the planner applies to a
+                        # name-keyed entry; it never finds the entry.
+                        scoped = str(row.get("material_path") or "").strip()
+                        if scoped and str(key) not in {
+                            scoped,
+                            scoped.rsplit("/", 1)[-1],
+                        }:
+                            raise ContentAgentsBundlePreflightError(
+                                "bundle_static_config_material_texture_key_unresolvable:"
+                                f"{name}:{key}"
+                            )
+                        if isinstance(row.get("target_prim_paths"), list):
                             target_paths.update(
                                 str(value) for value in row["target_prim_paths"]
                             )
