@@ -318,6 +318,65 @@ def validate_artifixer3d_terminal_spend_chain(
     }
 
 
+
+#: The appearance campaign's spend anchor when it has no paid predecessor.
+CAMPAIGN_START_SCHEMA_VERSION = "appearance_campaign_spend_start.v1"
+
+#: The shared cap every link of the campaign is checked against.
+AGGREGATE_GOAL_SPEND_CAP_USD = 12.0
+
+
+def validate_campaign_start_receipt(path: Path) -> tuple[dict[str, Any], float]:
+    """Anchor the campaign's spend on a measurement rather than a predecessor.
+
+    `_validate_prior_authority_chain` anchors on a completed AuraFusion360 paid
+    attempt: an authority carrying six bound dependency records, and a terminal
+    result with `status: completed`. Those exist only after a real paid Aura
+    run, and there was never one -- every Aura artifact is `dry_run_ready`, the
+    launch queue holds no Aura attempt, no Aura authority was consumed, and the
+    spend ledger totals zero. Retiring the lane made that anchor unreachable
+    rather than merely unused, so ArtiFixer3D could not be authorized at all.
+
+    This is the replacement, and it is deliberately not "skip the anchor". The
+    anchor's whole job is to carry the campaign's running spend into the
+    `prior_spend + hard_cap_usd > aggregate_cap` check, so removing it would
+    uncap the campaign. This keeps the number and changes only where it comes
+    from: a sealed receipt that records what was *measured*, and the evidence it
+    was measured from.
+
+    A zero-spend anchor must say so explicitly. A receipt claiming no prior
+    spend while naming prior paid attempts is refused rather than believed.
+    """
+
+    resolved = path.expanduser().resolve()
+    if resolved.is_symlink() or not resolved.is_file():
+        raise ValueError("appearance_campaign_start_invalid")
+    value = _read(resolved, code="appearance_campaign_start_unreadable")
+    spend = value.get("prior_goal_spend_usd")
+    observed = value.get("measured_paid_attempts")
+    if (
+        value.get("schema_version") != CAMPAIGN_START_SCHEMA_VERSION
+        or value.get("receipt_digest")
+        != canonical_digest(value, digest_field="receipt_digest")
+        or value.get("aggregate_goal_spend_cap_usd") != AGGREGATE_GOAL_SPEND_CAP_USD
+        or value.get("provider_mutation_performed") is not False
+        or isinstance(spend, bool)
+        or not isinstance(spend, (int, float))
+        or not math.isfinite(float(spend))
+        or float(spend) < 0
+        or not isinstance(observed, list)
+        or not isinstance(value.get("measured_from"), list)
+        or not value.get("measured_from")
+    ):
+        raise ValueError("appearance_campaign_start_invalid")
+    # The two halves have to agree. A receipt that names paid attempts and
+    # still claims zero prior spend is the shape a fabricated anchor takes.
+    if bool(observed) != (float(spend) > 0):
+        raise ValueError("appearance_campaign_start_spend_disagrees_with_evidence")
+    for record in value.get("measured_from") or []:
+        _bound(record, code="appearance_campaign_start_evidence_unbound")
+    return value, round(float(spend), 6)
+
 __all__ = [
     "ARTIFIXER3D_PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION",
     "ARTIFIXER3D_RESULT_SCHEMA_VERSION",
@@ -325,4 +384,7 @@ __all__ = [
     "_validate_prior_authority_chain",
     "_validate_prior_terminal_result",
     "validate_artifixer3d_terminal_spend_chain",
+    "validate_campaign_start_receipt",
+    "CAMPAIGN_START_SCHEMA_VERSION",
+    "AGGREGATE_GOAL_SPEND_CAP_USD",
 ]
