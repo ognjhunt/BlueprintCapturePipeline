@@ -74,6 +74,30 @@ and do not. They cover staging URL files and handoff capabilities the code
 chmods itself; provider secrets are read through `_read_secret`, which does not
 check mode. No change was made.
 
+## The appearance chain is ordered, not parallel
+
+`public_scene_artifixer3d_vast` and `paired_target_native_import_vast` are not
+two independent lanes. The import gate's attempt authority validates a
+`prior_terminal_artifixer` chain -- the predecessor's authority, terminal
+result, object store cleanup, and provider-zero receipt -- and carries its
+`aggregate_goal_spend_before_attempt_usd` forward against a **$12 campaign
+cap** shared by both.
+
+    public_scene_artifixer3d_vast  --terminal spend chain-->  paired_target_native_import_vast
+      cap $10, TTL 7200..21600                                  TTL 1800..7200
+
+So firing the import gate first is not slower, it is impossible: there is
+nothing to authorize it against. ArtiFixer3D runs first, and its spend reduces
+what remains for the gate.
+
+Both now have live profile builders. The paired-target bundle is already built
+at a deployed commit and staged host-resident, waiting only on its predecessor.
+
+Still missing for the chain:
+`materialize_paired_target_native_import_paid_attempt_authority` exists and has
+no CLI -- the same missing-entry-point class as #512 and #520, in a third
+scope: modules that mint an authority rather than seal a bundle.
+
 ## Rehearse before firing
 
 `scripts/rehearse_lane_terminal_contract.py` asks the launch's own terminal
