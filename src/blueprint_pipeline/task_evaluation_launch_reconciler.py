@@ -192,8 +192,27 @@ def _terminal_teardown_evidence(
     generated_at = _timestamp(manifest.get("generated_at"))
     if generated_at is None:
         blockers.append("terminal_teardown_manifest_timestamp_invalid")
-    if manifest.get("status") != "completed":
-        blockers.append("terminal_teardown_manifest_not_completed")
+    status = str(manifest.get("status") or "")
+    # A lane that blocks before it ever obtains an instance writes a
+    # `not_required_*` manifest rather than a completed teardown, because no
+    # teardown happened -- there was nothing to tear down. Demanding
+    # `completed` there demands an event that by definition never occurred, so
+    # those runs could never close, and the reconciler unit failed on every
+    # sweep forever after. A permanently red provider-zero signal is not a
+    # strict one; it is one nobody can read.
+    #
+    # It is accepted only on the lane's own proof that nothing was allocated.
+    # Wherever an instance id exists, `completed` is still the only answer.
+    allocated = True
+    if status != "completed":
+        if (
+            status.startswith("not_required_")
+            and manifest.get("vast_instance_ids") == []
+            and manifest.get("teardown_actions_performed") == []
+        ):
+            allocated = False
+        else:
+            blockers.append("terminal_teardown_manifest_not_completed")
     if manifest.get("continuing_spend_from_this_run") is not False:
         blockers.append("terminal_teardown_continuing_spend_not_false")
     if blockers:
@@ -205,6 +224,10 @@ def _terminal_teardown_evidence(
         "status": manifest.get("status"),
         "generated_at": manifest.get("generated_at"),
         "continuing_spend_from_this_run": False,
+        # Carried into the closure receipt so a reader can never mistake
+        # "torn down" for "never allocated".
+        "provider_resource_allocated": allocated,
+        "zero_continuing_spend_scope": manifest.get("zero_continuing_spend_scope"),
     }, []
 
 
