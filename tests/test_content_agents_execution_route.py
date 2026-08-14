@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import content_agents_execution_route as route_module
 from blueprint_pipeline.content_agents_execution_route import (
     ContentAgentsExecutionRouteError,
     materialize_content_agents_execution_route,
@@ -159,3 +161,47 @@ def test_route_rejects_cross_object_reuse_and_tampering(tmp_path: Path) -> None:
         match="content_agents_execution_route_object_identity_duplicate",
     ):
         validate_content_agents_execution_route(duplicate)
+
+
+def test_route_cli_supplies_every_materializer_keyword() -> None:
+    entry = route_module.STEPS["route"]
+    upstream = {
+        parameter
+        for parameter, value in inspect.signature(entry.materialize).parameters.items()
+        if value.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+
+    assert upstream == set(entry.params)
+
+
+def test_route_cli_materializes_without_provider_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    objects_path = tmp_path / "objects.json"
+    objects_path.write_text(
+        json.dumps([_object(1, capabilities=["configuration_review"])]),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "route.json"
+
+    assert (
+        route_module.main(
+            [
+                "route",
+                "--objects",
+                str(objects_path),
+                "--output",
+                str(output_path),
+                "--generated-at",
+                "2026-08-14T00:00:00Z",
+            ]
+        )
+        == 0
+    )
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "materialized"
+    assert summary["provider_mutation_performed"] is False
+    assert json.loads(output_path.read_text(encoding="utf-8"))["status"] == (
+        "codex_local_only_ready"
+    )
