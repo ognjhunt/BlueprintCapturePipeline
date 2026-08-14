@@ -7833,3 +7833,48 @@ def test_a_readable_log_channel_keeps_its_no_progress_watchdog(
 
     assert result["log_bytes_ever_read"] is True
     assert result["no_progress_timeout_reached"] is True
+
+
+def test_vast_adapter_records_an_unusable_lock_as_unusable_not_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retained artifacts must name the cause the run actually hit.
+
+    "Busy" is the fleet at its authorized concurrency and clears by waiting.
+    "Unusable" is a host that cannot honour its own semaphore -- production had
+    `slot1`/`slot2` owned `root:root` at 0644 while the adapter runs as
+    `blueprint`. Writing "busy" into the phase artifacts for that would send
+    the next operator to wait for capacity that was never the problem.
+    """
+
+    _configure_live_gates(tmp_path, monkeypatch)
+    lock_path = tmp_path / "unusable-vast-paid-launch.lock"
+    monkeypatch.setenv(vpa.VAST_LAUNCH_LOCK_FILE_ENV, str(lock_path))
+    for slot in vpa.vast_launch_lock_paths(lock_path):
+        slot.parent.mkdir(parents=True, exist_ok=True)
+        slot.mkdir()  # exists, unopenable for any uid including root
+
+    def fail_if_called(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError(f"unexpected Vast API call: {kwargs}")
+
+    monkeypatch.setattr(vpa, "_api_json", fail_if_called)
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "lock-unusable",
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        max_live_minutes=1,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["api_call_performed"] is False
+    assert result["blockers"] == ["vast_paid_launch_lock_unusable"]
+
+    job_dir = tmp_path / "lock-unusable"
+    probe = _read_json(job_dir / "vast_startup_probe_manifest.json")
+    assert probe["blockers"] == ["vast_paid_launch_lock_unusable"], (
+        "the phase artifact recorded a cause the run did not hit"
+    )

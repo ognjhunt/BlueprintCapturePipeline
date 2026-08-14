@@ -8,6 +8,7 @@ import json
 import os
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .common import parse_bool
@@ -123,6 +124,89 @@ def _check_spend_authority_ledger(
             ["spend_authority_ledger_not_reconciled:unwritable_root"],
         )
     return (receipt, [])
+
+
+def _check_paid_launch_lock_slots(
+    source: Mapping[str, str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Every concurrency slot must be usable by the account that launches.
+
+    The launch lock is an N-slot semaphore, and a slot is only real if the
+    service account can open and chmod it -- which is exactly what the adapter
+    does before taking the ``flock``. Production drifted to `slot1`/`slot2`
+    owned ``root:root`` at 0644 because a paid-lane tool was run as root once,
+    so the authorized N=3 was really N=1. Nothing noticed, because the lane
+    holding slot 0 kept succeeding.
+
+    Probing means attempting the adapter's own two calls rather than reading
+    ``stat`` and reasoning about it: the question is "can the launcher use
+    this", and ownership, mode, ACLs and read-only mounts all answer it
+    differently. An absent slot is not a fault -- the adapter creates it as the
+    service account at 0600 -- so only slots that already exist are probed.
+    """
+
+    from .vast_provider_adapter import (
+        DEFAULT_VAST_API_KEY_FILE,
+        DEFAULT_VAST_LAUNCH_LOCK_FILENAME,
+        VAST_API_KEY_FILE_ENV,
+        VAST_LAUNCH_LOCK_FILE_ENV,
+        vast_launch_lock_paths,
+    )
+
+    configured = str(source.get(VAST_LAUNCH_LOCK_FILE_ENV) or "").strip()
+    if configured:
+        base = Path(configured).expanduser()
+    else:
+        api_key_path = Path(
+            source.get(VAST_API_KEY_FILE_ENV) or DEFAULT_VAST_API_KEY_FILE
+        ).expanduser()
+        base = api_key_path.parent / DEFAULT_VAST_LAUNCH_LOCK_FILENAME
+
+    # Rediscovered from the adapter, so changing the ceiling cannot leave a
+    # slot unchecked by a list that was never updated alongside it.
+    slots = vast_launch_lock_paths(base)
+    if not base.parent.is_dir():
+        # No provider-lock tree on this host. Creating one would scatter state
+        # into a directory the deployment never provisioned -- on a developer
+        # machine the default path resolves under `~/.blueprint-secrets`.
+        return (
+            {
+                "status": "not_provisioned",
+                "lock_path": str(base),
+                "slots_probed": [str(slot) for slot in slots],
+                "created_slots": [],
+                "unusable_slots": [],
+            },
+            [],
+        )
+
+    blockers: list[str] = []
+    unusable: list[str] = []
+    created: list[str] = []
+    for slot in slots:
+        existed = slot.exists()
+        try:
+            with slot.open("a+", encoding="utf-8"):
+                slot.chmod(0o600)
+        except OSError as exc:
+            unusable.append(f"{slot.name}:{type(exc).__name__}")
+            blockers.append(f"paid_launch_lock_slot_unusable:{slot.name}")
+            continue
+        if not existed:
+            # Creating the slot here is what stops the fault recurring rather
+            # than merely reporting it: `open("a+")` leaves the owner of an
+            # existing file alone, so a slot created once as the service
+            # account survives every later tool that runs as root.
+            created.append(str(slot))
+
+    report = {
+        "status": "unusable_slots" if unusable else "usable",
+        "lock_path": str(base),
+        "slots_probed": [str(slot) for slot in slots],
+        "created_slots": created,
+        "unusable_slots": unusable,
+    }
+    return report, blockers
 
 
 def _default_catalog_reconciler(
@@ -248,6 +332,9 @@ def build_production_runtime_env_guard(
     residency, residency_blockers = _check_launch_input_residency(source, residency_report)
     blockers.extend(residency_blockers)
 
+    lock_slots, lock_slot_blockers = _check_paid_launch_lock_slots(source)
+    blockers.extend(lock_slot_blockers)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -259,6 +346,7 @@ def build_production_runtime_env_guard(
         "spend_authority_ledger": ledger,
         "launch_profile_catalog": catalog,
         "launch_input_residency": residency,
+        "paid_launch_lock_slots": lock_slots,
         "claim_boundary": (
             "This guard verifies production fail-closed runtime posture, that "
             "every control-plane entrypoint imports, that no spend-authority "

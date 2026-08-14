@@ -5851,6 +5851,21 @@ def _runtime_result_artifact_summary(
     return summarize_runtime_result(runtime_result)
 
 
+def _lock_blocked_phase_reason(lock_manifest: Mapping[str, Any]) -> str:
+    """Name the cause the run actually hit, not the one that is usually true.
+
+    The blocked-phase artifacts took a literal `vast_paid_launch_lock_busy` for
+    all four phases. "Busy" clears by waiting; "unusable" is a host that cannot
+    open its own lock slots and never clears, so recording the wrong one sends
+    the next operator to wait out capacity that was never the constraint.
+    """
+
+    blockers = _string_list(lock_manifest.get("blockers"))
+    # A manifest that names no cause still refuses, and "busy" is the
+    # conservative reading: it asserts nothing about the host's provisioning.
+    return blockers[0] if blockers else "vast_paid_launch_lock_busy"
+
+
 def _write_blocked_phase_artifacts(
     *,
     job_dir: Path,
@@ -6088,10 +6103,28 @@ def _try_acquire_vast_launch_lock(
     handle = None
     held_path: Path | None = None
     last_holder = ""
+    unusable: list[str] = []
     for candidate in slots:
         ensure_dir(candidate.parent)
-        attempt = candidate.open("a+", encoding="utf-8")
-        candidate.chmod(0o600)
+        # A slot the launching account cannot open is a provisioning fault, not
+        # a busy slot, and no amount of waiting clears it. Production reached
+        # this state when a tool run as root created `slot1`/`slot2` owned
+        # `root:root` at 0644 while the adapter runs as `blueprint`. Both calls
+        # sat outside the `try:` below, which catches only `BlockingIOError`,
+        # so the `PermissionError` escaped as an unhandled traceback at the
+        # money boundary -- and only when slot 0 was already held, because slot
+        # 0 is tried first and is usually fine.
+        try:
+            attempt = candidate.open("a+", encoding="utf-8")
+        except OSError as exc:
+            unusable.append(f"{candidate.name}:{type(exc).__name__}")
+            continue
+        try:
+            candidate.chmod(0o600)
+        except OSError as exc:
+            unusable.append(f"{candidate.name}:{type(exc).__name__}")
+            attempt.close()
+            continue
         try:
             fcntl.flock(attempt.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -6103,9 +6136,11 @@ def _try_acquire_vast_launch_lock(
         held_path = candidate
         break
     if handle is None or held_path is None:
-        # Every slot is taken. This is the same refusal as before, and it still
-        # says nothing about whether a *particular* run may proceed -- only
-        # that the fleet is at its authorized concurrency.
+        # Two different refusals share this exit. "Busy" is the fleet at its
+        # authorized concurrency and says nothing about whether a *particular*
+        # run may proceed. "Unusable" is a host that cannot honour its own
+        # semaphore, which an operator has to repair.
+        every_slot_unusable = len(unusable) == len(slots)
         manifest = {
             "schema_version": "vast_launch_lock_manifest.v1",
             "generated_at": generated_at,
@@ -6113,8 +6148,13 @@ def _try_acquire_vast_launch_lock(
             "lock_path": str(slots[0]),
             "lock_slots": [str(item) for item in slots],
             "lock_acquired": False,
-            "blockers": ["vast_paid_launch_lock_busy"],
+            "blockers": [
+                "vast_paid_launch_lock_unusable"
+                if every_slot_unusable
+                else "vast_paid_launch_lock_busy"
+            ],
             "existing_lock_record_prefix": last_holder,
+            "unusable_lock_slots": unusable,
             "raw_secret_values_recorded": False,
         }
         write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
@@ -6140,6 +6180,9 @@ def _try_acquire_vast_launch_lock(
         "lock_acquired": True,
         "lock_record": record,
         "blockers": [],
+        # Recorded on the success path too: a fleet silently running at lower
+        # concurrency than it is authorized for is the failure this hides.
+        "unusable_lock_slots": unusable,
         "raw_secret_values_recorded": False,
     }
     write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
@@ -7106,8 +7149,9 @@ def run_vast_provider_adapter(
         }
     )
     if launch_lock_handle is None:
+        lock_reason = _lock_blocked_phase_reason(launch_lock_manifest)
         lock_blockers = _string_list(launch_lock_manifest.get("blockers")) or [
-            "vast_paid_launch_lock_busy"
+            lock_reason
         ]
         offer_manifest = {
             "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -7125,10 +7169,10 @@ def run_vast_provider_adapter(
         _write_blocked_phase_artifacts(
             job_dir=resolved_job_dir,
             generated_at=generated_at,
-            heartbeat_reason="vast_paid_launch_lock_busy",
-            gpu_reason="vast_paid_launch_lock_busy",
-            isaac_reason="vast_paid_launch_lock_busy",
-            provider_reason="vast_paid_launch_lock_busy",
+            heartbeat_reason=lock_reason,
+            gpu_reason=lock_reason,
+            isaac_reason=lock_reason,
+            provider_reason=lock_reason,
         )
         write_json(
             resolved_job_dir / "vast_teardown_manifest.json",
