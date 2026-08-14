@@ -52,7 +52,9 @@ if [[ "${SKIP_APT}" != "true" ]]; then
   # network-disabled dry run of the agent configs, and it must run where the
   # bundle it describes is going to run. Without it the lane can be staged,
   # profiled, and published, and is then refused at the paid boundary for
-  # evidence that only exists on somebody's workstation.
+  # evidence that only exists on somebody's workstation. docker-buildx is the
+  # canonical immutable worker-image publisher used by the SAM 3.1 lane; keep
+  # it in the host bootstrap so image publication is not a remembered patch.
   apt-get install -y -qq \
     git \
     python3-venv \
@@ -61,6 +63,7 @@ if [[ "${SKIP_APT}" != "true" ]]; then
     curl \
     ca-certificates \
     docker.io \
+    docker-buildx \
     libgl1 \
     libglib2.0-0
   systemctl enable --now docker >/dev/null 2>&1 || true
