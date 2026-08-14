@@ -37,9 +37,9 @@ def _args(tmp_path: Path, *, execute: bool) -> Namespace:
     )
 
 
-def _write_private(path: Path, value: str) -> None:
+def _write_private(path: Path, value: str, *, mode: int = 0o600) -> None:
     path.write_text(value, encoding="utf-8")
-    path.chmod(0o600)
+    path.chmod(mode)
 
 
 class _ReadOnlyProvider:
@@ -71,7 +71,9 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
     write_json(Path(args.sam31_attempt_authority), {"request_authority_id": "fixture-authority"})
     write_json(Path(args.sam31_input_bundle_receipt), {"receipt": True})
     Path(args.sam31_input_bundle).write_bytes(b"bundle")
-    _write_private(Path(args.sam31_hf_token_file), "hf-secret")
+    # Canonical production secret integration: root-owned and readable by the
+    # private ``blueprint`` service group, with no group write or world bits.
+    _write_private(Path(args.sam31_hf_token_file), "hf-secret", mode=0o640)
     monkeypatch.setattr(
         "blueprint_pipeline.sam31_paid_resource_allocator_lane.validate_sam31_paid_attempt_authority",
         lambda *_args, **_kwargs: {},

@@ -138,6 +138,15 @@ def test_profile_refuses_nonprivate_hf_token(tmp_path: Path) -> None:
         _build(paths)
 
 
+def test_profile_accepts_canonical_root_service_group_secret_mode(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    paths["token"].chmod(0o640)
+
+    profile = _build(paths)
+
+    assert profile["execution_admission"]["live_enabled"] is True
+
+
 def test_profile_refuses_bundle_tamper(tmp_path: Path) -> None:
     paths = _fixture(tmp_path)
     paths["bundle"].write_bytes(b"tampered")
