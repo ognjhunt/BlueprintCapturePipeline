@@ -1,4 +1,5 @@
 name: Full Test Lane
+run-name: Full Test Lane / ${{ inputs.reason || 'nightly_integration' }}
 
 on:
   workflow_call:

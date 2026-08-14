@@ -86,6 +86,7 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert 'cron: "17 8 * * *"' in event_block
     assert "production_deployment_promotion" in event_block
     assert "cross_cutting_diagnostic" in event_block
+    assert "run-name: Full Test Lane / ${{ inputs.reason || 'nightly_integration' }}" in workflow
     assert "cancel-in-progress: true" in workflow
     assert "pytest_args" not in workflow
     assert "inputs.pytest" not in workflow

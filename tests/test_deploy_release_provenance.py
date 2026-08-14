@@ -27,9 +27,10 @@ def _metadata() -> tuple[dict[str, object], dict[str, object], dict[str, object]
         "head_sha": SHA,
         "status": "completed",
         "conclusion": "success",
-        "event": "push",
+        "event": "workflow_dispatch",
         "head_branch": "main",
         "name": "Full Test Lane",
+        "display_title": "Full Test Lane / production_deployment_promotion",
         "path": ".github/workflows/full-test-lane.yml@refs/heads/main",
         "repository": {"full_name": REPOSITORY},
         "head_repository": {"full_name": REPOSITORY},
@@ -103,7 +104,8 @@ def test_run_metadata_requires_exact_sha_workflow_job_steps_and_artifact() -> No
         (run, "head_sha", "b" * 40),
         (run, "conclusion", "failure"),
         (run, "path", ".github/workflows/ci.yml"),
-        (run, "event", "workflow_dispatch"),
+        (run, "event", "push"),
+        (run, "display_title", "Full Test Lane / cross_cutting_diagnostic"),
         (artifacts["artifacts"][0], "expired", True),  # type: ignore[index]
         (jobs["jobs"][0]["steps"][1], "conclusion", "failure"),  # type: ignore[index]
     )
