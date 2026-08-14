@@ -2535,6 +2535,20 @@ def _ptdp_cancellation_requested() -> bool:
     return bool(raw and Path(raw).expanduser().is_file())
 
 
+def _ptdp_free_disk(path: Path) -> Any:
+    """Free-space probe for the resource preflight, and the seam that states it.
+
+    The preflight below refuses when the estimated output plus
+    `PTDP_MIN_FREE_HEADROOM_BYTES_DEFAULT` exceeds what this reports, which is
+    correct in production and ruinous in a test: a developer machine near that
+    line blocks the export and every assertion downstream reads as a packaging
+    failure. Tests replace this rather than inherit the host's free space; the
+    guard itself is exercised on a stated-short disk instead of a real one.
+    """
+
+    return shutil.disk_usage(path)
+
+
 def _build_ptdp_resource_preflight(
     *,
     output_dir: Path,
@@ -2572,7 +2586,7 @@ def _build_ptdp_resource_preflight(
         512 * 1024**2,
         max(64 * 1024**2, len(clip_rows) * 8192),
     )
-    disk = shutil.disk_usage(output_dir.parent)
+    disk = _ptdp_free_disk(output_dir.parent)
     blockers: List[str] = []
     if _ptdp_cancellation_requested():
         blockers.append("ptdp_cancellation_requested")

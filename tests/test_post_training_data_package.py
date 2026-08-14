@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import sys
 import tarfile
 import types
@@ -44,6 +45,29 @@ def _configure_ptdp_identity_signer(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     key_path.chmod(0o600)
     monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_FILE_ENV, str(key_path))
     monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_ID_ENV, "test-ptdp-ed25519")
+
+
+def _stated_disk(free_bytes: int):
+    """A disk report the test states, rather than whatever the host has."""
+
+    return lambda path: shutil._ntuple_diskusage(
+        free_bytes * 4, free_bytes * 3, free_bytes
+    )
+
+
+@pytest.fixture(autouse=True)
+def _state_ample_free_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the resource preflight from reading the developer machine's disk.
+
+    The preflight blocks on `ptdp_insufficient_free_disk` roughly a GiB above
+    full, and that blocker propagates into the package status, so a near-full
+    host turns every export assertion in this file into a packaging failure
+    that says nothing about what it was asserting. Tests that care about the
+    guard state a short disk explicitly -- see
+    `test_a_host_without_room_for_the_export_still_refuses_the_package`.
+    """
+
+    monkeypatch.setattr(package_module, "_ptdp_free_disk", _stated_disk(64 * 1024**3))
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -1251,6 +1275,44 @@ def test_ptdp_resource_preflight_enforces_quota_and_cancellation(
     )
     assert cancelled["status"] == "blocked"
     assert "ptdp_cancellation_requested" in cancelled["blockers"]
+
+
+def test_a_host_without_room_for_the_export_still_refuses_the_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stating the free space must not disable the guard, only pin it.
+
+    Every other test in this file inherits an ample stated disk, which is the
+    case a near-full developer machine used to reach by accident, so the
+    refusal itself is asserted here on purpose.
+    """
+
+    output = tmp_path / "package"
+    output.mkdir()
+    monkeypatch.setattr(package_module, "_ptdp_free_disk", _stated_disk(1))
+    blocked = package_module._build_ptdp_resource_preflight(
+        output_dir=output,
+        clips={"clips": []},
+        source_roots=[tmp_path],
+        generated_at="2026-08-13T00:00:00Z",
+    )
+    assert blocked["status"] == "blocked"
+    assert "ptdp_insufficient_free_disk" in blocked["blockers"]
+    assert blocked["backpressure_required"] is True
+    assert blocked["available_disk_bytes"] == 1
+
+    monkeypatch.setattr(
+        package_module, "_ptdp_free_disk", _stated_disk(64 * 1024**3)
+    )
+    passed = package_module._build_ptdp_resource_preflight(
+        output_dir=output,
+        clips={"clips": []},
+        source_roots=[tmp_path],
+        generated_at="2026-08-13T00:00:01Z",
+    )
+    assert passed["status"] == "passed"
+    assert "ptdp_insufficient_free_disk" not in passed["blockers"]
 
 
 def test_clip_materialization_rejects_escape_symlink_corrupt_and_oversized_media(
