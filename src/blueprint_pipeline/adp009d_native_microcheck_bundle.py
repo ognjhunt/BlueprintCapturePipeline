@@ -1066,6 +1066,7 @@ def build_native_microcheck_bundle(
         "droid_policy_bridge.py",
         "adp009d_contact_envelope.py",
         "adp009d_hold_trace.py",
+        "adp009d_newton_gripper_drive.py",
         "adp009d_physics_backend_comparison.py",
         "adp009d_policy_episode.py",
         "adp009d_control_episode.py",

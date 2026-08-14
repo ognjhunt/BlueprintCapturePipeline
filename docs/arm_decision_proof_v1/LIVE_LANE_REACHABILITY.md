@@ -1,224 +1,127 @@
 # Live lane reachability
 
-Which paid lanes can be launched from the website, what each one still needs,
-and which are deliberately out of scope.
+This is the current product-path inventory for paid and provider-backed Task
+Evaluation probes. The allocator's `probe_kind` dispatch table is the
+denominator; a transport module is not a lane and one profile builder may emit
+more than one ordered probe kind.
 
-A lane needs three things to be reachable. Two are code and one is a command:
+<!-- reachability-inventory:start -->
+Current executable inventory: **32 dispatched, 17 website-reachable, 15 named
+non-reachable, 0 awaiting-builder.**
+<!-- reachability-inventory:end -->
 
-1. **A live profile builder.** A launch profile is the only thing that carries a
-   lane across the website boundary. The skeleton lives once in
-   `src/blueprint_pipeline/task_evaluation_live_profile.py`; a lane brings a
-   `LaneLiveProfileSpec` — its probe kind, TTL band, allocator arguments, and
-   the receipts it pins.
-2. **An attempt-authority issuer**, but only for the lanes whose allocator
-   branch demands one. Six of the fourteen do not.
-3. **Host-resident staging**, which is `scripts/stage_paid_lane_bundle.py` — one
-   command per lane, no new code.
+`tests/test_website_reachable_probe_kinds.py` derives these sets from the
+allocator and every `build_*_live_profile.py` module. It also verifies the
+inventory sentence above, so code and this operator ledger fail together when
+the denominator changes.
 
-## Status
+## What reachable means
 
-Every one of the fifteen paid lanes below has an established status: it has
-completed through the live path, or it names the exact thing stopping it. None
-is left merely unattempted.
+A probe kind is website-reachable only when a live profile builder emits it.
+The profile is the immutable bridge across the website boundary: it binds the
+probe kind, source commit, TTL band, allocator arguments, immutable inputs,
+secret-profile identity, terminal contract, and claim ceiling.
 
-| Lane | Builder | Status |
-| --- | --- | --- |
-| `adp_retained_scene_render_vast` | yes | **completed** — all controls passed, provider-zero verified |
-| `adp_content_agents_vast` | yes | **completed** — all controls passed, provider-zero verified |
-| `public_scene_simready_isaac_vast` | yes | **completed** — all controls passed, provider-zero verified |
-| `adp009d_franka_vast` | yes | reachable, never fired. Its three published profiles are `task-evaluation-profile-preflight` dry-run profiles, not lane launches; a launchable profile has not been published. |
-| `adp_gaussian_excision_vast` | yes | **blocked: no bundle CLI.** `build_gaussian_excision_vast_bundle` exists but the module has no `main()`, so the bundle cannot be rebuilt at the deployed commit — and the allocator refuses a bundle from any other commit. Its inputs (cameras, execution authority, scene PLY, dependency wheelhouse) survive **only inside the existing bundle zip**, so a rebuild also needs them extracted. |
-| `adp_joint_agent_vast` | yes | **blocked: scattered inputs.** The module has a CLI needing eight inputs; `execution_authority.json`, `joint_agent_packet.json`, and the review contract survive inside the bundle zip, but the freeze and scope-amendment documents were not located on disk. |
-| `native_task_arena_vast` | no | needs a builder. Three probe kinds (construction/controls/policy) and up to five input packets; all inputs located under `second_scene_840796_e2e`. |
-| `nvidia_warehouse_native_camera_gpu_admission` | yes | reachable, never fired. Its lane seals no terminal artifacts, so a live run cannot report `completed` — see below. |
-| `adp_isaac_lab_arena_vast` | no | needs a builder. Uses the shared artifact manifest directly. |
-| `adp009d_ovrtx_vast` | no | needs a builder. Appearance/camera transport; see the retirement note below before building it. |
-| `adp009d_aura_native_vast` | no | **retired** with the Aura appearance method. |
-| `adp_aura_author_smoke_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
-| `adp_aura_interiorgs_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
-| `public_scene_aura_exact_residual_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
-| `adp_inpaint360_interiorgs_vast` | no | **retired** — artifixer3D+ with `gpt-image-2`. |
-| `simpler_public_vast` | n/a | **retired** 2026-08-13 — not needed. Was already frozen by doctrine as a five-policy/general-ranking reference; now retired outright. |
+Reachability alone does **not** prove that a profile is published on the live
+host, that the deployed control plane is at the same commit, or that a paid
+attempt completed. Production proof additionally requires:
 
-Six lanes retired or frozen, three completed, six outstanding — of which two are
-blocked on recoverable inputs and three need a builder.
+1. all mutable and immutable control-plane surfaces deployed to one clean Git
+   commit by `scripts/deploy_control_plane_commit.py`;
+2. the exact live profile published in the host catalog;
+3. a signed website launch record bound to the Pipeline intake receipt;
+4. allocator admission and attempt authority where the lane requires it;
+5. retained terminal artifacts, teardown, billing reconciliation, and a fresh
+   provider-zero receipt; and
+6. no automatic paid retry.
 
-## What every completed run still cannot claim
+## Website-reachable probe kinds
 
-All three return `website_trigger_proven: false` with
-`webapp_launch_record_missing`. The runs are real — signed HMAC intake, canonical
-allocator, digest-bound immutable inputs, retained artifacts, teardown receipt,
-provider-zero verified — but nothing binds a run to a website record. Until that
-is closed, the honest phrasing is "triggered through the intake API", not
-"triggered by the website".
+| Probe kind | Live profile builder |
+| --- | --- |
+| `adp-artifixer3d-exact-support` | `build_artifixer3d_live_profile.py` |
+| `adp-gaussian-excision` | `build_gaussian_excision_live_profile.py` |
+| `adp-isaac-lab-arena-native-control` | `build_arena_native_control_live_profile.py` |
+| `adp-paired-target-native-import` | `build_paired_target_native_import_live_profile.py` |
+| `adp-retained-scene-gpu-render` | `build_retained_scene_render_live_profile.py` |
+| `adp-usd-content-agents` | `build_content_agents_live_profile.py` |
+| `adp-usd-joint-agent` | `build_joint_agent_live_profile.py` |
+| `adp009b-exact-simready-isaac` | `build_simready_isaac_live_profile.py` |
+| `adp009d-franka-native-microcheck` | `build_adp009d_840313_live_profile.py` |
+| `native-task-arena-construction` | `build_native_task_arena_live_profile.py` |
+| `native-task-arena-controls` | `build_native_task_arena_live_profile.py` |
+| `native-task-arena-policy` | `build_native_task_arena_live_profile.py` |
+| `new-site-diagnostic-canary` | `build_new_site_diagnostic_canary_live_profile.py` |
+| `new-site-native-camera` | `build_new_site_native_camera_live_profile.py` |
+| `reconstruction-worker-smoke` | `build_reconstruction_worker_smoke_live_profile.py` |
+| `semantic-sam31-source-tracks` | `build_sam31_source_tracks_live_profile.py` |
+| `semantic-teacher-image-edit` | `build_semantic_teacher_image_edit_live_profile.py` |
 
-## Defect-class sweep, 2026-08-13
+The three `native-task-arena-*` rows are ordered stages of one chain, not
+three independent campaigns. Likewise, the appearance path is ordered:
 
-Each named shape swept across the tree rather than fixed where first seen.
-Three came back clean because they had already been fixed *as classes*
-earlier, which is the point of the rule.
+`adp-artifixer3d-exact-support` -> `adp-paired-target-native-import`
 
-| Shape | Result | Rediscovery contract |
-| --- | --- | --- |
-| Artifact recording the authoring machine's absolute paths | fixed in 5 places (#464, #484, #487, #488, #492) | `launch_profile_residency_blockers`; the developer-home credential contract |
-| A lane not emitting the evidence its terminal contract requires | fixed in 8 lanes (#481), plus the seal-*root* variant in 1 of 9 (#501) | `test_paid_lane_terminal_artifact_contract.py` |
-| A lane whose bundle cannot be rebuilt from a command line | **found 4** (#512) | `test_paid_lane_bundle_cli_contract.py` |
-| Secret resolved only from a developer home under `ProtectHome=true` | fixed in 3 modules (#492) | `test_no_module_resolves_a_credential_only_from_a_developer_home` |
-| Bytes verified as the transfer user, not the consuming account | fixed for wire transfer (#485) and local install (#493) | `test_install_paid_lane_evidence_for_consumer.py` |
-| A gate reading a channel that can fail independently | **clean** — `watching_a_live_second_channel` (#459, #477) | in `vast_provider_adapter` |
-| A frozen pin encoding one machine's identity | **clean** — every lane carries its own `instance_label_prefix` (#473); no frozen instance-id allowlist remains | prelaunch inventory guard |
-| Two components disagreeing about a directory's mode or schema | **clean** — one instance (`0o755` consumption ledger, #479) | — |
+The import authority validates the predecessor terminal result, cleanup, and
+provider-zero receipt and carries forward aggregate spend against the shared
+campaign cap. The import cannot be authorized first.
 
-The false lead worth recording so nobody re-chases it: the four `mode_is_0600`
-gates look like they disagree with the `0640 root:blueprint` provider secrets
-and do not. They cover staging URL files and handoff capabilities the code
-chmods itself; provider secrets are read through `_read_secret`, which does not
-check mode. No change was made.
+## Named non-reachable probe kinds
 
-## The appearance chain is ordered, not parallel
+These fifteen allocator branches are deliberate decisions, not builder debt.
 
-`public_scene_artifixer3d_vast` and `paired_target_native_import_vast` are not
-two independent lanes. The import gate's attempt authority validates a
-`prior_terminal_artifixer` chain -- the predecessor's authority, terminal
-result, object store cleanup, and provider-zero receipt -- and carries its
-`aggregate_goal_spend_before_attempt_usd` forward against a **$12 campaign
-cap** shared by both.
+### Retired appearance/reference approaches (7)
 
-    public_scene_artifixer3d_vast  --terminal spend chain-->  paired_target_native_import_vast
-      cap $10, TTL 7200..21600                                  TTL 1800..7200
+- `adp-aurafusion360-author-smoke`
+- `adp-aurafusion360-exact-residual`
+- `adp-aurafusion360-interiorgs`
+- `adp-inpaint360-interiorgs`
+- `adp-simpler-public-reference`
+- `adp009d-aura-native-live-camera`
+- `adp009d-aura-ovrtx-live-camera`
 
-So firing the import gate first is not slower, it is impossible: there is
-nothing to authorize it against. ArtiFixer3D runs first, and its spend reduces
-what remains for the gate.
+Their historical receipts remain immutable spend and provenance anchors. No
+new profile should make them reachable unless the active-program decision is
+explicitly changed.
 
-Both now have live profile builders. The paired-target bundle is already built
-at a deployed commit and staged host-resident, waiting only on its predecessor.
+### Frozen programs (7)
 
-Both links can now be authorized from a command line via
-`scripts/issue_appearance_chain_paid_attempt_authority.py`, which was the third
-scope of the missing-entry-point class after #512 (lanes) and #520 (bundle
-modules): modules that mint an authority rather than seal a bundle.
+- `openpi-policy-ranking`
+- `persistent-policy-wam-loop`
+- `policy-ranking-cosmos-reasoner`
+- `policy-ranking-successor-cosmos`
+- `single-kitchen-episode`
+- `single-kitchen-finetune`
+- `single-kitchen-qualification`
 
-**Do not delete the retired AuraFusion360 receipts.** A prior Aura authority and
-terminal result are what the ArtiFixer3D authority anchors its campaign spend
-on. Retiring the lane means no new launch profile and no new attempt; it does
-not mean the historical artifacts are disposable. Deleting them would strand the
-appearance chain with no anchor.
+Arm Decision Proof v1 is the sole active program. Policy-ranking,
+world-model, and post-training work remains frozen.
 
-## Rehearse before firing
+### Internal allocator preflight (1)
 
-`scripts/rehearse_lane_terminal_contract.py` asks the launch's own terminal
-question against a lane's real sealing path for **$0**, in about a second. All
-23 lane profiles published on the control plane currently rehearse
-`would_pass`. Two of the defects that cost paid GPU runs on 2026-08-13 were path
-bugs this would have caught first, so run it on every profile before firing.
+- `task-evaluation-profile-preflight`
 
-## Deliberately out of scope
+This is not a website lane. The allocator runs it against a profile before any
+provider mutation.
 
-These are **not** blocked on work. They are scoped out, and their code, bundles,
-and allocator branches remain in the repository.
+## Terminal and production rules
 
-### AuraFusion360 (4 lanes) and Inpaint360GS
+Every live profile must rehearse `would_pass` through
+`scripts/rehearse_lane_terminal_contract.py` before a paid attempt. The shared
+terminal contract requires an allocator-owned artifact manifest, teardown
+manifest, run-owned post-teardown provider-zero receipt, retained guard
+snapshot, and website sync receipt. The new-site camera and diagnostic lanes
+are included in the same AST-discovered terminal-artifact contract as every
+other provider transport.
 
-`adp_aura_author_smoke_vast`, `adp_aura_interiorgs_vast`,
-`adp009d_aura_native_vast` (as an Aura appearance method),
-`public_scene_aura_exact_residual_vast`, and
-`adp_inpaint360_interiorgs_vast`.
+The canonical deployment sequence is documented in
+`PRODUCTION_WEBSITE_LAUNCH.md`. Deployments must use the repo's atomic deploy
+tool rather than moving the mutable checkout and release symlink separately.
+The deploy tool holds every paid-launch slot while activating, rejects a dirty
+surface, restarts the intake service, and verifies the public runtime reports
+the requested commit.
 
-**Decision, 2026-08-13:** a real run of artifixer3d with `gpt-image-2` produced
-materially better results than either method, so neither is needed as a quality
-challenger. No profile builder will be written for them and no aura
-attempt-authority issuer is required.
-
-What would have been needed had they stayed in scope, recorded so nobody
-rediscovers it:
-
-- **Aura.** `adp009b_aura_runtime_prerequisite_receipt.v1.json` reads
-  `author_data_rights_established: false`. Its only snapshot is
-  `aurafusion360_openclip_vit_h_14` (MIT, rights established); the two artifacts
-  the lane requires — `aurafusion360_sunflower_author_scene` and
-  `aurafusion360_sunflower_expected_output` — are absent. A rights decision, not
-  an engineering one.
-- **Inpaint360GS.** `big-lama.zip` is already host-resident and its sha256 and
-  size match the pinned identity exactly. Missing is a prerequisite receipt
-  carrying an `inpaint360_author_smoke` method with `rights_established: true`;
-  `public_scene_method_prerequisites.py` is request-driven and has no reference
-  to that method, so a request document would have to be authored first.
-
-`CLAUDE.md` and `AGENTS.md` were updated alongside this decision, so the binding
-guides and this file agree: artifixer3D+ with `gpt-image-2` is the appearance
-path, and neither retired method is an outstanding requirement or an open rights
-question. Nothing here is pending anyone's decision.
-
-### SIMPLER (`simpler_public_vast`)
-
-**Retired 2026-08-13.** Not needed.
-
-Worth keeping straight for anyone reading later: SIMPLER is a *policy-ranking*
-benchmark reference, not an appearance method, so it is not literally replaced
-by artifixer3D+ with `gpt-image-2` the way AuraFusion360 and Inpaint360GS are.
-It was already frozen by doctrine as five-policy/general-ranking work; the
-decision here retires it outright rather than leaving it frozen-but-pending.
-
-Its bundle CLI landed in #512 anyway. Retired means we do not run it, not that
-it should stay a landmine for whoever unfreezes it.
-
-## The denominator is 30, not 14
-
-Counting `*_vast.py` lane modules understated the gap. A `*_vast.py` is
-transport, and several probe kinds have no lane module of their own -- the two
-oldest builders emit kinds (`adp009d-franka-native-microcheck`,
-`adp-retained-scene-gpu-render`) that appear in no lane module at all.
-
-The allocator dispatches on **probe kind**, so that is the unit. Read from its
-own `if args.probe_kind == ...` branches: **30 probe kinds are executable, and
-9 are reachable from a live profile builder.** `tests/test_website_reachable_probe_kinds.py`
-rediscovers that set from the allocator on every run, so a new branch there
-cannot become the next unreachable lane without either a builder or a named
-reason.
-
-The 21 unreachable kinds are not one problem:
-
-| Reason | Count | Meaning |
-| --- | --- | --- |
-| `retired_appearance_approach` | 7 | Superseded by the GPT-teacher/ArtiFixer3D path. Not to be relaunched; receipts retained as spend anchors. |
-| `frozen_program` | 7 | Frozen by the active-program contract in `CLAUDE.md`. |
-| `not_a_website_lane` | 1 | The profile preflight, which the allocator runs itself. |
-| `awaiting_builder` | 3 | Real debt: executable, not retired, not frozen, unreachable. |
-
-Only the last row is work. The Arena chain (construction -> controls -> policy)
-came off it when `build_native_task_arena_live_profile.py` landed, and
-`new-site-native-camera` came off it when
-`build_new_site_native_camera_live_profile.py` did, leaving the Isaac Lab Arena
-native control, the fresh-site diagnostic canary, and the reconstruction worker
-smoke. The contract caps that row at its current size, so it can shrink but not
-silently grow.
-
-## The fresh-site camera lane is reachable and cannot yet report success
-
-`build_new_site_native_camera_live_profile.py` closes the reachability half:
-the lane can now be selected, published, and launched from the website path.
-The lane itself still cannot satisfy the terminal contract that every launch
-profile carries.
-
-`shared_control_surface()` requires `teardown_manifest_path` and
-`artifact_manifest_path` on the allocator result.
-`nvidia_warehouse_native_camera_gpu_admission.py` calls neither
-`seal_lane_terminal_artifacts` nor `build_task_evaluation_artifact_manifest`,
-and it does not use the `vast_provider_run/` + `immutable_execution/`
-convention the shared seal inventories -- it writes its evidence flat under the
-adapter output's directory. So a live run would tear down correctly, retain its
-frames, and still end `allocator_terminal_artifact_missing:`, which is defect
-class #481 in a lane the sweep did not reach.
-
-It was not reached because `tests/test_paid_lane_terminal_artifact_contract.py`
-discovers lanes by globbing `src/blueprint_pipeline/*_vast.py`, and this lane's
-transport is named `*_gpu_admission.py`. The fix is a change to the lane's
-execute path plus its entry in that contract's module list, not a change to
-this builder, and it is the last thing between this lane and a launch that can
-report `completed`.
-
-Reading only a builder's `SPEC` under-reported this: a chain builder declares
-several links and no module-level `SPEC`, so the whole Arena family read as
-unreachable even after its builder existed, and the gate stayed green. The
-extraction now walks every module-level object that carries a `probe_kind`.
+Do not report a lane as "working in production" from builder reachability, a
+CPU test, simulator startup, or provider allocation alone. That claim requires
+the exact deployed commit plus a terminal launch record satisfying the six
+production-proof conditions above.
