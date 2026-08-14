@@ -310,6 +310,13 @@ def run_sam31_vast_source_track_canary(
     ensure_dir(lease_dir)
     request_digest = str(request.get("request_digest") or "")
     image = str(request.get("worker_image_digest") or "")
+    runtime_digest = image.rpartition("@")[2]
+    if not (
+        runtime_digest.startswith("sha256:")
+        and len(runtime_digest) == 71
+        and all(character in "0123456789abcdef" for character in runtime_digest[7:])
+    ):
+        raise Sam31VastCanaryError("sam31_worker_image_digest_invalid")
     started_at = float(clock())
     watchdog = preflight.get("watchdog")
     watchdog = watchdog if isinstance(watchdog, Mapping) else {}
@@ -370,7 +377,7 @@ def run_sam31_vast_source_track_canary(
             "BLUEPRINT_SAM31_CANARY_REQUEST_DIGEST": request_digest,
             "BLUEPRINT_SAM31_BOUND_REQUEST_DIGEST": str(request.get("bound_request_digest") or ""),
             "BLUEPRINT_CONTAINER_IMAGE_DIGEST": image,
-            "BLUEPRINT_SAM31_RUNTIME_DIGEST": image,
+            "BLUEPRINT_SAM31_RUNTIME_DIGEST": runtime_digest,
             "BLUEPRINT_SAM31_INPUT_BUNDLE_DIGEST": str(request.get("input_bundle_digest") or ""),
             "BLUEPRINT_SAM31_SOURCE_TRACK_REQUEST_DIGEST": str(
                 request.get("source_track_run_request_digest") or ""

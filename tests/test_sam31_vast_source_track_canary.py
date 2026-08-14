@@ -156,6 +156,7 @@ class _Provider:
         assert spec.requires_rtx is False
         assert spec.env["HF_TOKEN"] == TOKEN
         assert spec.env["BLUEPRINT_SAM31_INPUT_BUNDLE_GET_URL"] == INPUT_URL
+        assert spec.env["BLUEPRINT_SAM31_RUNTIME_DIGEST"] == "sha256:" + "b" * 64
         return {"create_payload": {"env": dict(spec.env)}}
 
     def launch(self, job_dir, request, **kwargs):
