@@ -25,6 +25,7 @@ from pathlib import Path
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.sam31_gpu_admission import prepare_sam31_gpu_canary
+from blueprint_pipeline.task_evaluation_live_profile import shared_control_surface
 from tests.test_sam31_gpu_admission import COMMIT, _preflight, _request
 
 
@@ -86,26 +87,63 @@ def _write_retained_evidence(attempt_root: Path) -> Path:
     return teardown
 
 
-def _required_path_fields() -> list[str]:
-    """Read the live profile's terminal contract from the builder that emits it."""
+def _builder_additional_path_fields() -> tuple[str, ...]:
+    """The extra terminal fields this builder adds, read from its own source.
+
+    They are named in the `additional_required_path_fields=` keyword it hands
+    to `shared_control_surface`, either as literals or through a module
+    constant, so both spellings are resolved here.
+    """
 
     tree = ast.parse(PROFILE_BUILDER.read_text(encoding="utf-8"))
+    constants = {
+        target.id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+        for target in node.targets
+        if isinstance(target, ast.Name) and isinstance(node.value.value, str)
+    }
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Dict):
+        if not isinstance(node, ast.Call):
             continue
-        for key, value in zip(node.keys, node.values):
-            if (
-                isinstance(key, ast.Constant)
-                and key.value == "required_path_fields"
-                and isinstance(value, ast.List)
+        for keyword in node.keywords:
+            if keyword.arg != "additional_required_path_fields" or not isinstance(
+                keyword.value, (ast.Tuple, ast.List)
             ):
-                return [
-                    item.value for item in value.elts if isinstance(item, ast.Constant)
-                ]
-    raise AssertionError(
-        f"no required_path_fields literal in {PROFILE_BUILDER.name}; the profile's "
-        "terminal contract moved and this test can no longer read it"
+                continue
+            return tuple(
+                item.value
+                if isinstance(item, ast.Constant)
+                else constants[item.id]
+                for item in keyword.value.elts
+                if (isinstance(item, ast.Constant) and isinstance(item.value, str))
+                or (isinstance(item, ast.Name) and item.id in constants)
+            )
+    return ()
+
+
+def _required_path_fields() -> list[str]:
+    """Read the live profile's terminal contract from where the builder gets it.
+
+    This used to scrape a `required_path_fields` literal out of the builder.
+    There is no longer one to scrape: the builder takes the whole control
+    surface from `shared_control_surface` and names only the single field it
+    adds. Reading the shared definition plus that addition keeps this test
+    pinned to the contract a launch actually reads, rather than to a copy of it
+    that drifts the moment the lane is refactored -- which is exactly what
+    happened here.
+    """
+
+    source = PROFILE_BUILDER.read_text(encoding="utf-8")
+    assert "shared_control_surface" in source, (
+        f"{PROFILE_BUILDER.name} no longer takes its control surface from the "
+        "shared definition, so this test is reading a contract the launch does "
+        "not use"
     )
+    surface = shared_control_surface(
+        additional_required_path_fields=_builder_additional_path_fields()
+    )
+    return list(surface["terminal_contract"]["required_path_fields"])
 
 
 def test_the_terminal_result_names_both_manifest_fields(tmp_path: Path) -> None:

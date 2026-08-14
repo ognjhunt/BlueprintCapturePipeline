@@ -10,6 +10,15 @@ evidence they had retained sat on disk with nothing pointing at it.
 Fixing that lane by lane leaves the next lane to rediscover it. This is the test
 that makes the shared seal the default: a lane added tomorrow either calls it or
 fails here.
+
+A gate is only as wide as the set it looks at, though. This one discovered lanes
+with ``*_vast.py`` and so never saw `reconstruction_vast_worker_smoke.py`, which
+went on to rent a GPU, pass its healthcheck, tear down with provider zero
+confirmed, and still report `allocator_terminal_artifact_missing:` -- with
+nothing here red. Widening to ``*_vast*.py`` surfaced seven more lanes running a
+paid attempt. Each is now accounted for: sealed here, sealed by the wrapper that
+writes its result, or named as debt below with a reason that the tests keep
+honest.
 """
 
 from __future__ import annotations
@@ -41,14 +50,44 @@ PAID_LANE_MODULES = (
     "public_scene_aura_exact_residual_vast.py",
     "public_scene_artifixer3d_vast.py",
     "public_scene_simready_isaac_vast.py",
-    # Not a `*_vast.py` transport: it writes the launch profile's terminal
-    # `result.json` on every non-execute-ready path, so it is a terminal write
-    # into the same contract and is verified as one.
+    "reconstruction_vast_worker_smoke.py",
+    # Not a `*_vast*.py` transport at all: it writes the launch profile's
+    # terminal `result.json` on every non-execute-ready path, so it is a
+    # terminal write into the same contract and is verified as one.
     "sam31_gpu_admission.py",
     "sam31_paid_resource_allocator_lane.py",
     "semantic_teacher_image_edit_vast.py",
     "simpler_public_vast.py",
 )
+
+#: Lanes whose result is sealed by the allocator wrapper that writes it to the
+#: adapter output, rather than by the lane itself. That is a legitimate way to
+#: meet the contract -- the profile reads the wrapper's file, not the lane's --
+#: but only while the named wrapper really does seal, so the test below checks
+#: both halves rather than taking the claim on trust.
+SEALED_BY_ALLOCATOR_CALLER = {
+    "sam31_vast_source_track_canary.py": "sam31_paid_resource_allocator_lane.py",
+}
+
+#: Lanes that run a paid attempt and seal nothing, with why. These all reach the
+#: canonical allocator's single unsealed ``write_json(adapter_path, result)``,
+#: so each would report `allocator_terminal_artifact_missing:` on a live launch
+#: exactly as `reconstruction_vast_worker_smoke` did.
+#:
+#: This is a ledger of known debt, not a suppression list: an entry here is an
+#: admission that the lane is not launchable, not an exemption from fixing it.
+#: The tests below refuse a stale entry, refuse an entry that has quietly
+#: started sealing, and cap the total so the ledger cannot absorb a new lane.
+UNSEALED_LANE_DEBT = {
+    "measurement_chrono_dem_vast_canary.py": "shares_unsealed_canonical_allocator_write",
+    "measurement_dlo_lab_vast_canary.py": "shares_unsealed_canonical_allocator_write",
+    "measurement_isaac_vast_canary.py": "shares_unsealed_canonical_allocator_write",
+    "reconstruction_isaac_vast_operation.py": "shares_unsealed_canonical_allocator_write",
+    "reconstruction_vast_operation.py": "shares_unsealed_canonical_allocator_write",
+    "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
+}
+
+VALID_DEBT_REASONS = {"shares_unsealed_canonical_allocator_write", "frozen_program"}
 
 #: The shared Arena transport seals on behalf of every lane that runs through
 #: it, so delegating to it satisfies the contract as completely as calling the
@@ -102,24 +141,112 @@ def test_a_direct_builder_lane_uses_the_shared_manifest(module: str) -> None:
     assert "build_task_evaluation_artifact_manifest" in _calls(path)
 
 
+def _discovered_paid_lanes() -> set[str]:
+    """Every module that runs a provider attempt, read from the tree.
+
+    A module that runs one is identifiable: it takes a paid resource admission
+    grant. The name pattern is the other half, and it used to be ``*_vast.py``
+    -- which missed `reconstruction_vast_worker_smoke.py` entirely, so that
+    lane reached a live GPU, passed its healthcheck, tore down cleanly, and was
+    still reported `allocator_terminal_artifact_missing:` with nothing in this
+    suite red. It is not the only lane named that way, and the next one would
+    have slipped through the same gap.
+    """
+
+    return {
+        path.name
+        for path in sorted(SOURCE_ROOT.glob("*_vast*.py"))
+        if "paid_resource_admission_grant" in path.read_text(encoding="utf-8")
+    }
+
+
+def _accounted_for() -> set[str]:
+    return (
+        set(PAID_LANE_MODULES)
+        | set(DIRECT_BUILDER_MODULES)
+        | set(SEALED_BY_ALLOCATOR_CALLER)
+        | set(UNSEALED_LANE_DEBT)
+    )
+
+
 def test_the_lane_list_is_the_set_of_modules_that_run_a_paid_attempt() -> None:
     """The list is only a gate if it stays complete.
 
-    A module that runs a provider attempt is identifiable: it takes a paid
-    resource admission grant. Anything matching that and absent from the list
-    would slip through the parametrised check above without this.
+    Anything that runs a paid attempt and is absent from every list here would
+    slip through the parametrised check above without this.
     """
 
-    discovered = {
-        path.name
-        for path in sorted(SOURCE_ROOT.glob("*_vast.py"))
-        if "paid_resource_admission_grant" in path.read_text(encoding="utf-8")
-    }
-    known = set(PAID_LANE_MODULES) | set(DIRECT_BUILDER_MODULES)
+    discovered = _discovered_paid_lanes()
+    known = _accounted_for()
 
     assert discovered <= known, (
         "these modules run a paid attempt but are not covered by the terminal "
         f"artifact contract: {sorted(discovered - known)}"
+    )
+
+
+def test_the_widened_discovery_still_sees_the_lanes_it_used_to() -> None:
+    """A pattern that stopped matching would empty the gate silently."""
+
+    discovered = _discovered_paid_lanes()
+
+    assert "reconstruction_vast_worker_smoke.py" in discovered
+    assert {module for module in PAID_LANE_MODULES if module.endswith("_vast.py")} <= discovered
+
+
+def test_a_lane_sealed_by_its_caller_really_is_sealed_by_that_caller() -> None:
+    """Naming a sealer is a claim, and an unchecked claim is how a lane ends up
+    covered by a wrapper that stopped sealing two refactors ago."""
+
+    for lane, sealer in sorted(SEALED_BY_ALLOCATOR_CALLER.items()):
+        path = SOURCE_ROOT / sealer
+        assert path.is_file(), f"{lane} names a sealer that does not exist: {sealer}"
+        source = path.read_text(encoding="utf-8")
+        assert lane.removesuffix(".py") in source, (
+            f"{sealer} is named as the sealer for {lane} but does not import it"
+        )
+        assert "seal_lane_terminal_artifacts" in _calls(path), (
+            f"{sealer} is named as the sealer for {lane} and seals nothing"
+        )
+
+
+def test_no_named_gap_outlives_the_lane_it_describes() -> None:
+    """An entry for a module that no longer runs a paid attempt is stale, and a
+    stale entry reads as coverage."""
+
+    discovered = _discovered_paid_lanes()
+    stale = sorted((set(SEALED_BY_ALLOCATOR_CALLER) | set(UNSEALED_LANE_DEBT)) - discovered)
+
+    assert not stale, f"these are named here but run no paid attempt: {stale}"
+
+
+def test_a_lane_that_started_sealing_is_promoted_rather_than_left_as_debt() -> None:
+    """Otherwise the ledger keeps reporting debt that has already been paid,
+    and the parametrised seal check never guards the lane."""
+
+    promoted = sorted(
+        module
+        for module in UNSEALED_LANE_DEBT
+        if "seal_lane_terminal_artifacts" in _calls(SOURCE_ROOT / module)
+    )
+
+    assert not promoted, (
+        f"{promoted} now seal their terminal artifacts; move them into "
+        "PAID_LANE_MODULES rather than leaving a stale debt entry."
+    )
+
+
+def test_the_unsealed_lane_debt_is_stated_rather_than_implied() -> None:
+    """Every entry is a lane that cannot pass its own launch profile. Keeping
+    the size visible is what stops the ledger becoming the place new lanes go."""
+
+    assert set(UNSEALED_LANE_DEBT.values()) <= VALID_DEBT_REASONS, (
+        f"unrecognized debt reasons: {sorted(set(UNSEALED_LANE_DEBT.values()) - VALID_DEBT_REASONS)}"
+    )
+    assert len(UNSEALED_LANE_DEBT) <= 6, (
+        f"unsealed paid lanes grew to {len(UNSEALED_LANE_DEBT)}: "
+        f"{sorted(UNSEALED_LANE_DEBT)}. Lower this bound as lanes are sealed; "
+        "do not raise it to make it pass."
     )
 
 
