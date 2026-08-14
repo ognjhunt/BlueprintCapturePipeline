@@ -2144,6 +2144,11 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
         "bundle_sha256": bundle_receipt["bundle_sha256"],
         "content_agents_source_commit": content_agents.SOURCE_COMMIT,
         "content_agents_source_tree": content_agents.SOURCE_TREE,
+        "orchestrator_runtime_bindings": (
+            bundle_preflight._bundle_orchestrator_runtime_bindings(
+                Path(bundle_receipt["bundle_path"])
+            )
+        ),
         "local_container_image": _admitted_image_record(),
         "model_access": _qualified_model_access(),
         "configs": bundle_preflight._bundle_config_records(
@@ -2257,6 +2262,10 @@ def _allocator_bundle(
     with zipfile.ZipFile(bundle, "w") as archive:
         for member in bundle_preflight.CONFIG_MEMBERS.values():
             archive.writestr(member, content)
+        for _name, (member, source_path) in (
+            bundle_preflight.ORCHESTRATOR_RUNTIME_MEMBERS.items()
+        ):
+            archive.writestr(member, source_path.read_bytes())
     receipt_value = {
         "status": "ready",
         "source_commit": content_agents.SOURCE_COMMIT,
@@ -2810,10 +2819,23 @@ def _executable_preflight_fixture(tmp_path: Path) -> tuple[Path, str]:
         archive.writestr(
             "provider_runtime/content_agents_source.zip", source_buffer.getvalue()
         )
-        archive.writestr("provider_runtime/adp_content_agents_provider_runner.py", "pass\n")
+        archive.writestr(
+            "provider_runtime/adp_content_agents_provider_runner.py",
+            (ROOT / "scripts/adp_content_agents_provider_runner.py").read_bytes(),
+        )
         archive.writestr(
             "provider_runtime/run_adp_content_agents_provider_runtime.sh",
-            "#!/bin/sh\n",
+            (ROOT / "scripts/run_adp_content_agents_provider_runtime.sh").read_bytes(),
+        )
+        archive.writestr(
+            "provider_runtime/provider_archive.py",
+            (ROOT / "src/blueprint_pipeline/provider_archive.py").read_bytes(),
+        )
+        archive.writestr(
+            "provider_runtime/content_agents_model_compatibility.py",
+            (
+                ROOT / "src/blueprint_pipeline/content_agents_model_compatibility.py"
+            ).read_bytes(),
         )
         archive.writestr("provider_runtime/input/reference.png", b"PNG")
         for member in bundle_preflight.CONFIG_MEMBERS.values():
@@ -2858,6 +2880,34 @@ def Xform "Asset"
         },
     )
     return bundle_receipt, secret
+
+
+@pytest.mark.parametrize("runtime_name", sorted(bundle_preflight.ORCHESTRATOR_RUNTIME_MEMBERS))
+def test_static_preflight_rejects_runtime_file_from_a_different_commit(
+    tmp_path: Path, runtime_name: str
+) -> None:
+    bundle_receipt, _secret = _executable_preflight_fixture(tmp_path)
+    receipt = json.loads(bundle_receipt.read_text(encoding="utf-8"))
+    bundle = Path(receipt["bundle_path"])
+    with zipfile.ZipFile(bundle) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    member, _source_path = bundle_preflight.ORCHESTRATOR_RUNTIME_MEMBERS[runtime_name]
+    members[member] = b"# stale runtime file from another commit\n"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for name, value in members.items():
+            archive.writestr(name, value)
+    receipt["bundle_sha256"] = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
+    write_json(bundle_receipt, receipt)
+
+    with pytest.raises(
+        bundle_preflight.ContentAgentsBundlePreflightError,
+        match=f"bundle_orchestrator_runtime_binding_invalid:{runtime_name}",
+    ):
+        bundle_preflight.materialize_static_bundle_config_preflight(
+            bundle_receipt_path=bundle_receipt,
+            evidence_dir=tmp_path / "stale-runner-preflight",
+            generated_at="fixed",
+        )
 
 
 def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(
