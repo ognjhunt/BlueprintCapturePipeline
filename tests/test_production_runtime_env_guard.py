@@ -164,3 +164,115 @@ def test_guard_reconciles_the_configured_catalog_from_the_environment(tmp_path):
 
     assert report["launch_profile_catalog"]["status"] == "repaired"
     assert catalog.read_text(encoding="utf-8") == "[]\n"
+
+
+def _lock_env(base) -> dict[str, str]:
+    env = _production_env()
+    env["VAST_LAUNCH_LOCK_FILE"] = str(base)
+    return env
+
+
+def test_guard_blocks_a_launch_lock_slot_the_service_account_cannot_use(tmp_path):
+    """A root-created slot silently halves the fleet's authorized concurrency.
+
+    Production had `slot1`/`slot2` owned `root:root` at 0644 while the adapter
+    runs as `blueprint`, so the N=3 semaphore was really N=1 and the overflow
+    path raised instead of refusing. Nothing detected it: the lane that held
+    slot 0 succeeded, so every signal looked healthy.
+    """
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+
+    base = tmp_path / "provider-locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    slots = vast_launch_lock_paths(base)
+    slots[0].touch()
+    slots[1].mkdir()  # exists, cannot be opened, for any uid including root
+
+    report = build_production_runtime_env_guard(env=_lock_env(base))
+
+    assert report["status"] == "blocked"
+    assert any(
+        blocker.startswith("paid_launch_lock_slot_unusable")
+        for blocker in report["blockers"]
+    ), report["blockers"]
+    assert slots[1].name in " ".join(report["blockers"])
+
+
+def test_guard_is_ready_when_every_existing_launch_lock_slot_is_usable(tmp_path):
+    """An absent slot is fine -- the adapter creates it as the service account."""
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+
+    base = tmp_path / "provider-locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    vast_launch_lock_paths(base)[0].touch()
+
+    report = build_production_runtime_env_guard(env=_lock_env(base))
+
+    assert report["status"] == "ready", report["blockers"]
+    assert report["paid_launch_lock_slots"]["status"] == "usable"
+
+
+def test_guard_probes_every_slot_the_adapter_would_use(tmp_path):
+    """The checked set is rediscovered from the adapter, never hand-listed.
+
+    Raising or lowering the concurrency ceiling must not be able to leave a
+    slot unchecked, which is how a list drifts out of date without failing.
+    """
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+
+    base = tmp_path / "provider-locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    expected = vast_launch_lock_paths(base)
+    for slot in expected:
+        slot.touch()
+
+    report = build_production_runtime_env_guard(env=_lock_env(base))
+
+    assert report["paid_launch_lock_slots"]["slots_probed"] == [
+        str(slot) for slot in expected
+    ]
+
+
+def test_guard_precreates_absent_slots_as_the_service_account(tmp_path):
+    """Pre-creating is what actually stops the fault from recurring.
+
+    `open("a+")` never changes the owner of a file that already exists, so a
+    slot created correctly at first start survives any later tool that is run
+    as root. Creation happens as the service account under the guard's own
+    umask-independent 0600, which is the mode every paid lane demands.
+    """
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_lock_paths
+
+    base = tmp_path / "provider-locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+
+    report = build_production_runtime_env_guard(env=_lock_env(base))
+
+    assert report["status"] == "ready", report["blockers"]
+    for slot in vast_launch_lock_paths(base):
+        assert slot.is_file(), f"{slot.name} was not provisioned"
+        assert slot.stat().st_mode & 0o777 == 0o600, oct(slot.stat().st_mode)
+    assert report["paid_launch_lock_slots"]["created_slots"] == [
+        str(slot) for slot in vast_launch_lock_paths(base)
+    ]
+
+
+def test_guard_does_not_create_a_lock_directory_that_was_never_provisioned(tmp_path):
+    """A guard must not scatter state into a home the deployment never set up.
+
+    On a developer machine the default path resolves under `~/.blueprint-secrets`,
+    which the installer alone owns. No parent directory means this host has no
+    provider-lock tree, which is reported rather than invented.
+    """
+
+    base = tmp_path / "never-installed" / "vast_paid_launch.lock"
+
+    report = build_production_runtime_env_guard(env=_lock_env(base))
+
+    assert report["status"] == "ready", report["blockers"]
+    assert report["paid_launch_lock_slots"]["status"] == "not_provisioned"
+    assert not base.parent.exists()
