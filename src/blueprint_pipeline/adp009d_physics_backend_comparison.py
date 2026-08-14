@@ -1402,10 +1402,11 @@ def build_newton_canary_terminal_receipt(
         evidence_input_digests["native_result"] = canonical_digest(native_result)
     if backend_profile is not None:
         evidence_input_digests["backend_profile"] = canonical_digest(profile)
+    drive_candidate = profile["gripper_drive_candidate"]
     receipt: dict[str, Any] = {
         "schema_version": CANARY_TERMINAL_SCHEMA_VERSION,
         "status": native_status,
-        "evidence_type": "physics_backend_comparison_evidence_only",
+        "evidence_type": drive_candidate["claim_ceiling"],
         "physics_backend": "newton",
         "backend_profile_digest": profile["profile_digest"],
         "implementation_commit": bundle_receipt.get("implementation_commit"),
@@ -1487,13 +1488,12 @@ def build_newton_canary_terminal_receipt(
         },
         "retry_count": 0,
         "engine_promotion_performed": False,
-        "claim_ceiling": "controls_comparison_evidence_only",
+        "claim_ceiling": drive_candidate["claim_ceiling"],
     }
     receipt["terminal_receipt_digest"] = canonical_digest(
         receipt, digest_field="terminal_receipt_digest"
     )
     return receipt
-
 
 def _validate_control_run(
     value: Mapping[str, Any], *, profile: Mapping[str, Any]

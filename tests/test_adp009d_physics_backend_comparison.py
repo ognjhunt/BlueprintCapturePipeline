@@ -160,7 +160,7 @@ def _newton_terminal_inputs() -> dict[str, dict]:
     return inputs
 
 
-def test_newton_blocked_canary_retains_terminal_comparison_evidence() -> None:
+def test_newton_blocked_canary_retains_terminal_identification_evidence() -> None:
     receipt = build_newton_canary_terminal_receipt(**_newton_terminal_inputs())
 
     assert receipt["status"] == "blocked"
@@ -171,7 +171,10 @@ def test_newton_blocked_canary_retains_terminal_comparison_evidence() -> None:
     assert receipt["provider_zero"]["live_instance_count"] == 0
     assert receipt["policy_verdict"] is None
     assert receipt["engine_promotion_performed"] is False
-    assert receipt["claim_ceiling"] == "controls_comparison_evidence_only"
+    assert receipt["claim_ceiling"] == (
+        "newton_native_drive_identification_candidate_only"
+    )
+    assert receipt["evidence_type"] == receipt["claim_ceiling"]
     assert set(receipt["evidence_input_digests"]) == {
         "admission",
         "allocator_result",
