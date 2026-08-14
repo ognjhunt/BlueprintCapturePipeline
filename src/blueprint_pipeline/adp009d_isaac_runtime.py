@@ -19,6 +19,11 @@ from typing import Any
 
 
 try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_contact_envelope import contact_envelope_receipt_fields
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_contact_envelope import contact_envelope_receipt_fields
+
+try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_approach_capture import (
         APPROACH_GRIPPER_BODY_NAMES,
         APPROACH_MAX_JOINT_STEP_RAD,
@@ -71,78 +76,6 @@ except ModuleNotFoundError:  # imported as part of the repository package
         summarize_wrist_approach_capture,
         validate_wrist_observable_episode_start_restore,
         world_to_base_rotation_row_major_xyzw,
-    )
-try:  # flat provider-bundle layout, where this file runs as a script
-    from adp009d_contact_envelope import (
-        ContactEnvelopeError,
-        contact_envelope_from_physx_sdf_settings,
-    )
-except ModuleNotFoundError:  # imported as part of the repository package
-    from .adp009d_contact_envelope import (
-        ContactEnvelopeError,
-        contact_envelope_from_physx_sdf_settings,
-    )
-try:  # flat provider-bundle layout, where this file runs as a script
-    from adp009d_hold_trace import (
-        HOLD_TRACE_SCHEMA_VERSION,
-        HoldTraceError,
-        classify_arm_hold_trace,
-        extract_arm_effort_limits,
-        extract_arm_sample,
-    )
-except ModuleNotFoundError:  # imported as part of the repository package
-    from .adp009d_hold_trace import (
-        HOLD_TRACE_SCHEMA_VERSION,
-        HoldTraceError,
-        classify_arm_hold_trace,
-        extract_arm_effort_limits,
-        extract_arm_sample,
-    )
-try:  # flat provider-bundle layout, where this file runs as a script
-    from adp009d_physics_backend_comparison import (
-        DROID_FRANKA_ROBOTIQ_USD_DIGEST,
-        DROID_FRANKA_ROBOTIQ_USD_URI,
-        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
-        FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
-        FRANKA_SOURCE_MESH_SCALE,
-        GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
-        NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
-        NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
-        NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES,
-        ROBOTIQ_BODY_MASSES_KG,
-        build_backend_contact_configuration,
-        build_backend_profile,
-        build_gravity_real_actuation_contract,
-        build_newton_actuator_limit_mapping_contract,
-        build_newton_robot_inertial_overlay_contract,
-        normalize_physics_backend,
-        validate_backend_probe,
-        validate_backend_profile,
-        validate_gravity_real_actuation,
-        validate_newton_dynamics_representable,
-    )
-except ModuleNotFoundError:  # imported as part of the repository package
-    from .adp009d_physics_backend_comparison import (
-        DROID_FRANKA_ROBOTIQ_USD_DIGEST,
-        DROID_FRANKA_ROBOTIQ_USD_URI,
-        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
-        FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
-        FRANKA_SOURCE_MESH_SCALE,
-        GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
-        NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
-        NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
-        NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES,
-        ROBOTIQ_BODY_MASSES_KG,
-        build_backend_contact_configuration,
-        build_backend_profile,
-        build_gravity_real_actuation_contract,
-        build_newton_actuator_limit_mapping_contract,
-        build_newton_robot_inertial_overlay_contract,
-        normalize_physics_backend,
-        validate_backend_probe,
-        validate_backend_profile,
-        validate_gravity_real_actuation,
-        validate_newton_dynamics_representable,
     )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
@@ -281,145 +214,6 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ROBOT_BASE_POSITION_M = (3.4681748, -2.8100837, 0.2766791)
 ROBOT_BASE_YAW_RAD = -math.pi / 2
 CAN_START_POSITION_M = (3.4681748, -3.3100837, 0.5264650138348479)
-APPROVED_CAN_RADIUS_M = 0.031094726014345042
-APPROVED_CAN_HEIGHT_M = 0.1694279937744141
-CONTACT_PARTNER_FILTER_LABEL = "approved_can"
-CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can"
-NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR = "*body_collider"
-CONTACT_SAGE_COLLISION_FILTER_LABEL = "sage_collision"
-CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/sage_collision"
-NEWTON_SAGE_COLLISION_SHAPE_LABELS = (
-    "SM_floorplan",
-    "Z6TL2HRVAIIBIPTUKE888888",
-    "ZBRQEFBVAI3DWPTUKY888888",
-    "ZE6ZHARVAII2IPTUL4888888",
-    "ZEMALJZVAJTQWPTUK4888888",
-    "ZEO7DVBVAI7DEPTUKU888888",
-    "ZEOP4DRVAIJFSPTUKE888888",
-    "ZHQYBPJVAI3AUPTULE888888",
-    "ZHQYGJJVAJYEYPTUK4888888",
-    "ZV67OQJVAJSVCPTULY888888",
-    "ZXXPXAZVAJ3T6PTULI888888",
-    "_IMCHJBVAV7AMPTUKI888888",
-    "_K7DXDRVAZU7IPTULI888888_004",
-    "_LTFTHJVAZ3VMPTUJU888888",
-    "_PROTIZVAJTMCPTULU888888",
-)
-NEWTON_SAGE_COLLISION_FILTER_SHAPE_EXPRS = tuple(
-    f"*{label}" for label in NEWTON_SAGE_COLLISION_SHAPE_LABELS
-)
-CONTACT_PARTNER_SENSOR_NAMES = {
-    "left_inner_finger": "robot_contact_can_left",
-    "right_inner_finger": "robot_contact_can_right",
-}
-CONTACT_SAGE_COLLISION_SENSOR_NAMES = {
-    "left_inner_finger": "robot_contact_sage_left",
-    "right_inner_finger": "robot_contact_sage_right",
-}
-
-
-def _robot_contact_sensor_prim_path(physics_backend: str) -> str:
-    """Return an equivalent two-finger selector in the backend pattern syntax."""
-
-    backend = normalize_physics_backend(physics_backend)
-    base = "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
-    if backend == "newton":
-        return base + "*inner_finger"
-    return base + "(left_inner_finger|right_inner_finger)"
-
-
-def _contact_partner_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
-    """Return the backend-native exact can contact-partner filter."""
-
-    backend = normalize_physics_backend(physics_backend)
-    if backend == "newton":
-        return {
-            "filter_shape_prim_expr": [NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR]
-        }
-    return {"filter_prim_paths_expr": [CONTACT_PARTNER_FILTER_PRIM_PATH]}
-
-
-def _summarize_newton_contact_labels(
-    body_labels: list[str] | tuple[str, ...],
-    shape_labels: list[str] | tuple[str, ...],
-) -> dict[str, Any]:
-    """Retain bounded converted labels needed to diagnose filter admission."""
-
-    bodies = [str(value) for value in body_labels]
-    shapes = [str(value) for value in shape_labels]
-    relevant_tokens = ("approved", "can", "beverage", "body_collider")
-
-    def relevant(values: list[str]) -> list[str]:
-        return [
-            value
-            for value in values
-            if any(token in value.lower() for token in relevant_tokens)
-        ]
-
-    body_limit = 256
-    shape_sample_limit = 64
-    retained_bodies = bodies[:body_limit]
-    if len(shapes) <= shape_sample_limit:
-        shape_sample = shapes
-    else:
-        half = shape_sample_limit // 2
-        shape_sample = shapes[:half] + shapes[-half:]
-    return {
-        "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
-        "body_label_count": len(bodies),
-        "shape_label_count": len(shapes),
-        "body_labels": retained_bodies,
-        "body_labels_truncated": len(bodies) > body_limit,
-        "can_relevant_body_labels": relevant(bodies),
-        "can_relevant_shape_labels": relevant(shapes),
-        "shape_label_sample": shape_sample,
-        "shape_label_sample_truncated": len(shapes) > shape_sample_limit,
-        "requested_can_shape_filter": NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR,
-    }
-
-
-def _newton_contact_label_diagnostics() -> dict[str, Any]:
-    """Read the finalized Newton model labels after a sensor-build failure."""
-
-    try:
-        from isaaclab_newton.physics import NewtonManager
-
-        model = NewtonManager.get_model()
-        if model is None:
-            return {
-                "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
-                "status": "model_unavailable",
-            }
-        raw_body_labels = getattr(model, "body_label", None)
-        raw_shape_labels = getattr(model, "shape_label", None)
-        result = _summarize_newton_contact_labels(
-            [] if raw_body_labels is None else list(raw_body_labels),
-            [] if raw_shape_labels is None else list(raw_shape_labels),
-        )
-        result["status"] = "observed"
-        return result
-    except Exception as exc:  # noqa: BLE001 - diagnostics cannot mask the blocker
-        return {
-            "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
-            "status": "unavailable",
-            "error_type": type(exc).__name__,
-        }
-
-
-def _sage_collision_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
-    """Keep PhysX body filtering and Newton static-shape filtering distinct."""
-
-    backend = normalize_physics_backend(physics_backend)
-    if backend == "newton":
-        return {
-            "filter_shape_prim_expr": list(
-                NEWTON_SAGE_COLLISION_FILTER_SHAPE_EXPRS
-            )
-        }
-    return {"filter_prim_paths_expr": [CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH]}
-
-
-FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M = 0.046
 # Semantics are authored as a runtime spawn-config override so the sealed can
 # and SAGE USD bytes are never mutated.  The exact override is emitted with the
 # result and digest-bound, so a downstream composition can prove which labelling
@@ -1720,21 +1514,11 @@ def _inspect_physx_sdf_collider(stage: Any, prim_path: str) -> dict[str, Any]:
     }
     if any(value is None for value in settings.values()):
         raise RuntimeError(f"physx_sdf_cooking_settings_missing:{prim_path}")
-    try:
-        contact_envelope = contact_envelope_from_physx_sdf_settings(
-            sdf_margin_m=settings["sdf_margin"],
-            sdf_narrow_band_thickness_m=settings["sdf_narrow_band_thickness"],
-            sdf_resolution=settings["sdf_resolution"],
-            sdf_subgrid_resolution=settings["sdf_subgrid_resolution"],
-        )
-    except ContactEnvelopeError as exc:
-        raise RuntimeError(str(exc)) from exc
     return {
         "prim_path": prim_path,
         "applied_schemas": applied_schemas,
         "approximation": str(approximation),
         **settings,
-        "contact_envelope": contact_envelope,
     }
 
 
@@ -2027,70 +1811,9 @@ def _approved_can_observability(camera: Any) -> dict[str, Any]:
     )
 
 
-def _probe_finger_collision_envelope() -> dict[str, Any]:
-    """Measure each finger's geometry extent in its own body frame."""
-
-    result: dict[str, Any] = {
-        "schema_version": "adp009d_finger_collision_envelope_probe.v1",
-        "status": "unavailable",
-        "tool_frame_local_offset_m": FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M,
-        "fingers": {},
-    }
-    try:
-        import omni.usd
-        from pxr import Usd, UsdGeom
-
-        stage = omni.usd.get_context().get_stage()
-        cache = UsdGeom.BBoxCache(
-            Usd.TimeCode.Default(),
-            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
-        )
-        for body_name in sorted(CONTACT_PARTNER_SENSOR_NAMES):
-            path = f"/World/envs/env_0/Robot/Gripper/Robotiq_2F_85/{body_name}"
-            prim = stage.GetPrimAtPath(path)
-            if not (prim and prim.IsValid()):
-                result["fingers"][body_name] = {"prim_exists": False}
-                continue
-            aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
-            minimum = [float(value) for value in aligned.GetMin()]
-            maximum = [float(value) for value in aligned.GetMax()]
-            transform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
-                Usd.TimeCode.Default()
-            )
-            origin = transform.ExtractTranslation()
-            body_origin = [float(origin[index]) for index in range(3)]
-            rotation = transform.ExtractRotationQuat()
-            imaginary = rotation.GetImaginary()
-            extent = [maximum[index] - minimum[index] for index in range(3)]
-            result["fingers"][body_name] = {
-                "prim_exists": True,
-                "prim_path": path,
-                "world_bound_min_m": minimum,
-                "world_bound_max_m": maximum,
-                "body_origin_world_m": body_origin,
-                "body_orientation_world_xyzw": [
-                    float(imaginary[0]),
-                    float(imaginary[1]),
-                    float(imaginary[2]),
-                    float(rotation.GetReal()),
-                ],
-                "bound_extent_m": extent,
-                "largest_extent_m": max(extent),
-                "reach_below_body_origin_m": body_origin[2] - minimum[2],
-                "reach_above_body_origin_m": maximum[2] - body_origin[2],
-            }
-        if any(row.get("prim_exists") for row in result["fingers"].values()):
-            result["status"] = "measured"
-    except Exception as exc:  # noqa: BLE001 - diagnostics must not break a paid run
-        result["error_type"] = type(exc).__name__
-    return result
-
-
 def _build_environment(runtime: Path, args: argparse.Namespace):
     import torch
     import isaaclab.sim as sim_utils
-    from isaaclab.sensors.contact_sensor import ContactSensorCfg
-    from isaaclab_arena.assets.asset import Asset
     from isaaclab_arena.assets.object import Object
     from isaaclab_arena.assets.object_base import ObjectType
     from isaaclab_arena.embodiments.droid.droid import DroidAbsoluteJointPositionEmbodiment
@@ -2120,19 +1843,6 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
                 prim_path=prim_path,
                 object_type=ObjectType.SPAWNER,
             )
-
-    class ContactSensorAsset(Asset):
-        """Compose one read-only Isaac sensor through Arena's asset seam."""
-
-        def __init__(self, *, name: str, sensor_cfg: Any):
-            super().__init__(name=name)
-            self.sensor_cfg = sensor_cfg
-
-        def get_object_cfg(self):
-            return self.name, self.sensor_cfg
-
-        def get_event_cfg(self):
-            return self.name, None
 
     _phase("embodiment_configuration")
     yaw_half = ROBOT_BASE_YAW_RAD / 2
@@ -2337,49 +2047,6 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         initial_pose=Pose(position_xyz=CAN_START_POSITION_M),
         spawn_cfg_addon=approved_can_spawn_addon,
     )
-    robot_contact = ContactSensorAsset(
-        name="robot_contact",
-        sensor_cfg=BackendContactSensorCfg(
-            prim_path=_robot_contact_sensor_prim_path(args.physics_backend),
-            update_period=0.0,
-            history_length=1,
-            debug_vis=False,
-        ),
-    )
-    partner_contacts = [
-        ContactSensorAsset(
-            name=sensor_name,
-            sensor_cfg=BackendContactSensorCfg(
-                prim_path=(
-                    "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
-                    f"{body_name}"
-                ),
-                update_period=0.0,
-                history_length=1,
-                debug_vis=False,
-                **_contact_partner_filter_kwargs(args.physics_backend),
-            ),
-        )
-        for body_name, sensor_name in sorted(CONTACT_PARTNER_SENSOR_NAMES.items())
-    ]
-    sage_collision_contacts = [
-        ContactSensorAsset(
-            name=sensor_name,
-            sensor_cfg=BackendContactSensorCfg(
-                prim_path=(
-                    "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
-                    f"{body_name}"
-                ),
-                update_period=0.0,
-                history_length=1,
-                debug_vis=False,
-                **_sage_collision_filter_kwargs(args.physics_backend),
-            ),
-        )
-        for body_name, sensor_name in sorted(
-            CONTACT_SAGE_COLLISION_SENSOR_NAMES.items()
-        )
-    ]
     light = SpawnerObject(
         name="light",
         prim_path="/World/Light",
@@ -2389,14 +2056,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         ),
     )
     scene = Scene(
-        assets=[
-            sage,
-            approved_can,
-            robot_contact,
-            *partner_contacts,
-            *sage_collision_contacts,
-            light,
-        ]
+        assets=[sage, approved_can, light]
         + ([aura_appearance] if aura_appearance is not None else [])
     )
     _phase("sealed_scene_configuration", "completed")
@@ -3959,19 +3619,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         if camera_name == "wrist_camera"
                         else None
                     ),
-                    contact_sensor=env.unwrapped.scene["robot_contact"],
-                    contact_envelope=live_collider.get("contact_envelope"),
-                    partner_contact_sensors={
-                        sensor_name: env.unwrapped.scene[sensor_name]
-                        for sensor_name in CONTACT_PARTNER_SENSOR_NAMES.values()
-                    },
-                    backend_contact_configuration=backend_contact_configuration,
-                    task_object_radius_m=APPROVED_CAN_RADIUS_M,
-                    task_object_height_m=APPROVED_CAN_HEIGHT_M,
-                    sage_collision_contact_sensors={
-                        sensor_name: env.unwrapped.scene[sensor_name]
-                        for sensor_name in CONTACT_SAGE_COLLISION_SENSOR_NAMES.values()
-                    },
                 )
                 probe_dynamics = adapter.read_arm_dynamics_observation()
                 partner_forces = probe_dynamics.get(
@@ -4342,6 +3989,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "schema_version": "adp009d_scripted_control_ik_receipt.v1",
             "binding": control_ik_binding,
             "step_diagnostics": control_ik_step_diagnostics,
+            # Retain the approved contact envelope alongside the trace. Without
+            # it a run whose colliders were assembled against a different margin
+            # produces controls evidence indistinguishable from a correct one,
+            # and the mismatch can only surface later as an unexplained policy
+            # score rather than a typed runtime blocker.
+            **contact_envelope_receipt_fields(),
             "receipt_digest": "",
         }
         scripted_control_ik["receipt_digest"] = _canonical_digest(
@@ -4368,9 +4021,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "decimation": cfg.decimation,
                 "solver": "TGS",
                 "enhanced_determinism": True,
-                "solver_configuration": backend_profile["solver_configuration"],
-                "backend_contact_configuration": backend_contact_configuration,
-                "contact_envelope": live_collider.get("contact_envelope"),
                 "static_collider_validation": static_collider,
                 "live_collider_validation": live_collider,
                 "newton_robot_inertial_overlay": (
