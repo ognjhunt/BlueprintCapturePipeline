@@ -91,6 +91,11 @@ def _watchdog_valid(
 ) -> bool:
     try:
         pid = int(watchdog.get("watchdog_pid") or watchdog.get("pid") or 0)
+        started = float(
+            watchdog.get("watchdog_started_epoch")
+            or watchdog.get("started_epoch")
+            or 0
+        )
         deadline = float(
             watchdog.get("watchdog_deadline_epoch")
             or watchdog.get("deadline_epoch")
@@ -105,7 +110,10 @@ def _watchdog_valid(
             watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or ""
         ).startswith(NAME_PREFIX)
         or pid <= 0
-        or deadline < now_epoch + hard_ttl_seconds
+        or started <= 0
+        or started > now_epoch
+        or deadline <= now_epoch
+        or deadline - started < hard_ttl_seconds
     ):
         return False
     try:

@@ -188,7 +188,7 @@ def run_sam31_paid_resource_allocator_lane(
         adapter_path = Path(args.adapter_output).expanduser().resolve()
         handoff, handle = arm_watchdog(
             job_dir=adapter_path.parent,
-            max_live_minutes=max(2, args.sam31_hard_ttl_seconds // 60),
+            max_live_minutes=max(2, (args.sam31_hard_ttl_seconds + 59) // 60),
             generated_at=utc_now_iso(),
             allowed_active_instance_ids=getattr(
                 args, "sam31_allowed_active_vast_instance_id", []
@@ -208,6 +208,7 @@ def run_sam31_paid_resource_allocator_lane(
             "status": "armed",
             "independent_process": True,
             "pid": handoff["watchdog_pid"],
+            "started_epoch": handoff["watchdog_started_epoch"],
             "deadline_epoch": handoff["watchdog_deadline_epoch"],
             "name_prefix": handoff["pod_name_prefix"],
             "started_instance_id_path": str(handle.started_instance_id_path),

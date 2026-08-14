@@ -53,11 +53,13 @@ def test_watchdog_is_armed_detached_before_allocation(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-07-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
         allowed_active_instance_ids=[47226054],
     )
 
     assert handoff["status"] == "armed"
     assert handoff["watchdog_armed_before_allocation"] is True
+    assert handoff["watchdog_deadline_epoch"] - handoff["watchdog_started_epoch"] == 180
     assert handle is not None
     assert handle.process.kwargs["start_new_session"] is True
     assert handle.process.kwargs["stdin"] is control.subprocess.DEVNULL
@@ -66,6 +68,24 @@ def test_watchdog_is_armed_detached_before_allocation(
     assert handoff["allowed_active_instance_ids"] == [47226054]
     index = handle.process.command.index("--allowed-active-instance-id")
     assert handle.process.command[index + 1] == "47226054"
+
+
+def test_watchdog_preserves_exact_caller_supplied_sam_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+
+    handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-08-14T08:13:04+00:00",
+        pod_name_prefix="blueprint-sam31-source-tracks-",
+    )
+
+    assert handle is not None
+    assert handoff["pod_name_prefix"].startswith("blueprint-sam31-source-tracks-")
+    assert handle.pod_name_prefix == handoff["pod_name_prefix"]
+    assert "blueprint-groot-oscar-canary-vast-wam-" not in handoff["pod_name_prefix"]
 
 
 def test_paired_native_import_prefix_is_accepted_by_real_watchdog_contract(
@@ -109,6 +129,7 @@ def test_watchdog_process_start_failure_blocks_before_allocation(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-07-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
     )
 
     assert handle is None
@@ -131,6 +152,7 @@ def test_watchdog_rejects_one_minute_ttl_before_process_start(
         job_dir=tmp_path,
         max_live_minutes=1,
         generated_at="2026-07-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
     )
 
     assert handle is None
@@ -146,6 +168,7 @@ def test_watchdog_without_allocation_is_cancelled_without_provider_mutation(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-07-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
     )
     assert handle is not None
 
@@ -184,6 +207,7 @@ def test_watchdog_without_allocation_retains_double_api_zero(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-08-13T00:00:00+00:00",
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
     )
     assert handle is not None
 
@@ -206,6 +230,7 @@ def test_watchdog_stays_armed_when_create_identity_is_ambiguous(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-07-27T00:00:00+00:00",
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
     )
     assert handle is not None
 
@@ -241,6 +266,7 @@ def test_close_returns_terminal_as_soon_as_evidence_confirms_absence(
         job_dir=tmp_path,
         max_live_minutes=3,
         generated_at="2026-08-09T00:00:00+00:00",
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
     )
     assert handle is not None
 

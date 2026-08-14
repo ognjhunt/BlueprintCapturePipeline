@@ -450,6 +450,7 @@ def run_vast_wam_authorized_runner(
                     job_dir=resolved_job_dir,
                     max_live_minutes=max_live_minutes,
                     generated_at=generated,
+                    pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
                 )
                 blockers.extend(str(item) for item in watchdog_handoff.get("blockers") or [])
             if blockers:

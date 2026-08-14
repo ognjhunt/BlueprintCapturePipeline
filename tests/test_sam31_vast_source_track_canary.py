@@ -72,6 +72,7 @@ def _preflight() -> dict:
             "status": "armed",
             "independent_process": True,
             "pid": 123,
+            "started_epoch": 1000,
             "deadline_epoch": 2000,
             "name_prefix": "blueprint-sam31-source-tracks-",
         },
@@ -88,10 +89,45 @@ def test_watchdog_validator_accepts_canonical_handoff_field_names(monkeypatch) -
             "status": "armed",
             "independent_process": True,
             "watchdog_pid": 123,
+            "watchdog_started_epoch": 1000,
             "watchdog_deadline_epoch": 2000,
             "pod_name_prefix": "blueprint-sam31-source-tracks-bound-run-",
         },
         now_epoch=1000,
+        hard_ttl_seconds=60,
+    )
+
+
+def test_watchdog_validator_accepts_realistic_preflight_handoff_delay(monkeypatch) -> None:
+    monkeypatch.setattr("os.kill", lambda pid, signal: None)
+    assert _watchdog_valid(
+        {
+            "status": "armed",
+            "independent_process": True,
+            "pid": 123,
+            "started_epoch": 1000,
+            "deadline_epoch": 1060,
+            "name_prefix": "blueprint-sam31-source-tracks-bound-run-",
+        },
+        now_epoch=1005,
+        hard_ttl_seconds=60,
+    )
+
+
+def test_watchdog_validator_rejects_expired_or_short_armed_interval(monkeypatch) -> None:
+    monkeypatch.setattr("os.kill", lambda pid, signal: None)
+    base = {
+        "status": "armed",
+        "independent_process": True,
+        "pid": 123,
+        "started_epoch": 1000,
+        "deadline_epoch": 1060,
+        "name_prefix": "blueprint-sam31-source-tracks-bound-run-",
+    }
+    assert not _watchdog_valid(base, now_epoch=1060, hard_ttl_seconds=60)
+    assert not _watchdog_valid(
+        {**base, "deadline_epoch": 1059},
+        now_epoch=1005,
         hard_ttl_seconds=60,
     )
 

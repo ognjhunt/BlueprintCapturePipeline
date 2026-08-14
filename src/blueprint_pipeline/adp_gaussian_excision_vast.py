@@ -1368,6 +1368,7 @@ def run_gaussian_excision_vast(
         job_dir=job,
         max_live_minutes=remaining_minutes,
         generated_at=utc_now_iso(),
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
         allowed_active_instance_ids=allowed_active_instance_ids,
     )
     if watchdog_handle is None:
