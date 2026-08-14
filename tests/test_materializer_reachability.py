@@ -32,7 +32,11 @@ SOURCE_ROOT = REPO_ROOT / "src" / "blueprint_pipeline"
 SCRIPTS = REPO_ROOT / "scripts"
 
 #: 78 before the ArtiFixer3D input chain got an entry point, 74 after, and
-#: 73 once the segment-mask-repair preflight -- the chain's root -- got one.
+#: 73 once the segment-mask-repair preflight -- the chain's root -- got one,
+#: 72 after the ArtiFixer use attestation, and 69 after the selected
+#: replacement/native chain stopped requiring a Python session. The chain
+#: adds one new policy-spec materializer while making four existing producers
+#: reachable, so that final change lowers the net count by three.
 #: It may fall and never rise.
 #:
 #: It went to 76 once, when the semantic-teacher image-edit lane landed with all
@@ -46,7 +50,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: Naming all 73 individually would be a list nobody maintains; the population
 #: is rediscovered every run and only its size is pinned, so a new unreachable
 #: materializer fails here even though no name was ever written down.
-UNREACHABLE_MATERIALIZER_BUDGET = 73
+UNREACHABLE_MATERIALIZER_BUDGET = 69
 
 
 def _module_sources() -> dict[Path, str]:
@@ -121,9 +125,9 @@ def test_unreachable_materializers_only_ever_decrease() -> None:
 def test_the_artifixer3d_input_chain_is_reachable() -> None:
     """The head of the appearance path, and the reason this contract exists.
 
-    Pinned by name rather than by count: these four are what the ArtiFixer3D
-    bundle's `--candidate-inputs-receipt` depends on, so losing their entry
-    point again would re-block the chain at its first step.
+    Pinned by name rather than by count: these five are what the ArtiFixer3D
+    bundle and its candidate-bound use attestation depend on, so losing their
+    entry point again would re-block the chain at its first step.
     """
 
     unreachable = {name for _, name in _unreachable()}
@@ -133,13 +137,20 @@ def test_the_artifixer3d_input_chain_is_reachable() -> None:
         "materialize_artifixer3d_candidate_inputs",
         "materialize_whole_frame_semantic_teacher_receipt",
         "materialize_dual_target_artifixer3d_inputs",
+        "materialize_artifixer3d_use_attestation",
     ):
         assert required not in unreachable, f"{required} lost its command line"
 
 
 @pytest.mark.parametrize(
     "step",
-    ["object-absent-reference", "candidate-inputs", "semantic-teacher", "dual-target"],
+    [
+        "object-absent-reference",
+        "candidate-inputs",
+        "semantic-teacher",
+        "dual-target",
+        "use-attestation",
+    ],
 )
 def test_every_input_step_can_supply_its_materializer(step: str) -> None:
     """Same rule as the authority issuer: the flag table is the call."""
@@ -149,6 +160,50 @@ def test_every_input_step_can_supply_its_materializer(step: str) -> None:
     import sys
 
     name = "prepare_artifixer3d_inputs"
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+
+    entry = module.STEPS[step]
+    upstream = {
+        parameter
+        for parameter, value in inspect.signature(entry.materialize).parameters.items()
+        if value.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+
+    assert not upstream - set(entry.params), (
+        f"{step} cannot supply {sorted(upstream - set(entry.params))} from a "
+        "command line"
+    )
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "visual-binding",
+        "visual-composition",
+        "registered-asset",
+        "interaction-affordance",
+        "articulated-kinematic-path",
+        "camera-rig",
+        "construction-bindings",
+        "arena-requests",
+        "arena-packet",
+        "policy-execution-spec",
+    ],
+)
+def test_every_selected_replacement_native_step_can_supply_its_materializer(
+    step: str,
+) -> None:
+    """Every selected-path producer must be callable without a Python session."""
+
+    import importlib.util
+    import inspect
+    import sys
+
+    name = "materialize_paired_target_native_inputs"
     spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

@@ -33,6 +33,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from blueprint_pipeline.materializer_cli import Param, Step, run
+from blueprint_pipeline.public_scene_artifixer3d_bundle import (
+    materialize_artifixer3d_use_attestation,
+)
 from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
     materialize_artifixer3d_candidate_inputs,
     materialize_object_absent_reference_candidate_receipt,
@@ -108,6 +111,21 @@ STEPS: dict[str, Step] = {
             ),
             "selected_task_ids": Param(
                 "--task-id", "Repeatable; omit for every task.", accumulate=True
+            ),
+        },
+    ),
+    "use-attestation": Step(
+        "Bind explicit retained use authority to one candidate receipt.",
+        materialize_artifixer3d_use_attestation,
+        {
+            "candidate_inputs_receipt_path": Param(
+                "--candidate-inputs-receipt", required=True
+            ),
+            "output_path": Param("--output", required=True),
+            "authorized_by": Param("--authorized-by", required=True),
+            "authorization_kind": Param(
+                "--authorization-kind",
+                default="explicit_user_direction_in_current_goal",
             ),
         },
     ),
