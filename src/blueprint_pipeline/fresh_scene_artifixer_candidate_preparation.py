@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Mapping, Sequence
+import json
 from pathlib import Path
 from typing import Any
 
@@ -89,9 +91,39 @@ def materialize_fresh_scene_artifixer_candidate_preparation(
     return receipt
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the deterministic cutout-to-ArtiFixer preparation from a JSON request."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--output-root", required=True)
+    args = parser.parse_args(argv)
+    request_path = Path(args.request).expanduser().resolve()
+    try:
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FreshSceneArtiFixerCandidatePreparationError(
+            "fresh_scene_artifixer_candidate_request_unreadable"
+        ) from exc
+    if request_path.is_symlink() or not isinstance(request, dict):
+        raise FreshSceneArtiFixerCandidatePreparationError(
+            "fresh_scene_artifixer_candidate_request_unreadable"
+        )
+    result = materialize_fresh_scene_artifixer_candidate_preparation(
+        request=request, output_root=args.output_root
+    )
+    print(canonical_json(result))
+    return 0
+
+
 __all__: Sequence[str] = (
     "REQUEST_SCHEMA_VERSION",
     "RECEIPT_SCHEMA_VERSION",
     "FreshSceneArtiFixerCandidatePreparationError",
+    "main",
     "materialize_fresh_scene_artifixer_candidate_preparation",
 )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
