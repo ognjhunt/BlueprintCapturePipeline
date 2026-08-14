@@ -14,6 +14,20 @@ from blueprint_pipeline.common import read_json, write_json
 MAIN_USD = gate.DEFAULT_MAIN_USD_RELPATH
 
 
+@pytest.fixture(autouse=True)
+def _state_ample_free_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep extraction tests from reading the developer machine's free space.
+
+    The gate refuses when free space is under `DISK_HEADROOM_FACTOR` times the
+    inventory size, so a near-full host answers `kitchen_asset_insufficient_disk`
+    to tests that are asserting extraction and reuse behaviour instead. Tests
+    that care about the refusal pass their own `free_disk_probe` -- see
+    `test_insufficient_disk_blocks_before_extraction`.
+    """
+
+    monkeypatch.setattr(gate, "_default_free_disk_probe", lambda path: 64 * 1024**3)
+
+
 def _make_tree(root: Path) -> Path:
     tree = root / "assets"
     main = tree / MAIN_USD
