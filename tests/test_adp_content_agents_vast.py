@@ -5,7 +5,9 @@ import importlib.util
 import inspect
 import io
 import json
+import os
 import subprocess
+import sys
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -1973,6 +1975,7 @@ def test_provider_runtime_pins_native_dependency_closure_before_agent_execution(
 
 
 def test_provider_runtime_emits_structured_progress_across_silent_paid_stages(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     runtime = (ROOT / "scripts/run_adp_content_agents_provider_runtime.sh").read_text()
@@ -1999,6 +2002,45 @@ def test_provider_runtime_emits_structured_progress_across_silent_paid_stages(
         assert f'_progress("{stage}")' in runner_source
     assert '_progress(f"{name}_agent_started")' in runner_source
     assert '_progress(f"{name}_agent_completed")' in runner_source
+
+    execution = runner._run(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(0.08); print('agent finished')",
+        ],
+        log_path=tmp_path / "physics-agent.log",
+        env=dict(os.environ),
+        timeout=1,
+        progress_interval_seconds=0.02,
+    )
+
+    progress = capsys.readouterr().out
+    assert "BLUEPRINT_ADP_CONTENT_AGENTS_PROGRESS:subprocess_running:physics-agent:" in progress
+    assert execution["returncode"] == 0
+    assert execution["timed_out"] is False
+    assert (tmp_path / "physics-agent.log").read_text() == "agent finished\n"
+
+
+def test_provider_runtime_stage_timeout_still_kills_silent_subprocess(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = _provider_runner_module()
+
+    execution = runner._run(
+        [sys.executable, "-c", "import time; time.sleep(1)"],
+        log_path=tmp_path / "physics-agent.log",
+        env=dict(os.environ),
+        timeout=0.08,
+        progress_interval_seconds=0.02,
+    )
+
+    assert "BLUEPRINT_ADP_CONTENT_AGENTS_PROGRESS:subprocess_running:physics-agent:" in (
+        capsys.readouterr().out
+    )
+    assert execution["returncode"] == 124
+    assert execution["timed_out"] is True
 
 
 def test_provider_runtime_uses_native_tls_before_uv_dependency_fetches() -> None:
