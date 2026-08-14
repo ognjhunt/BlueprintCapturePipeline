@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
+from .common import redacted_failure_detail, write_json
 from .g1_kitchen_bundle_compatibility import (
     CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
 )
@@ -75,6 +75,7 @@ from .production_gpu_campaign_budget import (
 )
 from .safe_outbound_http import presigned_transfer_policy
 from .safe_outbound_http import request as safe_http_request
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 
 
 SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_admission.v1"
@@ -94,6 +95,43 @@ MONITOR_NAME = "nvidia_warehouse_native_camera_monitor.json"
 MAX_OUTPUT_ARCHIVE_MEMBERS = 32
 MAX_OUTPUT_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_CONSECUTIVE_TRANSIENT_OUTPUT_ERRORS = 3
+
+
+def _seal_terminal(result: Mapping[str, Any], adapter_output: str | Path) -> dict[str, Any]:
+    """Give this lane's terminal result the two paths its launch contract reads.
+
+    ``adapter_output`` is not an incidental copy of the result: it is the
+    ``terminal_contract.result_path`` of the live profile that makes
+    ``new-site-native-camera`` website-reachable, and that contract's
+    ``required_path_fields`` are read straight off it. Until #543 the lane had
+    no builder, so nothing read this file and the omission cost nothing. It has
+    one now, and a result written here without ``artifact_manifest_path`` and
+    ``teardown_manifest_path`` ends ``allocator_terminal_artifact_missing:`` for
+    both no matter what happened on the provider -- after renting a GPU.
+
+    The attempt root is the adapter result's own directory, which is exactly
+    the ``root`` this lane already lays its provider run and receipts under, so
+    the sealer looks where the evidence actually is. Sealing a root the
+    evidence is not under is the #501 defect: it takes the dry-run path and
+    reports ``completed`` with ``blockers: []`` having sealed nothing.
+
+    Every terminal write goes through here, including the pre-provider refusals
+    that rent nothing, because the launch reads the same file whichever path
+    wrote it. Both fields are named unconditionally, ``None`` when there is
+    nothing to name, so an attempt that retained no evidence stays
+    distinguishable from one whose evidence went missing. The shared seal only
+    ever adds blockers or downgrades a status, so this cannot turn a blocked
+    attempt into a passing one.
+    """
+
+    terminal = dict(result)
+    terminal.setdefault("artifact_manifest_path", None)
+    terminal.setdefault("teardown_manifest_path", None)
+    return seal_lane_terminal_artifacts(
+        terminal,
+        attempt_root=Path(adapter_output).expanduser().resolve().parent,
+        lane=PAID_LANE,
+    )
 
 
 def _read_object(path: str | Path) -> dict[str, Any]:
@@ -718,7 +756,7 @@ def _monitor_native_camera_output_and_teardown(
                 return {
                     "status": "monitor_failed_watchdog_retained",
                     "blockers": [
-                        f"native_camera_output_monitor_failed:{type(exc).__name__}"
+                        f"native_camera_output_monitor_failed:{redacted_failure_detail(exc)}"
                     ],
                     "transient_error_attempts": consecutive_transient_errors,
                     "continuing_spend": True,
@@ -729,7 +767,7 @@ def _monitor_native_camera_output_and_teardown(
             return {
                 "status": "monitor_failed_watchdog_retained",
                 "blockers": [
-                    f"native_camera_output_monitor_failed:{type(exc).__name__}"
+                    f"native_camera_output_monitor_failed:{redacted_failure_detail(exc)}"
                 ],
                 "continuing_spend": True,
                 "watchdog_deadline_epoch": deadline_epoch,
@@ -951,7 +989,7 @@ def run_native_camera_gpu_lane(
             "blockers": prepared["blockers"],
             "provider_mutations_performed": 0,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
     if not execute:
         result = {
@@ -961,7 +999,7 @@ def run_native_camera_gpu_lane(
             "watchdog_process_started": False,
             "budget_reservation_created": False,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
 
     missing_execute = [
@@ -986,7 +1024,7 @@ def run_native_camera_gpu_lane(
             ],
             "provider_mutations_performed": 0,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
 
     input_secret_url = _read_private_https_url(
@@ -1020,7 +1058,7 @@ def run_native_camera_gpu_lane(
             "provider_mutations_performed": 0,
             "campaign_budget_admission": exc.admission,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
     reserved_at_epoch = time.time()
     budget_context = {
@@ -1105,7 +1143,7 @@ def run_native_camera_gpu_lane(
             "blockers": list(lease.get("blockers") or []),
             "provider_mutations_performed": 0,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
 
     try:
@@ -1185,7 +1223,7 @@ def run_native_camera_gpu_lane(
             "blockers": list(handoff.get("blockers") or []),
             "provider_mutations_performed": 0,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
     receipt = {
         **handoff,
@@ -1223,7 +1261,7 @@ def run_native_camera_gpu_lane(
             "raw_secret_values_recorded": False,
         }
         adapter.pop("error", None)
-        write_json(Path(adapter_output), adapter)
+        write_json(Path(adapter_output), _seal_terminal(adapter, adapter_output))
     except Exception as exc:
         mark_pending_teardown_ambiguous(
             pending["path"],
@@ -1252,7 +1290,7 @@ def run_native_camera_gpu_lane(
             "continuing_spend": cleanup_handoff["continuing_spend"],
             "raw_secret_values_recorded": False,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
 
     instance_id = str(adapter.get("instance_id") or "").strip()
@@ -1280,7 +1318,7 @@ def run_native_camera_gpu_lane(
             "continuing_spend": monitor.get("continuing_spend") is True,
             "raw_secret_values_recorded": False,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
 
     if adapter.get("allocation_outcome_ambiguous") is True:
@@ -1317,7 +1355,7 @@ def run_native_camera_gpu_lane(
         "cleanup_handoff": cleanup_handoff,
         "continuing_spend": cleanup_handoff["continuing_spend"],
     }
-    write_json(Path(adapter_output), result)
+    write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
     return result
 
 

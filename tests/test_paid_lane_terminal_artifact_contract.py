@@ -46,6 +46,14 @@ PAID_LANE_MODULES = (
     "adp_joint_agent_vast.py",
     "adp_retained_scene_render_vast.py",
     "native_task_arena_vast.py",
+    # Not a `*_vast*.py` transport: it is the fresh-site camera lane's own
+    # runner, and #543 gave `new-site-native-camera` a builder, so the launch
+    # profile now reads the terminal result it writes.
+    "nvidia_warehouse_native_camera_gpu_admission.py",
+    # The `*_runpod*.py` half of the provider families. Dual-purpose: the
+    # frozen `openpi-policy-ranking` campaign and the live
+    # `new-site-diagnostic-canary` #544 made reachable share this runner.
+    "openpi_policy_ranking_runpod.py",
     "paired_target_native_import_vast.py",
     "public_scene_aura_exact_residual_vast.py",
     "public_scene_artifixer3d_vast.py",
@@ -79,12 +87,17 @@ SEALED_BY_ALLOCATOR_CALLER = {
 #: The tests below refuse a stale entry, refuse an entry that has quietly
 #: started sealing, and cap the total so the ledger cannot absorb a new lane.
 UNSEALED_LANE_DEBT = {
+    "groot_oscar_runpod_canary.py": "frozen_program",
+    "groot_oscar_runpod_persistent_carrier_campaign.py": "frozen_program",
+    "groot_oscar_runpod_s3_model_cache.py": "frozen_program",
     "measurement_chrono_dem_vast_canary.py": "shares_unsealed_canonical_allocator_write",
     "measurement_dlo_lab_vast_canary.py": "shares_unsealed_canonical_allocator_write",
     "measurement_isaac_vast_canary.py": "shares_unsealed_canonical_allocator_write",
     "reconstruction_isaac_vast_operation.py": "shares_unsealed_canonical_allocator_write",
     "reconstruction_vast_operation.py": "shares_unsealed_canonical_allocator_write",
+    "single_g1_kitchen_episode_runpod.py": "frozen_program",
     "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
+    "unitree_unifolm_runpod_server.py": "frozen_program",
 }
 
 VALID_DEBT_REASONS = {"shares_unsealed_canonical_allocator_write", "frozen_program"}
@@ -151,11 +164,21 @@ def _discovered_paid_lanes() -> set[str]:
     still reported `allocator_terminal_artifact_missing:` with nothing in this
     suite red. It is not the only lane named that way, and the next one would
     have slipped through the same gap.
+
+    Widening to ``*_vast*.py`` fixed the pattern and left the *provider* half
+    of the hole open: Vast is not the only provider, and every ``*_runpod*.py``
+    lane was invisible here for the same reason. Six of them take a grant, and
+    one -- `openpi_policy_ranking_runpod.py` -- is the paid execution path for
+    `new-site-diagnostic-canary`, which #544 made website-reachable. A gate
+    that only knows one provider's naming will keep rediscovering this, so both
+    families are globbed and a lane on a third provider is expected to be added
+    here rather than to a debt row.
     """
 
     return {
         path.name
-        for path in sorted(SOURCE_ROOT.glob("*_vast*.py"))
+        for pattern in ("*_vast*.py", "*_runpod*.py")
+        for path in sorted(SOURCE_ROOT.glob(pattern))
         if "paid_resource_admission_grant" in path.read_text(encoding="utf-8")
     }
 
@@ -192,6 +215,9 @@ def test_the_widened_discovery_still_sees_the_lanes_it_used_to() -> None:
 
     assert "reconstruction_vast_worker_smoke.py" in discovered
     assert {module for module in PAID_LANE_MODULES if module.endswith("_vast.py")} <= discovered
+    # The runpod family, invisible here until a live canary depended on it.
+    assert "openpi_policy_ranking_runpod.py" in discovered
+    assert sum(1 for module in discovered if "_runpod" in module) >= 6
 
 
 def test_a_lane_sealed_by_its_caller_really_is_sealed_by_that_caller() -> None:
@@ -243,10 +269,32 @@ def test_the_unsealed_lane_debt_is_stated_rather_than_implied() -> None:
     assert set(UNSEALED_LANE_DEBT.values()) <= VALID_DEBT_REASONS, (
         f"unrecognized debt reasons: {sorted(set(UNSEALED_LANE_DEBT.values()) - VALID_DEBT_REASONS)}"
     )
-    assert len(UNSEALED_LANE_DEBT) <= 6, (
+
+    # Split, because one total hid the distinction that matters. A
+    # `frozen_program` lane is fenced by the reachability contract and cannot be
+    # triggered from the website at all; an unfenced one is a lane a launch can
+    # actually reach and then fail to report on. Widening discovery to the
+    # runpod family added six frozen rows at once -- lanes that had been running
+    # paid attempts unsealed the whole time, simply invisible to a gate that
+    # only knew Vast's naming -- and a single total would have read that as the
+    # ledger doubling.
+    launchable = sorted(
+        module
+        for module, reason in UNSEALED_LANE_DEBT.items()
+        if reason != "frozen_program"
+    )
+
+    assert len(launchable) <= 5, (
+        f"unsealed lanes that are not fenced by the frozen-program contract "
+        f"grew to {len(launchable)}: {launchable}. These are reachable and "
+        "cannot report completed after paying for a GPU. Lower this bound as "
+        "lanes are sealed; do not raise it to make it pass."
+    )
+    assert len(UNSEALED_LANE_DEBT) <= 11, (
         f"unsealed paid lanes grew to {len(UNSEALED_LANE_DEBT)}: "
         f"{sorted(UNSEALED_LANE_DEBT)}. Lower this bound as lanes are sealed; "
-        "do not raise it to make it pass."
+        "raise it only when discovery widens to a provider family that was "
+        "never checked, and say so."
     )
 
 
@@ -595,11 +643,18 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
 #: `sam31_gpu_admission.py` was the urgent one -- `semantic-sam31-source-tracks`
 #: is website-reachable today -- and it now seals, so it has moved into
 #: `PAID_LANE_MODULES` and the bound below has been ratcheted with it.
-#: `openpi_policy_ranking_gpu_admission.py` is dual-purpose: it also serves the
-#: live `new-site-diagnostic-canary`, so "policy ranking is frozen" does not
-#: excuse it. Only the two `policy_ranking_*` entries are purely frozen.
+#: `nvidia_warehouse_native_camera_gpu_admission.py` followed for the same
+#: reason: #543 gave `new-site-native-camera` a builder, which turned a dormant
+#: omission into a live one, and it now seals.
+#:
+#: `openpi_policy_ranking_gpu_admission.py` stays, but read what it is: this
+#: module writes no terminal adapter result of its own, and the paid execution
+#: for both the frozen campaign and the live `new-site-diagnostic-canary` runs
+#: through `openpi_policy_ranking_runpod.py`, which now seals and is checked as
+#: a paid lane above. The live exposure is closed; the row remains because this
+#: transport still names neither field and the ledger is keyed on the
+#: allocator's imports.
 TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {
-    "nvidia_warehouse_native_camera_gpu_admission.py": "new-site-native-camera",
     "openpi_policy_ranking_gpu_admission.py": "new-site-diagnostic-canary + frozen openpi",
     "policy_ranking_cosmos_reasoner_gpu_admission.py": "frozen_program",
     "policy_ranking_successor_gpu_admission.py": "frozen_program",
@@ -657,7 +712,7 @@ def test_the_missing_terminal_evidence_set_only_ever_shrinks() -> None:
     cannot be spent on the next lane that would rather be excused than sealed.
     """
 
-    assert len(TRANSPORTS_MISSING_TERMINAL_EVIDENCE) <= 7, (
+    assert len(TRANSPORTS_MISSING_TERMINAL_EVIDENCE) <= 6, (
         "a transport was added to TRANSPORTS_MISSING_TERMINAL_EVIDENCE rather "
         "than sealing its terminal evidence. This list records lanes that "
         "cannot report completed after paying for a GPU; it is not an "
