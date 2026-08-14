@@ -9,12 +9,14 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
 
 SCHEMA_VERSION = "adp_content_agents_vast_result.v1"
 TIMEOUT_SECONDS = 2400
+SUBPROCESS_PROGRESS_INTERVAL_SECONDS = 60.0
 
 
 def _progress(stage: str) -> None:
@@ -40,27 +42,47 @@ def _redact(value: str, env: dict[str, str]) -> str:
 
 
 def _run(
-    command: Sequence[str], *, log_path: Path, env: dict[str, str], timeout: int = TIMEOUT_SECONDS
+    command: Sequence[str],
+    *,
+    log_path: Path,
+    env: dict[str, str],
+    timeout: float = TIMEOUT_SECONDS,
+    progress_interval_seconds: float = SUBPROCESS_PROGRESS_INTERVAL_SECONDS,
 ) -> dict[str, Any]:
+    """Run one bounded agent while keeping the outer provider watchdog alive."""
+
+    if timeout <= 0 or progress_interval_seconds <= 0:
+        raise ValueError("content_agents_subprocess_timeout_policy_invalid")
     started = dt.datetime.now(dt.timezone.utc)
-    try:
-        completed = subprocess.run(
-            list(command),
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout,
-            check=False,
-        )
-        returncode = completed.returncode
-        output = completed.stdout + completed.stderr
-        timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        returncode = 124
-        output = (exc.stdout or "") + (exc.stderr or "")
-        timed_out = True
+    process = subprocess.Popen(
+        list(command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+    )
+    started_monotonic = time.monotonic()
+    deadline = started_monotonic + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            process.kill()
+            output, _ = process.communicate()
+            returncode = 124
+            timed_out = True
+            break
+        try:
+            output, _ = process.communicate(
+                timeout=min(progress_interval_seconds, remaining)
+            )
+            returncode = int(process.returncode or 0)
+            timed_out = False
+            break
+        except subprocess.TimeoutExpired:
+            elapsed_seconds = max(1, int(time.monotonic() - started_monotonic))
+            _progress(f"subprocess_running:{log_path.stem}:{elapsed_seconds}s")
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(_redact(output, env), encoding="utf-8")
+    log_path.write_text(_redact(output or "", env), encoding="utf-8")
     finished = dt.datetime.now(dt.timezone.utc)
     return {
         "command": [str(item) for item in command],
