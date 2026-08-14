@@ -17,6 +17,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,9 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, REPO_ROOT / "scripts" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    # `dataclasses` resolves annotations through `sys.modules[cls.__module__]`,
+    # so a builder declaring a dataclass cannot be loaded without this.
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
