@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .materializer_cli import Param, Step, run
 from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 
 
@@ -313,13 +314,37 @@ def nvidia_content_agents_required(
     return bool(nvidia), list(row["codex_local_capabilities"]), nvidia
 
 
+STEPS = {
+    "route": Step(
+        "Seal the selected 1-5 object Codex/NVIDIA execution route.",
+        materialize_content_agents_execution_route,
+        {
+            "objects": Param("--objects", required=True, json_file=True),
+            "output_path": Param("--output", required=True),
+            "generated_at": Param("--generated-at", required=True),
+        },
+    )
+}
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Expose route sealing without invoking Codex, an API, or a provider."""
+
+    return run(STEPS, argv, description=__doc__)
+
+
 __all__ = [
     "ContentAgentsExecutionRouteError",
     "LOCAL_CODEX_CAPABILITIES",
     "MAX_REPLACEMENT_OBJECTS",
     "NVIDIA_CONTENT_AGENTS_CAPABILITIES",
     "SCHEMA_VERSION",
+    "main",
     "materialize_content_agents_execution_route",
     "nvidia_content_agents_required",
     "validate_content_agents_execution_route",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI seam
+    raise SystemExit(main())

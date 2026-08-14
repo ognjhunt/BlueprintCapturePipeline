@@ -34,6 +34,7 @@ from blueprint_pipeline.native_task_arena_controls_bundle import (
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     build_native_task_arena_policy_bundle,
     load_verified_native_task_arena_policy_bundle,
+    materialize_native_task_policy_execution_spec,
 )
 from blueprint_pipeline.native_task_arena_vast import (
     run_native_task_arena_policy_vast,
@@ -551,6 +552,31 @@ def test_policy_bundle_requires_exact_qualified_construction_and_controls(
             policy_execution_spec=spec,
             runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
             implementation_commit="d" * 40,
+        )
+
+
+def test_policy_execution_spec_can_be_sealed_without_calling_an_endpoint(
+    tmp_path: Path,
+) -> None:
+    packet, scene = _articulated_packet(tmp_path)
+    construction = _qualified_construction(tmp_path, scene)
+    controls = _qualified_controls(tmp_path, scene, construction)
+    request = _policy_spec(scene, construction, controls)
+    request.pop("execution_spec_digest")
+    output = tmp_path / "policy-execution-spec.json"
+
+    result = materialize_native_task_policy_execution_spec(
+        request=request, output_path=output
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8")) == result
+    assert result["candidate_id"] == "pi05_droid"
+    assert result["execution_spec_digest"] == canonical_digest(
+        result, digest_field="execution_spec_digest"
+    )
+    with pytest.raises(ValueError, match="output_exists"):
+        materialize_native_task_policy_execution_spec(
+            request=request, output_path=output
         )
 
 

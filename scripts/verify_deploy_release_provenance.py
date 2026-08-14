@@ -28,6 +28,9 @@ RUN_URL_PATTERN = re.compile(r"^/([^/]+)/([^/]+)/actions/runs/([1-9][0-9]*)/?$")
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 CANONICAL_WORKFLOW_PATH = ".github/workflows/full-test-lane.yml"
 CANONICAL_WORKFLOW_NAME = "Full Test Lane"
+CANONICAL_PRODUCTION_DISPLAY_TITLE = (
+    "Full Test Lane / production_deployment_promotion"
+)
 CANONICAL_JOB_NAME = "Full pytest lane on CPU runner"
 REQUIRED_SUCCESSFUL_STEPS = {
     "Collect full lane",
@@ -98,12 +101,14 @@ def validate_run_metadata(
         blockers.append("run_not_completed")
     if str(run.get("conclusion") or "") != "success":
         blockers.append("run_conclusion_not_success")
-    if str(run.get("event") or "") != "push":
-        blockers.append("run_event_not_main_push")
+    if str(run.get("event") or "") != "workflow_dispatch":
+        blockers.append("run_event_not_workflow_dispatch")
     if str(run.get("head_branch") or "") != "main":
         blockers.append("run_branch_not_main")
     if str(run.get("name") or "") != CANONICAL_WORKFLOW_NAME:
         blockers.append("workflow_name_mismatch")
+    if str(run.get("display_title") or "") != CANONICAL_PRODUCTION_DISPLAY_TITLE:
+        blockers.append("production_promotion_reason_mismatch")
     workflow_path = str(run.get("path") or "").split("@", 1)[0]
     if workflow_path != CANONICAL_WORKFLOW_PATH:
         blockers.append("workflow_path_mismatch")

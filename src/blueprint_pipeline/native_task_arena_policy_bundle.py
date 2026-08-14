@@ -120,6 +120,32 @@ def validate_native_task_policy_execution_spec(
     return payload
 
 
+def materialize_native_task_policy_execution_spec(
+    *, request: Mapping[str, Any], output_path: str | Path
+) -> dict[str, Any]:
+    """Seal one frozen policy request without contacting its endpoint."""
+
+    try:
+        payload = json.loads(json.dumps(dict(request), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("native_task_policy_execution_spec_request_invalid") from exc
+    supplied_digest = payload.pop("execution_spec_digest", None)
+    payload["execution_spec_digest"] = canonical_digest(
+        payload, digest_field="execution_spec_digest"
+    )
+    if supplied_digest not in (None, "", payload["execution_spec_digest"]):
+        raise ValueError("native_task_policy_execution_spec_digest_invalid")
+    validated = validate_native_task_policy_execution_spec(payload)
+    destination = Path(output_path).expanduser().resolve()
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("native_task_policy_execution_spec_output_exists")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(validated, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return validated
+
+
 def build_native_task_arena_policy_bundle(
     *,
     job_dir: str | Path,
@@ -288,6 +314,7 @@ __all__ = [
     "RESULT_SCHEMA_VERSION",
     "build_native_task_arena_policy_bundle",
     "load_verified_native_task_arena_policy_bundle",
+    "materialize_native_task_policy_execution_spec",
     "validate_native_task_policy_execution_spec",
 ]
 

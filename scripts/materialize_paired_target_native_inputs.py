@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Materialize the active paired-target/native construction input chain.
+"""Materialize the active replacement/native construction input chain.
 
 This command reads retained, digest-bound inputs and writes receipts only. It
 does not allocate a provider or execute a simulator.
@@ -9,7 +9,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from blueprint_pipeline.agent_cad_graph_visual_composition import (
+    materialize_agent_cad_visual_composition,
+    seal_agent_cad_visual_binding,
+)
 from blueprint_pipeline.materializer_cli import Param, Step, run
+from blueprint_pipeline.native_task_arena_packet import (
+    materialize_native_task_arena_packet,
+)
+from blueprint_pipeline.native_task_arena_policy_bundle import (
+    materialize_native_task_policy_execution_spec,
+)
 from blueprint_pipeline.paired_target_articulated_kinematic_path import (
     materialize_paired_target_articulated_kinematic_path,
 )
@@ -25,9 +35,56 @@ from blueprint_pipeline.paired_target_native_camera_rig_candidate import (
 from blueprint_pipeline.paired_target_native_construction_bindings import (
     materialize_paired_target_native_construction_bindings,
 )
+from blueprint_pipeline.registered_replacement_asset import (
+    materialize_registered_replacement_asset,
+)
 
 
 STEPS: dict[str, Step] = {
+    "visual-binding": Step(
+        "Seal the selected CAD visual meshes onto the graph asset links.",
+        seal_agent_cad_visual_binding,
+        {
+            "graph_authoring_receipt_path": Param(
+                "--graph-authoring-receipt", required=True
+            ),
+            "cad_agent_output_receipt_path": Param("--cad-agent-output-receipt"),
+            "cad_agent_matrix_path": Param("--cad-agent-matrix"),
+            "cad_agent_backend_id": Param("--cad-agent-backend-id"),
+            "cad_agent_visual_review_path": Param(
+                "--cad-agent-visual-review", required=True
+            ),
+            "mesh_projection_receipt_path": Param(
+                "--mesh-projection-receipt", required=True
+            ),
+            "link_bindings": Param("--link-bindings", required=True, json_file=True),
+            "unmapped_graph_link_reasons": Param(
+                "--unmapped-graph-link-reasons", required=True, json_file=True
+            ),
+            "output_path": Param("--output", required=True),
+        },
+    ),
+    "visual-composition": Step(
+        "Compose the exact selected CAD visuals into the graph asset USD.",
+        materialize_agent_cad_visual_composition,
+        {
+            "binding_path": Param("--binding", required=True),
+            "destination_usd_path": Param("--output-usd", required=True),
+            "receipt_path": Param("--receipt"),
+        },
+    ),
+    "registered-asset": Step(
+        "Apply the reviewed frame registration to one composed replacement.",
+        materialize_registered_replacement_asset,
+        {
+            "visual_composition_receipt_path": Param(
+                "--visual-composition-receipt", required=True
+            ),
+            "frame_registration_path": Param("--frame-registration", required=True),
+            "output_usd_path": Param("--output-usd", required=True),
+            "output_receipt_path": Param("--output-receipt", required=True),
+        },
+    ),
     "interaction-affordance": Step(
         "Bind one registered replacement to its robot interaction affordance.",
         materialize_paired_target_interaction_affordance_candidate,
@@ -110,6 +167,23 @@ STEPS: dict[str, Step] = {
             ),
             "evidence_root": Param("--evidence-root", required=True),
             "output_root": Param("--output-root", required=True),
+        },
+    ),
+    "arena-packet": Step(
+        "Copy verified scene bytes into one immutable native Arena packet.",
+        materialize_native_task_arena_packet,
+        {
+            "request": Param("--request", required=True, json_file=True),
+            "evidence_root": Param("--evidence-root", required=True),
+            "output_dir": Param("--output-dir", required=True),
+        },
+    ),
+    "policy-execution-spec": Step(
+        "Seal one frozen candidate request without contacting its endpoint.",
+        materialize_native_task_policy_execution_spec,
+        {
+            "request": Param("--request", required=True, json_file=True),
+            "output_path": Param("--output", required=True),
         },
     ),
 }
