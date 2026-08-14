@@ -190,7 +190,9 @@ def _position(parameters: Mapping[str, Any], prefix: str) -> list[float]:
     ]
 
 
-def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
+def materialize_control_plan(
+    instance: Mapping[str, Any], *, physics_backend: str = "physx"
+) -> dict[str, Any]:
     """Derive a fixed native control plan from one digest-bound scenario cell."""
 
     try:
@@ -349,8 +351,42 @@ def materialize_control_plan(instance: Mapping[str, Any]) -> dict[str, Any]:
         "scripted_positive_phases": phases,
         "caller_asserted_success_accepted": False,
         "candidate_policy_queried": False,
+        "semantic_plan_digest": "",
         "plan_digest": "",
     }
+    semantic_plan = {
+        "instance_digest": plan["instance_digest"],
+        "cell_id": plan["cell_id"],
+        "seed": plan["seed"],
+        "resolved_start_position_world_m": plan["resolved_start_position_world_m"],
+        "resolved_destination_position_world_m": plan[
+            "resolved_destination_position_world_m"
+        ],
+        "object_height_m": object_height,
+        "object_radius_m": object_radius,
+        "grasp_target_frame": plan["grasp_target_frame"],
+        "controlled_body_orientation_strategy": plan[
+            "controlled_body_orientation_strategy"
+        ],
+        "controlled_body_quaternion_world_xyzw": plan[
+            "controlled_body_quaternion_world_xyzw"
+        ],
+        "phase_semantics": [
+            {
+                key: phase.get(key)
+                for key in (
+                    "phase_id",
+                    "mode",
+                    "target_position_world_m",
+                    "target_frame",
+                    "target_quaternion_world_xyzw",
+                    "gripper",
+                )
+            }
+            for phase in phases
+        ],
+    }
+    plan["semantic_plan_digest"] = canonical_digest(semantic_plan)
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return plan
 

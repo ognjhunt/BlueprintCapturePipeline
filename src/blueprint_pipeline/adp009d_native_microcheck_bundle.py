@@ -34,6 +34,7 @@ ASSET_BINDINGS = {
     "sage_collision.usd": "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41",
 }
 APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
+APPROVED_CAN_NEWTON_ADAPTER_FILENAME = "approved_can_newton_generic_adapter.usda"
 APPROVED_CAN_DEFAULT_PRIM = "canned_beverage"
 APPROVED_CAN_COLLIDER_PATH = "colliders/body_collider"
 TARGET_COLLIDER_PRIM = "/Root/ZHQYGJJVAJYEYPTUKY888888"
@@ -743,6 +744,35 @@ def Xform "{APPROVED_CAN_DEFAULT_PRIM}" (
 '''
 
 
+def _approved_can_newton_adapter_text() -> str:
+    """Block the source SDF token before Newton imports the generic mesh."""
+
+    collider_parts = APPROVED_CAN_COLLIDER_PATH.split("/")
+    if len(collider_parts) != 2:
+        raise ValueError("adp009d_approved_can_collider_path_invalid")
+    scope_name, collider_name = collider_parts
+    return f'''#usda 1.0
+(
+    defaultPrim = "{APPROVED_CAN_DEFAULT_PRIM}"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "{APPROVED_CAN_DEFAULT_PRIM}" (
+    prepend references = @approved_can.usda@</{APPROVED_CAN_DEFAULT_PRIM}>
+)
+{{
+    over "{scope_name}"
+    {{
+        over "{collider_name}"
+        {{
+            uniform token physics:approximation = None
+        }}
+    }}
+}}
+'''
+
+
 def _copy_bound_asset(source: Path, destination: Path, expected_digest: str) -> dict[str, Any]:
     if not source.is_file():
         raise ValueError(f"adp009d_bound_asset_missing:{destination.name}")
@@ -764,6 +794,7 @@ def build_native_microcheck_bundle(
     sage_collision_path: str | Path,
     harness_manifest_path: str | Path,
     implementation_commit: str,
+    physics_backend: str = DEFAULT_PHYSICS_BACKEND,
     policy_candidate_id: str | None = None,
     run_controls: bool = False,
     scenario_instance_path: str | Path | None = None,
@@ -786,6 +817,13 @@ def build_native_microcheck_bundle(
 
     if len(implementation_commit) != 40 or any(ch not in "0123456789abcdef" for ch in implementation_commit):
         raise ValueError("adp009d_implementation_commit_invalid")
+    backend = normalize_physics_backend(physics_backend)
+    if backend == "newton":
+        if policy_candidate_id:
+            raise ValueError("adp009d_newton_policy_candidate_forbidden")
+        if not run_controls:
+            raise ValueError("adp009d_newton_controls_required")
+    backend_profile = build_backend_profile(backend)
     job = Path(job_dir).expanduser().resolve()
     if job.exists():
         shutil.rmtree(job)
@@ -851,23 +889,53 @@ def build_native_microcheck_bundle(
             },
         ]
     )
-    can_adapter_path = assets / APPROVED_CAN_ADAPTER_FILENAME
-    can_adapter_path.write_text(_approved_can_physx_sdf_adapter_text(), encoding="utf-8")
-    asset_rows.append(
-        {
-            "filename": can_adapter_path.name,
-            "sha256": _sha256(can_adapter_path),
-            "size_bytes": can_adapter_path.stat().st_size,
-            "composition_only": True,
-            "sealed_source_mutated": False,
-            "source_asset": "approved_can.usda",
-            "collider_prim": (
-                f"/{APPROVED_CAN_DEFAULT_PRIM}/{APPROVED_CAN_COLLIDER_PATH}"
-            ),
-            "required_applied_schema": "PhysxSDFMeshCollisionAPI",
-            "required_approximation": "sdf",
-        }
-    )
+    if backend == "physx":
+        can_adapter_path = assets / APPROVED_CAN_ADAPTER_FILENAME
+        can_adapter_path.write_text(_approved_can_physx_sdf_adapter_text(), encoding="utf-8")
+        asset_rows.append(
+            {
+                "filename": can_adapter_path.name,
+                "sha256": _sha256(can_adapter_path),
+                "size_bytes": can_adapter_path.stat().st_size,
+                "composition_only": True,
+                "sealed_source_mutated": False,
+                "source_asset": "approved_can.usda",
+                "collider_prim": (
+                    f"/{APPROVED_CAN_DEFAULT_PRIM}/{APPROVED_CAN_COLLIDER_PATH}"
+                ),
+                "required_applied_schema": "PhysxSDFMeshCollisionAPI",
+                "required_approximation": "sdf",
+            }
+        )
+    else:
+        newton_adapter_path = assets / APPROVED_CAN_NEWTON_ADAPTER_FILENAME
+        newton_adapter_path.write_text(
+            _approved_can_newton_adapter_text(), encoding="utf-8"
+        )
+        asset_rows.append(
+            {
+                "filename": newton_adapter_path.name,
+                "sha256": _sha256(newton_adapter_path),
+                "size_bytes": newton_adapter_path.stat().st_size,
+                "composition_only": True,
+                "sealed_source_mutated": False,
+                "source_asset": "approved_can.usda",
+                "blocked_source_field": "physics:approximation=sdf",
+                "newton_import_semantics": "generic_triangle_mesh",
+                "physx_schema_authored": False,
+            }
+        )
+        approved_can_row = next(
+            row for row in asset_rows if row["filename"] == "approved_can.usda"
+        )
+        approved_can_row.update(
+            {
+                "backend_role": "newton_generic_usd_import_source",
+                "physx_sdf_overlay_loaded": False,
+                "source_asset_mutated": False,
+                "runtime_conversion_receipt_required": True,
+            }
+        )
 
     source_dir = Path(__file__).resolve().parent
     worker_path = (
@@ -1008,7 +1076,9 @@ def build_native_microcheck_bundle(
         if not instance_source.is_file():
             raise ValueError("adp009d_control_scenario_instance_missing")
         scenario_instance = json.loads(instance_source.read_text(encoding="utf-8"))
-        control_plan = materialize_control_plan(scenario_instance)
+        control_plan = materialize_control_plan(
+            scenario_instance, physics_backend=backend
+        )
         shutil.copy2(instance_source, runtime / "adp009d_scenario_instance.v1.json")
         (runtime / "adp009d_control_plan.v5.json").write_text(
             json.dumps(control_plan, indent=2, sort_keys=True) + "\n",
@@ -1060,6 +1130,11 @@ def build_native_microcheck_bundle(
         "status": "ready",
         "program_id": "arm-decision-proof-v1",
         "probe_kind": PROBE_KIND,
+        "physics_backend": backend,
+        "physics_backend_profile": backend_profile,
+        "physics_backend_profile_digest": backend_profile["profile_digest"],
+        "backend_selected_at_simulation_construction": True,
+        "mid_run_backend_switch_allowed": False,
         "implementation_commit": implementation_commit,
         "container_image": DEFAULT_IMAGE,
         "official_sources": {
@@ -1090,6 +1165,9 @@ def build_native_microcheck_bundle(
             control_plan["instance_digest"] if run_controls else None
         ),
         "control_plan_digest": control_plan["plan_digest"] if run_controls else None,
+        "control_plan_semantic_digest": (
+            control_plan["semantic_plan_digest"] if run_controls else None
+        ),
         "camera_resolution_binding": camera_resolution or None,
         "media_toolchain_required": ["ffmpeg", "ffprobe"],
         "media_toolchain_preflight_before_simulator": True,
@@ -1129,6 +1207,7 @@ def build_native_microcheck_bundle_isolated(
     sage_collision_path: str | Path,
     harness_manifest_path: str | Path,
     implementation_commit: str,
+    physics_backend: str = DEFAULT_PHYSICS_BACKEND,
     policy_candidate_id: str | None = None,
     run_controls: bool = False,
     scenario_instance_path: str | Path | None = None,
@@ -1154,6 +1233,8 @@ def build_native_microcheck_bundle_isolated(
         str(Path(harness_manifest_path).expanduser().resolve()),
         "--implementation-commit",
         implementation_commit,
+        "--physics-backend",
+        normalize_physics_backend(physics_backend),
     ]
     if policy_candidate_id is not None:
         command.extend(("--policy-candidate-id", policy_candidate_id))
@@ -1216,6 +1297,9 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sage-collision-path", required=True)
     parser.add_argument("--harness-manifest-path", required=True)
     parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument(
+        "--physics-backend", choices=("physx", "newton"), default=DEFAULT_PHYSICS_BACKEND
+    )
     parser.add_argument("--policy-candidate-id", default=None)
     parser.add_argument("--run-controls", action="store_true")
     parser.add_argument("--scenario-instance-path", default=None)
@@ -1234,6 +1318,7 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
         sage_collision_path=args.sage_collision_path,
         harness_manifest_path=args.harness_manifest_path,
         implementation_commit=args.implementation_commit,
+        physics_backend=args.physics_backend,
         policy_candidate_id=args.policy_candidate_id,
         run_controls=args.run_controls,
         scenario_instance_path=args.scenario_instance_path,
@@ -1246,6 +1331,7 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "APPROVED_CAN_ADAPTER_FILENAME",
+    "APPROVED_CAN_NEWTON_ADAPTER_FILENAME",
     "DEFAULT_IMAGE",
     "PROBE_KIND",
     "build_native_microcheck_bundle",

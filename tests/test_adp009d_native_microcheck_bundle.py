@@ -24,6 +24,17 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     build_native_microcheck_bundle,
     build_native_microcheck_bundle_isolated,
 )
+from blueprint_pipeline.adp009d_physics_backend_comparison import (
+    DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+    DROID_FRANKA_ROBOTIQ_USD_URI,
+    FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
+    FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
+    FRANKA_SOURCE_MESH_SCALE,
+    ROBOTIQ_BODY_MASSES_KG,
+    build_backend_profile,
+    build_newton_actuator_limit_mapping_contract,
+    build_newton_robot_inertial_overlay_contract,
+)
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.vast_provider_adapter import (
@@ -450,7 +461,10 @@ def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
 def test_runtime_preflights_exact_arena_environment_import_closure() -> None:
     source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
 
-    assert "def _preflight_environment_imports() -> dict[str, str]:" in source
+    assert (
+        'def _preflight_environment_imports(physics_backend: str = "physx")'
+        in source
+    )
     assert '_phase("runtime_import_preflight")' in source
     assert "from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder" in source
     assert '"hydra-core"' in source
@@ -497,6 +511,50 @@ def test_runtime_binds_and_verifies_canonical_reset_pose() -> None:
     assert "_assert_canonical_object_stability(" in source
     assert '"canonical_hold_object_stability": object_stability' in source
     assert "approved_can_support_loss_after_zero_action" not in source
+
+
+def test_runtime_maps_newton_legacy_actuator_limits_to_active_sim_fields() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+    mapping = build_newton_actuator_limit_mapping_contract()
+
+    assert "_configure_newton_actuator_limit_mapping(" in source
+    assert "actuator.effort_limit_sim = values[\"effort_limit_sim\"]" in source
+    assert "actuator.velocity_limit_sim = values[\"velocity_limit_sim\"]" in source
+    assert "actuator.effort_limit = None" in source
+    assert "actuator.velocity_limit = None" in source
+    assert mapping["actuators"]["panda_shoulder"]["effort_limit_sim"] == 87.0
+
+
+def test_runtime_applies_newton_actuator_mapping_without_retuning() -> None:
+    class FakeActuator:
+        def __init__(self, *, effort: float | None, velocity: float | None) -> None:
+            self.effort_limit = effort
+            self.velocity_limit = velocity
+            self.effort_limit_sim = None
+            self.velocity_limit_sim = None
+
+    class FakeEmbodiment:
+        def __init__(self) -> None:
+            self.scene_config = type("Scene", (), {})()
+            self.scene_config.robot = type("Robot", (), {})()
+            self.scene_config.robot.actuators = {
+                "panda_shoulder": FakeActuator(effort=87.0, velocity=2.175),
+                "panda_forearm": FakeActuator(effort=12.0, velocity=2.61),
+                "gripper": FakeActuator(effort=None, velocity=1.0),
+            }
+
+    embodiment = FakeEmbodiment()
+    receipt = isaac_runtime._configure_newton_actuator_limit_mapping(
+        embodiment,
+        backend_profile=build_backend_profile("newton"),
+    )
+
+    assert receipt["status"] == "applied_and_verified"
+    assert receipt["legacy_fields_cleared"] is True
+    assert embodiment.scene_config.robot.actuators["panda_shoulder"].effort_limit is None
+    assert embodiment.scene_config.robot.actuators["panda_shoulder"].effort_limit_sim == 87.0
+    assert embodiment.scene_config.robot.actuators["panda_forearm"].velocity_limit is None
+    assert embodiment.scene_config.robot.actuators["panda_forearm"].velocity_limit_sim == 2.61
 
 
 def test_canonical_reset_uses_official_arena_droid_safe_pose() -> None:
@@ -642,6 +700,22 @@ def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> No
     assert '"foreground_semantic_pixel_fraction"' in source
 
 
+def test_runtime_keeps_physx_readback_and_constructs_newton_separately() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    assert 'if args.physics_backend == "physx":' in source
+    assert "from isaaclab_physx.physics import PhysxCfg" in source
+    assert "from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg" in source
+    assert "nconmax=1024" in source
+    assert 'integrator="implicitfast"' in source
+    assert 'save_to_mjcf=str(' in source
+    assert "approved_can_newton_source_contains_physx_schema" in source
+    assert "adp009d_newton_unsupported_physx_setting_observed" in source
+    assert "adp009d_backend_native_capability_probe_failed" in source
+    assert "validate_backend_probe(" in source
+    assert '"physics_backend_probe": backend_probe' in source
+
+
 def test_overview_camera_is_task_centered_and_fails_closed_when_object_is_absent() -> None:
     """The stock second Arena view faced backward and showed no task pixels."""
 
@@ -709,6 +783,24 @@ def test_worker_uses_smallest_pinned_official_arena_physx_install_closure(tmp_pa
     assert "source/isaaclab*/" not in flattened
     assert "apt-get" not in flattened
     worker._validate_install_commands(commands)
+
+
+def test_worker_newton_install_is_exact_and_does_not_select_physx(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    commands = worker._install_commands(tmp_path / "arena", physics_backend="newton")
+    flattened = "\n".join(" ".join(command) for command in commands)
+
+    assert (
+        "isaaclab.sh -i assets,newton[all],ov,rl[rsl-rl],tasks,teleop"
+        in flattened
+    )
+    assert "assets,newton,ov" not in flattened
+    assert "isaaclab_physx" not in flattened
+    assert "isaaclab_newton" in flattened
+    worker._validate_install_commands(commands, physics_backend="newton")
 
 
 def test_worker_rejects_expanded_install_profile() -> None:
@@ -937,6 +1029,130 @@ def test_allocator_refuses_an_ambiguous_paid_microcheck_without_an_execution_mod
     result = json.loads((tmp_path / "adapter.json").read_text())
     assert result["provider_mutations_performed"] == 0
     assert "adp009d_execution_mode_missing" in result["blockers"]
+
+
+def test_allocator_validates_newton_dry_run_without_provider_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+
+    def fake_build(**kwargs):
+        observed["build"] = kwargs
+        return {
+            "status": "ready",
+            "bundle_sha256": "sha256:" + "b" * 64,
+            "input_digest": "sha256:" + "c" * 64,
+            "control_plan_semantic_digest": "sha256:" + "d" * 64,
+        }
+
+    def fake_run(**kwargs):
+        observed["run"] = kwargs
+        return {"status": "dry_run_ready", "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(allocator, "build_native_microcheck_bundle", fake_build)
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+
+    args = _allocator_args(tmp_path, execute=False) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+    ]
+    assert allocator.main(args) == 0
+    assert observed["build"]["physics_backend"] == "newton"
+    assert observed["run"]["execute"] is False
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["allocation_binding"]["physics_backend"] == "newton"
+
+
+def test_allocator_blocks_newton_mutation_before_specific_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    args = _allocator_args(tmp_path, execute=True) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+    ]
+
+    assert allocator.main(args) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["provider_mutations_performed"] == 0
+    assert "adp009d_newton_canary_admission_missing" in result["blockers"]
+
+
+def test_allocator_binds_newton_admission_to_exact_concurrent_instance_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_newton_canary_admission",
+        lambda *_args, **_kwargs: [],
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    admission_path = tmp_path / "newton-admission.json"
+    admission_path.write_text(
+        json.dumps(
+            {
+                "max_spend_usd": 4.0,
+                "hard_ttl_seconds": 14_400,
+                "allowed_active_vast_instance_ids": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _allocator_args(tmp_path, execute=True) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-newton-canary-admission",
+        str(admission_path),
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+        "--adp-allowed-active-vast-instance-id",
+        "47482504",
+    ]
+
+    assert allocator.main(args) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert (
+        "adp009d_newton_canary_admission_concurrency_binding_invalid"
+        in result["blockers"]
+    )
 
 
 def test_paid_host_exit_before_control_receipt_is_avoidlisted_not_scored() -> None:

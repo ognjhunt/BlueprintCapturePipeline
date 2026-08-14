@@ -4976,6 +4976,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             control_blockers, control_identity = _control_plane_checkout_blockers()
             blockers = [*missing, *control_blockers]
+            physics_backend_profile = build_backend_profile(
+                args.adp009d_physics_backend
+            )
             if args.adp009d_controls and not args.adp009d_scenario_instance:
                 blockers.append("adp009d_control_scenario_instance_missing")
             selected_candidates = {
@@ -5064,6 +5067,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "input_digest": (prepared_bundle.get("input_digest") if prepared_bundle else None),
                 "candidate_policy_queried": False,
+                "physics_backend": args.adp009d_physics_backend,
+                "physics_backend_profile_digest": physics_backend_profile[
+                    "profile_digest"
+                ],
                 "controls_requested": bool(args.adp009d_controls),
                 "diagnostic_only_requested": bool(args.adp009d_diagnostic_only),
                 "articulated_native_diagnostic_requested": articulated_native_requested,
@@ -5080,6 +5087,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 "control_plan_digest": (
                     prepared_bundle.get("control_plan_digest") if prepared_bundle else None
+                ),
+                "control_plan_semantic_digest": (
+                    prepared_bundle.get("control_plan_semantic_digest")
+                    if prepared_bundle
+                    else None
                 ),
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
                 "hard_cap_usd": args.adp_max_spend_usd,
@@ -5138,7 +5150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 except PaidResourceAdmissionBlocked as exc:
                     result = {
                         "status": "blocked",
-                        "blockers": exc.blockers,
+                        "blockers": sorted(set([*blockers, *exc.blockers])),
                         "provider_mutations_performed": 0,
                     }
                     write_json(Path(args.adapter_output), result)

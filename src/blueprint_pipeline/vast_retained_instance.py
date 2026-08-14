@@ -194,6 +194,7 @@ def bind_all_in_cost(
     instance_id: int,
     disk_gb: int,
     max_live_minutes: int,
+    max_hourly_rate: float,
     hard_cap_usd: float,
     max_hourly_rate_usd: float | None = None,
 ) -> dict[str, Any]:
@@ -224,7 +225,12 @@ def bind_all_in_cost(
         "disk_gb": disk_gb,
         "compute_hourly_rate_usd": compute_rate,
         "storage_hourly_rate_usd": storage_rate,
-        "all_in_hourly_rate_usd": selected_offer["hourly_rate_usd"],
+        "all_in_hourly_rate_observed": all_in_rate_observed,
+        "all_in_hourly_rate_usd": all_in_rate,
+        "max_hourly_rate_usd": max_hourly_rate,
+        "all_in_hourly_rate_under_max": (
+            all_in_rate_observed and all_in_rate <= max_hourly_rate
+        ),
         "max_live_minutes": max_live_minutes,
         "projected_all_in_cost_usd": projected_cost,
         "hard_cap_usd": hard_cap_usd,

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
+from .adp009d_physics_backend_comparison import build_backend_profile
 
 
 SCHEMA_VERSION = "adp009d_franka_runtime_bundle.v1"
@@ -58,6 +59,12 @@ def validate_runtime_bundle_manifest(value: Mapping[str, Any]) -> list[str]:
         blockers.append("runtime_bundle_id_invalid")
     if value.get("status") != "admitted_development_only":
         blockers.append("runtime_bundle_status_invalid")
+    if (
+        value.get("physics_backend") != "physx"
+        or value.get("physics_backend_profile_digest")
+        != build_backend_profile("physx")["profile_digest"]
+    ):
+        blockers.append("runtime_bundle_physics_backend_invalid")
     if source_row != {
         "bundle_id": SOURCE_BUNDLE_ID,
         "bundle_digest": SOURCE_BUNDLE_DIGEST,
@@ -91,6 +98,13 @@ def validate_runtime_bundle_manifest(value: Mapping[str, Any]) -> list[str]:
     )
     if appearance.get("visual_only") is not True or appearance.get("collision_authority") is not False:
         blockers.append("runtime_bundle_appearance_authority_invalid")
+    execution = value.get("execution_bindings")
+    execution_row = dict(execution) if isinstance(execution, Mapping) else {}
+    if (
+        execution_row.get("physics_backend_immutable_per_run") is not True
+        or execution_row.get("mid_run_backend_switch_allowed") is not False
+    ):
+        blockers.append("runtime_bundle_backend_immutability_invalid")
     expected_digest = canonical_digest(value, digest_field="runtime_bundle_digest")
     if value.get("runtime_bundle_digest") != expected_digest:
         blockers.append("runtime_bundle_digest_invalid")

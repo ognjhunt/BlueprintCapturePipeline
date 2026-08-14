@@ -4,6 +4,7 @@ import json
 import os
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -260,9 +261,23 @@ def test_live_transport_emits_allocator_artifact_manifest(
             (staging / name).write_text("https://example.invalid/object\n")
         return {"status": "completed"}
 
-    def fake_adapter(*, job_dir, **_kwargs):
+    observed_adapter: dict = {}
+    watchdog_events: list[str] = []
+    watchdog_handle = SimpleNamespace(
+        pod_name_prefix="blueprint-adp009d-watchdog-",
+        started_instance_id_path=tmp_path / "started_vast_instance_id.txt",
+    )
+
+    def fake_arm(**kwargs):
+        watchdog_events.append("armed")
+        assert kwargs["pod_name_prefix_base"] == "blueprint-adp-arena-"
+        return {"status": "armed", "blockers": []}, watchdog_handle
+
+    def fake_adapter(*, job_dir, **kwargs):
+        watchdog_events.append("adapter")
+        observed_adapter.update(kwargs)
         provider = Path(job_dir)
-        provider.mkdir(parents=True)
+        provider.mkdir(parents=True, exist_ok=True)
         write_json(provider / "vast_provider_adapter_result.json", {"status": "completed"})
         write_json(
             provider / "vast_teardown_manifest.json",
@@ -280,13 +295,33 @@ def test_live_transport_emits_allocator_artifact_manifest(
                 ),
             )
             archive.writestr("lossless_frames/frame_000001.png", b"lossless")
-        return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.1}
+        return {
+            "status": "completed",
+            "blockers": [],
+            "estimated_cost_usd": 0.1,
+            "vast_instance_ids": [123],
+            "continuing_spend_from_this_run": False,
+            "provider_create_attempted": True,
+        }
+
+    def fake_close(**kwargs):
+        watchdog_events.append("closed")
+        assert kwargs["instance_ids"] == [123]
+        assert kwargs["provider_teardown_completed"] is True
+        return {"status": "provider_terminal"}
 
     monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", fake_stage)
     monkeypatch.setattr(
         arena, "cleanup_staged_wam_provider_objects", lambda _path: {"all_objects_absent": True}
     )
     monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        arena,
+        "require_pre_spend_preflight",
+        lambda **_kwargs: {"status": "PASS", "blockers": []},
+    )
+    monkeypatch.setattr(arena, "arm_independent_vast_watchdog", fake_arm)
+    monkeypatch.setattr(arena, "close_independent_vast_watchdog", fake_close)
     monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
 
     result = arena.run_arena_native_control_vast(
@@ -300,6 +335,13 @@ def test_live_transport_emits_allocator_artifact_manifest(
     )
 
     assert result["status"] == "completed"
+    assert watchdog_events == ["armed", "adapter", "closed"]
+    assert observed_adapter["instance_label_prefix"] == watchdog_handle.pod_name_prefix
+    assert (
+        observed_adapter["started_instance_id_path"]
+        == watchdog_handle.started_instance_id_path
+    )
+    assert observed_adapter["retention_watchdog_handoff"]["status"] == "armed"
     manifest_path = Path(result["artifact_manifest_path"])
     manifest = json.loads(manifest_path.read_text())
     assert manifest["status"] == "completed"
@@ -312,6 +354,122 @@ def test_live_transport_emits_allocator_artifact_manifest(
     assert "immutable_execution/lossless_frames/frame_000001.png" in {
         row["relative_path"] for row in manifest["files"]
     }
+
+
+def test_live_transport_blocks_before_storage_or_compute_when_watchdog_is_not_armed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    prepared_bundle = {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": arena._file_sha256(bundle_path),
+    }
+    stage_called = False
+    adapter_called = False
+
+    def fake_stage(**_kwargs):
+        nonlocal stage_called
+        stage_called = True
+        return {"status": "completed"}
+
+    def fake_adapter(**_kwargs):
+        nonlocal adapter_called
+        adapter_called = True
+        return {"status": "completed"}
+
+    monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        arena,
+        "require_pre_spend_preflight",
+        lambda **_kwargs: {"status": "PASS", "blockers": []},
+    )
+    monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
+    monkeypatch.setattr(
+        arena,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: (
+            {
+                "status": "blocked",
+                "blockers": ["independent_vast_watchdog_not_armed"],
+            },
+            None,
+        ),
+    )
+
+    result = arena.run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=prepared_bundle,
+        hard_cap_usd=1.0,
+        hard_ttl_seconds=3600,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == ["independent_vast_watchdog_not_armed"]
+    assert stage_called is False
+    assert adapter_called is False
+
+
+def test_live_transport_blocks_before_watchdog_storage_or_compute_on_spend_lock_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    prepared_bundle = {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": arena._file_sha256(bundle_path),
+    }
+    calls: list[str] = []
+    failed_preflight = {
+        "status": "FAIL",
+        "blockers": ["spend_admission:spend_admission_lock_missing_or_symlink"],
+    }
+
+    def fail_pre_spend(**_kwargs):
+        raise arena.PreSpendPreflightBlocked(failed_preflight)
+
+    monkeypatch.setattr(arena, "require_pre_spend_preflight", fail_pre_spend)
+    monkeypatch.setattr(
+        arena,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: calls.append("watchdog"),
+    )
+    monkeypatch.setattr(
+        arena,
+        "stage_wam_provider_bundle_object_store",
+        lambda **_kwargs: calls.append("storage"),
+    )
+    monkeypatch.setattr(
+        arena,
+        "run_vast_provider_adapter",
+        lambda **_kwargs: calls.append("compute"),
+    )
+    monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
+
+    result = arena.run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=prepared_bundle,
+        hard_cap_usd=1.0,
+        hard_ttl_seconds=3600,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert calls == []
+    assert result["blockers"] == [
+        "adp_arena_pre_spend_preflight_not_passed",
+        "spend_admission:spend_admission_lock_missing_or_symlink",
+    ]
 
 
 def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:

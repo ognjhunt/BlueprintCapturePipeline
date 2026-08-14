@@ -56,6 +56,7 @@ def arm_independent_vast_watchdog(
     job_dir: Path,
     max_live_minutes: int,
     generated_at: str,
+    pod_name_prefix_base: str = "blueprint-groot-oscar-canary-vast-wam-",
     startup_wait_seconds: float = 10.0,
     allowed_active_instance_ids: Sequence[int] = (),
     pod_name_prefix: str = "blueprint-groot-oscar-canary-vast-wam-",

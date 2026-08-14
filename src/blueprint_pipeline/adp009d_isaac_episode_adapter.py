@@ -734,6 +734,7 @@ def describe_adapter() -> dict[str, Any]:
         "scripted_control_body_pose_resolution": (
             "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
         ),
+        "scripted_control_jacobian_frame": "world",
         "scripted_control_physx_jacobian_frame": "world",
         "scripted_control_controller_error_frame": "robot_root",
         "scripted_control_jacobian_frame_transform": (
