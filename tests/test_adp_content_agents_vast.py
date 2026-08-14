@@ -5,7 +5,9 @@ import importlib.util
 import inspect
 import io
 import json
+import os
 import subprocess
+import sys
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -1973,6 +1975,7 @@ def test_provider_runtime_pins_native_dependency_closure_before_agent_execution(
 
 
 def test_provider_runtime_emits_structured_progress_across_silent_paid_stages(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     runtime = (ROOT / "scripts/run_adp_content_agents_provider_runtime.sh").read_text()
@@ -1999,6 +2002,45 @@ def test_provider_runtime_emits_structured_progress_across_silent_paid_stages(
         assert f'_progress("{stage}")' in runner_source
     assert '_progress(f"{name}_agent_started")' in runner_source
     assert '_progress(f"{name}_agent_completed")' in runner_source
+
+    execution = runner._run(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(0.08); print('agent finished')",
+        ],
+        log_path=tmp_path / "physics-agent.log",
+        env=dict(os.environ),
+        timeout=1,
+        progress_interval_seconds=0.02,
+    )
+
+    progress = capsys.readouterr().out
+    assert "BLUEPRINT_ADP_CONTENT_AGENTS_PROGRESS:subprocess_running:physics-agent:" in progress
+    assert execution["returncode"] == 0
+    assert execution["timed_out"] is False
+    assert (tmp_path / "physics-agent.log").read_text() == "agent finished\n"
+
+
+def test_provider_runtime_stage_timeout_still_kills_silent_subprocess(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = _provider_runner_module()
+
+    execution = runner._run(
+        [sys.executable, "-c", "import time; time.sleep(1)"],
+        log_path=tmp_path / "physics-agent.log",
+        env=dict(os.environ),
+        timeout=0.08,
+        progress_interval_seconds=0.02,
+    )
+
+    assert "BLUEPRINT_ADP_CONTENT_AGENTS_PROGRESS:subprocess_running:physics-agent:" in (
+        capsys.readouterr().out
+    )
+    assert execution["returncode"] == 124
+    assert execution["timed_out"] is True
 
 
 def test_provider_runtime_uses_native_tls_before_uv_dependency_fetches() -> None:
@@ -2102,6 +2144,11 @@ def _passing_config_preflight(tmp_path: Path, bundle_receipt: dict) -> Path:
         "bundle_sha256": bundle_receipt["bundle_sha256"],
         "content_agents_source_commit": content_agents.SOURCE_COMMIT,
         "content_agents_source_tree": content_agents.SOURCE_TREE,
+        "orchestrator_runtime_bindings": (
+            bundle_preflight._bundle_orchestrator_runtime_bindings(
+                Path(bundle_receipt["bundle_path"])
+            )
+        ),
         "local_container_image": _admitted_image_record(),
         "model_access": _qualified_model_access(),
         "configs": bundle_preflight._bundle_config_records(
@@ -2215,6 +2262,10 @@ def _allocator_bundle(
     with zipfile.ZipFile(bundle, "w") as archive:
         for member in bundle_preflight.CONFIG_MEMBERS.values():
             archive.writestr(member, content)
+        for _name, (member, source_path) in (
+            bundle_preflight.ORCHESTRATOR_RUNTIME_MEMBERS.items()
+        ):
+            archive.writestr(member, source_path.read_bytes())
     receipt_value = {
         "status": "ready",
         "source_commit": content_agents.SOURCE_COMMIT,
@@ -2768,10 +2819,23 @@ def _executable_preflight_fixture(tmp_path: Path) -> tuple[Path, str]:
         archive.writestr(
             "provider_runtime/content_agents_source.zip", source_buffer.getvalue()
         )
-        archive.writestr("provider_runtime/adp_content_agents_provider_runner.py", "pass\n")
+        archive.writestr(
+            "provider_runtime/adp_content_agents_provider_runner.py",
+            (ROOT / "scripts/adp_content_agents_provider_runner.py").read_bytes(),
+        )
         archive.writestr(
             "provider_runtime/run_adp_content_agents_provider_runtime.sh",
-            "#!/bin/sh\n",
+            (ROOT / "scripts/run_adp_content_agents_provider_runtime.sh").read_bytes(),
+        )
+        archive.writestr(
+            "provider_runtime/provider_archive.py",
+            (ROOT / "src/blueprint_pipeline/provider_archive.py").read_bytes(),
+        )
+        archive.writestr(
+            "provider_runtime/content_agents_model_compatibility.py",
+            (
+                ROOT / "src/blueprint_pipeline/content_agents_model_compatibility.py"
+            ).read_bytes(),
         )
         archive.writestr("provider_runtime/input/reference.png", b"PNG")
         for member in bundle_preflight.CONFIG_MEMBERS.values():
@@ -2816,6 +2880,34 @@ def Xform "Asset"
         },
     )
     return bundle_receipt, secret
+
+
+@pytest.mark.parametrize("runtime_name", sorted(bundle_preflight.ORCHESTRATOR_RUNTIME_MEMBERS))
+def test_static_preflight_rejects_runtime_file_from_a_different_commit(
+    tmp_path: Path, runtime_name: str
+) -> None:
+    bundle_receipt, _secret = _executable_preflight_fixture(tmp_path)
+    receipt = json.loads(bundle_receipt.read_text(encoding="utf-8"))
+    bundle = Path(receipt["bundle_path"])
+    with zipfile.ZipFile(bundle) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    member, _source_path = bundle_preflight.ORCHESTRATOR_RUNTIME_MEMBERS[runtime_name]
+    members[member] = b"# stale runtime file from another commit\n"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for name, value in members.items():
+            archive.writestr(name, value)
+    receipt["bundle_sha256"] = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
+    write_json(bundle_receipt, receipt)
+
+    with pytest.raises(
+        bundle_preflight.ContentAgentsBundlePreflightError,
+        match=f"bundle_orchestrator_runtime_binding_invalid:{runtime_name}",
+    ):
+        bundle_preflight.materialize_static_bundle_config_preflight(
+            bundle_receipt_path=bundle_receipt,
+            evidence_dir=tmp_path / "stale-runner-preflight",
+            generated_at="fixed",
+        )
 
 
 def test_exact_bundle_preflight_executes_all_clis_and_never_records_secret(

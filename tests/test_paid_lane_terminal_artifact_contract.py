@@ -453,3 +453,99 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
         "these seal a root their terminal evidence is not under, so they report "
         f"a terminal status their artifacts do not support: {mismatched}"
     )
+
+
+#: Transports the allocator can dispatch to that do NOT seal terminal evidence.
+#: Every one is an open defect, not an exemption: a lane here rents a GPU, runs,
+#: tears down cleanly, and still reports `allocator_terminal_artifact_missing`.
+#: They are recorded so the set cannot grow silently while each is fixed on the
+#: paid execution path, which is a change no launch profile can make for it.
+#:
+#: `sam31_gpu_admission.py` is the urgent one -- `semantic-sam31-source-tracks`
+#: is website-reachable today, so this is reachable from the site right now.
+#: `openpi_policy_ranking_gpu_admission.py` is dual-purpose: it also serves the
+#: live `new-site-diagnostic-canary`, so "policy ranking is frozen" does not
+#: excuse it. Only the two `policy_ranking_*` entries are purely frozen.
+TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {
+    "nvidia_warehouse_native_camera_gpu_admission.py": "new-site-native-camera",
+    "openpi_policy_ranking_gpu_admission.py": "new-site-diagnostic-canary + frozen openpi",
+    "policy_ranking_cosmos_reasoner_gpu_admission.py": "frozen_program",
+    "policy_ranking_successor_gpu_admission.py": "frozen_program",
+    "reconstruction_gpu_admission.py": "reconstruction-worker-smoke",
+    "reconstruction_isaac_vast_operation.py": "reconstruction isaac operation",
+    "reconstruction_vast_operation.py": "reconstruction operation",
+    "sam31_gpu_admission.py": "semantic-sam31-source-tracks (WEBSITE-REACHABLE)",
+}
+
+
+def _allocator_transport_imports() -> set[str]:
+    """Every transport module the allocator itself imports, read from its source.
+
+    The list above is hand-written, which is exactly how an entire naming
+    family went unchecked: it enumerates `*_vast.py`, and six
+    `*_gpu_admission.py` transports -- including one that is website-reachable
+    today -- were never in it. A lane outside this contract rents a GPU, runs,
+    tears down cleanly, and still reports `allocator_terminal_artifact_missing`,
+    which is the failure that cost a paid run on 2026-08-13.
+
+    Rediscovering from the allocator's own imports means a new transport is
+    covered the moment the allocator can dispatch to it, whatever it is named.
+    """
+
+    source = (SOURCE_ROOT / "paid_resource_allocator.py").read_text(encoding="utf-8")
+    found = set()
+    for match in re.finditer(r"^from \.([a-z0-9_]+) import", source, re.MULTILINE):
+        module = match.group(1)
+        if module.endswith(("_vast", "_gpu_admission", "_allocator_lane", "_vast_operation")):
+            found.add(f"{module}.py")
+    assert found, "no transport imports discovered in the allocator"
+    return found
+
+
+def test_every_transport_the_allocator_imports_is_covered_by_this_contract() -> None:
+    classified = (
+        set(PAID_LANE_MODULES)
+        | set(DIRECT_BUILDER_MODULES)
+        | set(TRANSPORTS_MISSING_TERMINAL_EVIDENCE)
+    )
+    unclassified = sorted(_allocator_transport_imports() - classified)
+
+    assert not unclassified, (
+        "the allocator can dispatch to transports this contract never checks: "
+        f"{unclassified}. Add each to PAID_LANE_MODULES (so its terminal "
+        "evidence is verified), or to NON_PAID_ALLOCATOR_IMPORTS with why it "
+        "returns no admissible allocator result. A lane outside this contract "
+        "rents a GPU and then cannot report completed."
+    )
+
+
+def test_the_missing_terminal_evidence_set_only_ever_shrinks() -> None:
+    """A recorded defect must be a shrinking list, never a growing exemption."""
+
+    assert len(TRANSPORTS_MISSING_TERMINAL_EVIDENCE) <= 8, (
+        "a transport was added to TRANSPORTS_MISSING_TERMINAL_EVIDENCE rather "
+        "than sealing its terminal evidence. This list records lanes that "
+        "cannot report completed after paying for a GPU; it is not an "
+        "exemption to widen."
+    )
+
+
+def test_every_recorded_gap_still_lacks_the_evidence_it_claims_to_lack() -> None:
+    """Once a transport seals, its entry must go, or the ledger starts lying.
+
+    Checked by the emitted FIELD, never by grepping for the helper that usually
+    produces it -- a prior session grepped for `seal_lane_terminal_artifacts`,
+    concluded five lanes were broken, and was wrong.
+    """
+
+    for module in sorted(TRANSPORTS_MISSING_TERMINAL_EVIDENCE):
+        source = (SOURCE_ROOT / module).read_text(encoding="utf-8")
+        emits_both = (
+            '"artifact_manifest_path"' in source
+            and '"teardown_manifest_path"' in source
+        )
+        assert not emits_both, (
+            f"{module} now emits both terminal path fields; remove it from "
+            "TRANSPORTS_MISSING_TERMINAL_EVIDENCE and add it to "
+            "PAID_LANE_MODULES so it is verified rather than excused."
+        )
