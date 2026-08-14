@@ -81,7 +81,7 @@ def materialize_fresh_scene_artifixer_candidate_preparation(
         "artifixer3d_execution_started": False,
         "provider_mutations_performed": 0,
         "canonical_source_altered": False,
-        "next_required_stage": "semantic_teacher_receipts",
+        "next_required_stage": "semantic_teacher_edit_packet",
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")

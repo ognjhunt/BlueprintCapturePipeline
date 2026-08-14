@@ -96,10 +96,19 @@ provider-zero closure.
      upstream `fresh_scene_*_missing` blocker, not surface later as a generic
      ArtiFixer preflight failure. This tool performs no semantic editing,
      ArtiFixer execution, provider mutation, or canonical-source change.
-9. `semantic_teacher_receipts`
-   - Preferred editor: rights-admitted `gpt-image-2` full-frame empty-scene
-     candidates. A pinned local editor may be used when disclosure rights or
-     production credentials do not admit the hosted route.
+9. `semantic_teacher_edit_packet` and `semantic_teacher_receipts`
+   - Production supervisor tool:
+     `materialize_fresh_scene_semantic_teacher_edit_packet`.
+   - Select `backend_id` from the repository image-editor registry. The packet
+     binds the exact registry bytes, selected row, immutable model snapshot,
+     adapter capabilities, mask encoding, and human rights attestation. The
+     editor used by the successful Scene 840920 experiment is an observed
+     configuration, not a hard-coded production model.
+   - Hosted and bounded local-GPU editors use the same packet interface. Adding
+     a newer editor that satisfies an existing adapter contract is a reviewed
+     registry-row change; it does not require changing the packet materializer.
+   - Packet preparation performs no upload, inference, or spend. Execution
+     remains a separately authorized paid-allocator stage with zero retries.
    - Do not hard-paste generated pixels into a washer/laptop-shaped composite
      before ArtiFixer3D. Preserve the whole teacher image and separately retain
      the original anchor plus the excluded repair-region loss mask.
@@ -197,7 +206,7 @@ The required agent-facing tools are:
   and cannot alter canonical InteriorGS.
 - `materialize_fresh_scene_artifixer_candidate`: turn the reviewed shared
   cutout into the exact repair preflight and ArtiFixer candidate packet. It
-  stops at the explicit `semantic_teacher_receipts` blocker and cannot call an
+  stops at the explicit `semantic_teacher_edit_packet` blocker and cannot call an
   image editor or GPU provider.
 
 `fresh_scene_supervisor_bindings` is the production bridge. It accepts only a

@@ -191,7 +191,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "artifixer3d_execution_started": {"const": False},
             "provider_mutations_performed": {"const": 0},
             "canonical_source_altered": {"const": False},
-            "next_required_stage": {"const": "semantic_teacher_receipts"},
+            "next_required_stage": {"const": "semantic_teacher_edit_packet"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -3471,7 +3471,7 @@ def _bound_artifact(
                 or result.get("artifixer3d_execution_started") is not False
                 or result.get("provider_mutations_performed") != 0
                 or result.get("canonical_source_altered") is not False
-                or result.get("next_required_stage") != "semantic_teacher_receipts"
+                or result.get("next_required_stage") != "semantic_teacher_edit_packet"
             ):
                 raise ValueError("fresh_scene_artifixer_candidate_result_invalid")
             receipt_path = write_phase2_artifact(
@@ -3489,7 +3489,7 @@ def _bound_artifact(
                 "artifixer3d_execution_started": False,
                 "provider_mutations_performed": 0,
                 "canonical_source_altered": False,
-                "next_required_stage": "semantic_teacher_receipts",
+                "next_required_stage": "semantic_teacher_edit_packet",
                 "proof_state_changed": False,
             }, [
                 {

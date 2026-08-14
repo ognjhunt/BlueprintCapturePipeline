@@ -299,7 +299,7 @@ def test_agents_sdk_invokes_digest_bound_artifixer_candidate_builder(
             "artifixer3d_execution_started": False,
             "provider_mutations_performed": 0,
             "canonical_source_altered": False,
-            "next_required_stage": "semantic_teacher_receipts",
+            "next_required_stage": "semantic_teacher_edit_packet",
             "receipt_digest": "",
         }
         result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
@@ -328,7 +328,7 @@ def test_agents_sdk_invokes_digest_bound_artifixer_candidate_builder(
     assert observation["status"] == "completed"
     assert observation["typed_result"]["task_count"] == 2
     assert observation["typed_result"]["next_required_stage"] == (
-        "semantic_teacher_receipts"
+        "semantic_teacher_edit_packet"
     )
     assert observation["typed_result"]["semantic_teacher_execution_started"] is False
     assert observation["typed_result"]["artifixer3d_execution_started"] is False

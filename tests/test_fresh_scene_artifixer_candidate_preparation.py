@@ -26,7 +26,7 @@ def test_prepares_two_task_artifixer_inputs_without_model_execution(tmp_path: Pa
     )
 
     assert result["task_count"] == 2
-    assert result["next_required_stage"] == "semantic_teacher_receipts"
+    assert result["next_required_stage"] == "semantic_teacher_edit_packet"
     assert result["semantic_teacher_execution_started"] is False
     assert result["artifixer3d_execution_started"] is False
     assert result["provider_mutations_performed"] == 0

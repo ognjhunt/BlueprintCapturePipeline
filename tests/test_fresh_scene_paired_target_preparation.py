@@ -106,6 +106,37 @@ def test_fresh_scene_names_human_track_review_before_masks(tmp_path: Path) -> No
     assert result["next_required_stage"] == "sam31_track_selection_review"
 
 
+def test_fresh_scene_requires_registry_selected_edit_packet_before_paid_edit(
+    tmp_path: Path,
+) -> None:
+    task_paths = _tasks(tmp_path)
+    artifacts: dict[str, object] = {}
+    for contract in STAGE_CONTRACTS:
+        if contract["stage_id"] == "semantic_teacher_edit_packet":
+            break
+        if contract["cardinality"] == "per_task":
+            artifacts[contract["stage_id"]] = {
+                task_id: str(_artifact(tmp_path, contract, task_id))
+                for task_id in ("task_a", "task_b")
+            }
+        else:
+            artifacts[contract["stage_id"]] = str(
+                _artifact(tmp_path, contract, "shared")
+            )
+    result = materialize_fresh_scene_preparation_status(
+        task_freeze_paths=task_paths,
+        artifacts=artifacts,
+        output_path=tmp_path / "status.json",
+    )
+
+    assert result["first_blocker"] == "fresh_scene_semantic_teacher_edit_packet_missing"
+    assert result["next_required_stage"] == "semantic_teacher_edit_packet"
+    packet_stage = next(
+        row for row in result["stages"] if row["stage_id"] == "semantic_teacher_edit_packet"
+    )
+    assert packet_stage["backend"] == "registry-selected rights-admitted image editor"
+
+
 def test_complete_inventory_reaches_visual_review_without_claim_upgrade(tmp_path: Path) -> None:
     task_paths = _tasks(tmp_path)
     artifacts: dict[str, object] = {}
