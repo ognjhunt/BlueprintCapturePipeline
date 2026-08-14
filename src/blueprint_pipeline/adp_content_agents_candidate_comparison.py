@@ -398,7 +398,11 @@ def materialize_content_agents_candidate_comparison(
     comparison["receipt_digest"] = canonical_digest(
         comparison, digest_field="receipt_digest"
     )
-    write_json(output_path, comparison)
+    # The signature accepts `str | Path`, and `write_json` reaches for
+    # `.parent`. Every caller so far handed it a `Path` from a test, so the
+    # declared `str` half raised `AttributeError` the first time this was called
+    # from a command line -- which is the only way an operator ever calls it.
+    write_json(Path(output_path).expanduser(), comparison)
     return comparison
 
 

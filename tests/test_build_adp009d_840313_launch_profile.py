@@ -72,6 +72,8 @@ def test_builder_emits_exact_dry_profile_with_per_launch_outputs(
             "allocator_artifact_manifest_not_emitted",
         ],
     }
+    assert profile["physics_backend"] == "physx"
+    assert profile["physics_backend_profile_digest"].startswith("sha256:")
     allocator_text = json.dumps(profile["allocator"])
     assert LAUNCH_RUN_ROOT_PLACEHOLDER in allocator_text
     assert str(tmp_path / "release" / "allocator") not in allocator_text

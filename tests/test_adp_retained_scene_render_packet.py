@@ -80,22 +80,29 @@ def test_retained_scene_render_authority_environment_restores_retry_setting(
     assert os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] == "caller-retry"
 
 
+@pytest.mark.parametrize(
+    ("layer", "source_role"),
+    [
+        ("shared_deleted_source_layer", "shared_deleted_source_union"),
+        ("task_deleted_source_layer", "task_deleted_source_layer"),
+    ],
+)
 def test_output_relocation_rebinds_container_manifest_paths_to_verified_local_files(
-    tmp_path: Path,
+    tmp_path: Path, layer: str, source_role: str
 ) -> None:
     output = tmp_path / "immutable-extraction"
     manifest_path = (
         output
         / "renders"
         / "task_a"
-        / "task_a_shared_deleted_source_layer_black"
+        / f"task_a_{layer}_black"
         / "sealed_camera_render_manifest.v1.json"
     )
     manifest_path.parent.mkdir(parents=True)
     manifest: dict[str, object] = {
         "schema_version": "sealed_camera_render_manifest.v1",
         "status": "rendered_exact_cameras",
-        "source_layer_role": "shared_deleted_source_union",
+        "source_layer_role": source_role,
         "render_settings": {"background_rgb": "#000000"},
         "sealed_camera_render_manifest_digest": "",
     }
@@ -108,7 +115,7 @@ def test_output_relocation_rebinds_container_manifest_paths_to_verified_local_fi
         "render_manifests": [
             {
                 "task_id": "task_a",
-                "layer": "shared_deleted_source_layer",
+                "layer": layer,
                 "background_rgb": "#000000",
                 "manifest_path": "/workspace/provider/output/manifest.json",
                 "manifest_digest": manifest["sealed_camera_render_manifest_digest"],
@@ -252,7 +259,7 @@ def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
     )
     request = {
         "shared_deleted_source_layer": {**_relative_record(runtime, source), "gaussian_count": 1},
-        "shared_retained_scene": _relative_record(runtime, retained),
+        "shared_retained_scene": {**_relative_record(runtime, retained), "gaussian_count": 1},
         "shared_retained_gaussian_count": 1,
         "candidate_set": _relative_record(runtime, candidate),
         "execution_authority": _relative_record(runtime, authority),
@@ -264,9 +271,17 @@ def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(
                 "task_id": "task",
                 "camera_contract": _relative_record(runtime, camera),
                 "task_freeze": _relative_record(runtime, freeze),
+                "task_deleted_source_layer": {
+                    **_relative_record(runtime, source),
+                    "gaussian_count": 1,
+                },
+                "task_retained_scene": {
+                    **_relative_record(runtime, retained),
+                    "gaussian_count": 1,
+                },
                 "dimensions": {"width": 2, "height": 2},
                 "render_variants": [
-                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"}
+                    {"layer": "task_deleted_source_layer", "background_rgb": "#000000"}
                 ],
             }
         ],
@@ -361,7 +376,7 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
     )
     request = {
         "shared_deleted_source_layer": {**_relative_record(runtime, source), "gaussian_count": 1},
-        "shared_retained_scene": _relative_record(runtime, retained),
+        "shared_retained_scene": {**_relative_record(runtime, retained), "gaussian_count": 1},
         "shared_retained_gaussian_count": 1,
         "candidate_set": _relative_record(runtime, candidate),
         "execution_authority": _relative_record(runtime, authority),
@@ -373,9 +388,17 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
                 "task_id": "task",
                 "camera_contract": _relative_record(runtime, camera),
                 "task_freeze": _relative_record(runtime, freeze),
+                "task_deleted_source_layer": {
+                    **_relative_record(runtime, source),
+                    "gaussian_count": 1,
+                },
+                "task_retained_scene": {
+                    **_relative_record(runtime, retained),
+                    "gaussian_count": 1,
+                },
                 "dimensions": {"width": 2, "height": 2},
                 "render_variants": [
-                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"}
+                    {"layer": "task_deleted_source_layer", "background_rgb": "#000000"}
                 ],
             }
         ],
@@ -403,7 +426,7 @@ def test_retained_scene_render_runner_seals_rendered_frames_with_relative_paths(
     assert result["status"] == "completed"
     manifest_path = Path(result["render_manifests"][0]["manifest_path"])
     manifest = json.loads(manifest_path.read_text())
-    assert manifest["source_layer_role"] == "shared_deleted_source_union"
+    assert manifest["source_layer_role"] == "task_deleted_source_layer"
     assert manifest["splat_digest"] == _sha256(source)
     assert manifest["renders"] == [
         {

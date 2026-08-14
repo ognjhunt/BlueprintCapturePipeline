@@ -30,7 +30,27 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPO_ROOT / "scripts" / "retain_semantic_teacher_image_edit_receipts.py"
+SCRIPTS = REPO_ROOT / "scripts"
+
+#: The canonical closer. Two scripts once materialized these same three
+#: receipts: this one and `materialize_semantic_teacher_image_edit_closeout.py`,
+#: written in parallel on branches that could not see each other and merged an
+#: hour apart. Their flags were identical and their subcommands were not
+#: (`result` against `result-import`, `no-allocation-closeout` against
+#: `no-allocation`), so an operator closing a real paid attempt had two commands,
+#: no statement of which was canonical, and a working command that the other
+#: script's spelling would have refused.
+#:
+#: This one survives because its flag table is derived and checked against each
+#: materializer's own signature by the contract below; the other hand-listed its
+#: flags, which is how #523's first cut silently dropped four of six.
+SCRIPT = SCRIPTS / "retain_semantic_teacher_image_edit_receipts.py"
+
+MATERIALIZERS = (
+    "materialize_semantic_teacher_image_edit_result",
+    "materialize_semantic_teacher_no_allocation_closeout",
+    "materialize_semantic_teacher_provider_zero_receipt",
+)
 
 
 def _load():
@@ -54,6 +74,32 @@ def test_every_step_of_the_lane_is_exposed() -> None:
     """All three terminal receipts, or the lane is closeable only in part."""
 
     assert sorted(closer.STEPS) == sorted(STEP_NAMES)
+
+
+def test_exactly_one_script_closes_the_lane() -> None:
+    """The decision, pinned: one closer, so a receipt has one way to be sealed.
+
+    These are the terminal receipts of a paid GPU run. A second entry point onto
+    the same three functions is not a convenience -- it is a second interface
+    that drifts from this one, and the drift is only discovered by an operator
+    reconciling a provider bill. That is the defect
+    `tests/test_live_profile_builder_contract.py` and the shared flag-table
+    skeleton both exist to prevent, and it happened here.
+
+    A wrapper that delegates is welcome; it just has to call this script rather
+    than reach past it to the materializers.
+    """
+
+    callers = sorted(
+        path.name
+        for path in SCRIPTS.glob("*.py")
+        if any(name in path.read_text(encoding="utf-8") for name in MATERIALIZERS)
+    )
+
+    assert callers == [SCRIPT.name], (
+        "the semantic-teacher image-edit lane must have exactly one closer; "
+        f"{callers} each reach the terminal materializers directly"
+    )
 
 
 @pytest.mark.parametrize("step", STEP_NAMES)
@@ -107,6 +153,81 @@ def test_every_evidence_path_is_required(step: str) -> None:
     for keyword, param in entry.params.items():
         assert signature.parameters[keyword].default is inspect.Parameter.empty
         assert param.required, f"{step} {param.flag} is optional but upstream requires it"
+
+
+def test_a_sealed_receipt_reports_its_digest_to_the_operator(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one capability the removed second closer had, over real evidence.
+
+    That script printed the digest it had just sealed; this one printed none,
+    because the shared skeleton matched `receipt_digest` by name and these
+    receipts seal under `closeout_digest`. The digest is what an operator
+    records against a paid attempt, so closing a run should not require
+    reopening the file to find it.
+
+    Driven end to end rather than against a stub receipt: the value echoed has
+    to be the one actually written to disk.
+    """
+
+    from tests.test_semantic_teacher_image_edit_provider_lane import (
+        _authority,
+        _inventory,
+        _write_json,
+    )
+
+    from blueprint_pipeline.semantic_teacher_image_edit_paid_lane import (
+        prepare_semantic_teacher_image_edit_allocator_dry_run,
+    )
+
+    authority, authority_path, bundle, _receipt, receipt_path = _authority(tmp_path)
+    dry_run = tmp_path / "dry-run.json"
+    prepare_semantic_teacher_image_edit_allocator_dry_run(
+        authority_path=authority_path,
+        bundle_path=bundle,
+        bundle_receipt_path=receipt_path,
+        checkout_source_commit=authority["source_commit_sha"],
+        live_inventory=_inventory(),
+        output_path=dry_run,
+    )
+    zero = _inventory()
+    watchdog = tmp_path / "watchdog-closeout.json"
+    _write_json(
+        watchdog,
+        {
+            "schema_version": "vast_independent_watchdog_handoff.v1",
+            "status": "provider_terminal",
+            "watchdog_armed_before_allocation": True,
+            "provider_absence_confirmed": True,
+            "initial_inventory": zero,
+            "initial_global_inventory": zero,
+            "final_inventory": zero,
+            "final_global_inventory": zero,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        },
+    )
+    output = tmp_path / "no-allocation.json"
+
+    code = closer.main(
+        [
+            "no-allocation-closeout",
+            "--dry-run",
+            str(dry_run),
+            "--watchdog-closeout",
+            str(watchdog),
+            "--reason",
+            "capacity_not_admitted",
+            "--output",
+            str(output),
+        ]
+    )
+
+    summary = json.loads(capsys.readouterr().out)
+    sealed = json.loads(output.read_text(encoding="utf-8"))
+    assert code == 0
+    assert summary["closeout_digest"] == sealed["closeout_digest"]
+    assert summary["provider_mutation_performed"] is False
 
 
 def test_the_two_counts_are_parsed_as_integers() -> None:

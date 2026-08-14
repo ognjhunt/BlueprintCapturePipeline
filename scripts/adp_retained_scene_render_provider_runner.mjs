@@ -127,13 +127,18 @@ function gpuIdentity() {
   return { nvidia_smi_detected: true, gpu_rows: rows };
 }
 
-function renderOne({ request, lane, variant, deleted, retained, gpu }) {
+function renderOne({ request, lane, variant, gpu }) {
   const layer = variant.layer;
-  const deletedSourceLayer = layer === "shared_deleted_source_layer";
-  const splat = deletedSourceLayer ? deleted : retained;
-  const splatRecord = deletedSourceLayer
-    ? request.shared_deleted_source_layer
-    : request.shared_retained_scene;
+  const deletedSourceLayer = ["shared_deleted_source_layer", "task_deleted_source_layer"].includes(layer);
+  const splatRecords = {
+    shared_deleted_source_layer: request.shared_deleted_source_layer,
+    shared_retained_scene: request.shared_retained_scene,
+    task_deleted_source_layer: lane.task_deleted_source_layer,
+    task_retained_scene: lane.task_retained_scene,
+  };
+  const splatRecord = splatRecords[layer];
+  if (!splatRecord) throw new Error("retained_scene_render_runtime_layer_invalid");
+  const splat = checkedFile(runtime, splatRecord);
   const cameraPath = checkedFile(runtime, lane.camera_contract);
   const cameras = cameraSpecs(JSON.parse(fs.readFileSync(cameraPath, "utf8")));
   const dimensions = lane.dimensions || {};
@@ -208,8 +213,8 @@ function renderOne({ request, lane, variant, deleted, retained, gpu }) {
     rendered_by: "reference_spark_renderer_exact_camera",
     rendered_by_gpu: true,
     gpu_identity: gpu,
-    camera_set_label: `${lane.task_id}:shared_retained_scene_gpu:${label}`,
-    purpose: "ADP-009D exact retained-scene residual inpainting input",
+    camera_set_label: `${lane.task_id}:exact_gaussian_layer_gpu:${label}`,
+    purpose: "ADP-009D exact task-isolated or shared Gaussian layer render",
     authorization_class: "method_input",
     candidate_set_digest: request.candidate_set_digest,
     splat_digest: splatRecord.sha256,
@@ -218,9 +223,12 @@ function renderOne({ request, lane, variant, deleted, retained, gpu }) {
       retained_gaussian_count: splatRecord.gaussian_count,
       retained_count_source: "verified_standard_ply_header",
     },
-    source_layer_role: deletedSourceLayer
-      ? "shared_deleted_source_union"
-      : "shared_retained_scene",
+    source_layer_role: {
+      shared_deleted_source_layer: "shared_deleted_source_union",
+      shared_retained_scene: "shared_retained_scene",
+      task_deleted_source_layer: "task_deleted_source_layer",
+      task_retained_scene: "task_retained_scene",
+    }[layer],
     calibrated_camera_file: {
       digest: lane.camera_contract.sha256,
       binding: "caller_file_exact_match",
@@ -271,6 +279,18 @@ function main() {
     for (const lane of request.lanes || []) {
       checkedFile(runtime, lane.camera_contract);
       checkedFile(runtime, lane.task_freeze);
+      if (lane.task_deleted_source_layer) {
+        const taskDeleted = checkedFile(runtime, lane.task_deleted_source_layer);
+        if (standardPlyCount(taskDeleted) !== lane.task_deleted_source_layer.gaussian_count) {
+          throw new Error("retained_scene_render_runtime_ply_count_invalid");
+        }
+      }
+      if (lane.task_retained_scene) {
+        const taskRetained = checkedFile(runtime, lane.task_retained_scene);
+        if (standardPlyCount(taskRetained) !== lane.task_retained_scene.gaussian_count) {
+          throw new Error("retained_scene_render_runtime_ply_count_invalid");
+        }
+      }
     }
     if (rehearsal) {
       const result = {
@@ -291,7 +311,7 @@ function main() {
     const variants = [];
     for (const lane of request.lanes || []) {
       for (const variant of lane.render_variants || []) {
-        variants.push(renderOne({ request, lane, variant, deleted, retained, gpu }));
+        variants.push(renderOne({ request, lane, variant, gpu }));
       }
     }
     const result = {

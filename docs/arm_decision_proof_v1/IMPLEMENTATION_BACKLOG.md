@@ -306,6 +306,11 @@ remain proposal/cross-check aids.
 
 ### ADP-009D — Deterministic variation, abstention, and full rehearsal
 
+The production-safe controls-only physics comparison precursor is specified in
+[`ADP_009D_PHYSICS_BACKEND_COMPARISON.md`](ADP_009D_PHYSICS_BACKEND_COMPARISON.md).
+PhysX remains the website default; Newton remains experimental comparison
+evidence and requires a separate current paid-canary admission.
+
 Use the exact sealed AuraFusion360 InteriorGS `840313` appearance result,
 matching SAGE collision scene, approved match-v2 SimReady can, and a registered
 Franka with parallel-jaw gripper. Define one basic bounded pick-and-place task.

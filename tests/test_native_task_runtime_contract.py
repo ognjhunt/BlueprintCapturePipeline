@@ -20,6 +20,9 @@ from blueprint_pipeline.replacement_construction_bindings import (
     SOURCE_COLLIDER_DELETION_SCHEMA_VERSION,
     seal_replacement_construction_bindings,
 )
+from blueprint_pipeline.paired_target_native_construction_bindings import (
+    validate_paired_target_native_construction_bindings,
+)
 
 
 def _sha(character: str) -> str:
@@ -496,6 +499,79 @@ def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() ->
     )
 
 
+def test_runtime_accepts_paired_target_construction_binding_without_legacy_receipts() -> None:
+    articulated = _articulated_fixture()
+    rigid = _rigid_fixture()
+    rows = []
+    for task_id, asset_id, freeze, asset_sha in (
+        (articulated["task_id"], "articulated_a", _sha("3"), _sha("c")),
+        (rigid["task_id"], "rigid_b", _sha("8"), _sha("e")),
+    ):
+        registered_digest = _sha("7" if asset_id == "articulated_a" else "b")
+        probe_digest = _sha("6" if asset_id == "articulated_a" else "a")
+        rows.append(
+            {
+                "task_id": task_id,
+                "asset_id": asset_id,
+                "task_freeze_digest": freeze,
+                "registered_asset_receipt_digest": registered_digest,
+                "replacement_asset_sha256": asset_sha,
+                "native_import_probe_result_digest": probe_digest,
+                "native_simulator_import_qualified": True,
+                "evidence_receipts": {
+                    "task_freeze": _evidence_record(
+                        f"{asset_id}_freeze",
+                        freeze,
+                        "dual_task_task_freeze.v1",
+                    ),
+                    "registered_asset": _evidence_record(
+                        f"{asset_id}_registered",
+                        registered_digest,
+                        "registered_replacement_asset.v1",
+                    ),
+                    "registered_usd": {
+                        "path": f"/fixture/{asset_id}.usda",
+                        "size_bytes": 1,
+                        "sha256": asset_sha,
+                    },
+                    "native_import_probe": _evidence_record(
+                        f"{asset_id}_probe",
+                        probe_digest,
+                        "simready_replacement_native_import_probe_result.v1",
+                    ),
+                },
+            }
+        )
+    paired = {
+        "schema_version": "paired_target_native_construction_bindings.v1",
+        "status": "paired_targets_admitted_for_native_construction",
+        "scene_id": articulated["scene_id"],
+        "task_freeze_set_digest": _sha("2"),
+        "replacement_object_count": 2,
+        "bindings": sorted(rows, key=lambda row: row["asset_id"]),
+        "native_camera_readback_qualified": False,
+        "native_reachability_qualified": False,
+        "controls_executed": False,
+        "learned_policies_executed": False,
+        "construction_digest": "",
+    }
+    paired["construction_digest"] = canonical_digest(
+        paired, digest_field="construction_digest"
+    )
+    paired = validate_paired_target_native_construction_bindings(paired)
+    articulated["assets"] = _dual_replacement_assets()
+    articulated["task_spec"]["subject_asset_id"] = "articulated_a"
+    articulated["construction_bindings"] = paired
+    articulated["task_freeze_digest"] = _sha("3")
+
+    contract = materialize_native_task_runtime_contract(**articulated)
+
+    assert contract["task_subject_asset_id"] == "articulated_a"
+    assert contract["construction_bindings"]["schema_version"] == (
+        "paired_target_native_construction_bindings.v1"
+    )
+
+
 def _five_replacement_fixture() -> dict:
     fixture = _rigid_fixture()
     scene_assets = _dual_replacement_assets()[:2]
@@ -572,6 +648,27 @@ def test_runtime_preserves_five_copresent_replacements_and_one_subject() -> None
     assert set(contract["reset_contract"]["per_object_reset_states"]) == {
         f"replacement_{index}" for index in range(5)
     }
+
+
+def test_digest_bound_replacement_asset_id_may_begin_with_scene_number() -> None:
+    fixture = _five_replacement_fixture()
+    asset = next(
+        row
+        for row in fixture["assets"]
+        if row.get("asset_id") == "replacement_0"
+    )
+    asset["asset_id"] = "840920_replacement_0"
+    fixture["task_spec"]["subject_asset_id"] = asset["asset_id"]
+    fixture["construction_bindings"]["bindings"][0]["asset_id"] = asset["asset_id"]
+    fixture["construction_bindings"]["construction_digest"] = canonical_digest(
+        fixture["construction_bindings"], digest_field="construction_digest"
+    )
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    subject = next(row for row in contract["objects"] if row["task_subject"])
+    assert subject["asset_id"] == "840920_replacement_0"
+    assert subject["runtime_name"] == "task_object"
 
 
 def test_runtime_accepts_single_repeatable_replacement_with_construction_binding() -> None:

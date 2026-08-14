@@ -56,6 +56,7 @@ def arm_independent_vast_watchdog(
     job_dir: Path,
     max_live_minutes: int,
     generated_at: str,
+    pod_name_prefix_base: str = "blueprint-groot-oscar-canary-vast-wam-",
     startup_wait_seconds: float = 10.0,
     allowed_active_instance_ids: Sequence[int] = (),
     pod_name_prefix: str = "blueprint-groot-oscar-canary-vast-wam-",
@@ -68,6 +69,7 @@ def arm_independent_vast_watchdog(
     if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
         raise ValueError("independent_vast_watchdog_prefix_invalid")
     prefix = f"{prefix_base}{_safe_suffix(generated_at)}-"
+    prefix = f"{pod_name_prefix_base}{_safe_suffix(generated_at)}-"
     if int(max_live_minutes) < 2:
         blocked = {
             "schema_version": HANDOFF_SCHEMA,

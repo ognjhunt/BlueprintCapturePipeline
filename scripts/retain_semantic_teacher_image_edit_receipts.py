@@ -11,6 +11,17 @@ Same defect as #512 (lanes), #520 (bundle modules), #523 (authority
 materializers) and the ArtiFixer3D input chain, in a fifth scope. It is also
 what pushed `tests/test_materializer_reachability.py` from 73 to 76.
 
+This is the canonical closer, and the only one. A second script,
+`materialize_semantic_teacher_image_edit_closeout.py`, was written against these
+same three functions in parallel on a branch that could not see this one, and
+the two merged an hour apart carrying identical flags under different subcommand
+names. It was removed rather than kept as an alias: these are the terminal
+receipts of a paid GPU run, and a second interface onto them is one that drifts
+from this one, discovered by whoever is reconciling a provider bill.
+`tests/test_semantic_teacher_image_edit_lane_cli.py` holds the count at one. A
+wrapper that delegates here is fine; one that reaches past this table to the
+materializers is the thing that was removed.
+
 Which step closes a run depends on how far it got:
 
     allocation never became possible
