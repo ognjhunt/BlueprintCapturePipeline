@@ -2659,6 +2659,55 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
     assert "do-not-record" not in recorded_error
 
 
+def test_vast_launch_single_create_authority_never_walks_to_second_offer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A lane authorized for one allocation gets exactly one create request."""
+    import io
+    import urllib.error
+
+    create_paths: list[str] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        if method == "POST" and path == "/bundles/":
+            return 200, {"offers": ["raw"]}
+        create_paths.append(path)
+        raise urllib.error.HTTPError(
+            "https://vast/asks/stale/",
+            400,
+            "Bad Request",
+            None,
+            io.BytesIO(b'{"msg":"ask expired"}'),
+        )
+
+    offers = [
+        {"ask_contract_id": "ask-1", "gpu_name": "RTX", "hourly_rate_usd": 0.4},
+        {"ask_contract_id": "ask-2", "gpu_name": "RTX", "hourly_rate_usd": 0.5},
+    ]
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._offers_from_response",
+        lambda _response: offers,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._select_offer",
+        lambda rows, **_kwargs: rows[0] if rows else None,
+    )
+    request = _with_prelaunch_guard(
+        VastRenderProvider().build_request(_spec(), tmp_path)
+    )
+    request["maximum_create_attempts"] = 1
+
+    result = VastRenderProvider().launch(tmp_path, request)
+
+    assert result["status"] == "blocked"
+    assert create_paths == ["/asks/ask-1/"]
+    assert result["allocation_created"] is False
+
+
 @pytest.mark.parametrize("failure_kind", ["timeout", "http_500", "success_without_id"])
 def test_vast_ambiguous_create_never_tries_a_second_offer(
     monkeypatch, tmp_path: Path, failure_kind: str

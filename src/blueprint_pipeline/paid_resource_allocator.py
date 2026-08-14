@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .common import ensure_dir, write_json
+from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .groot_oscar_digitalocean_builder import (
     DETACHED_CPU_BUILD_SUPERVISOR_ENV,
@@ -112,7 +112,21 @@ from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
 from .sam31_gpu_admission import PROBE_KIND as SAM31_SOURCE_TRACKS_PROBE_KIND
 from .sam31_paid_resource_allocator_lane import run_sam31_paid_resource_allocator_lane
-from .gpu_render_providers import get_render_provider
+from .semantic_teacher_image_edit_paid_lane import (
+    DRY_RUN_SCHEMA_VERSION as SEMANTIC_TEACHER_DRY_RUN_SCHEMA_VERSION,
+    prepare_semantic_teacher_image_edit_allocator_dry_run,
+)
+from .semantic_teacher_image_edit_vast import (
+    NAME_PREFIX as SEMANTIC_TEACHER_NAME_PREFIX,
+    PROBE_KIND as SEMANTIC_TEACHER_IMAGE_EDIT_PROBE_KIND,
+    run_semantic_teacher_image_edit_vast,
+)
+from .gpu_render_providers import RenderLaunchSpec, get_render_provider
+from .vast_independent_watchdog_control import (
+    arm_independent_vast_watchdog,
+    close_independent_vast_watchdog,
+    close_independent_vast_watchdog_without_allocation,
+)
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
     run_single_episode,
@@ -619,6 +633,119 @@ def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, re
         value = getattr(args, attribute, None)
         if value:
             write_json(Path(value), result)
+
+
+def _semantic_teacher_blocked_result(
+    args: argparse.Namespace, blockers: Sequence[str]
+) -> dict[str, Any]:
+    result = {
+        "schema_version": "semantic_teacher_image_edit_allocator_result.v1",
+        "status": "blocked",
+        "blockers": sorted(set(str(item) for item in blockers if str(item))),
+        "allocation_count": 0,
+        "automatic_retry_count": 0,
+        "provider_mutations_performed": 0,
+        "continuing_spend_from_this_run": False,
+        "raw_secret_values_recorded": False,
+    }
+    for attribute in (
+        "semantic_teacher_dry_run_output",
+        "semantic_teacher_preflight_output",
+        "adapter_output",
+    ):
+        value = getattr(args, attribute, None)
+        if value:
+            path = Path(value).expanduser().resolve()
+            if not path.exists():
+                write_json(path, result)
+    return result
+
+
+def _semantic_teacher_dry_run_binding_valid(
+    path: str | Path,
+    *,
+    authority: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    checkout_commit: str,
+) -> bool:
+    try:
+        value = _load(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return bool(
+        value.get("schema_version") == SEMANTIC_TEACHER_DRY_RUN_SCHEMA_VERSION
+        and value.get("status") == "dry_run_ready"
+        and value.get("source_commit_sha") == checkout_commit
+        and value.get("authorization_digest") == authority.get("authorization_digest")
+        and value.get("bundle_sha256") == (receipt.get("bundle") or {}).get("sha256")
+        and value.get("bundle_size_bytes")
+        == (receipt.get("bundle") or {}).get("size_bytes")
+        and value.get("backend_entry_digest") == authority.get("backend_entry_digest")
+        and value.get("task_count") == authority.get("task_count")
+        and value.get("camera_count") == authority.get("camera_count")
+        and value.get("maximum_provider_allocations") == 1
+        and value.get("automatic_retry_count") == 0
+        and value.get("provider_inventory_api_zero") is True
+        and value.get("provider_mutations_performed") == 0
+        and value.get("dry_run_digest")
+        == canonical_digest(value, digest_field="dry_run_digest")
+    )
+
+
+def _semantic_teacher_capacity_preflight(
+    *,
+    provider: Any,
+    authority: Mapping[str, Any],
+    runtime_image_identity: str,
+    job_dir: Path,
+    watchdog: Mapping[str, Any],
+) -> dict[str, Any]:
+    spec = RenderLaunchSpec(
+        name=f"{SEMANTIC_TEACHER_NAME_PREFIX}capacity-preflight",
+        image=runtime_image_identity,
+        env={},
+        bootstrap_argv=["-lc", "exit 0"],
+        entrypoint=["bash"],
+        container_disk_gb=32,
+        volume_gb=0,
+        max_hourly_rate_usd=float(authority["maximum_hourly_rate_usd"]),
+        min_gpu_ram_mb=16_000,
+        requires_rtx=False,
+        vast_launch_mode="args",
+    )
+    request = provider.build_request(spec, job_dir)
+    capacity = provider.capacity_preflight(request)
+    selected = capacity.get("selected_offer")
+    selected = selected if isinstance(selected, Mapping) else {}
+    hourly = selected.get("hourly_rate_usd") or selected.get(
+        "on_demand_price_usd_per_hour"
+    )
+    memory_mb = selected.get("gpu_ram_mb") or selected.get("gpu_memory_mb")
+    if (
+        capacity.get("status") != "available"
+        or isinstance(hourly, bool)
+        or not isinstance(hourly, (int, float))
+        or float(hourly) <= 0
+        or float(hourly) > float(authority["maximum_hourly_rate_usd"])
+        or isinstance(memory_mb, bool)
+        or not isinstance(memory_mb, (int, float))
+        or int(memory_mb) < 16_000
+    ):
+        raise ValueError("semantic_teacher_live_capacity_preflight_blocked")
+    return {
+        "schema_version": "semantic_teacher_image_edit_live_preflight.v1",
+        "status": "ready",
+        "provider": "vast",
+        "watchdog": dict(watchdog),
+        "capacity": dict(capacity),
+        "gpu_memory_bytes": int(memory_mb) * 1_000_000,
+        "container_disk_bytes": 32 * 1024**3,
+        "on_demand_price_usd_per_hour": float(hourly),
+        "maximum_create_attempts": 1,
+        "automatic_retry_count": 0,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+    }
 
 
 def _configure_detached_supervisor_signal_policy(command: str) -> bool:
@@ -1176,6 +1303,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
             SAM31_SOURCE_TRACKS_PROBE_KIND,
+            SEMANTIC_TEACHER_IMAGE_EDIT_PROBE_KIND,
             ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
@@ -1276,6 +1404,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
     )
     gpu.add_argument("--sam31-hf-token-file")
+    gpu.add_argument("--semantic-teacher-bundle")
+    gpu.add_argument("--semantic-teacher-bundle-receipt")
+    gpu.add_argument("--semantic-teacher-attempt-authority")
+    gpu.add_argument("--semantic-teacher-token-file")
+    gpu.add_argument("--semantic-teacher-runtime-image-identity")
+    gpu.add_argument("--semantic-teacher-job-dir")
+    gpu.add_argument("--semantic-teacher-dry-run-output")
+    gpu.add_argument("--semantic-teacher-dry-run-receipt")
+    gpu.add_argument("--semantic-teacher-preflight-output")
     gpu.add_argument("--adp-public-reference-manifest")
     gpu.add_argument("--adp-arena-approval")
     gpu.add_argument("--adp009d-approved-can")
@@ -1673,6 +1810,145 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             write_json(output, result)
             success = result.get("status") == "completed"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == SEMANTIC_TEACHER_IMAGE_EDIT_PROBE_KIND:
+            checkout_blockers, checkout_commit = _source_checkout_blockers(
+                args.expected_source_commit or "",
+                allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
+            )
+            required = (
+                "semantic_teacher_bundle",
+                "semantic_teacher_bundle_receipt",
+                "semantic_teacher_attempt_authority",
+                "semantic_teacher_runtime_image_identity",
+                "semantic_teacher_job_dir",
+            )
+            missing = [name for name in required if not getattr(args, name, None)]
+            if not args.execute and not args.semantic_teacher_dry_run_output:
+                missing.append("semantic_teacher_dry_run_output")
+            if args.provider != "vast":
+                checkout_blockers.append("semantic_teacher_provider_must_be_vast")
+            if args.execute:
+                missing.extend(
+                    name
+                    for name in (
+                        "semantic_teacher_token_file",
+                        "semantic_teacher_dry_run_receipt",
+                        "semantic_teacher_preflight_output",
+                        "adapter_output",
+                    )
+                    if not getattr(args, name, None)
+                )
+            blockers = sorted(
+                set(
+                    [
+                        *checkout_blockers,
+                        *[f"{name}_missing" for name in missing],
+                    ]
+                )
+            )
+            if blockers:
+                result = _semantic_teacher_blocked_result(args, blockers)
+                print(json.dumps({"success": False}, sort_keys=True))
+                return 2
+            try:
+                authority = _load(args.semantic_teacher_attempt_authority)
+                bundle_receipt = _load(args.semantic_teacher_bundle_receipt)
+                provider = get_render_provider("vast")
+                if not args.execute:
+                    inventory = provider.billable_inventory(name_prefix="")
+                    result = prepare_semantic_teacher_image_edit_allocator_dry_run(
+                        authority_path=args.semantic_teacher_attempt_authority,
+                        bundle_path=args.semantic_teacher_bundle,
+                        bundle_receipt_path=args.semantic_teacher_bundle_receipt,
+                        checkout_source_commit=checkout_commit,
+                        live_inventory=inventory,
+                        output_path=args.semantic_teacher_dry_run_output,
+                    )
+                else:
+                    if not _semantic_teacher_dry_run_binding_valid(
+                        args.semantic_teacher_dry_run_receipt,
+                        authority=authority,
+                        receipt=bundle_receipt,
+                        checkout_commit=checkout_commit,
+                    ):
+                        raise ValueError("semantic_teacher_allocator_dry_run_not_bound")
+                    job_dir = Path(args.semantic_teacher_job_dir).expanduser().resolve()
+                    ensure_dir(job_dir)
+                    ttl = int(authority.get("hard_ttl_seconds") or 0)
+                    handoff, handle = arm_independent_vast_watchdog(
+                        job_dir=job_dir,
+                        max_live_minutes=max(2, (ttl + 59) // 60),
+                        generated_at=utc_now_iso(),
+                        allowed_active_instance_ids=[],
+                        pod_name_prefix=SEMANTIC_TEACHER_NAME_PREFIX,
+                    )
+                    if handle is None:
+                        raise ValueError("semantic_teacher_independent_watchdog_not_armed")
+                    try:
+                        preflight = _semantic_teacher_capacity_preflight(
+                            provider=provider,
+                            authority=authority,
+                            runtime_image_identity=(
+                                args.semantic_teacher_runtime_image_identity
+                            ),
+                            job_dir=job_dir,
+                            watchdog=handoff,
+                        )
+                    except (OSError, RuntimeError, ValueError):
+                        close_independent_vast_watchdog_without_allocation(
+                            job_dir=job_dir,
+                            handle=handle,
+                        )
+                        raise
+                    write_json(Path(args.semantic_teacher_preflight_output), preflight)
+                    admission = build_paid_lane_admission(
+                        resource_class="gpu_render", blockers=[]
+                    )
+                    write_json(job_dir / "semantic_teacher_paid_lane_admission.json", admission)
+                    grant = require_paid_resource_admission(
+                        admission,
+                        resource_class="gpu_render",
+                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                    )
+
+                    def close_watchdog(**kwargs: Any) -> Mapping[str, Any]:
+                        instance_ids = [
+                            int(value)
+                            for value in kwargs.get("instance_ids", [])
+                            if str(value).isdigit()
+                        ]
+                        return close_independent_vast_watchdog(
+                            job_dir=job_dir,
+                            handle=handle,
+                            instance_ids=instance_ids,
+                            provider_teardown_completed=bool(
+                                kwargs.get("provider_teardown_completed")
+                            ),
+                            provider_allocation_impossible=bool(
+                                kwargs.get("provider_allocation_impossible")
+                            ),
+                        )
+
+                    result = run_semantic_teacher_image_edit_vast(
+                        args,
+                        checkout_commit=checkout_commit,
+                        preflight=preflight,
+                        provider=provider,
+                        paid_resource_admission_grant=grant,
+                        watchdog_closer=close_watchdog,
+                    )
+                    write_json(Path(args.adapter_output), result)
+            except (OSError, RuntimeError, ValueError) as exc:
+                result = _semantic_teacher_blocked_result(
+                    args,
+                    [
+                        "semantic_teacher_allocator_failed",
+                        redacted_failure_detail(exc),
+                    ],
+                )
+            success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == SAM31_SOURCE_TRACKS_PROBE_KIND:

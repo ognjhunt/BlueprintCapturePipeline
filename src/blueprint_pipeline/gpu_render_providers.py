@@ -2130,11 +2130,24 @@ class VastRenderProvider(GpuRenderProvider):
         )
         create_payload = request.get("create_payload") or {}
         # Offers go stale between search and create (bundle staging can take minutes),
-        # and a stale ask 400s. Walk up to 3 candidate offers before giving up so one
-        # expired ask can't dud the whole provider in a race.
+        # and a stale ask 400s. Most lanes may walk up to 3 candidate offers. A
+        # single-allocation authority can bind ``maximum_create_attempts=1`` so a
+        # rejected create cannot silently become an automatic paid retry.
+        maximum_create_attempts = request.get("maximum_create_attempts", 3)
+        if (
+            isinstance(maximum_create_attempts, bool)
+            or not isinstance(maximum_create_attempts, int)
+            or not 1 <= maximum_create_attempts <= 3
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["vast_maximum_create_attempts_invalid"],
+                "allocation_created": False,
+                "spend_occurred": False,
+            }
         remaining = list(offers)
         last_blocker = "no_vast_offer_matching_rate_and_gpu_memory"
-        for _try in range(3):
+        for _try in range(maximum_create_attempts):
             offer = _select_offer(
                 remaining,
                 max_hourly_rate=max_rate,
@@ -2203,7 +2216,7 @@ class VastRenderProvider(GpuRenderProvider):
                     )
                     if iid:
                         break
-            attempts.append({"create_status": cs, "instance_id": iid,
+            attempts.append({"create_status": cs, "ask_id": ask_id, "instance_id": iid,
                              "gpu_name": offer.get("gpu_name"),
                              "has_avx": offer.get("has_avx"),
                              "hourly_rate_usd": offer.get("hourly_rate_usd")})
@@ -2213,7 +2226,12 @@ class VastRenderProvider(GpuRenderProvider):
                 )
                 return {"status": "launched", "instance_id": iid, "mode": "vast_on_demand",
                         "vast_launch_mode": launch_mode,
-                        "attempts": attempts, "started_id_record": started_id_record}
+                        "attempts": attempts,
+                        "create_attempt_count": sum(
+                            1 for attempt in attempts if "ask_id" in attempt
+                        ),
+                        "maximum_create_attempts": maximum_create_attempts,
+                        "started_id_record": started_id_record}
             if cs not in {400, 404, 409, 422}:
                 return {
                     "status": "blocked",
@@ -2226,6 +2244,10 @@ class VastRenderProvider(GpuRenderProvider):
             "status": "blocked",
             "blockers": [last_blocker],
             "attempts": attempts,
+            "create_attempt_count": sum(
+                1 for attempt in attempts if "ask_id" in attempt
+            ),
+            "maximum_create_attempts": maximum_create_attempts,
             "allocation_created": False,
         }
 
