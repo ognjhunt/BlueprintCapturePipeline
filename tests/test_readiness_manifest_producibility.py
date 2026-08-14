@@ -115,43 +115,48 @@ def _checked_in_manifests(schema: str) -> list[Path]:
     return matches
 
 
-@pytest.mark.parametrize("manifest_path", _checked_in_manifests(READINESS_SCHEMA))
-def test_a_checked_in_readiness_manifest_uses_only_its_producers_blockers(
-    manifest_path: Path,
-) -> None:
+def test_a_checked_in_readiness_manifest_uses_only_its_producers_blockers() -> None:
+    """Iterated rather than parametrized: an empty case set must not become a skip.
+
+    Parametrizing over "files declaring this schema" collects nothing once the
+    last such file is fixed, and pytest reports that as a SKIP. The CPU full
+    lane blocks on any skip, so a contract that had simply run out of work
+    turned the whole lane red. Looping keeps the check a real pass.
+    """
+
     producer = _producer_module(READINESS_SCHEMA)
     vocabulary = _emittable_blockers(producer)
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for manifest_path in _checked_in_manifests(READINESS_SCHEMA):
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    orphans = sorted(
-        blocker
-        for blocker in payload.get("blockers", [])
-        if isinstance(blocker, str) and blocker not in vocabulary
-    )
+        orphans = sorted(
+            blocker
+            for blocker in payload.get("blockers", [])
+            if isinstance(blocker, str) and blocker not in vocabulary
+        )
 
-    assert not orphans, (
-        f"{manifest_path.relative_to(REPO_ROOT)} declares {READINESS_SCHEMA} but "
-        f"carries blockers {producer.name} cannot emit: {orphans}. A blocker no "
-        "code produces is an assertion someone typed, not an observation."
-    )
+        assert not orphans, (
+            f"{manifest_path.relative_to(REPO_ROOT)} declares {READINESS_SCHEMA} "
+            f"but carries blockers {producer.name} cannot emit: {orphans}. A "
+            "blocker no code produces is an assertion someone typed."
+        )
 
 
-@pytest.mark.parametrize("manifest_path", _checked_in_manifests(READINESS_SCHEMA))
-def test_a_checked_in_readiness_manifest_reports_every_observation(
-    manifest_path: Path,
-) -> None:
+def test_a_checked_in_readiness_manifest_reports_every_observation() -> None:
     """A partial observation block reads as a full one and hides what was never checked."""
 
     producer = _producer_module(READINESS_SCHEMA)
     expected = _observation_keys(producer)
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    actual = set(payload.get("observations") or {})
+    for manifest_path in _checked_in_manifests(READINESS_SCHEMA):
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        actual = set(payload.get("observations") or {})
 
-    assert actual == expected, (
-        f"{manifest_path.relative_to(REPO_ROOT)} declares {READINESS_SCHEMA} but its "
-        f"observations differ from what {producer.name} emits. "
-        f"Missing: {sorted(expected - actual)}. Unknown: {sorted(actual - expected)}."
-    )
+        assert actual == expected, (
+            f"{manifest_path.relative_to(REPO_ROOT)} declares {READINESS_SCHEMA} "
+            f"but its observations differ from what {producer.name} emits. "
+            f"Missing: {sorted(expected - actual)}. "
+            f"Unknown: {sorted(actual - expected)}."
+        )
 
 
 def test_the_dry_lane_placeholder_does_not_claim_a_producer_owned_schema() -> None:

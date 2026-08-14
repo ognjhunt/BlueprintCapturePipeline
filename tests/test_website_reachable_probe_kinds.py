@@ -62,7 +62,10 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     "adp-isaac-lab-arena-native-control": "awaiting_builder",
     "new-site-diagnostic-canary": "awaiting_builder",
     "new-site-native-camera": "awaiting_builder",
-    "reconstruction-worker-smoke": "awaiting_builder",
+    # Landed with an allocator branch and no builder, and without declaring
+    # itself here, so this gate was already red on main when the worker-smoke
+    # builder took the slot back. Stated rather than left implied.
+    "semantic-teacher-image-edit": "awaiting_builder",
 }
 
 VALID_REASONS = {
