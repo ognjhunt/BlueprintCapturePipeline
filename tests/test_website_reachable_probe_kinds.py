@@ -59,7 +59,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # profile of its own.
     "task-evaluation-profile-preflight": "not_a_website_lane",
     # Real debt: executable, not retired, not frozen, and unreachable.
-    "adp-isaac-lab-arena-native-control": "awaiting_builder",
     "new-site-diagnostic-canary": "awaiting_builder",
 }
 
