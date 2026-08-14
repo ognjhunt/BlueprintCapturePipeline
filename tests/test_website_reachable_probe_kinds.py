@@ -61,7 +61,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # Real debt: executable, not retired, not frozen, and unreachable.
     "adp-isaac-lab-arena-native-control": "awaiting_builder",
     "new-site-diagnostic-canary": "awaiting_builder",
-    "reconstruction-worker-smoke": "awaiting_builder",
 }
 
 VALID_REASONS = {
@@ -209,7 +208,7 @@ def test_the_reachability_debt_is_stated_rather_than_implied() -> None:
         if reason == "awaiting_builder"
     )
 
-    assert len(debt) <= 3, (
+    assert len(debt) <= 2, (
         f"unreachable executable probe kinds grew to {len(debt)}: {debt}. "
         "Lower this bound as builders land; do not raise it to make it pass."
     )

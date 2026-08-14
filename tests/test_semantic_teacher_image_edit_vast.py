@@ -503,6 +503,7 @@ def test_one_instance_run_retains_output_and_proves_every_zero(
     assert result["status"] == "completed"
     assert result["allocation_count"] == 1
     assert result["automatic_retry_count"] == 0
+    assert result["retry_cap"] == 0
     assert result["provider_mutations_performed"] == 2
     assert result["provider_zero_verified"] is True
     assert result["all_staged_objects_absent"] is True
@@ -632,6 +633,7 @@ def test_failed_worker_archive_is_preserved_without_paid_retry(
     )
     assert result["status"] == "blocked"
     assert result["automatic_retry_count"] == 0
+    assert result["retry_cap"] == 0
     assert result["allocation_count"] == 1
     assert result["provider_zero_verified"] is True
     assert provider.launch_calls == 1

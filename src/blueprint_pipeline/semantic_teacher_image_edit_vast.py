@@ -469,6 +469,7 @@ def _close_blocked_before_launch(
             "maximum_create_attempts": 1,
             "create_attempt_count": 0,
             "automatic_retry_count": 0,
+            "retry_cap": 0,
             "provider_mutations_performed": 0,
             "cost_usd": 0.0,
             "all_staged_objects_absent": cleanup.get("all_objects_absent"),
@@ -1861,6 +1862,7 @@ def _execute_semantic_teacher_image_edit_vast(
         "maximum_create_attempts": 1,
         "create_attempt_count": launch_result.get("create_attempt_count", 0),
         "automatic_retry_count": 0,
+        "retry_cap": 0,
         "provider_mutations_performed": provider_mutations,
         "provider_mutation_outcome_ambiguous": bool(
             launch_result.get("allocation_outcome_ambiguous") is True

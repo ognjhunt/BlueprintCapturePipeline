@@ -55,7 +55,11 @@ def file_digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def shared_control_surface(*, required_providers: Sequence[str] = ("vast",)) -> dict[str, Any]:
+def shared_control_surface(
+    *,
+    required_providers: Sequence[str] = ("vast",),
+    additional_required_path_fields: Sequence[str] = (),
+) -> dict[str, Any]:
     """The part of a launch profile that is the same for every paid lane.
 
     These four blocks are what make a run provable rather than merely finished:
@@ -68,6 +72,11 @@ def shared_control_surface(*, required_providers: Sequence[str] = ("vast",)) -> 
     dropped `provider_zero_required` would keep passing until the day it
     mattered. One definition, used by every builder, including the ones whose
     inputs are too different to share the whole skeleton below.
+
+    A lane whose result carries one more terminal artifact names it in
+    `additional_required_path_fields` rather than restating the whole contract.
+    The SAM 3.1 lane restated it to add one field, and the copy it needed to
+    make was the four blocks this function exists to keep single.
     """
 
     return {
@@ -91,7 +100,11 @@ def shared_control_surface(*, required_providers: Sequence[str] = ("vast",)) -> 
             "required_values": {"continuing_spend_from_this_run": False, "retry_cap": 0},
             # Both are sealed by `seal_lane_terminal_artifacts`. Asking for them
             # here is what makes a lane that stops emitting them fail.
-            "required_path_fields": ["teardown_manifest_path", "artifact_manifest_path"],
+            "required_path_fields": [
+                "teardown_manifest_path",
+                "artifact_manifest_path",
+                *additional_required_path_fields,
+            ],
         },
         "webapp_sync": {"max_attempts": 20},
     }
