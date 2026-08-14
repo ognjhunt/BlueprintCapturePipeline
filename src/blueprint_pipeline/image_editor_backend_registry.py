@@ -39,9 +39,14 @@ DEFAULT_REGISTRY_PATH = (
 
 #: The value meaning "no direct editor ran", which is not a backend.
 NO_DIRECT_EDITOR = "none"
-
+ARTIFIXER_DIRECT_CAPABILITY = "artifixer_direct"
+SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY = "semantic_teacher_image_edit"
+SUPPORTED_CAPABILITIES = frozenset(
+    {ARTIFIXER_DIRECT_CAPABILITY, SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY}
+)
 REQUIRED_FIELDS = (
     "backend_id",
+    "capability",
     "model_identity",
     "license",
     "license_url",
@@ -85,6 +90,8 @@ def load_registry(path: str | Path | None = None) -> dict[str, dict[str, Any]]:
             )
         if not isinstance(row.get("commercial_use_permitted"), bool):
             raise ImageEditorRegistryError("image_editor_registry_terms_unrecorded")
+        if row.get("capability") not in SUPPORTED_CAPABILITIES:
+            raise ImageEditorRegistryError("image_editor_registry_capability_invalid")
         backend_id = str(row["backend_id"])
         if backend_id == NO_DIRECT_EDITOR:
             raise ImageEditorRegistryError("image_editor_registry_reserved_backend_id")
@@ -94,8 +101,19 @@ def load_registry(path: str | Path | None = None) -> dict[str, dict[str, Any]]:
     return registry
 
 
-def registered_backend_ids(path: str | Path | None = None) -> frozenset[str]:
-    return frozenset(load_registry(path))
+def registered_backend_ids(
+    path: str | Path | None = None, *, capability: str | None = None
+) -> frozenset[str]:
+    registry = load_registry(path)
+    if capability is None:
+        return frozenset(registry)
+    if capability not in SUPPORTED_CAPABILITIES:
+        raise ImageEditorRegistryError("image_editor_registry_capability_invalid")
+    return frozenset(
+        backend_id
+        for backend_id, row in registry.items()
+        if row["capability"] == capability
+    )
 
 
 def admissible_for_delivery(backend_id: str, *, path: str | Path | None = None) -> bool:
@@ -112,11 +130,14 @@ def admissible_for_delivery(backend_id: str, *, path: str | Path | None = None) 
 
 
 __all__ = [
+    "ARTIFIXER_DIRECT_CAPABILITY",
     "DEFAULT_REGISTRY_PATH",
     "ImageEditorRegistryError",
     "NO_DIRECT_EDITOR",
     "REGISTRY_SCHEMA_VERSION",
     "REQUIRED_FIELDS",
+    "SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY",
+    "SUPPORTED_CAPABILITIES",
     "admissible_for_delivery",
     "load_registry",
     "registered_backend_ids",

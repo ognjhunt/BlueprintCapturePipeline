@@ -163,3 +163,246 @@ def test_agents_sdk_invokes_digest_bound_sam_packet_builder(tmp_path: Path) -> N
     assert observation["typed_result"]["provider_mutations_performed"] == 0
     assert len(calls) == 1
     assert calls[0]["output_root"] == tmp_path / "generated/sam31_task_inputs"
+
+
+def test_agents_sdk_invokes_digest_bound_removal_freeze_builder(tmp_path: Path) -> None:
+    request = {
+        "schema_version": "fresh_scene_removal_freeze_tool_request.v1",
+        "tasks": {"task_a": {}},
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    calls: list[dict] = []
+
+    def materializer(*, request: dict, output_root: Path) -> dict:
+        calls.append({"request": request, "output_root": output_root})
+        result = {
+            "schema_version": "fresh_scene_removal_freeze_set.v1",
+            "status": "excision_and_segment_sweep_freezes_materialized_no_execution",
+            "task_count": 1,
+            "paid_execution_started": False,
+            "provider_mutations_performed": 0,
+            "agent_selected_gaussian_indices": False,
+            "canonical_source_altered": False,
+            "receipt_digest": "",
+        }
+        result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="fresh-scene-tools-test",
+        customer_question="Prepare one fresh scene.",
+        supervisor_output_dir=str(tmp_path),
+        fresh_scene_removal_freeze_request=request,
+        fresh_scene_removal_freeze_materializer=materializer,
+    )
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=_authority(registry, request["request_digest"]),
+        )
+    }
+
+    observation = bindings["materialize_fresh_scene_removal_freezes"].invoke(
+        {"request_digest": request["request_digest"]}
+    )
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["paid_execution_started"] is False
+    assert observation["typed_result"]["provider_mutations_performed"] == 0
+    assert observation["typed_result"]["agent_selected_gaussian_indices"] is False
+    assert observation["typed_result"]["canonical_source_altered"] is False
+    assert calls[0]["output_root"] == tmp_path / "generated/removal_freezes"
+
+
+def test_agents_sdk_invokes_digest_bound_segment_cutout_builder(tmp_path: Path) -> None:
+    request = {
+        "schema_version": "fresh_scene_segment_cutout_tool_request.v1",
+        "task_freeze_paths": ["task-a.json", "task-b.json"],
+        "sweep_freeze_paths_by_task": {"task_a": "a.json", "task_b": "b.json"},
+        "contribution_manifest_paths_by_task": {
+            "task_a": "a-manifest.json",
+            "task_b": "b-manifest.json",
+        },
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    calls: list[dict] = []
+
+    def materializer(*, request: dict, output_root: Path) -> dict:
+        calls.append({"request": request, "output_root": output_root})
+        result = {
+            "schema_version": "adp009d_segment_contribution_cutout_set.v1",
+            "status": (
+                "repair_supported_segment_contribution_cutout_materialized_"
+                "pending_full_deleted_layer_projection"
+            ),
+            "task_candidates": [{"task_id": "task_a"}, {"task_id": "task_b"}],
+            "claim_boundary": {"canonical_source_altered": False},
+            "receipt_digest": "",
+        }
+        result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="fresh-scene-tools-test",
+        customer_question="Prepare one fresh scene.",
+        supervisor_output_dir=str(tmp_path),
+        fresh_scene_segment_cutout_request=request,
+        fresh_scene_segment_cutout_materializer=materializer,
+    )
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=_authority(registry, request["request_digest"]),
+        )
+    }
+    observation = bindings["materialize_fresh_scene_segment_cutout"].invoke(
+        {"request_digest": request["request_digest"]}
+    )
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["task_count"] == 2
+    assert observation["typed_result"]["canonical_source_altered"] is False
+    assert observation["typed_result"]["agent_selected_gaussian_indices"] is False
+    assert observation["typed_result"]["paid_execution_started"] is False
+    assert calls[0]["output_root"] == tmp_path / "generated/segment_cutout_set"
+
+
+def test_agents_sdk_invokes_digest_bound_artifixer_candidate_builder(
+    tmp_path: Path,
+) -> None:
+    request = {
+        "schema_version": "fresh_scene_artifixer_candidate_preparation_request.v1",
+        "segment_cutout_set_path": "cutout.json",
+        "execution_authority_path": "authority.json",
+        "selected_task_ids": ["task_a", "task_b"],
+        "object_absent_reference_receipt_paths": [],
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    calls: list[dict] = []
+
+    def materializer(*, request: dict, output_root: Path) -> dict:
+        calls.append({"request": request, "output_root": output_root})
+        result = {
+            "schema_version": "fresh_scene_artifixer_candidate_preparation.v1",
+            "status": "artifixer_candidate_inputs_prepared_no_model_no_execution",
+            "task_count": 2,
+            "semantic_teacher_execution_started": False,
+            "artifixer3d_execution_started": False,
+            "provider_mutations_performed": 0,
+            "canonical_source_altered": False,
+            "next_required_stage": "semantic_teacher_edit_packet",
+            "receipt_digest": "",
+        }
+        result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="fresh-scene-tools-test",
+        customer_question="Prepare one fresh scene.",
+        supervisor_output_dir=str(tmp_path),
+        fresh_scene_artifixer_candidate_request=request,
+        fresh_scene_artifixer_candidate_materializer=materializer,
+    )
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=_authority(registry, request["request_digest"]),
+        )
+    }
+    observation = bindings["materialize_fresh_scene_artifixer_candidate"].invoke(
+        {"request_digest": request["request_digest"]}
+    )
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["task_count"] == 2
+    assert observation["typed_result"]["next_required_stage"] == (
+        "semantic_teacher_edit_packet"
+    )
+    assert observation["typed_result"]["semantic_teacher_execution_started"] is False
+    assert observation["typed_result"]["artifixer3d_execution_started"] is False
+    assert observation["typed_result"]["provider_mutations_performed"] == 0
+    assert observation["typed_result"]["canonical_source_altered"] is False
+    assert calls[0]["output_root"] == tmp_path / "generated/artifixer_candidate"
+
+
+def test_agents_sdk_invokes_registry_selected_semantic_teacher_packet_builder(
+    tmp_path: Path,
+) -> None:
+    request = {
+        "schema_version": "fresh_scene_semantic_teacher_image_edit_request.v1",
+        "source_candidate_inputs_receipt_path": "candidate.json",
+        "backend_registry_path": "registry.json",
+        "backend_id": "future_editor",
+        "rights_attestation_path": "rights.json",
+        "selected_task_ids": ["task_a", "task_b"],
+        "prompt_policy": "generic_masked_object_absent_background_completion_v2",
+        "output_format": "png",
+        "retry_count": 0,
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    calls: list[dict] = []
+
+    def materializer(*, request: dict, output_root: Path) -> dict:
+        calls.append({"request": request, "output_root": output_root})
+        result = {
+            "schema_version": "fresh_scene_semantic_teacher_image_edit_packet.v1",
+            "status": (
+                "semantic_teacher_image_edit_packet_prepared_no_upload_no_execution"
+            ),
+            "backend": {
+                "registry_entry": {"backend_id": "future_editor"},
+            },
+            "task_count": 2,
+            "request_count": 16,
+            "provider_upload_performed": False,
+            "provider_inference_performed": False,
+            "provider_mutations_performed": 0,
+            "canonical_source_altered": False,
+            "packet_digest": "",
+        }
+        result["packet_digest"] = canonical_digest(result, digest_field="packet_digest")
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="fresh-scene-tools-test",
+        customer_question="Prepare one fresh scene.",
+        supervisor_output_dir=str(tmp_path),
+        fresh_scene_semantic_teacher_edit_request=request,
+        fresh_scene_semantic_teacher_edit_materializer=materializer,
+    )
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=_authority(registry, request["request_digest"]),
+        )
+    }
+    observation = bindings[
+        "materialize_fresh_scene_semantic_teacher_edit_packet"
+    ].invoke({"request_digest": request["request_digest"]})
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["backend_id"] == "future_editor"
+    assert observation["typed_result"]["task_count"] == 2
+    assert observation["typed_result"]["request_count"] == 16
+    assert observation["typed_result"]["provider_upload_performed"] is False
+    assert observation["typed_result"]["provider_inference_performed"] is False
+    assert observation["typed_result"]["provider_mutations_performed"] == 0
+    assert calls[0]["output_root"] == (
+        tmp_path / "generated/semantic_teacher_edit_packet"
+    )

@@ -82,6 +82,10 @@ _RECONSTRUCTION_CONTEXT_FIELDS = {
     "fresh_scene_preparation_status",
     "fresh_scene_sam31_task_input_request",
     "fresh_scene_calibrated_mask_request",
+    "fresh_scene_removal_freeze_request",
+    "fresh_scene_segment_cutout_request",
+    "fresh_scene_artifixer_candidate_request",
+    "fresh_scene_semantic_teacher_edit_request",
 }
 
 
@@ -752,6 +756,10 @@ def run_capture_reconstruction_supervisor_continuation(
         "inspect_fresh_scene_preparation",
         "materialize_sam31_task_inputs",
         "materialize_calibrated_object_masks",
+        "materialize_fresh_scene_removal_freezes",
+        "materialize_fresh_scene_segment_cutout",
+        "materialize_fresh_scene_artifixer_candidate",
+        "materialize_fresh_scene_semantic_teacher_edit_packet",
     }
     not_ready = sorted(
         tool_id

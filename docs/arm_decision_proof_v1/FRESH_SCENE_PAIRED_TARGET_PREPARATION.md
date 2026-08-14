@@ -41,20 +41,31 @@ provider-zero closure.
    - Run one task-local packet for each preregistered object so every object can
      use its own calibrated target-visible camera set. Output is compact
      persistent RLE mask tracks only. No geometry or identity qualification.
-4. `calibrated_object_masks`
-   - Implementation: `public_scene_calibrated_object_masks`.
-   - An operator or review agent explicitly selects the track ID or track-ID
-     union corresponding to each preregistered task object.
+4. `sam31_track_selection_review` and `calibrated_object_masks`
+   - Implementations: `public_scene_sam31_track_selection_review` and
+     `public_scene_calibrated_object_masks`.
+   - An operator or review agent proposes the track ID or track-ID union
+     corresponding to each preregistered task object. The deterministic
+     `public_scene_sam31_track_selection_review` producer renders the exact
+     selected pixels in magenta over every calibrated camera. A human then
+     accepts that immutable packet. The calibrated-mask materializer reopens
+     the file-backed receipt and refuses a naked digest or agent-only approval.
    - The materializer verifies exact source-frame and camera-record digests,
      requires an explicit one-to-one camera-to-SAM-frame map, decodes the RLE,
      and writes one undilated binary PNG per calibrated camera. It never assumes
      that a camera ID happens to equal a source-frame ID.
 5. `excision_freezes` and `segment_sweep_freezes`
-   - Implementations: `public_scene_gaussian_excision_audit` and
+   - Production interface: `fresh_scene_removal_freezes`; deterministic
+     implementations: `public_scene_gaussian_excision_audit` and
      `public_scene_segment_contribution_cutout`.
    - Bind the immutable standard-3DGS derivative, registered collision object,
      calibrated views, source images, reviewed object masks, and 1--5 task
      freezes before any contribution execution.
+   - The supervisor receives only the request digest. The host re-hashes the
+     task freezes, normalized SAM tracks, review-authorized masks, cameras,
+     source images, standard-3DGS derivative, registered collision asset, and
+     registered-frame receipt. It produces both freeze types without choosing
+     Gaussian indices, altering canonical source bytes, or starting paid work.
 6. `gaussian_contribution_evidence`
    - Backend: FlashSplat commit
      `3e3b14786333bf0163ba1b8541e86a3765112d7d`, rasterizer commit
@@ -64,19 +75,40 @@ provider-zero closure.
      zero retry, hard cap/TTL, independent watchdog, cleanup, and API-zero.
 7. `segment_cutout_set`
    - Implementation: `public_scene_segment_contribution_cutout`.
+   - Production supervisor tool: `materialize_fresh_scene_segment_cutout`.
    - Union every Gaussian with renderer-detectable contribution to the exact
      task-object segments across all calibrated views and repetitions.
    - Write only a derived, byte-accounted, digest-bound retained PLY; never
      mutate canonical InteriorGS.
+   - The host-resident request inventory includes every task freeze, all-camera
+     sweep, contribution manifest, and raw repetition array. The tool rejects
+     any changed byte and reports that neither an agent nor simulator selected
+     Gaussian indices.
 8. `segment_repair_preflight` and `artifixer_candidate_inputs`
+   - Production supervisor tool:
+     `materialize_fresh_scene_artifixer_candidate`.
+   - Deterministically reopen the shared cutout and execution authority, run
+     the exact segment-repair preflight, and package the selected 1--5 task
+     cameras, original frames, masks, and derived retained PLY into the
+     ArtiFixer candidate contract.
    - Bind exact repair support, rights, cameras, original frames, task freezes,
      and the derived retained PLY. A missing upstream input must remain an
      upstream `fresh_scene_*_missing` blocker, not surface later as a generic
-     ArtiFixer preflight failure.
-9. `semantic_teacher_receipts`
-   - Preferred editor: rights-admitted `gpt-image-2` full-frame empty-scene
-     candidates. A pinned local editor may be used when disclosure rights or
-     production credentials do not admit the hosted route.
+     ArtiFixer preflight failure. This tool performs no semantic editing,
+     ArtiFixer execution, provider mutation, or canonical-source change.
+9. `semantic_teacher_edit_packet` and `semantic_teacher_receipts`
+   - Production supervisor tool:
+     `materialize_fresh_scene_semantic_teacher_edit_packet`.
+   - Select `backend_id` from the repository image-editor registry. The packet
+     binds the exact registry bytes, selected row, immutable model snapshot,
+     adapter capabilities, mask encoding, and human rights attestation. The
+     editor used by the successful Scene 840920 experiment is an observed
+     configuration, not a hard-coded production model.
+   - Hosted and bounded local-GPU editors use the same packet interface. Adding
+     a newer editor that satisfies an existing adapter contract is a reviewed
+     registry-row change; it does not require changing the packet materializer.
+   - Packet preparation performs no upload, inference, or spend. Execution
+     remains a separately authorized paid-allocator stage with zero retries.
    - Do not hard-paste generated pixels into a washer/laptop-shaped composite
      before ArtiFixer3D. Preserve the whole teacher image and separately retain
      the original anchor plus the excluded repair-region loss mask.
@@ -102,6 +134,48 @@ Production dispatchers should publish the next paid profile only after all
 prior deterministic stages validate and a new file-backed authority has been
 materialized. Automatic paid retries remain forbidden.
 
+For `sam31_source_tracks`, build that profile with
+`scripts/build_sam31_source_tracks_live_profile.py`. The builder binds the
+exact request, input bundle, bundle receipt, single-use authority, deployed
+commit, host-resident secret-file path, hard cap/TTL, and zero retry. The
+profile deliberately does not publish a capacity snapshot: after the
+independent watchdog is armed, the allocator collects a fresh Vast capacity
+and provider-zero preflight at execution time, writes it beneath the launch
+root, and fails closed before authority consumption or provider mutation when
+that live check does not pass. Every terminal execute result also seals the
+shared Task Evaluation artifact manifest and teardown record required by the
+website reconciler. A successful terminal result must additionally name the
+normalized `semantic_source_track_import_result.v1` artifact. That compact,
+digest-bound track file is the direct input to the reviewed calibrated-mask
+request; the production handoff never returns or redistributes source-frame
+bytes.
+
+Generate and accept the review packet on the deployed control-plane host with
+the repository CLI. `task-inputs.json` maps every frozen task ID to its exact
+host-resident source-track result, camera contract, calibrated image root, and
+camera-to-source-frame map. `selected-tracks.json` maps each task ID to the
+proposed SAM track-ID union. Repeat `--task-freeze` once per task (one to five):
+
+```bash
+python -m blueprint_pipeline.public_scene_sam31_track_selection_review candidate \
+  --task-freeze /path/task_a.json \
+  --task-freeze /path/task_b.json \
+  --task-inputs /path/task-inputs.json \
+  --selected-tracks /path/selected-tracks.json \
+  --output-root /path/review-candidate
+
+# After the named human has inspected every overlay in review_media/:
+python -m blueprint_pipeline.public_scene_sam31_track_selection_review accept \
+  --candidate /path/review-candidate/public_scene_sam31_track_selection_review_candidate.v1.json \
+  --reviewed-by authorized-reviewer \
+  --reviewed-on 2026-08-13 \
+  --output /path/public_scene_sam31_track_selection_review.v1.json
+```
+
+The acceptance command re-hashes and reopens every source image, binary mask,
+and overlay before sealing. Pass that exact receipt path, not merely its digest,
+to `materialize_calibrated_object_masks`.
+
 ## Agents SDK orchestration
 
 The repository already pins `openai-agents` and the production control plane
@@ -120,7 +194,20 @@ The required agent-facing tools are:
 - `materialize_sam31_task_inputs`: produce the calibrated, task-local SAM input
   packet without uploading bytes or starting paid work.
 - `materialize_calibrated_object_masks`: invoke the deterministic task-local
-  camera/frame bridge after explicit track selections are present.
+  camera/frame bridge after explicit track selections and their human review
+  receipt are present.
+- `materialize_fresh_scene_removal_freezes`: turn the exact reviewed 1--5-task
+  mask set into per-task excision and all-camera segment-sweep freezes. This is
+  a non-spend producer; only the later Gaussian-contribution profile may enter
+  the paid allocator.
+- `materialize_fresh_scene_segment_cutout`: after the separately authorized
+  Gaussian-contribution run closes, deterministically materialize every
+  task-local cutout plus the shared retained-scene PLY. This tool is non-spend
+  and cannot alter canonical InteriorGS.
+- `materialize_fresh_scene_artifixer_candidate`: turn the reviewed shared
+  cutout into the exact repair preflight and ArtiFixer candidate packet. It
+  stops at the explicit `semantic_teacher_edit_packet` blocker and cannot call an
+  image editor or GPU provider.
 
 `fresh_scene_supervisor_bindings` is the production bridge. It accepts only a
 host-resident, digest-bound status plus the exact available tool request, and

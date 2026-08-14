@@ -12,6 +12,9 @@ from blueprint_pipeline.paid_resource_admission import (
 )
 from blueprint_pipeline.sam31_gpu_admission import CHECKPOINT_DIGEST, OPERATION
 from blueprint_pipeline.sam31_source_track_canary_worker import RUNTIME_RESULT_SCHEMA_VERSION
+from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
+    canonical_json_digest,
+)
 from blueprint_pipeline.sam31_vast_source_track_canary import (
     Sam31VastCanaryError,
     _bootstrap_script,
@@ -78,6 +81,17 @@ def _preflight() -> dict:
 
 
 def _runtime_result() -> dict:
+    normalized = {
+        "schema_version": "semantic_source_track_import_result.v1",
+        "status": "abstained",
+        "bindings": {},
+        "track_registry": [],
+        "frame_masks": [],
+        "blockers": [],
+        "warnings": ["provider_returned_no_tracks"],
+        "claim_ceiling": "no_source_tracks_detected",
+    }
+    normalized["result_digest"] = canonical_json_digest(normalized)
     value = {
         "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
         "status": "passed",
@@ -99,6 +113,7 @@ def _runtime_result() -> dict:
         },
         "provider_result": {"tracks": []},
         "source_track_import_request": {},
+        "normalized_source_tracks": normalized,
         "blockers": [],
         "source_frame_bytes_returned": False,
         "raw_secret_values_recorded": False,
@@ -136,6 +151,7 @@ class _Provider:
         }
 
     def build_request(self, spec, job_dir):
+        assert spec.name.startswith("blueprint-sam31-source-tracks-")
         assert spec.image == IMAGE
         assert spec.requires_rtx is False
         assert spec.env["HF_TOKEN"] == TOKEN
@@ -203,6 +219,11 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
     assert result["provider_zero_verified"] is True
     assert result["provider_mutations_performed"] == 2
     assert result["comparative_policy_ranking_verdict"] == "thesis_not_supported"
+    assert Path(result["source_track_import_result_path"]).is_file()
+    assert result["source_track_import_result_digest"] == _runtime_result()[
+        "normalized_source_tracks"
+    ]["result_digest"]
+    assert provider.requests[0]["create_payload"]["env"]
     persisted = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in tmp_path.rglob("*")

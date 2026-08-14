@@ -22,6 +22,7 @@ import zipfile
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .image_editor_backend_registry import (
+    ARTIFIXER_DIRECT_CAPABILITY,
     NO_DIRECT_EDITOR as REGISTRY_NO_DIRECT_EDITOR,
     registered_backend_ids,
 )
@@ -75,7 +76,7 @@ VIBE_SOURCE_LICENSE_SHA256 = (
 # release. The registry records each backend's terms alongside its name, so the
 # seam stays open for the next model without opening it for a model nobody
 # checked the license on. See `image_editor_backend_registry`.
-DIRECT_EDITOR_BACKENDS = registered_backend_ids()
+DIRECT_EDITOR_BACKENDS = registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY)
 NO_DIRECT_EDITOR = REGISTRY_NO_DIRECT_EDITOR
 
 

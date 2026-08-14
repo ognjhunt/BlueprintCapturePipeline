@@ -14,7 +14,10 @@ import struct
 import subprocess
 import sys
 
-from blueprint_pipeline.image_editor_backend_registry import registered_backend_ids
+from blueprint_pipeline.image_editor_backend_registry import (
+    ARTIFIXER_DIRECT_CAPABILITY,
+    registered_backend_ids,
+)
 import time
 from typing import Any, Mapping, Sequence
 import zipfile
@@ -59,7 +62,9 @@ DUAL_TARGET_LOSS_OVERRIDES = {
 # Read from the registry rather than a second copy of the same literals: this
 # module and the bundle module each had their own set, so admitting a backend in
 # one and not the other was a silent disagreement waiting to happen.
-DIRECT_EDITOR_BACKENDS = set(registered_backend_ids())
+DIRECT_EDITOR_BACKENDS = set(
+    registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY)
+)
 SEMANTIC_EDITOR_PROMPT = (
     "Reconstruct the natural empty background where the solid black masked hole "
     "appears. Continue the surrounding floor, wall, cabinet, desk, curtain, and "

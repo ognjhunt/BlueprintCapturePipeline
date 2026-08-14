@@ -66,25 +66,31 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --adapter-output /path/to/sam31_execution.json \
   --pod-name sam31-source-track-canary \
   --expected-source-commit <exact-40-character-commit> \
-  --provider-bundle-url-file /private/input-get-url.txt \
-  --provider-output-put-url-file /private/output-put-url.txt \
-  --provider-output-get-url-file /private/output-get-url.txt \
+  --sam31-input-bundle /host/immutable/sam31-input.zip \
+  --sam31-input-bundle-receipt /host/immutable/sam31-input-receipt.json \
+  --sam31-attempt-authority /host/authorities/sam31-paid-attempt-authority.json \
   --sam31-hf-token-file /private/hf-token.txt \
+  --sam31-max-hourly-rate-usd <explicit-rate-ceiling> \
   --sam31-max-spend-usd <explicit-cap> \
   --sam31-hard-ttl-seconds <at-most-3600> \
-  --sam31-retry-cap <0-or-1> \
+  --sam31-retry-cap 0 \
   --sam31-authority-id <authority-id> \
   --execute
 ```
 
 Before `--execute`, require a clean exact protected-main commit or a clean,
-pushed `codex/` diagnostic branch with `--experimental-branch-diagnostic`; an
-independent watchdog whose deadline covers the TTL; current Vast capacity; and
-API-confirmed zero global Vast inventory. A configured provider is not enough.
+pushed `codex/` diagnostic branch with `--experimental-branch-diagnostic`; a
+digest-bound one-shot authority file; current Vast capacity; and API-confirmed
+zero global Vast inventory. A configured provider or a free-form authority ID
+is not enough. The allocator consumes the authority exactly once before it
+stages any bytes, creates the signed object-store transport itself, and arms its
+run-owned independent watchdog before provider create.
 
 The lifecycle opens a paid-lane lease and pending teardown before create,
 records the exact instance ID, polls only for the signed output, validates all
-bindings and claim ceilings, terminates the instance in `finally`, and requires
-API-confirmed scoped and global provider zero. Any ambiguity, stale input,
-runtime mismatch, secret-file permission failure, timeout, disagreement, or
-teardown failure is terminal failure or abstention, never a pass.
+bindings and claim ceilings, terminates the instance in `finally`, deletes and
+absence-proves both staged objects, removes signed URL files, closes the
+watchdog against API inventory, and requires scoped and global provider zero.
+Any ambiguity, stale input, runtime mismatch, secret-file permission failure,
+timeout, disagreement, cleanup failure, or teardown failure is terminal
+failure or abstention, never a pass.
