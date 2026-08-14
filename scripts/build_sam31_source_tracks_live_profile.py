@@ -29,11 +29,14 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
-from blueprint_pipeline.task_evaluation_live_profile import shared_control_surface
+from blueprint_pipeline.task_evaluation_live_profile import (
+    RUN_ROOT,
+    shared_control_surface,
+)
 
 
-RUN_ROOT = "{launch_run_root}"
-SECRET_PROFILE_ID = "canonical-vast-adp"
+#: The one terminal artifact this lane adds to the shared contract.
+SOURCE_TRACK_RESULT_FIELD = "source_track_import_result_path"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -120,10 +123,6 @@ def build_sam31_source_tracks_live_profile(
         (authority.get("active_instance_allowlist") or {}).get(
             "external_provider_owned", []
         )
-    )
-    control_surface = shared_control_surface()
-    control_surface['terminal_contract']['required_path_fields'].append(
-        "source_track_import_result_path"
     )
     profile: dict[str, Any] = {
         "schema_version": "task_evaluation_launch_profile.v1",
@@ -218,7 +217,9 @@ def build_sam31_source_tracks_live_profile(
             },
         ],
         "runtime_environment": {},
-        **control_surface,
+        **shared_control_surface(
+            additional_required_path_fields=(SOURCE_TRACK_RESULT_FIELD,)
+        ),
     }
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
     validation = [

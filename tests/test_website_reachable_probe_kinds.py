@@ -62,7 +62,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     "adp-isaac-lab-arena-native-control": "awaiting_builder",
     "new-site-diagnostic-canary": "awaiting_builder",
     "new-site-native-camera": "awaiting_builder",
-    "reconstruction-worker-smoke": "awaiting_builder",
 }
 
 VALID_REASONS = {
