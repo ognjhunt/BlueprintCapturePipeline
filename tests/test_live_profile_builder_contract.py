@@ -43,8 +43,23 @@ def test_there_are_builders_to_check() -> None:
 
 
 def _cli_arguments(path: Path) -> set[str]:
+    """Every flag this builder's command line declares.
+
+    Two declaration styles count. The first is a literal
+    `add_argument("--flag", ...)`. The second is a declarative flag table whose
+    rows name their own flag -- the style `prepare_artifixer3d_inputs` already
+    uses, where one table builds both the parser and the call so a parameter
+    cannot quietly lose its flag and be fixed at a default. Reading only the
+    first style reported a table-driven builder as offering no flags at all,
+    which would have exempted it from the `--revision` contract below by
+    failing it for the wrong reason.
+
+    Both are read from the syntax rather than from the source text, so a
+    docstring that happens to mention a flag cannot satisfy a contract.
+    """
+
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    return {
+    declared = {
         node.args[0].value
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -52,6 +67,38 @@ def _cli_arguments(path: Path) -> set[str]:
         and node.args
         and isinstance(node.args[0], ast.Constant)
     }
+    # A flag-table row: any call whose first positional argument is a literal
+    # option string, e.g. `Param("--revision", ...)`.
+    declared.update(
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+        and node.args[0].value.startswith("--")
+    )
+    return {item for item in declared if isinstance(item, str)}
+
+
+def test_the_flag_reader_sees_a_table_driven_command_line(tmp_path: Path) -> None:
+    """The reader decides which contract every builder below is held to.
+
+    Narrowing it back to `add_argument` literals would report a flag-table
+    builder as having no command line, and widening it to plain source text
+    would let a docstring satisfy the contract. Both are pinned here.
+    """
+
+    builder = tmp_path / "build_probe_live_profile.py"
+    builder.write_text(
+        "PARAMS = {'revision': Param('--revision')}\n"
+        "def build_parser():\n"
+        "    parser.add_argument('--output', required=True)\n"
+        '    """--not-a-flag lives only in a docstring"""\n',
+        encoding="utf-8",
+    )
+
+    assert _cli_arguments(builder) == {"--revision", "--output"}
 
 
 def _is_receipt_driven(path: Path) -> bool:
