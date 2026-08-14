@@ -39,6 +39,8 @@ def test_native_trace_requires_finite_speed_bounded_settled_motion() -> None:
         positions_rad=[0.0, 0.05, 0.10], velocities_rad_s=[0.0, 0.8, 0.01]
     )
     assert passed["status"] == "passed"
+    assert passed["positions_rad"] == [0.0, 0.05, 0.10]
+    assert passed["velocities_rad_s"] == [0.0, 0.8, 0.01]
 
     blocked = assess_newton_gripper_drive_trace(
         positions_rad=[0.0, math.nan], velocities_rad_s=[0.0, 1.2]

@@ -193,6 +193,8 @@ def assess_newton_gripper_drive_trace(
     return {
         "status": "passed" if not blockers else "blocked",
         "sample_count": len(positions_rad),
+        "positions_rad": list(positions_rad),
+        "velocities_rad_s": list(velocities_rad_s),
         "finite_joint_state": finite,
         "maximum_abs_joint_velocity_rad_s": maximum_velocity,
         "settled_abs_joint_velocity_rad_s": settled_velocity,
@@ -274,6 +276,23 @@ def validate_newton_gripper_drive_probe(
     drive = dict(profile.get("gripper_drive_candidate") or {})
     trace_row = dict(trace) if isinstance(trace, Mapping) else {}
     receipt_digest = conversion.get("newton_gripper_drive_receipt_digest")
+    commands = trace_row.get("commands")
+    command_rows = dict(commands) if isinstance(commands, Mapping) else {}
+    command_traces_valid = set(command_rows) == {"0.0", "1.0"}
+    for row in command_rows.values():
+        command = dict(row) if isinstance(row, Mapping) else {}
+        positions = command.get("positions_rad")
+        velocities = command.get("velocities_rad_s")
+        if (
+            not isinstance(positions, list)
+            or not isinstance(velocities, list)
+            or len(positions) != 30
+            or command
+            != assess_newton_gripper_drive_trace(
+                positions_rad=positions, velocities_rad_s=velocities
+            )
+        ):
+            command_traces_valid = False
     if (
         conversion.get("newton_gripper_drive_contract_digest")
         != drive.get("contract_digest")
@@ -283,6 +302,7 @@ def validate_newton_gripper_drive_probe(
         or not receipt_digest.startswith("sha256:")
         or trace_row.get("status") != "passed"
         or trace_row.get("blockers") != []
+        or not command_traces_valid
     ):
         return ["adp009d_newton_probe_gripper_drive_invalid"]
     return []

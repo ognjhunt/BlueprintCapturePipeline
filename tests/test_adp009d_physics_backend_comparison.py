@@ -47,6 +47,7 @@ from blueprint_pipeline.adp009d_approach_capture import (
     next_episode_start_restore_command,
 )
 from blueprint_pipeline.adp009d_newton_gripper_drive import (
+    assess_newton_gripper_drive_trace,
     build_newton_gripper_drive_candidate,
 )
 from blueprint_pipeline.adp009d_provider_zero import build_provider_zero_receipt
@@ -370,6 +371,9 @@ def test_newton_terminal_receipt_cli_compiles_retained_evidence(
 
 def _probe(profile: dict) -> dict:
     overlay = profile["asset_conversion"].get("robot_inertial_overlay") or {}
+    drive_trace = assess_newton_gripper_drive_trace(
+        positions_rad=[0.0] * 30, velocities_rad_s=[0.0] * 30
+    )
     value = {
         "schema_version": PROBE_SCHEMA_VERSION,
         "status": "passed",
@@ -459,7 +463,11 @@ def _probe(profile: dict) -> dict:
             ),
         },
         "gripper_drive_trace": (
-            {"status": "passed", "blockers": [], "commands": {}}
+            {
+                "status": "passed",
+                "blockers": [],
+                "commands": {"0.0": drive_trace, "1.0": drive_trace},
+            }
             if profile["physics_backend"] == "newton"
             else None
         ),
@@ -479,6 +487,17 @@ def test_newton_profile_binds_comparison_ineligible_gripper_drive_candidate() ->
     assert profile["gripper_drive_candidate"] == build_newton_gripper_drive_candidate()
     assert profile["gripper_drive_candidate"]["comparison_eligible"] is False
     assert "gripper_drive_candidate" not in build_backend_profile("physx")
+
+
+def test_newton_probe_rejects_missing_native_gripper_command_traces() -> None:
+    profile = build_backend_profile("newton")
+    probe = _probe(profile)
+    probe["gripper_drive_trace"]["commands"] = {}
+    probe["probe_digest"] = canonical_digest(probe, digest_field="probe_digest")
+
+    assert "adp009d_newton_probe_gripper_drive_invalid" in validate_backend_probe(
+        probe, profile=profile
+    )
 
 
 def _admission(profile: dict, now: datetime) -> dict:
