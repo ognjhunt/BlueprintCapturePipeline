@@ -25,6 +25,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
+from .decision_evidence_contracts import canonical_digest
+
 
 @dataclass(frozen=True)
 class Param:
@@ -49,6 +51,11 @@ class Step:
 
 #: Receipt keys worth echoing so an operator can chain steps without reopening
 #: the file. `status` is renamed because the summary carries one of its own.
+#:
+#: Digests are not listed here beyond `receipt_digest`, because the name a lane
+#: seals under is its own -- the semantic-teacher terminal receipts use
+#: `closeout_digest`, `provider_zero_digest` and `result_import_digest`. They are
+#: recognised instead; see `sealing_digests`.
 SUMMARY_KEYS = (
     "schema_version",
     "status",
@@ -56,6 +63,37 @@ SUMMARY_KEYS = (
     "receipt_path",
     "output_root",
 )
+
+
+def sealing_digests(receipt: Mapping[str, Any]) -> dict[str, str]:
+    """The digest keys holding this receipt's own seal, rather than an input's.
+
+    A receipt binds digests of the evidence it consumed as well as the one that
+    seals it, and only the latter is what an operator records against a paid
+    attempt. The seal is identifiable without knowing its name: it is the value
+    equal to the canonical digest of this receipt computed with that field
+    removed, which is how every `materialize_*` in this package writes one.
+
+    Recognising it keeps a lane that seals under a new name from silently
+    printing a summary with no digest in it -- the state that sent an operator
+    back into the file to find out what a paid run had just sealed.
+    """
+
+    sealed: dict[str, str] = {}
+    for key, value in receipt.items():
+        if not isinstance(key, str) or not key.endswith("_digest"):
+            continue
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            matches = canonical_digest(receipt, digest_field=key) == value
+        except (TypeError, ValueError):
+            # A receipt that already reached disk is serialisable. If one is
+            # not, that is not worth turning a completed seal into a traceback.
+            break
+        if matches:
+            sealed[key] = value
+    return sealed
 
 
 def build_parser(
@@ -136,5 +174,6 @@ def run(
         for key in SUMMARY_KEYS:
             if key in receipt:
                 summary[f"receipt_{key}" if key == "status" else key] = receipt[key]
+        summary.update(sealing_digests(receipt))
     print(json.dumps(summary, indent=1, sort_keys=True))
     return 0
