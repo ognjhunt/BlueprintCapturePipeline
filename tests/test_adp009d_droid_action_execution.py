@@ -232,25 +232,38 @@ def test_plan_matches_the_repository_droid_velocity_action_semantics() -> None:
 def test_runtime_measures_the_gripper_convention_rather_than_assuming_it() -> None:
     """The executor refuses to run without this, so the runtime must supply it."""
 
+    import inspect
     from pathlib import Path
 
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_newton_gripper_drive import (
+        measure_gripper_convention_and_newton_drive,
+    )
 
-    source = Path(runtime.__file__).read_text(encoding="utf-8")
+    runtime_source = Path(runtime.__file__).read_text(encoding="utf-8")
+    measurement_source = inspect.getsource(measure_gripper_convention_and_newton_drive)
 
+    # The runtime must invoke the sealed measurement helper rather than carry a
+    # second, drifting implementation of the convention probe.
+    assert "measure_gripper_convention_and_newton_drive(" in runtime_source
     # Both candidate commands are actually applied, not inferred from one.
-    assert "for command in (0.0, 1.0):" in source
+    assert "for command in (0.0, 1.0):" in measurement_source
     # The decision comes from measured finger separation, not a constant.
-    assert "finger_separation_m" in source
-    assert "closes_at = 1.0 if closed_gap < open_gap else 0.0" in source
+    assert "finger_separation_m" in measurement_source
+    assert (
+        'closes_at = 1.0 if separations["1.0"] < separations["0.0"] else 0.0'
+        in measurement_source
+    )
     # An indistinguishable result stays unmeasured rather than guessed.
-    assert '"ambiguous"' in source
-    assert "gripper_convention_travel_below_floor" in source
-    # And the probe's own reset must not leave the canonical hold state altered.
-    probe = source[source.index("--- gripper convention probe") :]
+    assert 'status="ambiguous"' in measurement_source
+    assert "gripper_convention_travel_below_floor" in measurement_source
+    # The helper resets for both measurements, and the runtime resets once more
+    # afterward so the probe cannot leave the canonical hold state altered.
+    assert "env.reset(seed=20260806)" in measurement_source
+    probe = runtime_source[runtime_source.index("--- gripper convention probe") :]
     probe = probe[: probe.index('timings_seconds["gripper_convention_probe"]')]
-    assert probe.count("env.reset(seed=20260806)") >= 2
-    assert "gripper_convention_probe" in source
+    assert probe.count("env.reset(seed=20260806)") >= 1
+    assert "gripper_convention_probe" in runtime_source
 
 
 def test_runtime_phase_timings_are_closed_before_the_next_phase_starts() -> None:
@@ -299,7 +312,7 @@ def test_a_measured_probe_result_constructs_a_usable_convention() -> None:
     ambiguous = GripperConvention(
         closed_command=1.0,
         open_command=0.0,
-        measured_by_probe=("ambiguous" == "measured"),
+        measured_by_probe=False,
     )
     with pytest.raises(DroidActionExecutionError):
         droid_row_to_isaac_action(
