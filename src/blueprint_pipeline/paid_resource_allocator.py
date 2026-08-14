@@ -182,6 +182,10 @@ from .adp009d_native_microcheck_bundle import (
 from .articulated_native_diagnostic_bundle import (
     build_articulated_native_diagnostic_bundle,
 )
+from .adp009d_physics_backend_comparison import (
+    build_backend_profile,
+    validate_newton_canary_admission,
+)
 from .model_access_env import model_access_secret_status, normalize_model_access_env
 from .adp009d_ovrtx_vast import (
     PROBE_KIND as ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
@@ -1531,6 +1535,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--adp009d-articulated-diagnostic-request",
         help="Frozen articulated_native_diagnostic_request.v1 JSON.",
     )
+    gpu.add_argument(
+        "--adp009d-physics-backend",
+        choices=("physx", "newton"),
+        default="physx",
+    )
+    gpu.add_argument("--adp009d-newton-canary-admission", default=None)
     gpu.add_argument(
         "--adp009d-aura-particlefield",
         default=None,
@@ -5001,6 +5011,46 @@ def main(argv: Sequence[str] | None = None) -> int:
                 blockers.append("adp009d_articulated_native_requires_diagnostic_only")
             if articulated_native_requested and (selected_candidates or args.adp009d_controls):
                 blockers.append("adp009d_articulated_native_policy_or_controls_forbidden")
+            if args.adp009d_physics_backend == "newton":
+                if selected_candidates:
+                    blockers.append("adp009d_newton_policy_candidate_forbidden")
+                if not args.adp009d_controls or args.adp009d_diagnostic_only:
+                    blockers.append("adp009d_newton_controls_only_required")
+                if args.execute:
+                    admission_path = args.adp009d_newton_canary_admission
+                    if not admission_path:
+                        blockers.append("adp009d_newton_canary_admission_missing")
+                    else:
+                        try:
+                            newton_admission = json.loads(
+                                Path(admission_path)
+                                .expanduser()
+                                .resolve()
+                                .read_text(encoding="utf-8")
+                            )
+                            blockers.extend(
+                                validate_newton_canary_admission(
+                                    newton_admission,
+                                    profile=physics_backend_profile,
+                                )
+                            )
+                            if (
+                                newton_admission.get("max_spend_usd")
+                                != args.adp_max_spend_usd
+                                or newton_admission.get("hard_ttl_seconds")
+                                != args.adp_hard_ttl_seconds
+                            ):
+                                blockers.append(
+                                    "adp009d_newton_canary_admission_budget_binding_invalid"
+                                )
+                            if newton_admission.get(
+                                "allowed_active_vast_instance_ids"
+                            ) != sorted(set(args.adp_allowed_active_vast_instance_id)):
+                                blockers.append(
+                                    "adp009d_newton_canary_admission_concurrency_binding_invalid"
+                                )
+                        except (OSError, ValueError, TypeError):
+                            blockers.append("adp009d_newton_canary_admission_unreadable")
             gated_backbone_selected = "groot_n17_droid" in selected_candidates
             gated_backbone_access: dict[str, Any] | None = None
             if gated_backbone_selected and not args.adp009d_authorize_gated_backbone:
@@ -5051,6 +5101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             sage_collision_path=args.adp009d_sage_collision,
                             harness_manifest_path=args.adp009d_harness_manifest,
                             implementation_commit=control_identity["orchestrator_source_commit"],
+                            physics_backend=args.adp009d_physics_backend,
                             policy_candidate_id=args.adp009d_policy_candidate,
                             run_controls=args.adp009d_controls,
                             scenario_instance_path=args.adp009d_scenario_instance,
