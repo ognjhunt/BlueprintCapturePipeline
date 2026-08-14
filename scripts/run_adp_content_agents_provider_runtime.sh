@@ -93,6 +93,10 @@ if [ "${uv_rc}" -ne 0 ]; then
   exit "${uv_rc}"
 fi
 UV_BIN="$(command -v uv)"
+# The Vast Isaac image trusts the provider CA through the system TLS store, while
+# uv's bundled roots can reject the same PyPI connection with UnknownIssuer.
+# Use the host-native trust store for every subsequent uv download.
+export UV_NATIVE_TLS=true
 "${UV_BIN}" python install 3.12
 python_rc=$?
 if [ "${python_rc}" -ne 0 ]; then
