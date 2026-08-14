@@ -349,6 +349,59 @@ def _orchestrator_source_identity() -> dict[str, Any]:
     return {"commit": values["commit"], "tree": values["tree"], "checkout_clean": True}
 
 
+ORCHESTRATOR_RUNTIME_MEMBERS = {
+    "provider_runner": (
+        "provider_runtime/adp_content_agents_provider_runner.py",
+        ORCHESTRATOR_REPO_ROOT / "scripts/adp_content_agents_provider_runner.py",
+    ),
+    "provider_entrypoint": (
+        "provider_runtime/run_adp_content_agents_provider_runtime.sh",
+        ORCHESTRATOR_REPO_ROOT / "scripts/run_adp_content_agents_provider_runtime.sh",
+    ),
+    "provider_archive": (
+        "provider_runtime/provider_archive.py",
+        ORCHESTRATOR_REPO_ROOT / "src/blueprint_pipeline/provider_archive.py",
+    ),
+    "model_compatibility": (
+        "provider_runtime/content_agents_model_compatibility.py",
+        ORCHESTRATOR_REPO_ROOT
+        / "src/blueprint_pipeline/content_agents_model_compatibility.py",
+    ),
+}
+
+
+def _bundle_orchestrator_runtime_bindings(bundle_path: Path) -> dict[str, dict[str, Any]]:
+    """Prove copied provider code is byte-identical to the deployed checkout."""
+
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            members = set(archive.namelist())
+            records: dict[str, dict[str, Any]] = {}
+            for name, (member, source_path) in ORCHESTRATOR_RUNTIME_MEMBERS.items():
+                if member not in members:
+                    raise ContentAgentsBundlePreflightError(
+                        f"bundle_orchestrator_runtime_missing:{name}"
+                    )
+                if not source_path.is_file():
+                    raise ContentAgentsBundlePreflightError(
+                        f"orchestrator_runtime_source_missing:{name}"
+                    )
+                bundled = archive.read(member)
+                source = source_path.read_bytes()
+                if bundled != source:
+                    raise ContentAgentsBundlePreflightError(
+                        f"bundle_orchestrator_runtime_binding_invalid:{name}"
+                    )
+                records[name] = {
+                    "member": member,
+                    "sha256": _sha256_bytes(bundled),
+                    "size_bytes": len(bundled),
+                }
+            return records
+    except zipfile.BadZipFile as exc:
+        raise ContentAgentsBundlePreflightError("bundle_zip_invalid") from exc
+
+
 def _bundle_config_records(bundle_path: Path) -> dict[str, dict[str, Any]]:
     try:
         with zipfile.ZipFile(bundle_path) as archive:
@@ -623,6 +676,7 @@ def materialize_static_bundle_config_preflight(
         or _sha256_file(bundle_path) != bundle_receipt.get("bundle_sha256")
     ):
         raise ContentAgentsBundlePreflightError("bundle_receipt_binding_invalid")
+    runtime_bindings = _bundle_orchestrator_runtime_bindings(bundle_path)
     config_records = _bundle_config_records(bundle_path)
     input_records = _bundle_static_input_records(bundle_path)
     config_semantics = _bundle_config_semantics(bundle_path)
@@ -641,6 +695,7 @@ def materialize_static_bundle_config_preflight(
         "bundle_sha256": _sha256_file(bundle_path),
         "content_agents_source_commit": SOURCE_COMMIT,
         "content_agents_source_tree": SOURCE_TREE,
+        "orchestrator_runtime_bindings": runtime_bindings,
         "configs": config_records,
         "config_semantics": config_semantics,
         "input_records": input_records,
@@ -690,6 +745,7 @@ def materialize_bundle_config_preflight(
         or _sha256_file(bundle_path) != bundle_receipt.get("bundle_sha256")
     ):
         raise ContentAgentsBundlePreflightError("bundle_receipt_binding_invalid")
+    runtime_bindings = _bundle_orchestrator_runtime_bindings(bundle_path)
     config_records = _bundle_config_records(bundle_path)
     image_record = _inspect_image(docker=docker, image=image)
     # Run the image on the platform it was admitted for. Naming one global
@@ -895,6 +951,7 @@ def materialize_bundle_config_preflight(
         "bundle_sha256": _sha256_file(bundle_path),
         "content_agents_source_commit": SOURCE_COMMIT,
         "content_agents_source_tree": SOURCE_TREE,
+        "orchestrator_runtime_bindings": runtime_bindings,
         "local_container_image": image_record,
         "model_access": model_access,
         "configs": config_records,
@@ -973,6 +1030,7 @@ def materialize_blocked_local_bundle_config_preflight(
         or _sha256_file(bundle_path) != bundle_receipt.get("bundle_sha256")
     ):
         raise ContentAgentsBundlePreflightError("bundle_receipt_binding_invalid")
+    runtime_bindings = _bundle_orchestrator_runtime_bindings(bundle_path)
     try:
         probe = subprocess.run(
             [docker, "version", "--format", "{{json .}}"],
@@ -1016,6 +1074,7 @@ def materialize_blocked_local_bundle_config_preflight(
         "bundle_sha256": _sha256_file(bundle_path),
         "content_agents_source_commit": SOURCE_COMMIT,
         "content_agents_source_tree": SOURCE_TREE,
+        "orchestrator_runtime_bindings": runtime_bindings,
         "local_container_image_reference": image,
         "docker_probe": docker_probe,
         "configs": _bundle_config_records(bundle_path),
@@ -1080,6 +1139,12 @@ def validate_bundle_config_preflight(
         observed_configs = {}
     if preflight.get("configs") != observed_configs:
         blockers.append("adp_content_agents_config_preflight_config_digest_mismatch")
+    try:
+        runtime_bindings = _bundle_orchestrator_runtime_bindings(bundle_path)
+    except (OSError, ContentAgentsBundlePreflightError):
+        runtime_bindings = {}
+    if preflight.get("orchestrator_runtime_bindings") != runtime_bindings:
+        blockers.append("adp_content_agents_config_preflight_runtime_binding_mismatch")
     executions = preflight.get("executions")
     if not isinstance(executions, Mapping):
         blockers.append("adp_content_agents_config_preflight_execution_missing")
@@ -1245,6 +1310,12 @@ def validate_local_bundle_config_preflight(
         blockers.append(
             "adp_content_agents_local_config_preflight_config_digest_mismatch"
         )
+    try:
+        runtime_bindings = _bundle_orchestrator_runtime_bindings(bundle_path)
+    except (OSError, ContentAgentsBundlePreflightError):
+        runtime_bindings = {}
+    if preflight.get("orchestrator_runtime_bindings") != runtime_bindings:
+        blockers.append("adp_content_agents_local_config_preflight_runtime_binding_mismatch")
     executions = preflight.get("executions")
     if not isinstance(executions, Mapping):
         blockers.append("adp_content_agents_local_config_preflight_execution_missing")
@@ -1419,6 +1490,12 @@ def validate_static_bundle_config_preflight(
         blockers.append(
             "adp_content_agents_static_config_preflight_config_digest_mismatch"
         )
+    try:
+        runtime_bindings = _bundle_orchestrator_runtime_bindings(bundle_path)
+    except (OSError, ContentAgentsBundlePreflightError):
+        runtime_bindings = {}
+    if preflight.get("orchestrator_runtime_bindings") != runtime_bindings:
+        blockers.append("adp_content_agents_static_config_preflight_runtime_binding_mismatch")
     if preflight.get("input_records") != input_records:
         blockers.append(
             "adp_content_agents_static_config_preflight_input_digest_mismatch"
