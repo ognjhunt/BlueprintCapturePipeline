@@ -29,6 +29,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
 ALLOCATOR = REPO_ROOT / "src" / "blueprint_pipeline" / "paid_resource_allocator.py"
+REACHABILITY_DOC = (
+    REPO_ROOT / "docs" / "arm_decision_proof_v1" / "LIVE_LANE_REACHABILITY.md"
+)
 
 #: Probe kinds with no live profile builder, and why. Reasons are load-bearing:
 #: they say whether the gap is a decision or a debt.
@@ -215,3 +218,21 @@ def test_the_reachability_debt_is_stated_rather_than_implied() -> None:
         "either reachable from the website or a recorded decision. Add the "
         "builder rather than a row here; do not reopen the ledger to pass."
     )
+
+
+def test_operator_reachability_inventory_matches_executable_truth() -> None:
+    """Keep the production ledger from lagging resolved builder work."""
+
+    debt = [
+        kind
+        for kind, reason in NOT_WEBSITE_REACHABLE.items()
+        if reason == "awaiting_builder"
+    ]
+    expected = (
+        f"Current executable inventory: **{len(DISPATCHED)} dispatched, "
+        f"{len(EMITTED)} website-reachable, "
+        f"{len(NOT_WEBSITE_REACHABLE)} named\n"
+        f"non-reachable, {len(debt)} awaiting-builder.**"
+    )
+
+    assert expected in REACHABILITY_DOC.read_text(encoding="utf-8")

@@ -146,6 +146,18 @@ except ModuleNotFoundError:  # imported as part of the repository package
         validate_gravity_real_actuation,
         validate_newton_dynamics_representable,
     )
+try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_newton_gripper_drive import (
+        build_newton_gripper_probe_fields,
+        configure_newton_gripper_drive_candidate,
+        measure_gripper_convention_and_newton_drive,
+    )
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_newton_gripper_drive import (
+        build_newton_gripper_probe_fields,
+        configure_newton_gripper_drive_candidate,
+        measure_gripper_convention_and_newton_drive,
+    )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
 EXPECTED_ASSETS = {
@@ -1362,6 +1374,10 @@ def _configure_newton_actuator_limit_mapping(
     contract = backend_profile.get("actuator_limit_mapping")
     if contract != expected:
         raise RuntimeError("adp009d_newton_actuator_limit_mapping_contract_invalid")
+    drive_receipt = configure_newton_gripper_drive_candidate(
+        embodiment,
+        expected_contract=backend_profile.get("gripper_drive_candidate") or {},
+    )
     actuators = embodiment.scene_config.robot.actuators
     expected_actuators = expected["actuators"]
     if not isinstance(actuators, dict) or set(actuators) != set(expected_actuators):
@@ -1391,6 +1407,7 @@ def _configure_newton_actuator_limit_mapping(
         "contract_digest": expected["mapping_digest"],
         "observed_sim_limits": observed,
         "legacy_fields_cleared": True,
+        "gripper_drive_configuration": drive_receipt,
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = _canonical_digest(
@@ -2985,7 +3002,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         }
         env.reset(seed=20260806)
         robot = env.unwrapped.scene["robot"]
-        body_names_all = list(robot.data.body_names)
         approved_can = env.unwrapped.scene["approved_can"]
         hold_start_can_pose = _to_torch(approved_can.data.root_pose_w)[0].clone()
         hold_action = torch.zeros_like(action)
@@ -3152,47 +3168,14 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         # has been observed, and an ambiguous result must stay ambiguous.
         _phase("gripper_convention_probe")
         phase_started = time.monotonic()
-        finger_pair = ("left_inner_finger", "right_inner_finger")
-        finger_indices = [
-            body_names_all.index(name) for name in finger_pair if name in body_names_all
-        ]
-        gripper_probe: dict[str, Any] = {
-            "schema_version": "adp009d_gripper_convention_probe.v1",
-            "candidate_commands": [0.0, 1.0],
-            "finger_bodies": list(finger_pair),
-            "settle_steps": 30,
-        }
-        if len(finger_indices) == 2:
-            separations: dict[str, float] = {}
-            for command in (0.0, 1.0):
-                env.reset(seed=20260806)
-                probe_action = torch.zeros_like(action)
-                probe_action[:, :7] = _to_torch(robot.data.joint_pos)[:, :7]
-                probe_action[:, 7] = float(command)
-                for _ in range(30):
-                    env.step(probe_action)
-                poses = _to_torch(robot.data.body_pose_w)[0, finger_indices, :3]
-                separations[str(command)] = float(torch.linalg.vector_norm(poses[0] - poses[1]))
-            open_gap = separations["0.0"]
-            closed_gap = separations["1.0"]
-            travel = abs(open_gap - closed_gap)
-            gripper_probe["finger_separation_m"] = separations
-            gripper_probe["separation_travel_m"] = travel
-            # Below this the two commands are indistinguishable and the
-            # convention stays unmeasured rather than being guessed from noise.
-            if travel < 1.0e-3:
-                gripper_probe["status"] = "ambiguous"
-                gripper_probe["blockers"] = ["gripper_convention_travel_below_floor"]
-            else:
-                closes_at = 1.0 if closed_gap < open_gap else 0.0
-                gripper_probe["status"] = "measured"
-                gripper_probe["blockers"] = []
-                gripper_probe["closed_command"] = closes_at
-                gripper_probe["open_command"] = 1.0 - closes_at
-        else:
-            gripper_probe["status"] = "blocked"
-            gripper_probe["blockers"] = ["gripper_convention_finger_bodies_missing"]
-        gripper_probe["probe_digest"] = _canonical_digest(gripper_probe)
+        gripper_probe = measure_gripper_convention_and_newton_drive(
+            env=env,
+            action=action,
+            robot=robot,
+            torch=torch,
+            to_torch=_to_torch,
+            backend=backend,
+        )
         # The probe reset the environment, so restore the canonical hold state
         # the retained evidence above was measured under.
         env.reset(seed=20260806)
@@ -4121,6 +4104,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     partner_native_identifier_kind = "usd_rigid_body_prim"
                     partner_native_identifiers = [APPROVED_CAN_LIVE_ROOT_PRIM]
                     partner_prim_paths = [APPROVED_CAN_LIVE_ROOT_PRIM]
+                gripper_drive_probe_fields = build_newton_gripper_probe_fields(
+                    backend=backend,
+                    profile=backend_profile,
+                    mapping_receipt=newton_actuator_limit_mapping,
+                    convention_probe=gripper_probe,
+                )
                 backend_probe = {
                     "schema_version": "adp009d_physics_backend_probe.v1",
                     "status": "passed",
@@ -4232,7 +4221,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                             and newton_actuator_limit_mapping is not None
                             else None
                         ),
+                        **gripper_drive_probe_fields["asset_conversion"],
                     },
+                    "gripper_drive_trace": gripper_drive_probe_fields["trace"],
                     "contact_buffer": {
                         "nconmax": 1024 if backend == "newton" else None,
                         "overflow_observed": False,

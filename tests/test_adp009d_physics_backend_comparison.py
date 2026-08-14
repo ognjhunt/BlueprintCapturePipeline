@@ -46,6 +46,10 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
 from blueprint_pipeline.adp009d_approach_capture import (
     next_episode_start_restore_command,
 )
+from blueprint_pipeline.adp009d_newton_gripper_drive import (
+    assess_newton_gripper_drive_trace,
+    build_newton_gripper_drive_candidate,
+)
 from blueprint_pipeline.adp009d_provider_zero import build_provider_zero_receipt
 from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -157,7 +161,7 @@ def _newton_terminal_inputs() -> dict[str, dict]:
     return inputs
 
 
-def test_newton_blocked_canary_retains_terminal_comparison_evidence() -> None:
+def test_newton_blocked_canary_retains_terminal_identification_evidence() -> None:
     receipt = build_newton_canary_terminal_receipt(**_newton_terminal_inputs())
 
     assert receipt["status"] == "blocked"
@@ -168,7 +172,10 @@ def test_newton_blocked_canary_retains_terminal_comparison_evidence() -> None:
     assert receipt["provider_zero"]["live_instance_count"] == 0
     assert receipt["policy_verdict"] is None
     assert receipt["engine_promotion_performed"] is False
-    assert receipt["claim_ceiling"] == "controls_comparison_evidence_only"
+    assert receipt["claim_ceiling"] == (
+        "newton_native_drive_identification_candidate_only"
+    )
+    assert receipt["evidence_type"] == receipt["claim_ceiling"]
     assert set(receipt["evidence_input_digests"]) == {
         "admission",
         "allocator_result",
@@ -364,6 +371,9 @@ def test_newton_terminal_receipt_cli_compiles_retained_evidence(
 
 def _probe(profile: dict) -> dict:
     overlay = profile["asset_conversion"].get("robot_inertial_overlay") or {}
+    drive_trace = assess_newton_gripper_drive_trace(
+        positions_rad=[0.0] * 30, velocities_rad_s=[0.0] * 30
+    )
     value = {
         "schema_version": PROBE_SCHEMA_VERSION,
         "status": "passed",
@@ -436,7 +446,31 @@ def _probe(profile: dict) -> dict:
                 if profile["physics_backend"] == "newton"
                 else None
             ),
+            "newton_gripper_drive_contract_digest": (
+                profile["gripper_drive_candidate"]["contract_digest"]
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
+            "newton_gripper_drive_status": (
+                "applied_for_native_identification"
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
+            "newton_gripper_drive_receipt_digest": (
+                "sha256:" + "d" * 64
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
         },
+        "gripper_drive_trace": (
+            {
+                "status": "passed",
+                "blockers": [],
+                "commands": {"0.0": drive_trace, "1.0": drive_trace},
+            }
+            if profile["physics_backend"] == "newton"
+            else None
+        ),
         "contact_buffer": {"nconmax": 1024, "overflow_observed": False},
         "policy_query_count": 0,
         "candidate_outcomes_accessed": False,
@@ -445,6 +479,25 @@ def _probe(profile: dict) -> dict:
     }
     value["probe_digest"] = canonical_digest(value, digest_field="probe_digest")
     return value
+
+
+def test_newton_profile_binds_comparison_ineligible_gripper_drive_candidate() -> None:
+    profile = build_backend_profile("newton")
+
+    assert profile["gripper_drive_candidate"] == build_newton_gripper_drive_candidate()
+    assert profile["gripper_drive_candidate"]["comparison_eligible"] is False
+    assert "gripper_drive_candidate" not in build_backend_profile("physx")
+
+
+def test_newton_probe_rejects_missing_native_gripper_command_traces() -> None:
+    profile = build_backend_profile("newton")
+    probe = _probe(profile)
+    probe["gripper_drive_trace"]["commands"] = {}
+    probe["probe_digest"] = canonical_digest(probe, digest_field="probe_digest")
+
+    assert "adp009d_newton_probe_gripper_drive_invalid" in validate_backend_probe(
+        probe, profile=profile
+    )
 
 
 def _admission(profile: dict, now: datetime) -> dict:
@@ -921,7 +974,7 @@ def test_newton_admission_builder_binds_exact_allowed_concurrency() -> None:
     assert admission["unapproved_live_instance_count"] == 0
 
 
-def test_comparison_receipt_requires_exact_common_bindings() -> None:
+def test_comparison_receipt_blocks_identification_candidate_and_binding_drift() -> None:
     physx = _run("physx")
     newton = _run("newton")
     receipt = build_comparison_receipt(
@@ -931,9 +984,10 @@ def test_comparison_receipt_requires_exact_common_bindings() -> None:
     )
 
     assert receipt["schema_version"] == "adp009d_physics_backend_comparison.v1"
-    assert receipt["status"] == "completed"
-    assert receipt["evidence_parity_observed"] is True
-    assert receipt["promotion_review_eligible"] is True
+    assert receipt["status"] == "blocked"
+    assert receipt["evidence_parity_observed"] is False
+    assert receipt["promotion_review_eligible"] is False
+    assert "adp009d_newton_gripper_drive_comparison_ineligible" in receipt["blockers"]
     assert receipt["engine_promotion_performed"] is False
     assert receipt["default_backend_after_comparison"] == "physx"
     assert receipt["policy_verdict"] is None

@@ -12,10 +12,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 try:  # pragma: no cover - flat layout inside the sealed runtime bundle
+    from adp009d_newton_gripper_drive import build_newton_gripper_drive_candidate, validate_newton_gripper_drive_probe
     from decision_evidence_contracts import canonical_digest
 except ImportError:  # pragma: no cover - installed package layout
+    from .adp009d_newton_gripper_drive import build_newton_gripper_drive_candidate, validate_newton_gripper_drive_probe
     from .decision_evidence_contracts import canonical_digest
-
 
 ALLOWED_PHYSICS_BACKENDS = ("physx", "newton")
 DEFAULT_PHYSICS_BACKEND = "physx"
@@ -111,16 +112,10 @@ NEWTON_MAPPED_PHYSX_PROPERTY_NAMES = (
     "physxRigidBody:angularDamping",
     "physxRigidBody:linearDamping",
 )
-# PhysX applies per-body gravity disable; the MJCF the Newton importer emits
-# carries no ``gravcomp`` (or any other) expression of it, so the identical
-# sealed asset is a weightless arm under PhysX and a full-weight arm under
-# Newton.  Measured on the sealed Franka at the canonical pose: PhysX held to
-# 4.649e-06 rad, while Newton carried 18.28 kg -- 20.07 N*m at panda_joint4,
-# a 0.0502 rad steady-state droop at the shared kp=400, five times the 1.0e-2
-# hold gate before any transient.  That is not a Newton defect to tune away and
-# not a comparable pair of runs; it is a property whose semantics one backend
-# cannot represent, so it must fail closed rather than surface downstream as a
-# hold failure.
+# Newton cannot represent PhysX's per-body gravity disable: the imported MJCF
+# has no ``gravcomp``.  The sealed arm was weightless in PhysX but carried
+# 18.28 kg in Newton, with a 0.0502-rad joint-4 droop at kp=400.  Fail closed;
+# this backend-specific property cannot support a comparable controls pair.
 NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES = ("physxRigidBody:disableGravity",)
 NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES = (
     "physxLimit:",
@@ -704,6 +699,7 @@ def build_backend_profile(physics_backend: str) -> dict[str, Any]:
                 "actuator_limit_mapping": (
                     build_newton_actuator_limit_mapping_contract()
                 ),
+                "gripper_drive_candidate": build_newton_gripper_drive_candidate(),
                 "contact_model": {
                     "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
                     "contact_generation": "mujoco_warp_from_generic_usd_import",
@@ -942,6 +938,9 @@ def validate_backend_probe(
             ).startswith("sha256:")
         ):
             blockers.append("adp009d_newton_probe_actuator_limit_mapping_invalid")
+        blockers.extend(validate_newton_gripper_drive_probe(
+            conversion=conversion_row, profile=profile,
+            trace=value.get("gripper_drive_trace")))
     if (
         value.get("policy_query_count") != 0
         or value.get("candidate_outcomes_accessed") is not False
@@ -1403,10 +1402,11 @@ def build_newton_canary_terminal_receipt(
         evidence_input_digests["native_result"] = canonical_digest(native_result)
     if backend_profile is not None:
         evidence_input_digests["backend_profile"] = canonical_digest(profile)
+    drive_candidate = profile["gripper_drive_candidate"]
     receipt: dict[str, Any] = {
         "schema_version": CANARY_TERMINAL_SCHEMA_VERSION,
         "status": native_status,
-        "evidence_type": "physics_backend_comparison_evidence_only",
+        "evidence_type": drive_candidate["claim_ceiling"],
         "physics_backend": "newton",
         "backend_profile_digest": profile["profile_digest"],
         "implementation_commit": bundle_receipt.get("implementation_commit"),
@@ -1488,13 +1488,12 @@ def build_newton_canary_terminal_receipt(
         },
         "retry_count": 0,
         "engine_promotion_performed": False,
-        "claim_ceiling": "controls_comparison_evidence_only",
+        "claim_ceiling": drive_candidate["claim_ceiling"],
     }
     receipt["terminal_receipt_digest"] = canonical_digest(
         receipt, digest_field="terminal_receipt_digest"
     )
     return receipt
-
 
 def _validate_control_run(
     value: Mapping[str, Any], *, profile: Mapping[str, Any]
@@ -1723,6 +1722,8 @@ def build_comparison_receipt(
     }
     runs = {"physx": dict(physx_run), "newton": dict(newton_run)}
     blockers: list[str] = []
+    if profiles["newton"]["gripper_drive_candidate"]["comparison_eligible"] is not True:
+        blockers.append("adp009d_newton_gripper_drive_comparison_ineligible")
     for backend, run in runs.items():
         blockers.extend(_validate_control_run(run, profile=profiles[backend]))
         if run.get("status") != "completed":
@@ -1850,7 +1851,6 @@ def build_comparison_receipt(
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return receipt
-
 
 def validate_comparison_receipt(value: Mapping[str, Any]) -> list[str]:
     """Validate a comparison receipt by deterministic reconstruction."""
