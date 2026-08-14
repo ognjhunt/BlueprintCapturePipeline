@@ -40,7 +40,7 @@ def _load(path: Path):
     # a dataclass -- two already do -- fails to load at all without this, with an
     # AttributeError from inside the standard library that says nothing about
     # the builder.
-    sys.modules[path.stem] = module
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
