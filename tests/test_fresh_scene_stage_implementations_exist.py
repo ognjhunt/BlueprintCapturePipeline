@@ -2,15 +2,8 @@
 
 `fresh_scene_paired_target_preparation.STAGE_CONTRACTS` is the chain a fresh
 scene walks to become an ArtiFixer3D input set, and each stage names the module
-that produces it. Two stages -- `segment_sweep_freezes` and `segment_cutout_set`
--- name `blueprint_pipeline.public_scene_segment_contribution_cutout`, which is
-not in the tree.
-
-That is the whole reason a fresh scene cannot be prepared by code today. The
-chain reports it honestly (`fresh_scene_segment_cutout_set_missing`, at the
-right stage rather than several steps downstream), but a reader checking
-"is there a producer for every stage" sees thirteen `implementation` strings
-and reasonably concludes yes.
+that produces it. Every declared producer must remain importable after the
+segment-contribution cutout implementation landed.
 
 An import is the cheapest possible proof that a named producer is real, and it
 rediscovers the set from `STAGE_CONTRACTS` so a stage added later cannot ship
@@ -28,13 +21,7 @@ from blueprint_pipeline.fresh_scene_paired_target_preparation import STAGE_CONTR
 #: Stages whose producer is known-missing, with the work item that closes it.
 #: A stage listed here still fails the "declared" check below, so the gap
 #: cannot be widened silently -- only an entry removed when the module lands.
-KNOWN_MISSING_PRODUCERS: dict[str, str] = {
-    "blueprint_pipeline.public_scene_segment_contribution_cutout": (
-        "the deterministic exact-index standard-3DGS subset writer that emits "
-        "adp009d_segment_contribution_cutout_set.v1; nothing in the tree "
-        "produces a segment cutout set, which is what blocks ArtiFixer3D"
-    ),
-}
+KNOWN_MISSING_PRODUCERS: dict[str, str] = {}
 
 
 def test_the_stage_table_is_discoverable() -> None:

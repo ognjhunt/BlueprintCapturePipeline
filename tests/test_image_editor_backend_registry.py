@@ -17,9 +17,11 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.image_editor_backend_registry import (
+    ARTIFIXER_DIRECT_CAPABILITY,
     DEFAULT_REGISTRY_PATH,
     REGISTRY_SCHEMA_VERSION,
     REQUIRED_FIELDS,
+    SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY,
     ImageEditorRegistryError,
     admissible_for_delivery,
     load_registry,
@@ -39,6 +41,7 @@ def _registry(tmp_path: Path, backends: list[dict]) -> Path:
 def _entry(**overrides) -> dict:
     row = {
         "backend_id": "new_sota_editor",
+        "capability": ARTIFIXER_DIRECT_CAPABILITY,
         "model_identity": "Some Newer Editor v2",
         "license": "Apache-2.0",
         "license_url": "https://example.invalid/license",
@@ -61,7 +64,9 @@ def test_the_bundle_takes_its_admissible_set_from_the_registry() -> None:
 
     from blueprint_pipeline import public_scene_artifixer3d_bundle as bundle
 
-    assert bundle.DIRECT_EDITOR_BACKENDS == registered_backend_ids()
+    assert bundle.DIRECT_EDITOR_BACKENDS == registered_backend_ids(
+        capability=ARTIFIXER_DIRECT_CAPABILITY
+    )
     source = Path(bundle.__file__).read_text(encoding="utf-8")
     assert 'frozenset({"artifixer"' not in source, "the literal set came back"
 
@@ -73,6 +78,31 @@ def test_a_new_backend_is_admitted_by_adding_a_row(tmp_path: Path) -> None:
 
     assert registered_backend_ids(path) == frozenset({"new_sota_editor"})
     assert admissible_for_delivery("new_sota_editor", path=path) is True
+
+
+def test_capabilities_keep_semantic_teacher_rows_out_of_direct_editor_lane(
+    tmp_path: Path,
+) -> None:
+    semantic = _entry(
+        backend_id="semantic_only",
+        capability=SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY,
+    )
+    direct = _entry()
+    path = _registry(tmp_path, [direct, semantic])
+
+    assert registered_backend_ids(
+        path, capability=ARTIFIXER_DIRECT_CAPABILITY
+    ) == frozenset({"new_sota_editor"})
+    assert registered_backend_ids(
+        path, capability=SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY
+    ) == frozenset({"semantic_only"})
+
+
+def test_unknown_capability_is_refused(tmp_path: Path) -> None:
+    path = _registry(tmp_path, [_entry(capability="wrong_lane")])
+
+    with pytest.raises(ImageEditorRegistryError, match="capability_invalid"):
+        load_registry(path)
 
 
 @pytest.mark.parametrize("field", sorted(REQUIRED_FIELDS))

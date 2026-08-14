@@ -3,7 +3,8 @@
  "note": "Adding a newly released image editor is a row here, not a code change. Every row records the terms the model may be used under, because these artifacts reach customers. An entry without recorded terms is refused rather than defaulted.",
  "backends": [
   {
-   "backend_id": "artifixer",
+      "backend_id": "artifixer",
+      "capability": "artifixer_direct",
    "model_identity": "ArtiFixer3D paired appearance repair",
    "license": "see upstream ArtiFixer3D THIRD-PARTY-NOTICES",
    "license_url": "https://github.com/artifixer/artifixer3d",
@@ -11,14 +12,63 @@
    "recorded_on": "2026-08-13",
    "notes": "Upstream bundles several components; treat as non-commercial until each is cleared individually."
   },
-  {
-   "backend_id": "vibe_image_edit",
+    {
+      "backend_id": "vibe_image_edit",
+      "capability": "artifixer_direct",
    "model_identity": "VIBE-Image-Edit (iitolstykh/VIBE-Image-Edit)",
    "license": "Apache-2.0",
    "license_url": "https://github.com/ai-forever/VIBE",
    "commercial_use_permitted": true,
-   "recorded_on": "2026-08-13",
-   "notes": "Locally hosted open weights from ai-forever/VIBE, pinned by repository, revision and license in the bundle module. NOT a hosted API -- an earlier version of this row said 'provider terms of service' and linked OpenAI's terms, which was wrong. For an API editor run against our own captures, add a row whose terms are the provider's and record the model per run in editor_identity."
-  }
- ]
+      "recorded_on": "2026-08-13",
+      "notes": "Locally hosted open weights from ai-forever/VIBE, pinned by repository, revision and license in the bundle module. NOT a hosted API -- an earlier version of this row said 'provider terms of service' and linked OpenAI's terms, which was wrong. For an API editor run against our own captures, add a row whose terms are the provider's and record the model per run in editor_identity."
+    },
+    {
+      "backend_id": "openai_gpt_image_2_2026_04_21_semantic_teacher",
+      "capability": "semantic_teacher_image_edit",
+      "model_identity": "GPT Image 2 snapshot gpt-image-2-2026-04-21",
+      "license": "OpenAI Services Agreement and Usage Policies",
+      "license_url": "https://openai.com/policies/services-agreement/",
+      "commercial_use_permitted": true,
+      "recorded_on": "2026-08-13",
+      "execution": {
+        "transport_kind": "hosted_image_edit",
+        "adapter_id": "openai_images_edits_v1",
+        "provider_id": "openai_api",
+        "endpoint": "https://api.openai.com/v1/images/edits",
+        "endpoint_identity": "api.openai.com:443",
+        "model_snapshot": "gpt-image-2-2026-04-21",
+        "masked_image_edit_supported": true,
+        "high_fidelity_input_supported": true,
+        "output_formats": [
+          "png"
+        ],
+        "mask_encoding": "rgba_alpha_zero_edit_region_png",
+        "external_disclosure_required": true,
+        "default_options": {
+          "input_fidelity": "high",
+          "output_format": "png",
+          "quality": "high"
+        },
+        "pricing_snapshot": {
+          "currency": "USD",
+          "recorded_on": "2026-08-13",
+          "source_url": "https://openai.com/api/pricing/",
+          "image_input_usd_per_million_tokens": 8.0,
+          "cached_image_input_usd_per_million_tokens": 2.0,
+          "image_output_usd_per_million_tokens": 30.0,
+          "text_input_usd_per_million_tokens": 5.0,
+          "cached_text_input_usd_per_million_tokens": 1.25,
+          "conservative_max_usd_per_request": 1.0
+        }
+      },
+      "provider_terms": {
+        "data_used_for_training_by_default": false,
+        "training_opt_in_required": true,
+        "abuse_monitoring_retention_max_days": 30,
+        "zero_data_retention_eligible": true,
+        "source_url": "https://developers.openai.com/api/docs/guides/your-data"
+      },
+      "notes": "Semantic-teacher image editing only. Selection is explicit in each immutable packet; this row is not a Python default. A run additionally requires a human rights attestation and fresh paid authority."
+    }
+  ]
 }

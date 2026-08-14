@@ -22,7 +22,11 @@ from blueprint_pipeline.fresh_scene_semantic_teacher_image_edit import (
     SemanticTeacherImageEditError,
     materialize_semantic_teacher_image_edit_packet,
 )
-from blueprint_pipeline.image_editor_backend_registry import REGISTRY_SCHEMA_VERSION
+from blueprint_pipeline.image_editor_backend_registry import (
+    ARTIFIXER_DIRECT_CAPABILITY,
+    REGISTRY_SCHEMA_VERSION,
+    SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY,
+)
 from tests.test_public_scene_segment_mask_repair_preflight import _fixture
 
 
@@ -57,6 +61,7 @@ def _backend(
     hosted = transport_kind == "hosted_image_edit"
     return {
         "backend_id": backend_id,
+        "capability": SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY,
         "model_identity": f"Replaceable editor {backend_id}",
         "license": "commercial-provider-terms" if hosted else "Apache-2.0",
         "license_url": "https://example.invalid/editor-terms",
@@ -76,6 +81,34 @@ def _backend(
             "default_options": {"quality": "high"},
         },
     }
+
+
+def test_direct_editor_capability_is_refused_by_semantic_teacher_lane(
+    tmp_path: Path,
+) -> None:
+    candidate_path, candidate = _candidate(tmp_path)
+    registry_path, rows = _registry(tmp_path)
+    backend = rows["next_quarter_hosted_editor"]
+    backend["capability"] = ARTIFIXER_DIRECT_CAPABILITY
+    registry_path.write_text(
+        canonical_json(
+            {"schema_version": REGISTRY_SCHEMA_VERSION, "backends": list(rows.values())}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    rights = _rights(tmp_path, candidate=candidate, backend=backend)
+    request = _request(
+        candidate_path=candidate_path,
+        registry_path=registry_path,
+        rights_path=rights,
+        backend_id=backend["backend_id"],
+    )
+
+    with pytest.raises(SemanticTeacherImageEditError, match="execution_contract"):
+        materialize_semantic_teacher_image_edit_packet(
+            request=request, output_root=tmp_path / "must-not-write"
+        )
 
 
 def _registry(tmp_path: Path) -> tuple[Path, dict[str, dict]]:

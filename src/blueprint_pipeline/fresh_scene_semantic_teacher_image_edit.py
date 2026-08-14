@@ -23,6 +23,7 @@ from PIL import Image
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .image_editor_backend_registry import (
     REGISTRY_SCHEMA_VERSION,
+    SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY,
     ImageEditorRegistryError,
     load_registry,
 )
@@ -157,6 +158,7 @@ def _validated_backend(
     default_options = execution.get("default_options")
     if (
         backend.get("commercial_use_permitted") is not True
+        or backend.get("capability") != SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY
         or transport_kind not in SUPPORTED_TRANSPORT_KINDS
         or not str(execution.get("adapter_id") or "").strip()
         or not str(execution.get("provider_id") or "").strip()
