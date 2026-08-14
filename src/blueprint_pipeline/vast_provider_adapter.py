@@ -5303,6 +5303,9 @@ def _request_logs_and_fetch(
     log_transport_failure_ceiling = max(0, int(log_transport_failure_limit))
     output_probe_observed = False
     output_probe_failed = False
+    output_probe_first_observed_attempt: int | None = None
+    observed_blueprint_marker_lines: list[str] = []
+    observed_blueprint_marker_line_set: set[str] = set()
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -5330,6 +5333,20 @@ def _request_logs_and_fetch(
             except Exception as exc:  # pragma: no cover - live network dependent.
                 fetch_error = f"{type(exc).__name__}: {str(exc)[:300]}"
         output_text = attempt_text
+        # Vast returns a moving tail rather than an append-only log.  Preserve
+        # every structured Blueprint marker observed across polls so an early
+        # GPU/start marker cannot scroll out before the terminal output lands.
+        # The retained raw log remains the latest redacted tail; this compact
+        # list is the cumulative control-plane evidence used for classification.
+        for raw_line in attempt_text.splitlines():
+            marker_line = raw_line.strip()
+            if not marker_line.startswith("BLUEPRINT_"):
+                continue
+            marker_line = _redact_text(marker_line, secret_values)
+            if marker_line in observed_blueprint_marker_line_set:
+                continue
+            observed_blueprint_marker_line_set.add(marker_line)
+            observed_blueprint_marker_lines.append(marker_line)
         if attempt_text:
             log_bytes_ever_read = True
         if fetch_error and not attempt_text:
@@ -5497,9 +5514,20 @@ def _request_logs_and_fetch(
                 output_probe_failed = True
         if output_observed:
             output_probe_observed = True
+            if output_probe_first_observed_attempt is None:
+                output_probe_first_observed_attempt = attempt_index
+        waiting_for_post_output_log_refresh = bool(
+            output_probe_first_observed_attempt == attempt_index
+        )
         if marker_found:
             break_reason = "success_marker_found"
-        elif output_observed:
+        elif waiting_for_post_output_log_refresh:
+            # Object-store visibility can lead Vast's log tail by one poll.  A
+            # final bounded refresh preserves the upload/completion marker when
+            # it arrives just after the object, without extending the workload
+            # deadline or adding an automatic retry.
+            break_reason = ""
+        elif output_probe_first_observed_attempt is not None:
             break_reason = "provider_output_observed"
         elif log_transport_unavailable and output_probe is None:
             # With no second channel there is nothing left to wait for: the
@@ -5548,6 +5576,12 @@ def _request_logs_and_fetch(
         "output_probe_configured": output_probe is not None,
         "output_probe_observed": output_probe_observed,
         "output_probe_failed": output_probe_failed,
+        "output_probe_first_observed_attempt": output_probe_first_observed_attempt,
+        "post_output_log_refresh_performed": bool(
+            output_probe_first_observed_attempt is not None
+            and attempt_index > output_probe_first_observed_attempt
+        ),
+        "observed_blueprint_marker_lines": observed_blueprint_marker_lines,
         # A no-progress verdict that was suppressed because the only channel
         # reporting no progress was the one that never worked.
         "no_log_progress_deferred_to_output_probe": bool(
@@ -7697,6 +7731,11 @@ def run_vast_provider_adapter(
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
         )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
+        observed_marker_text = "\n".join(
+            _string_list(onstart_logs.get("observed_blueprint_marker_lines"))
+        )
+        if observed_marker_text:
+            heartbeat_text = "\n".join((heartbeat_text, observed_marker_text))
         if not _log_text_has_success_marker(
             heartbeat_text, log_success_markers
         ) and _log_result_saw_container_missing(onstart_logs):
