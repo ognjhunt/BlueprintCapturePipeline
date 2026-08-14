@@ -237,7 +237,7 @@ def _prepare_marigold_runtime(runtime: Path, request: Mapping[str, Any]) -> dict
             if not names or any(not name for name in names):
                 raise ValueError("aura_exact_residual_runtime_marigold_model_spec_invalid")
             snapshot = Path(
-                snapshot_download(
+                snapshot_download(  # nosec B615 - immutable revision is manifest-bound
                     repo_id=repository,
                     revision=revision,
                     cache_dir=str(cache),

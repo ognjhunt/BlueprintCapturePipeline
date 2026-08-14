@@ -20,6 +20,7 @@ import hmac
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -130,11 +131,26 @@ def signed_headers(
 def submit(
     *, endpoint: str, headers: Mapping[str, str], body: bytes, timeout: float = 30.0
 ) -> dict[str, Any]:
+    parsed = urllib.parse.urlsplit(endpoint)
+    loopback_http = parsed.scheme == "http" and parsed.hostname in {
+        "127.0.0.1",
+        "::1",
+        "localhost",
+    }
+    if (
+        (parsed.scheme != "https" and not loopback_http)
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        raise LaunchSubmissionError("intake endpoint must be HTTPS or loopback HTTP")
     request = urllib.request.Request(
         endpoint, data=body, headers=dict(headers), method="POST"
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(  # nosec B310 - endpoint validated above
+            request, timeout=timeout
+        ) as response:
             return {"http_status": response.status, "body": json.loads(response.read())}
     except urllib.error.HTTPError as exc:
         return {"http_status": exc.code, "body": exc.read().decode("utf-8")[:2000]}

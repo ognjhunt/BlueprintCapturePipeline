@@ -378,7 +378,7 @@ def _download_author_snapshot(destination: Path) -> None:
     try:
         from huggingface_hub import snapshot_download
 
-        snapshot_download(
+        snapshot_download(  # nosec B615 - immutable revision is contract-bound
             repo_id=_AUTHOR_DATA["repository"],
             repo_type="dataset",
             revision=_AUTHOR_DATA["revision"],

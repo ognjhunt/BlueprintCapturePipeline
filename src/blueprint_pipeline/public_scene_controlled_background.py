@@ -317,7 +317,7 @@ def execute_case(
             "none",
             "--read-only",
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,size=256m",
+            "/tmp:rw,noexec,nosuid,size=256m",  # nosec B108 - isolated container tmpfs
             "--mount",
             f"type=bind,src={source_root},dst=/source,readonly",
             "--mount",

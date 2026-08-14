@@ -35,7 +35,9 @@ READ_CHUNK_BYTES = 8 * 1024 * 1024
 
 
 def _request_json(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=120) as response:
+    with urllib.request.urlopen(  # nosec B310 - URL is built from fixed public GCS HTTPS origin
+        url, timeout=120
+    ) as response:
         return json.load(response)
 
 
@@ -70,7 +72,9 @@ def download_object(bucket: str, name: str, destination: Path) -> int:
     last_error: Exception | None = None
     for attempt in range(TRANSPORT_RETRY_ATTEMPTS):
         try:
-            with urllib.request.urlopen(url, timeout=600) as response:
+            with urllib.request.urlopen(  # nosec B310 - URL is built from fixed public GCS HTTPS origin
+                url, timeout=600
+            ) as response:
                 written = 0
                 with destination.open("wb") as handle:
                     while True:

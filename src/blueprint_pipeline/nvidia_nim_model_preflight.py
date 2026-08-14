@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .common import utc_now_iso, write_json
@@ -49,18 +50,28 @@ def _secret() -> tuple[str, str]:
 
 
 def _default_get(endpoint: str, headers: Mapping[str, str]) -> tuple[int, bytes]:
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("nvidia_nim_endpoint_not_public_https")
     request = urllib.request.Request(endpoint, headers=dict(headers), method="GET")
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(  # nosec B310 - public HTTPS endpoint validated above
+        request, timeout=30
+    ) as response:
         return int(response.status), response.read()
 
 
 def _default_post(
     endpoint: str, headers: Mapping[str, str], payload: bytes
 ) -> tuple[int, bytes]:
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("nvidia_nim_endpoint_not_public_https")
     request = urllib.request.Request(
         endpoint, data=payload, headers=dict(headers), method="POST"
     )
-    with urllib.request.urlopen(request, timeout=45) as response:
+    with urllib.request.urlopen(  # nosec B310 - public HTTPS endpoint validated above
+        request, timeout=45
+    ) as response:
         return int(response.status), response.read()
 
 

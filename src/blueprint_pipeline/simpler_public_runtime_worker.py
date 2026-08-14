@@ -393,11 +393,16 @@ def _vulkan_runtime_evidence(
 
 
 def _download(url: str, path: Path, *, expected_size: int, expected_sha256: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("download_url_not_public_https")
     path.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "BlueprintADPSimpler/1.0"})
     digest = hashlib.sha256()
     size = 0
-    with urllib.request.urlopen(request, timeout=120) as response, path.open("wb") as handle:
+    with urllib.request.urlopen(  # nosec B310 - public HTTPS URL validated above
+        request, timeout=120
+    ) as response, path.open("wb") as handle:
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
@@ -420,10 +425,12 @@ def _download_checkpoint_object(row: Mapping[str, Any], target: Path) -> None:
         f"?alt=media&generation={row['generation']}"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
-    md5 = hashlib.md5()  # noqa: S324 - required to verify the upstream GCS object identity.
+    md5 = hashlib.md5(usedforsecurity=False)
     size = 0
     request = urllib.request.Request(url, headers={"User-Agent": "BlueprintADPSimpler/1.0"})
-    with urllib.request.urlopen(request, timeout=120) as response, target.open("wb") as handle:
+    with urllib.request.urlopen(  # nosec B310 - fixed public GCS HTTPS origin
+        request, timeout=120
+    ) as response, target.open("wb") as handle:
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
@@ -539,7 +546,19 @@ def prepare_runtime(manifest: Mapping[str, Any], work_dir: Path) -> dict[str, An
                 raise ValueError("language_encoder_archive_path_traversal")
             if member.issym() or member.islnk():
                 raise ValueError("language_encoder_archive_link_member")
-        archive.extractall(encoder_dir)  # noqa: S202 - digest-bound members validated above.
+        for member in archive.getmembers():
+            target = encoder_dir / member.name
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise ValueError("language_encoder_archive_member_type_invalid")
+            source = archive.extractfile(member)
+            if source is None:
+                raise ValueError("language_encoder_archive_member_unreadable")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with source, target.open("wb") as destination:
+                shutil.copyfileobj(source, destination)
     _phase("language_encoder_acquisition", "completed")
 
     _phase("checkpoint_acquisition")
