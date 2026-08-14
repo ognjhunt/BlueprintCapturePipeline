@@ -261,6 +261,7 @@ APPROVED_CAN_ADAPTER_SHA256 = (
     "sha256:086199710beaeacea0d4894cc71b260f39a8357b562c8e6af298c924df11cc66"
 )
 APPROVED_CAN_SOURCE_COLLIDER_PRIM = "/canned_beverage/colliders/body_collider"
+APPROVED_CAN_LIVE_ROOT_PRIM = "/World/envs/env_0/approved_can"
 APPROVED_CAN_LIVE_COLLIDER_PRIM = "/World/envs/env_0/approved_can/colliders/body_collider"
 SAGE_SOURCE_ROOT_PRIM = "/Root"
 SAGE_LIVE_ROOT_PRIM = "/World/envs/env_0/sage_collision"
@@ -4055,6 +4056,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 partner_forces = probe_dynamics.get(
                     "body_contact_partner_force_world_n"
                 )
+                partner_filter_shapes = probe_dynamics.get(
+                    "body_contact_partner_filter_shapes"
+                )
+                partner_filter_object_names = probe_dynamics.get(
+                    "body_contact_partner_filter_object_names"
+                )
                 sage_collision_forces = probe_dynamics.get(
                     "body_contact_sage_collision_force_world_n"
                 )
@@ -4067,6 +4074,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     or not net_forces
                     or not isinstance(partner_forces, dict)
                     or not partner_forces
+                    or not isinstance(partner_filter_shapes, dict)
+                    or set(partner_filter_shapes) != set(partner_forces)
+                    or any(
+                        not isinstance(value, int) or value < 1
+                        for value in partner_filter_shapes.values()
+                    )
                     or not isinstance(sage_collision_forces, dict)
                     or not sage_collision_forces
                     or "closest_geometric_clearance_m" not in probe_sample
@@ -4075,6 +4088,40 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     raise RuntimeError(
                         "adp009d_backend_native_capability_probe_failed"
                     )
+                partner_root_prim = live_stage.GetPrimAtPath(
+                    APPROVED_CAN_LIVE_ROOT_PRIM
+                )
+                if not (partner_root_prim and partner_root_prim.IsValid()):
+                    raise RuntimeError(
+                        "adp009d_backend_contact_partner_live_root_missing"
+                    )
+                if backend == "newton":
+                    if not isinstance(partner_filter_object_names, dict):
+                        raise RuntimeError(
+                            "adp009d_newton_contact_partner_names_missing"
+                        )
+                    resolved_native_names = sorted(
+                        {
+                            str(name)
+                            for names in partner_filter_object_names.values()
+                            if isinstance(names, list)
+                            for name in names
+                        }
+                    )
+                    if (
+                        set(partner_filter_object_names) != set(partner_forces)
+                        or resolved_native_names != ["body_collider"]
+                    ):
+                        raise RuntimeError(
+                            "adp009d_newton_contact_partner_names_invalid"
+                        )
+                    partner_native_identifier_kind = "newton_shape_label"
+                    partner_native_identifiers = resolved_native_names
+                    partner_prim_paths = [APPROVED_CAN_LIVE_COLLIDER_PRIM]
+                else:
+                    partner_native_identifier_kind = "usd_rigid_body_prim"
+                    partner_native_identifiers = [APPROVED_CAN_LIVE_ROOT_PRIM]
+                    partner_prim_paths = [APPROVED_CAN_LIVE_ROOT_PRIM]
                 backend_probe = {
                     "schema_version": "adp009d_physics_backend_probe.v1",
                     "status": "passed",
@@ -4108,6 +4155,15 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     ],
                     "contact_readback": {
                         "force_vectors_world_n": list(net_forces.values()),
+                        # Source-stage prims are retained separately from the
+                        # backend-native counterpart identifier.  Newton's
+                        # public sensor reports the finalized shape label;
+                        # PhysX attribution is the validated live rigid root.
+                        "partner_prim_paths": partner_prim_paths,
+                        "partner_native_identifier_kind": (
+                            partner_native_identifier_kind
+                        ),
+                        "partner_native_identifiers": partner_native_identifiers,
                         "partner_force_vectors_world_n": list(
                             partner_forces.values()
                         ),
