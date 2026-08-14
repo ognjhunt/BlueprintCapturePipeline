@@ -19,6 +19,11 @@ from typing import Any
 
 
 try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_contact_envelope import contact_envelope_receipt_fields
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_contact_envelope import contact_envelope_receipt_fields
+
+try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_approach_capture import (
         APPROACH_GRIPPER_BODY_NAMES,
         APPROACH_MAX_JOINT_STEP_RAD,
@@ -3984,6 +3989,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "schema_version": "adp009d_scripted_control_ik_receipt.v1",
             "binding": control_ik_binding,
             "step_diagnostics": control_ik_step_diagnostics,
+            # Retain the approved contact envelope alongside the trace. Without
+            # it a run whose colliders were assembled against a different margin
+            # produces controls evidence indistinguishable from a correct one,
+            # and the mismatch can only surface later as an unexplained policy
+            # score rather than a typed runtime blocker.
+            **contact_envelope_receipt_fields(),
             "receipt_digest": "",
         }
         scripted_control_ik["receipt_digest"] = _canonical_digest(

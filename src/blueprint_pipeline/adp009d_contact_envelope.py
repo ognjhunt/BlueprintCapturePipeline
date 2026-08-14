@@ -238,6 +238,23 @@ def apply_contact_envelope_to_clearance(
     }
 
 
+def contact_envelope_receipt_fields() -> dict[str, Any]:
+    """The envelope fields every native arm-dynamics receipt must carry.
+
+    Producer side of `validate_dynamics_receipt_contact_envelope`. A receipt
+    built without these is indistinguishable from one whose colliders were
+    assembled against a different margin, and that difference would surface
+    later as an unexplained policy score rather than a typed runtime blocker.
+    """
+    envelope = canonical_contact_envelope()
+    return {
+        "effective_contact_envelope_m": envelope["effective_contact_envelope_m"],
+        "effective_contact_envelope_calculation": envelope[
+            "effective_contact_envelope_calculation"
+        ],
+    }
+
+
 def validate_dynamics_receipt_contact_envelope(
     receipt: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
