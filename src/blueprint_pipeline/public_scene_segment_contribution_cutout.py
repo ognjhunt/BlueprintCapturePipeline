@@ -9,6 +9,7 @@ The complete projected deleted layer must therefore become later repair support.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import shutil
@@ -495,12 +496,49 @@ def materialize_segment_contribution_cutout_set_from_tool_request(
     )
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    """Expose sweep-freeze and digest-bound cutout requests to production CLIs."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    sweep = commands.add_parser("sweep-freeze")
+    sweep.add_argument("--excision-freeze", required=True)
+    sweep.add_argument("--output-root", required=True)
+    cutout = commands.add_parser("cutout-from-request")
+    cutout.add_argument("--request", required=True)
+    cutout.add_argument("--output-root", required=True)
+    args = parser.parse_args(argv)
+    if args.command == "sweep-freeze":
+        result = materialize_segment_contribution_sweep_freeze(
+            excision_freeze_path=args.excision_freeze,
+            output_root=args.output_root,
+        )
+    else:
+        request_path = Path(args.request).expanduser().resolve()
+        request = _read(request_path, code="segment_cutout_tool_request_unreadable")
+        if request_path.is_symlink():
+            raise SegmentContributionCutoutError(
+                ["segment_cutout_tool_request_unreadable"]
+            )
+        result = materialize_segment_contribution_cutout_set_from_tool_request(
+            request=request,
+            output_root=args.output_root,
+        )
+    print(canonical_json(result))
+    return 0
+
+
 __all__ = [
     "CUTOUT_SET_SCHEMA",
     "SELECTION_RULE",
     "SWEEP_KIND",
     "SegmentContributionCutoutError",
+    "main",
     "materialize_segment_contribution_cutout_set",
     "materialize_segment_contribution_cutout_set_from_tool_request",
     "materialize_segment_contribution_sweep_freeze",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
