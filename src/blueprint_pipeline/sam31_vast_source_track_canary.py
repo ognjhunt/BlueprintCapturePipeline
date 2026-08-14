@@ -90,8 +90,12 @@ def _watchdog_valid(
     watchdog: Mapping[str, Any], *, now_epoch: float, hard_ttl_seconds: int
 ) -> bool:
     try:
-        pid = int(watchdog.get("pid") or 0)
-        deadline = float(watchdog.get("deadline_epoch") or 0)
+        pid = int(watchdog.get("watchdog_pid") or watchdog.get("pid") or 0)
+        deadline = float(
+            watchdog.get("watchdog_deadline_epoch")
+            or watchdog.get("deadline_epoch")
+            or 0
+        )
     except (TypeError, ValueError):
         return False
     if (

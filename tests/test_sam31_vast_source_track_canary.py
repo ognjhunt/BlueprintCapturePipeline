@@ -18,6 +18,7 @@ from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
 from blueprint_pipeline.sam31_vast_source_track_canary import (
     Sam31VastCanaryError,
     _bootstrap_script,
+    _watchdog_valid,
     run_sam31_vast_source_track_canary,
     validate_sam31_runtime_result,
 )
@@ -78,6 +79,21 @@ def _preflight() -> dict:
         "container_disk_bytes": 80 * 1024**3,
         "on_demand_price_usd_per_hour": 0.5,
     }
+
+
+def test_watchdog_validator_accepts_canonical_handoff_field_names(monkeypatch) -> None:
+    monkeypatch.setattr("os.kill", lambda pid, signal: None)
+    assert _watchdog_valid(
+        {
+            "status": "armed",
+            "independent_process": True,
+            "watchdog_pid": 123,
+            "watchdog_deadline_epoch": 2000,
+            "pod_name_prefix": "blueprint-sam31-source-tracks-bound-run-",
+        },
+        now_epoch=1000,
+        hard_ttl_seconds=60,
+    )
 
 
 def _runtime_result() -> dict:
