@@ -626,6 +626,7 @@ class IsaacEpisodeAdapter:
         self._backend_contact_configuration = dict(backend_contact_configuration)
         self._partner_contact_sensors = dict(partner_contact_sensors or {})
         self._partner_filter_shapes: dict[str, int] = {}
+        self._partner_filter_object_names: dict[str, list[str]] = {}
         self._task_object_radius_m = (
             None if task_object_radius_m is None else float(task_object_radius_m)
         )
@@ -786,7 +787,11 @@ class IsaacEpisodeAdapter:
         contact_sensors: Mapping[str, Any],
         *,
         filter_label: str,
-    ) -> tuple[dict[str, list[float]] | None, dict[str, int]]:
+    ) -> tuple[
+        dict[str, list[float]] | None,
+        dict[str, int],
+        dict[str, list[str]],
+    ]:
         """Read one explicit filtered-contact category without changing physics.
 
         Supplementary to ``net_forces_w``: a stalled finger reporting a large net
@@ -801,9 +806,10 @@ class IsaacEpisodeAdapter:
         """
 
         if not contact_sensors:
-            return None, {}
+            return None, {}, {}
         result: dict[str, list[float]] = {}
         filter_shapes: dict[str, int] = {}
+        filter_object_names: dict[str, list[str]] = {}
         for name, sensor in sorted(contact_sensors.items()):
             body_names = list(sensor.body_names)
             if len(body_names) != 1:
@@ -835,18 +841,34 @@ class IsaacEpisodeAdapter:
                 )
             result[str(body_names[0])] = vector
             filter_shapes[str(body_names[0])] = resolved_filter_shapes
+            native_names = getattr(sensor, "filter_object_names", None)
+            if native_names is not None:
+                names = [str(value) for value in native_names]
+                if (
+                    len(names) != resolved_filter_shapes
+                    or not names
+                    or any(not value for value in names)
+                ):
+                    raise IsaacEpisodeAdapterError(
+                        [
+                            "isaac_episode_contact_filter_object_names_invalid:"
+                            + f"{filter_label}:{name}"
+                        ]
+                    )
+                filter_object_names[str(body_names[0])] = names
         if not result:
-            return None, {}
-        return result, filter_shapes
+            return None, {}, {}
+        return result, filter_shapes, filter_object_names
 
     def _body_contact_partner_forces_n(self) -> dict[str, list[float]] | None:
         """Read the approved-can filtered-contact category."""
 
-        forces, filter_shapes = self._body_filtered_contact_forces_n(
+        forces, filter_shapes, filter_object_names = self._body_filtered_contact_forces_n(
             self._partner_contact_sensors,
             filter_label="approved_can",
         )
         self._partner_filter_shapes = filter_shapes
+        self._partner_filter_object_names = filter_object_names
         return forces
 
     def _body_contact_sage_collision_forces_n(self) -> dict[str, list[float]] | None:
@@ -857,7 +879,7 @@ class IsaacEpisodeAdapter:
         filter-shape count is nonzero; an unmatched expression is withheld.
         """
 
-        forces, filter_shapes = self._body_filtered_contact_forces_n(
+        forces, filter_shapes, _ = self._body_filtered_contact_forces_n(
             self._sage_collision_contact_sensors,
             filter_label="sage_collision",
         )
@@ -913,6 +935,13 @@ class IsaacEpisodeAdapter:
             # partner force evidence that the partner is not in contact, rather
             # than evidence that the filter expression never matched anything.
             "body_contact_partner_filter_shapes": dict(self._partner_filter_shapes),
+            # Newton exposes the finalized native counterpart labels through
+            # ContactSensor.filter_object_names.  PhysX does not, so this map
+            # is intentionally empty there and the live USD root is verified
+            # by the runtime instead.
+            "body_contact_partner_filter_object_names": dict(
+                self._partner_filter_object_names
+            ),
             "body_contact_sage_collision_force_world_n": (
                 self._body_contact_sage_collision_forces_n()
             ),

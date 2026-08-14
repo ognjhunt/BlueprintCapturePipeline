@@ -971,30 +971,39 @@ def test_resolved_filter_shape_count_is_reported_with_partner_forces() -> None:
             self.force_matrix_w = matrix
 
     class _Sensor:
-        def __init__(self, body, matrix):
+        def __init__(self, body, matrix, filter_object_names=None):
             self.body_names = [body]
             self.data = _Data(matrix)
+            self.filter_object_names = filter_object_names
 
     adapter = IsaacEpisodeAdapter.__new__(IsaacEpisodeAdapter)
     adapter._to_torch = lambda value: value
     adapter._partner_filter_shapes = {}
+    adapter._partner_filter_object_names = {}
 
     # One env, one body, one resolved filter shape, zero force.
     import numpy as np
 
     resolved = np.zeros((1, 1, 1, 3))
-    adapter._partner_contact_sensors = {"s": _Sensor("left_inner_finger", resolved)}
+    adapter._partner_contact_sensors = {
+        "s": _Sensor("left_inner_finger", resolved, ["body_collider"])
+    }
     forces = adapter._body_contact_partner_forces_n()
     assert forces == {"left_inner_finger": [0.0, 0.0, 0.0]}
     assert adapter._partner_filter_shapes == {"left_inner_finger": 1}
+    assert adapter._partner_filter_object_names == {
+        "left_inner_finger": ["body_collider"]
+    }
 
     # Zero filter shapes: the expression matched nothing, so withhold rather
     # than report a zero that would read as "the partner is not touching".
     unmatched = np.zeros((1, 1, 0, 3))
     adapter._partner_filter_shapes = {}
+    adapter._partner_filter_object_names = {}
     adapter._partner_contact_sensors = {"s": _Sensor("left_inner_finger", unmatched)}
     assert adapter._body_contact_partner_forces_n() is None
     assert adapter._partner_filter_shapes == {}
+    assert adapter._partner_filter_object_names == {}
 
     # The SAGE collision filter is a separate category.  It must retain its own
     # resolved-shape count so a zero can filter cannot be misread as evidence
