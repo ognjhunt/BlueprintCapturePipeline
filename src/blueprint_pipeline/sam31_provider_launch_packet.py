@@ -123,6 +123,90 @@ def _finite(value: Any, *, positive: bool = False) -> bool:
     )
 
 
+def materialize_sam31_worker_stack_manifest(
+    *,
+    source_commit_sha: str,
+    runtime_image_identity: str,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal the exact code, image, checkpoint, and license stack."""
+
+    if (
+        _COMMIT.fullmatch(source_commit_sha) is None
+        or _IMAGE.fullmatch(runtime_image_identity) is None
+    ):
+        raise Sam31ProviderLaunchPacketError("sam31_worker_stack_configuration_invalid")
+    manifest: dict[str, Any] = {
+        "schema_version": WORKER_STACK_SCHEMA_VERSION,
+        "source_commit_sha": source_commit_sha,
+        "runtime_image_identity": runtime_image_identity,
+        "runtime_digest": runtime_image_identity.rpartition("@")[2],
+        "official_code_revision": OFFICIAL_CODE_REVISION,
+        "checkpoint_repository_revision": CHECKPOINT_REPOSITORY_REVISION,
+        "checkpoint_digest": CHECKPOINT_DIGEST,
+        "license_terms_digest": LICENSE_TERMS_DIGEST,
+        "manifest_digest": "",
+    }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    _output(
+        output_path,
+        manifest,
+        code="sam31_worker_stack_manifest_output_exists",
+    )
+    return manifest
+
+
+def materialize_sam31_execution_authorization(
+    *,
+    source_commit_sha: str,
+    runtime_image_identity: str,
+    authorized_by: str,
+    authorized_on: str,
+    authority_reference: str,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Bind retained human execution authority to one exact code/image pair."""
+
+    if (
+        _COMMIT.fullmatch(source_commit_sha) is None
+        or _IMAGE.fullmatch(runtime_image_identity) is None
+        or not authorized_by.strip()
+        or not authorized_on.strip()
+        or not authority_reference.strip()
+    ):
+        raise Sam31ProviderLaunchPacketError(
+            "sam31_execution_authorization_configuration_invalid"
+        )
+    authorization: dict[str, Any] = {
+        "schema_version": EXECUTION_AUTHORIZATION_SCHEMA_VERSION,
+        "status": "authorized",
+        "source_commit_sha": source_commit_sha,
+        "runtime_image_identity": runtime_image_identity,
+        "external_execution_authorized": True,
+        "network_access_during_inference_forbidden": True,
+        "model_self_grading_forbidden": True,
+        "metric_claim_upgrade_forbidden": True,
+        "physics_claim_upgrade_forbidden": True,
+        "physical_claim_upgrade_forbidden": True,
+        "authorized_by": authorized_by.strip(),
+        "authorized_on": authorized_on.strip(),
+        "authority_reference": authority_reference.strip(),
+        "authority_issued_by_agent": False,
+        "receipt_digest": "",
+    }
+    authorization["receipt_digest"] = canonical_digest(
+        authorization, digest_field="receipt_digest"
+    )
+    _output(
+        output_path,
+        authorization,
+        code="sam31_execution_authorization_output_exists",
+    )
+    return authorization
+
+
 def _authorization_sources(
     *,
     license_path: Path,
@@ -593,6 +677,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    worker_stack = commands.add_parser("worker-stack")
+    worker_stack.add_argument("--source-commit", required=True)
+    worker_stack.add_argument("--runtime-image-identity", required=True)
+    worker_stack.add_argument("--output", required=True)
+    execution = commands.add_parser("execution-authorization")
+    execution.add_argument("--source-commit", required=True)
+    execution.add_argument("--runtime-image-identity", required=True)
+    execution.add_argument("--authorized-by", required=True)
+    execution.add_argument("--authorized-on", required=True)
+    execution.add_argument("--authority-reference", required=True)
+    execution.add_argument("--output", required=True)
     profile = commands.add_parser("profile")
     profile.add_argument("--worker-stack-manifest", required=True)
     profile.add_argument("--runtime-image-build-receipt", required=True)
@@ -626,7 +721,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--authority-id", required=True)
     gpu.add_argument("--output", required=True)
     args = parser.parse_args(argv)
-    if args.command == "profile":
+    if args.command == "worker-stack":
+        materialize_sam31_worker_stack_manifest(
+            source_commit_sha=args.source_commit,
+            runtime_image_identity=args.runtime_image_identity,
+            output_path=args.output,
+        )
+    elif args.command == "execution-authorization":
+        materialize_sam31_execution_authorization(
+            source_commit_sha=args.source_commit,
+            runtime_image_identity=args.runtime_image_identity,
+            authorized_by=args.authorized_by,
+            authorized_on=args.authorized_on,
+            authority_reference=args.authority_reference,
+            output_path=args.output,
+        )
+    elif args.command == "profile":
         materialize_sam31_provider_profile(
             worker_stack_manifest_path=args.worker_stack_manifest,
             runtime_image_build_receipt_path=args.runtime_image_build_receipt,
@@ -674,7 +784,9 @@ __all__ = [
     "TRADE_CONTROLS_SCHEMA_VERSION",
     "WORKER_STACK_SCHEMA_VERSION",
     "materialize_sam31_gpu_canary_request",
+    "materialize_sam31_execution_authorization",
     "materialize_sam31_provider_profile",
+    "materialize_sam31_worker_stack_manifest",
 ]
 
 

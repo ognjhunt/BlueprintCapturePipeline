@@ -24,8 +24,10 @@ from blueprint_pipeline.sam31_provider_launch_packet import (
     WORKER_STACK_SCHEMA_VERSION,
     Sam31ProviderLaunchPacketError,
     main,
+    materialize_sam31_execution_authorization,
     materialize_sam31_gpu_canary_request,
     materialize_sam31_provider_profile,
+    materialize_sam31_worker_stack_manifest,
 )
 from blueprint_pipeline.sam31_source_track_canary_worker import (
     build_sam31_source_track_input_bundle,
@@ -301,6 +303,63 @@ def test_materializes_exact_provider_profile_from_source_bytes(tmp_path: Path) -
         blockers,
     )
     assert blockers == []
+
+
+def test_cli_materializes_missing_worker_stack_and_execution_authority(
+    tmp_path: Path,
+) -> None:
+    stack_path = tmp_path / "worker-stack-cli.json"
+    execution_path = tmp_path / "execution-authority-cli.json"
+    assert main(
+        [
+            "worker-stack",
+            "--source-commit",
+            COMMIT,
+            "--runtime-image-identity",
+            IMAGE,
+            "--output",
+            str(stack_path),
+        ]
+    ) == 0
+    assert main(
+        [
+            "execution-authorization",
+            "--source-commit",
+            COMMIT,
+            "--runtime-image-identity",
+            IMAGE,
+            "--authorized-by",
+            "fixture-human",
+            "--authorized-on",
+            "2026-08-14T00:00:00Z",
+            "--authority-reference",
+            "retained user authorization",
+            "--output",
+            str(execution_path),
+        ]
+    ) == 0
+    stack = json.loads(stack_path.read_text())
+    execution = json.loads(execution_path.read_text())
+    assert stack == materialize_sam31_worker_stack_manifest(
+        source_commit_sha=COMMIT,
+        runtime_image_identity=IMAGE,
+        output_path=tmp_path / "worker-stack-function.json",
+    )
+    assert execution == materialize_sam31_execution_authorization(
+        source_commit_sha=COMMIT,
+        runtime_image_identity=IMAGE,
+        authorized_by="fixture-human",
+        authorized_on="2026-08-14T00:00:00Z",
+        authority_reference="retained user authorization",
+        output_path=tmp_path / "execution-authority-function.json",
+    )
+    assert stack["manifest_digest"] == canonical_digest(
+        stack, digest_field="manifest_digest"
+    )
+    assert execution["receipt_digest"] == canonical_digest(
+        execution, digest_field="receipt_digest"
+    )
+    assert execution["authority_issued_by_agent"] is False
 
 
 def test_materialized_gpu_request_passes_existing_dry_admission(tmp_path: Path) -> None:
