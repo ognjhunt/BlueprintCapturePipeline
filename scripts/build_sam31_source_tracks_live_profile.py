@@ -107,7 +107,11 @@ def build_sam31_source_tracks_live_profile(
         )
     except ValueError as exc:
         blockers.append(str(exc))
-    if token_file.stat().st_mode & 0o077:
+    # Production provider secrets are deliberately ``0640 root:blueprint``:
+    # root installs them and the hardened service account reads them through
+    # its private group.  Accept that canonical shape as well as owner-only
+    # ``0600`` while still refusing group write/execute and every other bit.
+    if token_file.stat().st_mode & 0o027:
         blockers.append("sam31_live_profile_hf_token_permissions_not_0600")
     if blockers:
         raise TaskEvaluationLaunchError(",".join(sorted(set(blockers))))

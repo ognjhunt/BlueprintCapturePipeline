@@ -54,7 +54,10 @@ def _read_private_secret(path_value: str | Path | None) -> tuple[str, list[str]]
         value = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError):
         return "", ["sam31_hf_token_file_unreadable"]
-    if mode != 0o600:
+    # The canonical service secret is ``0640 root:blueprint``.  Owner-only
+    # ``0600`` remains valid for hermetic/local runs; group write/execute and
+    # every world permission remain forbidden.
+    if mode & 0o027:
         blockers.append("sam31_hf_token_file_permissions_not_0600")
     if not value or len(value) > 4096 or "\n" in value or "\r" in value:
         blockers.append("sam31_hf_token_invalid")
