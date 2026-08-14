@@ -77,6 +77,78 @@ except ModuleNotFoundError:  # imported as part of the repository package
         validate_wrist_observable_episode_start_restore,
         world_to_base_rotation_row_major_xyzw,
     )
+try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        contact_envelope_from_physx_sdf_settings,
+    )
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        contact_envelope_from_physx_sdf_settings,
+    )
+try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_hold_trace import (
+        HOLD_TRACE_SCHEMA_VERSION,
+        HoldTraceError,
+        classify_arm_hold_trace,
+        extract_arm_effort_limits,
+        extract_arm_sample,
+    )
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_hold_trace import (
+        HOLD_TRACE_SCHEMA_VERSION,
+        HoldTraceError,
+        classify_arm_hold_trace,
+        extract_arm_effort_limits,
+        extract_arm_sample,
+    )
+try:  # flat provider-bundle layout, where this file runs as a script
+    from adp009d_physics_backend_comparison import (
+        DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+        DROID_FRANKA_ROBOTIQ_USD_URI,
+        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
+        FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
+        FRANKA_SOURCE_MESH_SCALE,
+        GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
+        NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
+        NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES,
+        NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
+        ROBOTIQ_BODY_MASSES_KG,
+        build_backend_contact_configuration,
+        build_backend_profile,
+        build_gravity_real_actuation_contract,
+        build_newton_actuator_limit_mapping_contract,
+        build_newton_robot_inertial_overlay_contract,
+        normalize_physics_backend,
+        validate_backend_probe,
+        validate_backend_profile,
+        validate_gravity_real_actuation,
+        validate_newton_dynamics_representable,
+    )
+except ModuleNotFoundError:  # imported as part of the repository package
+    from .adp009d_physics_backend_comparison import (
+        DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+        DROID_FRANKA_ROBOTIQ_USD_URI,
+        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
+        FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
+        FRANKA_SOURCE_MESH_SCALE,
+        GRAVITY_REAL_ARM_ACTUATOR_GROUPS,
+        NEWTON_MAPPED_PHYSX_PROPERTY_NAMES,
+        NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES,
+        NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES,
+        ROBOTIQ_BODY_MASSES_KG,
+        build_backend_contact_configuration,
+        build_backend_profile,
+        build_gravity_real_actuation_contract,
+        build_newton_actuator_limit_mapping_contract,
+        build_newton_robot_inertial_overlay_contract,
+        normalize_physics_backend,
+        validate_backend_probe,
+        validate_backend_profile,
+        validate_gravity_real_actuation,
+        validate_newton_dynamics_representable,
+    )
 
 RESULT_NAME = "adp009d_native_microcheck.json"
 EXPECTED_ASSETS = {
@@ -191,7 +263,7 @@ def _resolve_aura_appearance(runtime: Path) -> tuple[Path | None, str | None]:
 
 AURA_PARTICLEFIELD_PRIM = "/World/AuraAppearance/GaussianSurflets"
 APPROVED_CAN_ADAPTER_SHA256 = (
-    "sha256:5db5bc33b72983065bd47e30db0c5945ab3cba8fb3caeb6290bf07edc7337adc"
+    "sha256:086199710beaeacea0d4894cc71b260f39a8357b562c8e6af298c924df11cc66"
 )
 APPROVED_CAN_SOURCE_COLLIDER_PRIM = "/canned_beverage/colliders/body_collider"
 APPROVED_CAN_LIVE_COLLIDER_PRIM = "/World/envs/env_0/approved_can/colliders/body_collider"
@@ -214,6 +286,190 @@ ISAAC_LAB_REVISION = "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
 ROBOT_BASE_POSITION_M = (3.4681748, -2.8100837, 0.2766791)
 ROBOT_BASE_YAW_RAD = -math.pi / 2
 CAN_START_POSITION_M = (3.4681748, -3.3100837, 0.5264650138348479)
+APPROVED_CAN_RADIUS_M = 0.031094726014345042
+APPROVED_CAN_HEIGHT_M = 0.1694279937744141
+# Read-only contact partner used to name what a stalled finger is touching.
+# The filter names the can's rigid body, not its collider mesh: PhysX resolves
+# filter patterns against rigid bodies, and `PhysicsRigidBodyAPI` is applied at
+# the `canned_beverage` root while `colliders/body_collider` only carries
+# `PhysicsCollisionAPI`.
+CONTACT_PARTNER_FILTER_LABEL = "approved_can"
+CONTACT_PARTNER_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/approved_can"
+# Canaries 47488171 and 47489958 proved that neither the PhysX spawn label
+# ``approved_can`` nor the authored USD rigid-body name ``canned_beverage`` is
+# retained as a Newton body label.  The sealed USD has exactly one authored can
+# collision shape, ``/canned_beverage/colliders/body_collider``.  Newton's
+# native contact adapter supports shape-level partner filtering, so bind that
+# exact authored collider rather than guessing another converted body label.
+NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR = "*body_collider"
+# The retained paid controls receipt proved that the can filter resolved one
+# shape and carried zero force while the left finger carried 8.6 N net force.
+# That rules out the can, but not the sealed SAGE collision asset versus any
+# other unfiltered source.  This separate, read-only scope makes that next
+# distinction without changing collision, controller, or task geometry.
+CONTACT_SAGE_COLLISION_FILTER_LABEL = "sage_collision"
+CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/sage_collision"
+# SAGE is a static collection of collision shapes and deliberately has no
+# rigid body.  Newton therefore needs shape-level filters.  These suffixes are
+# the exact 15 active shapes in the digest-bound task-collision derivative;
+# suffix globs work whether Newton labels shapes by bare name or full USD path.
+NEWTON_SAGE_COLLISION_SHAPE_LABELS = (
+    "SM_floorplan",
+    "Z6TL2HRVAIIBIPTUKE888888",
+    "ZBRQEFBVAI3DWPTUKY888888",
+    "ZE6ZHARVAII2IPTUL4888888",
+    "ZEMALJZVAJTQWPTUK4888888",
+    "ZEO7DVBVAI7DEPTUKU888888",
+    "ZEOP4DRVAIJFSPTUKE888888",
+    "ZHQYBPJVAI3AUPTULE888888",
+    "ZHQYGJJVAJYEYPTUK4888888",
+    "ZV67OQJVAJSVCPTULY888888",
+    "ZXXPXAZVAJ3T6PTULI888888",
+    "_IMCHJBVAV7AMPTUKI888888",
+    "_K7DXDRVAZU7IPTULI888888_004",
+    "_LTFTHJVAZ3VMPTUJU888888",
+    "_PROTIZVAJTMCPTULU888888",
+)
+NEWTON_SAGE_COLLISION_FILTER_SHAPE_EXPRS = tuple(
+    f"*{label}" for label in NEWTON_SAGE_COLLISION_SHAPE_LABELS
+)
+# PhysX filtered contact reporting is strictly one-to-many: one sensor body may
+# be filtered against many partners, never many sensor bodies against one.  The
+# pinned IsaacLab docstring calls out this exact shape as unsupported, so each
+# finger needs its own filtered sensor.  The unfiltered two-body sensor stays
+# the primary net-force source and is unaffected.
+CONTACT_PARTNER_SENSOR_NAMES = {
+    "left_inner_finger": "robot_contact_can_left",
+    "right_inner_finger": "robot_contact_can_right",
+}
+CONTACT_SAGE_COLLISION_SENSOR_NAMES = {
+    "left_inner_finger": "robot_contact_sage_left",
+    "right_inner_finger": "robot_contact_sage_right",
+}
+
+
+def _robot_contact_sensor_prim_path(physics_backend: str) -> str:
+    """Return an equivalent two-finger selector in the backend's pattern syntax.
+
+    PhysX resolves ``ContactSensorCfg.prim_path`` as a regular expression.  The
+    pinned experimental Newton contact adapter converts only ``.*`` to a
+    ``fnmatch`` glob; regex grouping and alternation remain literal characters.
+    Terminal canary 47486783 therefore matched zero Newton bodies when given
+    ``(left_inner_finger|right_inner_finger)``.  A suffix glob selects the same
+    two terminal finger bodies in both bare-name and full-path Newton labels,
+    without also selecting the ``*_inner_finger_knuckle`` bodies.
+    """
+
+    backend = normalize_physics_backend(physics_backend)
+    base = "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
+    if backend == "newton":
+        return base + "*inner_finger"
+    return base + "(left_inner_finger|right_inner_finger)"
+
+
+def _contact_partner_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
+    """Return the backend-native exact can contact-partner filter."""
+
+    backend = normalize_physics_backend(physics_backend)
+    if backend == "newton":
+        return {
+            "filter_shape_prim_expr": [NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR]
+        }
+    return {"filter_prim_paths_expr": [CONTACT_PARTNER_FILTER_PRIM_PATH]}
+
+
+def _summarize_newton_contact_labels(
+    body_labels: list[str] | tuple[str, ...],
+    shape_labels: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Retain bounded converted labels needed to diagnose filter admission.
+
+    Contact-sensor construction happens after Newton has finalized its model,
+    so a failed selector must preserve what Newton actually named.  All body
+    labels are retained up to a generous bounded ceiling; shape labels retain
+    every can-relevant value plus deterministic head/tail samples.  This is
+    read-only failure evidence and cannot change contact behavior.
+    """
+
+    bodies = [str(value) for value in body_labels]
+    shapes = [str(value) for value in shape_labels]
+    relevant_tokens = ("approved", "can", "beverage", "body_collider")
+
+    def relevant(values: list[str]) -> list[str]:
+        return [
+            value
+            for value in values
+            if any(token in value.lower() for token in relevant_tokens)
+        ]
+
+    body_limit = 256
+    shape_sample_limit = 64
+    retained_bodies = bodies[:body_limit]
+    if len(shapes) <= shape_sample_limit:
+        shape_sample = shapes
+    else:
+        half = shape_sample_limit // 2
+        shape_sample = shapes[:half] + shapes[-half:]
+    return {
+        "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
+        "body_label_count": len(bodies),
+        "shape_label_count": len(shapes),
+        "body_labels": retained_bodies,
+        "body_labels_truncated": len(bodies) > body_limit,
+        "can_relevant_body_labels": relevant(bodies),
+        "can_relevant_shape_labels": relevant(shapes),
+        "shape_label_sample": shape_sample,
+        "shape_label_sample_truncated": len(shapes) > shape_sample_limit,
+        "requested_can_shape_filter": NEWTON_CONTACT_PARTNER_FILTER_SHAPE_EXPR,
+    }
+
+
+def _newton_contact_label_diagnostics() -> dict[str, Any]:
+    """Read the finalized Newton model labels after a sensor-build failure."""
+
+    try:
+        from isaaclab_newton.physics import NewtonManager
+
+        model = NewtonManager.get_model()
+        if model is None:
+            return {
+                "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
+                "status": "model_unavailable",
+            }
+        raw_body_labels = getattr(model, "body_label", None)
+        raw_shape_labels = getattr(model, "shape_label", None)
+        result = _summarize_newton_contact_labels(
+            [] if raw_body_labels is None else list(raw_body_labels),
+            [] if raw_shape_labels is None else list(raw_shape_labels),
+        )
+        result["status"] = "observed"
+        return result
+    except Exception as exc:  # noqa: BLE001 - diagnostics cannot mask the blocker
+        return {
+            "schema_version": "adp009d_newton_contact_label_diagnostics.v1",
+            "status": "unavailable",
+            "error_type": type(exc).__name__,
+        }
+
+
+def _sage_collision_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
+    """Keep PhysX body filtering and Newton static-shape filtering distinct."""
+
+    backend = normalize_physics_backend(physics_backend)
+    if backend == "newton":
+        return {
+            "filter_shape_prim_expr": list(
+                NEWTON_SAGE_COLLISION_FILTER_SHAPE_EXPRS
+            )
+        }
+    return {"filter_prim_paths_expr": [CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH]}
+
+
+# The worker imports the episode adapter under a flattened module name, so this
+# file cannot read the adapter's constant at module scope.  Mirrored here and
+# pinned equal by test, because a silent drift would misreport how far the
+# finger geometry reaches past the frame the planner steers.
+FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M = 0.046
 # Semantics are authored as a runtime spawn-config override so the sealed can
 # and SAGE USD bytes are never mutated.  The exact override is emitted with the
 # result and digest-bound, so a downstream composition can prove which labelling
@@ -1514,11 +1770,21 @@ def _inspect_physx_sdf_collider(stage: Any, prim_path: str) -> dict[str, Any]:
     }
     if any(value is None for value in settings.values()):
         raise RuntimeError(f"physx_sdf_cooking_settings_missing:{prim_path}")
+    try:
+        contact_envelope = contact_envelope_from_physx_sdf_settings(
+            sdf_margin_m=settings["sdf_margin"],
+            sdf_narrow_band_thickness_m=settings["sdf_narrow_band_thickness"],
+            sdf_resolution=settings["sdf_resolution"],
+            sdf_subgrid_resolution=settings["sdf_subgrid_resolution"],
+        )
+    except ContactEnvelopeError as exc:
+        raise RuntimeError(str(exc)) from exc
     return {
         "prim_path": prim_path,
         "applied_schemas": applied_schemas,
         "approximation": str(approximation),
         **settings,
+        "contact_envelope": contact_envelope,
     }
 
 
@@ -1811,9 +2077,87 @@ def _approved_can_observability(camera: Any) -> dict[str, Any]:
     )
 
 
+def _probe_finger_collision_envelope() -> dict[str, Any]:
+    """Measure each finger's geometry extent in its own body frame.
+
+    Arena's ``tool_leftfinger``/``tool_rightfinger`` frames are a +46 mm semantic
+    point along the finger's local Z, which the descend planner treats as the
+    fingertip.  That is not the collision extent, and the difference is what
+    decides whether a commanded descend is geometrically reachable.  Reported as
+    measurement only: it names no obstruction and changes no motion.
+    """
+
+    result: dict[str, Any] = {
+        "schema_version": "adp009d_finger_collision_envelope_probe.v1",
+        "status": "unavailable",
+        "tool_frame_local_offset_m": FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M,
+        "fingers": {},
+    }
+    try:
+        import omni.usd
+        from pxr import Usd, UsdGeom
+
+        stage = omni.usd.get_context().get_stage()
+        cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+        )
+        for body_name in sorted(CONTACT_PARTNER_SENSOR_NAMES):
+            path = f"/World/envs/env_0/Robot/Gripper/Robotiq_2F_85/{body_name}"
+            prim = stage.GetPrimAtPath(path)
+            if not (prim and prim.IsValid()):
+                result["fingers"][body_name] = {"prim_exists": False}
+                continue
+            # World space, not local: the first run of this probe reported a
+            # 586 mm reach and 285 mm half-width for a Robotiq 2F-85 finger
+            # whose whole gripper is ~160 mm, because ComputeLocalBound's frame
+            # semantics do not mean "extent from this body's origin".  World
+            # bound minus the body's own world origin is unambiguous, and the
+            # body quaternion is retained so the analysis can rotate into the
+            # tool frame without this probe assuming an axis convention.
+            aligned = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            minimum = [float(value) for value in aligned.GetMin()]
+            maximum = [float(value) for value in aligned.GetMax()]
+            transform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
+                Usd.TimeCode.Default()
+            )
+            origin = transform.ExtractTranslation()
+            body_origin = [float(origin[index]) for index in range(3)]
+            rotation = transform.ExtractRotationQuat()
+            imaginary = rotation.GetImaginary()
+            extent = [maximum[index] - minimum[index] for index in range(3)]
+            result["fingers"][body_name] = {
+                "prim_exists": True,
+                "prim_path": path,
+                "world_bound_min_m": minimum,
+                "world_bound_max_m": maximum,
+                "body_origin_world_m": body_origin,
+                "body_orientation_world_xyzw": [
+                    float(imaginary[0]),
+                    float(imaginary[1]),
+                    float(imaginary[2]),
+                    float(rotation.GetReal()),
+                ],
+                # Raw geometry facts only.  A finger whose largest extent is far
+                # bigger than the gripper is evidence the bound covers more than
+                # the finger, so the numbers stay interpretable when wrong.
+                "bound_extent_m": extent,
+                "largest_extent_m": max(extent),
+                "reach_below_body_origin_m": body_origin[2] - minimum[2],
+                "reach_above_body_origin_m": maximum[2] - body_origin[2],
+            }
+        if any(row.get("prim_exists") for row in result["fingers"].values()):
+            result["status"] = "measured"
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not break a paid run
+        result["error_type"] = type(exc).__name__
+    return result
+
+
 def _build_environment(runtime: Path, args: argparse.Namespace):
     import torch
     import isaaclab.sim as sim_utils
+    from isaaclab.sensors.contact_sensor import ContactSensorCfg
+    from isaaclab_arena.assets.asset import Asset
     from isaaclab_arena.assets.object import Object
     from isaaclab_arena.assets.object_base import ObjectType
     from isaaclab_arena.embodiments.droid.droid import DroidAbsoluteJointPositionEmbodiment
@@ -1832,6 +2176,16 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         )
 
         BackendContactSensorCfg = NewtonContactSensorCfg
+
+    class ContactSensorAsset(Asset):
+        """Compose one read-only Isaac sensor through Arena's asset seam."""
+
+        def __init__(self, *, name: str, sensor_cfg: Any):
+            super().__init__(name=name)
+            self.sensor_cfg = sensor_cfg
+
+        def get_object_cfg(self):
+            return self.name, self.sensor_cfg
 
     class SpawnerObject(Object):
         """Use Arena's composition seam without importing its full asset registry."""
@@ -2047,6 +2401,56 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         initial_pose=Pose(position_xyz=CAN_START_POSITION_M),
         spawn_cfg_addon=approved_can_spawn_addon,
     )
+    # Isaac Lab prim-path tokens match one USD level each, and the Robotiq
+    # fingers sit at Robot/Gripper/Robotiq_2F_85/<finger> in the pinned DROID
+    # embodiment (the same paths its own FrameTransformer binds), so a
+    # single-level Robot/.* wildcard can never resolve them.  Arm-link
+    # constraint evidence still comes from the per-link incoming joint wrench.
+    # The a0cf16c9 canary measured an 8.6 N vertical contact on one finger while
+    # the nearest scene triangle sat 70 mm from that finger's body origin and the
+    # can lid 81 mm below it, so the net force alone cannot name the partner.
+    # Filtering on the can's rigid body already proved this contact is not the
+    # can.  A second, independent SAGE-root filter is therefore diagnostic only:
+    # a nonzero SAGE force attributes this configured collision scope, while an
+    # unresolved/zero result leaves the non-can source explicitly unresolved.
+    # Neither filter changes contact behavior.
+    robot_contact = ContactSensorAsset(
+        name="robot_contact",
+        sensor_cfg=BackendContactSensorCfg(
+            prim_path=_robot_contact_sensor_prim_path(args.physics_backend),
+            update_period=0.0,
+            history_length=1,
+            debug_vis=False,
+        ),
+    )
+    partner_contacts = [
+        ContactSensorAsset(
+            name=sensor_name,
+            sensor_cfg=BackendContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/Gripper/Robotiq_2F_85/{body_name}",
+                update_period=0.0,
+                history_length=1,
+                debug_vis=False,
+                **_contact_partner_filter_kwargs(args.physics_backend),
+            ),
+        )
+        for body_name, sensor_name in sorted(CONTACT_PARTNER_SENSOR_NAMES.items())
+    ]
+    sage_collision_contacts = [
+        ContactSensorAsset(
+            name=sensor_name,
+            sensor_cfg=BackendContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/Gripper/Robotiq_2F_85/{body_name}",
+                update_period=0.0,
+                history_length=1,
+                debug_vis=False,
+                **_sage_collision_filter_kwargs(args.physics_backend),
+            ),
+        )
+        for body_name, sensor_name in sorted(
+            CONTACT_SAGE_COLLISION_SENSOR_NAMES.items()
+        )
+    ]
     light = SpawnerObject(
         name="light",
         prim_path="/World/Light",
@@ -2056,7 +2460,14 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         ),
     )
     scene = Scene(
-        assets=[sage, approved_can, light]
+        assets=[
+            sage,
+            approved_can,
+            robot_contact,
+            *partner_contacts,
+            *sage_collision_contacts,
+            light,
+        ]
         + ([aura_appearance] if aura_appearance is not None else [])
     )
     _phase("sealed_scene_configuration", "completed")
@@ -3309,11 +3720,15 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             try:
                 from adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
                 from adp009d_isaac_episode_adapter import (
-                    bounded_absolute_joint_setpoint,
                     controlled_body_pose_for_grasp_frame_target,
+                    grasp_frame_target_for_task_space_strategy,
+                    semantic_finger_tool_midpoint_world_m,
                 )
                 from adp009d_droid_action_execution import GripperConvention
-                from adp009d_control_episode import run_required_controls
+                from adp009d_control_episode import (
+                    CONTROL_PLAN_FILENAME,
+                    run_required_controls,
+                )
                 from adp009d_episode_batch import (
                     run_episode_batch,
                     summarize_candidate_batches,
@@ -3440,7 +3855,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     target_quaternion_world_xyzw,
                     gripper_command,
                     max_joint_delta_rad,
-                    max_joint_setpoint_lead_rad,
+                    max_task_space_translation_step_m,
+                    orientation_tolerance_deg,
+                    task_space_translation_strategy,
                 ):
                     """One bounded native differential-IK action for a control phase."""
 
@@ -3454,10 +3871,39 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         body_names.index("left_inner_finger"),
                         body_names.index("right_inner_finger"),
                     ]
-                    finger_midpoint = (
+                    raw_finger_body_midpoint = (
                         body_poses[finger_indices[0], :3]
                         + body_poses[finger_indices[1], :3]
                     ) / 2.0
+                    finger_midpoint = semantic_finger_tool_midpoint_world_m(
+                        left_finger_pose_world_xyzw=[
+                            float(value)
+                            for value in body_poses[finger_indices[0], :7]
+                        ],
+                        right_finger_pose_world_xyzw=[
+                            float(value)
+                            for value in body_poses[finger_indices[1], :7]
+                        ],
+                    )
+                    bounded_grasp_target = (
+                        grasp_frame_target_for_task_space_strategy(
+                            current_position_world_m=finger_midpoint,
+                            current_quaternion_world_xyzw=[
+                                float(value) for value in body_pose[3:7]
+                            ],
+                            target_position_world_m=target_position_world_m,
+                            target_quaternion_world_xyzw=(
+                                target_quaternion_world_xyzw
+                            ),
+                            max_translation_step_m=(
+                                max_task_space_translation_step_m
+                            ),
+                            orientation_tolerance_deg=orientation_tolerance_deg,
+                            task_space_translation_strategy=(
+                                task_space_translation_strategy
+                            ),
+                        )
+                    )
                     target_body_position_world, held_body_quaternion_world = (
                         controlled_body_pose_for_grasp_frame_target(
                             current_body_position_world_m=[
@@ -3470,7 +3916,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 float(value) for value in finger_midpoint
                             ],
                             target_grasp_frame_position_world_m=(
-                                target_position_world_m
+                                bounded_grasp_target["position_world_m"]
                             ),
                             target_body_quaternion_world_xyzw=(
                                 target_quaternion_world_xyzw
@@ -3507,27 +3953,10 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         jacobian,
                         current_arm,
                     )
-                    current_arm_values = [float(value) for value in current_arm[0]]
-                    joint_target_values = [float(value) for value in joint_target[0]]
-                    previous_command_values = (
-                        current_arm_values
-                        if control_ik_last_commanded_joint_positions_rad[0] is None
-                        else control_ik_last_commanded_joint_positions_rad[0]
-                    )
-                    bounded_target_values = bounded_absolute_joint_setpoint(
-                        measured_joint_positions_rad=current_arm_values,
-                        desired_joint_positions_rad=joint_target_values,
-                        previous_commanded_joint_positions_rad=previous_command_values,
-                        max_command_slew_per_step_rad=float(max_joint_delta_rad),
-                        max_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
-                    )
-                    control_ik_last_commanded_joint_positions_rad[0] = list(
-                        bounded_target_values
-                    )
-                    bounded_target = torch.tensor(
-                        [bounded_target_values],
-                        device=env.unwrapped.device,
-                        dtype=current_arm.dtype,
+                    bounded_target = current_arm + torch.clamp(
+                        joint_target - current_arm,
+                        -float(max_joint_delta_rad),
+                        float(max_joint_delta_rad),
                     )
                     callback_index = control_ik_call_counter[0]
                     control_ik_call_counter[0] += 1
@@ -3540,8 +3969,13 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                 "target_grasp_frame_position_world_m": [
                                     float(value) for value in target_position_world_m
                                 ],
+                                "bounded_grasp_frame_target": bounded_grasp_target,
                                 "current_grasp_frame_position_world_m": [
                                     float(value) for value in finger_midpoint
+                                ],
+                                "raw_finger_body_midpoint_world_m": [
+                                    float(value)
+                                    for value in raw_finger_body_midpoint
                                 ],
                                 "target_controlled_body_position_world_m": [
                                     float(value) for value in target_body_position_world
@@ -3577,17 +4011,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                                     float(value)
                                     for value in (bounded_target - current_arm)[0]
                                 ],
-                                "command_slew_from_previous_rad": [
-                                    bounded_target_values[index]
-                                    - previous_command_values[index]
-                                    for index in range(len(bounded_target_values))
-                                ],
-                                "max_command_slew_per_step_rad": float(
-                                    max_joint_delta_rad
-                                ),
-                                "max_setpoint_lead_rad": float(
-                                    max_joint_setpoint_lead_rad
-                                ),
                             }
                         )
                     scripted_action = torch.zeros_like(action)
@@ -3619,6 +4042,19 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         if camera_name == "wrist_camera"
                         else None
                     ),
+                    contact_sensor=env.unwrapped.scene["robot_contact"],
+                    contact_envelope=live_collider.get("contact_envelope"),
+                    partner_contact_sensors={
+                        sensor_name: env.unwrapped.scene[sensor_name]
+                        for sensor_name in CONTACT_PARTNER_SENSOR_NAMES.values()
+                    },
+                    backend_contact_configuration=backend_contact_configuration,
+                    task_object_radius_m=APPROVED_CAN_RADIUS_M,
+                    task_object_height_m=APPROVED_CAN_HEIGHT_M,
+                    sage_collision_contact_sensors={
+                        sensor_name: env.unwrapped.scene[sensor_name]
+                        for sensor_name in CONTACT_SAGE_COLLISION_SENSOR_NAMES.values()
+                    },
                 )
                 probe_dynamics = adapter.read_arm_dynamics_observation()
                 partner_forces = probe_dynamics.get(
@@ -3843,7 +4279,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                         scenario_instance = json.loads(
                             scenario_instance_path.read_text(encoding="utf-8")
                         )
-                        control_plan_path = runtime / "adp009d_control_plan.v5.json"
+                        control_plan_path = runtime / CONTROL_PLAN_FILENAME
                         if not control_plan_path.is_file():
                             raise RuntimeError("adp009d_control_plan_missing")
                         expected_control_plan = json.loads(
@@ -4021,6 +4457,9 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 "decimation": cfg.decimation,
                 "solver": "TGS",
                 "enhanced_determinism": True,
+                "solver_configuration": backend_profile["solver_configuration"],
+                "backend_contact_configuration": backend_contact_configuration,
+                "contact_envelope": live_collider.get("contact_envelope"),
                 "static_collider_validation": static_collider,
                 "live_collider_validation": live_collider,
                 "newton_robot_inertial_overlay": (

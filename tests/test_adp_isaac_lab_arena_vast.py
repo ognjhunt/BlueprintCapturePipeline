@@ -270,7 +270,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
 
     def fake_arm(**kwargs):
         watchdog_events.append("armed")
-        assert kwargs["pod_name_prefix_base"] == "blueprint-adp-arena-"
+        assert kwargs["pod_name_prefix"] == "blueprint-adp-arena-"
         return {"status": "armed", "blockers": []}, watchdog_handle
 
     def fake_adapter(*, job_dir, **kwargs):
@@ -332,6 +332,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
         prepared_bundle=prepared_bundle,
         hard_cap_usd=1.0,
         hard_ttl_seconds=3600,
+        require_independent_watchdog=True,
     )
 
     assert result["status"] == "completed"
@@ -369,9 +370,17 @@ def test_live_transport_blocks_before_storage_or_compute_when_watchdog_is_not_ar
     stage_called = False
     adapter_called = False
 
-    def fake_stage(**_kwargs):
+    def fake_stage(*, job_dir, **_kwargs):
         nonlocal stage_called
         stage_called = True
+        staging = Path(job_dir)
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text("https://example.invalid/object\n")
         return {"status": "completed"}
 
     def fake_adapter(**_kwargs):
@@ -380,6 +389,11 @@ def test_live_transport_blocks_before_storage_or_compute_when_watchdog_is_not_ar
         return {"status": "completed"}
 
     monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(
+        arena,
+        "cleanup_staged_wam_provider_objects",
+        lambda _path: {"all_objects_absent": True},
+    )
     monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
     monkeypatch.setattr(
         arena,
@@ -407,12 +421,13 @@ def test_live_transport_blocks_before_storage_or_compute_when_watchdog_is_not_ar
         prepared_bundle=prepared_bundle,
         hard_cap_usd=1.0,
         hard_ttl_seconds=3600,
+        require_independent_watchdog=True,
     )
 
     assert result["status"] == "blocked"
     assert result["provider_mutations_performed"] == 0
-    assert result["blockers"] == ["independent_vast_watchdog_not_armed"]
-    assert stage_called is False
+    assert result["blockers"] == ["adp_arena_independent_watchdog_not_armed"]
+    assert stage_called is True
     assert adapter_called is False
 
 

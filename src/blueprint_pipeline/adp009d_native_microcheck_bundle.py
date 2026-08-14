@@ -16,6 +16,20 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .adp009d_contact_envelope import (
+    APPROVED_CAN_SDF_MARGIN_M,
+    APPROVED_CAN_SDF_NARROW_BAND_THICKNESS_M,
+    APPROVED_CAN_SDF_RESOLUTION,
+    APPROVED_CAN_SDF_SUBGRID_RESOLUTION,
+    ContactEnvelopeError,
+    contact_envelope_from_harness_manifest,
+)
+from .adp009d_physics_backend_comparison import (
+    DEFAULT_PHYSICS_BACKEND,
+    build_backend_contact_configuration,
+    build_backend_profile,
+    normalize_physics_backend,
+)
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -734,10 +748,10 @@ def Xform "{APPROVED_CAN_DEFAULT_PRIM}" (
         )
         {{
             uniform token physics:approximation = "sdf"
-            float physxSDFMeshCollision:sdfMargin = 0.01
-            float physxSDFMeshCollision:sdfNarrowBandThickness = 0.01
-            int physxSDFMeshCollision:sdfResolution = 256
-            int physxSDFMeshCollision:sdfSubgridResolution = 6
+            float physxSDFMeshCollision:sdfMargin = {APPROVED_CAN_SDF_MARGIN_M:.4f}
+            float physxSDFMeshCollision:sdfNarrowBandThickness = {APPROVED_CAN_SDF_NARROW_BAND_THICKNESS_M:.4f}
+            int physxSDFMeshCollision:sdfResolution = {APPROVED_CAN_SDF_RESOLUTION}
+            int physxSDFMeshCollision:sdfSubgridResolution = {APPROVED_CAN_SDF_SUBGRID_RESOLUTION}
         }}
     }}
 }}
@@ -997,6 +1011,17 @@ def build_native_microcheck_bundle(
             aura_source, assets / f"aura_ghost_removed_appearance{aura_source.suffix}"
         )
     harness_source = Path(harness_manifest_path).expanduser().resolve()
+    try:
+        harness_manifest = json.loads(harness_source.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise ValueError("adp009d_contact_envelope_harness_unreadable") from exc
+    contact_envelope = None
+    if backend == "physx":
+        try:
+            contact_envelope = contact_envelope_from_harness_manifest(harness_manifest)
+        except ContactEnvelopeError as exc:
+            raise ValueError(str(exc)) from exc
+    backend_contact_configuration = build_backend_contact_configuration(backend)
     shutil.copy2(harness_source, runtime / "adp009d_franka_eval_harness_manifest.v1.json")
     shutil.copy2(
         source_dir / "adp009d_worker_environment_facts.py",
@@ -1014,6 +1039,9 @@ def build_native_microcheck_bundle(
         "adp009d_droid_observation.py",
         "adp009d_droid_action_execution.py",
         "droid_policy_bridge.py",
+        "adp009d_contact_envelope.py",
+        "adp009d_hold_trace.py",
+        "adp009d_physics_backend_comparison.py",
         "adp009d_policy_episode.py",
         "adp009d_control_episode.py",
         # Wired into the runtime but never shipped, so a live run reached the
@@ -1062,7 +1090,10 @@ def build_native_microcheck_bundle(
         encoding="utf-8",
     )
     if run_controls:
-        from .adp009d_control_episode import materialize_control_plan
+        from .adp009d_control_episode import (
+            CONTROL_PLAN_FILENAME,
+            materialize_control_plan,
+        )
 
         instance_source = (
             Path(scenario_instance_path).expanduser().resolve()
@@ -1080,7 +1111,7 @@ def build_native_microcheck_bundle(
             scenario_instance, physics_backend=backend
         )
         shutil.copy2(instance_source, runtime / "adp009d_scenario_instance.v1.json")
-        (runtime / "adp009d_control_plan.v5.json").write_text(
+        (runtime / CONTROL_PLAN_FILENAME).write_text(
             json.dumps(control_plan, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
@@ -1158,6 +1189,8 @@ def build_native_microcheck_bundle(
         "worker_overridden": worker_source is not None,
         "extra_native_files": native_payload,
         "extra_native_file_count": len(native_payload),
+        "backend_contact_configuration": backend_contact_configuration,
+        "contact_envelope": contact_envelope,
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "policy_candidate_id": policy_candidate_id,
         "controls_requested": bool(run_controls),
@@ -1261,12 +1294,21 @@ def build_native_microcheck_bundle_isolated(
             )
         )
     try:
+        source_root = str(Path(__file__).resolve().parents[1])
+        child_env = dict(os.environ)
+        inherited_pythonpath = child_env.get("PYTHONPATH", "")
+        child_env["PYTHONPATH"] = (
+            source_root
+            if not inherited_pythonpath
+            else os.pathsep.join((source_root, inherited_pythonpath))
+        )
         completed = subprocess.run(
             command,
             check=False,
             capture_output=True,
             text=True,
             timeout=600,
+            env=child_env,
         )
     except subprocess.TimeoutExpired as exc:
         raise ValueError("adp009d_bundle_subprocess_timeout") from exc

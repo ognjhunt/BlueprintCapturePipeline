@@ -69,6 +69,7 @@ def arm_independent_vast_watchdog(
     if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
         raise ValueError("independent_vast_watchdog_prefix_invalid")
     prefix = f"{prefix_base}{_safe_suffix(generated_at)}-"
+    prefix = f"{pod_name_prefix_base}{_safe_suffix(generated_at)}-"
     if int(max_live_minutes) < 2:
         blocked = {
             "schema_version": HANDOFF_SCHEMA,
