@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.materializer_cli import (
     Param,
     Step,
@@ -135,6 +136,64 @@ def test_a_successful_step_reports_what_it_wrote(capsys) -> None:
     assert summary["receipt_status"] == "materialized"
     assert summary["receipt_digest"] == "sha256:abc"
     assert "ignored" not in summary
+
+
+def test_the_digest_that_seals_the_receipt_is_echoed(capsys) -> None:
+    """A closer that seals a paid run has to say what it sealed.
+
+    `SUMMARY_KEYS` names `receipt_digest`, but a lane is free to seal under its
+    own key -- the semantic-teacher receipts use `closeout_digest`,
+    `provider_zero_digest` and `result_import_digest`. Matching on the name
+    alone printed a summary with no digest in it at all, so the operator closing
+    a paid attempt had to reopen the file to learn what to record.
+
+    The rule is derived rather than listed: a key ending in `_digest` is echoed
+    when its value is the canonical digest of this receipt computed over that
+    field, which is exactly the digest that seals it.
+    """
+
+    sealed = {"schema_version": "example.v1", "status": "closed", "closeout_digest": ""}
+    sealed["closeout_digest"] = canonical_digest(sealed, digest_field="closeout_digest")
+    step = Step("", lambda **_: dict(sealed), {"output": Param("--output", required=True)})
+
+    assert run({"only": step}, ["only", "--output", "/tmp/x.json"]) == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["closeout_digest"] == sealed["closeout_digest"]
+
+
+def test_a_digest_of_another_document_is_not_echoed(capsys) -> None:
+    """Receipts carry digests of their inputs; those are not what was sealed.
+
+    The provider-zero receipt binds `authority_digest`, `bundle_sha256` and four
+    more. Echoing every `_digest` key would bury the one an operator records.
+    """
+
+    sealed = {
+        "status": "provider_zero",
+        "authority_digest": "sha256:" + "0" * 64,
+        "provider_zero_digest": "",
+    }
+    sealed["provider_zero_digest"] = canonical_digest(
+        sealed, digest_field="provider_zero_digest"
+    )
+    step = Step("", lambda **_: dict(sealed), {"output": Param("--output", required=True)})
+
+    assert run({"only": step}, ["only", "--output", "/tmp/x.json"]) == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["provider_zero_digest"] == sealed["provider_zero_digest"]
+    assert "authority_digest" not in summary
+
+
+def test_a_receipt_that_is_not_a_mapping_is_still_reported(capsys) -> None:
+    """The digest scan must not assume a materializer returned a dict."""
+
+    step = Step("", lambda **_: None, {"output": Param("--output", required=True)})
+
+    assert run({"only": step}, ["only", "--output", "/tmp/x.json"]) == 0
+
+    assert json.loads(capsys.readouterr().out)["status"] == "materialized"
 
 
 @pytest.mark.parametrize(
