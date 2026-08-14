@@ -32,6 +32,9 @@ SUPPORTED_PROVIDERS = ("runpod", "vast")
 VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
 CANARY_NAME_PREFIXES = (
     "blueprint-groot-oscar-canary-",
+    # SAM 3.1 source-track jobs are bounded Vast canaries with their own
+    # exact-prefix instance handoff and teardown scope.
+    "blueprint-sam31-source-tracks-",
     # ADP's exact-mask Aura residual lane is a bounded, independently
     # watched Vast canary. Keep its resource name scope explicit rather than
     # borrowing the historical GR00T name family.
