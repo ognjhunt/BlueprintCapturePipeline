@@ -1,0 +1,128 @@
+{
+  "max_observations": 30,
+  "observations": [
+    {
+      "observed_at": "2026-08-14T15:57:21Z",
+      "repository_sha": "ac6e43be357fe95e44786fa355e3b884c3965d3c",
+      "run_id": "31814199890",
+      "run_url": "https://github.com/ognjhunt/BlueprintCapturePipeline/actions/runs/31814199890",
+      "slow_files": [
+        {
+          "case_duration_seconds": 376.787,
+          "path": "tests/test_robot_eval_job_orchestrator.py"
+        },
+        {
+          "case_duration_seconds": 100.088,
+          "path": "tests/test_oscar_cosmos_wam_evaluator.py"
+        },
+        {
+          "case_duration_seconds": 55.12,
+          "path": "tests/test_measurement_newton_rigid_adapter.py"
+        },
+        {
+          "case_duration_seconds": 41.366,
+          "path": "tests/test_task_evaluation_supervisor.py"
+        },
+        {
+          "case_duration_seconds": 30.018,
+          "path": "tests/test_vast_provider_adapter.py"
+        }
+      ],
+      "slow_testcases": [
+        {
+          "duration_seconds": 52.412,
+          "nodeid": "tests/test_measurement_newton_rigid_adapter.py::test_cross_engine_suite_executes_same_cases_and_preserves_deltas"
+        },
+        {
+          "duration_seconds": 26.169,
+          "nodeid": "tests/test_gear_sonic_controller_fk_adapter.py::test_executor_diagnostics_are_bounded_and_keep_exception_tail"
+        },
+        {
+          "duration_seconds": 23.915,
+          "nodeid": "tests/test_measurement_pyelastica_cable_adapter.py::test_real_pyelastica_corpus_executes_two_deterministic_cable_trials"
+        },
+        {
+          "duration_seconds": 23.032,
+          "nodeid": "tests/test_paid_resource_allocator_verifier.py::test_model_volume_watchdog_handoff_is_machine_enforced"
+        },
+        {
+          "duration_seconds": 15.161,
+          "nodeid": "tests/test_pr179_review_regressions.py::test_worker_is_closed_when_startup_validation_fails"
+        }
+      ],
+      "summary": {
+        "line_coverage_collected": false,
+        "maximum_test_file_duration_seconds": 376.787,
+        "parametrized_case_count": 1616,
+        "parametrized_case_fraction": 0.126557,
+        "reported_suite_wall_seconds": 1820.15,
+        "summed_case_duration_seconds": 1802.205,
+        "test_count": 12769,
+        "test_file_count": 1117
+      },
+      "workers": 1
+    },
+    {
+      "observed_at": "2026-08-14T22:08:55Z",
+      "repository_sha": "3090569b2d32da2ae380d6e228845037645006cb",
+      "run_id": "31844499960",
+      "run_url": "https://github.com/ognjhunt/BlueprintCapturePipeline/actions/runs/31844499960",
+      "slow_files": [
+        {
+          "case_duration_seconds": 421.875,
+          "path": "tests/test_robot_eval_job_orchestrator.py"
+        },
+        {
+          "case_duration_seconds": 166.722,
+          "path": "tests/test_oscar_cosmos_wam_evaluator.py"
+        },
+        {
+          "case_duration_seconds": 115.993,
+          "path": "tests/test_measurement_newton_rigid_adapter.py"
+        },
+        {
+          "case_duration_seconds": 61.401,
+          "path": "tests/test_gear_sonic_controller_fk_adapter.py"
+        },
+        {
+          "case_duration_seconds": 52.509,
+          "path": "tests/test_paid_resource_allocator_verifier.py"
+        }
+      ],
+      "slow_testcases": [
+        {
+          "duration_seconds": 113.071,
+          "nodeid": "tests/test_measurement_newton_rigid_adapter.py::test_cross_engine_suite_executes_same_cases_and_preserves_deltas"
+        },
+        {
+          "duration_seconds": 59.386,
+          "nodeid": "tests/test_gear_sonic_controller_fk_adapter.py::test_executor_diagnostics_are_bounded_and_keep_exception_tail"
+        },
+        {
+          "duration_seconds": 52.292,
+          "nodeid": "tests/test_paid_resource_allocator_verifier.py::test_model_volume_watchdog_handoff_is_machine_enforced"
+        },
+        {
+          "duration_seconds": 43.091,
+          "nodeid": "tests/test_measurement_pyelastica_cable_adapter.py::test_real_pyelastica_corpus_executes_two_deterministic_cable_trials"
+        },
+        {
+          "duration_seconds": 30.503,
+          "nodeid": "tests/test_cpu_env_contract.py::test_canonical_cpu_env_collects_without_errors"
+        }
+      ],
+      "summary": {
+        "line_coverage_collected": false,
+        "maximum_test_file_duration_seconds": 421.875,
+        "parametrized_case_count": 1616,
+        "parametrized_case_fraction": 0.126388,
+        "reported_suite_wall_seconds": 591.299,
+        "summed_case_duration_seconds": 2142.922,
+        "test_count": 12786,
+        "test_file_count": 1120
+      },
+      "workers": 4
+    }
+  ],
+  "schema_version": "blueprint.test_suite_timing_history.v1"
+}

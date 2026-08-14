@@ -24,6 +24,10 @@ concurrency:
   group: full-test-lane-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  actions: read
+  contents: read
+
 jobs:
   full-pytest:
     name: Full pytest lane on CPU runner
@@ -178,6 +182,48 @@ jobs:
             --workers 4 \
             --output "${{ runner.temp }}/blueprint-ci/test-suite-telemetry.json"
 
+      - name: Download prior main-branch timing history
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          history_root="${{ runner.temp }}/blueprint-ci/prior-history"
+          mkdir -p "${history_root}"
+          prior_run_id="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=test-suite-history&per_page=100" \
+              --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")][0].workflow_run.id // empty'
+          )"
+          if [[ -n "${prior_run_id}" ]]; then
+            gh run download "${prior_run_id}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --name test-suite-history \
+              --dir "${history_root}"
+          fi
+
+      - name: Build bounded timing history and regression report
+        if: success()
+        run: |
+          set -euo pipefail
+          observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          uv run python scripts/build_test_suite_timing_history.py \
+            --current "${{ runner.temp }}/blueprint-ci/test-suite-telemetry.json" \
+            --baseline docs/test_suite_timing_baseline.json \
+            --history "${{ runner.temp }}/blueprint-ci/prior-history/test-suite-history.json" \
+            --run-id '${{ github.run_id }}' \
+            --run-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
+            --observed-at "${observed_at}" \
+            --history-output "${{ runner.temp }}/blueprint-ci/test-suite-history.json" \
+            --report-output "${{ runner.temp }}/blueprint-ci/test-suite-regression.json"
+          jq -r '
+            "### Full-lane timing history\n\n" +
+            "- Status: `" + .status + "`\n" +
+            "- Same-worker baselines: `" + (.comparison.same_worker_observation_count | tostring) + "`\n" +
+            "- Warnings: `" + ((.warnings | length) | tostring) + "`"
+          ' "${{ runner.temp }}/blueprint-ci/test-suite-regression.json" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Upload full lane report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -192,3 +238,13 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml
             ${{ runner.temp }}/blueprint-ci/cpu_full.json
             ${{ runner.temp }}/blueprint-ci/test-suite-telemetry.json
+            ${{ runner.temp }}/blueprint-ci/test-suite-regression.json
+
+      - name: Upload bounded timing history
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-suite-history
+          retention-days: 90
+          if-no-files-found: error
+          path: ${{ runner.temp }}/blueprint-ci/test-suite-history.json

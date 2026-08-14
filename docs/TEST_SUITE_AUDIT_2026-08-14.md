@@ -64,6 +64,14 @@ worker startup, resource contention, and the 376.787-second largest file bound t
 actual result. The next promotion/nightly run must validate wall time and test
 isolation.
 
+PR run [31844499960](https://github.com/ognjhunt/BlueprintCapturePipeline/actions/runs/31844499960)
+provided that hosted validation. The pytest step completed in 593 seconds and the
+entire job in 791 seconds, down from 1,828 and 2,059 seconds respectively. Exact
+collection, CPU evidence, telemetry generation, and artifact upload all passed.
+The 67.6% pytest-step reduction came with an 18.9% increase in summed per-case
+durations, so future regression comparisons must compare equal worker counts and
+must not interpret concurrent case timings as serial cost.
+
 Every full run now uploads `test-suite-telemetry.json` with:
 
 - total/file/parametrized case counts;
@@ -94,6 +102,14 @@ false-green risk. The next safe sequence is:
    path is covered by that manifest and all required invariant sentinels are green;
 6. use boundary or pairwise reduction only for a parameter family whose retained
    cases preserve the relevant branch and invariant coverage.
+
+Timing history now uses the first serial promotion and first green four-worker run
+as commit-bound seeds. Successful full runs append a bounded 30-observation
+history artifact. Equal-worker wall-time regressions and repeatedly unstable slow
+tests/files are warnings; malformed history or a greater-than-two-percent test or
+test-file count contraction blocks. A transient history-download failure falls
+back to the checked-in seed rather than blocking a production proof for GitHub API
+availability.
 
 The existing exact-SHA production artifact reuse remains valid: deployment
 provenance already downloads and revalidates the green full-lane artifact for the

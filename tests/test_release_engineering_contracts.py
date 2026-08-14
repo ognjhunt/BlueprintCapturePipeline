@@ -100,6 +100,12 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "full-test-lane-executed.json" in workflow
     assert "scripts/build_test_suite_telemetry.py" in workflow
     assert "test-suite-telemetry.json" in workflow
+    assert "scripts/build_test_suite_timing_history.py" in workflow
+    assert "docs/test_suite_timing_baseline.json" in workflow
+    assert "test-suite-regression.json" in workflow
+    assert "name: test-suite-history" in workflow
+    assert "continue-on-error: true" in workflow
+    assert "head_branch == \"main\"" in workflow
 
 
 def test_risk_based_verification_workflows_are_bounded() -> None:
