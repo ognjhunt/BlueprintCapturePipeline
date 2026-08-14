@@ -773,7 +773,11 @@ def _repo(root: Path) -> tuple[Path, Path]:
     return repo, vendor
 
 
-def _inputs(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+def _inputs(
+    tmp_path: Path,
+    *,
+    candidate_schema: str = "adp009b_direct_evidence_expansion_set.v1",
+) -> tuple[Path, dict[str, object]]:
     root = tmp_path / "direct_set"
     source = _source_ply(root / "source.ply")
     shared = root / "shared_scene_union"
@@ -796,19 +800,52 @@ def _inputs(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         _write_json(freeze, task)
         removal = task["removal_plan"]
         assert isinstance(removal, dict)
-        tasks.append(
-            {
-                "task_id": task["task_id"],
-                "task_freeze_digest": task["task_freeze_digest"],
-                "removal_id": removal["removal_id"],
-                "mask_set_id": removal["mask_set_id"],
-                "task_freeze": _absolute_record(freeze),
-            }
-        )
+        task_row: dict[str, object] = {
+            "task_id": task["task_id"],
+            "task_freeze_digest": task["task_freeze_digest"],
+            "removal_id": removal["removal_id"],
+            "mask_set_id": removal["mask_set_id"],
+            "task_freeze": _absolute_record(freeze),
+        }
+        if candidate_schema == "adp009d_segment_contribution_cutout_set.v1":
+            task_root = root / f"task_{slot}"
+            task_root.mkdir()
+            task_deleted_indices = np.array([deleted[slot - 1]], dtype=np.int64)
+            task_retained_indices = np.setdiff1d(
+                np.arange(10, dtype=np.int64), task_deleted_indices, assume_unique=True
+            )
+            np.save(
+                task_root / "deleted_source_indices.npy",
+                task_deleted_indices,
+                allow_pickle=False,
+            )
+            task_deleted = write_standard_3dgs_ply_subset_exact(
+                source,
+                task_root / "deleted_source_gaussians.ply",
+                task_deleted_indices,
+            )
+            task_retained = write_standard_3dgs_ply_subset_exact(
+                source,
+                task_root / "retained_scene_gaussians.ply",
+                task_retained_indices,
+            )
+            task_row.update(
+                {
+                    "counts": {"source": 10, "deleted_total": 1, "retained_total": 9},
+                    "outputs": {
+                        "deleted_source_indices": _relative_record(
+                            root, task_root / "deleted_source_indices.npy"
+                        ),
+                        "deleted_source_gaussians": _relative_record(root, task_deleted),
+                        "retained_scene_gaussians": _relative_record(root, task_retained),
+                    },
+                }
+            )
+        tasks.append(task_row)
         camera = _camera_contract(tmp_path / "cameras" / f"task_{slot}.json", f"camera_{slot}")
         lanes.append({"task_id": task["task_id"], "camera_contract_path": str(camera)})
     candidate: dict[str, object] = {
-        "schema_version": "adp009b_direct_evidence_expansion_set.v1",
+        "schema_version": candidate_schema,
         "task_candidates": tasks,
         "shared_scene_union": {
             "counts": {"source": 10, "deleted_total": 2, "retained_total": 8},
