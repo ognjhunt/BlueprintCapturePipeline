@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import signal
 import shutil
 import subprocess
 import time
@@ -17,6 +18,14 @@ from typing import Any, Sequence
 SCHEMA_VERSION = "adp_content_agents_vast_result.v1"
 TIMEOUT_SECONDS = 2400
 SUBPROCESS_PROGRESS_INTERVAL_SECONDS = 60.0
+# Production CAD inputs can contain many independently planned mesh prims. Keep
+# each paid stage bounded, while giving the planning-heavy material and physics
+# agents enough time to finish before the live profile's 14,400-second ceiling.
+AGENT_TIMEOUT_SECONDS = {
+    "material": 3_600,
+    "texture": 1_200,
+    "physics": 3_600,
+}
 
 
 def _progress(stage: str) -> None:
@@ -60,13 +69,20 @@ def _run(
         stderr=subprocess.STDOUT,
         text=True,
         env=env,
+        start_new_session=os.name == "posix",
     )
     started_monotonic = time.monotonic()
     deadline = started_monotonic + timeout
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            process.kill()
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:  # pragma: no cover - provider execution is Linux
+                process.kill()
             output, _ = process.communicate()
             returncode = 124
             timed_out = True
@@ -88,6 +104,7 @@ def _run(
         "command": [str(item) for item in command],
         "returncode": returncode,
         "timed_out": timed_out,
+        "timeout_seconds": timeout,
         "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
         "runtime_seconds": (finished - started).total_seconds(),
@@ -393,6 +410,7 @@ def main() -> int:
             command,
             log_path=output_root / f"{name}-agent.log",
             env=env,
+            timeout=AGENT_TIMEOUT_SECONDS[name],
         )
         produced = _files(work)
         success = execution["returncode"] == 0 and bool(produced)
