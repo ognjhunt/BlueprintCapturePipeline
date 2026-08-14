@@ -18,7 +18,6 @@ except ImportError:  # pragma: no cover - installed package layout
     from .adp009d_newton_gripper_drive import build_newton_gripper_drive_candidate, validate_newton_gripper_drive_probe
     from .decision_evidence_contracts import canonical_digest
 
-
 ALLOWED_PHYSICS_BACKENDS = ("physx", "newton")
 DEFAULT_PHYSICS_BACKEND = "physx"
 BACKEND_PROFILE_SCHEMA_VERSION = "adp009d_physics_backend_profile.v1"
@@ -1723,6 +1722,8 @@ def build_comparison_receipt(
     }
     runs = {"physx": dict(physx_run), "newton": dict(newton_run)}
     blockers: list[str] = []
+    if profiles["newton"]["gripper_drive_candidate"]["comparison_eligible"] is not True:
+        blockers.append("adp009d_newton_gripper_drive_comparison_ineligible")
     for backend, run in runs.items():
         blockers.extend(_validate_control_run(run, profile=profiles[backend]))
         if run.get("status") != "completed":
@@ -1850,7 +1851,6 @@ def build_comparison_receipt(
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return receipt
-
 
 def validate_comparison_receipt(value: Mapping[str, Any]) -> list[str]:
     """Validate a comparison receipt by deterministic reconstruction."""

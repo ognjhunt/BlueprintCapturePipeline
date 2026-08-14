@@ -952,7 +952,7 @@ def test_newton_admission_builder_binds_exact_allowed_concurrency() -> None:
     assert admission["unapproved_live_instance_count"] == 0
 
 
-def test_comparison_receipt_requires_exact_common_bindings() -> None:
+def test_comparison_receipt_blocks_identification_candidate_and_binding_drift() -> None:
     physx = _run("physx")
     newton = _run("newton")
     receipt = build_comparison_receipt(
@@ -962,9 +962,10 @@ def test_comparison_receipt_requires_exact_common_bindings() -> None:
     )
 
     assert receipt["schema_version"] == "adp009d_physics_backend_comparison.v1"
-    assert receipt["status"] == "completed"
-    assert receipt["evidence_parity_observed"] is True
-    assert receipt["promotion_review_eligible"] is True
+    assert receipt["status"] == "blocked"
+    assert receipt["evidence_parity_observed"] is False
+    assert receipt["promotion_review_eligible"] is False
+    assert "adp009d_newton_gripper_drive_comparison_ineligible" in receipt["blockers"]
     assert receipt["engine_promotion_performed"] is False
     assert receipt["default_backend_after_comparison"] == "physx"
     assert receipt["policy_verdict"] is None
