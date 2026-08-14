@@ -122,9 +122,10 @@ def _junit_outcomes(path: Path) -> dict[str, Any]:
     for testcase in testcases:
         fallback_identifier = _testcase_identifier(testcase)
         properties = testcase.find("properties")
+        property_rows = list(properties) if properties is not None else []
         nodeid_properties = [
             prop
-            for prop in list(properties or [])
+            for prop in property_rows
             if prop.tag == "property" and prop.attrib.get("name") == NODEID_PROPERTY
         ]
         nodeid_values = [str(prop.attrib.get("value") or "").strip() for prop in nodeid_properties]
@@ -176,9 +177,9 @@ def _junit_outcomes(path: Path) -> dict[str, Any]:
         "declared_counts": declared,
         "counts_match_declared": declared == observed,
         "testcase_outcomes_sha256": hashlib.sha256(
-            "\n".join(outcome_rows).encode("utf-8")
+            "\n".join(sorted(outcome_rows)).encode("utf-8")
         ).hexdigest(),
-        "junit_nodeids": junit_nodeids,
+        "junit_nodeids": sorted(junit_nodeids),
         "nodeid_errors": nodeid_errors,
         "duplicate_nodeids": sorted(
             nodeid for nodeid, count in Counter(junit_nodeids).items() if count > 1

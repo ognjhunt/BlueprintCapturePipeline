@@ -92,11 +92,14 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "inputs.pytest" not in workflow
     assert "extra_args" not in workflow
     assert "uv run scripts/pytest_full.sh" in workflow
+    assert "-n 4 --dist loadfile" in workflow
     assert '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"' in workflow
     assert "blueprint_pipeline.pytest_full_lane_evidence" in workflow
     assert "scripts/verify_full_lane_collection.py" in workflow
     assert "full-test-lane-planned.json" in workflow
     assert "full-test-lane-executed.json" in workflow
+    assert "scripts/build_test_suite_telemetry.py" in workflow
+    assert "test-suite-telemetry.json" in workflow
 
 
 def test_risk_based_verification_workflows_are_bounded() -> None:
