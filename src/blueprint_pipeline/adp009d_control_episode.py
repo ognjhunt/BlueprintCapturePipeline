@@ -64,6 +64,20 @@ except ModuleNotFoundError:  # repository package
         finalize_manipulation_evaluation_visual_evidence,
         persist_multicamera_observation,
     )
+try:  # flat provider-bundle layout
+    from adp009d_contact_envelope import canonical_contact_envelope
+except ModuleNotFoundError:  # repository package
+    from .adp009d_contact_envelope import canonical_contact_envelope
+try:  # flat provider-bundle layout
+    from adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        normalize_physics_backend,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        normalize_physics_backend,
+    )
 
 
 CONTROL_PLAN_SCHEMA_VERSION = "adp009d_control_plan.v5"
@@ -94,6 +108,7 @@ MAX_JOINT_DELTA_PER_STEP_RAD = 0.03
 # v98 used the 0.03-rad slew as the lead ceiling and starved the controller.
 MAX_JOINT_SETPOINT_LEAD_RAD = 0.20
 PHASE_ARRIVAL_TOLERANCE_M = 0.02
+GRIPPER_FULL_OPENING_M = 0.085
 MOTION_PHASE_MINIMUM_STEPS = 1
 MOTION_PHASE_MAXIMUM_STEPS = 240
 GRIPPER_DWELL_MINIMUM_STEPS = 30
@@ -220,8 +235,31 @@ def materialize_control_plan(
     start = _position(parameters, "object_start")
     target = _position(parameters, "target")
     object_height = _finite(parameters.get("object_height_m"))
+    if "object_radius_m" not in parameters:
+        raise ControlEpisodeError(["control_plan_object_radius_missing"])
+    object_radius = _finite(parameters.get("object_radius_m"))
     if object_height <= 0.0:
         raise ControlEpisodeError(["control_plan_object_height_invalid"])
+    if object_radius <= 0.0:
+        raise ControlEpisodeError(["control_plan_object_radius_invalid"])
+    backend = normalize_physics_backend(physics_backend)
+    backend_contact_configuration = build_backend_contact_configuration(backend)
+    contact_envelope = canonical_contact_envelope() if backend == "physx" else None
+    open_jaw_radial_clearance = GRIPPER_FULL_OPENING_M / 2.0 - object_radius
+    effective_contact_envelope = float(
+        backend_contact_configuration["planner_contact_allowance_m"]
+    )
+    open_jaw_effective_radial_clearance = (
+        open_jaw_radial_clearance - effective_contact_envelope
+    )
+    if open_jaw_effective_radial_clearance <= 0.0:
+        raise ControlEpisodeError(
+            ["control_plan_object_open_jaw_effective_clearance_insufficient"]
+        )
+    aperture_safe_arrival_tolerance = min(
+        PHASE_ARRIVAL_TOLERANCE_M,
+        open_jaw_effective_radial_clearance,
+    )
     grasp_frame_z = start[2] + object_height / 2.0
     place_frame_z = target[2] + object_height / 2.0
     phases = [
@@ -336,6 +374,23 @@ def materialize_control_plan(
         "resolved_start_position_world_m": start,
         "resolved_destination_position_world_m": target,
         "object_height_m": object_height,
+        "object_radius_m": object_radius,
+        "physics_backend": backend,
+        "backend_contact_configuration": backend_contact_configuration,
+        "contact_envelope": contact_envelope,
+        "open_gripper_geometry": {
+            "full_opening_m": GRIPPER_FULL_OPENING_M,
+            "object_diameter_m": object_radius * 2.0,
+            "radial_clearance_m": open_jaw_radial_clearance,
+            "effective_contact_envelope_m": effective_contact_envelope,
+            "radial_clearance_after_effective_contact_envelope_m": (
+                open_jaw_effective_radial_clearance
+            ),
+            "clearance_accounting": (
+                "radial_clearance_m_minus_effective_contact_envelope_m"
+            ),
+            "aperture_safe_arrival_tolerance_m": aperture_safe_arrival_tolerance,
+        },
         "grasp_target_frame": GRASP_TARGET_FRAME,
         "controlled_body_orientation_strategy": CONTROLLED_BODY_ORIENTATION_STRATEGY,
         "controlled_body_quaternion_world_xyzw": list(
