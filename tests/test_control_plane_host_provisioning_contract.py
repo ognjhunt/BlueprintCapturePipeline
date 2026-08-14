@@ -46,6 +46,13 @@ def test_installs_the_system_libraries_headless_opencv_needs() -> None:
         )
 
 
+def test_installs_the_immutable_worker_image_builder() -> None:
+    assert "docker-buildx" in _bootstrap(), (
+        "SAM 3.1 worker publication requires Buildx for the immutable digest, "
+        "SBOM, and provenance; the production host must not need a manual patch"
+    )
+
+
 def test_installs_the_edge_and_reverse_proxy() -> None:
     assert "caddy" in _bootstrap().lower(), (
         "the intake service binds loopback only, so the host needs its edge"
