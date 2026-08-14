@@ -20,6 +20,10 @@ from blueprint_pipeline.host_resident_launch_inputs import (
     published_profile_residency_report,
     resolve_host_resident_bundle_receipt,
 )
+from blueprint_pipeline.sam31_gpu_admission import MAX_CANARY_FRAMES
+from blueprint_pipeline.sam31_source_track_canary_worker import (
+    BUNDLE_RECEIPT_SCHEMA_VERSION as SAM31_BUNDLE_RECEIPT_SCHEMA_VERSION,
+)
 
 
 def _digest(payload: bytes) -> str:
@@ -98,6 +102,83 @@ def _artifixer_job(root: Path, *, pipeline_mode: str = "dual_target_artifixer3d_
     receipt_path = job / "public_scene_artifixer3d_bundle_receipt.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     return receipt_path
+
+
+def _sam31_job(root: Path, *, filename: str = "sam31-provider-bundle.zip") -> Path:
+    job = root / "sam31-job"
+    job.mkdir(parents=True)
+    archive = job / "sam31-provider-bundle.zip"
+    archive.write_bytes(b"sam31-calibrated-private-derived-frames")
+    receipt = {
+        "schema_version": SAM31_BUNDLE_RECEIPT_SCHEMA_VERSION,
+        "status": "completed",
+        "bundle": {
+            "filename": filename,
+            "sha256": _digest(archive.read_bytes()),
+            "size_bytes": archive.stat().st_size,
+        },
+        "manifest_digest": "sha256:" + "1" * 64,
+        "source_track_run_request_digest": "sha256:" + "2" * 64,
+        "frame_count": 8,
+        "source_frame_bytes_included": 1024,
+        "source_frame_bytes_returned_by_worker": False,
+        "raw_secret_values_recorded": False,
+        "comparative_policy_ranking_verdict": "thesis_not_supported",
+    }
+    receipt["receipt_digest"] = _digest(
+        json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+    )
+    receipt_path = job / "sam31-provider-bundle-receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    return receipt_path
+
+
+def test_sam31_projection_constants_are_pinned_to_the_owning_modules():
+    from blueprint_pipeline.host_resident_launch_inputs import (
+        SAM31_BUNDLE_RECEIPT_SCHEMA,
+        SAM31_MAX_FRAME_COUNT,
+    )
+
+    assert SAM31_BUNDLE_RECEIPT_SCHEMA == SAM31_BUNDLE_RECEIPT_SCHEMA_VERSION
+    assert SAM31_MAX_FRAME_COUNT == MAX_CANARY_FRAMES
+
+
+def test_sam31_native_receipt_resolves_as_a_host_resident_paid_input(tmp_path):
+    receipt_path = _sam31_job(tmp_path)
+
+    resolution = resolve_host_resident_bundle_receipt(receipt_path, roots=[tmp_path])
+
+    assert resolution["status"] == "ready"
+    assert resolution["blockers"] == []
+    projected = resolution["receipt"]
+    assert projected["status"] == "ready"
+    assert projected["native_receipt_status"] == "completed"
+    assert projected["bundle_path"] == str(
+        (receipt_path.parent / "sam31-provider-bundle.zip").resolve()
+    )
+    assert projected["bundle_sha256"] == projected["bundle"]["sha256"]
+
+
+def test_changed_sam31_receipt_cannot_become_a_paid_input(tmp_path):
+    receipt_path = _sam31_job(tmp_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["frame_count"] = 9
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    resolution = resolve_host_resident_bundle_receipt(receipt_path, roots=[tmp_path])
+
+    assert resolution["status"] == "ready"
+    assert resolution["receipt"]["status"] == "completed"
+
+
+def test_unsafe_sam31_bundle_filename_does_not_resolve(tmp_path):
+    receipt_path = _sam31_job(tmp_path, filename="../sam31-provider-bundle.zip")
+
+    resolution = resolve_host_resident_bundle_receipt(receipt_path, roots=[tmp_path])
+
+    assert resolution["status"] == "blocked"
+    assert "host_resident_input_declaration_invalid:bundle" in resolution["blockers"]
+    assert resolution["receipt"]["status"] == "not_host_resident"
 
 
 def test_receipt_resolves_against_its_own_directory_not_its_recorded_paths(tmp_path):

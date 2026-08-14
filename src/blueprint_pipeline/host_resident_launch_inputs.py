@@ -74,6 +74,13 @@ ARTIFIXER3D_BUNDLE_READY_STATUS = (
 )
 ARTIFIXER3D_LIVE_PIPELINE_MODE = "dual_target_artifixer3d_only"
 SEMANTIC_TEACHER_BUNDLE_READY_STATUS = "completed_no_upload_no_inference"
+# Spelled here instead of importing ``sam31_source_track_canary_worker`` so a
+# live-profile builder does not need Pillow merely to resolve already-built
+# input bytes. ``tests/test_host_resident_launch_inputs.py`` pins both copied
+# constants against their owning SAM modules.
+SAM31_BUNDLE_RECEIPT_SCHEMA = "semantic_sam31_source_track_input_bundle_receipt.v1"
+SAM31_BUNDLE_READY_STATUS = "completed"
+SAM31_MAX_FRAME_COUNT = 128
 # Spelled here rather than imported from ``new_site_diagnostic_canary_gpu``,
 # which pulls in NumPy, Pillow, and the MuJoCo closed-loop stack. Nothing about
 # resolving a path on this host needs any of that, and this module is imported
@@ -155,6 +162,76 @@ def _native_camera_receipt_view(
     return view
 
 
+def _canonical_receipt_digest(
+    value: Mapping[str, Any], *, digest_field: str = "receipt_digest"
+) -> str:
+    payload = json.loads(json.dumps(dict(value)))
+    payload.pop(digest_field, None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _sam31_receipt_view(
+    receipt: Mapping[str, Any], view: dict[str, Any]
+) -> dict[str, Any]:
+    """Project a sealed SAM frame bundle without weakening its native receipt.
+
+    SAM intentionally records only the archive filename because the bundle is
+    portable.  The shared residency contract expects top-level path/digest
+    fields.  Promote the read-only view only after reopening every native
+    safety binding, including the receipt's canonical digest; otherwise a
+    changed filename or byte count could turn an unreviewed mapping into a paid
+    launch input merely by passing through this adapter.
+    """
+
+    bundle = receipt.get("bundle")
+    view["native_receipt_status"] = receipt.get("status")
+    if not isinstance(bundle, Mapping):
+        return view
+    filename = str(bundle.get("filename") or "").strip()
+    safe_filename = bool(
+        filename
+        and filename not in {".", ".."}
+        and not Path(filename).is_absolute()
+        and Path(filename).name == filename
+        and "/" not in filename
+        and "\\" not in filename
+    )
+    if safe_filename:
+        view["bundle_path"] = filename
+        view["bundle_relative_path"] = filename
+        view["bundle_sha256"] = bundle.get("sha256")
+    frame_count = receipt.get("frame_count")
+    ready = (
+        receipt.get("status") == SAM31_BUNDLE_READY_STATUS
+        and safe_filename
+        and isinstance(bundle.get("sha256"), str)
+        and str(bundle.get("sha256")).startswith("sha256:")
+        and len(str(bundle.get("sha256"))) == 71
+        and all(
+            character in "0123456789abcdef"
+            for character in str(bundle.get("sha256"))[7:]
+        )
+        and isinstance(bundle.get("size_bytes"), int)
+        and not isinstance(bundle.get("size_bytes"), bool)
+        and bundle.get("size_bytes") > 0
+        and isinstance(frame_count, int)
+        and not isinstance(frame_count, bool)
+        and 1 <= frame_count <= SAM31_MAX_FRAME_COUNT
+        and isinstance(receipt.get("source_frame_bytes_included"), int)
+        and not isinstance(receipt.get("source_frame_bytes_included"), bool)
+        and receipt.get("source_frame_bytes_included") > 0
+        and receipt.get("source_frame_bytes_returned_by_worker") is False
+        and receipt.get("raw_secret_values_recorded") is False
+        and receipt.get("receipt_digest") == _canonical_receipt_digest(receipt)
+    )
+    if ready:
+        view["status"] = "ready"
+    return view
+
+
 def _launch_receipt_view(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """Project a lane-native receipt onto the portable launch contract.
 
@@ -176,6 +253,8 @@ def _launch_receipt_view(receipt: Mapping[str, Any]) -> dict[str, Any]:
         return _new_site_canary_receipt_view(receipt, view)
     if receipt.get("schema_version") == NATIVE_CAMERA_BUNDLE_RECEIPT_SCHEMA:
         return _native_camera_receipt_view(receipt, view)
+    if receipt.get("schema_version") == SAM31_BUNDLE_RECEIPT_SCHEMA:
+        return _sam31_receipt_view(receipt, view)
     if receipt.get("schema_version") == SEMANTIC_TEACHER_BUNDLE_SCHEMA:
         bundle = receipt.get("bundle")
         rehearsal = receipt.get("rehearsal")
