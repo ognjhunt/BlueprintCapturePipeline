@@ -59,13 +59,7 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # profile of its own.
     "task-evaluation-profile-preflight": "not_a_website_lane",
     # Real debt: executable, not retired, not frozen, and unreachable.
-    "adp-isaac-lab-arena-native-control": "awaiting_builder",
     "new-site-diagnostic-canary": "awaiting_builder",
-    "new-site-native-camera": "awaiting_builder",
-    # Landed with an allocator branch and no builder, and without declaring
-    # itself here, so this gate was already red on main when the worker-smoke
-    # builder took the slot back. Stated rather than left implied.
-    "semantic-teacher-image-edit": "awaiting_builder",
 }
 
 VALID_REASONS = {
@@ -213,7 +207,7 @@ def test_the_reachability_debt_is_stated_rather_than_implied() -> None:
         if reason == "awaiting_builder"
     )
 
-    assert len(debt) <= 4, (
+    assert len(debt) <= 2, (
         f"unreachable executable probe kinds grew to {len(debt)}: {debt}. "
         "Lower this bound as builders land; do not raise it to make it pass."
     )
