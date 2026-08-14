@@ -84,6 +84,7 @@ def repository_from_remote(remote: str) -> str:
 def validate_run_metadata(
     *,
     run: Mapping[str, Any],
+    workflow: Mapping[str, Any],
     jobs: Mapping[str, Any],
     artifacts: Mapping[str, Any],
     expected_repository: str,
@@ -105,13 +106,21 @@ def validate_run_metadata(
         blockers.append("run_event_not_workflow_dispatch")
     if str(run.get("head_branch") or "") != "main":
         blockers.append("run_branch_not_main")
-    if str(run.get("name") or "") != CANONICAL_WORKFLOW_NAME:
-        blockers.append("workflow_name_mismatch")
+    if str(run.get("name") or "") != CANONICAL_PRODUCTION_DISPLAY_TITLE:
+        blockers.append("workflow_run_name_mismatch")
     if str(run.get("display_title") or "") != CANONICAL_PRODUCTION_DISPLAY_TITLE:
         blockers.append("production_promotion_reason_mismatch")
     workflow_path = str(run.get("path") or "").split("@", 1)[0]
     if workflow_path != CANONICAL_WORKFLOW_PATH:
         blockers.append("workflow_path_mismatch")
+    if workflow.get("id") != run.get("workflow_id"):
+        blockers.append("workflow_id_mismatch")
+    if str(workflow.get("name") or "") != CANONICAL_WORKFLOW_NAME:
+        blockers.append("workflow_name_mismatch")
+    if str(workflow.get("path") or "") != CANONICAL_WORKFLOW_PATH:
+        blockers.append("workflow_metadata_path_mismatch")
+    if str(workflow.get("state") or "") != "active":
+        blockers.append("workflow_not_active")
     repository = run.get("repository")
     repository_name = (
         str(repository.get("full_name") or "") if isinstance(repository, Mapping) else ""
@@ -298,6 +307,12 @@ def verify_live(
 
     api_base = f"repos/{expected_repository}/actions"
     run = _run_json(["gh", "api", f"{api_base}/runs/{run_id}"], cwd=root)
+    workflow_id = run.get("workflow_id")
+    if not isinstance(workflow_id, int) or workflow_id <= 0:
+        raise ProvenanceError("run_workflow_id_invalid")
+    workflow = _run_json(
+        ["gh", "api", f"{api_base}/workflows/{workflow_id}"], cwd=root
+    )
     jobs = _run_json(
         ["gh", "api", f"{api_base}/runs/{run_id}/jobs?per_page=100"],
         cwd=root,
@@ -308,6 +323,7 @@ def verify_live(
     )
     artifact = validate_run_metadata(
         run=run,
+        workflow=workflow,
         jobs=jobs,
         artifacts=artifacts,
         expected_repository=expected_repository,

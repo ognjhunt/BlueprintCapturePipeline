@@ -21,7 +21,12 @@ REPOSITORY = "ognjhunt/BlueprintCapturePipeline"
 RUN_ID = 123456
 
 
-def _metadata() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+def _metadata() -> tuple[
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+]:
     run: dict[str, object] = {
         "id": RUN_ID,
         "head_sha": SHA,
@@ -29,11 +34,18 @@ def _metadata() -> tuple[dict[str, object], dict[str, object], dict[str, object]
         "conclusion": "success",
         "event": "workflow_dispatch",
         "head_branch": "main",
-        "name": "Full Test Lane",
+        "name": "Full Test Lane / production_deployment_promotion",
         "display_title": "Full Test Lane / production_deployment_promotion",
         "path": ".github/workflows/full-test-lane.yml@refs/heads/main",
+        "workflow_id": 42,
         "repository": {"full_name": REPOSITORY},
         "head_repository": {"full_name": REPOSITORY},
+    }
+    workflow: dict[str, object] = {
+        "id": 42,
+        "name": "Full Test Lane",
+        "path": ".github/workflows/full-test-lane.yml",
+        "state": "active",
     }
     jobs: dict[str, object] = {
         "jobs": [
@@ -62,7 +74,7 @@ def _metadata() -> tuple[dict[str, object], dict[str, object], dict[str, object]
             }
         ]
     }
-    return run, jobs, artifacts
+    return run, workflow, jobs, artifacts
 
 
 def test_canonical_run_url_and_remote_parsing_reject_lookalikes() -> None:
@@ -89,9 +101,10 @@ def test_canonical_run_url_and_remote_parsing_reject_lookalikes() -> None:
 
 
 def test_run_metadata_requires_exact_sha_workflow_job_steps_and_artifact() -> None:
-    run, jobs, artifacts = _metadata()
+    run, workflow, jobs, artifacts = _metadata()
     artifact = validate_run_metadata(
         run=run,
+        workflow=workflow,
         jobs=jobs,
         artifacts=artifacts,
         expected_repository=REPOSITORY,
@@ -105,7 +118,10 @@ def test_run_metadata_requires_exact_sha_workflow_job_steps_and_artifact() -> No
         (run, "conclusion", "failure"),
         (run, "path", ".github/workflows/ci.yml"),
         (run, "event", "push"),
+        (run, "name", "Full Test Lane"),
         (run, "display_title", "Full Test Lane / cross_cutting_diagnostic"),
+        (workflow, "name", "CI"),
+        (workflow, "path", ".github/workflows/ci.yml"),
         (artifacts["artifacts"][0], "expired", True),  # type: ignore[index]
         (jobs["jobs"][0]["steps"][1], "conclusion", "failure"),  # type: ignore[index]
     )
@@ -115,6 +131,7 @@ def test_run_metadata_requires_exact_sha_workflow_job_steps_and_artifact() -> No
         with pytest.raises(ProvenanceError):
             validate_run_metadata(
                 run=run,
+                workflow=workflow,
                 jobs=jobs,
                 artifacts=artifacts,
                 expected_repository=REPOSITORY,
