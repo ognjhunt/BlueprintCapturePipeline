@@ -166,6 +166,21 @@ def _cutout_request(root: Path) -> Path:
     return _write(root / "cutout-request.json", value)
 
 
+def _artifixer_candidate_request(root: Path) -> Path:
+    for name in ("segment-cutout.json", "execution-authority.json"):
+        _write(root / name, {})
+    value = {
+        "schema_version": "fresh_scene_artifixer_candidate_preparation_request.v1",
+        "segment_cutout_set_path": str(root / "segment-cutout.json"),
+        "execution_authority_path": str(root / "execution-authority.json"),
+        "selected_task_ids": ["task_a"],
+        "object_absent_reference_receipt_paths": [],
+        "request_digest": "",
+    }
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    return _write(root / "artifixer-candidate-request.json", value)
+
+
 def test_host_resident_manifest_compiles_exact_agents_sdk_bindings(tmp_path: Path) -> None:
     status = _status(tmp_path / "status.json")
     request = _sam_request(tmp_path / "inputs")
@@ -319,6 +334,38 @@ def test_cutout_binding_rehashes_contribution_arrays(tmp_path: Path) -> None:
         ]
     ) == 6
     (tmp_path / "cutout-inputs/contribution-0.npz").write_bytes(b"changed")
+    with pytest.raises(
+        FreshSceneSupervisorBindingError,
+        match="fresh_scene_tool_request_input_bytes_changed",
+    ):
+        compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+
+
+def test_artifixer_candidate_binding_rehashes_cutout_and_authority(
+    tmp_path: Path,
+) -> None:
+    status = _status(tmp_path / "status.json")
+    request = _artifixer_candidate_request(tmp_path / "artifixer-inputs")
+    manifest_path = tmp_path / "binding.json"
+    manifest = materialize_fresh_scene_supervisor_bindings(
+        preparation_status_path=status,
+        artifixer_candidate_request_path=request,
+        output_path=manifest_path,
+        roots=[tmp_path],
+    )
+    compiled = compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+    assert compiled["requested_tool_ids"] == [
+        "inspect_fresh_scene_preparation",
+        "materialize_fresh_scene_artifixer_candidate",
+    ]
+    assert len(
+        manifest["tool_requests"]["fresh_scene_artifixer_candidate_request"][
+            "input_inventory"
+        ]
+    ) == 2
+    (tmp_path / "artifixer-inputs/segment-cutout.json").write_text(
+        '{"changed":true}', encoding="utf-8"
+    )
     with pytest.raises(
         FreshSceneSupervisorBindingError,
         match="fresh_scene_tool_request_input_bytes_changed",

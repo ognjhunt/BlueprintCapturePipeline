@@ -178,6 +178,23 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "materialize_fresh_scene_artifixer_candidate": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "receipt_digest": {"type": "string"},
+            "status": {
+                "const": "artifixer_candidate_inputs_prepared_no_model_no_execution"
+            },
+            "task_count": {"type": "integer"},
+            "semantic_teacher_execution_started": {"const": False},
+            "artifixer3d_execution_started": {"const": False},
+            "provider_mutations_performed": {"const": 0},
+            "canonical_source_altered": {"const": False},
+            "next_required_stage": {"const": "semantic_teacher_receipts"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "materialize_sam31_task_inputs": _output_schema(
         {
             "contract_present": {"const": True},
@@ -724,6 +741,18 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             minimum_mode="execute_non_spend",
             timeout_seconds=600.0,
             idempotency="content_addressed_all_view_segment_cutout_set",
+        ),
+        _descriptor(
+            "materialize_fresh_scene_artifixer_candidate",
+            "fresh_scene_artifixer_candidate_materialization",
+            expected_artifacts=["fresh_scene_artifixer_candidate_preparation.v1"],
+            input_properties={"request_digest": {"type": "string"}},
+            required_inputs=["request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=900.0,
+            idempotency="content_addressed_segment_cutout_to_artifixer_candidate",
         ),
         _descriptor(
             "inspect_capture_build",
@@ -1435,6 +1464,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "materialize_calibrated_object_masks",
         "materialize_fresh_scene_removal_freezes",
         "materialize_fresh_scene_segment_cutout",
+        "materialize_fresh_scene_artifixer_candidate",
         "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
@@ -3192,6 +3222,7 @@ def _bound_artifact(
         "materialize_calibrated_object_masks",
         "materialize_fresh_scene_removal_freezes",
         "materialize_fresh_scene_segment_cutout",
+        "materialize_fresh_scene_artifixer_candidate",
     }:
         root_value = getattr(context, "supervisor_output_dir", None)
         if tool_id == "materialize_sam31_task_inputs":
@@ -3228,7 +3259,7 @@ def _bound_artifact(
 
                 materializer = materialize_fresh_scene_removal_freezes
             output_name = "removal_freezes"
-        else:
+        elif tool_id == "materialize_fresh_scene_segment_cutout":
             source = getattr(context, "fresh_scene_segment_cutout_request", None)
             materializer = getattr(
                 context, "fresh_scene_segment_cutout_materializer", None
@@ -3240,6 +3271,18 @@ def _bound_artifact(
 
                 materializer = materialize_segment_contribution_cutout_set_from_tool_request
             output_name = "segment_cutout_set"
+        else:
+            source = getattr(context, "fresh_scene_artifixer_candidate_request", None)
+            materializer = getattr(
+                context, "fresh_scene_artifixer_candidate_materializer", None
+            )
+            if not callable(materializer):
+                from ..fresh_scene_artifixer_candidate_preparation import (
+                    materialize_fresh_scene_artifixer_candidate_preparation,
+                )
+
+                materializer = materialize_fresh_scene_artifixer_candidate_preparation
+            output_name = "artifixer_candidate"
         if not isinstance(root_value, str) or not root_value:
             raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
         if not isinstance(source, Mapping) or not callable(materializer):
@@ -3365,6 +3408,47 @@ def _bound_artifact(
                     "artifact_path": str(receipt_path.relative_to(Path(root_value))),
                     "artifact_digest": result["receipt_digest"],
                     "artifact_type": "adp009d_segment_contribution_cutout_set.v1",
+                }
+            ]
+        if tool_id == "materialize_fresh_scene_artifixer_candidate":
+            if (
+                not isinstance(result, Mapping)
+                or result.get("schema_version")
+                != "fresh_scene_artifixer_candidate_preparation.v1"
+                or result.get("status")
+                != "artifixer_candidate_inputs_prepared_no_model_no_execution"
+                or result.get("receipt_digest")
+                != canonical_digest(result, digest_field="receipt_digest")
+                or not 1 <= int(result.get("task_count") or 0) <= 5
+                or result.get("semantic_teacher_execution_started") is not False
+                or result.get("artifixer3d_execution_started") is not False
+                or result.get("provider_mutations_performed") != 0
+                or result.get("canonical_source_altered") is not False
+                or result.get("next_required_stage") != "semantic_teacher_receipts"
+            ):
+                raise ValueError("fresh_scene_artifixer_candidate_result_invalid")
+            receipt_path = write_phase2_artifact(
+                root_value,
+                "generated/artifixer_candidate/tool_receipt.json",
+                result,
+            )
+            return {
+                "contract_present": True,
+                "digest_matches": True,
+                "receipt_digest": result["receipt_digest"],
+                "status": result["status"],
+                "task_count": int(result["task_count"]),
+                "semantic_teacher_execution_started": False,
+                "artifixer3d_execution_started": False,
+                "provider_mutations_performed": 0,
+                "canonical_source_altered": False,
+                "next_required_stage": "semantic_teacher_receipts",
+                "proof_state_changed": False,
+            }, [
+                {
+                    "artifact_path": str(receipt_path.relative_to(Path(root_value))),
+                    "artifact_digest": result["receipt_digest"],
+                    "artifact_type": "fresh_scene_artifixer_candidate_preparation.v1",
                 }
             ]
         if (
@@ -3651,6 +3735,13 @@ def non_spend_tool_bindings(
         if tool_id == "materialize_fresh_scene_segment_cutout" and (
             not isinstance(
                 getattr(context, "fresh_scene_segment_cutout_request", None), Mapping
+            )
+        ):
+            continue
+        if tool_id == "materialize_fresh_scene_artifixer_candidate" and (
+            not isinstance(
+                getattr(context, "fresh_scene_artifixer_candidate_request", None),
+                Mapping,
             )
         ):
             continue

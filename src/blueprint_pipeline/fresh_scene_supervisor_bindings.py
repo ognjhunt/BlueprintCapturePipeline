@@ -32,6 +32,9 @@ SAM_REQUEST_SCHEMA = "fresh_scene_sam31_task_input_tool_request.v1"
 MASK_REQUEST_SCHEMA = "fresh_scene_calibrated_mask_tool_request.v1"
 REMOVAL_FREEZE_REQUEST_SCHEMA = "fresh_scene_removal_freeze_tool_request.v1"
 SEGMENT_CUTOUT_REQUEST_SCHEMA = "fresh_scene_segment_cutout_tool_request.v1"
+ARTIFIXER_CANDIDATE_REQUEST_SCHEMA = (
+    "fresh_scene_artifixer_candidate_preparation_request.v1"
+)
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAX_BOUND_INPUT_FILES = 1024
 MAX_BOUND_INPUT_BYTES = 2 * 1024**3
@@ -244,7 +247,7 @@ def _request_input_paths(
                             ),
                         )
                     )
-    else:
+    elif schema == SEGMENT_CUTOUT_REQUEST_SCHEMA:
         paths.append(
             _resident_path(
                 str(request.get("source_standard_splat_path") or ""),
@@ -290,12 +293,37 @@ def _request_input_paths(
                     )
                 paths.append(
                     _resident_path(
-                        manifest_path.parent / str(record.get("relative_path") or ""),
+                        manifest_path.parent
+                        / str(record.get("relative_path") or ""),
                         roots=roots,
                         kind="file",
                         code="fresh_scene_segment_cutout_array_not_host_resident",
                     )
                 )
+    elif schema == ARTIFIXER_CANDIDATE_REQUEST_SCHEMA:
+        for key in ("segment_cutout_set_path", "execution_authority_path"):
+            paths.append(
+                _resident_path(
+                    str(request.get(key) or ""),
+                    roots=roots,
+                    kind="file",
+                    code=f"fresh_scene_tool_request_input_not_host_resident:{key}",
+                )
+            )
+        for value in request.get("object_absent_reference_receipt_paths") or []:
+            paths.append(
+                _resident_path(
+                    str(value),
+                    roots=roots,
+                    kind="file",
+                    code=(
+                        "fresh_scene_tool_request_input_not_host_resident:"
+                        "object_absent_reference_receipt_paths"
+                    ),
+                )
+            )
+    else:  # pragma: no cover - every accepted schema is handled above
+        raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
     unique = sorted(set(paths))
     if (
         not unique
@@ -378,7 +406,7 @@ def _validate_request(
             ):
                 raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
         _request_input_paths(request, schema=schema, roots=roots)
-    else:
+    elif schema == SEGMENT_CUTOUT_REQUEST_SCHEMA:
         task_freezes = request.get("task_freeze_paths")
         sweeps = request.get("sweep_freeze_paths_by_task")
         manifests = request.get("contribution_manifest_paths_by_task")
@@ -392,6 +420,17 @@ def _validate_request(
         ):
             raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
         _request_input_paths(request, schema=schema, roots=roots)
+    elif schema == ARTIFIXER_CANDIDATE_REQUEST_SCHEMA:
+        selected = request.get("selected_task_ids")
+        references = request.get("object_absent_reference_receipt_paths")
+        if (
+            selected is not None
+            and (not isinstance(selected, list) or not 1 <= len(selected) <= 5)
+        ) or not isinstance(references, list):
+            raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+        _request_input_paths(request, schema=schema, roots=roots)
+    else:  # pragma: no cover - every accepted schema is handled above
+        raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
     return request
 
 
@@ -403,6 +442,7 @@ def materialize_fresh_scene_supervisor_bindings(
     calibrated_mask_request_path: str | Path | None = None,
     removal_freeze_request_path: str | Path | None = None,
     segment_cutout_request_path: str | Path | None = None,
+    artifixer_candidate_request_path: str | Path | None = None,
     roots: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     """Seal the exact non-spend tool inputs available on this host."""
@@ -446,6 +486,12 @@ def materialize_fresh_scene_supervisor_bindings(
             "materialize_fresh_scene_segment_cutout",
             SEGMENT_CUTOUT_REQUEST_SCHEMA,
             segment_cutout_request_path,
+        ),
+        (
+            "fresh_scene_artifixer_candidate_request",
+            "materialize_fresh_scene_artifixer_candidate",
+            ARTIFIXER_CANDIDATE_REQUEST_SCHEMA,
+            artifixer_candidate_request_path,
         ),
     ):
         if raw_path is None:
@@ -549,6 +595,7 @@ def compile_fresh_scene_supervisor_bindings(
         "fresh_scene_calibrated_mask_request": MASK_REQUEST_SCHEMA,
         "fresh_scene_removal_freeze_request": REMOVAL_FREEZE_REQUEST_SCHEMA,
         "fresh_scene_segment_cutout_request": SEGMENT_CUTOUT_REQUEST_SCHEMA,
+        "fresh_scene_artifixer_candidate_request": ARTIFIXER_CANDIDATE_REQUEST_SCHEMA,
     }
     records = manifest.get("tool_requests")
     if not isinstance(records, Mapping) or set(records) - set(schema_by_field):
@@ -558,6 +605,9 @@ def compile_fresh_scene_supervisor_bindings(
         "fresh_scene_calibrated_mask_request": "materialize_calibrated_object_masks",
         "fresh_scene_removal_freeze_request": "materialize_fresh_scene_removal_freezes",
         "fresh_scene_segment_cutout_request": "materialize_fresh_scene_segment_cutout",
+        "fresh_scene_artifixer_candidate_request": (
+            "materialize_fresh_scene_artifixer_candidate"
+        ),
     }
     expected_tools = {"inspect_fresh_scene_preparation"}
     for field, raw in records.items():
@@ -610,6 +660,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build.add_argument("--calibrated-mask-request")
     build.add_argument("--removal-freeze-request")
     build.add_argument("--segment-cutout-request")
+    build.add_argument("--artifixer-candidate-request")
     build.add_argument("--output", required=True)
     run = commands.add_parser("run")
     run.add_argument("--binding-manifest", required=True)
@@ -626,6 +677,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             calibrated_mask_request_path=args.calibrated_mask_request,
             removal_freeze_request_path=args.removal_freeze_request,
             segment_cutout_request_path=args.segment_cutout_request,
+            artifixer_candidate_request_path=args.artifixer_candidate_request,
             output_path=args.output,
         )
     else:

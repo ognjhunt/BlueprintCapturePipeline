@@ -273,3 +273,65 @@ def test_agents_sdk_invokes_digest_bound_segment_cutout_builder(tmp_path: Path) 
     assert observation["typed_result"]["agent_selected_gaussian_indices"] is False
     assert observation["typed_result"]["paid_execution_started"] is False
     assert calls[0]["output_root"] == tmp_path / "generated/segment_cutout_set"
+
+
+def test_agents_sdk_invokes_digest_bound_artifixer_candidate_builder(
+    tmp_path: Path,
+) -> None:
+    request = {
+        "schema_version": "fresh_scene_artifixer_candidate_preparation_request.v1",
+        "segment_cutout_set_path": "cutout.json",
+        "execution_authority_path": "authority.json",
+        "selected_task_ids": ["task_a", "task_b"],
+        "object_absent_reference_receipt_paths": [],
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    calls: list[dict] = []
+
+    def materializer(*, request: dict, output_root: Path) -> dict:
+        calls.append({"request": request, "output_root": output_root})
+        result = {
+            "schema_version": "fresh_scene_artifixer_candidate_preparation.v1",
+            "status": "artifixer_candidate_inputs_prepared_no_model_no_execution",
+            "task_count": 2,
+            "semantic_teacher_execution_started": False,
+            "artifixer3d_execution_started": False,
+            "provider_mutations_performed": 0,
+            "canonical_source_altered": False,
+            "next_required_stage": "semantic_teacher_receipts",
+            "receipt_digest": "",
+        }
+        result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="fresh-scene-tools-test",
+        customer_question="Prepare one fresh scene.",
+        supervisor_output_dir=str(tmp_path),
+        fresh_scene_artifixer_candidate_request=request,
+        fresh_scene_artifixer_candidate_materializer=materializer,
+    )
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=_authority(registry, request["request_digest"]),
+        )
+    }
+    observation = bindings["materialize_fresh_scene_artifixer_candidate"].invoke(
+        {"request_digest": request["request_digest"]}
+    )
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["task_count"] == 2
+    assert observation["typed_result"]["next_required_stage"] == (
+        "semantic_teacher_receipts"
+    )
+    assert observation["typed_result"]["semantic_teacher_execution_started"] is False
+    assert observation["typed_result"]["artifixer3d_execution_started"] is False
+    assert observation["typed_result"]["provider_mutations_performed"] == 0
+    assert observation["typed_result"]["canonical_source_altered"] is False
+    assert calls[0]["output_root"] == tmp_path / "generated/artifixer_candidate"
