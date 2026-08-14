@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,12 @@ def _load(path: Path):
     spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    # Registered before execution: `@dataclass` resolves its field annotations
+    # through `sys.modules[cls.__module__]`, so a builder that declares one
+    # raises here unless the module it is being defined in can be found. That
+    # made this contract's reach depend on whether some earlier test happened
+    # to have imported the same builder first.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -43,8 +50,19 @@ def test_there_are_builders_to_check() -> None:
 
 
 def _cli_arguments(path: Path) -> set[str]:
+    """Every flag a builder accepts, however its parser is assembled.
+
+    Two forms, and reading only the first is what made this contract miss a
+    builder entirely. Most builders spell each flag in its own
+    `add_argument("--flag")` call. A builder whose flag table *is* its call
+    signature declares the flags once in a module-level `FLAGS` mapping and
+    loops -- which is the stronger arrangement, and which used to read here as
+    a builder offering nothing but `--output`. It then silently fell out of
+    every contract below keyed on `--bundle-receipt`.
+    """
+
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    return {
+    found = {
         node.args[0].value
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -52,6 +70,17 @@ def _cli_arguments(path: Path) -> set[str]:
         and node.args
         and isinstance(node.args[0], ast.Constant)
     }
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+        if not any(isinstance(t, ast.Name) and t.id == "FLAGS" for t in targets if t):
+            continue
+        if isinstance(node.value, ast.Dict):
+            found.update(
+                key.value
+                for key in node.value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            )
+    return found
 
 
 def _is_receipt_driven(path: Path) -> bool:

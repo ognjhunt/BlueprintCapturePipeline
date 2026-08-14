@@ -30,6 +30,7 @@ is left merely unattempted.
 | `adp_gaussian_excision_vast` | yes | **blocked: no bundle CLI.** `build_gaussian_excision_vast_bundle` exists but the module has no `main()`, so the bundle cannot be rebuilt at the deployed commit — and the allocator refuses a bundle from any other commit. Its inputs (cameras, execution authority, scene PLY, dependency wheelhouse) survive **only inside the existing bundle zip**, so a rebuild also needs them extracted. |
 | `adp_joint_agent_vast` | yes | **blocked: scattered inputs.** The module has a CLI needing eight inputs; `execution_authority.json`, `joint_agent_packet.json`, and the review contract survive inside the bundle zip, but the freeze and scope-amendment documents were not located on disk. |
 | `native_task_arena_vast` | no | needs a builder. Three probe kinds (construction/controls/policy) and up to five input packets; all inputs located under `second_scene_840796_e2e`. |
+| `nvidia_warehouse_native_camera_gpu_admission` | yes | reachable, never fired. Its lane seals no terminal artifacts, so a live run cannot report `completed` — see below. |
 | `adp_isaac_lab_arena_vast` | no | needs a builder. Uses the shared artifact manifest directly. |
 | `adp009d_ovrtx_vast` | no | needs a builder. Appearance/camera transport; see the retirement note below before building it. |
 | `adp009d_aura_native_vast` | no | **retired** with the Aura appearance method. |
@@ -171,25 +172,51 @@ oldest builders emit kinds (`adp009d-franka-native-microcheck`,
 
 The allocator dispatches on **probe kind**, so that is the unit. Read from its
 own `if args.probe_kind == ...` branches: **30 probe kinds are executable, and
-8 are reachable from a live profile builder.** `tests/test_website_reachable_probe_kinds.py`
+9 are reachable from a live profile builder.** `tests/test_website_reachable_probe_kinds.py`
 rediscovers that set from the allocator on every run, so a new branch there
 cannot become the next unreachable lane without either a builder or a named
 reason.
 
-The 22 unreachable kinds are not one problem:
+The 21 unreachable kinds are not one problem:
 
 | Reason | Count | Meaning |
 | --- | --- | --- |
 | `retired_appearance_approach` | 7 | Superseded by the GPT-teacher/ArtiFixer3D path. Not to be relaunched; receipts retained as spend anchors. |
 | `frozen_program` | 7 | Frozen by the active-program contract in `CLAUDE.md`. |
 | `not_a_website_lane` | 1 | The profile preflight, which the allocator runs itself. |
-| `awaiting_builder` | 4 | Real debt: executable, not retired, not frozen, unreachable. |
+| `awaiting_builder` | 3 | Real debt: executable, not retired, not frozen, unreachable. |
 
 Only the last row is work. The Arena chain (construction -> controls -> policy)
-came off it when `build_native_task_arena_live_profile.py` landed, leaving the
-Isaac Lab Arena native control, the two fresh-site probes, and the
-reconstruction worker smoke. The contract caps that row at its current size, so
-it can shrink but not silently grow.
+came off it when `build_native_task_arena_live_profile.py` landed, and
+`new-site-native-camera` came off it when
+`build_new_site_native_camera_live_profile.py` did, leaving the Isaac Lab Arena
+native control, the fresh-site diagnostic canary, and the reconstruction worker
+smoke. The contract caps that row at its current size, so it can shrink but not
+silently grow.
+
+## The fresh-site camera lane is reachable and cannot yet report success
+
+`build_new_site_native_camera_live_profile.py` closes the reachability half:
+the lane can now be selected, published, and launched from the website path.
+The lane itself still cannot satisfy the terminal contract that every launch
+profile carries.
+
+`shared_control_surface()` requires `teardown_manifest_path` and
+`artifact_manifest_path` on the allocator result.
+`nvidia_warehouse_native_camera_gpu_admission.py` calls neither
+`seal_lane_terminal_artifacts` nor `build_task_evaluation_artifact_manifest`,
+and it does not use the `vast_provider_run/` + `immutable_execution/`
+convention the shared seal inventories -- it writes its evidence flat under the
+adapter output's directory. So a live run would tear down correctly, retain its
+frames, and still end `allocator_terminal_artifact_missing:`, which is defect
+class #481 in a lane the sweep did not reach.
+
+It was not reached because `tests/test_paid_lane_terminal_artifact_contract.py`
+discovers lanes by globbing `src/blueprint_pipeline/*_vast.py`, and this lane's
+transport is named `*_gpu_admission.py`. The fix is a change to the lane's
+execute path plus its entry in that contract's module list, not a change to
+this builder, and it is the last thing between this lane and a launch that can
+report `completed`.
 
 Reading only a builder's `SPEC` under-reported this: a chain builder declares
 several links and no module-level `SPEC`, so the whole Arena family read as
