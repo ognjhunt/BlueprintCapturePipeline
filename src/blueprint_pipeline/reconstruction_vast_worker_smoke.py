@@ -31,6 +31,11 @@ from .paid_resource_admission import (
 )
 from .reconstruction_worker_image_healthcheck import SCHEMA_VERSION as HEALTHCHECK_SCHEMA_VERSION
 from .safe_outbound_http import presigned_transfer_policy, request as safe_http_request
+from .task_evaluation_artifact_manifest import (
+    ADAPTER_RESULT_NAME,
+    TEARDOWN_MANIFEST_NAME,
+    seal_lane_terminal_artifacts,
+)
 
 
 RESULT_SCHEMA_VERSION = "reconstruction_vast_worker_smoke_result.v1"
@@ -498,6 +503,13 @@ def run_reconstruction_vast_worker_smoke(
         "teardown_receipt_digest": teardown_receipt["teardown_receipt_digest"],
         "provider_zero_digest": provider_zero_receipt["provider_zero_digest"],
         "provider_zero_verified": provider_zero_receipt["status"] == "PASS",
+        # The two values every launch profile's terminal contract reads off the
+        # allocator result. `retry_cap` is the cap this attempt actually ran
+        # under rather than a hard-coded zero, so a profile that permitted a
+        # retry fails its own contract instead of being reported as if it had
+        # not.
+        "continuing_spend_from_this_run": not teardown_passed,
+        "retry_cap": retry_cap,
         "scientific_qualification_inferred": False,
         "proof_effect": "none",
         "claim_ceiling": "worker_image_compatibility_only",
@@ -505,8 +517,66 @@ def run_reconstruction_vast_worker_smoke(
     result["execution_result_digest"] = canonical_digest(
         result, digest_field="execution_result_digest"
     )
-    write_json(root / "reconstruction_vast_worker_smoke_execution.json", result)
-    return result
+    execution_path = root / "reconstruction_vast_worker_smoke_execution.json"
+    write_json(execution_path, result)
+
+    # Restate this attempt's own receipts in the shape the shared Task
+    # Evaluation contract reads, under the directory every paid lane lays its
+    # provider run out in. The receipts above stay exactly where replay expects
+    # them; these are a second view of the same bytes, bound to them by digest
+    # so the two cannot drift into a manifest claiming zero while the receipt
+    # says otherwise.
+    provider_run = root / "vast_provider_run"
+    write_json(
+        provider_run / TEARDOWN_MANIFEST_NAME,
+        {
+            "schema_version": "vast_teardown_manifest.v1",
+            "generated_at": utc_now_iso(),
+            "status": "completed" if teardown_passed else "blocked",
+            "vast_instance_ids": [int(instance_id)] if str(instance_id or "").isdigit() else [],
+            "teardown_actions_performed": (
+                [] if instance_id is None else [str(terminate_result.get("status"))]
+            ),
+            "continuing_spend_from_this_run": not teardown_passed,
+            "source_teardown_receipt_path": str(root / "teardown_receipt.json"),
+            "source_teardown_receipt_digest": teardown_receipt["teardown_receipt_digest"],
+            "provider_zero_digest": provider_zero_receipt["provider_zero_digest"],
+        },
+    )
+    write_json(
+        provider_run / ADAPTER_RESULT_NAME,
+        {
+            "schema_version": "reconstruction_gpu_canary_adapter_result.v1",
+            "status": result["status"],
+            "provider_mutations_performed": provider_mutations,
+            "instance_id": instance_id,
+            "provider_zero_verified": result["provider_zero_verified"],
+            "blockers": list(result["blockers"]),
+            "execution_result_digest": result["execution_result_digest"],
+            "raw_secret_values_recorded": False,
+        },
+    )
+    # Sealed after the execution record is written and never written back into
+    # it: these name where these bytes happen to live on *this* host, and the
+    # execution digest replay re-derives has to stay a statement about the run.
+    return seal_lane_terminal_artifacts(
+        result,
+        attempt_root=root,
+        lane="reconstruction_worker_smoke",
+        extra_artifact_roots={
+            "smoke_execution_result": execution_path,
+            "smoke_teardown_receipt": root / "teardown_receipt.json",
+            "smoke_provider_zero_verification": root / "provider_zero_verification.json",
+            "smoke_provider_runtime_result": root / "provider_runtime_result.json",
+        },
+        binding={
+            "request_digest": request_digest,
+            "bound_request_digest": request.get("bound_request_digest"),
+            "worker_image_digest": worker_image,
+            "execution_result_digest": result["execution_result_digest"],
+            "retry_cap": retry_cap,
+        },
+    )
 
 
 def replay_reconstruction_vast_worker_smoke(
