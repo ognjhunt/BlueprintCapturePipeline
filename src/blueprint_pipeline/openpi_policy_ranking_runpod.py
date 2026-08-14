@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
+from .common import redacted_failure_detail, write_json
 from .five_policy_identity_smoke import (
     INPUT_RECEIPT_SCHEMA_VERSION as FIVE_POLICY_INPUT_RECEIPT_SCHEMA_VERSION,
 )
@@ -70,6 +70,7 @@ from .production_gpu_campaign_budget import (
 from .runpod_provider_adapter import run_runpod_provider_adapter
 from .safe_outbound_http import presigned_transfer_policy
 from .safe_outbound_http import request as safe_http_request
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 
 
 SCHEMA_VERSION = "openpi_policy_ranking_runpod_launch.v1"
@@ -86,6 +87,44 @@ MAX_OUTPUT_ARCHIVE_BYTES = 2 * 1024**3
 MAX_OUTPUT_ARCHIVE_MEMBERS = 50_000
 MAX_OUTPUT_UNCOMPRESSED_BYTES = 12 * 1024**3
 MAX_CONSECUTIVE_TRANSIENT_OUTPUT_ERRORS = 3
+
+
+def _seal_terminal(result: Mapping[str, Any], adapter_output: str | Path) -> dict[str, Any]:
+    """Give this lane's terminal result the two paths its launch contract reads.
+
+    This module is dual-purpose, and that is why "policy ranking is frozen"
+    does not excuse it: the same campaign runner serves the frozen
+    ``openpi-policy-ranking`` probe kind *and* the live
+    ``new-site-diagnostic-canary``, which #544 made website-reachable. Its
+    ``adapter_output`` is the ``terminal_contract.result_path`` the canary's
+    launch profile reads ``required_path_fields`` straight off, so a result
+    written here without ``artifact_manifest_path`` and
+    ``teardown_manifest_path`` ends ``allocator_terminal_artifact_missing:``
+    for both -- after renting a GPU, with the evidence sitting on disk and
+    nothing naming it.
+
+    The attempt root is the adapter result's own directory, the same ``root``
+    this lane already lays its provider run and receipts under, so the sealer
+    looks where the evidence actually is rather than at a root it is not under
+    (the #501 defect, which seals nothing and still reports ``completed``).
+
+    Every terminal write goes through here, including the pre-provider
+    refusals. The provider adapter also writes this path mid-flight, but no
+    path returns between that write and a later one here, so the terminal state
+    is always a sealed write. Both fields are named unconditionally, ``None``
+    when there is nothing to name, and the shared seal only ever adds blockers
+    or downgrades a status, so this cannot turn a blocked attempt into a
+    passing one.
+    """
+
+    terminal = dict(result)
+    terminal.setdefault("artifact_manifest_path", None)
+    terminal.setdefault("teardown_manifest_path", None)
+    return seal_lane_terminal_artifacts(
+        terminal,
+        attempt_root=Path(adapter_output).expanduser().resolve().parent,
+        lane=PAID_LANE,
+    )
 
 
 def _read_object(path: str | Path) -> dict[str, Any]:
@@ -515,7 +554,7 @@ def _monitor_openpi_output_and_teardown(
                 return {
                     "status": "monitor_failed_watchdog_retained",
                     "blockers": [
-                        f"openpi_output_monitor_failed:{type(exc).__name__}"
+                        f"openpi_output_monitor_failed:{redacted_failure_detail(exc)}"
                     ],
                     "transient_error_attempts": consecutive_transient_errors,
                     "continuing_spend": True,
@@ -525,7 +564,7 @@ def _monitor_openpi_output_and_teardown(
         except Exception as exc:  # noqa: BLE001 - teardown still owns the deadline
             return {
                 "status": "monitor_failed_watchdog_retained",
-                "blockers": [f"openpi_output_monitor_failed:{type(exc).__name__}"],
+                "blockers": [f"openpi_output_monitor_failed:{redacted_failure_detail(exc)}"],
                 "continuing_spend": True,
                 "watchdog_deadline_epoch": deadline_epoch,
                 "raw_secret_values_recorded": False,
@@ -1034,7 +1073,7 @@ def run_openpi_policy_ranking_campaign(
             "watchdog_process_started": False,
             "budget_reservation_created": False,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
     if (
         campaign_budget_ledger is None
@@ -1048,7 +1087,7 @@ def run_openpi_policy_ranking_campaign(
             "blockers": ["openpi_runpod_campaign_budget_arguments_missing"],
             "provider_mutations_performed": 0,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
 
     input_secret_url = _read_private_https_url(
@@ -1081,7 +1120,7 @@ def run_openpi_policy_ranking_campaign(
             "provider_mutations_performed": 0,
             "campaign_budget_admission": exc.admission,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
     reserved_at_epoch = time.time()
     budget_context = {
@@ -1166,7 +1205,7 @@ def run_openpi_policy_ranking_campaign(
             "blockers": list(lease.get("blockers") or []),
             "provider_mutations_performed": 0,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
 
     try:
@@ -1244,7 +1283,7 @@ def run_openpi_policy_ranking_campaign(
             "blockers": list(handoff.get("blockers") or []),
             "provider_mutations_performed": 0,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
     receipt = {
         **handoff,
@@ -1298,7 +1337,7 @@ def run_openpi_policy_ranking_campaign(
                 "raw_secret_values_recorded": False,
             }
             adapter.pop("error", None)
-            write_json(Path(adapter_output), adapter)
+            write_json(Path(adapter_output), _seal_terminal(adapter, adapter_output))
         else:
             adapter = run_runpod_provider_adapter(
                 provider_launch_request_path=bound_request_out,
@@ -1337,7 +1376,7 @@ def run_openpi_policy_ranking_campaign(
             "continuing_spend": cleanup_handoff["continuing_spend"],
             "raw_secret_values_recorded": False,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
     finally:
         for key, value in previous.items():
@@ -1376,7 +1415,7 @@ def run_openpi_policy_ranking_campaign(
             "continuing_spend": monitor.get("continuing_spend") is True,
             "raw_secret_values_recorded": False,
         }
-        write_json(Path(adapter_output), result)
+        write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
         return result
 
     if (
@@ -1411,7 +1450,7 @@ def run_openpi_policy_ranking_campaign(
         "cleanup_handoff": cleanup_handoff,
         "continuing_spend": cleanup_handoff["continuing_spend"],
     }
-    write_json(Path(adapter_output), result)
+    write_json(Path(adapter_output), _seal_terminal(result, adapter_output))
     return result
 
 
