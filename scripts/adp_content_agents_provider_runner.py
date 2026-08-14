@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import signal
 import shutil
 import subprocess
 import time
@@ -68,13 +69,20 @@ def _run(
         stderr=subprocess.STDOUT,
         text=True,
         env=env,
+        start_new_session=os.name == "posix",
     )
     started_monotonic = time.monotonic()
     deadline = started_monotonic + timeout
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            process.kill()
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:  # pragma: no cover - provider execution is Linux
+                process.kill()
             output, _ = process.communicate()
             returncode = 124
             timed_out = True

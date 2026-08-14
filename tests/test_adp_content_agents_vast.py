@@ -2045,6 +2045,55 @@ def test_provider_runtime_stage_timeout_still_kills_silent_subprocess(
     assert execution["timeout_seconds"] == 0.08
 
 
+def test_provider_runtime_stage_timeout_kills_posix_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _provider_runner_module()
+    popen_kwargs: dict[str, object] = {}
+    killed: list[tuple[int, int]] = []
+
+    class FakeProcess:
+        pid = 4242
+        returncode = None
+        communicate_calls = 0
+
+        def communicate(self, timeout=None):
+            self.communicate_calls += 1
+            if self.communicate_calls == 1:
+                raise subprocess.TimeoutExpired(["fake-agent"], timeout)
+            return ("", None)
+
+    fake_process = FakeProcess()
+
+    def fake_popen(*args, **kwargs):
+        popen_kwargs.update(kwargs)
+        return fake_process
+
+    monotonic_values = iter((0.0, 0.0, 0.1, 0.6))
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(runner.os, "name", "posix")
+    monkeypatch.setattr(
+        runner.os,
+        "killpg",
+        lambda pid, sig: killed.append((pid, sig)),
+    )
+
+    execution = runner._run(
+        ["fake-agent"],
+        log_path=tmp_path / "material-agent.log",
+        env={},
+        timeout=0.5,
+        progress_interval_seconds=0.1,
+    )
+
+    assert popen_kwargs["start_new_session"] is True
+    assert killed == [(fake_process.pid, runner.signal.SIGKILL)]
+    assert execution["returncode"] == 124
+    assert execution["timed_out"] is True
+
+
 def test_provider_runtime_uses_stage_specific_bounded_timeouts() -> None:
     runner = _provider_runner_module()
     runner_source = (ROOT / "scripts/adp_content_agents_provider_runner.py").read_text()
