@@ -181,6 +181,57 @@ def _artifixer_candidate_request(root: Path) -> Path:
     return _write(root / "artifixer-candidate-request.json", value)
 
 
+def _semantic_teacher_edit_request(root: Path) -> Path:
+    source = root / "source.png"
+    mask = root / "mask.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"fixture-source")
+    mask.write_bytes(b"fixture-mask")
+
+    def record(path: Path) -> dict:
+        import hashlib
+
+        return {
+            "path": str(path),
+            "size_bytes": path.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    candidate = _write(
+        root / "candidate.json",
+        {
+            "tasks": [
+                {
+                    "task_id": "task_a",
+                    "frames": [
+                        {
+                            "frame_index": 0,
+                            "input_retained_frame": record(source),
+                            "input_exact_repair_mask": record(mask),
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    registry = _write(root / "registry.json", {"backends": []})
+    rights = _write(root / "rights.json", {})
+    value = {
+        "schema_version": "fresh_scene_semantic_teacher_image_edit_request.v1",
+        "source_candidate_inputs_receipt_path": str(candidate),
+        "backend_registry_path": str(registry),
+        "backend_id": "future_editor",
+        "rights_attestation_path": str(rights),
+        "selected_task_ids": ["task_a"],
+        "prompt_policy": "generic_masked_object_absent_background_completion_v2",
+        "output_format": "png",
+        "retry_count": 0,
+        "request_digest": "",
+    }
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    return _write(root / "semantic-teacher-edit-request.json", value)
+
+
 def test_host_resident_manifest_compiles_exact_agents_sdk_bindings(tmp_path: Path) -> None:
     status = _status(tmp_path / "status.json")
     request = _sam_request(tmp_path / "inputs")
@@ -366,6 +417,36 @@ def test_artifixer_candidate_binding_rehashes_cutout_and_authority(
     (tmp_path / "artifixer-inputs/segment-cutout.json").write_text(
         '{"changed":true}', encoding="utf-8"
     )
+    with pytest.raises(
+        FreshSceneSupervisorBindingError,
+        match="fresh_scene_tool_request_input_bytes_changed",
+    ):
+        compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+
+
+def test_semantic_teacher_binding_rehashes_registry_rights_and_transitive_frames(
+    tmp_path: Path,
+) -> None:
+    status = _status(tmp_path / "status.json")
+    request = _semantic_teacher_edit_request(tmp_path / "semantic-inputs")
+    manifest_path = tmp_path / "binding.json"
+    manifest = materialize_fresh_scene_supervisor_bindings(
+        preparation_status_path=status,
+        semantic_teacher_edit_request_path=request,
+        output_path=manifest_path,
+        roots=[tmp_path],
+    )
+    compiled = compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+    assert compiled["requested_tool_ids"] == [
+        "inspect_fresh_scene_preparation",
+        "materialize_fresh_scene_semantic_teacher_edit_packet",
+    ]
+    assert len(
+        manifest["tool_requests"]["fresh_scene_semantic_teacher_edit_request"][
+            "input_inventory"
+        ]
+    ) == 5
+    (tmp_path / "semantic-inputs/mask.png").write_bytes(b"changed")
     with pytest.raises(
         FreshSceneSupervisorBindingError,
         match="fresh_scene_tool_request_input_bytes_changed",

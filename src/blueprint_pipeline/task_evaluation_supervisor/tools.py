@@ -195,6 +195,27 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "materialize_fresh_scene_semantic_teacher_edit_packet": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "packet_digest": {"type": "string"},
+            "status": {
+                "const": (
+                    "semantic_teacher_image_edit_packet_prepared_no_upload_"
+                    "no_execution"
+                )
+            },
+            "task_count": {"type": "integer"},
+            "request_count": {"type": "integer"},
+            "backend_id": {"type": "string"},
+            "provider_upload_performed": {"const": False},
+            "provider_inference_performed": {"const": False},
+            "provider_mutations_performed": {"const": 0},
+            "canonical_source_altered": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "materialize_sam31_task_inputs": _output_schema(
         {
             "contract_present": {"const": True},
@@ -753,6 +774,18 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             minimum_mode="execute_non_spend",
             timeout_seconds=900.0,
             idempotency="content_addressed_segment_cutout_to_artifixer_candidate",
+        ),
+        _descriptor(
+            "materialize_fresh_scene_semantic_teacher_edit_packet",
+            "fresh_scene_semantic_teacher_edit_packet_materialization",
+            expected_artifacts=["fresh_scene_semantic_teacher_image_edit_packet.v1"],
+            input_properties={"request_digest": {"type": "string"}},
+            required_inputs=["request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=900.0,
+            idempotency="content_addressed_registry_selected_semantic_teacher_packet",
         ),
         _descriptor(
             "inspect_capture_build",
@@ -1465,6 +1498,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "materialize_fresh_scene_removal_freezes",
         "materialize_fresh_scene_segment_cutout",
         "materialize_fresh_scene_artifixer_candidate",
+        "materialize_fresh_scene_semantic_teacher_edit_packet",
         "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
@@ -3223,6 +3257,7 @@ def _bound_artifact(
         "materialize_fresh_scene_removal_freezes",
         "materialize_fresh_scene_segment_cutout",
         "materialize_fresh_scene_artifixer_candidate",
+        "materialize_fresh_scene_semantic_teacher_edit_packet",
     }:
         root_value = getattr(context, "supervisor_output_dir", None)
         if tool_id == "materialize_sam31_task_inputs":
@@ -3271,7 +3306,7 @@ def _bound_artifact(
 
                 materializer = materialize_segment_contribution_cutout_set_from_tool_request
             output_name = "segment_cutout_set"
-        else:
+        elif tool_id == "materialize_fresh_scene_artifixer_candidate":
             source = getattr(context, "fresh_scene_artifixer_candidate_request", None)
             materializer = getattr(
                 context, "fresh_scene_artifixer_candidate_materializer", None
@@ -3283,6 +3318,18 @@ def _bound_artifact(
 
                 materializer = materialize_fresh_scene_artifixer_candidate_preparation
             output_name = "artifixer_candidate"
+        else:
+            source = getattr(context, "fresh_scene_semantic_teacher_edit_request", None)
+            materializer = getattr(
+                context, "fresh_scene_semantic_teacher_edit_materializer", None
+            )
+            if not callable(materializer):
+                from ..fresh_scene_semantic_teacher_image_edit import (
+                    materialize_semantic_teacher_image_edit_packet,
+                )
+
+                materializer = materialize_semantic_teacher_image_edit_packet
+            output_name = "semantic_teacher_edit_packet"
         if not isinstance(root_value, str) or not root_value:
             raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
         if not isinstance(source, Mapping) or not callable(materializer):
@@ -3449,6 +3496,58 @@ def _bound_artifact(
                     "artifact_path": str(receipt_path.relative_to(Path(root_value))),
                     "artifact_digest": result["receipt_digest"],
                     "artifact_type": "fresh_scene_artifixer_candidate_preparation.v1",
+                }
+            ]
+        if tool_id == "materialize_fresh_scene_semantic_teacher_edit_packet":
+            status = (
+                "semantic_teacher_image_edit_packet_prepared_no_upload_no_execution"
+            )
+            backend = result.get("backend") if isinstance(result, Mapping) else None
+            registry_entry = (
+                backend.get("registry_entry") if isinstance(backend, Mapping) else None
+            )
+            if (
+                not isinstance(result, Mapping)
+                or result.get("schema_version")
+                != "fresh_scene_semantic_teacher_image_edit_packet.v1"
+                or result.get("status") != status
+                or result.get("packet_digest")
+                != canonical_digest(result, digest_field="packet_digest")
+                or not 1 <= int(result.get("task_count") or 0) <= 5
+                or int(result.get("request_count") or 0) < int(result["task_count"])
+                or not isinstance(registry_entry, Mapping)
+                or not str(registry_entry.get("backend_id") or "").strip()
+                or result.get("provider_upload_performed") is not False
+                or result.get("provider_inference_performed") is not False
+                or result.get("provider_mutations_performed") != 0
+                or result.get("canonical_source_altered") is not False
+            ):
+                raise ValueError("fresh_scene_semantic_teacher_edit_packet_invalid")
+            receipt_path = write_phase2_artifact(
+                root_value,
+                "generated/semantic_teacher_edit_packet/tool_receipt.json",
+                result,
+            )
+            return {
+                "contract_present": True,
+                "digest_matches": True,
+                "packet_digest": result["packet_digest"],
+                "status": status,
+                "task_count": int(result["task_count"]),
+                "request_count": int(result["request_count"]),
+                "backend_id": str(registry_entry["backend_id"]),
+                "provider_upload_performed": False,
+                "provider_inference_performed": False,
+                "provider_mutations_performed": 0,
+                "canonical_source_altered": False,
+                "proof_state_changed": False,
+            }, [
+                {
+                    "artifact_path": str(receipt_path.relative_to(Path(root_value))),
+                    "artifact_digest": result["packet_digest"],
+                    "artifact_type": (
+                        "fresh_scene_semantic_teacher_image_edit_packet.v1"
+                    ),
                 }
             ]
         if (
@@ -3741,6 +3840,13 @@ def non_spend_tool_bindings(
         if tool_id == "materialize_fresh_scene_artifixer_candidate" and (
             not isinstance(
                 getattr(context, "fresh_scene_artifixer_candidate_request", None),
+                Mapping,
+            )
+        ):
+            continue
+        if tool_id == "materialize_fresh_scene_semantic_teacher_edit_packet" and (
+            not isinstance(
+                getattr(context, "fresh_scene_semantic_teacher_edit_request", None),
                 Mapping,
             )
         ):
