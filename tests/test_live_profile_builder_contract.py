@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -43,8 +45,22 @@ def test_there_are_builders_to_check() -> None:
 
 
 def _cli_arguments(path: Path) -> set[str]:
+    """Every flag this builder's command line declares.
+
+    Two declaration styles count, and both are read from the syntax rather than
+    from the source text, so a comment that happens to mention a flag does not
+    change which contract a lane is held to.
+
+    The first is a literal `add_argument("--flag", ...)`. The second is a
+    declarative flag table whose rows name their own flag -- the style
+    `prepare_artifixer3d_inputs` already uses, where one table builds both the
+    parser and the call so that a parameter cannot quietly lose its flag and be
+    fixed at a default. For those builders a second literal would be exactly the
+    duplicate the table exists to prevent, so the table is the declaration.
+    """
+
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    return {
+    declared: set[Any] = {
         node.args[0].value
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -52,6 +68,39 @@ def _cli_arguments(path: Path) -> set[str]:
         and node.args
         and isinstance(node.args[0], ast.Constant)
     }
+    declared.update(
+        value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant)
+        and key.value == "flag"
+        and isinstance(value, ast.Constant)
+    )
+    return {item for item in declared if isinstance(item, str)}
+
+
+def test_the_flag_reader_sees_both_declaration_styles(tmp_path: Path) -> None:
+    """The reader decides which contract every builder below is held to.
+
+    Narrowing it back to `add_argument` literals would silently exempt a
+    flag-table builder from the `--revision` contract rather than fail it, and
+    a widening to plain source text would let a docstring satisfy it.
+    """
+
+    module = tmp_path / "build_probe_live_profile.py"
+    module.write_text(
+        textwrap.dedent(
+            '''
+            """A docstring naming --not-a-flag must not count."""
+            PARAMETERS = {"revision": {"flag": "--revision"}}
+            parser.add_argument("--output", required=True)
+            '''
+        ),
+        encoding="utf-8",
+    )
+
+    assert _cli_arguments(module) == {"--revision", "--output"}
 
 
 def _is_receipt_driven(path: Path) -> bool:
