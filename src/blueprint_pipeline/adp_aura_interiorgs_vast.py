@@ -645,6 +645,7 @@ def run_aura_interiorgs_vast(
         job_dir=job,
         max_live_minutes=remaining_minutes,
         generated_at=utc_now_iso(),
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
     )
     if watchdog_handle is None:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)

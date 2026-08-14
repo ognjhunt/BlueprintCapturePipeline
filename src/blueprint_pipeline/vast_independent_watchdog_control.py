@@ -56,10 +56,9 @@ def arm_independent_vast_watchdog(
     job_dir: Path,
     max_live_minutes: int,
     generated_at: str,
-    pod_name_prefix_base: str = "blueprint-groot-oscar-canary-vast-wam-",
+    pod_name_prefix: str,
     startup_wait_seconds: float = 10.0,
     allowed_active_instance_ids: Sequence[int] = (),
-    pod_name_prefix: str = "blueprint-groot-oscar-canary-vast-wam-",
 ) -> tuple[dict[str, Any], VastWatchdogHandle | None]:
     """Start a detached name-bound watchdog and prove it is armed before create."""
 
@@ -69,7 +68,6 @@ def arm_independent_vast_watchdog(
     if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
         raise ValueError("independent_vast_watchdog_prefix_invalid")
     prefix = f"{prefix_base}{_safe_suffix(generated_at)}-"
-    prefix = f"{pod_name_prefix_base}{_safe_suffix(generated_at)}-"
     if int(max_live_minutes) < 2:
         blocked = {
             "schema_version": HANDOFF_SCHEMA,
@@ -87,7 +85,8 @@ def arm_independent_vast_watchdog(
         write_json(out_dir / EVIDENCE_NAME, blocked)
         write_json(job_dir / HANDOFF_NAME, blocked)
         return blocked, None
-    deadline = time.time() + max(1, int(max_live_minutes)) * 60
+    started_epoch = time.time()
+    deadline = started_epoch + max(1, int(max_live_minutes)) * 60
     log_path = out_dir / "watchdog.log"
     log_handle = log_path.open("a", encoding="utf-8")
     command = [
@@ -167,6 +166,7 @@ def arm_independent_vast_watchdog(
         "status": "armed" if passed else "blocked",
         "independent_process": passed,
         "watchdog_pid": process.pid,
+        "watchdog_started_epoch": started_epoch,
         "watchdog_deadline_epoch": deadline,
         "watchdog_armed_before_allocation": passed,
         "pod_name_prefix": prefix,

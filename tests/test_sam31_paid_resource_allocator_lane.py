@@ -126,9 +126,11 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
     started = tmp_path / "watchdog" / "started.txt"
 
     def arm(**_kwargs):
+        observed["arm"] = _kwargs
         return (
             {
                 "watchdog_pid": 123,
+                "watchdog_started_epoch": 1_000,
                 "watchdog_deadline_epoch": 9_999_999_999,
                 "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
             },
@@ -170,6 +172,7 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
     )
     assert result["status"] == "completed"
     assert observed["prepare"]["execution_adapter_qualified"] is True
+    assert observed["arm"]["pod_name_prefix"] == "blueprint-sam31-source-tracks-"
     assert observed["execute"]["provider"] is provider
     assert observed["execute"]["hf_token"] == "hf-secret"
     assert observed["execute"]["input_bundle_get_url"].endswith("/input")
@@ -240,6 +243,7 @@ def test_sam31_allocator_lane_refuses_nonprivate_token_before_provider(
         arm_watchdog=lambda **_kwargs: (
             {
                 "watchdog_pid": 123,
+                "watchdog_started_epoch": 1_000,
                 "watchdog_deadline_epoch": 9_999_999_999,
                 "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
             },
@@ -285,6 +289,7 @@ def test_sam31_allocator_closes_watchdog_when_live_capacity_is_unavailable(
         arm_watchdog=lambda **_kwargs: (
             {
                 "watchdog_pid": 123,
+                "watchdog_started_epoch": 1_000,
                 "watchdog_deadline_epoch": 9_999_999_999,
                 "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
             },
@@ -320,6 +325,7 @@ def test_sam31_allocator_closes_watchdog_when_live_preflight_raises(
         arm_watchdog=lambda **_kwargs: (
             {
                 "watchdog_pid": 123,
+                "watchdog_started_epoch": 1_000,
                 "watchdog_deadline_epoch": 9_999_999_999,
                 "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
             },
