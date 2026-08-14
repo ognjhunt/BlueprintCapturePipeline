@@ -68,15 +68,12 @@ def test_invalid_six_task_count_fails_before_source_read(tmp_path: Path) -> None
 
 
 def test_real_two_task_requests_bind_registered_root_and_compile_packets() -> None:
-    """Regression over the retained public-scene packet when locally available."""
+    """Regression over the committed retained public-scene packet."""
 
-    root = Path(
-        "/Users/nijelhunt_1/workspace/BlueprintValidation/data/"
-        "adp009a_tranche1_20260804/third_scene_dual_task_e2e/shared_scene/"
-        "paired_target_native_arena_requests_v2_8f181229"
+    root = (
+        Path(__file__).resolve().parent
+        / "fixtures/paired_target_native_arena_requests_v2_8f181229"
     )
-    if not root.is_dir():
-        pytest.skip("retained public-scene packet is not present")
     receipt = json.loads(
         (root / "paired_target_native_arena_requests.v1.json").read_text()
     )

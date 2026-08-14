@@ -1,0 +1,149 @@
+{
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "claim_boundary": "deterministic_request_compilation_only;not_native_spawn_pose_camera_reach_contact_controls_policy_task_success_or_physical_evidence",
+  "construction_bindings": {
+    "construction_digest": "sha256:29a254e9738119d90983e091fa0d67082cb7d08803cfb6c8ca5f9750c78a2442",
+    "path": "retained-public-scene/paired_target_native_construction_bindings_v1_b2f716ce/paired_target_native_construction_bindings.v1.json",
+    "sha256": "sha256:851f09d9b0c9db5b25603f7dad58cb99037f695c80366823d7f34fc9a761f4d4",
+    "size_bytes": 8105
+  },
+  "learned_policies_executed": false,
+  "maximum_replacement_objects": 5,
+  "native_execution_performed": false,
+  "receipt_digest": "sha256:f3e878fd5955c69bdd44e420e94d11f3502eaf319bffb3b2be27358a87a938bb",
+  "replacement_object_count": 2,
+  "required_controls": [
+    "zero_action_negative",
+    "scripted_positive"
+  ],
+  "scene_id": "840920",
+  "schema_version": "paired_target_native_arena_requests.v1",
+  "status": "canonical_native_arena_requests_compiled_pending_packet_and_native_execution",
+  "tasks": [
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "camera_rig": {
+        "path": "retained-public-scene/paired_target_native_manipulation_inputs_v2_8f181229/task_a_washer_door_open/paired_target_native_camera_rig_candidate.v1.json",
+        "receipt_digest": "sha256:1c7ccbc3ac5b3f8b65de663fbfa90eb0837e0dda2996b6ff3aa926ba8d1e3bf4",
+        "sha256": "sha256:d1e0315fc011a72476951b3840879dd33ee972c80dc06f2aada60aaaf947381d",
+        "size_bytes": 5682
+      },
+      "interaction_affordance": {
+        "path": "retained-public-scene/paired_target_native_manipulation_inputs_v2_8f181229/task_a_washer_door_open/paired_target_interaction_affordance_candidate.v1.json",
+        "receipt_digest": "sha256:4224e8b5b5269da5c8a5df09e6b571099965c0aec82c560a4655fd7e4a570815",
+        "sha256": "sha256:e91ae72b8adf34ceadb24717fa98b53d25af8bd8fe0a681ff6a8d3477df88b18",
+        "size_bytes": 3744
+      },
+      "kinematic_path": {
+        "path": "retained-public-scene/paired_target_native_manipulation_inputs_v2_8f181229/task_a_washer_door_open/paired_target_articulated_kinematic_path.v1.json",
+        "receipt_digest": "sha256:211bad62b320d6666f1d0cc5ade67f839e77b2fdd492eda9737c8682e69579bc",
+        "sha256": "sha256:9e44f81535b14a85d3afed14807509d58a51e36cd15a194871ae30d887ee9d36",
+        "size_bytes": 21841
+      },
+      "registered_asset": {
+        "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_a_washer_door_open/registered_replacement_asset.v1.json",
+        "receipt_digest": "sha256:0080a819dba6ce060d7f8474e525ebd6d458e9d8bc685cd5df45f7e755494069",
+        "sha256": "sha256:322313edac6d90a0a21bbdddf7292bb23a6f1690a36e78626df7935f134a8d72",
+        "size_bytes": 2406
+      },
+      "registered_root_pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_world_m": [
+          3.5154863,
+          9.758716,
+          -1.3e-08
+        ]
+      },
+      "request": {
+        "path": "retained-public-scene/paired_target_native_arena_requests_v2_8f181229/task_a_washer_door_open/native_task_arena_packet_request.v1.json",
+        "request_digest": "sha256:efe2deae6ddccff4b23f9abd9af864bb3f95e2e31ae42905f7ee018e1dfa0b98",
+        "sha256": "sha256:9d9bcdda7c8825eac7403a0628e3636d40b61bb85349f4deaab77952588184bf",
+        "size_bytes": 48432
+      },
+      "scenario_suite": {
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_scenario_suite.v1.json",
+        "sha256": "sha256:c1e7f24845f0f101bc66f981f659efebdd021d9fb05e89104c28398f22d3bfa2",
+        "size_bytes": 6032,
+        "suite_digest": "sha256:2d173dc264a57a8db72a3216017112d1c5cfa0f29e2c535ffcf901918fb155ce"
+      },
+      "support_receipt": null,
+      "task_freeze": {
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json",
+        "sha256": "sha256:20259ab89d449875eb6836dce864dc0f6604c4bcae19ec9e594bdd387b8fb20a",
+        "size_bytes": 7881,
+        "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152"
+      },
+      "task_id": "task_a_washer_door_open",
+      "task_kind": "articulated_open_close"
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "camera_rig": {
+        "path": "retained-public-scene/paired_target_native_manipulation_inputs_v2_8f181229/task_b_notebook_relocation/paired_target_native_camera_rig_candidate.v1.json",
+        "receipt_digest": "sha256:94e9d3badb329e86171db87f6e9e7cbee5e723825243df4cc14f3a0756298cbf",
+        "sha256": "sha256:cb2ac234d6c82078be4de7d9a220474d2758ef33243fa78d716cb00d95d6e899",
+        "size_bytes": 5704
+      },
+      "interaction_affordance": {
+        "path": "retained-public-scene/paired_target_native_manipulation_inputs_v2_8f181229/task_b_notebook_relocation/paired_target_interaction_affordance_candidate.v1.json",
+        "receipt_digest": "sha256:271f3d432d85f073281c8959c98263db5c1ff3acfc41ec792d5fee47ff9fc2ff",
+        "sha256": "sha256:a35ffc948f1f834f79e5077afda3fc55b284d563c69145b00294f342c40a66fa",
+        "size_bytes": 3582
+      },
+      "kinematic_path": null,
+      "registered_asset": {
+        "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_b_notebook_relocation/registered_replacement_asset.v1.json",
+        "receipt_digest": "sha256:5bec4fa812a0d4c26ba5dfaba700ff327f95b4360907a65f1e2673d1db91d020",
+        "sha256": "sha256:dc1fe60dd3b50cfffe8b6fd8f017958af880d7fdb1216cbd380f2ac4129ac69a",
+        "size_bytes": 2428
+      },
+      "registered_root_pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.7071067811865475,
+          0.7071067811865476
+        ],
+        "position_world_m": [
+          13.580546,
+          7.17201,
+          0.824999996
+        ]
+      },
+      "request": {
+        "path": "retained-public-scene/paired_target_native_arena_requests_v2_8f181229/task_b_notebook_relocation/native_task_arena_packet_request.v1.json",
+        "request_digest": "sha256:dc325d9e30466285bacbb796286b2fbe0948a6cdedee7cb1cc83fd2c93b47aaa",
+        "sha256": "sha256:0fe388cc9c53950734eac065b318ff14d38e80604c2e32a4db6d1c2a9516e004",
+        "size_bytes": 19798
+      },
+      "scenario_suite": {
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_scenario_suite.v1.json",
+        "sha256": "sha256:f475c211bca5295280e35d803ae6f0b0b9e910bd5eb893fa280804ce85c5c395",
+        "size_bytes": 5998,
+        "suite_digest": "sha256:e80d2d16ca7c7aaf7cae0117cdc3cf0162e7b1506bb95e72e9bbbd1574ae85bf"
+      },
+      "support_receipt": {
+        "path": "retained-public-scene/selection/registration/notebook_support_wardrobe_101.json",
+        "receipt_digest": "sha256:b5b06eebc56339a97a797f9f3f6a824a893be97277e21437d9c459b7f7f2ee68",
+        "sha256": "sha256:5b640adebc1d27718926f5c83ee41ef23066d229061f6ee22233d21b8bd82039",
+        "size_bytes": 3489
+      },
+      "task_freeze": {
+        "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json",
+        "sha256": "sha256:2911d1c37b7f96b68c5b71b3272769f5f6ba27e5fd2a01a45f81f33395abff13",
+        "size_bytes": 4951,
+        "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6"
+      },
+      "task_id": "task_b_notebook_relocation",
+      "task_kind": "rigid_pick_place"
+    }
+  ]
+}

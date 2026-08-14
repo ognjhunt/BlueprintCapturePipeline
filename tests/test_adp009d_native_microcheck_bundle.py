@@ -2539,6 +2539,61 @@ def test_the_bundle_keeps_the_appearance_extension() -> None:
     assert "adp009d_aura_appearance_extension_unsupported" in source
 
 
+def test_bundle_digest_binds_the_exact_visual_only_appearance(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    appearance = tmp_path / "appearance.usdz"
+    appearance.write_bytes(b"PK\x03\x04exact-nurec")
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "appearance-bundle",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        aura_particlefield_path=appearance,
+        expected_aura_particlefield_sha256=_digest(appearance),
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    row = next(
+        item for item in receipt["asset_bindings"] if item.get("role") == "aura_appearance"
+    )
+    assert row == {
+        "filename": "aura_ghost_removed_appearance.usdz",
+        "role": "aura_appearance",
+        "sha256": _digest(appearance),
+        "size_bytes": appearance.stat().st_size,
+        "visual_only": True,
+        "collision_authority": False,
+        "sealed_source_mutated": False,
+    }
+
+
+def test_bundle_rejects_unbound_or_drifted_appearance(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    appearance = tmp_path / "appearance.usdz"
+    appearance.write_bytes(b"PK\x03\x04exact-nurec")
+    kwargs = {
+        "job_dir": tmp_path / "appearance-bundle",
+        "approved_can_path": approved,
+        "sage_collision_path": sage,
+        "harness_manifest_path": harness,
+        "implementation_commit": "a" * 40,
+        "aura_particlefield_path": appearance,
+        "generated_at": "fixed",
+        "expected_asset_bindings": bindings,
+    }
+
+    with pytest.raises(ValueError, match="aura_appearance_digest_required"):
+        build_native_microcheck_bundle(**kwargs)
+    with pytest.raises(ValueError, match="aura_appearance_digest_mismatch"):
+        build_native_microcheck_bundle(
+            **kwargs,
+            expected_aura_particlefield_sha256="sha256:" + "f" * 64,
+        )
+
+
 def test_the_stage_probe_finds_a_nurec_volume_too() -> None:
     """It matched "Gauss" and "Aura" case-sensitively.
 

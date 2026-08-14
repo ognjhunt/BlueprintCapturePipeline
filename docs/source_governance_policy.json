@@ -301,7 +301,6 @@
     "tests/test_host_resident_launch_inputs.py",
     "tests/test_issue_retained_scene_render_paid_attempt_authority.py",
     "tests/test_nurec_volume_codec.py",
-    "tests/test_paired_target_native_arena_request.py",
     "tests/test_stage_paid_lane_bundle.py"
   ],
   "grandfathered_module_line_limits": {

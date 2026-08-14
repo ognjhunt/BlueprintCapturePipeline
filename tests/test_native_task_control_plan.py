@@ -5,6 +5,9 @@ import copy
 import pytest
 
 from blueprint_pipeline.adp009d_control_episode import run_task_neutral_controls
+from blueprint_pipeline.adp009d_physics_backend_comparison import (
+    build_backend_contact_configuration,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_articulated_control_plan import (
     materialize_native_articulated_control_plan,
@@ -402,6 +405,25 @@ class _RigidControlEnvironment:
 
     def read_arm_joint_positions(self) -> list[float]:
         return list(self.joints)
+
+    def read_arm_dynamics_observation(self) -> dict:
+        zeros = [0.0] * 7
+        return {
+            "schema_version": "adp009d_arm_dynamics_observation.v2",
+            "joint_position_rad": list(self.joints),
+            "joint_velocity_rad_s": zeros,
+            "joint_position_target_rad": list(self.joints),
+            "computed_torque_nm": zeros,
+            "applied_torque_nm": zeros,
+            "joint_effort_limit_nm": [87.0] * 4 + [12.0] * 3,
+            "joint_effort_utilization": zeros,
+            "body_contact_force_world_n": None,
+            "body_incoming_joint_wrench_body": {},
+            "contact_envelope": None,
+            "backend_contact_configuration": build_backend_contact_configuration(
+                "physx"
+            ),
+        }
 
     def hold_action(self, *, gripper_command: float) -> list[float]:
         self._pending_target = None

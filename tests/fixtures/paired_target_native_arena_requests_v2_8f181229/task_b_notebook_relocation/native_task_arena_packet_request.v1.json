@@ -1,0 +1,568 @@
+{
+  "assets": [
+    {
+      "filename": "scene_collision.usda",
+      "pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_world_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "semantic_role": "scene_collision",
+      "source": {
+        "relative_path": "shared_scene/collider_removal_v1/scene_without_source_colliders.usda",
+        "root": "evidence",
+        "sha256": "sha256:36bc6e6800f59c92b4f655ca7900e1041a5714447b82d4b7b7102d45ed4fa883",
+        "size_bytes": 61346958
+      },
+      "visible": false
+    },
+    {
+      "filename": "scene_appearance.usdz",
+      "pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_world_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "semantic_role": "scene_appearance",
+      "source": {
+        "relative_path": "shared_scene/dual_target_task_b_native_appearance_export_v3_0cd797d2/task_b_notebook_relocation/native_appearance/repaired_scene.usdz",
+        "root": "evidence",
+        "sha256": "sha256:432f1fd253dda1a6d5b5f6395de54db874e7bcd5573c0412d9fe99fcaab6e25a",
+        "size_bytes": 118014456
+      },
+      "visible": true
+    },
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "filename": "replacement__840920_simready_washer_candidate.usda",
+      "object_type": "ARTICULATION",
+      "pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_world_m": [
+          3.5154863,
+          9.758716,
+          -1.3e-08
+        ]
+      },
+      "reset_state": {
+        "joint_positions": {
+          "door_hinge": 0.0,
+          "drawer_slide": 0.0,
+          "drum_bearing": 0.0,
+          "latch_coupler": 0.0,
+          "selector_axis": 0.0
+        }
+      },
+      "semantic_role": "replacement",
+      "source": {
+        "relative_path": "shared_scene/replacement_asset_final_static_v2_pending/task_a_washer_door_open/registered_replacement.usda",
+        "root": "evidence",
+        "sha256": "sha256:4526b8993e00bc3d618162a206f6ef08d1ab86201f82458b43ed25210f444e3f",
+        "size_bytes": 342074
+      },
+      "visible": true
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "filename": "replacement__840920_simready_notebook_candidate.usda",
+      "object_type": "ARTICULATION",
+      "pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.7071067811865475,
+          0.7071067811865476
+        ],
+        "position_world_m": [
+          13.580546,
+          7.17201,
+          0.824999996
+        ]
+      },
+      "reset_state": {
+        "joint_positions": {
+          "display_hinge": 1.745329252
+        }
+      },
+      "semantic_role": "replacement",
+      "source": {
+        "relative_path": "shared_scene/replacement_asset_final_static_v2_pending/task_b_notebook_relocation/registered_replacement.usda",
+        "root": "evidence",
+        "sha256": "sha256:1f56d66886282668f01e9685aa4129d7d55a0e227d5e148e772a292d4749d6fa",
+        "size_bytes": 3724317
+      },
+      "visible": true
+    }
+  ],
+  "cameras": [
+    {
+      "frame_from_camera_matrix": [
+        -0.8097035978249463,
+        -0.5070911807786574,
+        0.2953618425691521,
+        13.035571253,
+        -0.5868390611311909,
+        0.6996697743846824,
+        -0.407531744951421,
+        7.716984747,
+        0.0,
+        -0.5033097865023038,
+        -0.8641060460447001,
+        1.991882,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intrinsics": {
+        "cx": 159.5,
+        "cy": 89.5,
+        "fx": 172.88839142740494,
+        "fy": 172.88839142740494,
+        "height": 180,
+        "width": 320
+      },
+      "optical_convention": "opencv",
+      "parent_prim_path": "{ENV_REGEX_NS}",
+      "policy_input": true,
+      "pose_frame": "world",
+      "role": "external",
+      "scoring_input": false
+    },
+    {
+      "frame_from_camera_matrix": [
+        -0.31288330066166337,
+        0.007629276348343594,
+        0.9497609353460813,
+        0.011,
+        -0.949628982453264,
+        0.01598929182281905,
+        -0.31296827032749297,
+        -0.031,
+        -0.017573726179753835,
+        -0.9998430560289975,
+        0.0022421995347658985,
+        -0.074,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intrinsics": {
+        "cx": 159.5,
+        "cy": 89.5,
+        "fx": 172.88839142740494,
+        "fy": 172.88839142740494,
+        "height": 180,
+        "width": 320
+      },
+      "optical_convention": "opencv",
+      "parent_prim_path": "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link",
+      "policy_input": true,
+      "pose_frame": "robot_body",
+      "role": "wrist",
+      "scoring_input": false
+    },
+    {
+      "frame_from_camera_matrix": [
+        -0.5868390611311912,
+        0.6879566994272023,
+        -0.42700760654102204,
+        13.961791861562219,
+        0.8097035978249462,
+        0.49860203743105347,
+        -0.30947712668134353,
+        7.972652528518072,
+        0.0,
+        -0.527362861778143,
+        -0.8496401661981191,
+        2.2863499962771616,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intrinsics": {
+        "cx": 159.5,
+        "cy": 89.5,
+        "fx": 172.88839142740494,
+        "fy": 172.88839142740494,
+        "height": 180,
+        "width": 320
+      },
+      "optical_convention": "opencv",
+      "parent_prim_path": "{ENV_REGEX_NS}",
+      "policy_input": false,
+      "pose_frame": "world",
+      "role": "overview",
+      "scoring_input": false
+    }
+  ],
+  "construction_bindings": {
+    "bindings": [
+      {
+        "asset_id": "840920_simready_notebook_candidate",
+        "evidence_receipts": {
+          "native_import_probe": {
+            "canonical_digest": "sha256:5397fe9af1abd41e4e4722684a9588c3c5a0eeb10f98ae87ee4705ca679c8534",
+            "path": "retained-public-scene/paired_target_native_import_execution_v4_abba2251_one_shot/vast_execute/job/immutable_execution/probes/01__840920_simready_notebook_candidate.json",
+            "schema_version": "simready_replacement_native_import_probe_result.v1",
+            "sha256": "sha256:56bbd1c5ba9b2005ad6f4a61ef2c0e85d0cf1e66f8e5e06aeab9f3035dd94dc6",
+            "size_bytes": 1369
+          },
+          "registered_asset": {
+            "canonical_digest": "sha256:5bec4fa812a0d4c26ba5dfaba700ff327f95b4360907a65f1e2673d1db91d020",
+            "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_b_notebook_relocation/registered_replacement_asset.v1.json",
+            "schema_version": "registered_replacement_asset.v1",
+            "sha256": "sha256:dc1fe60dd3b50cfffe8b6fd8f017958af880d7fdb1216cbd380f2ac4129ac69a",
+            "size_bytes": 2428
+          },
+          "registered_usd": {
+            "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_b_notebook_relocation/registered_replacement.usda",
+            "sha256": "sha256:1f56d66886282668f01e9685aa4129d7d55a0e227d5e148e772a292d4749d6fa",
+            "size_bytes": 3724317
+          },
+          "task_freeze": {
+            "canonical_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+            "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json",
+            "schema_version": "dual_task_task_freeze.v1",
+            "sha256": "sha256:2911d1c37b7f96b68c5b71b3272769f5f6ba27e5fd2a01a45f81f33395abff13",
+            "size_bytes": 4951
+          }
+        },
+        "native_import_probe_result_digest": "sha256:5397fe9af1abd41e4e4722684a9588c3c5a0eeb10f98ae87ee4705ca679c8534",
+        "native_simulator_import_qualified": true,
+        "registered_asset_receipt_digest": "sha256:5bec4fa812a0d4c26ba5dfaba700ff327f95b4360907a65f1e2673d1db91d020",
+        "replacement_asset_sha256": "sha256:1f56d66886282668f01e9685aa4129d7d55a0e227d5e148e772a292d4749d6fa",
+        "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+        "task_id": "task_b_notebook_relocation"
+      },
+      {
+        "asset_id": "840920_simready_washer_candidate",
+        "evidence_receipts": {
+          "native_import_probe": {
+            "canonical_digest": "sha256:073b6f5a23209f8dde90c36c6c047c87f2673c12c7836ce4dd17bf51edfed2da",
+            "path": "retained-public-scene/paired_target_native_import_execution_v4_abba2251_one_shot/vast_execute/job/immutable_execution/probes/00__840920_simready_washer_candidate.json",
+            "schema_version": "simready_replacement_native_import_probe_result.v1",
+            "sha256": "sha256:1b79a2e69a4606a778141237f3b78b5771f9b2ea492dda5a481ef54be18b04b9",
+            "size_bytes": 1362
+          },
+          "registered_asset": {
+            "canonical_digest": "sha256:0080a819dba6ce060d7f8474e525ebd6d458e9d8bc685cd5df45f7e755494069",
+            "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_a_washer_door_open/registered_replacement_asset.v1.json",
+            "schema_version": "registered_replacement_asset.v1",
+            "sha256": "sha256:322313edac6d90a0a21bbdddf7292bb23a6f1690a36e78626df7935f134a8d72",
+            "size_bytes": 2406
+          },
+          "registered_usd": {
+            "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_a_washer_door_open/registered_replacement.usda",
+            "sha256": "sha256:4526b8993e00bc3d618162a206f6ef08d1ab86201f82458b43ed25210f444e3f",
+            "size_bytes": 342074
+          },
+          "task_freeze": {
+            "canonical_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+            "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json",
+            "schema_version": "dual_task_task_freeze.v1",
+            "sha256": "sha256:20259ab89d449875eb6836dce864dc0f6604c4bcae19ec9e594bdd387b8fb20a",
+            "size_bytes": 7881
+          }
+        },
+        "native_import_probe_result_digest": "sha256:073b6f5a23209f8dde90c36c6c047c87f2673c12c7836ce4dd17bf51edfed2da",
+        "native_simulator_import_qualified": true,
+        "registered_asset_receipt_digest": "sha256:0080a819dba6ce060d7f8474e525ebd6d458e9d8bc685cd5df45f7e755494069",
+        "replacement_asset_sha256": "sha256:4526b8993e00bc3d618162a206f6ef08d1ab86201f82458b43ed25210f444e3f",
+        "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+        "task_id": "task_a_washer_door_open"
+      }
+    ],
+    "claim_boundary": "exact_paired_scene_and_replacement_bytes_admitted_for_native_construction_only;camera_reachability_contact_controls_policy_and_physical_claims_unproven",
+    "collision_scene": {
+      "path": "retained-public-scene/collider_removal_v1/scene_without_source_colliders.usda",
+      "sha256": "sha256:36bc6e6800f59c92b4f655ca7900e1041a5714447b82d4b7b7102d45ed4fa883",
+      "size_bytes": 61346958
+    },
+    "construction_digest": "sha256:29a254e9738119d90983e091fa0d67082cb7d08803cfb6c8ca5f9750c78a2442",
+    "controls_executed": false,
+    "learned_policies_executed": false,
+    "manipulation_preflight": {
+      "canonical_digest": "sha256:22a34835a3f9c1e24692d065bc927e23f2a9390a10ebe89dcff232f9ec8f86df",
+      "path": "retained-public-scene/paired_target_native_manipulation_inputs_v1_b2f716ce/paired_target_native_manipulation_preflight.v1.json",
+      "schema_version": "paired_target_native_manipulation_preflight.v1",
+      "sha256": "sha256:9de6836a62f7479735c0b4ccab0b34e42308c58e24a755b8a74e98d00eaddf78",
+      "size_bytes": 10849
+    },
+    "native_camera_readback_qualified": false,
+    "native_import_result": {
+      "path": "retained-public-scene/paired_target_native_import_execution_v4_abba2251_one_shot/vast_execute/job/immutable_execution/paired_target_native_import_runtime_result.v1.json",
+      "result_digest": "sha256:771d149860c747b210a2e4dcf08a404b2987cb65db6ca1f7771a849a30a9fdc1",
+      "sha256": "sha256:1df428495cd98ad3ac269a004dec114379cfd8e8f7b2d0dd829c0d500731f6a8",
+      "size_bytes": 1641
+    },
+    "native_reachability_qualified": false,
+    "paired_target_preflight": {
+      "path": "retained-public-scene/paired_target_native_preflight_v4_cdb45157/paired_target_native_preflight.v1.json",
+      "receipt_digest": "sha256:8f846868a4dffdbb989ae7efc7e6a00d09a43cd1308181a9485d43c782307f9d",
+      "sha256": "sha256:420b1e7e69493793dd13eceda4567f96dac839e52a9da71c0e074e2651c503e6",
+      "size_bytes": 16005
+    },
+    "replacement_object_count": 2,
+    "scene_id": "840920",
+    "schema_version": "paired_target_native_construction_bindings.v1",
+    "status": "paired_targets_admitted_for_native_construction",
+    "task_freeze_set_digest": "sha256:0f21b3793fc44e2b45985a5a38692f151d27974fd3eab56c5d8a22c55d9b091d"
+  },
+  "physics_frequency_hz": 120,
+  "request_digest": "sha256:dc325d9e30466285bacbb796286b2fbe0948a6cdedee7cb1cc83fd2c93b47aaa",
+  "robot_base_pose_world": {
+    "orientation_xyzw": [
+      0.0,
+      0.0,
+      -0.38268343236488267,
+      0.9238795325113726
+    ],
+    "position_world_m": [
+      13.035571253,
+      7.716984747,
+      0.641882
+    ]
+  },
+  "robot_joint_reset_positions_rad": {
+    "finger_joint": 0.104255385697,
+    "left_inner_finger_joint": -0.080966427922,
+    "left_inner_finger_knuckle_joint": -0.071244180202,
+    "panda_joint1": 0.0,
+    "panda_joint2": -0.628318530718,
+    "panda_joint3": 0.0,
+    "panda_joint4": -2.513274122872,
+    "panda_joint5": 0.0,
+    "panda_joint6": 1.884955592154,
+    "panda_joint7": 0.0,
+    "right_inner_finger_joint": -0.128436118364,
+    "right_inner_finger_knuckle_joint": 0.125143155456,
+    "right_outer_knuckle_joint": 0.104152053595
+  },
+  "scenario": {
+    "cell_id": "840920_task_b_canonical",
+    "context_document": {
+      "caller_asserted_success": false,
+      "cell_id": "840920_task_b_canonical",
+      "context_digest": "sha256:a612500c303e54c293803ca75bf4fed876ab0d26a2aef72e0ae039a08942ac78",
+      "factor_records": [],
+      "learned_policy_outcomes_consulted": false,
+      "policy_neutral": true,
+      "program_id": "arm-decision-proof-v1",
+      "resolved_parameters": {},
+      "scenario_suite_digest": "sha256:e80d2d16ca7c7aaf7cae0117cdc3cf0162e7b1506bb95e72e9bbbd1574ae85bf",
+      "scene_id": "840920",
+      "schema_version": "native_task_construction_canary.v1",
+      "seed": 3201,
+      "task_id": "task_b_notebook_relocation"
+    },
+    "context_kind": "construction_canary",
+    "instance_digest": "sha256:a612500c303e54c293803ca75bf4fed876ab0d26a2aef72e0ae039a08942ac78",
+    "seed": 3201
+  },
+  "scene_id": "840920",
+  "schema_version": "native_task_arena_packet_request.v1",
+  "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+  "task_id": "task_b_notebook_relocation",
+  "task_joint_bindings": [
+    {
+      "joint_id": "display_hinge",
+      "joint_prim_path": "/Asset/joints/display_hinge",
+      "native_joint_name": "display_hinge",
+      "readback_kind": "native_coordinate",
+      "role": "locked",
+      "static_qualification_digest": null
+    }
+  ],
+  "task_spec": {
+    "articulation_graph": {
+      "collision_pairs": [
+        {
+          "collision_enabled": true,
+          "link_a": "base",
+          "link_b": "display"
+        }
+      ],
+      "joints": [
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "child_link_id": "display",
+          "dependency": null,
+          "drive": {
+            "damping": 20.0,
+            "drive_type": "force",
+            "maximum_force": 100.0,
+            "stiffness": 200.0
+          },
+          "joint_id": "display_hinge",
+          "joint_type": "revolute",
+          "limits": [
+            0.0,
+            2.2
+          ],
+          "parent_link_id": "base",
+          "reset_position": 1.745329252,
+          "reset_tolerance": 0.001,
+          "role": "locked"
+        }
+      ],
+      "links": [
+        {
+          "is_root": true,
+          "link_id": "base",
+          "semantic_role": "rigid_task_body_observed_exterior"
+        },
+        {
+          "is_root": false,
+          "link_id": "display",
+          "semantic_role": "locked_display_observed_exterior_generated_hinge"
+        }
+      ],
+      "schema_version": "adp_articulation_graph.v1",
+      "success_predicate": {
+        "combination": "all",
+        "joint_intervals": {}
+      }
+    },
+    "articulation_graph_digest": "sha256:22d7d3d83ed8b6e6683c832c444b0ebf0e77f3f317ce65d0e610c0c13bb3468c",
+    "collision_failure_minimum_force_n": 1.0,
+    "control_frequency_hz": 20,
+    "destination_orientation_tolerance_rad": 0.12,
+    "destination_orientation_xyzw": [
+      0,
+      0,
+      0,
+      1
+    ],
+    "destination_position_bounds_world_m": {
+      "maximum": [
+        13.610546,
+        7.35201,
+        0.994882
+      ],
+      "minimum": [
+        13.550546,
+        7.29201,
+        0.954882
+      ]
+    },
+    "interaction_affordance": {
+      "affordance_digest": "sha256:35a750c1829449d6d90671db4d0ef18b2e25ef41b32b2b8af65ad629dcadca75",
+      "allowed_contact_prim_paths": [
+        "/Asset/links/base"
+      ],
+      "approach_unit_scoring_frame": [
+        0.5637779093370072,
+        -0.777884486224324,
+        0.27757916895025186
+      ],
+      "arrival_orientation_tolerance_rad": 0.08,
+      "asset_root_from_scoring_frame": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          -0.7071067811865475,
+          0.7071067811865476
+        ],
+        "position_m": [
+          0.0,
+          0.0,
+          0.14988200400000007
+        ]
+      },
+      "contact_point_scoring_frame_m": [
+        -0.15000000596046448,
+        0.0,
+        -0.13853200372283847
+      ],
+      "gripper_orientation_scoring_frame_xyzw": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intended_support_prim_paths": [
+        "/Root/Wardrobe_A91dc5401640d42999a9c0d80006c1ea8"
+      ],
+      "lift_unit_world": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "pregrasp_clearance_m": 0.12,
+      "schema_version": "native_rigid_interaction_affordance.v1",
+      "scoring_frame_id": "task_scoring_frame",
+      "subject_asset_id": "840920_simready_notebook_candidate"
+    },
+    "maximum_action_steps": 400,
+    "minimum_lift_m": 0.05,
+    "minimum_translation_m": 0.12000000000000029,
+    "movement_epsilon_m": 0.005,
+    "prompt": "Relocate the open notebook 0.15 meters along the observed desk support, preserve its locked-open orientation, release, settle, and retreat.",
+    "release_gripper_width_min_m": 0.06,
+    "release_required": true,
+    "relocation_tracking_tolerance_m": 0.03,
+    "reset_orientation_tolerance_rad": 0.01,
+    "reset_translation_tolerance_m": 0.002,
+    "schema_version": "adp_task_spec.v2",
+    "settle_orientation_tolerance_rad": 0.03,
+    "settle_position_tolerance_m": 0.005,
+    "settle_window_samples": 20,
+    "start_pose_world": [
+      13.580546,
+      7.17201,
+      0.974882,
+      0,
+      0,
+      0,
+      1
+    ],
+    "subject_asset_id": "840920_simready_notebook_candidate",
+    "support_height_interval_m": [
+      0.954882,
+      0.994882
+    ],
+    "task_contact_minimum_force_n": 0.5,
+    "task_kind": "rigid_pick_place",
+    "workspace_position_bounds_world_m": {
+      "maximum": [
+        14.080546,
+        7.822010000000001,
+        1.474882
+      ],
+      "minimum": [
+        13.080546,
+        6.67201,
+        0.474882
+      ]
+    }
+  },
+  "task_state_binding": null
+}

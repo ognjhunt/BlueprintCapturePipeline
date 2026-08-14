@@ -1,0 +1,1574 @@
+{
+  "assets": [
+    {
+      "filename": "scene_collision.usda",
+      "pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_world_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "semantic_role": "scene_collision",
+      "source": {
+        "relative_path": "shared_scene/collider_removal_v1/scene_without_source_colliders.usda",
+        "root": "evidence",
+        "sha256": "sha256:36bc6e6800f59c92b4f655ca7900e1041a5714447b82d4b7b7102d45ed4fa883",
+        "size_bytes": 61346958
+      },
+      "visible": false
+    },
+    {
+      "filename": "scene_appearance.usdz",
+      "pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_world_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "semantic_role": "scene_appearance",
+      "source": {
+        "relative_path": "shared_scene/dual_target_task_a_native_appearance_export_v3_0cd797d2/task_a_washer_door_open/native_appearance/repaired_scene.usdz",
+        "root": "evidence",
+        "sha256": "sha256:75be32d364007037f310166ed3cbafef37223d4518ee8098c404cda587f5e022",
+        "size_bytes": 118014456
+      },
+      "visible": true
+    },
+    {
+      "asset_id": "840920_simready_washer_candidate",
+      "filename": "replacement__840920_simready_washer_candidate.usda",
+      "object_type": "ARTICULATION",
+      "pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_world_m": [
+          3.5154863,
+          9.758716,
+          -1.3e-08
+        ]
+      },
+      "reset_state": {
+        "joint_positions": {
+          "door_hinge": 0.0,
+          "drawer_slide": 0.0,
+          "drum_bearing": 0.0,
+          "latch_coupler": 0.0,
+          "selector_axis": 0.0
+        }
+      },
+      "semantic_role": "replacement",
+      "source": {
+        "relative_path": "shared_scene/replacement_asset_final_static_v2_pending/task_a_washer_door_open/registered_replacement.usda",
+        "root": "evidence",
+        "sha256": "sha256:4526b8993e00bc3d618162a206f6ef08d1ab86201f82458b43ed25210f444e3f",
+        "size_bytes": 342074
+      },
+      "visible": true
+    },
+    {
+      "asset_id": "840920_simready_notebook_candidate",
+      "filename": "replacement__840920_simready_notebook_candidate.usda",
+      "object_type": "ARTICULATION",
+      "pose_world": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.7071067811865475,
+          0.7071067811865476
+        ],
+        "position_world_m": [
+          13.580546,
+          7.17201,
+          0.824999996
+        ]
+      },
+      "reset_state": {
+        "joint_positions": {
+          "display_hinge": 1.745329252
+        }
+      },
+      "semantic_role": "replacement",
+      "source": {
+        "relative_path": "shared_scene/replacement_asset_final_static_v2_pending/task_b_notebook_relocation/registered_replacement.usda",
+        "root": "evidence",
+        "sha256": "sha256:1f56d66886282668f01e9685aa4129d7d55a0e227d5e148e772a292d4749d6fa",
+        "size_bytes": 3724317
+      },
+      "visible": true
+    }
+  ],
+  "cameras": [
+    {
+      "frame_from_camera_matrix": [
+        0.7070326435588747,
+        -0.6698303004390186,
+        0.22678670498052456,
+        3.5154863,
+        -0.7071809110419691,
+        -0.6696898638814196,
+        0.22673915690135316,
+        9.208716,
+        0.0,
+        -0.32069121414260776,
+        -0.947183796932644,
+        1.440782,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intrinsics": {
+        "cx": 159.5,
+        "cy": 89.5,
+        "fx": 172.88839142740494,
+        "fy": 172.88839142740494,
+        "height": 180,
+        "width": 320
+      },
+      "optical_convention": "opencv",
+      "parent_prim_path": "{ENV_REGEX_NS}",
+      "policy_input": true,
+      "pose_frame": "world",
+      "role": "external",
+      "scoring_input": false
+    },
+    {
+      "frame_from_camera_matrix": [
+        -0.31288330066166337,
+        0.007629276348343594,
+        0.9497609353460813,
+        0.011,
+        -0.949628982453264,
+        0.01598929182281905,
+        -0.31296827032749297,
+        -0.031,
+        -0.017573726179753835,
+        -0.9998430560289975,
+        0.0022421995347658985,
+        -0.074,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intrinsics": {
+        "cx": 159.5,
+        "cy": 89.5,
+        "fx": 172.88839142740494,
+        "fy": 172.88839142740494,
+        "height": 180,
+        "width": 320
+      },
+      "optical_convention": "opencv",
+      "parent_prim_path": "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link",
+      "policy_input": true,
+      "pose_frame": "robot_body",
+      "role": "wrist",
+      "scoring_input": false
+    },
+    {
+      "frame_from_camera_matrix": [
+        -0.7071809110419695,
+        -0.6007233327808573,
+        0.3728627582777737,
+        3.0031569230134747,
+        -0.7070326435588744,
+        0.6008493067898361,
+        -0.37294094904196734,
+        9.96915282432547,
+        0.0,
+        -0.5273628617781431,
+        -0.849640166198119,
+        1.8550000044978323,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intrinsics": {
+        "cx": 159.5,
+        "cy": 89.5,
+        "fx": 172.88839142740494,
+        "fy": 172.88839142740494,
+        "height": 180,
+        "width": 320
+      },
+      "optical_convention": "opencv",
+      "parent_prim_path": "{ENV_REGEX_NS}",
+      "policy_input": false,
+      "pose_frame": "world",
+      "role": "overview",
+      "scoring_input": false
+    }
+  ],
+  "construction_bindings": {
+    "bindings": [
+      {
+        "asset_id": "840920_simready_notebook_candidate",
+        "evidence_receipts": {
+          "native_import_probe": {
+            "canonical_digest": "sha256:5397fe9af1abd41e4e4722684a9588c3c5a0eeb10f98ae87ee4705ca679c8534",
+            "path": "retained-public-scene/paired_target_native_import_execution_v4_abba2251_one_shot/vast_execute/job/immutable_execution/probes/01__840920_simready_notebook_candidate.json",
+            "schema_version": "simready_replacement_native_import_probe_result.v1",
+            "sha256": "sha256:56bbd1c5ba9b2005ad6f4a61ef2c0e85d0cf1e66f8e5e06aeab9f3035dd94dc6",
+            "size_bytes": 1369
+          },
+          "registered_asset": {
+            "canonical_digest": "sha256:5bec4fa812a0d4c26ba5dfaba700ff327f95b4360907a65f1e2673d1db91d020",
+            "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_b_notebook_relocation/registered_replacement_asset.v1.json",
+            "schema_version": "registered_replacement_asset.v1",
+            "sha256": "sha256:dc1fe60dd3b50cfffe8b6fd8f017958af880d7fdb1216cbd380f2ac4129ac69a",
+            "size_bytes": 2428
+          },
+          "registered_usd": {
+            "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_b_notebook_relocation/registered_replacement.usda",
+            "sha256": "sha256:1f56d66886282668f01e9685aa4129d7d55a0e227d5e148e772a292d4749d6fa",
+            "size_bytes": 3724317
+          },
+          "task_freeze": {
+            "canonical_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+            "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json",
+            "schema_version": "dual_task_task_freeze.v1",
+            "sha256": "sha256:2911d1c37b7f96b68c5b71b3272769f5f6ba27e5fd2a01a45f81f33395abff13",
+            "size_bytes": 4951
+          }
+        },
+        "native_import_probe_result_digest": "sha256:5397fe9af1abd41e4e4722684a9588c3c5a0eeb10f98ae87ee4705ca679c8534",
+        "native_simulator_import_qualified": true,
+        "registered_asset_receipt_digest": "sha256:5bec4fa812a0d4c26ba5dfaba700ff327f95b4360907a65f1e2673d1db91d020",
+        "replacement_asset_sha256": "sha256:1f56d66886282668f01e9685aa4129d7d55a0e227d5e148e772a292d4749d6fa",
+        "task_freeze_digest": "sha256:74adcf6f90701c0cdb73adb67b7a47c52c5feef3e6258d4a6e5602a8c09806d6",
+        "task_id": "task_b_notebook_relocation"
+      },
+      {
+        "asset_id": "840920_simready_washer_candidate",
+        "evidence_receipts": {
+          "native_import_probe": {
+            "canonical_digest": "sha256:073b6f5a23209f8dde90c36c6c047c87f2673c12c7836ce4dd17bf51edfed2da",
+            "path": "retained-public-scene/paired_target_native_import_execution_v4_abba2251_one_shot/vast_execute/job/immutable_execution/probes/00__840920_simready_washer_candidate.json",
+            "schema_version": "simready_replacement_native_import_probe_result.v1",
+            "sha256": "sha256:1b79a2e69a4606a778141237f3b78b5771f9b2ea492dda5a481ef54be18b04b9",
+            "size_bytes": 1362
+          },
+          "registered_asset": {
+            "canonical_digest": "sha256:0080a819dba6ce060d7f8474e525ebd6d458e9d8bc685cd5df45f7e755494069",
+            "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_a_washer_door_open/registered_replacement_asset.v1.json",
+            "schema_version": "registered_replacement_asset.v1",
+            "sha256": "sha256:322313edac6d90a0a21bbdddf7292bb23a6f1690a36e78626df7935f134a8d72",
+            "size_bytes": 2406
+          },
+          "registered_usd": {
+            "path": "retained-public-scene/replacement_asset_final_static_v2_pending/task_a_washer_door_open/registered_replacement.usda",
+            "sha256": "sha256:4526b8993e00bc3d618162a206f6ef08d1ab86201f82458b43ed25210f444e3f",
+            "size_bytes": 342074
+          },
+          "task_freeze": {
+            "canonical_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+            "path": "/private/tmp/blueprint-adp-third-scene-agent-cad-20260810/docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json",
+            "schema_version": "dual_task_task_freeze.v1",
+            "sha256": "sha256:20259ab89d449875eb6836dce864dc0f6604c4bcae19ec9e594bdd387b8fb20a",
+            "size_bytes": 7881
+          }
+        },
+        "native_import_probe_result_digest": "sha256:073b6f5a23209f8dde90c36c6c047c87f2673c12c7836ce4dd17bf51edfed2da",
+        "native_simulator_import_qualified": true,
+        "registered_asset_receipt_digest": "sha256:0080a819dba6ce060d7f8474e525ebd6d458e9d8bc685cd5df45f7e755494069",
+        "replacement_asset_sha256": "sha256:4526b8993e00bc3d618162a206f6ef08d1ab86201f82458b43ed25210f444e3f",
+        "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+        "task_id": "task_a_washer_door_open"
+      }
+    ],
+    "claim_boundary": "exact_paired_scene_and_replacement_bytes_admitted_for_native_construction_only;camera_reachability_contact_controls_policy_and_physical_claims_unproven",
+    "collision_scene": {
+      "path": "retained-public-scene/collider_removal_v1/scene_without_source_colliders.usda",
+      "sha256": "sha256:36bc6e6800f59c92b4f655ca7900e1041a5714447b82d4b7b7102d45ed4fa883",
+      "size_bytes": 61346958
+    },
+    "construction_digest": "sha256:29a254e9738119d90983e091fa0d67082cb7d08803cfb6c8ca5f9750c78a2442",
+    "controls_executed": false,
+    "learned_policies_executed": false,
+    "manipulation_preflight": {
+      "canonical_digest": "sha256:22a34835a3f9c1e24692d065bc927e23f2a9390a10ebe89dcff232f9ec8f86df",
+      "path": "retained-public-scene/paired_target_native_manipulation_inputs_v1_b2f716ce/paired_target_native_manipulation_preflight.v1.json",
+      "schema_version": "paired_target_native_manipulation_preflight.v1",
+      "sha256": "sha256:9de6836a62f7479735c0b4ccab0b34e42308c58e24a755b8a74e98d00eaddf78",
+      "size_bytes": 10849
+    },
+    "native_camera_readback_qualified": false,
+    "native_import_result": {
+      "path": "retained-public-scene/paired_target_native_import_execution_v4_abba2251_one_shot/vast_execute/job/immutable_execution/paired_target_native_import_runtime_result.v1.json",
+      "result_digest": "sha256:771d149860c747b210a2e4dcf08a404b2987cb65db6ca1f7771a849a30a9fdc1",
+      "sha256": "sha256:1df428495cd98ad3ac269a004dec114379cfd8e8f7b2d0dd829c0d500731f6a8",
+      "size_bytes": 1641
+    },
+    "native_reachability_qualified": false,
+    "paired_target_preflight": {
+      "path": "retained-public-scene/paired_target_native_preflight_v4_cdb45157/paired_target_native_preflight.v1.json",
+      "receipt_digest": "sha256:8f846868a4dffdbb989ae7efc7e6a00d09a43cd1308181a9485d43c782307f9d",
+      "sha256": "sha256:420b1e7e69493793dd13eceda4567f96dac839e52a9da71c0e074e2651c503e6",
+      "size_bytes": 16005
+    },
+    "replacement_object_count": 2,
+    "scene_id": "840920",
+    "schema_version": "paired_target_native_construction_bindings.v1",
+    "status": "paired_targets_admitted_for_native_construction",
+    "task_freeze_set_digest": "sha256:0f21b3793fc44e2b45985a5a38692f151d27974fd3eab56c5d8a22c55d9b091d"
+  },
+  "physics_frequency_hz": 120,
+  "request_digest": "sha256:efe2deae6ddccff4b23f9abd9af864bb3f95e2e31ae42905f7ee018e1dfa0b98",
+  "robot_base_pose_world": {
+    "orientation_xyzw": [
+      0.0,
+      0.0,
+      0.7071067811865841,
+      0.7071067811865109
+    ],
+    "position_world_m": [
+      3.5154863,
+      9.208716,
+      0.090782
+    ]
+  },
+  "robot_joint_reset_positions_rad": {
+    "finger_joint": 0.104255385697,
+    "left_inner_finger_joint": -0.080966427922,
+    "left_inner_finger_knuckle_joint": -0.071244180202,
+    "panda_joint1": 0.0,
+    "panda_joint2": -0.628318530718,
+    "panda_joint3": 0.0,
+    "panda_joint4": -2.513274122872,
+    "panda_joint5": 0.0,
+    "panda_joint6": 1.884955592154,
+    "panda_joint7": 0.0,
+    "right_inner_finger_joint": -0.128436118364,
+    "right_inner_finger_knuckle_joint": 0.125143155456,
+    "right_outer_knuckle_joint": 0.104152053595
+  },
+  "scenario": {
+    "cell_id": "840920_task_a_canonical",
+    "context_document": {
+      "caller_asserted_success": false,
+      "cell_id": "840920_task_a_canonical",
+      "context_digest": "sha256:40f262ab5c684356b017d30c7d64130b922c5b8f3687122388f9486410434b8a",
+      "factor_records": [],
+      "learned_policy_outcomes_consulted": false,
+      "policy_neutral": true,
+      "program_id": "arm-decision-proof-v1",
+      "resolved_parameters": {},
+      "scenario_suite_digest": "sha256:2d173dc264a57a8db72a3216017112d1c5cfa0f29e2c535ffcf901918fb155ce",
+      "scene_id": "840920",
+      "schema_version": "native_task_construction_canary.v1",
+      "seed": 3101,
+      "task_id": "task_a_washer_door_open"
+    },
+    "context_kind": "construction_canary",
+    "instance_digest": "sha256:40f262ab5c684356b017d30c7d64130b922c5b8f3687122388f9486410434b8a",
+    "seed": 3101
+  },
+  "scene_id": "840920",
+  "schema_version": "native_task_arena_packet_request.v1",
+  "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+  "task_id": "task_a_washer_door_open",
+  "task_joint_bindings": [
+    {
+      "joint_id": "door_hinge",
+      "joint_prim_path": "/Asset/joints/door_hinge",
+      "native_joint_name": "door_hinge",
+      "readback_kind": "native_coordinate",
+      "role": "target",
+      "static_qualification_digest": null
+    },
+    {
+      "joint_id": "latch_coupler",
+      "joint_prim_path": "/Asset/joints/latch_coupler",
+      "native_joint_name": "latch_coupler",
+      "readback_kind": "native_coordinate",
+      "role": "dependent",
+      "static_qualification_digest": null
+    },
+    {
+      "joint_id": "drum_bearing",
+      "joint_prim_path": "/Asset/joints/drum_bearing",
+      "native_joint_name": "drum_bearing",
+      "readback_kind": "native_coordinate",
+      "role": "passive",
+      "static_qualification_digest": null
+    },
+    {
+      "joint_id": "selector_axis",
+      "joint_prim_path": "/Asset/joints/selector_axis",
+      "native_joint_name": "selector_axis",
+      "readback_kind": "native_coordinate",
+      "role": "locked",
+      "static_qualification_digest": null
+    },
+    {
+      "joint_id": "drawer_slide",
+      "joint_prim_path": "/Asset/joints/drawer_slide",
+      "native_joint_name": "drawer_slide",
+      "readback_kind": "native_coordinate",
+      "role": "locked",
+      "static_qualification_digest": null
+    }
+  ],
+  "task_spec": {
+    "articulation_graph": {
+      "collision_pairs": [
+        {
+          "collision_enabled": true,
+          "link_a": "body",
+          "link_b": "door"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "body",
+          "link_b": "drawer"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "body",
+          "link_b": "drum"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "body",
+          "link_b": "latch"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "body",
+          "link_b": "selector"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "door",
+          "link_b": "drawer"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "door",
+          "link_b": "drum"
+        },
+        {
+          "collision_enabled": false,
+          "link_a": "door",
+          "link_b": "latch"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "door",
+          "link_b": "selector"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "drawer",
+          "link_b": "drum"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "drawer",
+          "link_b": "latch"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "drawer",
+          "link_b": "selector"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "drum",
+          "link_b": "latch"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "drum",
+          "link_b": "selector"
+        },
+        {
+          "collision_enabled": true,
+          "link_a": "latch",
+          "link_b": "selector"
+        }
+      ],
+      "joints": [
+        {
+          "axis": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "child_link_id": "door",
+          "dependency": null,
+          "drive": {
+            "damping": 2.0,
+            "drive_type": "force",
+            "maximum_force": 80.0,
+            "stiffness": 0.0
+          },
+          "joint_id": "door_hinge",
+          "joint_type": "revolute",
+          "limits": [
+            0.0,
+            1.2
+          ],
+          "parent_link_id": "body",
+          "reset_position": 0.0,
+          "reset_tolerance": 0.001,
+          "role": "target"
+        },
+        {
+          "axis": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "child_link_id": "latch",
+          "dependency": {
+            "driver_joint_id": "door_hinge",
+            "multiplier": 0.05,
+            "offset": 0.0,
+            "tolerance": 0.002
+          },
+          "drive": {
+            "damping": 1.0,
+            "drive_type": "force",
+            "maximum_force": 20.0,
+            "stiffness": 4.0
+          },
+          "joint_id": "latch_coupler",
+          "joint_type": "revolute",
+          "limits": [
+            -0.1,
+            0.1
+          ],
+          "parent_link_id": "door",
+          "reset_position": 0.0,
+          "reset_tolerance": 0.001,
+          "role": "dependent"
+        },
+        {
+          "axis": [
+            0.0,
+            1.0,
+            0.0
+          ],
+          "child_link_id": "drum",
+          "dependency": null,
+          "drive": {
+            "damping": 0.2,
+            "drive_type": "none",
+            "maximum_force": 0.0,
+            "stiffness": 0.0
+          },
+          "joint_id": "drum_bearing",
+          "joint_type": "continuous",
+          "limits": [
+            -100.0,
+            100.0
+          ],
+          "parent_link_id": "body",
+          "reset_position": 0.0,
+          "reset_tolerance": 0.01,
+          "role": "passive"
+        },
+        {
+          "axis": [
+            0.0,
+            1.0,
+            0.0
+          ],
+          "child_link_id": "selector",
+          "dependency": null,
+          "drive": {
+            "damping": 10.0,
+            "drive_type": "force",
+            "maximum_force": 20.0,
+            "stiffness": 100.0
+          },
+          "joint_id": "selector_axis",
+          "joint_type": "revolute",
+          "limits": [
+            -3.2,
+            3.2
+          ],
+          "parent_link_id": "body",
+          "reset_position": 0.0,
+          "reset_tolerance": 0.001,
+          "role": "locked"
+        },
+        {
+          "axis": [
+            0.0,
+            1.0,
+            0.0
+          ],
+          "child_link_id": "drawer",
+          "dependency": null,
+          "drive": {
+            "damping": 10.0,
+            "drive_type": "force",
+            "maximum_force": 100.0,
+            "stiffness": 100.0
+          },
+          "joint_id": "drawer_slide",
+          "joint_type": "prismatic",
+          "limits": [
+            0.0,
+            0.2
+          ],
+          "parent_link_id": "body",
+          "reset_position": 0.0,
+          "reset_tolerance": 0.001,
+          "role": "locked"
+        }
+      ],
+      "links": [
+        {
+          "is_root": true,
+          "link_id": "body",
+          "semantic_role": "fixed_body_generated_candidate"
+        },
+        {
+          "is_root": false,
+          "link_id": "door",
+          "semantic_role": "target_door_observed_exterior_generated_mechanism"
+        },
+        {
+          "is_root": false,
+          "link_id": "latch",
+          "semantic_role": "dependent_latch_generated_candidate"
+        },
+        {
+          "is_root": false,
+          "link_id": "drum",
+          "semantic_role": "passive_drum_generated_candidate"
+        },
+        {
+          "is_root": false,
+          "link_id": "selector",
+          "semantic_role": "locked_selector_observed_exterior"
+        },
+        {
+          "is_root": false,
+          "link_id": "drawer",
+          "semantic_role": "locked_detergent_drawer_observed_exterior"
+        }
+      ],
+      "schema_version": "adp_articulation_graph.v1",
+      "success_predicate": {
+        "combination": "all",
+        "joint_intervals": {
+          "door_hinge": [
+            0.7,
+            0.95
+          ]
+        }
+      }
+    },
+    "articulation_graph_digest": "sha256:35c8f9129ca6b717bd73306babd43e26960877c744e92c37c872e7680987e2a6",
+    "control_frequency_hz": 20,
+    "interaction_affordance": {
+      "affordance_digest": "sha256:ebcc547100bf95603970c61fbf857381b66e2e286494c7b83bfbb161508cbdff",
+      "approach_unit_asset_root": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "arrival_orientation_tolerance_rad": 0.08,
+      "arrival_stability_steps": 2,
+      "arrival_tolerance_m": 0.02,
+      "articulation_graph_digest": "sha256:35c8f9129ca6b717bd73306babd43e26960877c744e92c37c872e7680987e2a6",
+      "contact_body_prim_paths": [
+        "/Asset/links/door"
+      ],
+      "contact_link_id": "door",
+      "contact_point_link_m": [
+        0.2480000044329236,
+        -5.1991224609082565e-05,
+        -0.02499998250216755
+      ],
+      "gripper_dwell_maximum_steps": 12,
+      "gripper_dwell_minimum_steps": 5,
+      "gripper_orientation_contact_xyzw": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "joint_contact_path": [
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              0.0,
+              1.4086566911091288e-24,
+              0.0,
+              1.0
+            ],
+            "position_m": [
+              0.2480000044329236,
+              -0.3020519773963315,
+              0.4050000246503898
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.0,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.0,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_00"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -5.04241527050206e-10,
+              1.2909942135778815e-24,
+              0.014731609961951468,
+              0.9998914839460975
+            ],
+            "position_m": [
+              0.24778755404453603,
+              -0.28752816339723486,
+              0.4050000246431179
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.02946428571428571,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.0014732142857142856,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_01"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.0083736174989533e-09,
+              1.2283793883639444e-24,
+              0.029460022691541528,
+              0.9995659593358579
+            ],
+            "position_m": [
+              0.2471473239782749,
+              -0.2730169121172749,
+              0.40500002462120377
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.05892857142857142,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.002946428571428571,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_02"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.5122868584960403e-09,
+              8.279891465888584e-25,
+              0.04418204165031087,
+              0.9990234968185734
+            ],
+            "position_m": [
+              0.2460798700059067,
+              -0.25853082050273796,
+              0.4050000245846664
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.08839285714285713,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.004419642857142857,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_03"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -2.0158718846886215e-09,
+              7.897774058041819e-25,
+              0.0588944716874537,
+              0.9982642141260277
+            ],
+            "position_m": [
+              0.24458611876429356,
+              -0.2440824636592743,
+              0.4050000245335375
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.11785714285714284,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.005892857142857142,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_04"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -2.5190194019570048e-09,
+              1.373743101614947e-24,
+              0.07359411973326815,
+              0.9972882760469439
+            ],
+            "position_m": [
+              0.2426673669509975,
+              -0.22968438393568422,
+              0.40500002446786143
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.14732142857142858,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.007366071428571429,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_05"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -3.0216202111349783e-09,
+              1.0639790463962263e-24,
+              0.08827779549215485,
+              0.9960958943912204
+            ],
+            "position_m": [
+              0.24032528019864124,
+              -0.2153490800361389,
+              0.4050000243876952
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.17678571428571427,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.008839285714285714,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_06"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -3.523565231709544e-09,
+              2.027021644344902e-24,
+              0.10294231213501348,
+              0.9946873279439612
+            ],
+            "position_m": [
+              0.23756189162900368,
+              -0.20108899617028878,
+              0.40500002429310844
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.20625,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.0103125,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_07"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -4.024745525494882e-09,
+              7.288390783752776e-25,
+              0.11758448699088712,
+              0.9930628824093114
+            ],
+            "position_m": [
+              0.2343796000881049,
+              -0.18691651125067757,
+              0.40500002418418324
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.23571428571428568,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.011785714285714285,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_08"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -4.525052320275446e-09,
+              1.0431314237201533e-24,
+              0.132201142237704,
+              0.9912229103441094
+            ],
+            "position_m": [
+              0.23078116806381277,
+              -0.17284392814683935,
+              0.4050000240610142
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.26517857142857143,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.013258928571428573,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_09"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -5.024377033413009e-09,
+              5.226493190073225e-25,
+              0.14678910559196678,
+              0.9891678110813708
+            ],
+            "position_m": [
+              0.2267697192877787,
+              -0.1588834630054074,
+              0.4050000239237081
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.29464285714285715,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.014732142857142859,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_10"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -5.522611295412605e-09,
+              7.333919143722207e-25,
+              0.16134521099724008,
+              0.9868980306436202
+            ],
+            "position_m": [
+              0.22234873602378447,
+              -0.14504723464550512,
+              0.4050000237723843
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.3241071428571428,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.016205357142857143,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_11"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -6.019646973442169e-09,
+              7.352424799516004e-25,
+              0.17586629931128644,
+              0.9844140616460906
+            ],
+            "position_m": [
+              0.21752205604485417,
+              -0.13134725403862552,
+              0.4050000236071741
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.35357142857142854,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.01767857142857143,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_12"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -6.5153761948008455e-09,
+              1.3692023849892705e-24,
+              0.1903492189917014,
+              0.9817164431898089
+            ],
+            "position_m": [
+              0.21229386930175528,
+              -0.11779541388213136,
+              0.40500002342822083
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.38303571428571426,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.019151785714285715,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_13"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -7.009691370330821e-09,
+              1.7958198369593017e-24,
+              0.20479082677989954,
+              0.9788057607445949
+            ],
+            "position_m": [
+              0.20666871428578015,
+              -0.1044034782754264,
+              0.40500002323568
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.4125,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.020625,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_14"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -7.502485217767632e-09,
+              2.119491967817527e-24,
+              0.21918798838330256,
+              0.9756826460219947
+            ],
+            "position_m": [
+              0.20065147408896677,
+              -0.0911830725077604,
+              0.4050000230297187
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.4419642857142857,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.022098214285714287,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_15"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -7.993650785023852e-09,
+              1.7014089655098555e-24,
+              0.2335375791555811,
+              0.9723477768381797
+            ],
+            "position_m": [
+              0.19424737216517798,
+              -0.07814567296653264,
+              0.4050000228105156
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.47142857142857136,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.02357142857142857,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_16"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -8.483081473401142e-09,
+              1.2807272037025719e-24,
+              0.24783648477480386,
+              0.9688018769668381
+            ],
+            "position_m": [
+              0.18746196779571814,
+              -0.06530259717485414,
+              0.4050000225782611
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.500892857142857,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.025044642857142852,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_17"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -8.970671060725583e-09,
+              1.714282751281343e-24,
+              0.26208160191934504,
+              0.9650457159820927
+            ],
+            "position_m": [
+              0.18030115126342522,
+              -0.05266499396701743,
+              0.40500002233315674
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.5303571428571429,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.026517857142857145,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_18"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -9.456313724401287e-09,
+              1.2910171660949856e-24,
+              0.27626983894140467,
+              0.9610801090914796
+            ],
+            "position_m": [
+              0.1727711387394262,
+              -0.040243833810401586,
+              0.4050000220754154
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.5598214285714286,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.02799107142857143,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_19"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -9.939904064377316e-09,
+              1.2966488103371996e-24,
+              0.2903981165379959,
+              0.9569059169590208
+            ],
+            "position_m": [
+              0.16487846688699492,
+              -0.028049899282214102,
+              0.40500002180526085
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.5892857142857143,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.029464285714285717,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_20"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.0421337126022873e-08,
+              1.7368183332375937e-24,
+              0.3044633684192523,
+              0.9525240455184334
+            ],
+            "position_m": [
+              0.15662998718719684,
+              -0.016093775709337316,
+              0.40500002152292736
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.6187499999999999,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.030937499999999996,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_21"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.0900508422905822e-08,
+              1.090766011860957e-24,
+              0.3184625419739112,
+              0.9479354457765121
+            ],
+            "position_m": [
+              0.14803285999124594,
+              -0.004385841979403476,
+              0.4050000212286603
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.6482142857142856,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.032410714285714286,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_22"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.1377313959469607e-08,
+              1.3155729306345518e-24,
+              0.3323925989318286,
+              0.9431411136067308
+            ],
+            "position_m": [
+              0.13909454830473794,
+              0.00706373846892383,
+              0.40500002092271487
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.6776785714285714,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.03388392857142857,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_23"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.1851650253603603e-08,
+              8.817220992234753e-25,
+              0.346250516023381,
+              0.938142089533106
+            ],
+            "position_m": [
+              0.12982281130915438,
+              0.01824502646864054,
+              0.40500002060535684
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.7071428571428571,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.03535714285714286,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_24"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.2323414359102096e-08,
+              2.659917334440262e-24,
+              0.3600332856356124,
+              0.9329394585043691
+            ],
+            "position_m": [
+              0.12022569762626181,
+              0.029148315752408033,
+              0.4050000202768616
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.7366071428571429,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.036830357142857144,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_25"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.2792503888006877e-08,
+              1.7836118152553177e-24,
+              0.3737379164649823,
+              0.9275343496584986
+            ],
+            "position_m": [
+              0.11031153833125373,
+              0.039764141378382106,
+              0.4050000199375144
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.7660714285714285,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.03830357142857143,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_26"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.3258817032828738e-08,
+              1.3458437154083846e-24,
+              0.3873614341665751,
+              0.92192793607766
+            ],
+            "position_m": [
+              0.10008893972069985,
+              0.050083287946552535,
+              0.4050000195876098
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.7955357142857142,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.039776785714285716,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_27"
+        },
+        {
+          "clearance_unit_asset_root": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "contact_pose_asset_root": {
+            "orientation_xyzw": [
+              -1.3722252588642962e-08,
+              1.805831806509665e-24,
+              0.4009008819996282,
+              0.9161214345336103
+            ],
+            "position_m": [
+              0.08956677584158053,
+              0.06009679759845976,
+              0.40500001922745144
+            ]
+          },
+          "joint_positions": {
+            "door_hinge": 0.825,
+            "drawer_slide": 0.0,
+            "drum_bearing": 0.0,
+            "latch_coupler": 0.04125,
+            "selector_axis": 0.0
+          },
+          "waypoint_id": "mechanism_path_28"
+        }
+      ],
+      "kinematic_path_receipt_digest": "sha256:211bad62b320d6666f1d0cc5ade67f839e77b2fdd492eda9737c8682e69579bc",
+      "max_joint_delta_rad": 0.03,
+      "max_joint_setpoint_lead_rad": 0.2,
+      "motion_maximum_steps": 64,
+      "motion_minimum_steps": 1,
+      "precontact_clearance_m": 0.12,
+      "retreat_clearance_m": 0.12,
+      "retreat_unit_asset_root": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "schema_version": "native_articulated_graph_interaction_affordance.v1",
+      "subject_asset_id": "840920_simready_washer_candidate",
+      "sweep_clearance_m": 0.025
+    },
+    "locked_joint_motion_tolerance": 0.01,
+    "maximum_action_steps": 400,
+    "maximum_settled_target_speed": 0.03,
+    "movement_epsilon": 0.01,
+    "prompt": "Open the front-loading washer door and release it in the open target interval.",
+    "schema_version": "adp_task_spec.v2",
+    "settle_window_samples": 20,
+    "subject_asset_id": "840920_simready_washer_candidate",
+    "task_kind": "articulated_open_close"
+  },
+  "task_state_binding": {
+    "articulation_graph_digest": "sha256:35c8f9129ca6b717bd73306babd43e26960877c744e92c37c872e7680987e2a6",
+    "collision_failure_minimum_force_n": 1.0,
+    "interaction_affordance_digest": "sha256:ebcc547100bf95603970c61fbf857381b66e2e286494c7b83bfbb161508cbdff",
+    "link_native_body_names": {
+      "body": "body",
+      "door": "door",
+      "drawer": "drawer",
+      "drum": "drum",
+      "latch": "latch",
+      "selector": "selector"
+    },
+    "retreat_minimum_separation_m": 0.1,
+    "root_orientation_tolerance_rad": 0.01,
+    "root_translation_tolerance_m": 0.002,
+    "schema_version": "native_articulated_graph_task_state_binding.v1",
+    "task_contact_minimum_force_n": 0.5
+  }
+}

@@ -4,6 +4,7 @@
     "adp_item": "ADP-009D",
     "frozen_before_render_execution": true,
     "learned_policy_outcomes_accessed": false,
+    "render_scope": "shared_union",
     "candidate_set_path": "third_scene_dual_task_e2e/shared_scene/direct_evidence_successor_set_v2_95ce9390c/adp009b_direct_evidence_expansion_set.v1.json",
     "execution_authority_path": "docs/arm_decision_proof_v1/manifests/third_scene_dual_task_execution_authority.v1.json",
     "renderer_vendor_root": "tools/splat_render/node_modules",
@@ -24,5 +25,5 @@
         "publication": false,
         "retention": "bounded_to_goal_then_provider_zero"
     },
-    "request_digest": "sha256:cbb8535b6b0ea8f8ea7b53267ccd06ac10ec6659082b072fb17172cf1e2c2da4"
+    "request_digest": "sha256:bfb0ae7e1ae000d3eedd2b4feda1714247e45c87a18e9c726a1941a0b609c443"
 }

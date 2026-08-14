@@ -3,7 +3,7 @@
   "contract_kind": "provider_free_design",
   "status": "validated_without_provider_launch",
   "program_id": "arm-decision-proof-v1",
-  "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
+  "comparison_id": "sealed-franka-robotiq-controls-physx-vs-newton",
   "default_physics_backend": "physx",
   "one_backend_per_run": true,
   "mid_run_backend_switch_allowed": false,
@@ -14,7 +14,7 @@
   "backend_profiles": {
     "physx": {
       "schema_version": "adp009d_physics_backend_profile.v1",
-      "profile_id": "adp009d-840313-physx-controls-v1",
+      "profile_id": "adp009d-physx-controls-v1",
       "program_id": "arm-decision-proof-v1",
       "physics_backend": "physx",
       "backend_selected_at_simulation_construction": true,
@@ -118,11 +118,11 @@
         "source_usd_mutated": false,
         "conversion_receipt_required": true
       },
-      "profile_digest": "sha256:82c22625b895baeffee93482255f29b029faaaac36f4b3ff1939914436749c9f"
+      "profile_digest": "sha256:8fd450a203b43d74e975edd7d3dff9c2359773f9ac7de665e3469f66ce9b5add"
     },
     "newton": {
       "schema_version": "adp009d_physics_backend_profile.v1",
-      "profile_id": "adp009d-840313-newton-controls-v1",
+      "profile_id": "adp009d-newton-controls-v1",
       "program_id": "arm-decision-proof-v1",
       "physics_backend": "newton",
       "backend_selected_at_simulation_construction": true,
@@ -446,14 +446,14 @@
           "overlay_digest": "sha256:4766188ad656344c866762945cd8593f4777160309bb684d17d5b9474756f3ba"
         }
       },
-      "profile_digest": "sha256:4d0c5e92e76e174439710146029bd5af08eb148c8f74dc1a9e6002164324f254"
+      "profile_digest": "sha256:9260bce62c43b797ccc9707628c055aa9aa43950cfcc9a9d185f9adfcad12d48"
     }
   },
   "backend_contact_configurations": {
     "physx": {
       "schema_version": "adp009d_backend_contact_configuration.v1",
       "physics_backend": "physx",
-      "backend_profile_digest": "sha256:82c22625b895baeffee93482255f29b029faaaac36f4b3ff1939914436749c9f",
+      "backend_profile_digest": "sha256:8fd450a203b43d74e975edd7d3dff9c2359773f9ac7de665e3469f66ce9b5add",
       "contact_model": {
         "configuration_schema": "adp009d_physx_sdf_contact_model.v1",
         "source": "approved_can_physx_sdf_adapter.usda",
@@ -469,12 +469,12 @@
       "planner_contact_allowance_m": 0.01,
       "planner_contact_allowance_source": "physx_sdf_margin_plus_narrow_band_plus_finger_contact_offset",
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "configuration_digest": "sha256:c1b5af847c6b5c49c137f4389e46995a0ec4be3cce05501d92ed0cd2f973f4e1"
+      "configuration_digest": "sha256:be17553234e22e214f8a2983f96a420e8db15f1bf974460e42fa51c81d980cad"
     },
     "newton": {
       "schema_version": "adp009d_backend_contact_configuration.v1",
       "physics_backend": "newton",
-      "backend_profile_digest": "sha256:4d0c5e92e76e174439710146029bd5af08eb148c8f74dc1a9e6002164324f254",
+      "backend_profile_digest": "sha256:9260bce62c43b797ccc9707628c055aa9aa43950cfcc9a9d185f9adfcad12d48",
       "contact_model": {
         "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
         "contact_generation": "mujoco_warp_from_generic_usd_import",
@@ -490,7 +490,7 @@
       "planner_contact_allowance_m": 0.0,
       "planner_contact_allowance_source": "generic_surface_geometry_only_no_physx_standoff_assumed",
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "configuration_digest": "sha256:a1a8ff04af9032a111b6c4f5c79523db11895eccb39c0e3c456002f451b0ce88"
+      "configuration_digest": "sha256:0101ab6fe92c5850514ef546035f904944b876f3a0b941ff787859a09baa7af8"
     }
   },
   "common_comparability_bindings": [
@@ -559,5 +559,5 @@
   },
   "provider_mutation_performed": false,
   "claim_ceiling": "controls_comparison_design_only",
-  "design_digest": "sha256:9253863575f517863667205cba08a6b879d0b3a29570dc1398351062ce1740d2"
+  "design_digest": "sha256:2bf5f63bcae24b652b5ee79ddb68a84972036fc543ad876681e10b7af2ca52c9"
 }

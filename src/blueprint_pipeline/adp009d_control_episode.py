@@ -825,7 +825,6 @@ def _vector_norm(values: Sequence[Any]) -> float:
 
 def _summarize_arm_dynamics(actions: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Summarize tracking, saturation, and contact without declaring a cause."""
-
     phases: dict[str, dict[str, Any]] = {}
     contact_envelope: dict[str, Any] | None = None
     contact_configuration: dict[str, Any] | None = None
@@ -1030,7 +1029,6 @@ def run_control_episode(
     episode_id: str,
 ) -> dict[str, Any]:
     """Execute one control and seal its deterministic evidence."""
-
     if control_id not in REQUIRED_CONTROLS:
         raise ControlEpisodeError([f"control_episode_control_unknown:{control_id}"])
     if plan.get("schema_version") != CONTROL_PLAN_SCHEMA_VERSION:
@@ -1102,9 +1100,7 @@ def run_control_episode(
         held_action: Sequence[float] | None = None
         for phase_step_index in range(phase_step_limit):
             before = [float(v) for v in environment.read_arm_joint_positions()]
-            dynamics_before = _canonical_dynamics_observation(
-                environment.read_arm_dynamics_observation()
-            )
+            dynamics_before = _canonical_dynamics_observation(environment.read_arm_dynamics_observation())
             _require_dynamics_contact_envelope(
                 dynamics_before,
                 expected=plan_contact_envelope,
@@ -1144,9 +1140,7 @@ def run_control_episode(
             step_index += 1
             phase_steps_executed += 1
             after = [float(v) for v in environment.read_arm_joint_positions()]
-            dynamics_after = _canonical_dynamics_observation(
-                environment.read_arm_dynamics_observation()
-            )
+            dynamics_after = _canonical_dynamics_observation(environment.read_arm_dynamics_observation())
             _require_dynamics_contact_envelope(
                 dynamics_after,
                 expected=plan_contact_envelope,
@@ -1490,7 +1484,6 @@ def validate_task_control_plan(
     plan: Mapping[str, Any], *, task_spec: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Validate an immutable task-neutral control trajectory before reset."""
-
     try:
         checked = json.loads(json.dumps(dict(plan), allow_nan=False))
         task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
@@ -1749,6 +1742,9 @@ def _run_task_control_episode(
         start_sample = samples[-1]
         for _ in range(phase_steps):
             before = [float(value) for value in environment.read_arm_joint_positions()]
+            dynamics_before = _canonical_dynamics_observation(
+                environment.read_arm_dynamics_observation()
+            )
             if row.get("mode") == "hold_current_joint_positions":
                 action = environment.hold_action(
                     gripper_command=float(gripper_open_command)
@@ -1794,6 +1790,9 @@ def _run_task_control_episode(
             step_index += 1
             phase_steps_executed += 1
             after = [float(value) for value in environment.read_arm_joint_positions()]
+            dynamics_after = _canonical_dynamics_observation(
+                environment.read_arm_dynamics_observation()
+            )
             actions.append(
                 _record_action(
                     step_index=step_index,
@@ -1801,6 +1800,8 @@ def _run_task_control_episode(
                     action=action,
                     observed_before=before,
                     observed_after=after,
+                    dynamics_before=dynamics_before, dynamics_after=dynamics_after,
+                    action_recomputed=True, action_hold_index=0,
                 )
             )
             samples.append(
@@ -1998,7 +1999,6 @@ def run_task_neutral_controls(
     output_dir: str | Path,
 ) -> dict[str, Any]:
     """Run zero then scripted controls for rigid or articulated task state."""
-
     task = json.loads(json.dumps(dict(task_spec), allow_nan=False))
     plan = validate_task_control_plan(control_plan, task_spec=task)
     output = Path(output_dir).expanduser().resolve()

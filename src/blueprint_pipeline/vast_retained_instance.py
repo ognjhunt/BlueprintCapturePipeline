@@ -194,10 +194,17 @@ def bind_all_in_cost(
     instance_id: int,
     disk_gb: int,
     max_live_minutes: int,
-    max_hourly_rate: float,
+    max_hourly_rate: float | None = None,
     hard_cap_usd: float,
     max_hourly_rate_usd: float | None = None,
 ) -> dict[str, Any]:
+    effective_max_hourly_rate = (
+        max_hourly_rate_usd
+        if max_hourly_rate_usd is not None
+        else max_hourly_rate
+    )
+    if effective_max_hourly_rate is None or effective_max_hourly_rate <= 0:
+        raise ValueError("vast_all_in_cost_max_hourly_rate_invalid")
     compute_rate = _number(selected_offer.get("compute_hourly_rate_usd"))
     if compute_rate is None:
         compute_rate = float(selected_offer["hourly_rate_usd"])
@@ -230,13 +237,9 @@ def bind_all_in_cost(
         "storage_hourly_rate_usd": storage_rate,
         "all_in_hourly_rate_observed": all_in_rate_observed,
         "all_in_hourly_rate_usd": all_in_rate,
-        "max_hourly_rate_usd": (
-            max_hourly_rate
-            if max_hourly_rate_usd is None
-            else max_hourly_rate_usd
-        ),
+        "max_hourly_rate_usd": effective_max_hourly_rate,
         "all_in_hourly_rate_under_max": (
-            all_in_rate_observed and all_in_rate <= max_hourly_rate
+            all_in_rate_observed and all_in_rate <= effective_max_hourly_rate
         ),
         "max_live_minutes": max_live_minutes,
         "projected_all_in_cost_usd": projected_cost,
@@ -244,7 +247,7 @@ def bind_all_in_cost(
         "all_in_hourly_rate_under_max_hourly": (
             all_in_rate_observed
             and all_in_rate
-            <= (max_hourly_rate if max_hourly_rate_usd is None else max_hourly_rate_usd)
+            <= effective_max_hourly_rate
         ),
         "projected_all_in_cost_under_hard_cap": (
             projected_cost is not None and projected_cost <= hard_cap_usd

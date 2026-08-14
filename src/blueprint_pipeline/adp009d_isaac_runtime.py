@@ -76,11 +76,13 @@ try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_contact_envelope import (
         ContactEnvelopeError,
         contact_envelope_from_physx_sdf_settings,
+        contact_envelope_receipt_fields,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_contact_envelope import (
         ContactEnvelopeError,
         contact_envelope_from_physx_sdf_settings,
+        contact_envelope_receipt_fields,
     )
 try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_hold_trace import (
@@ -3354,7 +3356,6 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
 
             def _jacobians_world_and_root():
                 """Read PhysX's world Jacobian and express both row blocks in root."""
-
                 jacobian_world = _to_torch(robot.root_view.get_jacobians())[
                     :, jacobian_index, :, arm_joint_ids
                 ]
@@ -3732,9 +3733,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
 
                 destination_path = Path(runtime / "adp009d_task_destination.v1.json")
                 destination = json.loads(destination_path.read_text(encoding="utf-8"))
-
                 selected_episode_start = episode_start_selection["selected"]
-
                 def _restore_wrist_observable_episode_start() -> None:
                     """Reset, replay, and verify the admitted policy start pose."""
 
@@ -4476,6 +4475,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "schema_version": "adp009d_scripted_control_ik_receipt.v1",
             "binding": control_ik_binding,
             "step_diagnostics": control_ik_step_diagnostics,
+            **contact_envelope_receipt_fields(),
             "receipt_digest": "",
         }
         scripted_control_ik["receipt_digest"] = _canonical_digest(
