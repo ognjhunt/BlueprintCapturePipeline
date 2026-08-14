@@ -84,6 +84,7 @@ _RECONSTRUCTION_CONTEXT_FIELDS = {
     "fresh_scene_calibrated_mask_request",
     "fresh_scene_removal_freeze_request",
     "fresh_scene_segment_cutout_request",
+    "fresh_scene_artifixer_candidate_request",
 }
 
 
@@ -756,6 +757,7 @@ def run_capture_reconstruction_supervisor_continuation(
         "materialize_calibrated_object_masks",
         "materialize_fresh_scene_removal_freezes",
         "materialize_fresh_scene_segment_cutout",
+        "materialize_fresh_scene_artifixer_candidate",
     }
     not_ready = sorted(
         tool_id

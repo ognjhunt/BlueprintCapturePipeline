@@ -85,10 +85,17 @@ provider-zero closure.
      any changed byte and reports that neither an agent nor simulator selected
      Gaussian indices.
 8. `segment_repair_preflight` and `artifixer_candidate_inputs`
+   - Production supervisor tool:
+     `materialize_fresh_scene_artifixer_candidate`.
+   - Deterministically reopen the shared cutout and execution authority, run
+     the exact segment-repair preflight, and package the selected 1--5 task
+     cameras, original frames, masks, and derived retained PLY into the
+     ArtiFixer candidate contract.
    - Bind exact repair support, rights, cameras, original frames, task freezes,
      and the derived retained PLY. A missing upstream input must remain an
      upstream `fresh_scene_*_missing` blocker, not surface later as a generic
-     ArtiFixer preflight failure.
+     ArtiFixer preflight failure. This tool performs no semantic editing,
+     ArtiFixer execution, provider mutation, or canonical-source change.
 9. `semantic_teacher_receipts`
    - Preferred editor: rights-admitted `gpt-image-2` full-frame empty-scene
      candidates. A pinned local editor may be used when disclosure rights or
@@ -188,6 +195,10 @@ The required agent-facing tools are:
   Gaussian-contribution run closes, deterministically materialize every
   task-local cutout plus the shared retained-scene PLY. This tool is non-spend
   and cannot alter canonical InteriorGS.
+- `materialize_fresh_scene_artifixer_candidate`: turn the reviewed shared
+  cutout into the exact repair preflight and ArtiFixer candidate packet. It
+  stops at the explicit `semantic_teacher_receipts` blocker and cannot call an
+  image editor or GPU provider.
 
 `fresh_scene_supervisor_bindings` is the production bridge. It accepts only a
 host-resident, digest-bound status plus the exact available tool request, and
