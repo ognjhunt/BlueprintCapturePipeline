@@ -60,7 +60,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     "task-evaluation-profile-preflight": "not_a_website_lane",
     # Real debt: executable, not retired, not frozen, and unreachable.
     "adp-isaac-lab-arena-native-control": "awaiting_builder",
-    "new-site-native-camera": "awaiting_builder",
 }
 
 VALID_REASONS = {
@@ -208,12 +207,7 @@ def test_the_reachability_debt_is_stated_rather_than_implied() -> None:
         if reason == "awaiting_builder"
     )
 
-    # Held at four, not lowered to three, and that is the honest number: the
-    # new-site diagnostic canary got its builder and `semantic-teacher-image-
-    # edit` arrived unreachable in the same window, so one lane left the debt
-    # and one joined it. Lower this bound as builders land; do not raise it to
-    # make it pass.
-    assert len(debt) <= 2, (
+    assert len(debt) <= 1, (
         f"unreachable executable probe kinds grew to {len(debt)}: {debt}. "
         "Lower this bound as builders land; do not raise it to make it pass."
     )
