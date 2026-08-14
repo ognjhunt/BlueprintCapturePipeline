@@ -74,10 +74,48 @@ ARTIFIXER3D_BUNDLE_READY_STATUS = (
 )
 ARTIFIXER3D_LIVE_PIPELINE_MODE = "dual_target_artifixer3d_only"
 SEMANTIC_TEACHER_BUNDLE_READY_STATUS = "completed_no_upload_no_inference"
+# Spelled here rather than imported from ``new_site_diagnostic_canary_gpu``,
+# which pulls in NumPy, Pillow, and the MuJoCo closed-loop stack. Nothing about
+# resolving a path on this host needs any of that, and this module is imported
+# by every live profile builder.
+# ``tests/test_build_new_site_diagnostic_canary_live_profile`` pins this string
+# against the lane's own constant so the copy cannot drift.
+NEW_SITE_CANARY_RECEIPT_SCHEMA = "new_site_diagnostic_canary_input_receipt.v2"
+NEW_SITE_CANARY_READY_STATUS = "completed"
 
 
 class HostResidentInputError(ValueError):
     """A launch input cannot be resolved on this host."""
+
+
+def _new_site_canary_receipt_view(
+    receipt: Mapping[str, Any], view: dict[str, Any]
+) -> dict[str, Any]:
+    """Project the new-site diagnostic canary's input receipt onto the contract.
+
+    The receipt differs from the launch contract in exactly two spellings, and
+    both would otherwise read as defects. It calls its finished state
+    ``completed`` where this layer admits only ``ready``, and it records its
+    bundle digest as bare hex where every launch digest carries a ``sha256:``
+    prefix -- an unprefixed digest is reported as an invalid *declaration*,
+    which is the right answer for a receipt that failed to state one and the
+    wrong answer for one that states it differently.
+
+    The retained bytes are what the allocator opens, so the receipt is not
+    rewritten; this read-only view supplies only the fields the residency and
+    live-profile layers share. Whether the bundle it names is the *canary's*
+    bundle is decided by the lane, in
+    ``scripts/build_new_site_diagnostic_canary_live_profile.py``, against the
+    same freeze the allocator's admission applies.
+    """
+
+    digest = str(receipt.get("bundle_sha256") or "").strip().lower()
+    if len(digest) == 64 and all(character in "0123456789abcdef" for character in digest):
+        view["bundle_sha256"] = "sha256:" + digest
+    view["native_receipt_status"] = receipt.get("status")
+    if receipt.get("status") == NEW_SITE_CANARY_READY_STATUS:
+        view["status"] = "ready"
+    return view
 
 
 def _native_camera_receipt_view(
@@ -134,6 +172,8 @@ def _launch_receipt_view(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     view = json.loads(json.dumps(dict(receipt)))
+    if receipt.get("schema_version") == NEW_SITE_CANARY_RECEIPT_SCHEMA:
+        return _new_site_canary_receipt_view(receipt, view)
     if receipt.get("schema_version") == NATIVE_CAMERA_BUNDLE_RECEIPT_SCHEMA:
         return _native_camera_receipt_view(receipt, view)
     if receipt.get("schema_version") == SEMANTIC_TEACHER_BUNDLE_SCHEMA:
