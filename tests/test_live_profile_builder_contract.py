@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,12 @@ def _load(path: Path):
     spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    # Registered before execution because `dataclasses` resolves a class's
+    # annotations through `sys.modules[cls.__module__]`. A builder that declares
+    # a dataclass -- two already do -- fails to load at all without this, with an
+    # AttributeError from inside the standard library that says nothing about
+    # the builder.
+    sys.modules[path.stem] = module
     spec.loader.exec_module(module)
     return module
 
@@ -43,8 +50,21 @@ def test_there_are_builders_to_check() -> None:
 
 
 def _cli_arguments(path: Path) -> set[str]:
+    """Every flag this builder's command line offers.
+
+    Two shapes are read. A literal ``add_argument("--flag", ...)``, and the keys
+    of a flag table -- a dict literal keyed by flag string, from which the
+    parser and the builder call are both generated so that a flag cannot be
+    added to one and forgotten in the other.
+
+    Reading only the first shape reported a table-driven builder as offering a
+    single flag, which is worse than a wrong answer here: `_is_receipt_driven`
+    is decided from this set, so such a builder was silently exempted from the
+    whole-skeleton and TTL-band contracts below.
+    """
+
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    return {
+    declared = {
         node.args[0].value
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -52,6 +72,16 @@ def _cli_arguments(path: Path) -> set[str]:
         and node.args
         and isinstance(node.args[0], ast.Constant)
     }
+    tabled = {
+        key.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant)
+        and isinstance(key.value, str)
+        and key.value.startswith("--")
+    }
+    return declared | tabled
 
 
 def _is_receipt_driven(path: Path) -> bool:

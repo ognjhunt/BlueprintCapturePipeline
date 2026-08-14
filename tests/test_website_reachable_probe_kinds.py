@@ -59,7 +59,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # profile of its own.
     "task-evaluation-profile-preflight": "not_a_website_lane",
     # Real debt: executable, not retired, not frozen, and unreachable.
-    "adp-isaac-lab-arena-native-control": "awaiting_builder",
     "new-site-diagnostic-canary": "awaiting_builder",
     "new-site-native-camera": "awaiting_builder",
     "reconstruction-worker-smoke": "awaiting_builder",
@@ -210,7 +209,7 @@ def test_the_reachability_debt_is_stated_rather_than_implied() -> None:
         if reason == "awaiting_builder"
     )
 
-    assert len(debt) <= 4, (
+    assert len(debt) <= 3, (
         f"unreachable executable probe kinds grew to {len(debt)}: {debt}. "
         "Lower this bound as builders land; do not raise it to make it pass."
     )
