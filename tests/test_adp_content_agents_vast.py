@@ -2001,6 +2001,14 @@ def test_provider_runtime_emits_structured_progress_across_silent_paid_stages(
     assert '_progress(f"{name}_agent_completed")' in runner_source
 
 
+def test_provider_runtime_uses_native_tls_before_uv_dependency_fetches() -> None:
+    runtime = (ROOT / "scripts/run_adp_content_agents_provider_runtime.sh").read_text()
+
+    native_tls = runtime.index("export UV_NATIVE_TLS=true")
+    assert native_tls < runtime.index('"${UV_BIN}" python install 3.12')
+    assert native_tls < runtime.index('"${UV_BIN}" pip install \\\n')
+
+
 def test_provider_output_inspector_recognizes_content_agents_result(tmp_path: Path) -> None:
     output = tmp_path / "output.zip"
     with zipfile.ZipFile(output, "w") as archive:
