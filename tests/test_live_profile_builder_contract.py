@@ -35,11 +35,11 @@ def _load(path: Path):
     spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    # Registered before execution: `@dataclass` resolves its field annotations
-    # through `sys.modules[cls.__module__]`, so a builder that declares one
-    # raises here unless the module it is being defined in can be found. That
-    # made this contract's reach depend on whether some earlier test happened
-    # to have imported the same builder first.
+    # Registered before execution because `dataclasses` resolves a class's
+    # annotations through `sys.modules[cls.__module__]`. A builder that declares
+    # a dataclass -- two already do -- fails to load at all without this, with an
+    # AttributeError from inside the standard library that says nothing about
+    # the builder.
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
