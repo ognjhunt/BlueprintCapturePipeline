@@ -640,7 +640,27 @@ def test_runtime_maps_newton_legacy_actuator_limits_to_active_sim_fields() -> No
     assert mapping["actuators"]["panda_shoulder"]["effort_limit_sim"] == 87.0
 
 
-def test_runtime_applies_newton_actuator_mapping_without_retuning() -> None:
+def test_native_bundle_ships_newton_gripper_drive_contract(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    build_native_microcheck_bundle(
+        job_dir=tmp_path / "bundle",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+        physics_backend="newton",
+        run_controls=True,
+    )
+
+    runtime = tmp_path / "bundle" / "provider_runtime"
+    assert (runtime / "adp009d_newton_gripper_drive.py").is_file()
+
+
+def test_runtime_applies_newton_actuator_mapping_without_retuning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeActuator:
         def __init__(self, *, effort: float | None, velocity: float | None) -> None:
             self.effort_limit = effort
@@ -659,6 +679,15 @@ def test_runtime_applies_newton_actuator_mapping_without_retuning() -> None:
             }
 
     embodiment = FakeEmbodiment()
+    drive_receipt = {
+        "status": "applied_for_native_identification",
+        "receipt_digest": "sha256:" + "d" * 64,
+    }
+    monkeypatch.setattr(
+        isaac_runtime,
+        "configure_newton_gripper_drive_candidate",
+        lambda *_args, **_kwargs: drive_receipt,
+    )
     receipt = isaac_runtime._configure_newton_actuator_limit_mapping(
         embodiment,
         backend_profile=build_backend_profile("newton"),
@@ -666,6 +695,7 @@ def test_runtime_applies_newton_actuator_mapping_without_retuning() -> None:
 
     assert receipt["status"] == "applied_and_verified"
     assert receipt["legacy_fields_cleared"] is True
+    assert receipt["gripper_drive_configuration"] == drive_receipt
     assert embodiment.scene_config.robot.actuators["panda_shoulder"].effort_limit is None
     assert embodiment.scene_config.robot.actuators["panda_shoulder"].effort_limit_sim == 87.0
     assert embodiment.scene_config.robot.actuators["panda_forearm"].velocity_limit is None

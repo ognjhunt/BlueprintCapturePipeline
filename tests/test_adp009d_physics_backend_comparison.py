@@ -46,6 +46,9 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
 from blueprint_pipeline.adp009d_approach_capture import (
     next_episode_start_restore_command,
 )
+from blueprint_pipeline.adp009d_newton_gripper_drive import (
+    build_newton_gripper_drive_candidate,
+)
 from blueprint_pipeline.adp009d_provider_zero import build_provider_zero_receipt
 from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -436,7 +439,27 @@ def _probe(profile: dict) -> dict:
                 if profile["physics_backend"] == "newton"
                 else None
             ),
+            "newton_gripper_drive_contract_digest": (
+                profile["gripper_drive_candidate"]["contract_digest"]
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
+            "newton_gripper_drive_status": (
+                "applied_for_native_identification"
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
+            "newton_gripper_drive_receipt_digest": (
+                "sha256:" + "d" * 64
+                if profile["physics_backend"] == "newton"
+                else None
+            ),
         },
+        "gripper_drive_trace": (
+            {"status": "passed", "blockers": [], "commands": {}}
+            if profile["physics_backend"] == "newton"
+            else None
+        ),
         "contact_buffer": {"nconmax": 1024, "overflow_observed": False},
         "policy_query_count": 0,
         "candidate_outcomes_accessed": False,
@@ -445,6 +468,14 @@ def _probe(profile: dict) -> dict:
     }
     value["probe_digest"] = canonical_digest(value, digest_field="probe_digest")
     return value
+
+
+def test_newton_profile_binds_comparison_ineligible_gripper_drive_candidate() -> None:
+    profile = build_backend_profile("newton")
+
+    assert profile["gripper_drive_candidate"] == build_newton_gripper_drive_candidate()
+    assert profile["gripper_drive_candidate"]["comparison_eligible"] is False
+    assert "gripper_drive_candidate" not in build_backend_profile("physx")
 
 
 def _admission(profile: dict, now: datetime) -> dict:

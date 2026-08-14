@@ -12,8 +12,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 try:  # pragma: no cover - flat layout inside the sealed runtime bundle
+    from adp009d_newton_gripper_drive import build_newton_gripper_drive_candidate, validate_newton_gripper_drive_probe
     from decision_evidence_contracts import canonical_digest
 except ImportError:  # pragma: no cover - installed package layout
+    from .adp009d_newton_gripper_drive import build_newton_gripper_drive_candidate, validate_newton_gripper_drive_probe
     from .decision_evidence_contracts import canonical_digest
 
 
@@ -111,16 +113,10 @@ NEWTON_MAPPED_PHYSX_PROPERTY_NAMES = (
     "physxRigidBody:angularDamping",
     "physxRigidBody:linearDamping",
 )
-# PhysX applies per-body gravity disable; the MJCF the Newton importer emits
-# carries no ``gravcomp`` (or any other) expression of it, so the identical
-# sealed asset is a weightless arm under PhysX and a full-weight arm under
-# Newton.  Measured on the sealed Franka at the canonical pose: PhysX held to
-# 4.649e-06 rad, while Newton carried 18.28 kg -- 20.07 N*m at panda_joint4,
-# a 0.0502 rad steady-state droop at the shared kp=400, five times the 1.0e-2
-# hold gate before any transient.  That is not a Newton defect to tune away and
-# not a comparable pair of runs; it is a property whose semantics one backend
-# cannot represent, so it must fail closed rather than surface downstream as a
-# hold failure.
+# Newton cannot represent PhysX's per-body gravity disable: the imported MJCF
+# has no ``gravcomp``.  The sealed arm was weightless in PhysX but carried
+# 18.28 kg in Newton, with a 0.0502-rad joint-4 droop at kp=400.  Fail closed;
+# this backend-specific property cannot support a comparable controls pair.
 NEWTON_UNREPRESENTABLE_PHYSX_PROPERTY_NAMES = ("physxRigidBody:disableGravity",)
 NEWTON_MAPPED_PHYSX_PROPERTY_PREFIXES = (
     "physxLimit:",
@@ -704,6 +700,7 @@ def build_backend_profile(physics_backend: str) -> dict[str, Any]:
                 "actuator_limit_mapping": (
                     build_newton_actuator_limit_mapping_contract()
                 ),
+                "gripper_drive_candidate": build_newton_gripper_drive_candidate(),
                 "contact_model": {
                     "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
                     "contact_generation": "mujoco_warp_from_generic_usd_import",
@@ -942,6 +939,9 @@ def validate_backend_probe(
             ).startswith("sha256:")
         ):
             blockers.append("adp009d_newton_probe_actuator_limit_mapping_invalid")
+        blockers.extend(validate_newton_gripper_drive_probe(
+            conversion=conversion_row, profile=profile,
+            trace=value.get("gripper_drive_trace")))
     if (
         value.get("policy_query_count") != 0
         or value.get("candidate_outcomes_accessed") is not False

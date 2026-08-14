@@ -254,6 +254,49 @@
         "retune_or_fidelity_claimed": false,
         "mapping_digest": "sha256:76b1c9ee7cd7500fb34afb447fe3320c1ec145951836cd995185c43b303c1de9"
       },
+      "gripper_drive_candidate": {
+        "schema_version": "adp009d_newton_gripper_drive_candidate.v1",
+        "status": "provider_free_candidate_ready",
+        "physics_backend": "newton",
+        "joint_name": "finger_joint",
+        "source_drive": {
+          "stiffness_nm_per_rad": 5729.58,
+          "damping_nm_s_per_rad": 0.0114592,
+          "effective_inertia_kg_m2": 3.80173e-07,
+          "effort_limit_nm": 16.5,
+          "velocity_limit_rad_s": 1.0
+        },
+        "candidate_drive": {
+          "stiffness_nm_per_rad": 5729.58,
+          "damping_nm_s_per_rad": 56.13624241901545,
+          "armature_kg_m2": 0.1375,
+          "effective_inertia_kg_m2": 0.137500380173,
+          "target_rate_limit_rad_s": 1.0,
+          "maximum_target_step_rad": 0.06666666666666667
+        },
+        "derivation": {
+          "physics_dt_seconds": 0.008333333333333333,
+          "control_decimation": 8,
+          "maximum_velocity_delta_per_max_torque_step_rad_s": 0.9999972351130992,
+          "explicit_stability_ratio": 1.7010935517773975,
+          "explicit_stability_ratio_limit": 2.0,
+          "damping_ratio": 1.0,
+          "rated_fingertip_speed_m_s": 0.10822536130248885,
+          "manufacturer_speed_range_m_s": [
+            0.02,
+            0.15
+          ]
+        },
+        "native_acceptance": {
+          "finite_joint_state_required": true,
+          "maximum_abs_joint_velocity_rad_s": 1.05,
+          "settled_abs_joint_velocity_rad_s": 0.05,
+          "minimum_finger_separation_travel_m": 0.001
+        },
+        "comparison_eligible": false,
+        "claim_ceiling": "newton_native_drive_identification_candidate_only",
+        "contract_digest": "sha256:137a6b5c446be921a5933dbb85a73926665ae50c198f82d8139886d48e2cc0cd"
+      },
       "contact_model": {
         "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
         "contact_generation": "mujoco_warp_from_generic_usd_import",
@@ -446,7 +489,7 @@
           "overlay_digest": "sha256:4766188ad656344c866762945cd8593f4777160309bb684d17d5b9474756f3ba"
         }
       },
-      "profile_digest": "sha256:9260bce62c43b797ccc9707628c055aa9aa43950cfcc9a9d185f9adfcad12d48"
+      "profile_digest": "sha256:2dccc668240767e5b618762fd33cfa0165524d7e239b8100e6f68095e6c8f3b2"
     }
   },
   "backend_contact_configurations": {
@@ -474,7 +517,7 @@
     "newton": {
       "schema_version": "adp009d_backend_contact_configuration.v1",
       "physics_backend": "newton",
-      "backend_profile_digest": "sha256:9260bce62c43b797ccc9707628c055aa9aa43950cfcc9a9d185f9adfcad12d48",
+      "backend_profile_digest": "sha256:2dccc668240767e5b618762fd33cfa0165524d7e239b8100e6f68095e6c8f3b2",
       "contact_model": {
         "configuration_schema": "adp009d_newton_mjwarp_contact_model.v1",
         "contact_generation": "mujoco_warp_from_generic_usd_import",
@@ -490,7 +533,7 @@
       "planner_contact_allowance_m": 0.0,
       "planner_contact_allowance_source": "generic_surface_geometry_only_no_physx_standoff_assumed",
       "actual_contact_onset_and_clearance_measurement_required": true,
-      "configuration_digest": "sha256:0101ab6fe92c5850514ef546035f904944b876f3a0b941ff787859a09baa7af8"
+      "configuration_digest": "sha256:7979c35ba4bacf968421e19b42198336e54fed5e67a43664a6bd449c454ff287"
     }
   },
   "common_comparability_bindings": [
@@ -559,5 +602,5 @@
   },
   "provider_mutation_performed": false,
   "claim_ceiling": "controls_comparison_design_only",
-  "design_digest": "sha256:2bf5f63bcae24b652b5ee79ddb68a84972036fc543ad876681e10b7af2ca52c9"
+  "design_digest": "sha256:d573e3d90de898653a30db4d9945b76e91ab570fa298501656b4c6dc07e995c7"
 }
