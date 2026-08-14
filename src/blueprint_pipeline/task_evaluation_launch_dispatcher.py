@@ -63,6 +63,21 @@ _ALLOWED_RUNTIME_ENV_KEYS = frozenset(
     }
 )
 QUEUE_RUN_SCHEMA_VERSION = "task_evaluation_launch_queue_run.v1"
+#: Where the scene a launch runs over actually came from. This is a provenance
+#: claim, not a label, so a lane whose scene is none of these does not get to
+#: borrow the nearest one -- the fresh-site camera lane runs over a public
+#: NVIDIA SimReady warehouse dataset and is neither a capture nor InteriorGS.
+#:
+#: Stated once. It was written out three times -- request, profile, and public
+#: descriptor -- which is three chances for one of them to fall behind.
+LAUNCH_PROFILE_SOURCE_KINDS = frozenset(
+    {
+        "interiorgs_sage",
+        "raw_v3_2_capture",
+        "scaniverse_derived",
+        "nvidia_simready_warehouse",
+    }
+)
 PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
     "profile_id",
     "profile_digest",
@@ -216,11 +231,7 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
     source_bundle = _mapping(request.get("source_bundle"))
     if not _is_identifier(source_bundle.get("bundle_id")):
         blockers.append("source_bundle_id_invalid")
-    if source_bundle.get("source_kind") not in {
-        "interiorgs_sage",
-        "raw_v3_2_capture",
-        "scaniverse_derived",
-    }:
+    if source_bundle.get("source_kind") not in LAUNCH_PROFILE_SOURCE_KINDS:
         blockers.append("source_bundle_kind_invalid")
     _validate_reference(
         request.get("evaluation_run_spec"), field="evaluation_run_spec", blockers=blockers
@@ -295,11 +306,7 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):
         blockers.append("launch_profile_source_bundle_id_invalid")
-    if profile_source.get("source_kind") not in {
-        "interiorgs_sage",
-        "raw_v3_2_capture",
-        "scaniverse_derived",
-    }:
+    if profile_source.get("source_kind") not in LAUNCH_PROFILE_SOURCE_KINDS:
         blockers.append("launch_profile_source_kind_invalid")
     _validate_reference(
         profile.get("evaluation_run_spec"), field="evaluation_run_spec", blockers=blockers
@@ -509,11 +516,10 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
         descriptor.get("source_bundle"), field="launch_profile_public_source", blockers=blockers
     )
     source = _mapping(descriptor.get("source_bundle"))
-    if not _is_identifier(source.get("bundle_id")) or source.get("source_kind") not in {
-        "interiorgs_sage",
-        "raw_v3_2_capture",
-        "scaniverse_derived",
-    }:
+    if (
+        not _is_identifier(source.get("bundle_id"))
+        or source.get("source_kind") not in LAUNCH_PROFILE_SOURCE_KINDS
+    ):
         blockers.append("launch_profile_public_source_invalid")
     _validate_reference(
         descriptor.get("evaluation_run_spec"),

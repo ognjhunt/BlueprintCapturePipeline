@@ -146,13 +146,18 @@ def build_parser() -> argparse.ArgumentParser:
         for keyword, param in step.params.items():
             options: dict[str, Any] = {"dest": keyword, "help": param.help or None}
             if param.accumulate:
+                # `action="append"` appends to whatever default it is given, so
+                # a tuple default raises `AttributeError` the first time the
+                # flag is actually passed. Start from `None` and let
+                # `call_arguments` restore the declared default.
                 options["action"] = "append"
-            if param.type is not None:
-                options["type"] = param.type
-            if param.required:
+                options["default"] = None
+            elif param.required:
                 options["required"] = True
             else:
                 options["default"] = param.default
+            if param.type is not None:
+                options["type"] = param.type
             target.add_argument(param.flag, **options)
     return parser
 

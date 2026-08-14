@@ -63,6 +63,11 @@ LAUNCH_INPUT_ROOTS_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_INPUT_ROOTS"
 # it, and a receipt that cannot resolve them is not usable evidence either.
 _BUNDLE_REFERENCE = "bundle"
 _RECORD_REFERENCES = ("execution_authority", "request")
+NATIVE_CAMERA_BUNDLE_RECEIPT_SCHEMA = (
+    "nvidia_warehouse_native_camera_gpu_bundle_receipt.v1"
+)
+NATIVE_CAMERA_BUNDLE_SCHEMA = "nvidia_warehouse_native_camera_gpu_bundle.v1"
+NATIVE_CAMERA_PURPOSE = "private_internal_nvidia_warehouse_native_camera_canary"
 ARTIFIXER3D_BUNDLE_SCHEMA = "public_scene_artifixer3d_bundle.v1"
 ARTIFIXER3D_BUNDLE_READY_STATUS = (
     "sealed_rehearsal_passed_no_upload_no_execution"
@@ -73,6 +78,43 @@ SEMANTIC_TEACHER_BUNDLE_READY_STATUS = "completed_no_upload_no_inference"
 
 class HostResidentInputError(ValueError):
     """A launch input cannot be resolved on this host."""
+
+
+def _native_camera_receipt_view(
+    receipt: Mapping[str, Any], view: dict[str, Any]
+) -> dict[str, Any]:
+    """Project the fresh-site camera bundle receipt onto the launch contract.
+
+    Two differences, both of which would otherwise read as defects rather than
+    as a different spelling. The receipt says ``completed`` where this layer
+    admits only ``ready``, and it records its bundle digest as bare hex where
+    every launch digest carries a ``sha256:`` prefix -- an unprefixed digest is
+    reported as an invalid declaration, which is the correct answer for a
+    receipt that never stated one and the wrong answer here.
+
+    The receipt's own bytes are what the allocator opens, so it is not
+    rewritten. Only a receipt still carrying its label-free freeze is promoted:
+    this is the last read before a profile is published, and a bundle that lost
+    that boundary must not become launchable by passing through a translation
+    layer.
+    """
+
+    digest = str(receipt.get("bundle_sha256") or "").strip().lower()
+    if len(digest) == 64 and all(character in "0123456789abcdef" for character in digest):
+        view["bundle_sha256"] = "sha256:" + digest
+    manifest = receipt.get("manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    if (
+        receipt.get("status") == "completed"
+        and manifest.get("schema_version") == NATIVE_CAMERA_BUNDLE_SCHEMA
+        and manifest.get("label_free") is True
+        and manifest.get("rankings_or_policy_outcomes_accessed") is False
+        and manifest.get("purpose") == NATIVE_CAMERA_PURPOSE
+    ):
+        view["status"] = "ready"
+    view["native_receipt_status"] = receipt.get("status")
+    view["implementation_commit"] = manifest.get("source_commit")
+    return view
 
 
 def _launch_receipt_view(receipt: Mapping[str, Any]) -> dict[str, Any]:
@@ -92,6 +134,8 @@ def _launch_receipt_view(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     view = json.loads(json.dumps(dict(receipt)))
+    if receipt.get("schema_version") == NATIVE_CAMERA_BUNDLE_RECEIPT_SCHEMA:
+        return _native_camera_receipt_view(receipt, view)
     if receipt.get("schema_version") == SEMANTIC_TEACHER_BUNDLE_SCHEMA:
         bundle = receipt.get("bundle")
         rehearsal = receipt.get("rehearsal")

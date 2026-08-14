@@ -60,7 +60,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     "task-evaluation-profile-preflight": "not_a_website_lane",
     # Real debt: executable, not retired, not frozen, and unreachable.
     "new-site-diagnostic-canary": "awaiting_builder",
-    "new-site-native-camera": "awaiting_builder",
 }
 
 VALID_REASONS = {
