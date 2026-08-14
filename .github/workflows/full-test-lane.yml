@@ -148,6 +148,7 @@ jobs:
           set -euo pipefail
           uv run scripts/pytest_full.sh \
             -p blueprint_pipeline.pytest_full_lane_evidence \
+            -n 4 --dist loadfile \
             --junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
             -m "not external_runtime and not external_data"
 
@@ -168,6 +169,15 @@ jobs:
             --repository-sha '${{ github.sha }}' \
             --output "${{ runner.temp }}/blueprint-ci/cpu_full.json"
 
+      - name: Build test-suite duration and matrix telemetry
+        if: always()
+        run: |
+          uv run python scripts/build_test_suite_telemetry.py \
+            --junit "${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
+            --repository-sha '${{ github.sha }}' \
+            --workers 4 \
+            --output "${{ runner.temp }}/blueprint-ci/test-suite-telemetry.json"
+
       - name: Upload full lane report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -181,3 +191,4 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/full-test-lane-executed.json
             ${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml
             ${{ runner.temp }}/blueprint-ci/cpu_full.json
+            ${{ runner.temp }}/blueprint-ci/test-suite-telemetry.json

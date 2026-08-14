@@ -88,6 +88,30 @@ def test_cpu_full_evidence_binds_collection_junit_sha_and_artifacts(
     )
 
 
+def test_cpu_full_evidence_accepts_parallel_completion_order(tmp_path: Path) -> None:
+    planned, executed, junit = _seed(tmp_path)
+    junit.write_text(
+        '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tests.test_two" name="test_b"><properties>'
+        '<property name="blueprint_nodeid" value="tests/test_two.py::test_b"/>'
+        "</properties></testcase>"
+        '<testcase classname="tests.test_one" name="test_a"><properties>'
+        '<property name="blueprint_nodeid" value="tests/test_one.py::test_a"/>'
+        "</properties></testcase>"
+        "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+
+    evidence = build_cpu_full_lane_evidence(
+        planned=planned,
+        executed=executed,
+        junit=junit,
+        repository_sha=SHA,
+    )
+
+    assert evidence["status"] == "passed"
+
+
 def test_cpu_full_evidence_blocks_and_records_every_skip(tmp_path: Path) -> None:
     planned, executed, junit = _seed(tmp_path, skipped=True)
 
