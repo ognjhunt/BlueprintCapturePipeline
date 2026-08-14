@@ -41,6 +41,10 @@ PAID_LANE_MODULES = (
     "public_scene_aura_exact_residual_vast.py",
     "public_scene_artifixer3d_vast.py",
     "public_scene_simready_isaac_vast.py",
+    # Not a `*_vast.py` transport: it writes the launch profile's terminal
+    # `result.json` on every non-execute-ready path, so it is a terminal write
+    # into the same contract and is verified as one.
+    "sam31_gpu_admission.py",
     "sam31_paid_resource_allocator_lane.py",
     "semantic_teacher_image_edit_vast.py",
     "simpler_public_vast.py",
@@ -461,8 +465,9 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
 #: They are recorded so the set cannot grow silently while each is fixed on the
 #: paid execution path, which is a change no launch profile can make for it.
 #:
-#: `sam31_gpu_admission.py` is the urgent one -- `semantic-sam31-source-tracks`
-#: is website-reachable today, so this is reachable from the site right now.
+#: `sam31_gpu_admission.py` was the urgent one -- `semantic-sam31-source-tracks`
+#: is website-reachable today -- and it now seals, so it has moved into
+#: `PAID_LANE_MODULES` and the bound below has been ratcheted with it.
 #: `openpi_policy_ranking_gpu_admission.py` is dual-purpose: it also serves the
 #: live `new-site-diagnostic-canary`, so "policy ranking is frozen" does not
 #: excuse it. Only the two `policy_ranking_*` entries are purely frozen.
@@ -474,7 +479,6 @@ TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {
     "reconstruction_gpu_admission.py": "reconstruction-worker-smoke",
     "reconstruction_isaac_vast_operation.py": "reconstruction isaac operation",
     "reconstruction_vast_operation.py": "reconstruction operation",
-    "sam31_gpu_admission.py": "semantic-sam31-source-tracks (WEBSITE-REACHABLE)",
 }
 
 
@@ -520,9 +524,13 @@ def test_every_transport_the_allocator_imports_is_covered_by_this_contract() -> 
 
 
 def test_the_missing_terminal_evidence_set_only_ever_shrinks() -> None:
-    """A recorded defect must be a shrinking list, never a growing exemption."""
+    """A recorded defect must be a shrinking list, never a growing exemption.
 
-    assert len(TRANSPORTS_MISSING_TERMINAL_EVIDENCE) <= 8, (
+    The bound is ratcheted every time one is fixed, so the room a fix bought
+    cannot be spent on the next lane that would rather be excused than sealed.
+    """
+
+    assert len(TRANSPORTS_MISSING_TERMINAL_EVIDENCE) <= 7, (
         "a transport was added to TRANSPORTS_MISSING_TERMINAL_EVIDENCE rather "
         "than sealing its terminal evidence. This list records lanes that "
         "cannot report completed after paying for a GPU; it is not an "

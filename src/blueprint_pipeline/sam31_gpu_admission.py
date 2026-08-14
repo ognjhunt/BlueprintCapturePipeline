@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 
 
 REQUEST_SCHEMA_VERSION = "semantic_sam31_gpu_canary_request.v1"
@@ -18,6 +19,9 @@ PREFLIGHT_SCHEMA_VERSION = "semantic_sam31_gpu_provider_preflight.v1"
 ADMISSION_SCHEMA_VERSION = "semantic_sam31_gpu_canary_admission.v1"
 PROBE_KIND = "semantic-sam31-source-tracks"
 OPERATION = "source_track_canary"
+#: The allocator lane this admission belongs to, used to bind the terminal
+#: artifact manifest to the same lane the paid path seals under.
+ALLOCATOR_LANE = "semantic_sam31_source_tracks"
 CHECKPOINT_FAMILY = "facebook/sam3.1"
 OFFICIAL_CODE_REVISION = "96914d2425f90a64f45ca977c2b5165418099543"
 CHECKPOINT_REPOSITORY_REVISION = "daa63191845a41281374e725f4c9e51c7a824460"
@@ -378,6 +382,43 @@ def build_sam31_gpu_canary_admission(
     return admission, bound_request
 
 
+def seal_sam31_terminal_admission(
+    admission: Mapping[str, Any], *, adapter_output: str | Path
+) -> dict[str, Any]:
+    """Give the terminal adapter result the two paths its launch contract reads.
+
+    ``adapter_output`` is not an incidental copy of the admission: it is the
+    ``terminal_contract.result_path`` of the live profile that makes
+    ``semantic-sam31-source-tracks`` website-reachable, and that contract's
+    ``required_path_fields`` are read straight off it. A result written there
+    without ``artifact_manifest_path`` and ``teardown_manifest_path`` ends
+    ``allocator_terminal_artifact_missing:`` for both no matter what happened on
+    the provider -- the failure that cost a paid run on 2026-08-13 -- and any
+    evidence the attempt retained sits on disk with nothing naming it.
+
+    The attempt root is the adapter result's own directory, because that is the
+    expression the paid lane builds ``<root>/vast_provider_run`` from. Sealing a
+    root the evidence is not under is the #501 defect: it reports ``completed``
+    with ``blockers: []`` while the launch blocks on artifacts the sealer never
+    looked for.
+
+    Both fields are named unconditionally, ``None`` when there is nothing to
+    name, so an attempt that produced no manifest is distinguishable from one
+    whose manifest went missing. The shared seal only ever adds blockers or
+    downgrades a status, so this cannot turn a blocked attempt into a passing
+    one.
+    """
+
+    terminal = dict(admission)
+    terminal.setdefault("artifact_manifest_path", None)
+    terminal.setdefault("teardown_manifest_path", None)
+    return seal_lane_terminal_artifacts(
+        terminal,
+        attempt_root=Path(adapter_output).expanduser().resolve().parent,
+        lane=ALLOCATOR_LANE,
+    )
+
+
 def prepare_sam31_gpu_canary(
     *,
     request_path: str | Path,
@@ -413,12 +454,18 @@ def prepare_sam31_gpu_canary(
     write_json(Path(admission_out), admission)
     write_json(Path(bound_request_out), bound)
     if admission["status"] != "execute_ready":
-        write_json(Path(adapter_output), admission)
+        # The admission receipt keeps its own digest-bound shape; only the
+        # terminal allocator result gains the paths the launch contract reads.
+        write_json(
+            Path(adapter_output),
+            seal_sam31_terminal_admission(admission, adapter_output=adapter_output),
+        )
     return admission
 
 
 __all__ = [
     "ADMISSION_SCHEMA_VERSION",
+    "ALLOCATOR_LANE",
     "CHECKPOINT_DIGEST",
     "CHECKPOINT_REPOSITORY_REVISION",
     "LICENSE_TERMS_DIGEST",
@@ -430,4 +477,5 @@ __all__ = [
     "build_sam31_gpu_canary_admission",
     "collect_sam31_vast_preflight",
     "prepare_sam31_gpu_canary",
+    "seal_sam31_terminal_admission",
 ]
