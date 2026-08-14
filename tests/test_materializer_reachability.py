@@ -35,6 +35,14 @@ SCRIPTS = REPO_ROOT / "scripts"
 #: 73 once the segment-mask-repair preflight -- the chain's root -- got one.
 #: It may fall and never rise.
 #:
+#: It went to 76 once, when the semantic-teacher image-edit lane landed with all
+#: three of its terminal materializers -- result, provider zero, and the
+#: no-allocation closeout -- reachable from nothing. That is the shape this
+#: ratchet exists to catch: the lane could be started from a production path and
+#: only closed from a Python session, so a paid attempt could end with no
+#: terminal artifact and a provider bill nobody reconciled. Restored to 73 by
+#: `scripts/retain_semantic_teacher_image_edit_receipts.py`.
+#:
 #: Naming all 73 individually would be a list nobody maintains; the population
 #: is rediscovered every run and only its size is pinned, so a new unreachable
 #: materializer fails here even though no name was ever written down.

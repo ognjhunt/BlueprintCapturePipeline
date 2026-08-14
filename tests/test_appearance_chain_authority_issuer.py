@@ -112,6 +112,37 @@ def test_the_import_gate_can_pin_which_instances_may_already_be_running() -> Non
     assert param.default == ()
 
 
+def test_a_supplied_repeatable_flag_does_not_crash_the_parser() -> None:
+    """The case the table test above cannot see, because it never parses a value.
+
+    `action="append"` appends to whatever default it is given, and a tuple has
+    no `append`. So pinning `default == ()` -- which is what the materializer
+    needs -- made the *only* invocation that names a running instance die in
+    `argparse`, on the paid path where naming one matters.
+    """
+
+    args = issuer.build_parser().parse_args(
+        [
+            "paired-target",
+            "--bundle-receipt", "b.json",
+            "--prior-artifixer-authority", "a.json",
+            "--prior-artifixer-result", "r.json",
+            "--prior-artifixer-cleanup", "c.json",
+            "--prior-artifixer-provider-zero", "z.json",
+            "--authorized-by", "operator",
+            "--authority-reference", "goal",
+            "--blueprint-commit", "e" * 40,
+            "--output", "out.json",
+            "--allow-active-instance", "42",
+            "--allow-active-instance", "7",
+        ]
+    )
+
+    assert issuer.call_arguments(issuer.LINKS["paired-target"], args)[
+        "allowed_active_instance_ids"
+    ] == (42, 7)
+
+
 def test_an_omitted_repeatable_flag_stays_empty_not_none() -> None:
     """`None` would reach a `Sequence[int]` parameter that iterates it."""
 
