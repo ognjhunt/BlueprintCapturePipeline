@@ -57,6 +57,11 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
     }
     receipt_path = tmp_path / "bundle-receipt.json"
     _write(receipt_path, receipt)
+    prior_spend = tmp_path / "prior-spend.json"
+    prior_spend.write_text(
+        json.dumps({"schema_version": "fixture_prior_spend.v1"}) + "\n",
+        encoding="utf-8",
+    )
     authority = {
         "authorization_digest": "sha256:" + "d" * 64,
         "runtime_image_identity": IMAGE,
@@ -66,6 +71,12 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         "maximum_hourly_rate_usd": 0.5,
         "hard_total_spend_cap_usd": 1.0,
         "hard_ttl_seconds": 600,
+        "prior_spend_reconciliation": {
+            "path": str(prior_spend),
+            "size_bytes": prior_spend.stat().st_size,
+            "sha256": "sha256:"
+            + hashlib.sha256(prior_spend.read_bytes()).hexdigest(),
+        },
     }
     authority_path = tmp_path / "authority.json"
     _write(authority_path, authority)
@@ -98,6 +109,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         "authority": authority_path,
         "dry_run": dry_run_path,
         "token": token,
+        "prior_spend": prior_spend,
     }
 
 
@@ -134,8 +146,21 @@ def test_profile_uses_admitted_dispatch_and_binds_private_inputs(
     assert IMAGE in argv
     immutable = {row["name"] for row in profile["immutable_inputs"]}
     assert "semantic_teacher_paid_attempt_authority" in immutable
+    assert "semantic_teacher_prior_spend_reconciliation" in immutable
     assert "evaluation_run_spec" in immutable
     assert all(str(paths["token"]) != row["path"] for row in profile["immutable_inputs"])
+    prior = next(
+        row
+        for row in profile["immutable_inputs"]
+        if row["name"] == "semantic_teacher_prior_spend_reconciliation"
+    )
+    assert prior["path"] == str(paths["prior_spend"])
+    paths["prior_spend"].write_text("changed\n", encoding="utf-8")
+    assert (
+        "launch_profile_immutable_input_digest_mismatch:"
+        "semantic_teacher_prior_spend_reconciliation"
+        in dispatcher.verify_profile_immutable_inputs(profile)
+    )
     assert profile["terminal_contract"]["required_values"] == {
         "continuing_spend_from_this_run": False,
         "retry_cap": 0,

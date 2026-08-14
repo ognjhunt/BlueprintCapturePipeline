@@ -55,6 +55,27 @@ def _native_receipt(context: LaneLiveProfileContext) -> dict[str, Any]:
     return _read(context.receipt_path)
 
 
+def _prior_spend_path(authority: Mapping[str, Any]) -> Path | None:
+    record = authority.get("prior_spend_reconciliation")
+    if record is None:
+        return None
+    if not isinstance(record, Mapping):
+        raise TaskEvaluationLaunchError(
+            "semantic_teacher_profile_prior_spend_invalid"
+        )
+    path = Path(str(record.get("path") or "")).expanduser().resolve()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size != record.get("size_bytes")
+        or file_digest(path) != record.get("sha256")
+    ):
+        raise TaskEvaluationLaunchError(
+            "semantic_teacher_profile_prior_spend_invalid"
+        )
+    return path
+
+
 def _dry_run_valid(
     value: Mapping[str, Any],
     *,
@@ -98,6 +119,10 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
         blockers.append("semantic_teacher_profile_token_permissions_not_0600")
     authority = _read(authority_path)
     dry_run = _read(dry_run_path)
+    try:
+        _prior_spend_path(authority)
+    except TaskEvaluationLaunchError as exc:
+        blockers.append(str(exc))
     try:
         validate_semantic_teacher_image_edit_paid_authority(
             authority,
@@ -149,7 +174,8 @@ def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
 
 def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
     receipt = _native_receipt(context)
-    return [
+    authority = _read(context.extra_paths["attempt_authority"])
+    immutable = [
         {
             "name": "source_bundle_manifest",
             "path": str(context.receipt_path),
@@ -171,6 +197,16 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             "digest": file_digest(context.extra_paths["attempt_authority"]),
         },
     ]
+    prior_spend = _prior_spend_path(authority)
+    if prior_spend is not None:
+        immutable.append(
+            {
+                "name": "semantic_teacher_prior_spend_reconciliation",
+                "path": str(prior_spend),
+                "digest": file_digest(prior_spend),
+            }
+        )
+    return immutable
 
 
 def _run_spec_digest(context: LaneLiveProfileContext) -> str:
