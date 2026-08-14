@@ -13,7 +13,7 @@ import stat
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 
@@ -983,8 +983,15 @@ def run_joint_agent_vast(
     public_image: str = DEFAULT_IMAGE,
     allowed_active_instance_ids: Sequence[int] = (),
     machine_avoidlist_path: str | Path | None = None,
+    disk_usage: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
-    """Execute exactly one zero-retry Joint Agent attempt with provider zero."""
+    """Execute exactly one zero-retry Joint Agent attempt with provider zero.
+
+    `disk_usage` overrides how free space is measured. The headroom guard below
+    reads the real filesystem by default, which is correct for a run and wrong
+    for a test: a caller near the 2 GiB floor turns any assertion into a
+    headroom failure that says nothing about what was being asserted.
+    """
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
@@ -1005,7 +1012,9 @@ def run_joint_agent_vast(
         )
     ):
         raise ValueError("adp_joint_agent_prepared_bundle_binding_invalid")
-    local_capacity = _local_evidence_capacity(job=job, bundle_path=bundle_path)
+    local_capacity = _local_evidence_capacity(
+        job=job, bundle_path=bundle_path, disk_usage=disk_usage or shutil.disk_usage
+    )
     write_json(job / "local_evidence_capacity.json", local_capacity)
     if local_capacity["status"] != "passed":
         return {

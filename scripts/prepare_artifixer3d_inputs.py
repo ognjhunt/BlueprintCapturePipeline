@@ -30,12 +30,9 @@ Reads retained bytes only; performs no provider mutation and rents nothing.
 
 from __future__ import annotations
 
-import argparse
-import json
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Sequence
 
+from blueprint_pipeline.materializer_cli import Param, Step, run
 from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
     materialize_artifixer3d_candidate_inputs,
     materialize_object_absent_reference_candidate_receipt,
@@ -44,27 +41,6 @@ from blueprint_pipeline.public_scene_artifixer3d_dual_target_inputs import (
     materialize_dual_target_artifixer3d_inputs,
     materialize_whole_frame_semantic_teacher_receipt,
 )
-
-
-@dataclass(frozen=True)
-class Param:
-    """One materializer keyword and the flag that supplies it."""
-
-    flag: str
-    help: str = ""
-    required: bool = False
-    type: Callable[[str], Any] | None = None
-    default: Any = None
-    accumulate: bool = False
-    #: Read the flag's value as JSON from a file rather than as a string.
-    json_file: bool = False
-
-
-@dataclass(frozen=True)
-class Step:
-    summary: str
-    materialize: Callable[..., Any]
-    params: Mapping[str, Param] = field(default_factory=dict)
 
 
 EDITOR_IDENTITY = Param(
@@ -138,77 +114,8 @@ STEPS: dict[str, Step] = {
 }
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="step", required=True)
-    for name, step in STEPS.items():
-        target = sub.add_parser(name, help=step.summary)
-        for keyword, param in step.params.items():
-            options: dict[str, Any] = {"dest": keyword, "help": param.help or None}
-            if param.accumulate:
-                # `action="append"` appends to whatever default it is given, so
-                # a tuple default raises `AttributeError` the first time the
-                # flag is actually passed. Start from `None` and let
-                # `call_arguments` restore the declared default.
-                options["action"] = "append"
-                options["default"] = None
-            elif param.required:
-                options["required"] = True
-            else:
-                options["default"] = param.default
-            if param.type is not None:
-                options["type"] = param.type
-            target.add_argument(param.flag, **options)
-    return parser
-
-
-def call_arguments(step: Step, namespace: argparse.Namespace) -> dict[str, Any]:
-    supplied = vars(namespace)
-    arguments: dict[str, Any] = {}
-    for keyword, param in step.params.items():
-        value = supplied.get(keyword, param.default)
-        if param.json_file and value is not None:
-            value = json.loads(Path(str(value)).expanduser().read_text(encoding="utf-8"))
-        elif param.accumulate:
-            collected = tuple(value or ())
-            # `None` means "every task" for the selectors; an empty tuple would
-            # mean "no tasks", which silently produces an empty receipt.
-            value = collected or (() if param.default == () else None)
-        arguments[keyword] = value
-    return arguments
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    step = STEPS[args.step]
-
-    try:
-        receipt = step.materialize(**call_arguments(step, args))
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        print(
-            json.dumps(
-                {
-                    "status": "blocked",
-                    "blockers": [f"{type(exc).__name__}:{exc}"],
-                    "provider_mutation_performed": False,
-                },
-                indent=1,
-                sort_keys=True,
-            )
-        )
-        return 2
-
-    summary: dict[str, Any] = {
-        "status": "materialized",
-        "step": args.step,
-        "provider_mutation_performed": False,
-    }
-    if isinstance(receipt, Mapping):
-        for key in ("schema_version", "status", "receipt_digest", "receipt_path", "output_root"):
-            if key in receipt:
-                summary[f"receipt_{key}" if key == "status" else key] = receipt[key]
-    print(json.dumps(summary, indent=1, sort_keys=True))
-    return 0
+    return run(STEPS, argv, description=__doc__)
 
 
 if __name__ == "__main__":  # pragma: no cover

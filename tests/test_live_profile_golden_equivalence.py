@@ -184,8 +184,33 @@ def test_content_agents_profile_is_byte_identical_to_the_hand_written_builder(
     _compare(_normalized(profile, root), _golden("content_agents"))
 
 
+def test_sam31_profile_is_byte_identical_to_the_hand_written_builder(
+    tmp_path: Path,
+) -> None:
+    """The third builder to be factored, and the first without a golden.
+
+    This lane's control surface was a hand-copy of the shared one plus a single
+    extra terminal field, and moving it onto `shared_control_surface` landed
+    without the check the other two got. The golden below was captured from the
+    hand-written builder at 65e817ad -- the commit before the port -- so it can
+    still answer the question the port never had to: did any byte change?
+
+    Its fixture is untouched across the port, which is what makes the two
+    directly comparable.
+    """
+
+    from tests.test_build_sam31_source_tracks_live_profile import _build, _fixture
+
+    root = tmp_path.resolve()
+    profile = _build(_fixture(root), revision="g1")
+
+    _compare(_normalized(profile, root), _golden("sam31_source_tracks"))
+
+
 @pytest.mark.parametrize(
-    "name", ["retained_scene_render", "content_agents"], ids=["retained-scene", "content-agents"]
+    "name",
+    ["retained_scene_render", "content_agents", "sam31_source_tracks"],
+    ids=["retained-scene", "content-agents", "sam31-source-tracks"],
 )
 def test_every_golden_still_asks_for_the_controls_that_make_a_run_provable(
     name: str,
@@ -199,7 +224,9 @@ def test_every_golden_still_asks_for_the_controls_that_make_a_run_provable(
     assert controls["watchdog_required"] is True
     assert controls["retry_cap"] == 0
     assert profile["allocator"]["retry_cap"] == 0
-    assert sorted(profile["terminal_contract"]["required_path_fields"]) == [
-        "artifact_manifest_path",
-        "teardown_manifest_path",
-    ]
+    # A superset, not an equality: a lane may insist on evidence only it emits,
+    # and the SAM 3.1 lane insists on its source-track import result. It may
+    # never ask for less than both sealed manifests.
+    assert {"artifact_manifest_path", "teardown_manifest_path"} <= set(
+        profile["terminal_contract"]["required_path_fields"]
+    )

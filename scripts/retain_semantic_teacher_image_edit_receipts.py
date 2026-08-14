@@ -38,12 +38,9 @@ seals what a run already did, and refuses when the evidence is not there.
 
 from __future__ import annotations
 
-import argparse
-import json
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Sequence
 
+from blueprint_pipeline.materializer_cli import Param as _Param, Step, run
 from blueprint_pipeline.semantic_teacher_image_edit_paid_lane import (
     materialize_semantic_teacher_image_edit_result,
     materialize_semantic_teacher_no_allocation_closeout,
@@ -51,21 +48,17 @@ from blueprint_pipeline.semantic_teacher_image_edit_paid_lane import (
 )
 
 
-@dataclass(frozen=True)
-class Param:
-    """One materializer keyword and the flag that supplies it."""
+def Param(flag: str, help: str = "", *, type=None) -> _Param:
+    """One required flag. Every keyword this script supplies is evidence.
 
-    flag: str
-    help: str = ""
-    required: bool = True
-    type: Callable[[str], Any] | None = None
+    The shared `Param` defaults to optional because most lanes have selectors
+    that may be omitted. This one has none: on a closeout a dropped path is a
+    piece of evidence the receipt claims to bind and does not, so requiring
+    them is stated here rather than inherited from a default that could change.
+    `tests/test_semantic_teacher_image_edit_lane_cli.py` holds that down.
+    """
 
-
-@dataclass(frozen=True)
-class Step:
-    summary: str
-    materialize: Callable[..., Any]
-    params: Mapping[str, Param] = field(default_factory=dict)
+    return _Param(flag, help, required=True, type=type)
 
 
 OUTPUT = Param("--output", "Where to write the sealed receipt.")
@@ -161,60 +154,8 @@ STEPS: dict[str, Step] = {
 }
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="step", required=True)
-    for name, step in STEPS.items():
-        target = sub.add_parser(name, help=step.summary)
-        for keyword, param in step.params.items():
-            options: dict[str, Any] = {"dest": keyword, "help": param.help or None}
-            if param.type is not None:
-                options["type"] = param.type
-            if param.required:
-                options["required"] = True
-            target.add_argument(param.flag, **options)
-    return parser
-
-
-def call_arguments(step: Step, namespace: argparse.Namespace) -> dict[str, Any]:
-    """The materializer keywords this invocation supplies, and nothing else."""
-
-    supplied = vars(namespace)
-    return {keyword: supplied.get(keyword) for keyword in step.params}
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    step = STEPS[args.step]
-
-    try:
-        receipt = step.materialize(**call_arguments(step, args))
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        print(
-            json.dumps(
-                {
-                    "status": "blocked",
-                    "blockers": [f"{type(exc).__name__}:{exc}"],
-                    "provider_mutation_performed": False,
-                },
-                indent=1,
-                sort_keys=True,
-            )
-        )
-        return 2
-
-    summary: dict[str, Any] = {
-        "status": "retained",
-        "step": args.step,
-        "output": str(Path(args.output_path).expanduser().resolve()),
-        "provider_mutation_performed": False,
-    }
-    if isinstance(receipt, Mapping):
-        for key in ("schema_version", "status", "receipt_digest", "total_cost_usd"):
-            if key in receipt:
-                summary[f"receipt_{key}" if key == "status" else key] = receipt[key]
-    print(json.dumps(summary, indent=1, sort_keys=True))
-    return 0
+    return run(STEPS, argv, description=__doc__)
 
 
 if __name__ == "__main__":  # pragma: no cover

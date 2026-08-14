@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import importlib.util
 from pathlib import Path
+import shutil
 import subprocess
 from types import SimpleNamespace
 import zipfile
@@ -537,12 +538,24 @@ def _prepared_bundle(tmp_path: Path) -> dict:
     }
 
 
+def _ample_disk(free_bytes: int = 64 * 1024**3):
+    """A disk report the test states, rather than whatever the host has.
+
+    The lane refuses below `MINIMUM_LOCAL_EVIDENCE_FREE_BYTES` (2 GiB), and a
+    developer machine sitting near that line turns every test below into a
+    headroom failure that says nothing about what it was asserting.
+    """
+
+    return lambda path: shutil._ntuple_diskusage(free_bytes * 4, free_bytes * 3, free_bytes)
+
+
 def test_run_dry_run_is_zero_mutation_and_requires_bound_bundle(tmp_path: Path) -> None:
     result = run_joint_agent_vast(
         job_dir=tmp_path / "job",
         paid_resource_admission_grant=None,
         execute=False,
         prepared_bundle=_prepared_bundle(tmp_path),
+        disk_usage=_ample_disk(),
     )
 
     assert result["status"] == "dry_run_ready"
@@ -563,6 +576,7 @@ def test_run_dry_run_rejects_budget_below_minimum_live_window(
         max_hourly_rate_usd=0.8,
         hard_cap_usd=0.8,
         hard_ttl_seconds=5400,
+        disk_usage=_ample_disk(),
     )
 
     assert result["status"] == "blocked"
@@ -570,6 +584,28 @@ def test_run_dry_run_rejects_budget_below_minimum_live_window(
     assert result["blockers"] == [
         "adp_joint_agent_budget_below_minimum_live_window"
     ]
+
+
+def test_a_host_without_room_for_the_evidence_still_refuses_the_run(
+    tmp_path: Path,
+) -> None:
+    """Stating the free space must not disable the guard, only pin it.
+
+    This is the case the two tests above used to reach by accident on a full
+    machine, which is why it is now asserted on purpose.
+    """
+
+    result = run_joint_agent_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=None,
+        execute=False,
+        prepared_bundle=_prepared_bundle(tmp_path),
+        disk_usage=_ample_disk(free_bytes=1),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == ["adp_joint_agent_local_evidence_headroom_insufficient"]
 
 
 @pytest.mark.parametrize("execute", [False, True])
