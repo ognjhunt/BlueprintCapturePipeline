@@ -3189,18 +3189,27 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
             return 200, {"success": True, "msg": "Instance destroyed successfully"}
         raise AssertionError((method, path))
 
+    fetched_log_tails = {"count": 0}
+
     def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
         assert url == "https://logs.example/provider"
+        fetched_log_tails["count"] += 1
+        if fetched_log_tails["count"] == 1:
+            return (
+                "BLUEPRINT_VAST_ONSTART_STARTED\n"
+                "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+                "RTX 4090, 580.95.05, 24564 MiB\n"
+                "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+                "BLUEPRINT_VAST_CUDA_RUNTIME_OK\n"
+                "BLUEPRINT_VAST_ISAAC_SMOKE_OK\n"
+                "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED\n"
+                "BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED\n"
+                "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n"
+                "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:2\n"
+            )
+        # The request_logs API returns a moving tail.  The terminal slice no
+        # longer includes startup/GPU evidence, which must remain cumulative.
         return (
-            "BLUEPRINT_VAST_ONSTART_STARTED\n"
-            "BLUEPRINT_VAST_HEARTBEAT_OK\n"
-            "RTX 4090, 580.95.05, 24564 MiB\n"
-            "BLUEPRINT_VAST_GPU_SANITY_OK\n"
-            "BLUEPRINT_VAST_ISAAC_SMOKE_OK\n"
-            "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED\n"
-            "BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED\n"
-            "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n"
-            "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:2\n"
             "BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:512\n"
             "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK\n"
             '{"ok": true, "bytes": 512}\n'
@@ -3244,6 +3253,13 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
         "real_unitree_g1_controller_policy_stack_not_packaged"
         in provider["runtime_result_blockers"]
     )
+    startup = _read_json(tmp_path / "vast_startup_probe_manifest.json")
+    assert fetched_log_tails["count"] == 2
+    assert "BLUEPRINT_VAST_GPU_SANITY_OK" in startup["container_log_result"][
+        "observed_blueprint_marker_lines"
+    ]
+    gpu = _read_json(tmp_path / "vast_gpu_sanity_report.json")
+    assert gpu["status"] == "completed"
     video = _read_json(tmp_path / "vast_video_smoke_result.json")
     assert video["status"] == "blocked"
     assert video["video_smoke_proven"] is False
@@ -7423,8 +7439,10 @@ def test_an_unreadable_log_channel_no_longer_ends_a_run_that_has_a_second_one(
     assert result["output_probe_configured"] is True
     assert result["output_probe_observed"] is True
     assert result["output_probe_failed"] is False
-    # It waited for the object instead of abandoning the run at the log fault.
-    assert polls["count"] == 4
+    # It waited for the object instead of abandoning the run at the log fault,
+    # then made one bounded final log refresh for a lagging completion marker.
+    assert polls["count"] == 5
+    assert result["post_output_log_refresh_performed"] is True
     assert result["log_bytes_ever_read"] is False
 
 
@@ -7773,7 +7791,8 @@ def test_the_no_progress_watchdog_does_not_end_a_run_it_cannot_measure(
 
     assert result["output_probe_observed"] is True
     assert result["no_progress_timeout_reached"] is False
-    assert polls["count"] == 6
+    assert polls["count"] == 7
+    assert result["post_output_log_refresh_performed"] is True
 
 
 def test_a_readable_log_channel_keeps_its_no_progress_watchdog(
