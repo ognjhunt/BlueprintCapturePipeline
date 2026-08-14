@@ -157,6 +157,8 @@ def _validated_backend(
     output_formats = execution.get("output_formats")
     default_options = execution.get("default_options")
     if (
+        backend.get("capability") != SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY
+        or
         backend.get("commercial_use_permitted") is not True
         or backend.get("capability") != SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY
         or transport_kind not in SUPPORTED_TRANSPORT_KINDS

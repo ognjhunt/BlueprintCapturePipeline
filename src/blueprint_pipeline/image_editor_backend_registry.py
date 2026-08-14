@@ -39,13 +39,11 @@ DEFAULT_REGISTRY_PATH = (
 
 #: The value meaning "no direct editor ran", which is not a backend.
 NO_DIRECT_EDITOR = "none"
-
 ARTIFIXER_DIRECT_CAPABILITY = "artifixer_direct"
 SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY = "semantic_teacher_image_edit"
 SUPPORTED_CAPABILITIES = frozenset(
     {ARTIFIXER_DIRECT_CAPABILITY, SEMANTIC_TEACHER_IMAGE_EDIT_CAPABILITY}
 )
-
 REQUIRED_FIELDS = (
     "backend_id",
     "capability",

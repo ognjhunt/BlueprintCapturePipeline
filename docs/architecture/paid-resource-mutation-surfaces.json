@@ -324,6 +324,16 @@
       ]
     },
     {
+      "path": "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "provider.launch(",
+        "stage_wam_provider_bundle_object_store",
+        "maximum_create_attempts"
+      ]
+    },
+    {
       "path": "src/blueprint_pipeline/runpod_provider_adapter.py",
       "classification": "grant_gated_legacy_adapter",
       "required_markers": [

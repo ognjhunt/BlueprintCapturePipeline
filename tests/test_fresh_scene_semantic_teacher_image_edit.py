@@ -137,6 +137,40 @@ def _registry(tmp_path: Path) -> tuple[Path, dict[str, dict]]:
     return path, rows
 
 
+def test_semantic_teacher_refuses_a_direct_editor_capability(tmp_path: Path) -> None:
+    candidate_path, candidate = _candidate(tmp_path)
+    backend = _backend(
+        "wrong_capability",
+        transport_kind="hosted_image_edit",
+        mask_encoding="rgba_alpha_zero_edit_region_png",
+        external_disclosure_required=True,
+    )
+    backend["capability"] = "artifixer_direct"
+    registry_path = tmp_path / "wrong-capability-registry.json"
+    registry_path.write_text(
+        canonical_json(
+            {"schema_version": REGISTRY_SCHEMA_VERSION, "backends": [backend]}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    rights_path = _rights(tmp_path, candidate=candidate, backend=backend)
+
+    with pytest.raises(
+        SemanticTeacherImageEditError,
+        match="semantic_teacher_backend_execution_contract_invalid",
+    ):
+        materialize_semantic_teacher_image_edit_packet(
+            request=_request(
+                candidate_path=candidate_path,
+                registry_path=registry_path,
+                rights_path=rights_path,
+                backend_id=backend["backend_id"],
+            ),
+            output_root=tmp_path / "wrong-capability-packet",
+        )
+
+
 def _rights(
     tmp_path: Path,
     *,
