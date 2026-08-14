@@ -60,7 +60,7 @@ dependencies = [
     # through S3-compatible object storage before any provider mutation.
     "boto3>=1.34.0",
     "botocore>=1.34.0",
-    "cryptography>=46.0.5",
+    "cryptography>=50.0.0",
     "defusedxml>=0.7.1",
     # Canonical agent harness for the Task Evaluation Supervisor and its
     # specialized agents. Blueprint contracts remain the proof authority.

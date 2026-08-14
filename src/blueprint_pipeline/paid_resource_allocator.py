@@ -5110,26 +5110,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                             sage_collision_path=args.adp009d_sage_collision,
                             harness_manifest_path=args.adp009d_harness_manifest,
                             implementation_commit=control_identity["orchestrator_source_commit"],
+                            physics_backend=args.adp009d_physics_backend,
                             policy_candidate_id=args.adp009d_policy_candidate,
                             run_controls=args.adp009d_controls,
                             scenario_instance_path=args.adp009d_scenario_instance,
                             aura_particlefield_path=args.adp009d_aura_particlefield,
+                            expected_aura_particlefield_sha256=(
+                                args.adp009d_aura_particlefield_sha256
+                            ),
                         )
-                    prepared_bundle = build_native_microcheck_bundle(
-                        job_dir=Path(args.adp_job_dir) / "bundle",
-                        approved_can_path=args.adp009d_approved_can,
-                        sage_collision_path=args.adp009d_sage_collision,
-                        harness_manifest_path=args.adp009d_harness_manifest,
-                        implementation_commit=control_identity["orchestrator_source_commit"],
-                        physics_backend=args.adp009d_physics_backend,
-                        policy_candidate_id=args.adp009d_policy_candidate,
-                        run_controls=args.adp009d_controls,
-                        scenario_instance_path=args.adp009d_scenario_instance,
-                        aura_particlefield_path=args.adp009d_aura_particlefield,
-                        expected_aura_particlefield_sha256=(
-                            args.adp009d_aura_particlefield_sha256
-                        ),
-                    )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")
             allocation_binding = {

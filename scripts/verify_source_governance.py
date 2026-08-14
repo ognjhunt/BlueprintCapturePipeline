@@ -210,6 +210,28 @@ def validate_source_governance(
             except re.error:
                 blockers.append(f"forbidden_personal_path_pattern_invalid:{index}")
     governed_text_paths = _governed_text_paths(root)
+    governed_relatives = {
+        path.relative_to(root).as_posix() for path in governed_text_paths
+    }
+    raw_grandfathered_personal_paths = policy.get(
+        "grandfathered_personal_path_files", []
+    )
+    grandfathered_personal_paths: set[str] = set()
+    if not isinstance(raw_grandfathered_personal_paths, list):
+        blockers.append("grandfathered_personal_path_files_invalid")
+    else:
+        for index, raw_relative in enumerate(raw_grandfathered_personal_paths):
+            if not isinstance(raw_relative, str) or not raw_relative.strip():
+                blockers.append(f"grandfathered_personal_path_file_invalid:{index}")
+                continue
+            relative = raw_relative.strip()
+            if relative in grandfathered_personal_paths:
+                blockers.append(f"grandfathered_personal_path_file_duplicate:{relative}")
+                continue
+            grandfathered_personal_paths.add(relative)
+            if relative not in governed_relatives:
+                blockers.append(f"grandfathered_personal_path_file_missing:{relative}")
+    observed_grandfathered_personal_paths: set[str] = set()
     for path in governed_text_paths:
         try:
             text = path.read_text(encoding="utf-8")
@@ -222,8 +244,18 @@ def validate_source_governance(
                 continue
             relative = path.relative_to(root).as_posix()
             line_number = text.count("\n", 0, match.start()) + 1
-            blockers.append(f"personal_absolute_path_forbidden:{relative}:{line_number}")
+            if relative in grandfathered_personal_paths:
+                observed_grandfathered_personal_paths.add(relative)
+            else:
+                blockers.append(f"personal_absolute_path_forbidden:{relative}:{line_number}")
             break
+    for relative in sorted(
+        grandfathered_personal_paths - observed_grandfathered_personal_paths
+    ):
+        if relative in governed_relatives:
+            blockers.append(
+                f"grandfathered_personal_path_file_no_longer_matches:{relative}"
+            )
 
     blockers = sorted(set(blockers))
     return {
@@ -233,6 +265,9 @@ def validate_source_governance(
         "grandfathered_module_count": len(grandfathered),
         "project_script_count": len(scripts),
         "personal_path_scanned_file_count": len(governed_text_paths),
+        "grandfathered_personal_path_file_count": len(
+            grandfathered_personal_paths
+        ),
         "claim_literal_counts": token_counts,
         "blockers": blockers,
         "claim_boundary": {

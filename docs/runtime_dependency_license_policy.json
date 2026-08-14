@@ -40,6 +40,22 @@
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License-Expression"
     },
+    "boto3==1.43.45": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License"
+    },
+    "botocore==1.43.45": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License"
+    },
     "blueprint-contracts==0.1.0": {
       "license_expression": "MIT",
       "approved": true,
@@ -88,12 +104,12 @@
       "expires_on": "2027-07-09",
       "source": "locked distribution project license"
     },
-    "cryptography==49.0.0": {
+    "cryptography==50.0.0": {
       "license_expression": "Apache-2.0 OR BSD-3-Clause",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-09",
-      "expires_on": "2027-07-09",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
       "source": "installed distribution metadata License-Expression"
     },
     "defusedxml==0.7.1": {
@@ -272,6 +288,14 @@
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License-Expression"
     },
+    "jmespath==1.1.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License and classifier"
+    },
     "json-numpy==2.1.1": {
       "license_expression": "MIT",
       "approved": true,
@@ -304,6 +328,14 @@
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License"
     },
+    "msgpack==1.2.1": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License-Expression"
+    },
     "numpy==2.2.6": {
       "license_expression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
       "approved": true,
@@ -319,6 +351,14 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "locked conditional resolution distribution License-Expression"
+    },
+    "packaging==25.0": {
+      "license_expression": "Apache-2.0 OR BSD-2-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution license classifiers"
     },
     "openai-agents==0.19.1": {
       "license_expression": "MIT",
@@ -431,6 +471,14 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "python-dateutil==2.9.0.post0": {
+      "license_expression": "Apache-2.0 OR BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License and classifiers"
     },
     "pyjwt==2.13.0": {
       "license_expression": "MIT",
@@ -552,6 +600,22 @@
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
     },
+    "s3transfer==0.19.0": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License and classifier"
+    },
+    "six==1.17.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License and classifier"
+    },
     "tenacity==9.1.4": {
       "license_expression": "Apache-2.0",
       "approved": true,
@@ -591,6 +655,14 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "usd-core==26.5": {
+      "license_expression": "LicenseRef-TOST-1.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "installed distribution metadata License"
     },
     "urllib3==2.7.0": {
       "license_expression": "MIT",

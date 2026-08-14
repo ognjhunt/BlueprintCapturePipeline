@@ -625,14 +625,14 @@ def _download_models(request: Mapping[str, Any], cache: Path) -> tuple[Path, Pat
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     wan_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Path(
-        hf_hub_download(
+        hf_hub_download(  # nosec B615 - immutable revision is manifest-bound
             repo_id=model["repository"],
             revision=model["revision"],
             filename=model["files"][0]["path"],
             local_dir=checkpoint_dir,
         )
     )
-    snapshot_download(
+    snapshot_download(  # nosec B615 - immutable revision is manifest-bound
         repo_id=wan["repository"],
         revision=wan["revision"],
         allow_patterns=[row["path"] for row in wan["files"]],
@@ -651,7 +651,7 @@ def _download_semantic_editor(request: Mapping[str, Any], cache: Path) -> Path |
 
     semantic = request["semantic_editor"]
     output = cache / backend
-    snapshot_download(
+    snapshot_download(  # nosec B615 - immutable revision is manifest-bound
         repo_id=semantic["repository"],
         revision=semantic["revision"],
         local_dir=output,
@@ -850,7 +850,9 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
         raise ValueError("artifixer3d_native_export_destination_exists")
     output_root.mkdir(parents=True)
     try:
-        checkpoint_value = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        checkpoint_value = torch.load(  # nosec B614 - exact digest-bound trusted checkpoint requires config object
+            checkpoint, map_location="cpu", weights_only=False
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("artifixer3d_native_export_checkpoint_unreadable") from exc
     if not isinstance(checkpoint_value, Mapping):

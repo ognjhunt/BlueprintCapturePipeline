@@ -380,7 +380,21 @@ def _probe(profile: dict) -> dict:
         "solver_configuration": deepcopy(profile["solver_configuration"]),
         "contact_readback": {
             "force_vectors_world_n": [[1.0, 2.0, 3.0]],
-            "partner_prim_paths": ["/World/envs/env_0/approved_can"],
+            "partner_prim_paths": (
+                ["/World/envs/env_0/approved_can/colliders/body_collider"]
+                if profile["physics_backend"] == "newton"
+                else ["/World/envs/env_0/approved_can"]
+            ),
+            "partner_native_identifier_kind": (
+                "newton_shape_label"
+                if profile["physics_backend"] == "newton"
+                else "usd_rigid_body_prim"
+            ),
+            "partner_native_identifiers": (
+                ["body_collider"]
+                if profile["physics_backend"] == "newton"
+                else ["/World/envs/env_0/approved_can"]
+            ),
         },
         "asset_conversion": {
             "source_asset_digest": profile["source_bindings"]["approved_can_digest"],
@@ -690,6 +704,19 @@ def test_unsupported_franka_or_contact_readback_blocks_probe(
     probe["probe_digest"] = canonical_digest(probe, digest_field="probe_digest")
 
     assert expected in validate_backend_probe(probe, profile=profile)
+
+
+def test_newton_probe_rejects_requested_filter_without_resolved_native_partner() -> None:
+    profile = build_backend_profile("newton")
+    probe = _probe(profile)
+    probe["contact_readback"]["partner_native_identifiers"] = [
+        "*body_collider"
+    ]
+    probe["probe_digest"] = canonical_digest(probe, digest_field="probe_digest")
+
+    assert "adp009d_backend_probe_contact_readback_invalid" in (
+        validate_backend_probe(probe, profile=profile)
+    )
 
 
 def test_probe_rejects_silent_physx_field_handling_and_contact_overflow() -> None:

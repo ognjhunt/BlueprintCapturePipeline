@@ -9,6 +9,9 @@ from blueprint_pipeline.adp009d_control_episode import (
     ControlEpisodeError,
     run_task_neutral_controls,
 )
+from blueprint_pipeline.adp009d_physics_backend_comparison import (
+    build_backend_contact_configuration,
+)
 from blueprint_pipeline.adp009d_task_scoring import (
     CAN_START_POSITION_M,
     GRIPPER_FULL_OPENING_M,
@@ -48,6 +51,25 @@ class _Environment:
 
     def read_arm_joint_positions(self):
         return list(self.joints)
+
+    def read_arm_dynamics_observation(self):
+        zeros = [0.0] * 7
+        return {
+            "schema_version": "adp009d_arm_dynamics_observation.v2",
+            "joint_position_rad": list(self.joints),
+            "joint_velocity_rad_s": zeros,
+            "joint_position_target_rad": list(self.joints),
+            "computed_torque_nm": zeros,
+            "applied_torque_nm": zeros,
+            "joint_effort_limit_nm": [87.0] * 4 + [12.0] * 3,
+            "joint_effort_utilization": zeros,
+            "body_contact_force_world_n": None,
+            "body_incoming_joint_wrench_body": {},
+            "contact_envelope": None,
+            "backend_contact_configuration": build_backend_contact_configuration(
+                "physx"
+            ),
+        }
 
     def read_task_sample(self):
         return {

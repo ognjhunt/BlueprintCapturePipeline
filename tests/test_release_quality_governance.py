@@ -279,15 +279,46 @@ def test_source_governance_blocks_personal_absolute_paths(tmp_path: Path) -> Non
         "personal_absolute_path_forbidden:src/blueprint_pipeline/small.py:1" in result["blockers"]
     )
 
-    module.write_text('path = "$HOME/workspace/private"\n', encoding="utf-8")
-    assert (
-        validate_source_governance(
-            root=tmp_path,
-            policy=policy,
-            today=date(2026, 7, 9),
-        )["status"]
-        == "passed"
+    policy["grandfathered_personal_path_files"] = [
+        "src/blueprint_pipeline/small.py"
+    ]
+    grandfathered = validate_source_governance(
+        root=tmp_path,
+        policy=policy,
+        today=date(2026, 7, 9),
     )
+    assert grandfathered["status"] == "passed"
+
+    new_module = tmp_path / "src" / "blueprint_pipeline" / "new.py"
+    new_module.write_text(f'path = "{personal_path}"\n', encoding="utf-8")
+    new_path = validate_source_governance(
+        root=tmp_path,
+        policy=policy,
+        today=date(2026, 7, 9),
+    )
+    assert (
+        "personal_absolute_path_forbidden:src/blueprint_pipeline/new.py:1"
+        in new_path["blockers"]
+    )
+    new_module.unlink()
+
+    module.write_text('path = "$HOME/workspace/private"\n', encoding="utf-8")
+    stale = validate_source_governance(
+        root=tmp_path,
+        policy=policy,
+        today=date(2026, 7, 9),
+    )
+    assert (
+        "grandfathered_personal_path_file_no_longer_matches:src/blueprint_pipeline/small.py"
+        in stale["blockers"]
+    )
+
+    policy["grandfathered_personal_path_files"] = []
+    assert validate_source_governance(
+        root=tmp_path,
+        policy=policy,
+        today=date(2026, 7, 9),
+    )["status"] == "passed"
 
 
 def _critical_policy() -> dict[str, object]:

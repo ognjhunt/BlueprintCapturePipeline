@@ -813,6 +813,7 @@ def build_native_microcheck_bundle(
     run_controls: bool = False,
     scenario_instance_path: str | Path | None = None,
     aura_particlefield_path: str | Path | None = None,
+    expected_aura_particlefield_sha256: str | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
     worker_source: str | Path | None = None,
@@ -997,9 +998,16 @@ def build_native_microcheck_bundle(
         # between steps, and the goal prompt rules a policy result invalid
         # unless both cameras see the Aura background together with the moving
         # arm and can in one time-synchronised frame.
-        aura_source = Path(aura_particlefield_path).expanduser().resolve()
-        if not aura_source.is_file():
+        unresolved_aura_source = Path(aura_particlefield_path).expanduser()
+        aura_source = unresolved_aura_source.resolve()
+        if unresolved_aura_source.is_symlink() or not aura_source.is_file():
             raise ValueError("adp009d_aura_particlefield_missing")
+        if (
+            not isinstance(expected_aura_particlefield_sha256, str)
+            or not expected_aura_particlefield_sha256.startswith("sha256:")
+            or len(expected_aura_particlefield_sha256) != 71
+        ):
+            raise ValueError("adp009d_aura_appearance_digest_required")
         # Staged under its own extension.  A fixed .usd name would rename a
         # NuRec .usdz into something Isaac opens as a flat layer, and the
         # appearance format is the whole question this lane is deciding: a
@@ -1007,9 +1015,26 @@ def build_native_microcheck_bundle(
         # NuRec volume it demonstrably has.
         if aura_source.suffix not in {".usd", ".usda", ".usdz"}:
             raise ValueError(f"adp009d_aura_appearance_extension_unsupported:{aura_source.suffix}")
-        shutil.copy2(
-            aura_source, assets / f"aura_ghost_removed_appearance{aura_source.suffix}"
+        aura_destination = assets / f"aura_ghost_removed_appearance{aura_source.suffix}"
+        observed_aura_digest = _sha256(aura_source)
+        if observed_aura_digest != expected_aura_particlefield_sha256:
+            raise ValueError("adp009d_aura_appearance_digest_mismatch")
+        shutil.copy2(aura_source, aura_destination)
+        if _sha256(aura_destination) != expected_aura_particlefield_sha256:
+            raise ValueError("adp009d_aura_appearance_copy_digest_mismatch")
+        asset_rows.append(
+            {
+                "filename": aura_destination.name,
+                "role": "aura_appearance",
+                "sha256": expected_aura_particlefield_sha256,
+                "size_bytes": aura_destination.stat().st_size,
+                "visual_only": True,
+                "collision_authority": False,
+                "sealed_source_mutated": False,
+            }
         )
+    elif expected_aura_particlefield_sha256 is not None:
+        raise ValueError("adp009d_aura_appearance_path_required")
     harness_source = Path(harness_manifest_path).expanduser().resolve()
     try:
         harness_manifest = json.loads(harness_source.read_text(encoding="utf-8"))
@@ -1245,6 +1270,7 @@ def build_native_microcheck_bundle_isolated(
     run_controls: bool = False,
     scenario_instance_path: str | Path | None = None,
     aura_particlefield_path: str | Path | None = None,
+    expected_aura_particlefield_sha256: str | None = None,
     generated_at: str | None = None,
     expected_asset_bindings: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -1283,6 +1309,10 @@ def build_native_microcheck_bundle_isolated(
     if aura_particlefield_path is not None:
         command.extend(
             ("--aura-particlefield-path", str(Path(aura_particlefield_path).resolve()))
+        )
+    if expected_aura_particlefield_sha256 is not None:
+        command.extend(
+            ("--expected-aura-particlefield-sha256", expected_aura_particlefield_sha256)
         )
     if generated_at is not None:
         command.extend(("--generated-at", generated_at))
@@ -1346,6 +1376,7 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-controls", action="store_true")
     parser.add_argument("--scenario-instance-path", default=None)
     parser.add_argument("--aura-particlefield-path", default=None)
+    parser.add_argument("--expected-aura-particlefield-sha256", default=None)
     parser.add_argument("--generated-at")
     parser.add_argument("--expected-asset-bindings-json")
     args = parser.parse_args(argv)
@@ -1365,6 +1396,7 @@ def _isolated_child_main(argv: list[str] | None = None) -> int:
         run_controls=args.run_controls,
         scenario_instance_path=args.scenario_instance_path,
         aura_particlefield_path=args.aura_particlefield_path,
+        expected_aura_particlefield_sha256=args.expected_aura_particlefield_sha256,
         generated_at=args.generated_at,
         expected_asset_bindings=expected_bindings,
     )

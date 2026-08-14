@@ -46,7 +46,7 @@ EXPECTED_FILES: tuple[tuple[str, int, str, str], ...] = (
 
 
 def _git_blob_sha1(path: Path, size: int) -> str:
-    digest = hashlib.sha1()  # noqa: S324 - publisher Git object identity, not security auth
+    digest = hashlib.sha1(usedforsecurity=False)
     digest.update(f"blob {size}\0".encode())
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):

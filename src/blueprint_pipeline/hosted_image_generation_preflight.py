@@ -9,6 +9,7 @@ import json
 import os
 import struct
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -45,10 +46,15 @@ def _secret() -> tuple[str, str]:
 def _post(
     endpoint: str, headers: Mapping[str, str], payload: bytes
 ) -> tuple[int, bytes]:
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("hosted_image_endpoint_not_public_https")
     request = urllib.request.Request(
         endpoint, headers=dict(headers), data=payload, method="POST"
     )
-    with urllib.request.urlopen(request, timeout=180) as response:
+    with urllib.request.urlopen(  # nosec B310 - public HTTPS endpoint validated above
+        request, timeout=180
+    ) as response:
         return int(response.status), response.read()
 
 

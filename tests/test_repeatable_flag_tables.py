@@ -40,19 +40,35 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.materializer_cli import build_parser as build_shared_parser
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
 
 #: The marker of the shared flag table: a `Param` dataclass with an
 #: `accumulate` field, plus the `build_parser` it feeds.
 PATTERN_MARKERS = ("accumulate: bool", "def build_parser(")
+SHARED_TABLE_MARKERS = (
+    "from blueprint_pipeline.materializer_cli import",
+    "STEPS:",
+    "accumulate=True",
+)
 
 
 def _flag_table_scripts() -> list[Path]:
     return [
         path
         for path in sorted(SCRIPTS.glob("*.py"))
-        if all(marker in path.read_text(encoding="utf-8") for marker in PATTERN_MARKERS)
+        if (
+            all(
+                marker in path.read_text(encoding="utf-8")
+                for marker in PATTERN_MARKERS
+            )
+            or all(
+                marker in path.read_text(encoding="utf-8")
+                for marker in SHARED_TABLE_MARKERS
+            )
+        )
     ]
 
 
@@ -84,6 +100,12 @@ def _append_actions(parser: argparse.ArgumentParser) -> list[tuple[str, argparse
     return found
 
 
+def _parser(module) -> argparse.ArgumentParser:
+    if hasattr(module, "STEPS"):
+        return build_shared_parser(module.STEPS, description=module.__doc__)
+    return module.build_parser()
+
+
 def test_the_flag_table_scripts_are_discoverable() -> None:
     """A scan that matched nothing would make the checks below vacuous."""
 
@@ -97,7 +119,7 @@ def test_the_flag_table_scripts_are_discoverable() -> None:
 def test_every_repeatable_flag_starts_from_something_appendable(path: Path) -> None:
     """`action="append"` mutates its default in place, so it cannot be a tuple."""
 
-    parser = _load(path).build_parser()
+    parser = _parser(_load(path))
     actions = _append_actions(parser)
 
     unusable = {
@@ -122,7 +144,7 @@ def test_every_repeatable_flag_can_actually_be_repeated(path: Path) -> None:
     broke accumulation, so this drives the action the way an operator does.
     """
 
-    parser = _load(path).build_parser()
+    parser = _parser(_load(path))
     actions = _append_actions(parser)
     assert actions, f"{path.name} declares no repeatable flag; the scan is broken"
 

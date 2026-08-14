@@ -364,7 +364,7 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
             )
         else:
             snapshot = Path(
-                snapshot_download(
+                snapshot_download(  # nosec B615 - immutable revision is manifest-bound
                     repo_id=model["repository"],
                     revision=model["revision"],
                     allow_patterns=(
@@ -379,7 +379,7 @@ def _prepare(runtime: Path, source: Path, spec: dict[str, Any]) -> int:
         _verify_runtime_model_snapshot(snapshot, model)
         resolved_snapshots[str(model["repository"])] = snapshot
     sd2 = spec["sd2_checkpoint"]
-    checkpoint = hf_hub_download(
+    checkpoint = hf_hub_download(  # nosec B615 - immutable revision is manifest-bound
         repo_id=sd2["repository"],
         revision=sd2["revision"],
         filename=sd2["path"],

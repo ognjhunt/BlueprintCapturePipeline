@@ -115,6 +115,7 @@ from .wam_score_claim_gate import WAM_SCORE_CLAIM_GATE_SCHEMA_VERSION
 
 
 JOB_REQUEST_SCHEMA_VERSION = ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
+PUBLIC_CLAIM_UPGRADE_ALLOWED_FIELD = "public_claim_upgrade_allowed"
 JOB_VALIDATION_SCHEMA_VERSION = "robot_eval_job_validation.v1"
 JOB_REQUEST_ENRICHMENT_SCHEMA_VERSION = "robot_eval_job_request_enrichment.v1"
 JOB_PLAN_SCHEMA_VERSION = "robot_eval_job_plan.v1"
@@ -2143,8 +2144,8 @@ def _build_scheduler_decision(
             "simulator_execution_proven_by_webapp": bool(
                 artifact_contract.get("simulator_execution_proven_by_webapp") is True
             ),
-            "public_claim_upgrade_allowed": bool(
-                artifact_contract.get("public_claim_upgrade_allowed") is True
+            PUBLIC_CLAIM_UPGRADE_ALLOWED_FIELD: bool(
+                artifact_contract.get(PUBLIC_CLAIM_UPGRADE_ALLOWED_FIELD) is True
             ),
         },
         "blockers": _dedupe(blockers),

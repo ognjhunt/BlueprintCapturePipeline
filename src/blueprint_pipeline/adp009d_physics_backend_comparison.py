@@ -46,6 +46,10 @@ SCENARIO_INSTANCE_DIGEST = (
 APPROVED_CAN_DIGEST = (
     "sha256:61c2a03bef425803d82cc5ef24ced5b2ccb4160923c53bb10c6ad0e3f52532ec"
 )
+APPROVED_CAN_LIVE_ROOT_PRIM = "/World/envs/env_0/approved_can"
+APPROVED_CAN_LIVE_COLLIDER_PRIM = (
+    "/World/envs/env_0/approved_can/colliders/body_collider"
+)
 SAGE_COLLISION_DIGEST = (
     "sha256:b265706c24f6a8ace3ee6743fd138583c4e21d83f61b99a06fd435e6ac2d6b41"
 )
@@ -596,7 +600,7 @@ def build_backend_profile(physics_backend: str) -> dict[str, Any]:
     backend = normalize_physics_backend(physics_backend)
     common: dict[str, Any] = {
         "schema_version": BACKEND_PROFILE_SCHEMA_VERSION,
-        "profile_id": f"adp009d-840313-{backend}-controls-v1",
+        "profile_id": f"adp009d-{backend}-controls-v1",
         "program_id": "arm-decision-proof-v1",
         "physics_backend": backend,
         "backend_selected_at_simulation_construction": True,
@@ -869,12 +873,24 @@ def validate_backend_probe(
     contact = value.get("contact_readback")
     contact_row = dict(contact) if isinstance(contact, Mapping) else {}
     force_vectors = contact_row.get("force_vectors_world_n")
+    expected_partner = (
+        {
+            "partner_prim_paths": [APPROVED_CAN_LIVE_COLLIDER_PRIM],
+            "partner_native_identifier_kind": "newton_shape_label",
+            "partner_native_identifiers": ["body_collider"],
+        }
+        if backend == "newton"
+        else {
+            "partner_prim_paths": [APPROVED_CAN_LIVE_ROOT_PRIM],
+            "partner_native_identifier_kind": "usd_rigid_body_prim",
+            "partner_native_identifiers": [APPROVED_CAN_LIVE_ROOT_PRIM],
+        }
+    )
     if (
         not isinstance(force_vectors, list)
         or not force_vectors
         or any(not _finite_vector(vector) for vector in force_vectors)
-        or not isinstance(contact_row.get("partner_prim_paths"), list)
-        or not contact_row.get("partner_prim_paths")
+        or any(contact_row.get(field) != expected for field, expected in expected_partner.items())
     ):
         blockers.append("adp009d_backend_probe_contact_readback_invalid")
     conversion = value.get("asset_conversion")
@@ -1790,7 +1806,7 @@ def build_comparison_receipt(
         "schema_version": COMPARISON_SCHEMA_VERSION,
         "status": "completed" if evidence_parity else "blocked",
         "program_id": "arm-decision-proof-v1",
-        "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
+        "comparison_id": "sealed-franka-robotiq-controls-physx-vs-newton",
         "physics_backends": list(ALLOWED_PHYSICS_BACKENDS),
         "comparability_bindings": physx_bindings,
         "backend_comparability_bindings": {
@@ -1900,7 +1916,7 @@ def build_comparison_design_contract() -> dict[str, Any]:
         "contract_kind": "provider_free_design",
         "status": "validated_without_provider_launch",
         "program_id": "arm-decision-proof-v1",
-        "comparison_id": "sealed-840313-franka-robotiq-controls-physx-vs-newton",
+        "comparison_id": "sealed-franka-robotiq-controls-physx-vs-newton",
         "default_physics_backend": DEFAULT_PHYSICS_BACKEND,
         "one_backend_per_run": True,
         "mid_run_backend_switch_allowed": False,

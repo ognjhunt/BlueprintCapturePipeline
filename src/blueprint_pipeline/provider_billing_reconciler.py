@@ -96,8 +96,13 @@ def _read_secret(path: Path) -> str:
 
 
 def _default_transport(request: urllib.request.Request, timeout: float) -> bytes:
+    parsed = urllib.parse.urlsplit(request.full_url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ProviderBillingReconciliationError("provider_billing_endpoint_not_public_https")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(  # nosec B310 - public HTTPS endpoint validated above
+            request, timeout=timeout
+        ) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
         raise ProviderBillingReconciliationError("provider_billing_request_failed") from exc

@@ -1,11 +1,29 @@
 {
-  "baseline_date": "2026-07-14",
+  "baseline_date": "2026-08-14",
   "characterization_tests": {
+    "src/blueprint_pipeline/adp009d_control_episode.py": [
+      "tests/test_adp009d_control_episode.py"
+    ],
+    "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py": [
+      "tests/test_adp009d_franka_evaluation_harness.py"
+    ],
+    "src/blueprint_pipeline/adp009d_isaac_runtime.py": [
+      "tests/test_adp009d_native_microcheck_bundle.py"
+    ],
+    "src/blueprint_pipeline/adp009d_physics_backend_comparison.py": [
+      "tests/test_adp009d_physics_backend_comparison.py"
+    ],
+    "src/blueprint_pipeline/adp_content_agents_vast.py": [
+      "tests/test_adp_content_agents_vast.py"
+    ],
     "src/blueprint_pipeline/alpha_readiness.py": [
       "tests/test_alpha_readiness.py"
     ],
     "src/blueprint_pipeline/arena_result_ingest.py": [
       "tests/test_arena_result_ingest.py"
+    ],
+    "src/blueprint_pipeline/articulated_usd_depth_sweep.py": [
+      "tests/test_adp009d_articulated_usd_depth_sweep.py"
     ],
     "src/blueprint_pipeline/capture_orchestrator.py": [
       "tests/test_capture_orchestrator.py"
@@ -99,6 +117,18 @@
     ],
     "src/blueprint_pipeline/post_training_data_package.py": [
       "tests/test_post_training_data_package.py"
+    ],
+    "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": [
+      "tests/test_public_scene_artifixer3d_vast.py"
+    ],
+    "src/blueprint_pipeline/public_scene_replacement_occlusion.py": [
+      "tests/test_adp009d_replacement_occlusion.py"
+    ],
+    "src/blueprint_pipeline/public_scene_suite_admission.py": [
+      "tests/test_public_scene_suite_admission.py"
+    ],
+    "src/blueprint_pipeline/public_scene_suite_materializer.py": [
+      "tests/test_public_scene_suite_materializer.py"
     ],
     "src/blueprint_pipeline/provider_bundle_staging_common.py": [
       "tests/test_provider_bundle_staging_common.py"
@@ -198,16 +228,97 @@
   "forbidden_personal_path_patterns": [
     "(?<![A-Za-z0-9._~:/-])/(?:Users|home)/[A-Za-z0-9._-]+/"
   ],
+  "grandfathered_personal_path_files": [
+    "docs/arm_decision_proof_v1/ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md",
+    "docs/arm_decision_proof_v1/CODEX_OVERNIGHT_HANDOFF_2026-08-08.md",
+    "docs/arm_decision_proof_v1/SECOND_SCENE_E2E_RESULTS.md",
+    "docs/arm_decision_proof_v1/THIRD_SCENE_DUAL_TASK_E2E_RESULTS.md",
+    "docs/arm_decision_proof_v1/immutable_execution/provider_evidence/adp_simpler_bundle_receipt.json",
+    "docs/arm_decision_proof_v1/immutable_execution/provider_evidence/adp_simpler_vast_result.json",
+    "docs/arm_decision_proof_v1/immutable_execution/provider_evidence/vast_final_validation.json",
+    "docs/arm_decision_proof_v1/immutable_execution/provider_evidence/vast_offer_selection_manifest.json",
+    "docs/arm_decision_proof_v1/immutable_execution/provider_evidence/vast_provider_output_download_manifest.json",
+    "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_control_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009a_840313_canned_beverage_match_v2_static_validation_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009a_usd_content_agents_preflight_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_adapter_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009b_aurafusion360_execution_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009b_infusion_adapter_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009b_inpaint360_adapter_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009b_inpaint360_interiorgs_execution_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009b_interiorgs_edit_input_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/adp009c_scannetpp_access_outcome.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_aurafusion360_adapter_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_aurafusion360_adapter_receipt.v2.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_aurafusion360_execution_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_aurafusion360_execution_receipt.v2.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_coverage_conditioned_construction.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_deterministic_simready_candidate.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_gaussian_excision_audit_preregistration.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_gaussian_excision_heldout_abstention.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_gaussian_excision_heldout_abstention.v2.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_inpainting_input_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_inpainting_input_receipt.v2.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_native_articulation_qualification.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_native_door_dynamics_qualification.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_native_probe_spec.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_render_appearance_candidate.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_simready_articulated_candidate.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_suppression_volume_proof.v1.json",
+    "docs/arm_decision_proof_v1/manifests/second_scene_840796_textured_simready.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_bundles.v2.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_content_agents_execution_readiness.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_agent_cad_matrix.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_reference_manifest.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_dual_task_content_agents_codex_advisory_matrix.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_retained_scene_gpu_render_request.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_standard_splat_conversion_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_earthtojake_text_to_cad_cad_agent_output.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_earthtojake_text_to_cad_cad_agent_request.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_gpu_collision_static_qualification.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_inpaint360_adapter_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_pan_chera_multi_agent_cad_cad_agent_output.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_pan_chera_multi_agent_cad_cad_agent_request.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_simready_graph_asset_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_simready_graph_asset_static_qualification.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_earthtojake_text_to_cad_cad_agent_output.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_earthtojake_text_to_cad_cad_agent_request.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_gpu_collision_static_qualification.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_inpaint360_adapter_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_pan_chera_multi_agent_cad_cad_agent_output.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_pan_chera_multi_agent_cad_cad_agent_request.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_simready_graph_asset_receipt.v1.json",
+    "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_simready_graph_asset_static_qualification.v1.json",
+    "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/shared_scene/README.md",
+    "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_a/removal/heldout_audit_v1/adp009b_gaussian_excision_heldout_audit.v1.json",
+    "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_a/removal/ownership_v1/adp009b_gaussian_excision_ownership_receipt.v1.json",
+    "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_b/removal/heldout_audit_v1/adp009b_gaussian_excision_heldout_audit.v1.json",
+    "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_b/removal/ownership_v1/adp009b_gaussian_excision_ownership_receipt.v1.json",
+    "tests/test_gaussian_suppression_render.py",
+    "tests/test_gaussian_suppression_volume.py",
+    "tests/test_host_resident_launch_inputs.py",
+    "tests/test_issue_retained_scene_render_paid_attempt_authority.py",
+    "tests/test_nurec_volume_codec.py",
+    "tests/test_stage_paid_lane_bundle.py"
+  ],
   "grandfathered_module_line_limits": {
+    "src/blueprint_pipeline/adp009d_control_episode.py": 2074,
+    "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py": 2047,
+    "src/blueprint_pipeline/adp009d_isaac_runtime.py": 4636,
+    "src/blueprint_pipeline/adp009d_physics_backend_comparison.py": 2037,
+    "src/blueprint_pipeline/adp_content_agents_vast.py": 2223,
     "src/blueprint_pipeline/alpha_readiness.py": 2163,
     "src/blueprint_pipeline/arena_result_ingest.py": 2383,
+    "src/blueprint_pipeline/articulated_usd_depth_sweep.py": 2786,
     "src/blueprint_pipeline/capture_orchestrator.py": 2002,
     "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": 2687,
     "src/blueprint_pipeline/evaluation_prep_stage.py": 5141,
     "src/blueprint_pipeline/first_gpu_run_packet.py": 5015,
     "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
-    "src/blueprint_pipeline/geometry_stage.py": 2218,
-    "src/blueprint_pipeline/gpu_render_providers.py": 3323,
+    "src/blueprint_pipeline/geometry_stage.py": 2244,
+    "src/blueprint_pipeline/gpu_render_providers.py": 3382,
     "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": 2643,
     "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py": 2020,
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": 3012,
@@ -215,7 +326,7 @@
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
     "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3216,
     "src/blueprint_pipeline/live_pipeline_control_plane.py": 2313,
-    "src/blueprint_pipeline/live_pipeline_intake_service.py": 2473,
+    "src/blueprint_pipeline/live_pipeline_intake_service.py": 2927,
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2198,
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6063,
@@ -227,11 +338,15 @@
     "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 8183,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5872,
-    "src/blueprint_pipeline/paid_resource_allocator.py": 2369,
+    "src/blueprint_pipeline/paid_resource_allocator.py": 6622,
     "src/blueprint_pipeline/policy_autoresearch.py": 2563,
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": 2053,
-    "src/blueprint_pipeline/post_training_data_package.py": 6713,
-    "src/blueprint_pipeline/site_package_orchestrator.py": 5573,
+    "src/blueprint_pipeline/post_training_data_package.py": 6727,
+    "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2241,
+    "src/blueprint_pipeline/public_scene_replacement_occlusion.py": 2004,
+    "src/blueprint_pipeline/public_scene_suite_admission.py": 2066,
+    "src/blueprint_pipeline/public_scene_suite_materializer.py": 2542,
+    "src/blueprint_pipeline/site_package_orchestrator.py": 5604,
     "src/blueprint_pipeline/retrieval_index_stage.py": 2215,
     "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,
@@ -242,13 +357,13 @@
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
     "src/blueprint_pipeline/scene_asset_preflight.py": 2213,
     "src/blueprint_pipeline/scene_wam_policy_episode_packet.py": 3689,
-    "src/blueprint_pipeline/simulation_automation.py": 3799,
+    "src/blueprint_pipeline/simulation_automation.py": 3804,
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py": 4378,
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4648,
-    "src/blueprint_pipeline/site_eval_director.py": 2145,
-    "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 3494,
+    "src/blueprint_pipeline/site_eval_director.py": 2152,
+    "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 4062,
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
-    "src/blueprint_pipeline/vast_provider_adapter.py": 6725,
+    "src/blueprint_pipeline/vast_provider_adapter.py": 9061,
     "src/blueprint_pipeline/wam_derived_observation_harness.py": 3066,
     "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
     "src/blueprint_pipeline/wam_generated_video_review.py": 2412
