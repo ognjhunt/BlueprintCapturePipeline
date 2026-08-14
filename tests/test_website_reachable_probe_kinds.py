@@ -61,7 +61,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # Real debt: executable, not retired, not frozen, and unreachable.
     "new-site-diagnostic-canary": "awaiting_builder",
     "new-site-native-camera": "awaiting_builder",
-    "reconstruction-worker-smoke": "awaiting_builder",
 }
 
 VALID_REASONS = {
