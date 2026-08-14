@@ -37,10 +37,16 @@
         "endpoint": "https://api.openai.com/v1/images/edits",
         "endpoint_identity": "api.openai.com:443",
         "model_snapshot": "gpt-image-2-2026-04-21",
+        "runtime_image_identity": "nvcr.io/nvidia/pytorch@sha256:0981807f1a51a156563e28b59dc2e7a9b5c1c7d85d1169d4965c5fd91fa38bcb",
         "masked_image_edit_supported": true,
         "high_fidelity_input_supported": true,
         "output_formats": [
           "png"
+        ],
+        "supported_output_sizes": [
+          "1024x1024",
+          "1536x1024",
+          "1024x1536"
         ],
         "mask_encoding": "rgba_alpha_zero_edit_region_png",
         "external_disclosure_required": true,
@@ -49,16 +55,24 @@
           "output_format": "png",
           "quality": "high"
         },
-        "pricing_snapshot": {
+        "pricing_binding": {
+          "kind": "immutable_registry_rate",
+          "billing_unit": "per_request",
           "currency": "USD",
           "recorded_on": "2026-08-13",
           "source_url": "https://openai.com/api/pricing/",
-          "image_input_usd_per_million_tokens": 8.0,
-          "cached_image_input_usd_per_million_tokens": 2.0,
-          "image_output_usd_per_million_tokens": 30.0,
-          "text_input_usd_per_million_tokens": 5.0,
-          "cached_text_input_usd_per_million_tokens": 1.25,
-          "conservative_max_usd_per_request": 1.0
+          "pricing_identity": "openai_api_pricing_gpt_image_2_2026_08_13",
+          "usage_required": true,
+          "usd_per_million_tokens": {
+            "input_tokens": 0.0,
+            "output_tokens": 0.0,
+            "total_tokens": 0.0,
+            "input_text_tokens": 5.0,
+            "input_image_tokens": 8.0,
+            "output_text_tokens": 0.0,
+            "output_image_tokens": 30.0
+          },
+          "max_cost_per_request_usd": 0.3
         }
       },
       "provider_terms": {
