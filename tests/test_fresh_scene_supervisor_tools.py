@@ -335,3 +335,74 @@ def test_agents_sdk_invokes_digest_bound_artifixer_candidate_builder(
     assert observation["typed_result"]["provider_mutations_performed"] == 0
     assert observation["typed_result"]["canonical_source_altered"] is False
     assert calls[0]["output_root"] == tmp_path / "generated/artifixer_candidate"
+
+
+def test_agents_sdk_invokes_registry_selected_semantic_teacher_packet_builder(
+    tmp_path: Path,
+) -> None:
+    request = {
+        "schema_version": "fresh_scene_semantic_teacher_image_edit_request.v1",
+        "source_candidate_inputs_receipt_path": "candidate.json",
+        "backend_registry_path": "registry.json",
+        "backend_id": "future_editor",
+        "rights_attestation_path": "rights.json",
+        "selected_task_ids": ["task_a", "task_b"],
+        "prompt_policy": "generic_masked_object_absent_background_completion_v2",
+        "output_format": "png",
+        "retry_count": 0,
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    calls: list[dict] = []
+
+    def materializer(*, request: dict, output_root: Path) -> dict:
+        calls.append({"request": request, "output_root": output_root})
+        result = {
+            "schema_version": "fresh_scene_semantic_teacher_image_edit_packet.v1",
+            "status": (
+                "semantic_teacher_image_edit_packet_prepared_no_upload_no_execution"
+            ),
+            "backend": {
+                "registry_entry": {"backend_id": "future_editor"},
+            },
+            "task_count": 2,
+            "request_count": 16,
+            "provider_upload_performed": False,
+            "provider_inference_performed": False,
+            "provider_mutations_performed": 0,
+            "canonical_source_altered": False,
+            "packet_digest": "",
+        }
+        result["packet_digest"] = canonical_digest(result, digest_field="packet_digest")
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="fresh-scene-tools-test",
+        customer_question="Prepare one fresh scene.",
+        supervisor_output_dir=str(tmp_path),
+        fresh_scene_semantic_teacher_edit_request=request,
+        fresh_scene_semantic_teacher_edit_materializer=materializer,
+    )
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=_authority(registry, request["request_digest"]),
+        )
+    }
+    observation = bindings[
+        "materialize_fresh_scene_semantic_teacher_edit_packet"
+    ].invoke({"request_digest": request["request_digest"]})
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["backend_id"] == "future_editor"
+    assert observation["typed_result"]["task_count"] == 2
+    assert observation["typed_result"]["request_count"] == 16
+    assert observation["typed_result"]["provider_upload_performed"] is False
+    assert observation["typed_result"]["provider_inference_performed"] is False
+    assert observation["typed_result"]["provider_mutations_performed"] == 0
+    assert calls[0]["output_root"] == (
+        tmp_path / "generated/semantic_teacher_edit_packet"
+    )

@@ -138,6 +138,8 @@ class SupervisorContext:
     fresh_scene_segment_cutout_materializer: Any | None = None
     fresh_scene_artifixer_candidate_request: Mapping[str, Any] | None = None
     fresh_scene_artifixer_candidate_materializer: Any | None = None
+    fresh_scene_semantic_teacher_edit_request: Mapping[str, Any] | None = None
+    fresh_scene_semantic_teacher_edit_materializer: Any | None = None
 
 
 class SupervisorCapability(Protocol):

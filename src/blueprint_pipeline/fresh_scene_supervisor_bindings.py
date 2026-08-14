@@ -35,6 +35,9 @@ SEGMENT_CUTOUT_REQUEST_SCHEMA = "fresh_scene_segment_cutout_tool_request.v1"
 ARTIFIXER_CANDIDATE_REQUEST_SCHEMA = (
     "fresh_scene_artifixer_candidate_preparation_request.v1"
 )
+SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA = (
+    "fresh_scene_semantic_teacher_image_edit_request.v1"
+)
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAX_BOUND_INPUT_FILES = 1024
 MAX_BOUND_INPUT_BYTES = 2 * 1024**3
@@ -310,6 +313,57 @@ def _request_input_paths(
                     code=f"fresh_scene_tool_request_input_not_host_resident:{key}",
                 )
             )
+    elif schema == SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA:
+        for key in (
+            "source_candidate_inputs_receipt_path",
+            "backend_registry_path",
+            "rights_attestation_path",
+        ):
+            paths.append(
+                _resident_path(
+                    str(request.get(key) or ""),
+                    roots=roots,
+                    kind="file",
+                    code=f"fresh_scene_tool_request_input_not_host_resident:{key}",
+                )
+            )
+        candidate_path = paths[0]
+        candidate = _read_object(
+            candidate_path, code="fresh_scene_semantic_teacher_candidate_invalid"
+        )
+        tasks = candidate.get("tasks")
+        if not isinstance(tasks, list) or not 1 <= len(tasks) <= 5:
+            raise FreshSceneSupervisorBindingError(
+                "fresh_scene_semantic_teacher_candidate_invalid"
+            )
+        for task in tasks:
+            frames = task.get("frames") if isinstance(task, Mapping) else None
+            if not isinstance(frames, list) or not frames:
+                raise FreshSceneSupervisorBindingError(
+                    "fresh_scene_semantic_teacher_candidate_invalid"
+                )
+            for frame in frames:
+                if not isinstance(frame, Mapping):
+                    raise FreshSceneSupervisorBindingError(
+                        "fresh_scene_semantic_teacher_candidate_invalid"
+                    )
+                for key in ("input_retained_frame", "input_exact_repair_mask"):
+                    record = frame.get(key)
+                    if not isinstance(record, Mapping):
+                        raise FreshSceneSupervisorBindingError(
+                            "fresh_scene_semantic_teacher_candidate_invalid"
+                        )
+                    paths.append(
+                        _resident_path(
+                            str(record.get("path") or ""),
+                            roots=roots,
+                            kind="file",
+                            code=(
+                                "fresh_scene_semantic_teacher_transitive_input_"
+                                "not_host_resident"
+                            ),
+                        )
+                    )
         for value in request.get("object_absent_reference_receipt_paths") or []:
             paths.append(
                 _resident_path(
@@ -429,6 +483,20 @@ def _validate_request(
         ) or not isinstance(references, list):
             raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
         _request_input_paths(request, schema=schema, roots=roots)
+    elif schema == SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA:
+        selected = request.get("selected_task_ids")
+        if (
+            not str(request.get("backend_id") or "").strip()
+            or not str(request.get("prompt_policy") or "").strip()
+            or request.get("output_format") != "png"
+            or request.get("retry_count") != 0
+            or (
+                selected is not None
+                and (not isinstance(selected, list) or not 1 <= len(selected) <= 5)
+            )
+        ):
+            raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+        _request_input_paths(request, schema=schema, roots=roots)
     else:  # pragma: no cover - every accepted schema is handled above
         raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
     return request
@@ -443,6 +511,7 @@ def materialize_fresh_scene_supervisor_bindings(
     removal_freeze_request_path: str | Path | None = None,
     segment_cutout_request_path: str | Path | None = None,
     artifixer_candidate_request_path: str | Path | None = None,
+    semantic_teacher_edit_request_path: str | Path | None = None,
     roots: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     """Seal the exact non-spend tool inputs available on this host."""
@@ -492,6 +561,12 @@ def materialize_fresh_scene_supervisor_bindings(
             "materialize_fresh_scene_artifixer_candidate",
             ARTIFIXER_CANDIDATE_REQUEST_SCHEMA,
             artifixer_candidate_request_path,
+        ),
+        (
+            "fresh_scene_semantic_teacher_edit_request",
+            "materialize_fresh_scene_semantic_teacher_edit_packet",
+            SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA,
+            semantic_teacher_edit_request_path,
         ),
     ):
         if raw_path is None:
@@ -596,6 +671,9 @@ def compile_fresh_scene_supervisor_bindings(
         "fresh_scene_removal_freeze_request": REMOVAL_FREEZE_REQUEST_SCHEMA,
         "fresh_scene_segment_cutout_request": SEGMENT_CUTOUT_REQUEST_SCHEMA,
         "fresh_scene_artifixer_candidate_request": ARTIFIXER_CANDIDATE_REQUEST_SCHEMA,
+        "fresh_scene_semantic_teacher_edit_request": (
+            SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA
+        ),
     }
     records = manifest.get("tool_requests")
     if not isinstance(records, Mapping) or set(records) - set(schema_by_field):
@@ -607,6 +685,9 @@ def compile_fresh_scene_supervisor_bindings(
         "fresh_scene_segment_cutout_request": "materialize_fresh_scene_segment_cutout",
         "fresh_scene_artifixer_candidate_request": (
             "materialize_fresh_scene_artifixer_candidate"
+        ),
+        "fresh_scene_semantic_teacher_edit_request": (
+            "materialize_fresh_scene_semantic_teacher_edit_packet"
         ),
     }
     expected_tools = {"inspect_fresh_scene_preparation"}
@@ -661,6 +742,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build.add_argument("--removal-freeze-request")
     build.add_argument("--segment-cutout-request")
     build.add_argument("--artifixer-candidate-request")
+    build.add_argument("--semantic-teacher-edit-request")
     build.add_argument("--output", required=True)
     run = commands.add_parser("run")
     run.add_argument("--binding-manifest", required=True)
@@ -678,6 +760,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             removal_freeze_request_path=args.removal_freeze_request,
             segment_cutout_request_path=args.segment_cutout_request,
             artifixer_candidate_request_path=args.artifixer_candidate_request,
+            semantic_teacher_edit_request_path=args.semantic_teacher_edit_request,
             output_path=args.output,
         )
     else:
