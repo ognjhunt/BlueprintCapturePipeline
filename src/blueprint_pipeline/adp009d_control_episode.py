@@ -65,18 +65,28 @@ except ModuleNotFoundError:  # repository package
         persist_multicamera_observation,
     )
 try:  # flat provider-bundle layout
-    from adp009d_contact_envelope import canonical_contact_envelope
+    from adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        canonical_contact_envelope,
+        validate_contact_envelope,
+    )
 except ModuleNotFoundError:  # repository package
-    from .adp009d_contact_envelope import canonical_contact_envelope
+    from .adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        canonical_contact_envelope,
+        validate_contact_envelope,
+    )
 try:  # flat provider-bundle layout
     from adp009d_physics_backend_comparison import (
         build_backend_contact_configuration,
         normalize_physics_backend,
+        validate_backend_contact_configuration,
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_physics_backend_comparison import (
         build_backend_contact_configuration,
         normalize_physics_backend,
+        validate_backend_contact_configuration,
     )
 
 
