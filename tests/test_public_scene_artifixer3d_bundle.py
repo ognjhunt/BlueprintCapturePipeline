@@ -138,6 +138,17 @@ def test_bundle_cli_forwards_each_optional_parameter_once(
     )
 
 
+def test_bundle_cli_does_not_advertise_an_unsupported_generated_at_parameter(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import blueprint_pipeline.public_scene_artifixer3d_bundle as subject
+
+    with pytest.raises(SystemExit, match="0"):
+        subject.main(["--help"])
+
+    assert "--generated-at" not in capsys.readouterr().out
+
+
 def _runner_module():
     path = Path(__file__).resolve().parents[1] / "scripts/public_scene_artifixer3d_runner.py"
     spec = importlib.util.spec_from_file_location("test_public_scene_artifixer3d_runner", path)

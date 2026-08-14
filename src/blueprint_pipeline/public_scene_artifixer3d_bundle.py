@@ -1277,7 +1277,6 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Repeatable. Instances that may already be running.",
     )
-    parser.add_argument("--generated-at", help="Defaults to now; set for a reproducible receipt.")
     args = parser.parse_args(argv)
     optional = {
         "artifixer3d_steps": args.artifixer3d_steps,
@@ -1287,7 +1286,6 @@ def main(argv: list[str] | None = None) -> int:
         "semantic_editor_only": args.semantic_editor_only,
         "reused_checkpoint_provider_output_zip_path": args.reused_checkpoint_provider_output_zip,
         "reused_checkpoint_source_provider_zero_path": args.reused_checkpoint_source_provider_zero,
-        "generated_at": args.generated_at,
     }
     try:
         receipt = build_artifixer3d_bundle(
