@@ -219,3 +219,49 @@ def test_the_blocked_phase_reason_is_the_cause_the_run_actually_hit() -> None:
     # conservative reading: it claims nothing about the host's provisioning.
     assert vpa._lock_blocked_phase_reason({}) == "vast_paid_launch_lock_busy"
     assert vpa._lock_blocked_phase_reason({"blockers": []}) == "vast_paid_launch_lock_busy"
+
+
+def test_the_deploy_repairs_a_slot_the_service_account_cannot_use(tmp_path: Path) -> None:
+    """The deploy is the only root-run repo code that touches these every time.
+
+    The guard runs as `blueprint` and can detect a mis-owned slot but never
+    repair one. Leaving the repair to an operator's `chown` is the remembered
+    ritual a rebuilt host does not perform -- and with the guard blocking on an
+    unusable slot, an unrepaired host would refuse to start intake at all.
+    """
+
+    base = tmp_path / "locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    slots = vpa.vast_launch_lock_paths(base)
+    for slot in slots:
+        slot.touch()
+        slot.chmod(0o644)  # the mode a root-run tool leaves under the default umask
+
+    chowned: list[tuple[str, int, int]] = []
+
+    def fake_chown(path, uid, gid):  # type: ignore[no-untyped-def]
+        chowned.append((Path(path).name, uid, gid))
+
+    receipt = deploy._repair_paid_launch_lock_slots(
+        [str(base)], owner_uid=4242, owner_gid=4242, chown=fake_chown
+    )
+
+    assert [name for name, _, _ in chowned] == [slot.name for slot in slots]
+    assert all((uid, gid) == (4242, 4242) for _, uid, gid in chowned)
+    for slot in slots:
+        assert slot.stat().st_mode & 0o777 == 0o600, oct(slot.stat().st_mode)
+    assert receipt["repaired_slots"] == [str(slot) for slot in slots]
+
+
+def test_the_deploy_repair_skips_slots_that_do_not_exist(tmp_path: Path) -> None:
+    """An absent slot is created correctly by the guard as the service account."""
+
+    base = tmp_path / "locks" / "vast_paid_launch.lock"
+    base.parent.mkdir(parents=True, exist_ok=True)
+
+    receipt = deploy._repair_paid_launch_lock_slots(
+        [str(base)], owner_uid=4242, owner_gid=4242, chown=lambda *a: None
+    )
+
+    assert receipt["repaired_slots"] == []
+    assert not base.exists()

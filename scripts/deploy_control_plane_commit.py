@@ -93,6 +93,58 @@ def _expanded_slots(lock_paths: Sequence[str]) -> list[Path]:
     return expanded
 
 
+DEFAULT_SERVICE_ACCOUNT = "blueprint"
+
+
+def _repair_paid_launch_lock_slots(
+    lock_paths: Sequence[str],
+    *,
+    owner_uid: int,
+    owner_gid: int,
+    chown: Any = os.chown,
+) -> dict[str, Any]:
+    """Give every existing lock slot back to the account that launches.
+
+    The launch lock is an N-slot semaphore, and a slot only counts if the
+    service account can open it. A paid-lane tool run once as root left
+    `slot1`/`slot2` owned `root:root` at 0644 on the live control plane, so the
+    authorized N=3 was really N=1 -- invisibly, because the lane holding slot 0
+    kept succeeding.
+
+    The runtime guard detects this on every service start but runs as the
+    service account and can never repair it. This is the only root-run repo
+    code that touches these files on every deploy, so the repair belongs here
+    rather than in an operator's remembered `chown`, which a rebuilt host never
+    performs. With the guard blocking on an unusable slot, an unrepaired host
+    refuses to start intake at all.
+
+    Absent slots are left alone: the guard creates those as the service account
+    at 0600, and `open("a+")` never changes an existing file's owner, so a slot
+    created correctly once survives every later root-run tool.
+    """
+
+    repaired: list[str] = []
+    for path in _expanded_slots(lock_paths):
+        if not path.is_file():
+            continue
+        chown(path, owner_uid, owner_gid)
+        path.chmod(0o600)
+        repaired.append(str(path))
+    return {"repaired_slots": repaired, "owner_uid": owner_uid, "owner_gid": owner_gid}
+
+
+def _service_account_ids(account: str) -> tuple[int, int] | None:
+    """Resolve the service account, or report that this host has none."""
+
+    try:
+        import pwd
+
+        entry = pwd.getpwnam(account)
+    except (ImportError, KeyError):
+        return None
+    return entry.pw_uid, entry.pw_gid
+
+
 @contextlib.contextmanager
 def _holding_paid_launch_locks(lock_paths: Sequence[str]):
     """Hold the provider's own launch lock for the whole deploy.
@@ -420,6 +472,22 @@ def deploy_control_plane_commit(
             source_repo=source,
             source_commit=commit,
         )
+        # Before the restart, not after: the runtime guard blocks a unit from
+        # starting on a lock slot the service account cannot use, so a host
+        # carrying a root-created slot would fail its own restart here.
+        service_ids = _service_account_ids(DEFAULT_SERVICE_ACCOUNT)
+        if service_ids is None:
+            lock_repair: dict[str, Any] = {
+                "status": "not_applicable_no_service_account",
+                "account": DEFAULT_SERVICE_ACCOUNT,
+                "repaired_slots": [],
+            }
+        else:
+            lock_repair = _repair_paid_launch_lock_slots(
+                paid_launch_locks, owner_uid=service_ids[0], owner_gid=service_ids[1]
+            )
+            lock_repair["status"] = "repaired"
+            lock_repair["account"] = DEFAULT_SERVICE_ACCOUNT
         restarted = _restart_units(_required_restart_units(restart_units))
         runtime = _verify_intake_runtime(
             intake_version_url, expected_commit=commit
@@ -446,6 +514,7 @@ def deploy_control_plane_commit(
         "paid_launch_locks_held": [
             str(path) for path in _expanded_slots(paid_launch_locks)
         ],
+        "paid_launch_lock_repair": lock_repair,
         "provider_mutation_performed": False,
         "raw_secret_values_recorded": False,
         "claim_boundary": (
