@@ -102,6 +102,15 @@ _VAST_MUTATION_ENV = (
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
 
+def _execution_purpose(freeze: Mapping[str, Any]) -> str:
+    sweep = freeze.get("segment_contribution_sweep")
+    if isinstance(sweep, Mapping) and sweep.get("kind") == (
+        "repair_supported_full_view_segment_contribution_sweep.v1"
+    ):
+        return "released_code_segment_contribution_sweep"
+    return "released_code_gaussian_ownership_audit"
+
+
 def gaussian_excision_lane_identity(freeze: Mapping[str, Any]) -> dict[str, str]:
     """Derive collision-free provider identities from frozen task evidence."""
 
@@ -188,7 +197,11 @@ def validate_gaussian_excision_paid_attempt_authority(
         errors.append("authorized_by_invalid")
     if not isinstance(authorized_on, str) or not authorized_on.strip():
         errors.append("authorized_on_invalid")
-    if value.get("purpose") != "released_code_gaussian_ownership_audit":
+    expected_purpose = str(
+        prepared_bundle.get("execution_purpose")
+        or "released_code_gaussian_ownership_audit"
+    )
+    if value.get("purpose") != expected_purpose:
         errors.append("purpose_invalid")
     if value.get("provider") != "vast":
         errors.append("provider_invalid")
@@ -988,7 +1001,7 @@ def _validate_authority(
     )
     if (
         authority.get("schema_version") != AUTHORITY_SCHEMA
-        or authority.get("purpose") != "released_code_gaussian_ownership_audit"
+        or authority.get("purpose") != _execution_purpose(freeze)
         or authority.get("publisher_scene_id")
         != str((freeze.get("scene") or {}).get("publisher_scene_id"))
         or authority.get("target_instance_id")
@@ -1104,6 +1117,7 @@ def build_gaussian_excision_vast_bundle(
         "released_code": released_source,
         "source_archive_sha256": _sha256(source_archive),
         "freeze_digest": freeze["freeze_digest"],
+        "execution_purpose": authority["purpose"],
         "execution_authority_digest": authority["authorization_digest"],
         "hard_cap_usd": authority["hard_attempt_spend_cap_usd"],
         "hard_ttl_seconds": authority["maximum_single_resource_ttl_seconds"],

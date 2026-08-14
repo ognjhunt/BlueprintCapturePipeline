@@ -176,10 +176,13 @@ def _validated_backend(packet: Mapping[str, Any]) -> dict[str, Any]:
         code="aura_exact_residual_backend_execution_authority_invalid",
     )
     terms = authority.get("terms")
+    authority_schema = authority.get("schema_version")
+    publisher_scene_id = str(authority.get("publisher_scene_id") or "")
     if (
-        authority.get("schema_version") != "third_scene_dual_task_execution_authority.v1"
+        not isinstance(authority_schema, str)
+        or not authority_schema.endswith("_execution_authority.v1")
         or authority.get("program_id") != "arm-decision-proof-v1"
-        or authority.get("publisher_scene_id") != "840920"
+        or not publisher_scene_id
         or authority.get("authority_kind") != "explicit_user_direction_in_current_goal"
         or not isinstance(authority.get("authorized_by"), str)
         or not authority["authorized_by"].strip()
@@ -211,9 +214,12 @@ def _validated_backend(packet: Mapping[str, Any]) -> dict[str, Any]:
         attestation_path,
         code="aura_exact_residual_backend_noncommercial_attestation_invalid",
     )
+    attestation_schema = attestation.get("schema_version")
     if (
-        attestation.get("schema_version")
-        != "third_scene_released_code_noncommercial_use_attestation.v1"
+        not isinstance(attestation_schema, str)
+        or not attestation_schema.endswith(
+            "_released_code_noncommercial_use_attestation.v1"
+        )
         or attestation.get("reviewer_role") != "authorized_rights_holder"
         or attestation.get("authorization_kind") != authority["authority_kind"]
         or attestation.get("authorized_by") != authority["authorized_by"]
@@ -243,6 +249,7 @@ def _validated_backend(packet: Mapping[str, Any]) -> dict[str, Any]:
         "execution_authority": {
             **_record(authority_path),
             "authority_digest": authority["authority_digest"],
+            "publisher_scene_id": publisher_scene_id,
         },
         "noncommercial_research_evaluation_attestation": {
             **_record(attestation_path),

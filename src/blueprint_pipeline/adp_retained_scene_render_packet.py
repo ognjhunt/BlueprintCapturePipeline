@@ -212,6 +212,14 @@ def build_retained_scene_gpu_render_request(value: Mapping[str, Any]) -> dict[st
         errors.append("retained_scene_render_request_not_frozen")
     if request.get("learned_policy_outcomes_accessed") is not False:
         errors.append("retained_scene_render_request_policy_outcome_leakage")
+    render_scope = request.get("render_scope", "shared_union")
+    if render_scope not in {
+        "shared_union",
+        "task_isolated",
+        "shared_union_and_task_isolated",
+    }:
+        errors.append("retained_scene_render_request_scope_invalid")
+    request["render_scope"] = render_scope
     if any(
         key in request for key in ("status", "render_qualified", "provider_mutations_performed")
     ):
@@ -286,7 +294,7 @@ def _validate_candidate_set(
     Path,
     Path,
     Path,
-    dict[str, tuple[Path, dict[str, Any]]],
+    dict[str, dict[str, Any]],
 ]:
     candidate = _read(path, code="retained_scene_render_candidate_set_unreadable")
     if (
@@ -376,7 +384,7 @@ def _validate_candidate_set(
     tasks = candidate.get("task_candidates")
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_REPLACEMENT_OBJECTS:
         raise RetainedSceneRenderPacketError(["retained_scene_render_task_count_invalid"])
-    task_paths: dict[str, tuple[Path, dict[str, Any]]] = {}
+    task_paths: dict[str, dict[str, Any]] = {}
     for row in tasks:
         if not isinstance(row, Mapping):
             raise RetainedSceneRenderPacketError(["retained_scene_render_task_row_invalid"])
@@ -394,7 +402,81 @@ def _validate_candidate_set(
             or freeze.get("task_freeze_digest") != row.get("task_freeze_digest")
         ):
             raise RetainedSceneRenderPacketError(["retained_scene_render_task_freeze_join_invalid"])
-        task_paths[task_id] = (freeze_path, freeze)
+        task_binding: dict[str, Any] = {
+            "freeze_path": freeze_path,
+            "freeze": freeze,
+        }
+        if candidate.get("schema_version") == "adp009d_segment_contribution_cutout_set.v1":
+            task_outputs = row.get("outputs")
+            task_counts = row.get("counts")
+            if not isinstance(task_outputs, Mapping) or not isinstance(task_counts, Mapping):
+                raise RetainedSceneRenderPacketError(
+                    ["retained_scene_render_task_isolated_outputs_missing"]
+                )
+            task_deleted = _relative_record(
+                path.parent,
+                task_outputs.get("deleted_source_gaussians"),
+                code="retained_scene_render_task_deleted_splat_invalid",
+            )
+            task_retained = _relative_record(
+                path.parent,
+                task_outputs.get("retained_scene_gaussians"),
+                code="retained_scene_render_task_retained_splat_invalid",
+            )
+            task_indices_path = _relative_record(
+                path.parent,
+                task_outputs.get("deleted_source_indices"),
+                code="retained_scene_render_task_deleted_indices_invalid",
+            )
+            try:
+                task_indices = np.asarray(
+                    np.load(task_indices_path, allow_pickle=False), dtype=np.int64
+                )
+                if (
+                    task_indices.ndim != 1
+                    or task_indices.size == 0
+                    or np.any(task_indices < 0)
+                    or np.any(task_indices >= source_count)
+                    or not np.array_equal(np.unique(task_indices), task_indices)
+                ):
+                    raise ValueError("task deleted indices are not a sorted source subset")
+                task_retained_indices = np.setdiff1d(
+                    expected_indices, task_indices, assume_unique=True
+                )
+                task_deleted_count = read_standard_3dgs_ply(task_deleted).count
+                task_retained_count = read_standard_3dgs_ply(task_retained).count
+                task_deleted_exact = verify_standard_3dgs_ply_subset_exact(
+                    source, task_deleted, task_indices
+                ).get("retained_rows_byte_exact")
+                task_retained_exact = verify_standard_3dgs_ply_subset_exact(
+                    source, task_retained, task_retained_indices
+                ).get("retained_rows_byte_exact")
+            except (OSError, ValueError) as exc:
+                raise RetainedSceneRenderPacketError(
+                    ["retained_scene_render_task_isolated_subset_unreadable"]
+                ) from exc
+            if (
+                task_deleted_exact is not True
+                or task_retained_exact is not True
+                or task_counts.get("source") != source_count
+                or task_counts.get("deleted_total") != task_deleted_count
+                or task_counts.get("retained_total") != task_retained_count
+                or task_deleted_count != int(task_indices.size)
+                or task_deleted_count <= 0
+                or task_deleted_count + task_retained_count != source_count
+            ):
+                raise RetainedSceneRenderPacketError(
+                    ["retained_scene_render_task_isolated_subset_invalid"]
+                )
+            task_binding.update(
+                {
+                    "deleted": task_deleted,
+                    "retained": task_retained,
+                    "deleted_count": task_deleted_count,
+                    "retained_count": task_retained_count,
+                }
+            )
+        task_paths[task_id] = task_binding
     return candidate, source, deleted, retained, task_paths
 
 
@@ -563,17 +645,47 @@ def build_retained_scene_gpu_render_bundle(
     task_bindings: dict[str, dict[str, Any]] = {}
     freezes = input_root / "task_freezes"
     freezes.mkdir()
-    for task_id, (freeze_path, freeze) in task_paths.items():
+    render_scope = str(request["render_scope"])
+    isolated_requested = render_scope in {
+        "task_isolated",
+        "shared_union_and_task_isolated",
+    }
+    for task_id, task_binding in task_paths.items():
+        freeze_path = task_binding["freeze_path"]
+        freeze = task_binding["freeze"]
         copied_freeze = freezes / f"{task_id}.json"
         _link_or_copy(freeze_path, copied_freeze)
         removal = freeze["removal_plan"]
-        task_bindings[task_id] = {
+        bound: dict[str, Any] = {
             "task_freeze": _record(copied_freeze, root=runtime),
             "task_freeze_digest": freeze["task_freeze_digest"],
             "removal_id": removal["removal_id"],
             "mask_set_id": removal["mask_set_id"],
             "replacement_asset_id": removal["replacement_asset_id"],
         }
+        if isolated_requested and "deleted" in task_binding:
+            task_layer_root = input_root / "task_layers" / task_id
+            task_deleted = task_layer_root / "deleted_source_layer.ply"
+            task_retained = task_layer_root / "retained_scene.ply"
+            _link_or_copy(task_binding["deleted"], task_deleted)
+            _link_or_copy(task_binding["retained"], task_retained)
+            bound.update(
+                {
+                    "task_deleted_source_layer": {
+                        **_record(task_deleted, root=runtime),
+                        "gaussian_count": task_binding["deleted_count"],
+                    },
+                    "task_retained_scene": {
+                        **_record(task_retained, root=runtime),
+                        "gaussian_count": task_binding["retained_count"],
+                    },
+                }
+            )
+        elif isolated_requested:
+            raise RetainedSceneRenderPacketError(
+                ["retained_scene_render_task_isolated_layers_unavailable"]
+            )
+        task_bindings[task_id] = bound
     lanes: list[dict[str, Any]] = []
     for lane in sorted(request["task_lanes"], key=lambda row: str(row["task_id"])):
         task_id = str(lane["task_id"])
@@ -588,6 +700,23 @@ def build_retained_scene_gpu_render_bundle(
         lane_root.mkdir(parents=True)
         copied = lane_root / "cameras.v1.json"
         _link_or_copy(camera_path, copied)
+        variants: list[dict[str, str]] = []
+        if render_scope in {"shared_union", "shared_union_and_task_isolated"}:
+            variants.extend(
+                [
+                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"},
+                    {"layer": "shared_deleted_source_layer", "background_rgb": "#ffffff"},
+                    {"layer": "shared_retained_scene", "background_rgb": "#000000"},
+                ]
+            )
+        if isolated_requested:
+            variants.extend(
+                [
+                    {"layer": "task_deleted_source_layer", "background_rgb": "#000000"},
+                    {"layer": "task_deleted_source_layer", "background_rgb": "#ffffff"},
+                    {"layer": "task_retained_scene", "background_rgb": "#000000"},
+                ]
+            )
         lanes.append(
             {
                 "task_id": task_id,
@@ -595,11 +724,7 @@ def build_retained_scene_gpu_render_bundle(
                 "camera_contract": _record(copied, root=runtime),
                 "camera_count": len(cameras),
                 "dimensions": {"width": width, "height": height},
-                "render_variants": [
-                    {"layer": "shared_deleted_source_layer", "background_rgb": "#000000"},
-                    {"layer": "shared_deleted_source_layer", "background_rgb": "#ffffff"},
-                    {"layer": "shared_retained_scene", "background_rgb": "#000000"},
-                ],
+                "render_variants": variants,
             }
         )
     renderer = runtime / "renderer"
@@ -672,7 +797,10 @@ def build_retained_scene_gpu_render_bundle(
             "gaussian_count": read_standard_3dgs_ply(deleted_ply).count,
             "source_layer_role": "shared_deleted_source_union",
         },
-        "shared_retained_scene": _record(retained_copy, root=runtime),
+        "shared_retained_scene": {
+            **_record(retained_copy, root=runtime),
+            "gaussian_count": read_standard_3dgs_ply(retained_ply).count,
+        },
         "shared_retained_gaussian_count": read_standard_3dgs_ply(retained_ply).count,
         "lanes": lanes,
         "renderer_identity": renderer_identity,
@@ -681,6 +809,7 @@ def build_retained_scene_gpu_render_bundle(
         "provider_training_authorized": False,
         "publication_authorized": False,
         "request_digest": request["request_digest"],
+        "render_scope": render_scope,
     }
     render_request["runtime_request_digest"] = canonical_digest(
         render_request, digest_field="runtime_request_digest"
@@ -727,6 +856,8 @@ def build_retained_scene_gpu_render_bundle(
         "source_pair_per_task": True,
         "deleted_source_layer_pair_per_task": True,
         "retained_frame_per_task": True,
+        "render_scope": render_scope,
+        "task_isolated_source_pair_per_task": isolated_requested,
         "renderer_identity": renderer_identity,
         "provider_network_dependency_install_required": False,
         "raw_interiorgs_downloaded_bytes_included": False,

@@ -155,6 +155,40 @@ def _input_rows(preflight: Mapping[str, Any]) -> dict[tuple[str, str], dict[str,
     return result
 
 
+def _publisher_scene_id(preflight: Mapping[str, Any]) -> str:
+    """Read the scene identity from the digest-bound execution authority.
+
+    The compositor is shared by the 1--5 replacement harness, so a particular
+    public-scene identifier must never be embedded in its implementation.
+    """
+
+    backend = preflight.get("backend_admission")
+    authority = backend.get("execution_authority") if isinstance(backend, Mapping) else None
+    if not isinstance(authority, Mapping):
+        raise AuraExactResidualCompositeError(
+            ["aura_exact_residual_scene_identity_missing"]
+        )
+    authority_path = _bound_absolute(
+        authority, code="aura_exact_residual_scene_identity_invalid"
+    )
+    authority_value = _read(
+        authority_path, code="aura_exact_residual_scene_identity_invalid"
+    )
+    scene_id = str(authority_value.get("publisher_scene_id") or "")
+    embedded_scene_id = str(authority.get("publisher_scene_id") or "")
+    if (
+        not scene_id
+        or authority_value.get("authority_digest")
+        != canonical_digest(authority_value, digest_field="authority_digest")
+        or authority.get("authority_digest") != authority_value["authority_digest"]
+        or (embedded_scene_id and embedded_scene_id != scene_id)
+    ):
+        raise AuraExactResidualCompositeError(
+            ["aura_exact_residual_scene_identity_invalid"]
+        )
+    return scene_id
+
+
 def _raw_result_rows(
     *, preflight: Mapping[str, Any], raw_result_path: Path
 ) -> tuple[
@@ -383,6 +417,7 @@ def materialize_aura_exact_residual_composite(
     preflight_file = _file(preflight_path, code="aura_exact_residual_preflight_missing")
     raw_result_file = _file(raw_result_path, code="aura_exact_residual_raw_result_missing")
     preflight = _preflight(preflight_file)
+    publisher_scene_id = _publisher_scene_id(preflight)
     inputs = _input_rows(preflight)
     raw_rows, provider_closeout, multiview_measurement = _raw_result_rows(
         preflight=preflight, raw_result_path=raw_result_file
@@ -471,7 +506,10 @@ def materialize_aura_exact_residual_composite(
                 "dimensions": {"width": renders[0]["width"], "height": renders[0]["height"]},
                 "background_rgb": "preserved_from_retained_scene",
             },
-            "scene": {"publisher_scene_id": "840920", "target_instance_id": task_id},
+            "scene": {
+                "publisher_scene_id": publisher_scene_id,
+                "target_instance_id": task_id,
+            },
             "preflight_digest": preflight["preflight_digest"],
             "raw_aura_result": _record(raw_result_file),
             "renders": sorted(renders, key=lambda row: row["camera_id"]),

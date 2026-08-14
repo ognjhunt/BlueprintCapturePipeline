@@ -40,6 +40,10 @@ SHARED_DIGEST_FIELDS_BY_SCHEMA = {
     "adp_content_agents_codex_advisory_review.v1": "receipt_digest",
     "adp_content_agents_codex_advisory_matrix.v1": "receipt_digest",
     "adp_content_agents_execution_readiness.v1": "receipt_digest",
+    "adp009b_direct_evidence_expansion_set.v1": "receipt_digest",
+    "public_scene_aura_exact_residual_composite.v1": "composite_digest",
+    "public_scene_aura_exact_residual_visual_abstention.v1": "receipt_digest",
+    "public_scene_aura_exact_residual_visual_abstention_replay.v1": "replay_digest",
 }
 
 

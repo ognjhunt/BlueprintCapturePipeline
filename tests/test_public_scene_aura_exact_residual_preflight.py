@@ -22,7 +22,9 @@ def _write(path: Path, value: dict[str, object]) -> None:
     path.write_text(canonical_json(value) + "\n", encoding="utf-8")
 
 
-def _admit_exact_aura_backend(request_path: Path) -> None:
+def _admit_exact_aura_backend(
+    request_path: Path, *, publisher_scene_id: str = "840920"
+) -> None:
     request = json.loads(request_path.read_text(encoding="utf-8"))
     backend_path = Path(request["backend_admission_path"])
     backend = json.loads(backend_path.read_text(encoding="utf-8"))
@@ -58,7 +60,7 @@ def _admit_exact_aura_backend(request_path: Path) -> None:
     authority: dict[str, object] = {
         "schema_version": "third_scene_dual_task_execution_authority.v1",
         "program_id": "arm-decision-proof-v1",
-        "publisher_scene_id": "840920",
+        "publisher_scene_id": publisher_scene_id,
         "authority_kind": "explicit_user_direction_in_current_goal",
         "authorized_by": "fixture_user",
         "terms": {
@@ -147,9 +149,13 @@ def _bind_big_lama_prerequisite(tmp_path: Path, request_path: Path) -> None:
     _write(backend_path, backend)
 
 
-def _packet(tmp_path: Path, *, count: int = 2) -> Path:
+def _packet(
+    tmp_path: Path, *, count: int = 2, publisher_scene_id: str = "840920"
+) -> Path:
     request_path, _candidate = _packet_inputs(tmp_path, count=count)
-    _admit_exact_aura_backend(request_path)
+    _admit_exact_aura_backend(
+        request_path, publisher_scene_id=publisher_scene_id
+    )
     _bind_big_lama_prerequisite(tmp_path, request_path)
     materialize_residual_inpainting_input_packet(
         request_path=request_path, output_root=tmp_path / "packet"
@@ -166,6 +172,9 @@ def test_prepares_one_shared_direct_aura_plan_for_five_replacements(tmp_path: Pa
 
     assert receipt["schema_version"] == SCHEMA_VERSION
     assert receipt["status"] == "prepared_no_upload_no_execution"
+    assert receipt["backend_admission"]["execution_authority"][
+        "publisher_scene_id"
+    ] == "840920"
     assert receipt["replacement_object_count"] == 5
     assert len(receipt["lanes"]) == 5
     assert receipt["aura_workflow"]["released_entrypoints"] == [

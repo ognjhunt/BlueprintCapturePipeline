@@ -128,6 +128,12 @@ def validate_retained_scene_render_bundle(
         or not str(
             (value.get("execution_authority") or {}).get("authority_digest") or ""
         ).startswith("sha256:")
+        or value.get("render_scope")
+        not in {
+            "shared_union",
+            "task_isolated",
+            "shared_union_and_task_isolated",
+        }
     ):
         errors.append("bundle_contract_invalid")
     lanes = value.get("task_lanes")
@@ -144,6 +150,21 @@ def validate_retained_scene_render_bundle(
         for row in lanes
     ):
         errors.append("task_lane_binding_invalid")
+    else:
+        isolated_expected = value.get("render_scope") in {
+            "task_isolated",
+            "shared_union_and_task_isolated",
+        }
+        if value.get("task_isolated_source_pair_per_task") is not isolated_expected:
+            errors.append("task_isolated_scope_binding_invalid")
+        elif isolated_expected and any(
+            not isinstance(row.get("task_deleted_source_layer"), Mapping)
+            or not isinstance(row.get("task_retained_scene"), Mapping)
+            or int(row["task_deleted_source_layer"].get("gaussian_count") or 0) < 1
+            or int(row["task_retained_scene"].get("gaussian_count") or 0) < 1
+            for row in lanes
+        ):
+            errors.append("task_isolated_lane_binding_invalid")
     if provider_bundle_rehearsal_blockers(
         value.get("exact_bundle_entrypoint_rehearsal"),
         bundle_sha256=str(value.get("bundle_sha256") or ""),
@@ -317,7 +338,13 @@ def _render_manifest_path(
         not task_id
         or "/" in task_id
         or "\\" in task_id
-        or layer not in {"shared_deleted_source_layer", "shared_retained_scene"}
+        or layer
+        not in {
+            "shared_deleted_source_layer",
+            "shared_retained_scene",
+            "task_deleted_source_layer",
+            "task_retained_scene",
+        }
         or background_rgb not in {"#000000", "#ffffff"}
     ):
         raise ValueError("retained_scene_render_manifest_reference_invalid")
@@ -379,11 +406,12 @@ def materialize_retained_scene_render_output_relocation(
         )
         manifest = _read(manifest_path)
         digest = manifest.get("sealed_camera_render_manifest_digest")
-        expected_role = (
-            "shared_deleted_source_union"
-            if layer == "shared_deleted_source_layer"
-            else "shared_retained_scene"
-        )
+        expected_role = {
+            "shared_deleted_source_layer": "shared_deleted_source_union",
+            "shared_retained_scene": "shared_retained_scene",
+            "task_deleted_source_layer": "task_deleted_source_layer",
+            "task_retained_scene": "task_retained_scene",
+        }[layer]
         if (
             manifest.get("schema_version") != "sealed_camera_render_manifest.v1"
             or manifest.get("status") != "rendered_exact_cameras"

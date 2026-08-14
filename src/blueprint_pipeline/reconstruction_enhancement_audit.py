@@ -14,10 +14,57 @@ _METHODS: dict[str, dict[str, Any]] = {
         "display_name": "NVIDIA ArtiFixer",
         "source_repository": "https://github.com/nv-tlabs/artifixer",
         "source_commit": "a392c4dfe17459ef9952407accdb9fcdcdddba98",
+        "source_tree": "f9283bfe5e3a6cc160fd418f4e66412746a19a07",
         "source_license": "Apache-2.0",
+        "source_license_sha256": (
+            "sha256:b3b341839dbbbbbe32a8664d9aac72a78270a8986d40f7065082b37bbce4b301"
+        ),
         "model_repository": "https://huggingface.co/nvidia/ArtiFixer",
+        "model_revision": "f96352ad72c84a628d5844b6543e94ae8c4479b3",
         "model_license": "NVIDIA License; research_and_development_only",
-        "modes": ["single_sequence_generation", "iterative_3d_distillation"],
+        "model_license_url": (
+            "https://developer.download.nvidia.com/licenses/"
+            "NVIDIA-OneWay-Noncommercial-License-22Mar2022.pdf"
+        ),
+        "model_license_sha256": (
+            "sha256:4ff203c3f7997c7fed287a463d733f794934a79cfabb2936008fca0bcc8ad3d6"
+        ),
+        "release_checkpoints": {
+            "artifixer_1_3b_v1": {
+                "filename": "artifixer-1.3b.pt",
+                "size_bytes": 6_715_346_651,
+                "sha256": (
+                    "sha256:23e909fb4232c6a74a1c59eaf0ebfd419dd188e601aa0ab0145b9aaea821e059"
+                ),
+                "base_model_id": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+                "base_model_revision": "0fad780a534b6463e45facd96134c9f345acfa5b",
+                "base_model_license": "Apache-2.0",
+            },
+            "artifixer_14b_v1": {
+                "filename": "artifixer-14b.pt",
+                "size_bytes": 67_644_337_412,
+                "sha256": (
+                    "sha256:c1a6d31fb849211d4c682a28b40980549cd8f807ee309e7bc0141a336ffcd16b"
+                ),
+                "base_model_id": "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+                "base_model_revision": "38ec498cb3208fb688890f8cc7e94ede2cbd7f68",
+                "base_model_license": "Apache-2.0",
+            },
+        },
+        "official_cuda12_base_image": {
+            "reference": "nvcr.io/nvidia/pytorch:25.01-py3",
+            "manifest_list_digest": (
+                "sha256:96990c82825613c3bdeebb66675c7c91b0123f64a5895623316dc5b824e0d7a9"
+            ),
+            "linux_amd64_digest": (
+                "sha256:0981807f1a51a156563e28b59dc2e7a9b5c1c7d85d1169d4965c5fd91fa38bcb"
+            ),
+        },
+        "modes": [
+            "artifixer_direct_sequence_generation",
+            "artifixer3d_fresh_3dgrut_distillation",
+            "artifixer3d_plus_postprocess_over_distilled_renders",
+        ],
         "runtime": "Linux;CUDA12_or_13;PyTorch;Diffusers;3DGRUT;FlashAttention",
         "status": "rejected_pending_model_license_and_runtime_qualification",
         "blockers": [
