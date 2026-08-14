@@ -43,6 +43,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .semantic_teacher_image_edit_bundle import (
+    BUNDLE_RECEIPT_SCHEMA_VERSION as SEMANTIC_TEACHER_BUNDLE_SCHEMA,
+)
+
 RESOLUTION_SCHEMA = "host_resident_bundle_receipt_resolution.v1"
 
 # Directories a Blueprint control-plane host owns. A launch input outside all of
@@ -64,6 +68,7 @@ ARTIFIXER3D_BUNDLE_READY_STATUS = (
     "sealed_rehearsal_passed_no_upload_no_execution"
 )
 ARTIFIXER3D_LIVE_PIPELINE_MODE = "dual_target_artifixer3d_only"
+SEMANTIC_TEACHER_BUNDLE_READY_STATUS = "completed_no_upload_no_inference"
 # Spelled here rather than imported from ``new_site_diagnostic_canary_gpu``,
 # which pulls in NumPy, Pillow, and the MuJoCo closed-loop stack. Nothing about
 # resolving a path on this host needs any of that, and this module is imported
@@ -127,6 +132,31 @@ def _launch_receipt_view(receipt: Mapping[str, Any]) -> dict[str, Any]:
     view = json.loads(json.dumps(dict(receipt)))
     if receipt.get("schema_version") == NEW_SITE_CANARY_RECEIPT_SCHEMA:
         return _new_site_canary_receipt_view(receipt, view)
+    if receipt.get("schema_version") == SEMANTIC_TEACHER_BUNDLE_SCHEMA:
+        bundle = receipt.get("bundle")
+        rehearsal = receipt.get("rehearsal")
+        if isinstance(bundle, Mapping):
+            view["bundle_path"] = bundle.get("path")
+            view["bundle_sha256"] = bundle.get("sha256")
+            recorded = str(bundle.get("path") or "").strip()
+            if recorded:
+                view["bundle_relative_path"] = Path(recorded).name
+        view["implementation_commit"] = receipt.get("source_commit_sha")
+        view["native_receipt_status"] = receipt.get("status")
+        if (
+            receipt.get("status") == SEMANTIC_TEACHER_BUNDLE_READY_STATUS
+            and receipt.get("provider_mutations_performed") == 0
+            and receipt.get("secret_values_stored") is False
+            and receipt.get("raw_nonredistributable_source_bytes_included") is False
+            and isinstance(rehearsal, Mapping)
+            and rehearsal.get("status") == "passed"
+            and rehearsal.get("token_lookup_performed") is False
+            and rehearsal.get("upload_performed") is False
+            and rehearsal.get("provider_mutations_performed") == 0
+        ):
+            view["status"] = "ready"
+        return view
+
     if receipt.get("schema_version") != ARTIFIXER3D_BUNDLE_SCHEMA:
         return view
 
