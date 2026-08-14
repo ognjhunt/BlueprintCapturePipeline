@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp009d_isaac_runtime as isaac_runtime
 from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     APPROVED_CAN_ADAPTER_FILENAME,
+    APPROVED_CAN_NEWTON_ADAPTER_FILENAME,
     DEFAULT_IMAGE,
     PROBE_KIND,
     SUPPORT_COLLIDER_PRIM,
@@ -23,6 +25,17 @@ from blueprint_pipeline.adp009d_native_microcheck_bundle import (
     _inspect_sage_collision_source,
     build_native_microcheck_bundle,
     build_native_microcheck_bundle_isolated,
+)
+from blueprint_pipeline.adp009d_physics_backend_comparison import (
+    DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+    DROID_FRANKA_ROBOTIQ_USD_URI,
+    FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2,
+    FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2,
+    FRANKA_SOURCE_MESH_SCALE,
+    ROBOTIQ_BODY_MASSES_KG,
+    build_backend_profile,
+    build_newton_actuator_limit_mapping_contract,
+    build_newton_robot_inertial_overlay_contract,
 )
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
@@ -89,7 +102,19 @@ def Xform "canned_beverage"
         encoding="utf-8",
     )
     harness = tmp_path / "harness.json"
-    harness.write_text('{"schema_version":"test"}\n', encoding="utf-8")
+    harness.write_text(
+        json.dumps(
+            {
+                "schema_version": "test",
+                "physics": {"settings": {"contact_offset_m": 0.005}},
+                "canonical_condition": {
+                    "parameters": {"object_contact_offset_m": 0.005}
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     bindings = {
         "approved_can.usda": _digest(approved),
         "sage_collision.usd": _digest(sage),
@@ -205,7 +230,7 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
         ).decode()
     assert "provider_runtime/adp009d_control_episode.py" in names
     assert "provider_runtime/adp009d_scenario_instance.v1.json" in names
-    assert "provider_runtime/adp009d_control_plan.v5.json" in names
+    assert "provider_runtime/adp009d_control_plan.v12.json" in names
     assert 'BLUEPRINT_ADP009D_CONTROLS="1"' in entrypoint
     assert "adp009d_policy_provisioning.pi05_droid.sh" not in names
     media_preflight = entrypoint.index(
@@ -222,6 +247,107 @@ def test_controls_only_bundle_binds_plan_instance_and_skips_policy_provisioning(
     assert "command -v ffprobe" in entrypoint
     assert "apt-get install -y -qq ffmpeg" in entrypoint
     assert "adp009d_media_toolchain_status.json" in entrypoint
+    entrypoint_path = tmp_path / "run_adp_arena_provider_runtime.sh"
+    entrypoint_path.write_text(entrypoint, encoding="utf-8")
+    subprocess.run(["bash", "-n", str(entrypoint_path)], check=True)
+
+
+def test_newton_controls_bundle_is_distinct_and_contains_no_physx_overlay(
+    tmp_path: Path,
+) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+
+    receipt = build_native_microcheck_bundle(
+        job_dir=tmp_path / "newton-controls",
+        approved_can_path=approved,
+        sage_collision_path=sage,
+        harness_manifest_path=harness,
+        implementation_commit="a" * 40,
+        physics_backend="newton",
+        run_controls=True,
+        generated_at="fixed",
+        expected_asset_bindings=bindings,
+    )
+
+    assert receipt["physics_backend"] == "newton"
+    assert receipt["contact_envelope"] is None
+    assert receipt["control_plan_semantic_digest"].startswith("sha256:")
+    assert receipt["backend_contact_configuration"]["contact_model"][
+        "physx_sdf_overlay_allowed"
+    ] is False
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        plan = json.loads(
+            archive.read("provider_runtime/adp009d_control_plan.v12.json")
+        )
+    assert f"provider_runtime/assets/{APPROVED_CAN_ADAPTER_FILENAME}" not in names
+    assert (
+        f"provider_runtime/assets/{APPROVED_CAN_NEWTON_ADAPTER_FILENAME}" in names
+    )
+    assert plan["physics_backend"] == "newton"
+    assert plan["contact_envelope"] is None
+    assert plan["semantic_plan_digest"] == receipt[
+        "control_plan_semantic_digest"
+    ]
+    Usd = pytest.importorskip("pxr.Usd")
+    adapter = Usd.Stage.Open(
+        str(
+            Path(receipt["bundle_path"]).parent
+            / "provider_runtime/assets"
+            / APPROVED_CAN_NEWTON_ADAPTER_FILENAME
+        )
+    )
+    collider = adapter.GetPrimAtPath("/canned_beverage/colliders/body_collider")
+    assert collider.GetAttribute("physics:approximation").Get() is None
+    assert all("Physx" not in str(schema) for schema in collider.GetAppliedSchemas())
+
+
+def test_newton_bundle_rejects_policy_and_requires_controls(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    kwargs = {
+        "job_dir": tmp_path / "newton-invalid",
+        "approved_can_path": approved,
+        "sage_collision_path": sage,
+        "harness_manifest_path": harness,
+        "implementation_commit": "a" * 40,
+        "physics_backend": "newton",
+        "generated_at": "fixed",
+        "expected_asset_bindings": bindings,
+    }
+
+    with pytest.raises(ValueError, match="newton_controls_required"):
+        build_native_microcheck_bundle(**kwargs)
+    with pytest.raises(ValueError, match="newton_policy_candidate_forbidden"):
+        build_native_microcheck_bundle(
+            **kwargs, run_controls=True, policy_candidate_id="pi05_droid"
+        )
+
+
+def test_bundle_rejects_a_harness_contact_offset_drift(tmp_path: Path) -> None:
+    approved, sage, harness, bindings = _inputs(tmp_path)
+    harness.write_text(
+        json.dumps(
+            {
+                "physics": {"settings": {"contact_offset_m": 0.004}},
+                "canonical_condition": {
+                    "parameters": {"object_contact_offset_m": 0.005}
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="harness_contact_offset_invalid"):
+        build_native_microcheck_bundle(
+            job_dir=tmp_path / "drifted-contact-offset",
+            approved_can_path=approved,
+            sage_collision_path=sage,
+            harness_manifest_path=harness,
+            implementation_commit="a" * 40,
+            generated_at="fixed",
+            expected_asset_bindings=bindings,
+        )
 
 
 def test_isolated_bundle_builder_returns_fresh_digest_bound_receipt(tmp_path: Path) -> None:
@@ -450,7 +576,10 @@ def test_runtime_does_not_import_unneeded_arena_asset_registry() -> None:
 def test_runtime_preflights_exact_arena_environment_import_closure() -> None:
     source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
 
-    assert "def _preflight_environment_imports() -> dict[str, str]:" in source
+    assert (
+        'def _preflight_environment_imports(physics_backend: str = "physx")'
+        in source
+    )
     assert '_phase("runtime_import_preflight")' in source
     assert "from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder" in source
     assert '"hydra-core"' in source
@@ -497,6 +626,50 @@ def test_runtime_binds_and_verifies_canonical_reset_pose() -> None:
     assert "_assert_canonical_object_stability(" in source
     assert '"canonical_hold_object_stability": object_stability' in source
     assert "approved_can_support_loss_after_zero_action" not in source
+
+
+def test_runtime_maps_newton_legacy_actuator_limits_to_active_sim_fields() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+    mapping = build_newton_actuator_limit_mapping_contract()
+
+    assert "_configure_newton_actuator_limit_mapping(" in source
+    assert "actuator.effort_limit_sim = values[\"effort_limit_sim\"]" in source
+    assert "actuator.velocity_limit_sim = values[\"velocity_limit_sim\"]" in source
+    assert "actuator.effort_limit = None" in source
+    assert "actuator.velocity_limit = None" in source
+    assert mapping["actuators"]["panda_shoulder"]["effort_limit_sim"] == 87.0
+
+
+def test_runtime_applies_newton_actuator_mapping_without_retuning() -> None:
+    class FakeActuator:
+        def __init__(self, *, effort: float | None, velocity: float | None) -> None:
+            self.effort_limit = effort
+            self.velocity_limit = velocity
+            self.effort_limit_sim = None
+            self.velocity_limit_sim = None
+
+    class FakeEmbodiment:
+        def __init__(self) -> None:
+            self.scene_config = type("Scene", (), {})()
+            self.scene_config.robot = type("Robot", (), {})()
+            self.scene_config.robot.actuators = {
+                "panda_shoulder": FakeActuator(effort=87.0, velocity=2.175),
+                "panda_forearm": FakeActuator(effort=12.0, velocity=2.61),
+                "gripper": FakeActuator(effort=None, velocity=1.0),
+            }
+
+    embodiment = FakeEmbodiment()
+    receipt = isaac_runtime._configure_newton_actuator_limit_mapping(
+        embodiment,
+        backend_profile=build_backend_profile("newton"),
+    )
+
+    assert receipt["status"] == "applied_and_verified"
+    assert receipt["legacy_fields_cleared"] is True
+    assert embodiment.scene_config.robot.actuators["panda_shoulder"].effort_limit is None
+    assert embodiment.scene_config.robot.actuators["panda_shoulder"].effort_limit_sim == 87.0
+    assert embodiment.scene_config.robot.actuators["panda_forearm"].velocity_limit is None
+    assert embodiment.scene_config.robot.actuators["panda_forearm"].velocity_limit_sim == 2.61
 
 
 def test_canonical_reset_uses_official_arena_droid_safe_pose() -> None:
@@ -642,6 +815,22 @@ def test_runtime_retains_camera_semantic_mapping_and_quality_diagnostics() -> No
     assert '"foreground_semantic_pixel_fraction"' in source
 
 
+def test_runtime_keeps_physx_readback_and_constructs_newton_separately() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+
+    assert 'if args.physics_backend == "physx":' in source
+    assert "from isaaclab_physx.physics import PhysxCfg" in source
+    assert "from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg" in source
+    assert "nconmax=1024" in source
+    assert 'integrator="implicitfast"' in source
+    assert 'save_to_mjcf=str(' in source
+    assert "approved_can_newton_source_contains_physx_schema" in source
+    assert "adp009d_newton_unsupported_physx_setting_observed" in source
+    assert "adp009d_backend_native_capability_probe_failed" in source
+    assert "validate_backend_probe(" in source
+    assert '"physics_backend_probe": backend_probe' in source
+
+
 def test_overview_camera_is_task_centered_and_fails_closed_when_object_is_absent() -> None:
     """The stock second Arena view faced backward and showed no task pixels."""
 
@@ -709,6 +898,24 @@ def test_worker_uses_smallest_pinned_official_arena_physx_install_closure(tmp_pa
     assert "source/isaaclab*/" not in flattened
     assert "apt-get" not in flattened
     worker._validate_install_commands(commands)
+
+
+def test_worker_newton_install_is_exact_and_does_not_select_physx(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline import adp009d_native_microcheck_worker as worker
+
+    commands = worker._install_commands(tmp_path / "arena", physics_backend="newton")
+    flattened = "\n".join(" ".join(command) for command in commands)
+
+    assert (
+        "isaaclab.sh -i assets,newton[all],ov,rl[rsl-rl],tasks,teleop"
+        in flattened
+    )
+    assert "assets,newton,ov" not in flattened
+    assert "isaaclab_physx" not in flattened
+    assert "isaaclab_newton" in flattened
+    worker._validate_install_commands(commands, physics_backend="newton")
 
 
 def test_worker_rejects_expanded_install_profile() -> None:
@@ -937,6 +1144,130 @@ def test_allocator_refuses_an_ambiguous_paid_microcheck_without_an_execution_mod
     result = json.loads((tmp_path / "adapter.json").read_text())
     assert result["provider_mutations_performed"] == 0
     assert "adp009d_execution_mode_missing" in result["blockers"]
+
+
+def test_allocator_validates_newton_dry_run_without_provider_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+
+    def fake_build(**kwargs):
+        observed["build"] = kwargs
+        return {
+            "status": "ready",
+            "bundle_sha256": "sha256:" + "b" * 64,
+            "input_digest": "sha256:" + "c" * 64,
+            "control_plan_semantic_digest": "sha256:" + "d" * 64,
+        }
+
+    def fake_run(**kwargs):
+        observed["run"] = kwargs
+        return {"status": "dry_run_ready", "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(allocator, "build_native_microcheck_bundle", fake_build)
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+
+    args = _allocator_args(tmp_path, execute=False) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+    ]
+    assert allocator.main(args) == 0
+    assert observed["build"]["physics_backend"] == "newton"
+    assert observed["run"]["execute"] is False
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["allocation_binding"]["physics_backend"] == "newton"
+
+
+def test_allocator_blocks_newton_mutation_before_specific_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    args = _allocator_args(tmp_path, execute=True) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+    ]
+
+    assert allocator.main(args) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert result["provider_mutations_performed"] == 0
+    assert "adp009d_newton_canary_admission_missing" in result["blockers"]
+
+
+def test_allocator_binds_newton_admission_to_exact_concurrent_instance_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_newton_canary_admission",
+        lambda *_args, **_kwargs: [],
+    )
+    called = False
+
+    def fake_run(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", fake_run)
+    admission_path = tmp_path / "newton-admission.json"
+    admission_path.write_text(
+        json.dumps(
+            {
+                "max_spend_usd": 4.0,
+                "hard_ttl_seconds": 14_400,
+                "allowed_active_vast_instance_ids": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _allocator_args(tmp_path, execute=True) + [
+        "--adp009d-physics-backend",
+        "newton",
+        "--adp009d-newton-canary-admission",
+        str(admission_path),
+        "--adp009d-controls",
+        "--adp009d-scenario-instance",
+        str(tmp_path / "scenario.json"),
+        "--adp-allowed-active-vast-instance-id",
+        "47482504",
+    ]
+
+    assert allocator.main(args) == 2
+    assert called is False
+    result = json.loads((tmp_path / "adapter.json").read_text())
+    assert (
+        "adp009d_newton_canary_admission_concurrency_binding_invalid"
+        in result["blockers"]
+    )
 
 
 def test_paid_host_exit_before_control_receipt_is_avoidlisted_not_scored() -> None:
@@ -1345,8 +1676,73 @@ def test_aura_is_rendered_by_isaac_not_composited_afterward() -> None:
     assert 'AURA_PARTICLEFIELD_FILENAME = "aura_ghost_removed_surflets.usd"' in source
     assert "aura_appearance" in source
     # Added to the rendered scene, not to a separate compositing step.
-    assert "assets=[sage, approved_can, light]" in source
+    assert "*sage_collision_contacts" in source
     assert "[aura_appearance] if aura_appearance is not None else []" in source
+
+
+def test_robot_contact_sensor_is_read_only_and_part_of_the_native_scene() -> None:
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+
+    assert "from isaaclab.sensors.contact_sensor import ContactSensorCfg" in source
+    assert 'contact_sensor=env.unwrapped.scene["robot_contact"]' in source
+    assert "set_joint" not in source[
+        source.index("class ContactSensorAsset") : source.index(
+            "_phase(\"embodiment_configuration\")"
+        )
+    ]
+
+
+def test_robot_contact_sensor_targets_nested_robotiq_fingers_per_backend() -> None:
+    """The d898 paid canary proved a single-level Robot/.* wildcard resolves zero
+    finger bodies: Isaac Lab matches prim-path tokens one USD level at a time and
+    the pinned DROID embodiment nests the fingers at
+    Robot/Gripper/Robotiq_2F_85/<finger>, the exact paths its own
+    FrameTransformer uses."""
+    from pathlib import Path as _Path
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import FINGER_BODIES
+
+    source = _Path(runtime.__file__).read_text(encoding="utf-8")
+
+    assert 'prim_path="{ENV_REGEX_NS}/Robot/.*"' not in source
+    physx_expression = runtime._robot_contact_sensor_prim_path("physx")
+    newton_expression = runtime._robot_contact_sensor_prim_path("newton")
+    assert physx_expression == (
+        "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/"
+        "(left_inner_finger|right_inner_finger)"
+    )
+    assert newton_expression == (
+        "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/*inner_finger"
+    )
+    for body in FINGER_BODIES:
+        assert body in physx_expression
+
+
+def test_newton_robot_contact_selector_is_fnmatch_not_regex_alternation() -> None:
+    """Newton converts ``.*`` only; parentheses and pipes become literals.
+
+    Vast instance 47486783 reached Newton environment construction but failed
+    closed because the shared PhysX regex matched zero Newton model labels.
+    Preserve an equivalent two-body selector in Newton's actual fnmatch syntax.
+    """
+
+    from fnmatch import fnmatchcase
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    pattern = runtime._robot_contact_sensor_prim_path("newton").rsplit("/", 1)[-1]
+
+    assert not set("()|").intersection(pattern)
+    assert fnmatchcase("left_inner_finger", pattern)
+    assert fnmatchcase("right_inner_finger", pattern)
+    assert not fnmatchcase("left_inner_finger_knuckle", pattern)
+    assert not fnmatchcase("right_inner_finger_knuckle", pattern)
+    assert not fnmatchcase("left_outer_finger", pattern)
 
 
 def test_the_appearance_is_visual_only_and_never_a_collider() -> None:
@@ -2696,9 +3092,6 @@ def test_the_bundle_can_carry_a_different_worker_and_runtime(tmp_path: Path) -> 
         worker_source=worker,
         runtime_module_source=runtime,
     )
-
-    import zipfile
-
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         assert archive.read(
             "provider_runtime/adp_arena_provider_runner.py"
@@ -2707,6 +3100,103 @@ def test_the_bundle_can_carry_a_different_worker_and_runtime(tmp_path: Path) -> 
             "provider_runtime/adp009d_isaac_runtime.py"
         ).decode() == "RUNTIME = 'articulated'\n"
     assert receipt["worker_source_sha256"].startswith("sha256:")
+
+
+def test_newton_contact_partner_filters_bind_exact_can_and_sage_shapes() -> None:
+    """Newton counterpart matching uses fnmatch labels, not PhysX prim scopes.
+
+    Vast instances 47488171 and 47489958 proved the PhysX spawn label and the
+    authored USD body name do not survive as Newton body labels.  The sealed
+    can and static SAGE geometry therefore use exact authored shape labels.
+    """
+
+    from fnmatch import fnmatchcase
+
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    assert runtime._contact_partner_filter_kwargs("physx") == {
+        "filter_prim_paths_expr": ["{ENV_REGEX_NS}/approved_can"]
+    }
+    newton_can = runtime._contact_partner_filter_kwargs("newton")
+    assert newton_can == {"filter_shape_prim_expr": ["*body_collider"]}
+    assert fnmatchcase("body_collider", newton_can["filter_shape_prim_expr"][0])
+    assert fnmatchcase(
+        "/World/envs/env_0/approved_can/canned_beverage/colliders/body_collider",
+        newton_can["filter_shape_prim_expr"][0],
+    )
+    assert not fnmatchcase(
+        "approved_can_visual", newton_can["filter_shape_prim_expr"][0]
+    )
+
+    assert runtime._sage_collision_filter_kwargs("physx") == {
+        "filter_prim_paths_expr": ["{ENV_REGEX_NS}/sage_collision"]
+    }
+    newton_sage = runtime._sage_collision_filter_kwargs("newton")
+    assert set(newton_sage) == {"filter_shape_prim_expr"}
+    expressions = newton_sage["filter_shape_prim_expr"]
+    assert len(expressions) == 15
+    assert len(expressions) == len(set(expressions))
+    for label, expression in zip(
+        runtime.NEWTON_SAGE_COLLISION_SHAPE_LABELS,
+        expressions,
+        strict=True,
+    ):
+        assert expression == f"*{label}"
+        assert fnmatchcase(label, expression)
+        assert fnmatchcase(
+            f"/World/envs/env_0/sage_collision/Root/{label}", expression
+        )
+        assert not fnmatchcase(f"Robot/{label}_other", expression)
+
+    assert not any(
+        fnmatchcase(
+            "/World/envs/env_0/approved_can/canned_beverage/colliders/body_collider",
+            expression,
+        )
+        for expression in expressions
+    )
+
+
+def test_newton_contact_label_diagnostics_are_bounded_and_retain_can_labels() -> None:
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+
+    bodies = [f"/World/envs/env_0/Robot/link_{index}" for index in range(300)]
+    bodies.append("/World/envs/env_0/approved_can/canned_beverage")
+    shapes = [f"/World/envs/env_0/sage_collision/mesh_{index}" for index in range(80)]
+    shapes.append(
+        "/World/envs/env_0/approved_can/canned_beverage/colliders/body_collider"
+    )
+
+    diagnostics = runtime._summarize_newton_contact_labels(bodies, shapes)
+
+    assert diagnostics["schema_version"] == (
+        "adp009d_newton_contact_label_diagnostics.v1"
+    )
+    assert diagnostics["body_label_count"] == 301
+    assert len(diagnostics["body_labels"]) == 256
+    assert diagnostics["body_labels_truncated"] is True
+    assert diagnostics["can_relevant_body_labels"] == [bodies[-1]]
+    assert diagnostics["shape_label_count"] == 81
+    assert diagnostics["can_relevant_shape_labels"] == [shapes[-1]]
+    assert len(diagnostics["shape_label_sample"]) == 64
+    assert diagnostics["shape_label_sample_truncated"] is True
+    assert diagnostics["requested_can_shape_filter"] == "*body_collider"
+
+
+def test_finger_collision_envelope_probe_measures_reach_and_cannot_break_a_run() -> None:
+    """Arena's tool frame is a +46 mm semantic point, not the finger's collision
+    extent, and the gap between them is what decides whether a commanded descend
+    is reachable. Measure it before any motion, and never let the measurement
+    fail a paid run."""
+    from blueprint_pipeline import adp009d_isaac_runtime as runtime
+    from blueprint_pipeline.adp009d_isaac_episode_adapter import (
+        FINGER_TOOL_FRAME_LOCAL_OFFSET_M,
+    )
+
+    assert runtime.FINGER_TOOL_FRAME_LOCAL_OFFSET_Z_M == FINGER_TOOL_FRAME_LOCAL_OFFSET_M[2]
+    probe = runtime._probe_finger_collision_envelope()
+    assert probe["schema_version"] == "adp009d_finger_collision_envelope_probe.v1"
+    assert probe["status"] == "unavailable"
 
 
 def test_the_default_worker_and_runtime_are_unchanged(tmp_path: Path) -> None:
@@ -2817,3 +3307,298 @@ def test_no_payload_leaves_the_rigid_bundle_exactly_as_it_was(tmp_path: Path) ->
     )
 
     assert plain["bundle_sha256"] == empty["bundle_sha256"]
+
+def _newton_robot_inertial_observations(*, post_apply: bool) -> dict[str, dict]:
+    return {
+        name: {
+            "prim_path": f"/World/envs/env_0/Robot/Gripper/Robotiq_2F_85/{name}",
+            "rigid_body_api_applied": True,
+            "collision_shape_count": 1,
+            "mass_api_applied": post_apply,
+            "mass_authored": post_apply,
+            "diagonal_inertia_authored": False,
+            "center_of_mass_authored": False,
+            "principal_axes_authored": False,
+            "mass_kg": mass if post_apply else None,
+        }
+        for name, mass in ROBOTIQ_BODY_MASSES_KG.items()
+    }
+
+
+def _newton_franka_inertia_observations(*, post_apply: bool) -> dict[str, dict]:
+    expected = (
+        FRANKA_CORRECTED_DIAGONAL_INERTIA_KG_M2
+        if post_apply
+        else FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2
+    )
+    return {
+        name: {
+            "prim_path": f"/World/envs/env_0/Robot/{name}",
+            "rigid_body_api_applied": True,
+            "mass_api_applied": True,
+            "mass_authored": True,
+            "mass_kg": 1.0 + index,
+            "center_of_mass_authored": True,
+            "center_of_mass": [0.0, 0.0, 0.0],
+            "diagonal_inertia_authored": True,
+            "diagonal_inertia_kg_m2": list(expected[name]),
+            "principal_axes_authored": False,
+            "collision_mesh_count": 1,
+            "collision_mesh_paths": [
+                f"/World/envs/env_0/Robot/{name}/geometry/{name}"
+            ],
+            "collision_mesh_scales": [[FRANKA_SOURCE_MESH_SCALE] * 3],
+        }
+        for index, name in enumerate(sorted(expected))
+    }
+
+
+def test_newton_robot_inertial_targets_fail_closed_on_asset_schema_drift() -> None:
+    before = _newton_robot_inertial_observations(post_apply=False)
+    after = _newton_robot_inertial_observations(post_apply=True)
+
+    assert isaac_runtime._newton_robot_inertial_target_blockers(
+        before, post_apply=False
+    ) == []
+    assert isaac_runtime._newton_robot_inertial_target_blockers(
+        after, post_apply=True
+    ) == []
+
+    missing = dict(before)
+    missing.pop("left_outer_knuckle")
+    assert "adp009d_newton_robot_inertial_body_set_invalid" in (
+        isaac_runtime._newton_robot_inertial_target_blockers(
+            missing, post_apply=False
+        )
+    )
+
+    no_collider = json.loads(json.dumps(before))
+    no_collider["right_inner_finger"]["collision_shape_count"] = 0
+    assert any(
+        blocker.endswith(":right_inner_finger")
+        for blocker in isaac_runtime._newton_robot_inertial_target_blockers(
+            no_collider, post_apply=False
+        )
+    )
+
+    preauthored = json.loads(json.dumps(before))
+    preauthored["left_inner_knuckle"]["mass_api_applied"] = True
+    preauthored["left_inner_knuckle"]["mass_authored"] = True
+    assert any(
+        "source_mass_drifted:left_inner_knuckle" in blocker
+        for blocker in isaac_runtime._newton_robot_inertial_target_blockers(
+            preauthored, post_apply=False
+        )
+    )
+
+    wrong_mass = json.loads(json.dumps(after))
+    wrong_mass["right_outer_knuckle"]["mass_kg"] = 1.0
+    assert any(
+        "mass_overlay_invalid:right_outer_knuckle" in blocker
+        for blocker in isaac_runtime._newton_robot_inertial_target_blockers(
+            wrong_mass, post_apply=True
+        )
+    )
+
+
+def test_newton_franka_inertia_conversion_rejects_asset_and_value_drift() -> None:
+    before = _newton_franka_inertia_observations(post_apply=False)
+    after = _newton_franka_inertia_observations(post_apply=True)
+
+    assert isaac_runtime._newton_franka_inertia_target_blockers(
+        before, post_apply=False
+    ) == []
+    assert isaac_runtime._newton_franka_inertia_target_blockers(
+        after, post_apply=True
+    ) == []
+
+    wrong_scale = json.loads(json.dumps(before))
+    wrong_scale["panda_link3"]["collision_mesh_scales"] = [[1.0, 1.0, 1.0]]
+    assert any(
+        blocker.endswith(":panda_link3")
+        for blocker in isaac_runtime._newton_franka_inertia_target_blockers(
+            wrong_scale, post_apply=False
+        )
+    )
+
+    wrong_source_inertia = json.loads(json.dumps(before))
+    wrong_source_inertia["panda_link6"]["diagonal_inertia_kg_m2"][0] *= 2.0
+    assert any(
+        blocker.endswith(":panda_link6")
+        for blocker in isaac_runtime._newton_franka_inertia_target_blockers(
+            wrong_source_inertia, post_apply=False
+        )
+    )
+
+    uncorrected = json.loads(json.dumps(after))
+    uncorrected["panda_link7"]["diagonal_inertia_kg_m2"] = list(
+        FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2["panda_link7"]
+    )
+    assert any(
+        blocker.endswith(":panda_link7")
+        for blocker in isaac_runtime._newton_franka_inertia_target_blockers(
+            uncorrected, post_apply=True
+        )
+    )
+
+
+def test_newton_robot_inertial_receipt_binds_source_and_overlay_digest() -> None:
+    overlay = build_newton_robot_inertial_overlay_contract()
+    receipt = {
+        "schema_version": "adp009d_newton_robot_inertial_overlay_receipt.v2",
+        "status": "applied_and_verified",
+        "physics_backend": "newton",
+        "source_robot_asset_uri": DROID_FRANKA_ROBOTIQ_USD_URI,
+        "source_robot_asset_digest": DROID_FRANKA_ROBOTIQ_USD_DIGEST,
+        "overlay_contract_digest": overlay["overlay_digest"],
+        "robot_root_prim_path": "/World/envs/env_0/Robot",
+        "body_count": len(ROBOTIQ_BODY_MASSES_KG),
+        "body_observations": _newton_robot_inertial_observations(
+            post_apply=True
+        ),
+        "franka_body_count": len(FRANKA_SOURCE_DIAGONAL_INERTIA_KG_M2),
+        "stage_meters_per_unit": 1.0,
+        "franka_source_observations": _newton_franka_inertia_observations(
+            post_apply=False
+        ),
+        "franka_inertia_observations": _newton_franka_inertia_observations(
+            post_apply=True
+        ),
+        "physx_property_admission": {
+            "schema_version": (
+                "adp009d_newton_physx_property_admission_receipt.v1"
+            ),
+            "policy": "block_value_before_newton_model_import",
+            "mapped_properties_retained": [
+                {
+                    "prim_path": "/World/envs/env_0/Robot/panda_joint1",
+                    "property_name": "physxJoint:maxJointVelocity",
+                }
+            ],
+            "unmapped_properties_blocked": [
+                {
+                    "prim_path": "/World/envs/env_0/Robot",
+                    "property_name": (
+                        "physxArticulation:solverPositionIterationCount"
+                    ),
+                }
+            ],
+            "remaining_unmapped_authored_properties": [],
+        },
+        "authored_properties": ["physics:diagonalInertia", "physics:mass"],
+        "source_usd_mutated": False,
+        "robotiq_center_of_mass_and_inertia_deferred_to_pinned_newton_importer": True,
+        "franka_source_center_of_mass_preserved": True,
+        "franka_diagonal_inertia_unit_conversion_applied": True,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = isaac_runtime._canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+    assert (
+        isaac_runtime._validate_newton_robot_inertial_overlay_receipt(
+            receipt, backend_profile=build_backend_profile("newton")
+        )
+        == []
+    )
+
+    receipt["source_robot_asset_digest"] = "sha256:" + "0" * 64
+    receipt["receipt_digest"] = isaac_runtime._canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert "adp009d_newton_robot_inertial_overlay_receipt_invalid" in (
+        isaac_runtime._validate_newton_robot_inertial_overlay_receipt(
+            receipt, backend_profile=build_backend_profile("newton")
+        )
+    )
+
+
+def test_newton_robot_mass_overlay_is_backend_scoped_before_environment_build() -> None:
+    source = Path(isaac_runtime.__file__).read_text(encoding="utf-8")
+    configuration = source[
+        source.index("_bind_canonical_joint_positions(embodiment)") : source.index(
+            "render_width, render_height"
+        )
+    ]
+
+    assert 'if args.physics_backend == "newton":' in configuration
+    assert "_configure_newton_robot_inertial_overlay(" in configuration
+    assert isaac_runtime._newton_physx_property_is_mapped(
+        "physxJoint:maxJointVelocity"
+    )
+    assert isaac_runtime._newton_physx_property_is_mapped(
+        "physxMimicJoint:rotX:gearing"
+    )
+    assert not isaac_runtime._newton_physx_property_is_mapped(
+        "physxArticulation:solverPositionIterationCount"
+    )
+    assert not isaac_runtime._newton_physx_property_is_mapped(
+        "physxRigidBody:enableCCD"
+    )
+    wrapper = source[
+        source.index("def _configure_newton_robot_inertial_overlay") : source.index(
+            "def _jsonable"
+        )
+    ]
+    assert "spawn_cfg.activate_contact_sensors = False" in wrapper
+    assert "solver_position_iteration_count=None" in wrapper
+    assert "solver_velocity_iteration_count=None" in wrapper
+    assert "max_depenetration_velocity=None" in wrapper
+
+
+def test_newton_robot_spawn_wrapper_resolves_exact_isaaclab_lazy_callable() -> None:
+    def underlying_spawn(*_args, **_kwargs):
+        return None
+
+    def resolved_spawn(*_args, **_kwargs):
+        return None
+
+    resolved_spawn.__module__ = "isaaclab.sim.spawners.from_files.from_files"
+    resolved_spawn.__name__ = "spawn_from_usd"
+    resolved_spawn.__wrapped__ = underlying_spawn
+    references: list[str] = []
+
+    result = isaac_runtime._resolve_newton_underlying_usd_spawn(
+        (
+            "isaaclab.sim.spawners.from_files.from_files:"
+            "spawn_from_usd"
+        ),
+        string_to_callable=lambda reference: (
+            references.append(reference) or resolved_spawn
+        ),
+    )
+
+    assert result is underlying_spawn
+    assert references == [
+        "isaaclab.sim.spawners.from_files.from_files:spawn_from_usd"
+    ]
+
+
+@pytest.mark.parametrize(
+    "configured_spawn",
+    [
+        "isaaclab.sim.spawners.from_files.from_files:spawn_from_urdf",
+        "untrusted.module:spawn_from_usd",
+    ],
+)
+def test_newton_robot_spawn_wrapper_rejects_noncanonical_lazy_callable(
+    configured_spawn: str,
+) -> None:
+    resolver_called = False
+
+    def resolver(_reference: str):
+        nonlocal resolver_called
+        resolver_called = True
+        return lambda: None
+
+    with pytest.raises(
+        RuntimeError,
+        match="adp009d_newton_robot_spawn_wrapper_unsupported",
+    ):
+        isaac_runtime._resolve_newton_underlying_usd_spawn(
+            configured_spawn,
+            string_to_callable=resolver,
+        )
+
+    assert resolver_called is False

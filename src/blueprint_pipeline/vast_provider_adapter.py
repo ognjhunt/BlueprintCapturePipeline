@@ -7666,9 +7666,12 @@ def run_vast_provider_adapter(
             instance_id=instance_id,
             disk_gb=resolved_disk_gb,
             max_live_minutes=max_live_minutes,
+            max_hourly_rate=max_hourly_rate,
             hard_cap_usd=hard_cap_usd,
             max_hourly_rate_usd=max_hourly_rate,
         )
+        if not all_in_cost_binding["all_in_hourly_rate_under_max"]:
+            raise RuntimeError("created_instance_all_in_hourly_rate_exceeds_max")
         if not all_in_cost_binding["projected_all_in_cost_under_hard_cap"]:
             raise RuntimeError("created_instance_projected_all_in_runtime_exceeds_hard_cap")
         if not all_in_cost_binding["all_in_hourly_rate_under_max_hourly"]:

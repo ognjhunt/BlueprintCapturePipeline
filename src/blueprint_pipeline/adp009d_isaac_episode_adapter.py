@@ -39,8 +39,33 @@ except ModuleNotFoundError:  # repository package
         DROID_EXTERIOR_VIEW_1,
         DROID_WRIST_VIEW,
     )
+try:  # flat provider-bundle layout
+    from adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        validate_contact_envelope,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_contact_envelope import (
+        ContactEnvelopeError,
+        validate_contact_envelope,
+    )
+try:  # flat provider-bundle layout
+    from adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        validate_backend_contact_configuration,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp009d_physics_backend_comparison import (
+        build_backend_contact_configuration,
+        validate_backend_contact_configuration,
+    )
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v9"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v11"
+ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
+DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
+ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
+    "orientation_first_bounded_local_increment"
+)
 
 # Isaac camera name -> the DROID view it serves.
 CAMERA_VIEW_BINDING = {
@@ -63,6 +88,14 @@ DEFAULT_CAMERA_SCENE_NAMES = {
 # The two bodies whose separation is the gripper width, matching the
 # convention probe so both read the same physical quantity.
 FINGER_BODIES = ("left_inner_finger", "right_inner_finger")
+# The pinned Arena DROID embodiment defines its semantic tool frames 46 mm
+# along each inner-finger body's local Z axis.  Rotate this offset through the
+# live body quaternion before averaging the two tool positions.
+FINGER_TOOL_FRAME_LOCAL_OFFSET_M = (0.0, 0.0, 0.046)
+FINGER_TOOL_FRAME_SOURCE = (
+    "IsaacLab-Arena@8b4a3a47fc53de23e8205089d71109a2e2348acd:"
+    "isaaclab_arena/embodiments/droid/droid.py:tool_leftfinger,tool_rightfinger"
+)
 # Ordered to match the already-measured approach controller.  ``base_link`` is
 # the Robotiq tool body that carries the wrist camera in the live Arena asset.
 END_EFFECTOR_BODY_CANDIDATES = ("panda_hand", "base_link", "panda_link7")
@@ -79,6 +112,98 @@ class IsaacEpisodeAdapterError(RuntimeError):
     def __init__(self, errors: Sequence[str]):
         self.errors = tuple(sorted({str(e) for e in errors if str(e)}))
         super().__init__(";".join(self.errors))
+
+
+def _rotate_vector_by_quaternion_xyzw(
+    quaternion_xyzw: Sequence[float], vector: Sequence[float]
+) -> list[float]:
+    x, y, z, w = quaternion_xyzw
+    vx, vy, vz = vector
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return [
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    ]
+
+
+def signed_point_to_vertical_cylinder_clearance_m(
+    *,
+    point_world_m: Sequence[float],
+    cylinder_pose_world_xyzw: Sequence[float],
+    radius_m: float,
+    height_m: float,
+) -> float:
+    """Return exact signed point clearance to a posed finite cylinder."""
+
+    point = [float(value) for value in point_world_m]
+    pose = [float(value) for value in cylinder_pose_world_xyzw]
+    radius = float(radius_m)
+    height = float(height_m)
+    if (
+        len(point) != 3
+        or len(pose) != 7
+        or radius <= 0.0
+        or height <= 0.0
+        or not all(math.isfinite(value) for value in [*point, *pose, radius, height])
+    ):
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_cylinder_clearance_geometry_invalid"]
+        )
+    displacement = [point[index] - pose[index] for index in range(3)]
+    qx, qy, qz, qw = pose[3:7]
+    local = _rotate_vector_by_quaternion_xyzw(
+        (-qx, -qy, -qz, qw), displacement
+    )
+    radial = math.hypot(local[0], local[1]) - radius
+    axial = abs(local[2]) - height / 2.0
+    outside = math.hypot(max(radial, 0.0), max(axial, 0.0))
+    inside = min(max(radial, axial), 0.0)
+    return outside + inside
+
+
+def semantic_finger_tool_midpoint_world_m(
+    *,
+    left_finger_pose_world_xyzw: Sequence[float],
+    right_finger_pose_world_xyzw: Sequence[float],
+) -> list[float]:
+    """Return the midpoint of Arena's two calibrated Robotiq tool frames."""
+
+    try:
+        poses = [
+            [float(value) for value in left_finger_pose_world_xyzw],
+            [float(value) for value in right_finger_pose_world_xyzw],
+        ]
+    except (TypeError, ValueError) as exc:
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_finger_tool_frame_pose_invalid"]
+        ) from exc
+    if any(len(pose) != 7 for pose in poses) or not all(
+        math.isfinite(value) for pose in poses for value in pose
+    ):
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_finger_tool_frame_pose_invalid"]
+        )
+
+    tool_positions: list[list[float]] = []
+    for pose in poses:
+        quaternion = pose[3:7]
+        if abs(math.sqrt(sum(value * value for value in quaternion)) - 1.0) > 1.0e-5:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_finger_tool_frame_pose_invalid"]
+            )
+        offset_world = _rotate_vector_by_quaternion_xyzw(
+            quaternion, FINGER_TOOL_FRAME_LOCAL_OFFSET_M
+        )
+        tool_positions.append(
+            [pose[axis] + offset_world[axis] for axis in range(3)]
+        )
+    return [
+        (tool_positions[0][axis] + tool_positions[1][axis]) / 2.0
+        for axis in range(3)
+    ]
 
 
 def bounded_absolute_joint_setpoint(
@@ -217,6 +342,150 @@ def controlled_body_pose_for_grasp_frame_target(
     return target_body, target_quaternion
 
 
+def bounded_grasp_frame_target_for_task_orientation(
+    *,
+    current_position_world_m: Sequence[float],
+    current_quaternion_world_xyzw: Sequence[float],
+    target_position_world_m: Sequence[float],
+    target_quaternion_world_xyzw: Sequence[float],
+    max_translation_step_m: float,
+    orientation_tolerance_deg: float,
+) -> dict[str, Any]:
+    """Resolve one local Cartesian target without mixing large rotation/translation.
+
+    The native DLS controller is a local solver.  Asking it to descend the full
+    335 mm grasp distance in one step made it trade orientation for translation,
+    sweep the open jaws laterally, and stall on the can.  Hold translation while
+    task orientation is outside tolerance; otherwise move at most one bounded
+    Cartesian increment toward the preregistered target.
+    """
+
+    try:
+        current = [float(value) for value in current_position_world_m]
+        target = [float(value) for value in target_position_world_m]
+        current_quaternion = [
+            float(value) for value in current_quaternion_world_xyzw
+        ]
+        target_quaternion = [
+            float(value) for value in target_quaternion_world_xyzw
+        ]
+        max_step = float(max_translation_step_m)
+        orientation_tolerance = float(orientation_tolerance_deg)
+    except (TypeError, ValueError) as exc:
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_bounded_task_space_target_invalid"]
+        ) from exc
+    values = (*current, *target, *current_quaternion, *target_quaternion)
+    if (
+        len(current) != 3
+        or len(target) != 3
+        or len(current_quaternion) != 4
+        or len(target_quaternion) != 4
+        or not all(math.isfinite(value) for value in values)
+        or not math.isfinite(max_step)
+        or max_step <= 0.0
+        or not math.isfinite(orientation_tolerance)
+        or orientation_tolerance <= 0.0
+        or abs(
+            math.sqrt(sum(value * value for value in current_quaternion)) - 1.0
+        )
+        > 1.0e-5
+        or abs(
+            math.sqrt(sum(value * value for value in target_quaternion)) - 1.0
+        )
+        > 1.0e-5
+    ):
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_bounded_task_space_target_invalid"]
+        )
+    quaternion_dot = abs(
+        sum(
+            current_value * target_value
+            for current_value, target_value in zip(
+                current_quaternion, target_quaternion, strict=True
+            )
+        )
+    )
+    orientation_error_deg = math.degrees(
+        2.0 * math.acos(min(1.0, max(0.0, quaternion_dot)))
+    )
+    delta = [target[index] - current[index] for index in range(3)]
+    requested_translation_m = math.sqrt(sum(value * value for value in delta))
+    translation_held_for_orientation = orientation_error_deg > orientation_tolerance
+    if translation_held_for_orientation or requested_translation_m == 0.0:
+        resolved = list(current)
+        translation_step_m = 0.0
+    elif requested_translation_m <= max_step:
+        resolved = list(target)
+        translation_step_m = requested_translation_m
+    else:
+        scale = max_step / requested_translation_m
+        resolved = [
+            current[index] + delta[index] * scale for index in range(3)
+        ]
+        translation_step_m = max_step
+    return {
+        "position_world_m": resolved,
+        "orientation_error_deg": orientation_error_deg,
+        "orientation_tolerance_deg": orientation_tolerance,
+        "translation_requested_m": requested_translation_m,
+        "translation_step_m": translation_step_m,
+        "max_translation_step_m": max_step,
+        "translation_held_for_orientation": translation_held_for_orientation,
+    }
+
+
+def grasp_frame_target_for_task_space_strategy(
+    *,
+    current_position_world_m: Sequence[float],
+    current_quaternion_world_xyzw: Sequence[float],
+    target_position_world_m: Sequence[float],
+    target_quaternion_world_xyzw: Sequence[float],
+    max_translation_step_m: float,
+    orientation_tolerance_deg: float,
+    task_space_translation_strategy: str,
+) -> dict[str, Any]:
+    """Resolve an immutable-plan strategy into one native IK grasp target.
+
+    Pregrasp starts from the wrist-camera evidence pose, which is roughly 152
+    degrees from the top-down task orientation.  The already-proven v6
+    controller converged by solving that obstacle-clear pose and translation
+    together.  Holding translation against the *current* grasp point while
+    rotating made the reference move with IK error and accumulated a 151 mm
+    lateral miss.  Later phases remain locally bounded because they start in
+    task orientation and operate around the sealed object.
+    """
+
+    strategy = str(task_space_translation_strategy).strip()
+    if strategy not in {
+        DIRECT_GLOBAL_POSE_TARGET,
+        ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT,
+    }:
+        raise IsaacEpisodeAdapterError(
+            ["isaac_episode_task_space_translation_strategy_invalid"]
+        )
+    resolved = bounded_grasp_frame_target_for_task_orientation(
+        current_position_world_m=current_position_world_m,
+        current_quaternion_world_xyzw=current_quaternion_world_xyzw,
+        target_position_world_m=target_position_world_m,
+        target_quaternion_world_xyzw=target_quaternion_world_xyzw,
+        max_translation_step_m=max_translation_step_m,
+        orientation_tolerance_deg=orientation_tolerance_deg,
+    )
+    if strategy == DIRECT_GLOBAL_POSE_TARGET:
+        resolved.update(
+            {
+                "position_world_m": [
+                    float(value) for value in target_position_world_m
+                ],
+                "translation_step_m": resolved["translation_requested_m"],
+                "translation_held_for_orientation": False,
+            }
+        )
+    resolved["task_space_translation_strategy"] = strategy
+    return resolved
+
+
 def _as_array(value: Any) -> Any:
     """Whatever the simulator handed back, as a numpy array.
 
@@ -301,10 +570,18 @@ class IsaacEpisodeAdapter:
         | None = None,
         task_sample_callback: Callable[[], Mapping[str, Any]] | None = None,
         camera_scene_names: Mapping[str, str] | None = None,
+        contact_sensor: Any | None = None,
+        contact_envelope: Mapping[str, Any] | None = None,
+        partner_contact_sensors: Mapping[str, Any] | None = None,
+        backend_contact_configuration: Mapping[str, Any] | None = None,
+        task_object_radius_m: float | None = None,
+        task_object_height_m: float | None = None,
+        sage_collision_contact_sensors: Mapping[str, Any] | None = None,
     ) -> None:
         self._env = env
         self._robot = robot
         self._rigid_object = rigid_task_object
+        self._can = self._rigid_object
         self._action_dim = int(action_dim)
         self._reset_seed = int(reset_seed)
         self._to_torch = to_torch
@@ -326,6 +603,52 @@ class IsaacEpisodeAdapter:
             DEFAULT_CAMERA_SCENE_NAMES
             if camera_scene_names is None
             else camera_scene_names
+        )
+        self._contact_sensor = contact_sensor
+        if contact_envelope is None:
+            self._contact_envelope = None
+        else:
+            try:
+                self._contact_envelope = validate_contact_envelope(contact_envelope)
+            except ContactEnvelopeError as exc:
+                raise IsaacEpisodeAdapterError([str(exc)]) from exc
+        if backend_contact_configuration is None:
+            backend_contact_configuration = build_backend_contact_configuration("physx")
+        if not isinstance(backend_contact_configuration, Mapping):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_backend_contact_configuration_missing"]
+            )
+        contact_blockers = validate_backend_contact_configuration(
+            backend_contact_configuration
+        )
+        if contact_blockers:
+            raise IsaacEpisodeAdapterError(contact_blockers)
+        self._backend_contact_configuration = dict(backend_contact_configuration)
+        self._partner_contact_sensors = dict(partner_contact_sensors or {})
+        self._partner_filter_shapes: dict[str, int] = {}
+        self._task_object_radius_m = (
+            None if task_object_radius_m is None else float(task_object_radius_m)
+        )
+        self._task_object_height_m = (
+            None if task_object_height_m is None else float(task_object_height_m)
+        )
+        if (self._task_object_radius_m is None) != (
+            self._task_object_height_m is None
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_task_object_geometry_incomplete"]
+            )
+        if self._task_object_radius_m is not None and (
+            not math.isfinite(self._task_object_radius_m)
+            or not math.isfinite(self._task_object_height_m)
+            or self._task_object_radius_m <= 0.0
+            or self._task_object_height_m <= 0.0
+        ):
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_task_object_geometry_invalid"]
+            )
+        self._sage_collision_contact_sensors = dict(
+            sage_collision_contact_sensors or {}
         )
         self._control_step_index = 0
         if self._rigid_object is None and self._task_sample_callback is None:
@@ -427,6 +750,186 @@ class IsaacEpisodeAdapter:
         joints = self._to_torch(self._robot.data.joint_pos)[0, :ARM_JOINT_COUNT]
         return [float(value) for value in joints]
 
+    def _arm_vector(self, attribute: str) -> list[float]:
+        raw = getattr(self._robot.data, attribute, None)
+        if raw is None:
+            raise IsaacEpisodeAdapterError(
+                [f"isaac_episode_arm_dynamics_missing:{attribute}"]
+            )
+        values = self._to_torch(raw)[0, :ARM_JOINT_COUNT]
+        result = [float(value) for value in values]
+        if len(result) != ARM_JOINT_COUNT or not all(
+            math.isfinite(value) for value in result
+        ):
+            raise IsaacEpisodeAdapterError(
+                [f"isaac_episode_arm_dynamics_invalid:{attribute}"]
+            )
+        return result
+
+    def _body_contact_forces_world_n(self) -> dict[str, list[float]] | None:
+        if self._contact_sensor is None:
+            return None
+        forces = self._to_torch(self._contact_sensor.data.net_forces_w)[0]
+        body_names = list(self._contact_sensor.body_names)
+        result: dict[str, list[float]] = {}
+        for index, name in enumerate(body_names):
+            vector = [float(value) for value in forces[index, :3]]
+            if not all(math.isfinite(value) for value in vector):
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_contact_force_invalid:{name}"]
+                )
+            result[str(name)] = vector
+        return result
+
+    def _body_filtered_contact_forces_n(
+        self,
+        contact_sensors: Mapping[str, Any],
+        *,
+        filter_label: str,
+    ) -> tuple[dict[str, list[float]] | None, dict[str, int]]:
+        """Read one explicit filtered-contact category without changing physics.
+
+        Supplementary to ``net_forces_w``: a stalled finger reporting a large net
+        force but a zero filtered force is being held by geometry outside that
+        filter, which is the distinction the net force alone cannot make.
+
+        PhysX filtered reporting is one-to-many, so each sensor here covers
+        exactly one body.  A sensor covering more than one body would silently
+        report unreliable values, so it is rejected rather than trusted.  No
+        filtered sensors at all degrades to ``None``, because ``net_forces_w``
+        remains the primary evidence and must not fail a paid run.
+        """
+
+        if not contact_sensors:
+            return None, {}
+        result: dict[str, list[float]] = {}
+        filter_shapes: dict[str, int] = {}
+        for name, sensor in sorted(contact_sensors.items()):
+            body_names = list(sensor.body_names)
+            if len(body_names) != 1:
+                raise IsaacEpisodeAdapterError(
+                    [
+                        "isaac_episode_contact_filtered_sensor_not_one_to_many:"
+                        + f"{filter_label}:{name}:{len(body_names)}"
+                    ]
+                )
+            matrix = getattr(sensor.data, "force_matrix_w", None)
+            if matrix is None:
+                continue
+            values = self._to_torch(matrix)
+            if values.ndim != 4 or values.shape[0] < 1 or values.shape[2] < 1:
+                # Zero filter shapes means the filter expression matched nothing,
+                # which is indistinguishable from "the partner is not touching"
+                # unless it is reported.  Withhold rather than read as zero.
+                continue
+            resolved_filter_shapes = int(values.shape[2])
+            # Sum across filter partners so widening the filter later cannot
+            # silently drop force from the attribution.
+            vector = [float(values[0, 0, :, axis].sum()) for axis in range(3)]
+            if not all(math.isfinite(value) for value in vector):
+                raise IsaacEpisodeAdapterError(
+                    [
+                        "isaac_episode_contact_filtered_force_invalid:"
+                        + f"{filter_label}:{name}"
+                    ]
+                )
+            result[str(body_names[0])] = vector
+            filter_shapes[str(body_names[0])] = resolved_filter_shapes
+        if not result:
+            return None, {}
+        return result, filter_shapes
+
+    def _body_contact_partner_forces_n(self) -> dict[str, list[float]] | None:
+        """Read the approved-can filtered-contact category."""
+
+        forces, filter_shapes = self._body_filtered_contact_forces_n(
+            self._partner_contact_sensors,
+            filter_label="approved_can",
+        )
+        self._partner_filter_shapes = filter_shapes
+        return forces
+
+    def _body_contact_sage_collision_forces_n(self) -> dict[str, list[float]] | None:
+        """Read the sealed SAGE collision-scene filtered-contact category.
+
+        A nonzero result names this configured collision scope only.  A zero is
+        interpretable as no SAGE contact only when the accompanying resolved
+        filter-shape count is nonzero; an unmatched expression is withheld.
+        """
+
+        forces, filter_shapes = self._body_filtered_contact_forces_n(
+            self._sage_collision_contact_sensors,
+            filter_label="sage_collision",
+        )
+        self._sage_collision_filter_shapes = filter_shapes
+        return forces
+
+    def _body_incoming_joint_wrenches(self) -> dict[str, list[float]]:
+        raw = getattr(self._robot.data, "body_incoming_joint_wrench_b", None)
+        if raw is None:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_arm_dynamics_missing:body_incoming_joint_wrench_b"]
+            )
+        wrenches = self._to_torch(raw)[0]
+        result: dict[str, list[float]] = {}
+        for index, name in enumerate(self._robot.data.body_names):
+            vector = [float(value) for value in wrenches[index, :6]]
+            if not all(math.isfinite(value) for value in vector):
+                raise IsaacEpisodeAdapterError(
+                    [f"isaac_episode_incoming_joint_wrench_invalid:{name}"]
+                )
+            result[str(name)] = vector
+        return result
+
+    def read_arm_dynamics_observation(self) -> dict[str, Any]:
+        """Read actuator tracking and contact state through pinned Isaac APIs."""
+
+        positions = self._arm_vector("joint_pos")
+        velocities = self._arm_vector("joint_vel")
+        targets = self._arm_vector("joint_pos_target")
+        computed = self._arm_vector("computed_torque")
+        applied = self._arm_vector("applied_torque")
+        effort_limits = self._arm_vector("joint_effort_limits")
+        utilization = [
+            abs(torque) / limit if limit > 0.0 else 0.0
+            for torque, limit in zip(applied, effort_limits, strict=True)
+        ]
+        return {
+            "schema_version": ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION,
+            "joint_position_rad": positions,
+            "joint_velocity_rad_s": velocities,
+            "joint_position_target_rad": targets,
+            "computed_torque_nm": computed,
+            "applied_torque_nm": applied,
+            "joint_effort_limit_nm": effort_limits,
+            "joint_effort_utilization": utilization,
+            "torque_clip_residual_nm": [
+                before - after
+                for before, after in zip(computed, applied, strict=True)
+            ],
+            "body_contact_force_world_n": self._body_contact_forces_world_n(),
+            "body_contact_partner_force_world_n": self._body_contact_partner_forces_n(),
+            # A resolved filter-shape count of at least one is what makes a zero
+            # partner force evidence that the partner is not in contact, rather
+            # than evidence that the filter expression never matched anything.
+            "body_contact_partner_filter_shapes": dict(self._partner_filter_shapes),
+            "body_contact_sage_collision_force_world_n": (
+                self._body_contact_sage_collision_forces_n()
+            ),
+            "body_contact_sage_collision_filter_shapes": dict(
+                self._sage_collision_filter_shapes
+            ),
+            "body_incoming_joint_wrench_body": self._body_incoming_joint_wrenches(),
+            "backend_contact_configuration": dict(
+                self._backend_contact_configuration
+            ),
+            "contact_envelope": (
+                None
+                if self._contact_envelope is None
+                else dict(self._contact_envelope)
+            ),
+        }
+
     def step(self, isaac_action: Sequence[float]) -> None:
         values = [float(v) for v in isaac_action]
         if len(values) != self._action_dim:
@@ -460,7 +963,10 @@ class IsaacEpisodeAdapter:
         target_quaternion_world_xyzw: Sequence[float] | None,
         gripper_command: float,
         max_joint_delta_rad: float,
-        max_joint_setpoint_lead_rad: float,
+        max_joint_setpoint_lead_rad: float | None = None,
+        max_task_space_translation_step_m: float | None = None,
+        orientation_tolerance_deg: float | None = None,
+        task_space_translation_strategy: str | None = None,
     ) -> list[float]:
         """Resolve one deterministic pose-servo step through the injected native IK."""
 
@@ -468,17 +974,41 @@ class IsaacEpisodeAdapter:
             raise IsaacEpisodeAdapterError(
                 ["isaac_episode_scripted_pose_controller_missing"]
             )
-        values = self._scripted_pose_action_callback(
-            target_position_world_m=[float(v) for v in target_position_world_m],
-            target_quaternion_world_xyzw=(
+        common = {
+            "target_position_world_m": [float(v) for v in target_position_world_m],
+            "target_quaternion_world_xyzw": (
                 None
                 if target_quaternion_world_xyzw is None
                 else [float(v) for v in target_quaternion_world_xyzw]
             ),
-            gripper_command=float(gripper_command),
-            max_joint_delta_rad=float(max_joint_delta_rad),
-            max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+            "gripper_command": float(gripper_command),
+            "max_joint_delta_rad": float(max_joint_delta_rad),
+        }
+        task_space_values = (
+            max_task_space_translation_step_m,
+            orientation_tolerance_deg,
+            task_space_translation_strategy,
         )
+        if all(value is not None for value in task_space_values):
+            values = self._scripted_pose_action_callback(
+                **common,
+                max_task_space_translation_step_m=float(
+                    max_task_space_translation_step_m
+                ),
+                orientation_tolerance_deg=float(orientation_tolerance_deg),
+                task_space_translation_strategy=str(task_space_translation_strategy),
+            )
+        elif max_joint_setpoint_lead_rad is not None and all(
+            value is None for value in task_space_values
+        ):
+            values = self._scripted_pose_action_callback(
+                **common,
+                max_joint_setpoint_lead_rad=float(max_joint_setpoint_lead_rad),
+            )
+        else:
+            raise IsaacEpisodeAdapterError(
+                ["isaac_episode_scripted_pose_control_contract_invalid"]
+            )
         action = [float(value) for value in values]
         if len(action) != self._action_dim or not all(
             math.isfinite(value) for value in action
@@ -589,7 +1119,8 @@ class IsaacEpisodeAdapter:
         controlled_body_pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._end_effector_index, :7
         ]
-        left, right = self._finger_positions()
+        left_pose, right_pose = self._finger_poses()
+        left, right = left_pose[:3], right_pose[:3]
         raw_separation = math.dist(left, right)
         width, unclamped_open_fraction, calibration_clamped = (
             self._calibrated_gripper_width(raw_separation)
@@ -621,12 +1152,61 @@ class IsaacEpisodeAdapter:
                 float(controlled_body_pose[3]),
             ],
         }
-        sample["grasp_frame_position_world_m"] = [
+        sample["gripper_body_midpoint_world_m"] = [
             (left[axis] + right[axis]) / 2.0 for axis in range(3)
         ]
+        sample["grasp_frame_position_world_m"] = (
+            semantic_finger_tool_midpoint_world_m(
+                left_finger_pose_world_xyzw=left_pose,
+                right_finger_pose_world_xyzw=right_pose,
+            )
+        )
         sample["grasp_frame_orientation_world_xyzw"] = list(
             sample["controlled_body_orientation_world_xyzw"]
         )
+        sample["grasp_frame_calibration"] = {
+            "frame_id": "probe_calibrated_finger_midpoint",
+            "finger_tool_frame_local_offset_m": list(
+                FINGER_TOOL_FRAME_LOCAL_OFFSET_M
+            ),
+            "source": FINGER_TOOL_FRAME_SOURCE,
+            "raw_body_midpoint_retained": True,
+        }
+        contact_forces = self._body_contact_forces_world_n()
+        if contact_forces is not None:
+            sample["finger_contact_forces_n"] = [
+                math.sqrt(sum(component * component for component in contact_forces[name]))
+                for name in FINGER_BODIES
+            ]
+        if self._task_object_radius_m is not None:
+            object_pose = [
+                float(value)
+                for value in self._to_torch(self._can.data.root_pose_w)[0, :7]
+            ]
+            tool_points = (
+                semantic_finger_tool_midpoint_world_m(
+                    left_finger_pose_world_xyzw=left_pose,
+                    right_finger_pose_world_xyzw=left_pose,
+                ),
+                semantic_finger_tool_midpoint_world_m(
+                    left_finger_pose_world_xyzw=right_pose,
+                    right_finger_pose_world_xyzw=right_pose,
+                ),
+            )
+            clearances = [
+                signed_point_to_vertical_cylinder_clearance_m(
+                    point_world_m=point,
+                    cylinder_pose_world_xyzw=object_pose,
+                    radius_m=self._task_object_radius_m,
+                    height_m=self._task_object_height_m,
+                )
+                for point in tool_points
+            ]
+            sample["finger_tool_to_object_signed_clearance_m"] = clearances
+            sample["closest_geometric_clearance_m"] = min(clearances)
+            sample["closest_geometric_clearance_metric"] = (
+                "signed_semantic_finger_tool_point_to_posed_finite_cylinder"
+            )
         return sample
 
     def read_task_sample(self) -> dict[str, Any]:
@@ -664,10 +1244,14 @@ class IsaacEpisodeAdapter:
     # -- internals ----------------------------------------------------------
 
     def _finger_positions(self) -> tuple[list[float], list[float]]:
+        left_pose, right_pose = self._finger_poses()
+        return left_pose[:3], right_pose[:3]
+
+    def _finger_poses(self) -> tuple[list[float], list[float]]:
         poses = self._to_torch(self._robot.data.body_pose_w)[0]
         return (
-            [float(poses[self._finger_indices[0]][axis]) for axis in range(3)],
-            [float(poses[self._finger_indices[1]][axis]) for axis in range(3)],
+            [float(poses[self._finger_indices[0]][axis]) for axis in range(7)],
+            [float(poses[self._finger_indices[1]][axis]) for axis in range(7)],
         )
 
     def _raw_gripper_body_separation(self) -> float:
@@ -728,17 +1312,34 @@ def describe_adapter() -> dict[str, Any]:
         "schema_version": ADAPTER_SCHEMA_VERSION,
         "camera_view_binding": dict(CAMERA_VIEW_BINDING),
         "finger_bodies": list(FINGER_BODIES),
+        "finger_tool_frame_local_offset_m": list(FINGER_TOOL_FRAME_LOCAL_OFFSET_M),
+        "finger_tool_frame_source": FINGER_TOOL_FRAME_SOURCE,
         "end_effector_body_candidates": list(END_EFFECTOR_BODY_CANDIDATES),
         "gripper_width_source": GRIPPER_WIDTH_SOURCE,
         "scripted_control_target_frame": "probe_calibrated_finger_midpoint",
         "scripted_control_body_pose_resolution": (
             "measured_body_local_to_finger_midpoint_applied_at_task_orientation"
         ),
+        "scripted_control_jacobian_frame": "world",
         "scripted_control_physx_jacobian_frame": "world",
         "scripted_control_controller_error_frame": "robot_root",
         "scripted_control_jacobian_frame_transform": (
             "rotate_linear_and_angular_rows_world_to_robot_root"
         ),
+        "arm_dynamics_observation_schema_version": (
+            ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION
+        ),
+        "contact_envelope_runtime_validation_required": True,
+        "contact_envelope_retained_in_arm_dynamics_observation": True,
+        "backend_contact_configuration_retained_in_arm_dynamics_observation": True,
+        "contact_force_source": "IsaacLab ContactSensor.data.net_forces_w",
+        "incoming_joint_wrench_source": (
+            "IsaacLab ArticulationData.body_incoming_joint_wrench_b"
+        ),
+        "scripted_control_task_space_translation_strategies": [
+            DIRECT_GLOBAL_POSE_TARGET,
+            ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT,
+        ],
         "gripper_physical_full_opening_m": GRIPPER_PHYSICAL_FULL_OPENING_M,
         "raw_gripper_body_separation_retained": True,
         "gripper_width_calibration_clamp_retained": True,
@@ -758,6 +1359,12 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_camera_binding_drifted")
     if list(bindings.get("finger_bodies") or []) != list(FINGER_BODIES):
         errors.append("isaac_episode_adapter_finger_bodies_drifted")
+    if list(bindings.get("finger_tool_frame_local_offset_m") or []) != list(
+        FINGER_TOOL_FRAME_LOCAL_OFFSET_M
+    ):
+        errors.append("isaac_episode_adapter_finger_tool_frame_offset_drifted")
+    if bindings.get("finger_tool_frame_source") != FINGER_TOOL_FRAME_SOURCE:
+        errors.append("isaac_episode_adapter_finger_tool_frame_source_drifted")
     if list(bindings.get("end_effector_body_candidates") or []) != list(
         END_EFFECTOR_BODY_CANDIDATES
     ):
@@ -780,6 +1387,26 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         "rotate_linear_and_angular_rows_world_to_robot_root"
     ):
         errors.append("isaac_episode_adapter_jacobian_frame_transform_drifted")
+    if bindings.get("arm_dynamics_observation_schema_version") != (
+        ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION
+    ):
+        errors.append("isaac_episode_adapter_arm_dynamics_schema_drifted")
+    if bindings.get("contact_envelope_runtime_validation_required") is not True:
+        errors.append("isaac_episode_adapter_contact_envelope_validation_missing")
+    if bindings.get("contact_envelope_retained_in_arm_dynamics_observation") is not True:
+        errors.append("isaac_episode_adapter_contact_envelope_retention_missing")
+    if bindings.get("contact_force_source") != (
+        "IsaacLab ContactSensor.data.net_forces_w"
+    ):
+        errors.append("isaac_episode_adapter_contact_force_source_drifted")
+    if bindings.get("incoming_joint_wrench_source") != (
+        "IsaacLab ArticulationData.body_incoming_joint_wrench_b"
+    ):
+        errors.append("isaac_episode_adapter_incoming_joint_wrench_source_drifted")
+    if list(
+        bindings.get("scripted_control_task_space_translation_strategies") or []
+    ) != [DIRECT_GLOBAL_POSE_TARGET, ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT]:
+        errors.append("isaac_episode_adapter_task_space_strategy_drifted")
     if (
         bindings.get("gripper_physical_full_opening_m")
         != GRIPPER_PHYSICAL_FULL_OPENING_M
@@ -811,5 +1438,7 @@ __all__ = [
     "describe_adapter",
     "rgb_from_camera_output",
     "rotation_row_major_from_quaternion_xyzw",
+    "semantic_finger_tool_midpoint_world_m",
+    "signed_point_to_vertical_cylinder_clearance_m",
     "validate_adapter_bindings",
 ]

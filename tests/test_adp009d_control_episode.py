@@ -16,6 +16,7 @@ from blueprint_pipeline.adp009d_control_episode import (
     run_control_episode,
     run_required_controls,
 )
+from blueprint_pipeline.adp009d_contact_envelope import canonical_contact_envelope
 from blueprint_pipeline.adp009d_droid_observation import (
     DROID_EXTERIOR_VIEW_1,
     DROID_WRIST_VIEW,
@@ -51,6 +52,7 @@ def _instance() -> dict:
             "target_y_m": TARGET[1],
             "target_z_m": TARGET[2],
             "object_height_m": 0.1694279937744141,
+            "object_radius_m": 0.031094726014345042,
         },
         "factor_records": [],
         "required_controls": [
@@ -94,6 +96,7 @@ class _ControlEnvironment:
         positive_moves_object: bool = True,
         grasp_frame_converges: bool = True,
         grasp_frame_step_fraction: float = 1.0,
+        contact_envelope: dict | None = None,
     ) -> None:
         self.positive_moves_object = positive_moves_object
         self.grasp_frame_converges = grasp_frame_converges
@@ -103,11 +106,13 @@ class _ControlEnvironment:
         self.joints = [0.1 * index for index in range(7)]
         self.can = list(START)
         self.grasp_frame = list(START)
+        self.controlled_body_quaternion = [1.0, 0.0, 0.0, 0.0]
         self.gripper_width = 0.085
         self.gripped = False
         self.pending_target = None
         self.pending_gripper = 1.0
         self.actions: list[list[float]] = []
+        self.contact_envelope = contact_envelope or canonical_contact_envelope()
 
     def reset(self) -> None:
         self.reset_count += 1
@@ -115,6 +120,7 @@ class _ControlEnvironment:
         self.joints = [0.1 * index for index in range(7)]
         self.can = list(START)
         self.grasp_frame = list(START)
+        self.controlled_body_quaternion = [1.0, 0.0, 0.0, 0.0]
         self.gripper_width = 0.085
         self.gripped = False
         self.pending_target = None
@@ -157,11 +163,33 @@ class _ControlEnvironment:
     def read_arm_joint_positions(self):
         return list(self.joints)
 
+    def read_arm_dynamics_observation(self):
+        zeros = [0.0] * 7
+        limits = [87.0] * 4 + [12.0] * 3
+        return {
+            "schema_version": "adp009d_arm_dynamics_observation.v2",
+            "joint_position_rad": list(self.joints),
+            "joint_velocity_rad_s": zeros,
+            "joint_position_target_rad": list(self.joints),
+            "computed_torque_nm": zeros,
+            "applied_torque_nm": zeros,
+            "joint_effort_limit_nm": limits,
+            "joint_effort_utilization": zeros,
+            "torque_clip_residual_nm": zeros,
+            "body_contact_force_world_n": None,
+            "body_incoming_joint_wrench_body": {},
+            "contact_envelope": dict(self.contact_envelope),
+        }
+
     def read_object_sample(self):
         return {
             "can_pose_world": [*self.can, 0.0, 0.0, 0.0, 1.0],
             "gripper_width_m": self.gripper_width,
             "grasp_frame_position_world_m": list(self.grasp_frame),
+            "controlled_body_pose_world": [
+                *self.grasp_frame,
+                *self.controlled_body_quaternion,
+            ],
         }
 
     def hold_action(self, *, gripper_command: float):
@@ -176,11 +204,18 @@ class _ControlEnvironment:
         target_quaternion_world_xyzw,
         gripper_command,
         max_joint_delta_rad,
-        max_joint_setpoint_lead_rad,
+        max_task_space_translation_step_m,
+        orientation_tolerance_deg,
+        task_space_translation_strategy,
     ):
         assert target_quaternion_world_xyzw == [1.0, 0.0, 0.0, 0.0]
         assert max_joint_delta_rad == 0.03
-        assert max_joint_setpoint_lead_rad == 0.20
+        assert max_task_space_translation_step_m == 0.01
+        assert orientation_tolerance_deg == 2.0
+        assert task_space_translation_strategy in {
+            "direct_global_pose_target",
+            "orientation_first_bounded_local_increment",
+        }
         self.pending_target = [float(value) for value in target_position_world_m]
         self.pending_gripper = float(gripper_command)
         target_joints = [
@@ -230,6 +265,34 @@ class _TransientArrivalEnvironment(_ControlEnvironment):
             self.grasp_frame = list(START)
 
 
+class _LegacyToleranceStallEnvironment(_ControlEnvironment):
+    """Replay the paid canary's unsafe pregrasp residual without GPU imports."""
+
+    def step(self, isaac_action):
+        super().step(isaac_action)
+        if self.pending_target is not None:
+            self.grasp_frame = [
+                self.pending_target[0],
+                self.pending_target[1] - 0.01585,
+                self.pending_target[2],
+            ]
+
+
+class _PaidCanaryOrientationStallEnvironment(_ControlEnvironment):
+    """Replay the paid canary's safe position with its unsafe wrist angle."""
+
+    def step(self, isaac_action):
+        super().step(isaac_action)
+        # 9.1716 degrees from the preregistered [1, 0, 0, 0] task orientation.
+        half_angle = np.deg2rad(9.1716) / 2.0
+        self.controlled_body_quaternion = [
+            float(np.cos(half_angle)),
+            0.0,
+            0.0,
+            float(np.sin(half_angle)),
+        ]
+
+
 def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> None:
     instance = _instance()
 
@@ -244,6 +307,10 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
         "horizontal_support_top_down_task_orientation"
     )
     assert first["controlled_body_quaternion_world_xyzw"] == [1.0, 0.0, 0.0, 0.0]
+    pregrasp = next(
+        phase for phase in first["scripted_positive_phases"]
+        if phase["phase_id"] == "pregrasp"
+    )
     grasp = next(
         phase for phase in first["scripted_positive_phases"]
         if phase["phase_id"] == "grasp"
@@ -258,10 +325,55 @@ def test_control_plan_is_deterministic_and_bound_to_the_scenario_instance() -> N
     )
     assert grasp["target_frame"] == "probe_calibrated_finger_midpoint"
     assert grasp["target_quaternion_world_xyzw"] == [1.0, 0.0, 0.0, 0.0]
-    assert grasp["arrival_tolerance_m"] == 0.02
+    assert grasp["arrival_tolerance_m"] == pytest.approx(
+        0.085 / 2.0
+        - instance["resolved_parameters"]["object_radius_m"]
+        - canonical_contact_envelope()["effective_contact_envelope_m"]
+    )
+    assert grasp["arrival_tolerance_basis"] == (
+        "open_jaw_radial_clearance_minus_effective_contact_envelope"
+    )
+    assert first["contact_envelope"] == canonical_contact_envelope()
+    assert first["open_gripper_geometry"] == {
+        "full_opening_m": 0.085,
+        "object_diameter_m": pytest.approx(
+            instance["resolved_parameters"]["object_radius_m"] * 2.0
+        ),
+        "radial_clearance_m": pytest.approx(
+            0.085 / 2.0
+            - instance["resolved_parameters"]["object_radius_m"]
+        ),
+        "effective_contact_envelope_m": pytest.approx(0.01),
+        "radial_clearance_after_effective_contact_envelope_m": pytest.approx(
+            0.085 / 2.0
+            - instance["resolved_parameters"]["object_radius_m"]
+            - 0.01
+        ),
+        "clearance_accounting": (
+            "radial_clearance_m_minus_effective_contact_envelope_m"
+        ),
+        "aperture_safe_arrival_tolerance_m": pytest.approx(
+            0.085 / 2.0
+            - instance["resolved_parameters"]["object_radius_m"]
+            - 0.01
+        ),
+    }
     assert grasp["minimum_steps"] == 30
     assert grasp["maximum_steps"] == 120
     assert grasp["arrival_stability_steps"] == 3
+    assert grasp["orientation_tolerance_deg"] == 2.0
+    assert grasp["orientation_tolerance_basis"] == (
+        "top_down_task_orientation_angular_distance"
+    )
+    assert grasp["max_task_space_translation_step_m"] == 0.01
+    assert grasp["action_hold_steps"] == 4
+    assert grasp["task_space_translation_strategy"] == (
+        "orientation_first_bounded_local_increment"
+    )
+    assert pregrasp["action_hold_steps"] == 1
+    assert pregrasp["task_space_translation_strategy"] == (
+        "direct_global_pose_target"
+    )
     assert [phase["phase_id"] for phase in first["scripted_positive_phases"]] == [
         "pregrasp",
         "descend",
@@ -306,7 +418,6 @@ def test_controls_reject_a_changed_shipped_plan(tmp_path: Path) -> None:
             gripper_closed_command=0.0,
             output_dir=tmp_path,
         )
-
     assert "control_plan_bundle_binding_mismatch" in excinfo.value.errors
 
 
@@ -328,6 +439,11 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
     assert pair["cell_admitted_for_policy_execution"] is True
     assert pair["policy_execution_blockers"] == []
     assert pair["positive_failure_is_policy_failure"] is False
+    assert pair["contact_envelope"] == canonical_contact_envelope()
+    assert all(
+        row["contact_envelope"] == canonical_contact_envelope()
+        for row in pair["controls"]
+    )
     assert all(row["control_passed"] for row in pair["controls"])
     negative = json.loads(
         (tmp_path / f"adp009d_control_episode.{ZERO_ACTION_NEGATIVE}.json").read_text()
@@ -349,7 +465,24 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         for row in positive["phase_arrivals"]
         if row["phase_id"] in {"grasp", "release"}
     } == {"grasp": 30, "release": 30}
-    assert (tmp_path / "adp009d_control_plan.v5.json").is_file()
+    positive_actions = [
+        row for row in positive["action_trace"] if row["phase_id"] == "grasp"
+    ]
+    assert [row["action_recomputed"] for row in positive_actions[:5]] == [
+        True,
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert [row["action_hold_index"] for row in positive_actions[:5]] == [0, 1, 2, 3, 0]
+    assert len({tuple(row["isaac_action"]) for row in positive_actions[:4]}) == 1
+    pregrasp_actions = [
+        row for row in positive["action_trace"] if row["phase_id"] == "pregrasp"
+    ]
+    assert all(row["action_recomputed"] for row in pregrasp_actions)
+    assert {row["action_hold_index"] for row in pregrasp_actions} == {0}
+    assert (tmp_path / "adp009d_control_plan.v12.json").is_file()
     assert negative["action_trace"][0]["isaac_action"][:7] == negative[
         "action_trace"
     ][0]["observed_joint_position_before_rad"]
@@ -363,6 +496,19 @@ def test_required_controls_admit_cell_only_after_negative_and_positive_pass(
         assert receipt["visual_evidence"]["review_only_camera_ids"] == ["overview"]
         assert receipt["state_trace_digest"].startswith("sha256:")
         assert receipt["action_trace_digest"].startswith("sha256:")
+        assert receipt["arm_dynamics_summary"]["schema_version"] == (
+            "adp009d_arm_dynamics_summary.v2"
+        )
+        assert receipt["contact_envelope"] == canonical_contact_envelope()
+        assert receipt["initial_arm_dynamics"]["contact_envelope"] == (
+            canonical_contact_envelope()
+        )
+        assert receipt["arm_dynamics_summary"]["contact_envelope"] == (
+            canonical_contact_envelope()
+        )
+        assert receipt["action_trace"][0]["arm_dynamics_before"][
+            "joint_effort_limit_nm"
+        ] == [87.0] * 4 + [12.0] * 3
 
 
 def test_failed_scripted_positive_blocks_cell_without_becoming_policy_failure(
@@ -414,7 +560,22 @@ def test_nonconverging_phase_aborts_before_grasp_and_retains_typed_evidence(
             "start_position_world_m": START,
             "achieved_position_world_m": START,
             "terminal_position_error_m": pytest.approx(0.42),
-            "arrival_tolerance_m": 0.02,
+            "terminal_lateral_error_m": 0.0,
+            "arrival_tolerance_m": pytest.approx(
+                0.085 / 2.0
+                - _instance()["resolved_parameters"]["object_radius_m"]
+                - 0.01
+            ),
+            "arrival_tolerance_basis": (
+                "open_jaw_radial_clearance_minus_effective_contact_envelope"
+            ),
+            "terminal_position_within_tolerance": False,
+            "terminal_orientation_error_deg": 0.0,
+            "orientation_tolerance_deg": 2.0,
+            "orientation_tolerance_basis": (
+                "top_down_task_orientation_angular_distance"
+            ),
+            "terminal_orientation_within_tolerance": True,
             "terminal_within_tolerance": False,
             "minimum_steps": 1,
             "maximum_steps": 240,
@@ -426,6 +587,113 @@ def test_nonconverging_phase_aborts_before_grasp_and_retains_typed_evidence(
         }
     ]
     assert {row["phase_id"] for row in positive["action_trace"]} == {"pregrasp"}
+
+
+def test_control_plan_rejects_object_that_cannot_clear_open_jaws() -> None:
+    instance = _instance()
+    instance["resolved_parameters"]["object_radius_m"] = 0.041
+    instance["instance_digest"] = canonical_digest(
+        instance, digest_field="instance_digest"
+    )
+
+    with pytest.raises(ControlEpisodeError) as excinfo:
+        materialize_control_plan(instance)
+
+    assert "control_plan_object_open_jaw_effective_clearance_insufficient" in (
+        excinfo.value.errors
+    )
+
+
+def test_control_plan_requires_observed_object_radius() -> None:
+    instance = _instance()
+    del instance["resolved_parameters"]["object_radius_m"]
+    instance["instance_digest"] = canonical_digest(
+        instance, digest_field="instance_digest"
+    )
+
+    with pytest.raises(ControlEpisodeError) as excinfo:
+        materialize_control_plan(instance)
+
+    assert "control_plan_object_radius_missing" in excinfo.value.errors
+
+
+def test_controls_reject_a_drifted_runtime_contact_envelope_before_motion(
+    tmp_path: Path,
+) -> None:
+    drifted_envelope = canonical_contact_envelope()
+    drifted_envelope["sdf_margin_m"] = 0.01
+    environment = _ControlEnvironment(contact_envelope=drifted_envelope)
+
+    with pytest.raises(ControlEpisodeError, match="sdf_margin_invalid"):
+        run_control_episode(
+            environment=environment,
+            plan=materialize_control_plan(_instance()),
+            control_id=ZERO_ACTION_NEGATIVE,
+            gripper_open_command=1.0,
+            gripper_closed_command=0.0,
+            media_output_dir=tmp_path,
+            episode_id="drifted-contact-envelope",
+        )
+
+    assert environment.actions == []
+
+
+def test_paid_canary_legacy_pregrasp_residual_is_not_admitted(
+    tmp_path: Path,
+) -> None:
+    plan = materialize_control_plan(_instance())
+    plan["scripted_positive_phases"] = [plan["scripted_positive_phases"][0]]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    receipt = run_control_episode(
+        environment=_LegacyToleranceStallEnvironment(positive_moves_object=False),
+        plan=plan,
+        control_id=SCRIPTED_POSITIVE,
+        gripper_open_command=1.0,
+        gripper_closed_command=0.0,
+        media_output_dir=tmp_path,
+        episode_id="paid-canary-pregrasp-residual",
+    )
+
+    arrival = receipt["phase_arrivals"][0]
+    assert arrival["terminal_position_error_m"] == pytest.approx(0.01585)
+    assert arrival["terminal_lateral_error_m"] == pytest.approx(0.01585)
+    assert arrival["arrival_tolerance_m"] == pytest.approx(
+        0.0014052739856549607
+    )
+    assert arrival["target_reached"] is False
+    assert "lateral_error_m=0.015850" in receipt["phase_execution_blocker"]
+
+
+def test_paid_canary_pregrasp_orientation_residual_is_not_admitted(
+    tmp_path: Path,
+) -> None:
+    plan = materialize_control_plan(_instance())
+    plan["scripted_positive_phases"] = [plan["scripted_positive_phases"][0]]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    receipt = run_control_episode(
+        environment=_PaidCanaryOrientationStallEnvironment(
+            positive_moves_object=False
+        ),
+        plan=plan,
+        control_id=SCRIPTED_POSITIVE,
+        gripper_open_command=1.0,
+        gripper_closed_command=0.0,
+        media_output_dir=tmp_path,
+        episode_id="paid-canary-pregrasp-orientation-residual",
+    )
+
+    arrival = receipt["phase_arrivals"][0]
+    assert arrival["terminal_position_within_tolerance"] is True
+    assert arrival["terminal_orientation_error_deg"] == pytest.approx(9.1716)
+    assert arrival["orientation_tolerance_deg"] == 2.0
+    assert arrival["terminal_orientation_within_tolerance"] is False
+    assert arrival["terminal_within_tolerance"] is False
+    assert arrival["target_reached"] is False
+    assert "orientation_error_deg=9.171600" in receipt[
+        "phase_execution_blocker"
+    ]
 
 
 def test_slowly_converging_phase_runs_past_legacy_budget_then_stops_early(
@@ -495,3 +763,111 @@ def test_control_episode_rejects_legacy_plan_schema(tmp_path: Path) -> None:
         )
 
     assert "control_episode_plan_schema_invalid" in excinfo.value.errors
+
+
+def test_partner_matrix_separates_filtered_contact_from_unattributed_force() -> None:
+    """The a0cf16c9 canary held the arm at 8.6 N with the nearest scene triangle
+    70 mm from the finger body origin, so the net force alone cannot say what is
+    pushing. The summary must split the filtered partner's share from the
+    residual and never assert a prim."""
+    from blueprint_pipeline.adp009d_control_episode import _summarize_arm_dynamics
+
+    def action(step, contact, partner, sage_collision=None):
+        zeros = [0.0] * 7
+        return {
+            "step_index": step,
+            "phase_id": "descend",
+            "arm_dynamics_after": {
+                "schema_version": "adp009d_arm_dynamics_observation.v2",
+                "joint_position_rad": zeros,
+                "joint_velocity_rad_s": zeros,
+                "joint_position_target_rad": zeros,
+                "computed_torque_nm": zeros,
+                "applied_torque_nm": zeros,
+                "joint_effort_limit_nm": [87.0] * 4 + [12.0] * 3,
+                "joint_effort_utilization": zeros,
+                "torque_clip_residual_nm": zeros,
+                "body_contact_force_world_n": {"left_inner_finger": [0.0, 0.0, contact]},
+                "body_contact_partner_force_world_n": (
+                    None if partner is None else {"left_inner_finger": [0.0, 0.0, partner]}
+                ),
+                "body_contact_sage_collision_force_world_n": (
+                    None
+                    if sage_collision is None
+                    else {"left_inner_finger": [0.0, 0.0, sage_collision]}
+                ),
+                "body_incoming_joint_wrench_body": {"panda_link1": [0.0] * 6},
+                "contact_envelope": canonical_contact_envelope(),
+            },
+        }
+
+    scene_held = _summarize_arm_dynamics([action(0, 8.62, 0.0)])["phases"]["descend"]
+    assert scene_held["contact_partner_matrix_available"] is True
+    assert scene_held["maximum_filtered_partner_contact_force_n"] == 0.0
+    assert scene_held["maximum_unattributed_contact_force_n"] == pytest.approx(8.62)
+
+    object_held = _summarize_arm_dynamics([action(0, 8.62, 8.62)])["phases"]["descend"]
+    assert object_held["maximum_filtered_partner_contact_force_n"] == pytest.approx(8.62)
+    assert object_held["maximum_unattributed_contact_force_n"] == 0.0
+
+    sage_held = _summarize_arm_dynamics([action(0, 8.62, 0.0, 8.62)])["phases"][
+        "descend"
+    ]
+    assert sage_held["contact_partner_matrix_available"] is True
+    assert sage_held["contact_sage_collision_matrix_available"] is True
+    assert sage_held["maximum_filtered_partner_contact_force_n"] == 0.0
+    assert sage_held["maximum_sage_collision_contact_force_n"] == pytest.approx(8.62)
+    assert sage_held["maximum_accounted_filtered_contact_force_n"] == pytest.approx(8.62)
+    assert sage_held["maximum_unattributed_contact_force_n"] == 0.0
+
+    unfiltered = _summarize_arm_dynamics([action(0, 8.62, None)])["phases"]["descend"]
+    assert unfiltered["contact_partner_matrix_available"] is False
+    assert unfiltered["maximum_unattributed_contact_force_n"] == pytest.approx(8.62)
+
+    summary = _summarize_arm_dynamics([action(0, 8.62, 0.0)])
+    assert "does not by itself assign root cause" in summary["claim_boundary"]
+
+
+def test_contact_partner_force_shape_is_validated_and_optional() -> None:
+    from blueprint_pipeline.adp009d_control_episode import (
+        ControlEpisodeError,
+        _canonical_dynamics_observation,
+    )
+
+    zeros = [0.0] * 7
+    base = {
+        "schema_version": "adp009d_arm_dynamics_observation.v2",
+        "joint_position_rad": zeros,
+        "joint_velocity_rad_s": zeros,
+        "joint_position_target_rad": zeros,
+        "computed_torque_nm": zeros,
+        "applied_torque_nm": zeros,
+        "joint_effort_limit_nm": [87.0] * 4 + [12.0] * 3,
+        "joint_effort_utilization": zeros,
+        "torque_clip_residual_nm": zeros,
+        "body_contact_force_world_n": {"left_inner_finger": [0.0, 0.0, 1.0]},
+        "body_incoming_joint_wrench_body": {"panda_link1": [0.0] * 6},
+        "contact_envelope": canonical_contact_envelope(),
+    }
+
+    assert _canonical_dynamics_observation(dict(base)) is not None
+    assert _canonical_dynamics_observation(
+        {**base, "body_contact_partner_force_world_n": None}
+    )
+    assert _canonical_dynamics_observation(
+        {**base, "body_contact_sage_collision_force_world_n": None}
+    )
+
+    with pytest.raises(ControlEpisodeError):
+        _canonical_dynamics_observation(
+            {**base, "body_contact_partner_force_world_n": {"left_inner_finger": [0.0, 1.0]}}
+        )
+    with pytest.raises(ControlEpisodeError):
+        _canonical_dynamics_observation(
+            {
+                **base,
+                "body_contact_sage_collision_force_world_n": {
+                    "left_inner_finger": [0.0, 1.0]
+                },
+            }
+        )

@@ -72,6 +72,8 @@ def test_live_builder_routes_the_exact_runtime_through_the_canonical_allocator(
     assert profile["profile_id"] == receipt["profile_id"]
     assert profile["execution_admission"]["live_enabled"] is True
     assert profile["execution_admission"]["blockers"] == []
+    assert profile["physics_backend"] == "physx"
+    assert argv[argv.index("--adp009d-physics-backend") + 1] == "physx"
     assert profile["allocator"]["entrypoint"] == builder.CANONICAL_ALLOCATOR_ENTRYPOINT
     assert "--execute" not in argv
     assert argv[argv.index("--probe-kind") + 1] == "adp009d-franka-native-microcheck"
