@@ -42,8 +42,18 @@ EXPECTED_SPEC_DIGEST = (
     "sha256:6e39daf5c5fc8a7e26d7cb34f53c6f9ac92756c1e86a5fc5ec70dd0e4e38b034"
 )
 EXPECTED_READINESS_DIGEST = (
-    "sha256:153dd8100a43b9e557f8dcd8187fe220afac24411a089bd25bff769ae1745f2a"
+    "sha256:7eb35f11e298038422cb5377ec60e35687f27532fd6430a7352ac58d80701e06"
 )
+#: The dry lane admits on *declared preconditions*, not on a measured readiness
+#: receipt. The file previously declared `task_evaluation_runtime_readiness.v1`
+#: -- the schema owned by `adp009d_live_readiness` -- while carrying three
+#: blockers that module cannot emit and three of its six observation keys. Its
+#: digest was self-consistent, so digest-binding could never catch it, and the
+#: profile copied `allocator_artifact_manifest_not_emitted` into
+#: `execution_admission` where it read as a measurement of the allocator. It
+#: never was one. Pinning the schema keeps a placeholder from impersonating a
+#: receipt again.
+EXPECTED_READINESS_SCHEMA = "task_evaluation_runtime_readiness_precondition.v1"
 MANIFEST_RELATIVE_ROOT = Path("docs/arm_decision_proof_v1/manifests")
 SOURCE_MANIFEST_NAME = "adp009d_840313_interiorgs_sage_source_bundle.v1.json"
 EVALUATION_SPEC_NAME = "adp009d_840313_evaluation_run.v1.json"
@@ -206,6 +216,7 @@ def build_profile_release(
         or validation.get("status") != "passed"
         or validation.get("spec_digest") != EXPECTED_SPEC_DIGEST
         or readiness.get("receipt_digest") != EXPECTED_READINESS_DIGEST
+        or readiness.get("schema_version") != EXPECTED_READINESS_SCHEMA
         or readiness.get("profile_id") != READINESS_PROFILE_ID
         or readiness.get("status") != "blocked"
         or readiness.get("live_execution_enabled") is not False

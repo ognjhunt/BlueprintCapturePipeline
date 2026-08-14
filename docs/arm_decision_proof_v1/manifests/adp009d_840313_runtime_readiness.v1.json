@@ -1,21 +1,23 @@
 {
-  "schema_version": "task_evaluation_runtime_readiness.v1",
-  "status": "blocked",
-  "program_id": "arm-decision-proof-v1",
-  "profile_id": "adp009d-840313-franka-dry-v1",
-  "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba",
-  "evaluation_run_spec_digest": "sha256:6e39daf5c5fc8a7e26d7cb34f53c6f9ac92756c1e86a5fc5ec70dd0e4e38b034",
-  "live_execution_enabled": false,
   "blockers": [
     "exact_adp009d_runtime_adapter_not_on_protected_main",
     "scripted_positive_control_not_passed",
     "allocator_artifact_manifest_not_emitted"
   ],
+  "claim_ceiling": "declared_precondition_not_measured",
+  "evaluation_run_spec_digest": "sha256:6e39daf5c5fc8a7e26d7cb34f53c6f9ac92756c1e86a5fc5ec70dd0e4e38b034",
+  "live_execution_enabled": false,
+  "measurement_source": null,
   "observations": {
-    "exact_runtime_adapter_on_protected_main": false,
-    "scripted_positive_control_passed": false,
-    "allocator_artifact_manifest_emitted": false
+    "allocator_artifact_manifest_emitted": null,
+    "exact_runtime_adapter_on_protected_main": null,
+    "scripted_positive_control_passed": null
   },
+  "profile_id": "adp009d-840313-franka-dry-v1",
+  "program_id": "arm-decision-proof-v1",
   "provider_mutation_performed": false,
-  "receipt_digest": "sha256:153dd8100a43b9e557f8dcd8187fe220afac24411a089bd25bff769ae1745f2a"
+  "receipt_digest": "sha256:7eb35f11e298038422cb5377ec60e35687f27532fd6430a7352ac58d80701e06",
+  "schema_version": "task_evaluation_runtime_readiness_precondition.v1",
+  "source_bundle_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba",
+  "status": "blocked"
 }
