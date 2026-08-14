@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import sys
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,12 @@ def _load(path: Path):
     spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    # Registered before execution: `@dataclass` resolves its field annotations
+    # through `sys.modules[cls.__module__]`, so a builder that declares one
+    # raises here unless the module it is being defined in can be found. That
+    # made this contract's reach depend on whether some earlier test happened
+    # to have imported the same builder first.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -45,18 +52,28 @@ def test_there_are_builders_to_check() -> None:
 
 
 def _cli_arguments(path: Path) -> set[str]:
-    """Every flag this builder's command line declares.
+    """Every flag this builder's command line offers, however it is declared.
 
-    Two declaration styles count, and both are read from the syntax rather than
-    from the source text, so a comment that happens to mention a flag does not
-    change which contract a lane is held to.
+    Four shapes are in use, and reading only some of them is not merely a wrong
+    answer here -- it is a silent exemption. `_is_receipt_driven` is decided
+    from this set, so a builder whose flags this misses drops out of the
+    whole-skeleton and TTL-band contracts below without failing anything.
 
-    The first is a literal `add_argument("--flag", ...)`. The second is a
-    declarative flag table whose rows name their own flag -- the style
-    `prepare_artifixer3d_inputs` already uses, where one table builds both the
-    parser and the call so that a parameter cannot quietly lose its flag and be
-    fixed at a default. For those builders a second literal would be exactly the
-    duplicate the table exists to prevent, so the table is the declaration.
+    * `parser.add_argument("--flag", ...)`, the common style;
+    * a row naming its own flag in a `"flag"` field, as
+      `prepare_artifixer3d_inputs` does: `{"revision": {"flag": "--revision"}}`;
+    * a table keyed by the flag itself: `FLAGS = {"--revision": Flag(...)}`;
+    * a row handing its flag first to a constructor:
+      `PARAMS = {"revision": Param("--revision", ...)}`.
+
+    The last three are one idea spelled three ways -- a single table that
+    builds both the parser and the call, so a parameter cannot quietly lose its
+    flag and be fixed at a default. Three lanes arrived at it independently and
+    each reader saw only its own spelling, which is why all four are read here
+    rather than any one of them.
+
+    All are read from the syntax rather than the source text, so a docstring
+    that happens to name a flag cannot satisfy a contract.
     """
 
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -77,15 +94,37 @@ def _cli_arguments(path: Path) -> set[str]:
         and key.value == "flag"
         and isinstance(value, ast.Constant)
     )
+    declared.update(
+        key.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant)
+        and isinstance(key.value, str)
+        and key.value.startswith("--")
+    )
+    declared.update(
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+        and node.args[0].value.startswith("--")
+    )
     return {item for item in declared if isinstance(item, str)}
 
 
-def test_the_flag_reader_sees_both_declaration_styles(tmp_path: Path) -> None:
+def test_the_flag_reader_sees_every_declaration_style_in_use(tmp_path: Path) -> None:
     """The reader decides which contract every builder below is held to.
 
-    Narrowing it back to `add_argument` literals would silently exempt a
-    flag-table builder from the `--revision` contract rather than fail it, and
-    a widening to plain source text would let a docstring satisfy it.
+    Each shape below is a real builder's command line, and three lanes added
+    three of them in the same week -- each lane's reader seeing only its own.
+    Narrowing back to any one of them silently exempts the other lanes from the
+    contracts keyed on `--bundle-receipt` and `--revision` rather than failing
+    them, which is the failure this whole function exists to prevent. Widening
+    to plain source text would let a docstring satisfy a contract, so that is
+    pinned here too.
     """
 
     module = tmp_path / "build_probe_live_profile.py"
@@ -94,13 +133,20 @@ def test_the_flag_reader_sees_both_declaration_styles(tmp_path: Path) -> None:
             '''
             """A docstring naming --not-a-flag must not count."""
             PARAMETERS = {"revision": {"flag": "--revision"}}
+            FLAGS = {"--bundle-receipt": Flag("bundle_receipt")}
+            PARAMS = {"release": Param("--release-evidence", required=True)}
             parser.add_argument("--output", required=True)
             '''
         ),
         encoding="utf-8",
     )
 
-    assert _cli_arguments(module) == {"--revision", "--output"}
+    assert _cli_arguments(module) == {
+        "--revision",
+        "--bundle-receipt",
+        "--release-evidence",
+        "--output",
+    }
 
 
 def _is_receipt_driven(path: Path) -> bool:
