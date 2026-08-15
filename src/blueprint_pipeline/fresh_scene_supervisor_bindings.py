@@ -502,6 +502,302 @@ def _validate_request(
     return request
 
 
+def _selected_task_ids(values: Sequence[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    selected = [str(value).strip() for value in values]
+    if (
+        not 1 <= len(selected) <= 5
+        or any(not value for value in selected)
+        or len(set(selected)) != len(selected)
+    ):
+        raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+    return sorted(selected)
+
+
+def _request_path(
+    value: str | Path,
+    *,
+    roots: Sequence[Path],
+    field: str,
+) -> str:
+    return str(
+        _resident_path(
+            value,
+            roots=roots,
+            kind="file",
+            code=f"fresh_scene_tool_request_input_not_host_resident:{field}",
+        )
+    )
+
+
+def _write_tool_request(
+    *,
+    value: Mapping[str, Any],
+    schema: str,
+    output_path: str | Path,
+    roots: Sequence[Path] | None,
+) -> dict[str, Any]:
+    resident_roots = tuple(
+        configured_launch_input_roots() if roots is None else roots
+    )
+    request = dict(value)
+    request["schema_version"] = schema
+    request["request_digest"] = ""
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    request = _validate_request(request, schema=schema, roots=resident_roots)
+    destination = Path(output_path).expanduser().resolve()
+    if (
+        destination.exists()
+        or destination.is_symlink()
+        or not path_is_host_resident(destination, resident_roots)
+    ):
+        raise FreshSceneSupervisorBindingError(
+            "fresh_scene_tool_request_output_invalid"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(canonical_json(request) + "\n", encoding="utf-8")
+    return request
+
+
+def materialize_fresh_scene_removal_freeze_request(
+    *,
+    source_standard_splat_path: str | Path,
+    source_collision_path: str | Path,
+    registered_frame_receipt_path: str | Path,
+    calibrated_mask_set_receipt_path: str | Path,
+    tasks: Mapping[str, Any],
+    output_path: str | Path,
+    roots: Sequence[Path] | None = None,
+) -> dict[str, Any]:
+    """Seal the reviewed mask-to-removal inputs; never select Gaussians."""
+
+    resident_roots = tuple(
+        configured_launch_input_roots() if roots is None else roots
+    )
+    if (
+        not 1 <= len(tasks) <= 5
+        or any(not isinstance(task_id, str) or not task_id.strip() for task_id in tasks)
+    ):
+        raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+    normalized_tasks: dict[str, Any] = {}
+    for task_id in sorted(tasks):
+        raw = tasks[task_id]
+        if not isinstance(task_id, str) or not isinstance(raw, Mapping):
+            raise FreshSceneSupervisorBindingError(
+                "fresh_scene_tool_request_invalid"
+            )
+        task = {
+            "target_collision_prim_path": raw.get("target_collision_prim_path"),
+            "scene": raw.get("scene"),
+            "policy": raw.get("policy"),
+            "historical_baseline": raw.get("historical_baseline"),
+        }
+        if raw.get("render_input_receipt_path") is not None:
+            task["render_input_receipt_path"] = _request_path(
+                str(raw["render_input_receipt_path"]),
+                roots=resident_roots,
+                field="render_input_receipt_path",
+            )
+        normalized_tasks[task_id] = task
+    return _write_tool_request(
+        value={
+            "source_standard_splat_path": _request_path(
+                source_standard_splat_path,
+                roots=resident_roots,
+                field="source_standard_splat_path",
+            ),
+            "source_collision_path": _request_path(
+                source_collision_path,
+                roots=resident_roots,
+                field="source_collision_path",
+            ),
+            "registered_frame_receipt_path": _request_path(
+                registered_frame_receipt_path,
+                roots=resident_roots,
+                field="registered_frame_receipt_path",
+            ),
+            "calibrated_mask_set_receipt_path": _request_path(
+                calibrated_mask_set_receipt_path,
+                roots=resident_roots,
+                field="calibrated_mask_set_receipt_path",
+            ),
+            "tasks": normalized_tasks,
+        },
+        schema=REMOVAL_FREEZE_REQUEST_SCHEMA,
+        output_path=output_path,
+        roots=resident_roots,
+    )
+
+
+def materialize_fresh_scene_segment_cutout_request(
+    *,
+    source_standard_splat_path: str | Path,
+    task_freeze_paths: Sequence[str | Path],
+    sweep_freeze_paths_by_task: Mapping[str, str | Path],
+    contribution_manifest_paths_by_task: Mapping[str, str | Path],
+    output_path: str | Path,
+    roots: Sequence[Path] | None = None,
+) -> dict[str, Any]:
+    """Seal completed contribution evidence for deterministic cutout."""
+
+    resident_roots = tuple(
+        configured_launch_input_roots() if roots is None else roots
+    )
+    if (
+        any(
+            not isinstance(task_id, str) or not task_id.strip()
+            for task_id in sweep_freeze_paths_by_task
+        )
+        or any(
+            not isinstance(task_id, str) or not task_id.strip()
+            for task_id in contribution_manifest_paths_by_task
+        )
+    ):
+        raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+    task_freezes = sorted(
+        _request_path(
+            value,
+            roots=resident_roots,
+            field="task_freeze_paths",
+        )
+        for value in task_freeze_paths
+    )
+    if len(set(task_freezes)) != len(task_freezes):
+        raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+    sweeps = {
+        str(task_id): _request_path(
+            value,
+            roots=resident_roots,
+            field="sweep_freeze_paths_by_task",
+        )
+        for task_id, value in sorted(sweep_freeze_paths_by_task.items())
+    }
+    manifests = {
+        str(task_id): _request_path(
+            value,
+            roots=resident_roots,
+            field="contribution_manifest_paths_by_task",
+        )
+        for task_id, value in sorted(contribution_manifest_paths_by_task.items())
+    }
+    return _write_tool_request(
+        value={
+            "source_standard_splat_path": _request_path(
+                source_standard_splat_path,
+                roots=resident_roots,
+                field="source_standard_splat_path",
+            ),
+            "task_freeze_paths": task_freezes,
+            "sweep_freeze_paths_by_task": sweeps,
+            "contribution_manifest_paths_by_task": manifests,
+        },
+        schema=SEGMENT_CUTOUT_REQUEST_SCHEMA,
+        output_path=output_path,
+        roots=resident_roots,
+    )
+
+
+def materialize_fresh_scene_artifixer_candidate_request(
+    *,
+    segment_cutout_set_path: str | Path,
+    execution_authority_path: str | Path,
+    output_path: str | Path,
+    selected_task_ids: Sequence[str] | None = None,
+    object_absent_reference_receipt_paths: Sequence[str | Path] = (),
+    roots: Sequence[Path] | None = None,
+) -> dict[str, Any]:
+    """Seal reviewed cutout inputs without executing an appearance model."""
+
+    resident_roots = tuple(
+        configured_launch_input_roots() if roots is None else roots
+    )
+    return _write_tool_request(
+        value={
+            "segment_cutout_set_path": _request_path(
+                segment_cutout_set_path,
+                roots=resident_roots,
+                field="segment_cutout_set_path",
+            ),
+            "execution_authority_path": _request_path(
+                execution_authority_path,
+                roots=resident_roots,
+                field="execution_authority_path",
+            ),
+            "selected_task_ids": _selected_task_ids(selected_task_ids),
+            "object_absent_reference_receipt_paths": sorted(
+                _request_path(
+                    value,
+                    roots=resident_roots,
+                    field="object_absent_reference_receipt_paths",
+                )
+                for value in object_absent_reference_receipt_paths
+            ),
+        },
+        schema=ARTIFIXER_CANDIDATE_REQUEST_SCHEMA,
+        output_path=output_path,
+        roots=resident_roots,
+    )
+
+
+def materialize_fresh_scene_semantic_teacher_edit_request(
+    *,
+    source_candidate_inputs_receipt_path: str | Path,
+    backend_registry_path: str | Path,
+    backend_id: str,
+    rights_attestation_path: str | Path,
+    output_path: str | Path,
+    selected_task_ids: Sequence[str] | None = None,
+    object_absent_reference_receipt_paths: Sequence[str | Path] = (),
+    prompt_policy: str = "generic_masked_object_absent_background_completion_v2",
+    output_format: str = "png",
+    retry_count: int = 0,
+    roots: Sequence[Path] | None = None,
+) -> dict[str, Any]:
+    """Seal whole-frame teacher inputs without upload, inference, or spend."""
+
+    resident_roots = tuple(
+        configured_launch_input_roots() if roots is None else roots
+    )
+    return _write_tool_request(
+        value={
+            "source_candidate_inputs_receipt_path": _request_path(
+                source_candidate_inputs_receipt_path,
+                roots=resident_roots,
+                field="source_candidate_inputs_receipt_path",
+            ),
+            "backend_registry_path": _request_path(
+                backend_registry_path,
+                roots=resident_roots,
+                field="backend_registry_path",
+            ),
+            "backend_id": backend_id.strip(),
+            "rights_attestation_path": _request_path(
+                rights_attestation_path,
+                roots=resident_roots,
+                field="rights_attestation_path",
+            ),
+            "selected_task_ids": _selected_task_ids(selected_task_ids),
+            "object_absent_reference_receipt_paths": sorted(
+                _request_path(
+                    value,
+                    roots=resident_roots,
+                    field="object_absent_reference_receipt_paths",
+                )
+                for value in object_absent_reference_receipt_paths
+            ),
+            "prompt_policy": prompt_policy,
+            "output_format": output_format,
+            "retry_count": retry_count,
+        },
+        schema=SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA,
+        output_path=output_path,
+        roots=resident_roots,
+    )
+
+
 def materialize_fresh_scene_supervisor_bindings(
     *,
     preparation_status_path: str | Path,
@@ -732,9 +1028,55 @@ def compile_fresh_scene_supervisor_bindings(
     }
 
 
+def _cli_mapping(path: str | Path, *, code: str) -> dict[str, Any]:
+    roots = configured_launch_input_roots()
+    source = _resident_path(
+        path, roots=roots, kind="file", code=f"{code}_not_host_resident"
+    )
+    value = _read_object(source, code=code)
+    return value
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    removal = commands.add_parser("request-removal-freezes")
+    removal.add_argument("--source-standard-splat", required=True)
+    removal.add_argument("--source-collision", required=True)
+    removal.add_argument("--registered-frame-receipt", required=True)
+    removal.add_argument("--calibrated-mask-set-receipt", required=True)
+    removal.add_argument("--tasks-json", required=True)
+    removal.add_argument("--output", required=True)
+    cutout = commands.add_parser("request-segment-cutout")
+    cutout.add_argument("--source-standard-splat", required=True)
+    cutout.add_argument("--task-freeze", action="append", required=True)
+    cutout.add_argument("--sweep-freezes-json", required=True)
+    cutout.add_argument("--contribution-manifests-json", required=True)
+    cutout.add_argument("--output", required=True)
+    candidate = commands.add_parser("request-artifixer-candidate")
+    candidate.add_argument("--segment-cutout-set", required=True)
+    candidate.add_argument("--execution-authority", required=True)
+    candidate.add_argument("--selected-task-id", action="append")
+    candidate.add_argument(
+        "--object-absent-reference-receipt", action="append", default=[]
+    )
+    candidate.add_argument("--output", required=True)
+    teacher = commands.add_parser("request-semantic-teacher-edit")
+    teacher.add_argument("--source-candidate-inputs-receipt", required=True)
+    teacher.add_argument("--backend-registry", required=True)
+    teacher.add_argument("--backend-id", required=True)
+    teacher.add_argument("--rights-attestation", required=True)
+    teacher.add_argument("--selected-task-id", action="append")
+    teacher.add_argument(
+        "--object-absent-reference-receipt", action="append", default=[]
+    )
+    teacher.add_argument(
+        "--prompt-policy",
+        default="generic_masked_object_absent_background_completion_v2",
+    )
+    teacher.add_argument("--output-format", default="png")
+    teacher.add_argument("--retry-count", type=int, default=0)
+    teacher.add_argument("--output", required=True)
     build = commands.add_parser("build")
     build.add_argument("--preparation-status", required=True)
     build.add_argument("--sam31-task-input-request")
@@ -752,7 +1094,59 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--allow-live-agents-sdk", action="store_true")
     run.add_argument("--agent-inference-budget-usd", type=float, default=0.0)
     args = parser.parse_args(argv)
-    if args.command == "build":
+    if args.command == "request-removal-freezes":
+        result = materialize_fresh_scene_removal_freeze_request(
+            source_standard_splat_path=args.source_standard_splat,
+            source_collision_path=args.source_collision,
+            registered_frame_receipt_path=args.registered_frame_receipt,
+            calibrated_mask_set_receipt_path=args.calibrated_mask_set_receipt,
+            tasks=_cli_mapping(
+                args.tasks_json, code="fresh_scene_removal_tasks_invalid"
+            ),
+            output_path=args.output,
+        )
+    elif args.command == "request-segment-cutout":
+        result = materialize_fresh_scene_segment_cutout_request(
+            source_standard_splat_path=args.source_standard_splat,
+            task_freeze_paths=args.task_freeze,
+            sweep_freeze_paths_by_task=_cli_mapping(
+                args.sweep_freezes_json,
+                code="fresh_scene_segment_sweep_inputs_invalid",
+            ),
+            contribution_manifest_paths_by_task=_cli_mapping(
+                args.contribution_manifests_json,
+                code="fresh_scene_segment_manifest_inputs_invalid",
+            ),
+            output_path=args.output,
+        )
+    elif args.command == "request-artifixer-candidate":
+        result = materialize_fresh_scene_artifixer_candidate_request(
+            segment_cutout_set_path=args.segment_cutout_set,
+            execution_authority_path=args.execution_authority,
+            selected_task_ids=args.selected_task_id,
+            object_absent_reference_receipt_paths=(
+                args.object_absent_reference_receipt
+            ),
+            output_path=args.output,
+        )
+    elif args.command == "request-semantic-teacher-edit":
+        result = materialize_fresh_scene_semantic_teacher_edit_request(
+            source_candidate_inputs_receipt_path=(
+                args.source_candidate_inputs_receipt
+            ),
+            backend_registry_path=args.backend_registry,
+            backend_id=args.backend_id,
+            rights_attestation_path=args.rights_attestation,
+            selected_task_ids=args.selected_task_id,
+            object_absent_reference_receipt_paths=(
+                args.object_absent_reference_receipt
+            ),
+            prompt_policy=args.prompt_policy,
+            output_format=args.output_format,
+            retry_count=args.retry_count,
+            output_path=args.output,
+        )
+    elif args.command == "build":
         result = materialize_fresh_scene_supervisor_bindings(
             preparation_status_path=args.preparation_status,
             sam31_task_input_request_path=args.sam31_task_input_request,
@@ -786,6 +1180,10 @@ __all__ = [
     "SCHEMA_VERSION",
     "FreshSceneSupervisorBindingError",
     "compile_fresh_scene_supervisor_bindings",
+    "materialize_fresh_scene_artifixer_candidate_request",
+    "materialize_fresh_scene_removal_freeze_request",
+    "materialize_fresh_scene_segment_cutout_request",
+    "materialize_fresh_scene_semantic_teacher_edit_request",
     "materialize_fresh_scene_supervisor_bindings",
 ]
 

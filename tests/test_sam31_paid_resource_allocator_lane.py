@@ -2,6 +2,7 @@ from argparse import Namespace
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import urllib.error
 
 import blueprint_pipeline.paid_resource_allocator as allocator
 from blueprint_pipeline.common import write_json
@@ -199,6 +200,89 @@ def test_sam31_allocator_lane_routes_exact_private_inputs(
     assert result["execution_result_digest"] == canonical_digest(
         result, digest_field="execution_result_digest"
     )
+
+
+def test_sam31_allocator_exception_preserves_terminal_provider_zero(
+    tmp_path: Path, monkeypatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    write_json(Path(args.provider_launch_request), {"request": True})
+    write_json(Path(args.preflight_bundle), {"provider": "vast"})
+    write_json(
+        Path(args.sam31_attempt_authority),
+        {"request_authority_id": "fixture-authority"},
+    )
+    write_json(Path(args.sam31_input_bundle_receipt), {"receipt": True})
+    Path(args.sam31_input_bundle).write_bytes(b"bundle")
+    _write_private(Path(args.sam31_hf_token_file), "hf-secret", mode=0o640)
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.validate_sam31_paid_attempt_authority",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.consume_sam31_paid_attempt_authority_once",
+        lambda *_args, **_kwargs: {"status": "consumed"},
+    )
+    started = tmp_path / "watchdog" / "started.txt"
+
+    def execute(**kwargs):
+        canary_root = Path(kwargs["job_dir"])
+        canary_root.mkdir(parents=True)
+        started.parent.mkdir(parents=True)
+        started.write_text("123", encoding="utf-8")
+        write_json(
+            canary_root / "teardown_receipt.json",
+            {
+                "status": "PASS",
+                "instance_id": "123",
+                "provider_zero_verified": True,
+                "teardown_receipt_digest": "sha256:" + "d" * 64,
+            },
+        )
+        raise urllib.error.HTTPError(
+            "https://objects.example/output", 404, "Not Found", None, None
+        )
+
+    def stage(**kwargs):
+        root = Path(kwargs["job_dir"])
+        root.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            _write_private(root / name, "https://objects.example/value")
+        return {"status": "completed", "blockers": []}
+
+    result = run_sam31_paid_resource_allocator_lane(
+        args,
+        checkout_commit="c" * 40,
+        prepare=lambda **kwargs: (
+            write_json(Path(kwargs["bound_request_out"]), {"bound": True})
+            or {"status": "execute_ready", "blockers": []}
+        ),
+        provider_factory=lambda _name: _ReadOnlyProvider(),
+        execute_canary=execute,
+        stage_bundle=stage,
+        cleanup_bundle=lambda *_args, **_kwargs: {"all_objects_absent": True},
+        arm_watchdog=lambda **_kwargs: (
+            {
+                "watchdog_pid": 123,
+                "watchdog_started_epoch": 1_000,
+                "watchdog_deadline_epoch": 9_999_999_999,
+                "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
+            },
+            SimpleNamespace(started_instance_id_path=started),
+        ),
+        close_watchdog=lambda **_kwargs: {"status": "provider_terminal"},
+    )
+
+    assert result["status"] == "failed"
+    assert result["provider_zero_verified"] is True
+    assert result["continuing_spend_from_this_run"] is False
+    teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())
+    assert teardown["status"] == "completed"
+    assert teardown["continuing_spend_from_this_run"] is False
 
 
 def test_sam31_allocator_lane_dry_run_never_reads_secrets(tmp_path: Path) -> None:
