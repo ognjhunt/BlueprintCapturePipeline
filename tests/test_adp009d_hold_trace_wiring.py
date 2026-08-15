@@ -27,6 +27,9 @@ def test_runtime_records_a_per_step_hold_trace() -> None:
     assert "extract_arm_sample(" in source
     assert "extract_arm_effort_limits(" in source
     assert "classify_arm_hold_trace(" in source
+    assert "hold_settle_decision(" in source
+    assert "max(max_hold_frames, DEFAULT_MAX_HOLD_SETTLE_SAMPLES)" in source
+    assert 'if backend == "newton"' in source
     assert "except HoldTraceError" in source
 
 
@@ -38,3 +41,4 @@ def test_hold_drift_diagnostics_carry_the_trace() -> None:
     assert "hold_trace=hold_trace" in source
     assert '"hold_trace"' in source
     assert '"status": "unavailable"' in source
+    assert '"camera_warmup_frames": warmup_frames' in source

@@ -28,6 +28,8 @@ ARM_JOINT_NAMES: tuple[str, ...] = (
 ARM_JOINT_COUNT = len(ARM_JOINT_NAMES)
 
 HOLD_TRACE_SCHEMA_VERSION = "adp009d_arm_hold_trace.v1"
+DEFAULT_MAX_HOLD_SETTLE_SAMPLES = 240
+HOLD_SETTLE_CONSECUTIVE_SAMPLES = 5
 
 
 class HoldTraceError(RuntimeError):
@@ -289,3 +291,48 @@ def classify_arm_hold_trace(
         "convergence": convergence,
         "hold_failure_mode": failure_mode,
     }
+
+
+def hold_settle_decision(
+    trace: dict[str, Any],
+    *,
+    minimum_samples: int,
+    maximum_samples: int = DEFAULT_MAX_HOLD_SETTLE_SAMPLES,
+    consecutive_within_tolerance: int = HOLD_SETTLE_CONSECUTIVE_SAMPLES,
+) -> str:
+    """Decide whether a bounded hold trace needs more simulator steps."""
+
+    if (
+        isinstance(minimum_samples, bool)
+        or isinstance(maximum_samples, bool)
+        or isinstance(consecutive_within_tolerance, bool)
+        or minimum_samples <= 0
+        or maximum_samples < minimum_samples
+        or not 0 < consecutive_within_tolerance <= minimum_samples
+    ):
+        raise HoldTraceError("adp009d_hold_settle_bounds_invalid")
+    try:
+        sample_count = int(trace["sample_count"])
+        tolerance_rad = float(trace["tolerance_rad"])
+        errors = [float(value) for value in trace["maximum_error_rad_by_step"]]
+        convergence = str(trace["convergence"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HoldTraceError("adp009d_hold_settle_trace_invalid") from exc
+    if (
+        sample_count != len(errors)
+        or sample_count <= 0
+        or not math.isfinite(tolerance_rad)
+        or tolerance_rad <= 0.0
+        or not all(math.isfinite(value) for value in errors)
+        or convergence not in {"converging", "diverging", "settled"}
+    ):
+        raise HoldTraceError("adp009d_hold_settle_trace_invalid")
+    if sample_count < minimum_samples:
+        return "continue"
+    if all(value <= tolerance_rad for value in errors[-consecutive_within_tolerance:]):
+        return "within_tolerance"
+    if convergence != "converging":
+        return f"{convergence}_out_of_tolerance"
+    if sample_count >= maximum_samples:
+        return "maximum_samples_reached"
+    return "continue"

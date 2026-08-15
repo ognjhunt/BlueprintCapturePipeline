@@ -86,19 +86,23 @@ except ModuleNotFoundError:  # imported as part of the repository package
     )
 try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_hold_trace import (
+        DEFAULT_MAX_HOLD_SETTLE_SAMPLES,
         HOLD_TRACE_SCHEMA_VERSION,
         HoldTraceError,
         classify_arm_hold_trace,
         extract_arm_effort_limits,
         extract_arm_sample,
+        hold_settle_decision,
     )
 except ModuleNotFoundError:  # imported as part of the repository package
     from .adp009d_hold_trace import (
+        DEFAULT_MAX_HOLD_SETTLE_SAMPLES,
         HOLD_TRACE_SCHEMA_VERSION,
         HoldTraceError,
         classify_arm_hold_trace,
         extract_arm_effort_limits,
         extract_arm_sample,
+        hold_settle_decision,
     )
 try:  # flat provider-bundle layout, where this file runs as a script
     from adp009d_physics_backend_comparison import (
@@ -1647,23 +1651,11 @@ def _max_gaussians_to_accumulate() -> int:
 
 FRAME_DEGENERATE_MAX_VALUE = 2
 CAMERA_WARMUP_FRAMES_ENV = "BLUEPRINT_ADP009D_CAMERA_WARMUP_FRAMES"
-# Forty frames is right for a bare scene whose frames cost milliseconds.  With
-# the appearance composed each frame costs about sixty-five seconds, because
-# every one of them waits the full omni.usd idle timeout, so the warmup alone
-# would run past the paid TTL and the run would end having saved no frame at
-# all.  A proof needs the camera settled, not forty frames of it.
 DEFAULT_CAMERA_WARMUP_FRAMES = 40
-# RTX accumulates samples across frames.  Four produced a frame with mean 0.2
-# and max 1 -- the arm faintly outlined in black -- because the accumulator
-# never converged, the same sample-starvation that once turned a 64spp render
-# black where 384spp was clean.  This floor is the converged value, chosen
-# from what actually renders rather than from what fits the wall clock.
 MIN_CAMERA_WARMUP_FRAMES = 40
 
 
 def _camera_warmup_frames() -> int:
-    """Frames to settle the camera before the first saved frame."""
-
     raw = os.environ.get(CAMERA_WARMUP_FRAMES_ENV)
     if not raw:
         return DEFAULT_CAMERA_WARMUP_FRAMES
@@ -1671,14 +1663,10 @@ def _camera_warmup_frames() -> int:
         requested = int(raw)
     except ValueError:
         return DEFAULT_CAMERA_WARMUP_FRAMES
-    # Never fewer than the camera needs to settle: a frame saved from an
-    # unsettled camera is worse than a slow run, because it looks like data.
     return max(MIN_CAMERA_WARMUP_FRAMES, requested)
 
 
 FIRST_RENDER_BUDGET_SECONDS_ENV = "BLUEPRINT_ADP009D_FIRST_RENDER_BUDGET_SECONDS"
-# Generous: the same scene without appearance renders its first frame in
-# seconds.  A live run sat in this call for over twenty minutes emitting an
 # omni.usd "failed to wait for idle" every seventy seconds and would have burnt
 # the whole TTL to tell us nothing.
 DEFAULT_FIRST_RENDER_BUDGET_SECONDS = 300.0
@@ -3018,7 +3006,12 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         marker_every = max(1, warmup_frames // 4)
         hold_effort_limits = extract_arm_effort_limits(robot, to_list=_jsonable)
         hold_samples: list[dict[str, Any]] = []
-        for warmup_index in range(warmup_frames):
+        hold_trace = None
+        hold_settle_status = "minimum_samples_not_reached"
+        max_hold_frames = warmup_frames
+        if backend == "newton":
+            max_hold_frames = max(max_hold_frames, DEFAULT_MAX_HOLD_SETTLE_SAMPLES)
+        for warmup_index in range(max_hold_frames):
             observation, reward, terminated, truncated, info = env.step(hold_action)
             hold_sample = extract_arm_sample(
                 robot, step_index=warmup_index, to_list=_jsonable
@@ -3029,26 +3022,37 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 log.flush()
                 fail_on_backend_collision_logs()
                 _phase(f"camera_warmup_{warmup_index + 1}", "completed")
-        timings_seconds[f"camera_warmup_{warmup_frames}_frames"] = round(
-            time.monotonic() - phase_started, 6
-        )
-        hold_trace = None
-        if hold_samples:
+            if warmup_index + 1 < warmup_frames or not hold_samples:
+                continue
             try:
                 hold_trace = classify_arm_hold_trace(
-                hold_samples,
-                requested_joint_positions_rad=RESET_JOINTS,
-                tolerance_rad=HOLD_ARM_TOLERANCE_RAD,
-                effort_limits_nm=hold_effort_limits,
-            )
+                    hold_samples,
+                    requested_joint_positions_rad=RESET_JOINTS,
+                    tolerance_rad=HOLD_ARM_TOLERANCE_RAD,
+                    effort_limits_nm=hold_effort_limits,
+                )
+                hold_settle_status = hold_settle_decision(
+                    hold_trace,
+                    minimum_samples=warmup_frames,
+                    maximum_samples=max_hold_frames,
+                )
             except HoldTraceError as exc:
-                # Diagnostics must not replace the canonical pose blocker.  A
-                # malformed backend readback is retained as a typed trace gap.
                 hold_trace = {
                     "schema_version": HOLD_TRACE_SCHEMA_VERSION,
                     "status": "unavailable",
                     "typed_blocker": str(exc),
                 }
+                hold_settle_status = "trace_unavailable"
+            if hold_settle_status != "continue":
+                break
+        warmup_frames = warmup_index + 1
+        if hold_settle_status == "continue":
+            hold_settle_status = "maximum_frames_reached"
+        timings_seconds[f"camera_warmup_{warmup_frames}_frames"] = round(
+            time.monotonic() - phase_started, 6
+        )
+        if hold_trace is not None:
+            hold_trace["settle_decision"] = hold_settle_status
         hold_arm_maximum_error_rad = _assert_arm_pose(
             _to_torch(env.unwrapped.scene["robot"].data.joint_pos)[0],
             RESET_JOINTS,
@@ -4532,7 +4536,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
             "camera_frames": camera_rows,
             "external_task_camera_plan": external_task_camera_plan,
             "overview_camera_plan": overview_camera_plan,
-            "camera_warmup_frames": 40,
+            "camera_warmup_frames": warmup_frames,
             "timings_seconds": timings_seconds,
             "source_target_collider_disabled_by_composed_overlay": (
                 backend == "physx"
