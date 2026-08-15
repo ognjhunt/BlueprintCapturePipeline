@@ -13,6 +13,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import pwd
+import stat
 from pathlib import Path
 
 import pytest
@@ -181,3 +184,86 @@ def test_catalog_never_carries_allocator_arguments(tmp_path: Path) -> None:
     text = catalog.read_text(encoding="utf-8")
     assert "argv" not in text
     assert "--adapter-output" not in text
+
+
+def test_publication_makes_root_style_0600_inputs_service_group_read_only(
+    tmp_path: Path,
+) -> None:
+    """Regression: root-created inputs must be readable by the dispatcher.
+
+    The production failure presented three correct, digest-bound JSON files as
+    ``root:root 0600``. Root could publish them, but the ``blueprint`` unit
+    could not reopen them. Use this test process as the service identity while
+    preserving the exact restrictive starting mode.
+    """
+
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "catalog.json"
+    fixture = _profile(tmp_path, "profile-private-inputs")
+    immutable = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable_bytes = immutable.read_bytes()
+    immutable.chmod(0o600)
+    account = pwd.getpwuid(os.geteuid()).pw_name
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=profile_dir,
+        webapp_catalog_out=catalog,
+        service_account=account,
+    )
+
+    metadata = immutable.stat()
+    assert immutable.read_bytes() == immutable_bytes
+    assert stat.S_IMODE(metadata.st_mode) == 0o440
+    assert metadata.st_gid == pwd.getpwnam(account).pw_gid
+    assert (profile_dir / "profile-private-inputs.json").is_file()
+
+
+def test_publication_fails_closed_when_service_cannot_read_an_immutable_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "catalog.json"
+    fixture = _profile(tmp_path, "profile-unreadable-inputs")
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    monkeypatch.setattr(publisher, "_digest_as_account", lambda *_args, **_kwargs: "")
+
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="launch_profile_immutable_input_consumer_unreadable",
+    ):
+        publisher.publish_profiles(
+            profile_paths=[fixture["path"]],
+            profile_dir=profile_dir,
+            webapp_catalog_out=catalog,
+            service_account=account,
+        )
+
+    assert not (profile_dir / "profile-unreadable-inputs.json").exists()
+    assert not catalog.exists()
+
+
+def test_cli_uses_the_invoking_account_outside_production_roots(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = _profile(tmp_path, "profile-local-cli")
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "catalog.json"
+
+    assert (
+        publisher.main(
+            [
+                "--profile",
+                str(fixture["path"]),
+                "--profile-dir",
+                str(profile_dir),
+                "--webapp-catalog-out",
+                str(catalog),
+            ]
+        )
+        == 0
+    )
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "published"
+    assert (profile_dir / "profile-local-cli.json").is_file()
