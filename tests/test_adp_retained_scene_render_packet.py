@@ -466,7 +466,7 @@ def test_retained_scene_render_runtime_result_is_recognized_by_provider_inspecti
     ]
 
 
-def test_retained_scene_render_reissue_binds_prior_terminal_spend(
+def test_retained_scene_render_reissue_rejects_estimate_only_prior_spend(
     tmp_path: Path,
 ) -> None:
     result: dict[str, object] = {
@@ -517,38 +517,11 @@ def test_retained_scene_render_reissue_binds_prior_terminal_spend(
         authority, digest_field="authorization_digest"
     )
 
-    assert (
+    with pytest.raises(
+        ValueError, match="prior_terminal_attempt_reconciliation_invalid"
+    ):
         validate_retained_scene_render_paid_attempt_authority(
             authority,
-            prepared_bundle=bundle,
-            max_hourly_rate_usd=2.0,
-            hard_ttl_seconds=10_800,
-            allowed_active_instance_ids=[47373597],
-        )["authorization_digest"]
-        == authority["authorization_digest"]
-    )
-
-    exceeded_result = {**result, "estimated_cost_usd": 7.0, "receipt_digest": ""}
-    exceeded_result["receipt_digest"] = canonical_digest(
-        exceeded_result, digest_field="receipt_digest"
-    )
-    exceeded_path = tmp_path / "prior_terminal_attempt_exceeded.json"
-    _write_json(exceeded_path, exceeded_result)
-    exceeded = dict(authority)
-    exceeded["prior_terminal_attempts"] = [
-        {
-            "result_path": str(exceeded_path),
-            "result_sha256": _sha256(exceeded_path),
-            "receipt_digest": exceeded_result["receipt_digest"],
-            "estimated_cost_usd": 7.0,
-        }
-    ]
-    exceeded["authorization_digest"] = canonical_digest(
-        exceeded, digest_field="authorization_digest"
-    )
-    with pytest.raises(ValueError, match="aggregate_spend_cap_exceeded"):
-        validate_retained_scene_render_paid_attempt_authority(
-            exceeded,
             prepared_bundle=bundle,
             max_hourly_rate_usd=2.0,
             hard_ttl_seconds=10_800,

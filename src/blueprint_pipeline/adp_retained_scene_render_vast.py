@@ -258,7 +258,7 @@ def validate_retained_scene_render_paid_attempt_authority(
                 errors.append("prior_terminal_attempt_reconciliation_invalid")
         elif (
             reconciliation is not None
-            or value.get("prior_actual_provider_spend_usd") != 0.0
+            or value.get("prior_actual_provider_spend_usd", 0.0) != 0.0
         ):
             errors.append("prior_spend_reconciliation_without_prior_attempt")
     if prior_spend_usd + max_hourly_rate_usd * hard_ttl_seconds / 3600.0 > float(
