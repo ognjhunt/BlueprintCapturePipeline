@@ -35,6 +35,7 @@ from .sam31_gpu_admission import (
 )
 from .sam31_source_track_canary_worker import BUNDLE_RECEIPT_SCHEMA_VERSION
 from .scene_placement.sam31_source_track_provider import (
+    CHECKPOINT_MULTIPLEX_COUNT,
     FRAME_INPUT_MODE,
     RUN_REQUEST_SCHEMA_VERSION,
     RUNTIME_API,
@@ -361,6 +362,7 @@ def materialize_sam31_provider_profile(
             isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 10_000
             for value in (max_num_objects, multiplex_count)
         )
+        or multiplex_count != CHECKPOINT_MULTIPLEX_COUNT
         or any(
             not isinstance(value, bool)
             for value in (use_fa3, compile_model, warm_up, async_loading_frames)

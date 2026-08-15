@@ -172,7 +172,7 @@ def _profile(tmp_path: Path) -> tuple[dict, dict[str, Path], Path]:
         method_version="sam3.1-96914d24",
         output_probability_threshold=0.5,
         max_num_objects=5,
-        multiplex_count=5,
+        multiplex_count=16,
         use_fa3=False,
         compile_model=False,
         warm_up=False,
@@ -285,6 +285,8 @@ def test_materializes_exact_provider_profile_from_source_bytes(tmp_path: Path) -
     assert profile["official_code_revision"] == OFFICIAL_CODE_REVISION
     assert profile["runtime_image_identity"] == IMAGE
     assert profile["checkpoint_digest"] == CHECKPOINT_DIGEST
+    assert profile["max_num_objects"] == 5
+    assert profile["multiplex_count"] == 16
     assert profile["profile_digest"] == canonical_json_digest(
         {key: value for key, value in profile.items() if key != "profile_digest"}
     )
@@ -434,7 +436,7 @@ def test_cli_materializes_raw_profile_and_raw_gpu_request(tmp_path: Path) -> Non
             "--max-num-objects",
             "5",
             "--multiplex-count",
-            "5",
+            "16",
             "--use-fa3",
             "false",
             "--compile-model",
@@ -567,6 +569,30 @@ def test_profile_refuses_unreviewed_or_unattributed_rights(
             method_version="sam3.1-96914d24",
             output_probability_threshold=0.5,
             max_num_objects=5,
+            multiplex_count=16,
+            use_fa3=False,
+            compile_model=False,
+            warm_up=False,
+            async_loading_frames=False,
+            output_path=tmp_path / "profile.json",
+        )
+
+
+def test_profile_refuses_checkpoint_incompatible_multiplex_count(tmp_path: Path) -> None:
+    sources = _profile_sources(tmp_path)
+    with pytest.raises(Sam31ProviderLaunchPacketError, match="configuration_invalid"):
+        materialize_sam31_provider_profile(
+            worker_stack_manifest_path=sources["stack"],
+            runtime_image_build_receipt_path=sources["image_build"],
+            license_use_authorization_path=sources["license"],
+            privacy_use_authorization_path=sources["privacy"],
+            trade_controls_review_path=sources["trade"],
+            execution_authorization_path=sources["execution"],
+            source_commit_sha=COMMIT,
+            runtime_image_identity=IMAGE,
+            method_version="sam3.1-96914d24",
+            output_probability_threshold=0.5,
+            max_num_objects=5,
             multiplex_count=5,
             use_fa3=False,
             compile_model=False,
@@ -591,7 +617,7 @@ def test_profile_refuses_unpinned_runtime_image(tmp_path: Path) -> None:
             method_version="sam3.1-96914d24",
             output_probability_threshold=0.5,
             max_num_objects=5,
-            multiplex_count=5,
+            multiplex_count=16,
             use_fa3=False,
             compile_model=False,
             warm_up=False,
