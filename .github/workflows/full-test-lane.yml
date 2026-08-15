@@ -25,10 +25,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  full-pytest:
-    name: Full pytest lane on CPU runner
+  full-pytest-shard:
+    name: Full pytest shard ${{ matrix.shard_index }} of 4
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3]
     env:
       # Full-lane artifacts live only on the disposable GitHub runner and are
       # uploaded with the workflow's explicit retention policy.
@@ -39,6 +43,7 @@ jobs:
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
       CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
       FULL_TEST_LANE_TRIGGER_REASON: ${{ inputs.reason || 'nightly_integration' }}
+      FULL_TEST_LANE_SHARD_INDEX: ${{ matrix.shard_index }}
 
     steps:
       - name: Bind ephemeral artifact roots
@@ -140,23 +145,105 @@ jobs:
             -m "not external_runtime and not external_data" --collect-only -q \
             > "${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt"
 
-      - name: Run full lane
+      - name: Build deterministic full-lane shard plan
+        run: |
+          set -euo pipefail
+          cp .github/full-test-lane-duration-baseline.json \
+            "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json"
+          uv run python scripts/full_lane_sharding.py plan \
+            --planned "${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json" \
+            --duration-baseline "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json" \
+            --repository-sha '${{ github.sha }}' \
+            --output "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json"
+
+      - name: Run full lane shard
         env:
-          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: ${{ runner.temp }}/blueprint-ci/full-test-lane-executed.json
+          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: ${{ runner.temp }}/blueprint-ci/full-test-lane-shard-executed.json
           BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: executed
         run: |
           set -euo pipefail
+          mapfile -t shard_files < <(
+            jq -r --argjson shard "${FULL_TEST_LANE_SHARD_INDEX}" \
+              '.shards[] | select(.index == $shard) | .files[]' \
+              "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json"
+          )
+          if [[ "${#shard_files[@]}" -eq 0 ]]; then
+            echo "::error::Deterministic shard ${FULL_TEST_LANE_SHARD_INDEX} has no assigned files."
+            exit 1
+          fi
           uv run scripts/pytest_full.sh \
             -p blueprint_pipeline.pytest_full_lane_evidence \
-            --junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
-            -m "not external_runtime and not external_data"
+            --junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml" \
+            -m "not external_runtime and not external_data" \
+            "${shard_files[@]}"
 
-      - name: Verify exact full-lane collection
+      - name: Verify exact full-lane shard
         if: always()
         run: |
-          uv run python scripts/verify_full_lane_collection.py \
+          uv run python scripts/full_lane_sharding.py verify-shard \
             --planned "${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json" \
-            --executed "${{ runner.temp }}/blueprint-ci/full-test-lane-executed.json"
+            --duration-baseline "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json" \
+            --plan "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json" \
+            --executed "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-executed.json" \
+            --junit "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml" \
+            --repository-sha '${{ github.sha }}' \
+            --shard-index "${FULL_TEST_LANE_SHARD_INDEX}" \
+            --output "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-verification.json"
+
+      - name: Upload full-lane shard evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: full-test-lane-shard-${{ matrix.shard_index }}-${{ github.run_id }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-shard-executed.json
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-shard-verification.json
+
+  full-pytest:
+    name: Full pytest lane on CPU runner
+    needs: full-pytest-shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
+      BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+
+      - name: Download exact full-lane shard artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: full-test-lane-shard-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/blueprint-full-lane-shards
+
+      - name: Aggregate exact full-lane shards
+        run: |
+          set -euo pipefail
+          uv run python scripts/full_lane_sharding.py aggregate \
+            --shard-root "${{ runner.temp }}/blueprint-full-lane-shards" \
+            --repository-sha '${{ github.sha }}' \
+            --output-dir "${{ runner.temp }}/blueprint-ci"
 
       - name: Build fail-closed CPU full-lane evidence
         if: always()
@@ -174,7 +261,8 @@ jobs:
           uv run python scripts/build_test_suite_telemetry.py \
             --junit "${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
             --repository-sha '${{ github.sha }}' \
-            --workers 1 \
+            --workers 4 \
+            --strategy deterministic_file_preserving_serial_shards \
             --output "${{ runner.temp }}/blueprint-ci/test-suite-telemetry.json"
 
       - name: Upload full lane report
@@ -185,9 +273,4 @@ jobs:
           retention-days: 90
           if-no-files-found: error
           path: |
-            ${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt
-            ${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json
-            ${{ runner.temp }}/blueprint-ci/full-test-lane-executed.json
-            ${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml
-            ${{ runner.temp }}/blueprint-ci/cpu_full.json
-            ${{ runner.temp }}/blueprint-ci/test-suite-telemetry.json
+            ${{ runner.temp }}/blueprint-ci/

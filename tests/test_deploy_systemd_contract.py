@@ -571,7 +571,12 @@ def test_full_test_lane_is_explicit_or_nightly_and_gates_deploy_contract():
     assert 'cron: "17 8 * * *"' in event_block
     assert "workflow_dispatch:" in event_block
     assert "uv run scripts/pytest_full.sh" in workflow
-    assert '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"' in workflow
+    assert (
+        '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml"'
+        in workflow
+    )
+    assert "scripts/full_lane_sharding.py aggregate" in workflow
+    assert "Full pytest lane on CPU runner" in workflow
     assert 'FULL_TEST_LANE_REQUIRED="${FULL_TEST_LANE_REQUIRED:-true}"' in deploy_script
     assert "check_full_test_lane_deploy_gate" in deploy_script
     assert "FULL_TEST_LANE_COMMIT" in deploy_script
@@ -588,8 +593,10 @@ def test_full_test_lane_is_explicit_or_nightly_and_gates_deploy_contract():
         in deploy_script
     )
     assert "Full Test Lane / Full pytest lane on CPU" in required_doc
-    assert "runner` to have passed for that exact commit SHA" in required_doc
-    assert "passed for that exact commit SHA" in required_doc
+    assert "production_deployment_promotion" in required_doc
+    assert "on that exact protected-main commit SHA" in required_doc
+    assert "proves their disjoint union" in required_doc
+    assert "No shard uses xdist" in required_doc
     assert "deploy/scripts/deploy.sh" in required_doc
     assert "nightly scheduled run is supplementary health evidence only" in required_doc
 

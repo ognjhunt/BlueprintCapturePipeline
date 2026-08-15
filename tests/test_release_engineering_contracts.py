@@ -94,13 +94,22 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "uv run scripts/pytest_full.sh" in workflow
     assert "-n " not in workflow
     assert "--dist" not in workflow
-    assert '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"' in workflow
+    assert (
+        '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml"'
+        in workflow
+    )
     assert "blueprint_pipeline.pytest_full_lane_evidence" in workflow
-    assert "scripts/verify_full_lane_collection.py" in workflow
+    assert "scripts/full_lane_sharding.py verify-shard" in workflow
+    assert "scripts/full_lane_sharding.py aggregate" in workflow
+    assert "shard_index: [0, 1, 2, 3]" in workflow
+    assert "fail-fast: false" in workflow
+    assert "Full pytest lane on CPU runner" in workflow
     assert "full-test-lane-planned.json" in workflow
     assert "full-test-lane-executed.json" in workflow
+    assert '--output-dir "${{ runner.temp }}/blueprint-ci"' in workflow
     assert "scripts/build_test_suite_telemetry.py" in workflow
-    assert "--workers 1" in workflow
+    assert "--workers 4" in workflow
+    assert "--strategy deterministic_file_preserving_serial_shards" in workflow
     assert "test-suite-telemetry.json" in workflow
 
 

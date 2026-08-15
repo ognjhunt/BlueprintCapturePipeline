@@ -1,0 +1,5632 @@
+{
+  "default_seconds_per_test": 0.114799394,
+  "file_count": 1124,
+  "files": [
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/synthesis/test_depth_splat.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.006,
+      "path": "tests/synthesis/test_plucker_rays.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.011,
+      "path": "tests/synthesis/test_retrieval_query.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 9.196,
+      "path": "tests/synthesis/test_synthesize.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.084,
+      "path": "tests/test_action_normalization.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.108,
+      "path": "tests/test_adaptive_task_stance_configurator.py",
+      "test_count": 50
+    },
+    {
+      "duration_seconds": 0.006,
+      "path": "tests/test_adp009d_840313_production_profile_inputs.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.007,
+      "path": "tests/test_adp009d_840313_runtime_bundle.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.016,
+      "path": "tests/test_adp009d_agent_skill_audit.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.053,
+      "path": "tests/test_adp009d_approach_capture.py",
+      "test_count": 48
+    },
+    {
+      "duration_seconds": 0.161,
+      "path": "tests/test_adp009d_articulated_native_diagnostic_bundle.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.282,
+      "path": "tests/test_adp009d_articulated_usd_depth_sweep.py",
+      "test_count": 33
+    },
+    {
+      "duration_seconds": 0.008,
+      "path": "tests/test_adp009d_aura_frame_comparison.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.017,
+      "path": "tests/test_adp009d_aura_native_conformance.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.038,
+      "path": "tests/test_adp009d_aura_native_vast.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.142,
+      "path": "tests/test_adp009d_aura_renderer_conformance.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.018,
+      "path": "tests/test_adp009d_aura_task_volume_exclusion.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.012,
+      "path": "tests/test_adp009d_checkpoint_fetch_worker.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.024,
+      "path": "tests/test_adp009d_checkpoint_materialization.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.004,
+      "path": "tests/test_adp009d_contact_envelope.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.032,
+      "path": "tests/test_adp009d_contact_envelope_seams.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 4.361,
+      "path": "tests/test_adp009d_control_episode.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.027,
+      "path": "tests/test_adp009d_droid_action_execution.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.181,
+      "path": "tests/test_adp009d_droid_observation.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 1.081,
+      "path": "tests/test_adp009d_episode_batch.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.573,
+      "path": "tests/test_adp009d_episode_evidence_index.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 6.172,
+      "path": "tests/test_adp009d_franka_evaluation_harness.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.019,
+      "path": "tests/test_adp009d_gated_backbone.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.246,
+      "path": "tests/test_adp009d_gaussian_excision_audit.py",
+      "test_count": 24
+    },
+    {
+      "duration_seconds": 0.262,
+      "path": "tests/test_adp009d_gaussian_excision_heldout.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.083,
+      "path": "tests/test_adp009d_groot_worker_identity.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.04,
+      "path": "tests/test_adp009d_hold_trace.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.006,
+      "path": "tests/test_adp009d_hold_trace_wiring.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.276,
+      "path": "tests/test_adp009d_isaac_episode_adapter.py",
+      "test_count": 50
+    },
+    {
+      "duration_seconds": 0.068,
+      "path": "tests/test_adp009d_live_hybrid_frames.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.033,
+      "path": "tests/test_adp009d_live_hybrid_observation.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.012,
+      "path": "tests/test_adp009d_live_readiness.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 4.426,
+      "path": "tests/test_adp009d_native_microcheck_bundle.py",
+      "test_count": 147
+    },
+    {
+      "duration_seconds": 0.015,
+      "path": "tests/test_adp009d_newton_gripper_drive.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.026,
+      "path": "tests/test_adp009d_ovrtx_live_camera.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.054,
+      "path": "tests/test_adp009d_ovrtx_vast.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.272,
+      "path": "tests/test_adp009d_physics_backend_comparison.py",
+      "test_count": 53
+    },
+    {
+      "duration_seconds": 0.026,
+      "path": "tests/test_adp009d_policy_candidate_admission.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.943,
+      "path": "tests/test_adp009d_policy_episode.py",
+      "test_count": 25
+    },
+    {
+      "duration_seconds": 0.078,
+      "path": "tests/test_adp009d_policy_provisioning.py",
+      "test_count": 24
+    },
+    {
+      "duration_seconds": 0.15,
+      "path": "tests/test_adp009d_policy_server_standup.py",
+      "test_count": 39
+    },
+    {
+      "duration_seconds": 0.083,
+      "path": "tests/test_adp009d_policy_server_worker.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.019,
+      "path": "tests/test_adp009d_provider_zero.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.053,
+      "path": "tests/test_adp009d_provisioning_preflight.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.205,
+      "path": "tests/test_adp009d_replacement_occlusion.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.274,
+      "path": "tests/test_adp009d_review_video_repair.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.067,
+      "path": "tests/test_adp009d_sage_franka_placement.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.079,
+      "path": "tests/test_adp009d_source_collider_subtree_removal.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.078,
+      "path": "tests/test_adp009d_task_destination.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.054,
+      "path": "tests/test_adp009d_task_neutral_controls.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.348,
+      "path": "tests/test_adp009d_task_scoring.py",
+      "test_count": 81
+    },
+    {
+      "duration_seconds": 0.018,
+      "path": "tests/test_adp_abstention_blocked_markdown.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/test_adp_arena_native_canary_worker.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.227,
+      "path": "tests/test_adp_aura_author_smoke_vast.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.016,
+      "path": "tests/test_adp_aura_interiorgs_provider_runner.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.101,
+      "path": "tests/test_adp_aura_interiorgs_runtime.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.072,
+      "path": "tests/test_adp_content_agents_candidate_comparison.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 10.496,
+      "path": "tests/test_adp_content_agents_vast.py",
+      "test_count": 93
+    },
+    {
+      "duration_seconds": 0.074,
+      "path": "tests/test_adp_founder_sim_protocol.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 1.519,
+      "path": "tests/test_adp_inpaint360_interiorgs_vast.py",
+      "test_count": 42
+    },
+    {
+      "duration_seconds": 0.18,
+      "path": "tests/test_adp_isaac_lab_arena_materialization.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.021,
+      "path": "tests/test_adp_isaac_lab_arena_request.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.725,
+      "path": "tests/test_adp_isaac_lab_arena_vast.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 1.049,
+      "path": "tests/test_adp_joint_agent_vast.py",
+      "test_count": 33
+    },
+    {
+      "duration_seconds": 0.158,
+      "path": "tests/test_adp_prospective_design.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 1.408,
+      "path": "tests/test_adp_retained_scene_render_packet.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 8.042,
+      "path": "tests/test_adp_scene_literal_lint.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.092,
+      "path": "tests/test_adp_task_evaluation_abstention.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.082,
+      "path": "tests/test_adp_task_scoring.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.684,
+      "path": "tests/test_agent_cad_graph_visual_composition.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.226,
+      "path": "tests/test_agent_enrichment_acceptance.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.032,
+      "path": "tests/test_agent_operator_runtime_coverage.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.047,
+      "path": "tests/test_agent_review_cli.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.01,
+      "path": "tests/test_agent_review_recapture_planner.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.01,
+      "path": "tests/test_agent_runtime_artifacts.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.233,
+      "path": "tests/test_agent_runtime_orchestrator_coverage.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.469,
+      "path": "tests/test_agent_workspace_gc.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.157,
+      "path": "tests/test_alpha_canonical_edges.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 6.597,
+      "path": "tests/test_alpha_readiness.py",
+      "test_count": 25
+    },
+    {
+      "duration_seconds": 0.022,
+      "path": "tests/test_android_xr_modality_contract.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.07,
+      "path": "tests/test_appearance_campaign_start_anchor.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.086,
+      "path": "tests/test_appearance_chain_authority_issuer.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.07,
+      "path": "tests/test_appearance_fidelity.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.082,
+      "path": "tests/test_arena_fixture_smoke.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.075,
+      "path": "tests/test_arena_package_audit_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.04,
+      "path": "tests/test_arena_result_ingest.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.143,
+      "path": "tests/test_arkit_depth_surface_compiler.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.013,
+      "path": "tests/test_arkit_raw_contract_validation.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.172,
+      "path": "tests/test_arkit_reconstruction_dataset.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.095,
+      "path": "tests/test_arkitscenes_inspection_run.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 2.737,
+      "path": "tests/test_arkitscenes_raw_proxy.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.126,
+      "path": "tests/test_arm_decision_proof.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.084,
+      "path": "tests/test_arm_decision_proof_focus.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.06,
+      "path": "tests/test_articulated_control_planner.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.168,
+      "path": "tests/test_articulated_controls_probe.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.144,
+      "path": "tests/test_articulated_controls_worker_finalize.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.055,
+      "path": "tests/test_articulated_door_state_clearance.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.061,
+      "path": "tests/test_articulated_dynamics_profiles.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.102,
+      "path": "tests/test_articulated_dynamics_realism.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.187,
+      "path": "tests/test_articulated_excision_join.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 0.065,
+      "path": "tests/test_articulated_franka_placement.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/test_articulated_handle_band_observation.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.075,
+      "path": "tests/test_articulated_handle_detection.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.552,
+      "path": "tests/test_articulated_harness_scene_neutrality.py",
+      "test_count": 43
+    },
+    {
+      "duration_seconds": 0.19,
+      "path": "tests/test_articulated_interior_authoring.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.208,
+      "path": "tests/test_articulated_interior_exposure.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.271,
+      "path": "tests/test_articulated_isaac_bundle.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.087,
+      "path": "tests/test_articulated_joint_drives.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.022,
+      "path": "tests/test_articulated_member_observation.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.133,
+      "path": "tests/test_articulated_native_probe.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.105,
+      "path": "tests/test_articulated_public_scene_pipeline.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.159,
+      "path": "tests/test_articulated_render_materials.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.094,
+      "path": "tests/test_articulated_render_textures.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.18,
+      "path": "tests/test_articulated_runtime_composition.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.071,
+      "path": "tests/test_articulated_scripted_ik_preflight.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.395,
+      "path": "tests/test_articulated_simready_replacement.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 0.038,
+      "path": "tests/test_articulated_source_asset.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.274,
+      "path": "tests/test_articulated_support_aperture.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.053,
+      "path": "tests/test_articulated_task_camera_resolution.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.073,
+      "path": "tests/test_articulated_workspace_clearance.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.043,
+      "path": "tests/test_articulation_graph_contract.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.039,
+      "path": "tests/test_artifact_contracts.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.053,
+      "path": "tests/test_artifact_storage.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.109,
+      "path": "tests/test_artifixer3d_live_lane.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.168,
+      "path": "tests/test_artifixer_heldout_evaluation.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.014,
+      "path": "tests/test_attempt_closure_projection.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.058,
+      "path": "tests/test_aura_gaussian_surflet_usd.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.896,
+      "path": "tests/test_autoresearch_eval.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.492,
+      "path": "tests/test_autoresearch_runner.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.022,
+      "path": "tests/test_backend_support_artifacts.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.799,
+      "path": "tests/test_benchmark_protocol.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.059,
+      "path": "tests/test_benchmark_uncertainty.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.074,
+      "path": "tests/test_beta_capacity_storage.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.018,
+      "path": "tests/test_beta_ops_incident_runbook.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.085,
+      "path": "tests/test_build_adp009d_840313_controls_profile.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.063,
+      "path": "tests/test_build_adp009d_840313_launch_profile.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.03,
+      "path": "tests/test_build_adp009d_840313_live_profile.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.256,
+      "path": "tests/test_build_arena_native_control_live_profile.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.379,
+      "path": "tests/test_build_new_site_diagnostic_canary_live_profile.py",
+      "test_count": 27
+    },
+    {
+      "duration_seconds": 0.296,
+      "path": "tests/test_build_new_site_native_camera_live_profile.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.091,
+      "path": "tests/test_build_push_sam31_source_tracks_image.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.229,
+      "path": "tests/test_build_reconstruction_worker_smoke_live_profile.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.033,
+      "path": "tests/test_build_release_command_attestation.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.154,
+      "path": "tests/test_build_retained_scene_render_live_profile.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.088,
+      "path": "tests/test_build_sam31_source_tracks_live_profile.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.034,
+      "path": "tests/test_build_test_suite_telemetry.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.024,
+      "path": "tests/test_buyer_claim_ceiling.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.169,
+      "path": "tests/test_buyer_package_readout.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.112,
+      "path": "tests/test_c2pa_stamping.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.051,
+      "path": "tests/test_cad_agent_mesh_projection.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.798,
+      "path": "tests/test_cad_agent_review_media.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.08,
+      "path": "tests/test_camera_geometry_validation.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.016,
+      "path": "tests/test_canonical_3dgs_cli.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 4.011,
+      "path": "tests/test_canonical_3dgs_pipeline.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.047,
+      "path": "tests/test_canonical_3dgs_registration.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.091,
+      "path": "tests/test_canonical_3dgs_vast_adapter.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.125,
+      "path": "tests/test_canonical_3dgs_worker.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.069,
+      "path": "tests/test_canonical_training_quality_pipeline.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.052,
+      "path": "tests/test_capture_batch_registry.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.076,
+      "path": "tests/test_capture_bridge_edges.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.051,
+      "path": "tests/test_capture_enrichment_llm_coverage.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.238,
+      "path": "tests/test_capture_intake.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.471,
+      "path": "tests/test_capture_lifecycle.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.505,
+      "path": "tests/test_capture_orchestrator.py",
+      "test_count": 27
+    },
+    {
+      "duration_seconds": 0.148,
+      "path": "tests/test_capture_orchestrator_coverage_edges.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.082,
+      "path": "tests/test_capture_profile_validation.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.251,
+      "path": "tests/test_capture_qa.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.268,
+      "path": "tests/test_capture_quality_analyzer.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.076,
+      "path": "tests/test_capture_reconstruction_qualification.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.037,
+      "path": "tests/test_capture_root_by_site_coverage.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.597,
+      "path": "tests/test_capture_upload_intake.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.081,
+      "path": "tests/test_capture_v32_candidate_admission.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.027,
+      "path": "tests/test_captured_site_policy_ranking.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 7.394,
+      "path": "tests/test_city_launch_autonomy_harness.py",
+      "test_count": 31
+    },
+    {
+      "duration_seconds": 0.14,
+      "path": "tests/test_city_launch_evidence_policy.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.972,
+      "path": "tests/test_clip_curation_stage.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.027,
+      "path": "tests/test_cloud_run_iam_auth.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.135,
+      "path": "tests/test_cloud_vm_render_providers.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.013,
+      "path": "tests/test_collect_github_actions_evidence.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.47,
+      "path": "tests/test_common_and_delivery_edges.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.044,
+      "path": "tests/test_common_atomic_writes.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.249,
+      "path": "tests/test_consent_gate_prod_wiring.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 1.058,
+      "path": "tests/test_consent_rights_cross_surface_invariants.py",
+      "test_count": 89
+    },
+    {
+      "duration_seconds": 0.83,
+      "path": "tests/test_consent_takedown.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.081,
+      "path": "tests/test_container_missing_corroboration.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.043,
+      "path": "tests/test_container_production_evidence.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.403,
+      "path": "tests/test_content_agents_candidate_comparison_cli.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.066,
+      "path": "tests/test_content_agents_execution_route.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.116,
+      "path": "tests/test_content_agents_model_compatibility.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 2.341,
+      "path": "tests/test_control_plane_checkout_identity.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.11,
+      "path": "tests/test_control_plane_host_provisioning_contract.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.161,
+      "path": "tests/test_control_ranker.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.724,
+      "path": "tests/test_cosmos3_edge_experiment.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.047,
+      "path": "tests/test_cosmos3_edge_qualification.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.139,
+      "path": "tests/test_cosmos3_readiness.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.181,
+      "path": "tests/test_cosmos3_wam_command_adapter.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.176,
+      "path": "tests/test_cosmos_benchmark.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.271,
+      "path": "tests/test_cosmos_capture_bootstrap.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.285,
+      "path": "tests/test_cosmos_edge_closed_loop_provider_bundle.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.111,
+      "path": "tests/test_cosmos_edge_droid_policy_runtime.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.046,
+      "path": "tests/test_cosmos_edge_droid_policy_server.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.176,
+      "path": "tests/test_cosmos_inference.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.169,
+      "path": "tests/test_cosmos_lora_training.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 2.663,
+      "path": "tests/test_cosmos_training_export.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.014,
+      "path": "tests/test_cosmos_vast_training_wrapper.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.046,
+      "path": "tests/test_cosmos_vast_training_wrapper_coverage.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.029,
+      "path": "tests/test_cosmos_worker.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 14.469,
+      "path": "tests/test_cpu_env_contract.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.02,
+      "path": "tests/test_cpu_env_doctor.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.073,
+      "path": "tests/test_cpu_full_lane_evidence.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.72,
+      "path": "tests/test_cpu_pre_gpu_preflight.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 2.165,
+      "path": "tests/test_cross_repo_first_gpu_readiness.py",
+      "test_count": 24
+    },
+    {
+      "duration_seconds": 0.131,
+      "path": "tests/test_ctrl_world_provider_bundle.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.433,
+      "path": "tests/test_decision_evidence_execution_concurrency.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.693,
+      "path": "tests/test_decision_evidence_router.py",
+      "test_count": 33
+    },
+    {
+      "duration_seconds": 0.104,
+      "path": "tests/test_delivery_cdn_signing.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.228,
+      "path": "tests/test_deploy_control_plane_commit.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.071,
+      "path": "tests/test_deploy_control_plane_edge_contract.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.039,
+      "path": "tests/test_deploy_release_provenance.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.278,
+      "path": "tests/test_deploy_systemd_contract.py",
+      "test_count": 27
+    },
+    {
+      "duration_seconds": 0.031,
+      "path": "tests/test_deployment_service_canaries.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.049,
+      "path": "tests/test_design_partner_beta_fixture_matrix.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.184,
+      "path": "tests/test_digest_bound_review_contact_sheet.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.084,
+      "path": "tests/test_droid_oscar_closed_loop_adapter.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.116,
+      "path": "tests/test_droid_oscar_skeleton_conditioning.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.072,
+      "path": "tests/test_droid_policy_bridge.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.261,
+      "path": "tests/test_dry_render_g1_pov_seed.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.154,
+      "path": "tests/test_dual_task_evidence_package_index.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.092,
+      "path": "tests/test_dual_task_rehearsal_contract.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.044,
+      "path": "tests/test_dual_task_scenario_suite.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 7.54,
+      "path": "tests/test_dynamic_splat_scene.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.127,
+      "path": "tests/test_endpoint_reference_and_token_setup.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.096,
+      "path": "tests/test_episode_spec.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.799,
+      "path": "tests/test_episode_visual_evidence.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 1.914,
+      "path": "tests/test_equirectangular_virtual_rig.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.45,
+      "path": "tests/test_eval_ready_task_grounding.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.31,
+      "path": "tests/test_evaluation_prep_stage_coverage_edges.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.438,
+      "path": "tests/test_evaluation_run.py",
+      "test_count": 38
+    },
+    {
+      "duration_seconds": 0.293,
+      "path": "tests/test_evaluation_run_execution.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 20.894,
+      "path": "tests/test_evaluator_qualification_workflow.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.237,
+      "path": "tests/test_evaluator_runtime_evidence.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.225,
+      "path": "tests/test_external_alpha_launch_gate.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.033,
+      "path": "tests/test_external_anchor_candidate_registry.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.142,
+      "path": "tests/test_external_data_marker_contract.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.097,
+      "path": "tests/test_external_pointcloud_initialization.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.224,
+      "path": "tests/test_external_provider_nurec.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.128,
+      "path": "tests/test_external_reconstruction_import.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.065,
+      "path": "tests/test_external_scene_collision_candidate.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.307,
+      "path": "tests/test_external_scene_frame_registration.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.056,
+      "path": "tests/test_external_scene_inspection_outcome.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.025,
+      "path": "tests/test_external_scene_isaac_package.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.062,
+      "path": "tests/test_external_scene_isaac_verification.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.278,
+      "path": "tests/test_external_scene_pilot_evidence.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.419,
+      "path": "tests/test_external_scene_robot_placement.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.611,
+      "path": "tests/test_external_simready_validation.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.012,
+      "path": "tests/test_failure_diagnosis_contract.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.057,
+      "path": "tests/test_fetch_pinned_isaac_assets.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.372,
+      "path": "tests/test_first_gpu_candidate_audit.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 1.765,
+      "path": "tests/test_first_gpu_e2e_readiness.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 3.354,
+      "path": "tests/test_first_gpu_run_packet.py",
+      "test_count": 23
+    },
+    {
+      "duration_seconds": 0.101,
+      "path": "tests/test_first_gpu_run_packet_coverage_edges.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.083,
+      "path": "tests/test_first_gpu_sample_video_preflight.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 3.101,
+      "path": "tests/test_first_gpu_sample_video_stage.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 3.803,
+      "path": "tests/test_five_policy_identity_smoke.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.241,
+      "path": "tests/test_frame_alignment_stage.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.121,
+      "path": "tests/test_frames_layout.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.061,
+      "path": "tests/test_franka_base_orientation.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.046,
+      "path": "tests/test_franka_can_tray_feasibility.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.157,
+      "path": "tests/test_franka_diagnostic_arm_adapters.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.134,
+      "path": "tests/test_franka_droid_closed_loop.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.022,
+      "path": "tests/test_franka_droid_control_preflight.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.098,
+      "path": "tests/test_franka_inspection_learned_policy_lane.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.701,
+      "path": "tests/test_franka_kinematics.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.031,
+      "path": "tests/test_fresh_scene_artifixer_candidate_preparation.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.668,
+      "path": "tests/test_fresh_scene_paired_target_preparation.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.187,
+      "path": "tests/test_fresh_scene_removal_freezes.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.215,
+      "path": "tests/test_fresh_scene_semantic_teacher_image_edit.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.216,
+      "path": "tests/test_fresh_scene_stage_implementations_exist.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.211,
+      "path": "tests/test_fresh_scene_supervisor_bindings.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.245,
+      "path": "tests/test_fresh_scene_supervisor_tools.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.33,
+      "path": "tests/test_fresh_site_lane_terminal_evidence_seal.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/test_future_anchor_regrounding.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.432,
+      "path": "tests/test_g1_controlled_proof_setup.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.414,
+      "path": "tests/test_g1_controlled_run_evidence.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.193,
+      "path": "tests/test_g1_field_run_capture.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.166,
+      "path": "tests/test_g1_field_run_review.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.108,
+      "path": "tests/test_g1_kitchen_attempt_closure.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.744,
+      "path": "tests/test_g1_kitchen_bundle_compatibility.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.132,
+      "path": "tests/test_g1_kitchen_digitalocean_closure.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.024,
+      "path": "tests/test_g1_kitchen_episode_contract.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/test_g1_kitchen_leaf_evidence.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.26,
+      "path": "tests/test_g1_kitchen_pre_allocation_identity.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.323,
+      "path": "tests/test_g1_kitchen_proof_row_validation.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.044,
+      "path": "tests/test_g1_kitchen_run_index.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.102,
+      "path": "tests/test_g1_kitchen_semantic_review.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/test_g1_kitchen_worker_image_evidence.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.052,
+      "path": "tests/test_g1_kitchen_worker_proof_emission.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.03,
+      "path": "tests/test_g1_microwave_finetune_preflight.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.081,
+      "path": "tests/test_g1_microwave_finetune_provider_bundle.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.483,
+      "path": "tests/test_g1_microwave_finetune_provider_job.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 0.337,
+      "path": "tests/test_g1_microwave_finetune_worker.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.057,
+      "path": "tests/test_g1_microwave_grasp_arc_seed.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.263,
+      "path": "tests/test_g1_microwave_groot_finetune_component.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.077,
+      "path": "tests/test_g1_microwave_handle_dynamics_validation.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.039,
+      "path": "tests/test_g1_microwave_lerobot_materialization.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.175,
+      "path": "tests/test_g1_microwave_live_aligned_finetune.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.052,
+      "path": "tests/test_g1_microwave_owned_training_seed.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.434,
+      "path": "tests/test_g1_microwave_reach_seed.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.221,
+      "path": "tests/test_g1_proprioception_map.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.687,
+      "path": "tests/test_g1_render_noise_audit.py",
+      "test_count": 29
+    },
+    {
+      "duration_seconds": 0.183,
+      "path": "tests/test_g1_render_noise_audit_job.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.144,
+      "path": "tests/test_g1_render_noise_audit_runner.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.294,
+      "path": "tests/test_g1_site_3dgs_mujoco_preview.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.197,
+      "path": "tests/test_g1_sonic_motion_token_conversion.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.026,
+      "path": "tests/test_g4_host_image_contract.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.244,
+      "path": "tests/test_gate_reachability_and_adoption.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.158,
+      "path": "tests/test_gaussian_excision_live_lane.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.145,
+      "path": "tests/test_gaussian_object_partition.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.087,
+      "path": "tests/test_gaussian_source_removal_qualification.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.258,
+      "path": "tests/test_gaussian_splat_decode.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.293,
+      "path": "tests/test_gaussian_suppression_render.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.252,
+      "path": "tests/test_gaussian_suppression_volume.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.101,
+      "path": "tests/test_gear_sonic_container_smoke.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 28.759,
+      "path": "tests/test_gear_sonic_controller_fk_adapter.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.041,
+      "path": "tests/test_gear_sonic_isaac_dds_bridge.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.236,
+      "path": "tests/test_gear_sonic_joint_order_contract.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.721,
+      "path": "tests/test_gear_sonic_official_zmq_executor.py",
+      "test_count": 39
+    },
+    {
+      "duration_seconds": 0.09,
+      "path": "tests/test_gear_sonic_process_supervisor.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 3.354,
+      "path": "tests/test_gear_sonic_zmq_transport.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.063,
+      "path": "tests/test_geometry_da3.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 4.116,
+      "path": "tests/test_geometry_stage.py",
+      "test_count": 37
+    },
+    {
+      "duration_seconds": 0.037,
+      "path": "tests/test_gpu_campaign_schemas.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.259,
+      "path": "tests/test_gpu_provider_canary_evidence.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.065,
+      "path": "tests/test_gpu_provider_key_rotation.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.12,
+      "path": "tests/test_gpu_render_provider_secret_resolution.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 2.444,
+      "path": "tests/test_gpu_render_providers.py",
+      "test_count": 125
+    },
+    {
+      "duration_seconds": 0.226,
+      "path": "tests/test_gpu_residency_attribution.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 2.671,
+      "path": "tests/test_gpu_spend_guard.py",
+      "test_count": 93
+    },
+    {
+      "duration_seconds": 15.625,
+      "path": "tests/test_gpu_startup_reliability.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.045,
+      "path": "tests/test_groot_n16_arena_policy_runtime.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.067,
+      "path": "tests/test_groot_n17_droid_policy_runtime.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.075,
+      "path": "tests/test_groot_oscar_cached_footprint.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.429,
+      "path": "tests/test_groot_oscar_carrier_remote_build_packet.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.622,
+      "path": "tests/test_groot_oscar_closed_loop_image.py",
+      "test_count": 39
+    },
+    {
+      "duration_seconds": 4.481,
+      "path": "tests/test_groot_oscar_digitalocean_builder.py",
+      "test_count": 31
+    },
+    {
+      "duration_seconds": 1.366,
+      "path": "tests/test_groot_oscar_digitalocean_closed_loop_job.py",
+      "test_count": 34
+    },
+    {
+      "duration_seconds": 0.076,
+      "path": "tests/test_groot_oscar_digitalocean_job_inputs.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.13,
+      "path": "tests/test_groot_oscar_digitalocean_prebaked_host.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.163,
+      "path": "tests/test_groot_oscar_episode_review.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.458,
+      "path": "tests/test_groot_oscar_infrastructure_admission.py",
+      "test_count": 29
+    },
+    {
+      "duration_seconds": 0.408,
+      "path": "tests/test_groot_oscar_model_cache.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.457,
+      "path": "tests/test_groot_oscar_model_cache_s3_remote_executor.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 1.072,
+      "path": "tests/test_groot_oscar_model_cache_s3_remote_packet.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.154,
+      "path": "tests/test_groot_oscar_model_cache_wheelhouse.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.125,
+      "path": "tests/test_groot_oscar_release_build_script.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.267,
+      "path": "tests/test_groot_oscar_release_hardening.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.156,
+      "path": "tests/test_groot_oscar_release_workflow.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.22,
+      "path": "tests/test_groot_oscar_runpod_canary.py",
+      "test_count": 25
+    },
+    {
+      "duration_seconds": 0.48,
+      "path": "tests/test_groot_oscar_runpod_carrier_volume.py",
+      "test_count": 30
+    },
+    {
+      "duration_seconds": 0.048,
+      "path": "tests/test_groot_oscar_runpod_persistent_carrier.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.301,
+      "path": "tests/test_groot_oscar_runpod_persistent_carrier_campaign.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.144,
+      "path": "tests/test_groot_oscar_runpod_preflight.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.535,
+      "path": "tests/test_groot_oscar_runpod_s3_model_cache.py",
+      "test_count": 45
+    },
+    {
+      "duration_seconds": 0.568,
+      "path": "tests/test_groot_oscar_runpod_serverless.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.193,
+      "path": "tests/test_groot_oscar_runpod_serverless_campaign_io.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.189,
+      "path": "tests/test_groot_oscar_runpod_serverless_campaign_worker.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.064,
+      "path": "tests/test_groot_oscar_runpod_serverless_watchdog.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.18,
+      "path": "tests/test_groot_oscar_runpod_serverless_worker.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.771,
+      "path": "tests/test_groot_oscar_runpod_storage_volume.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.158,
+      "path": "tests/test_groot_oscar_runpod_volume_watchdog.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.063,
+      "path": "tests/test_groot_oscar_runpod_watchdog.py",
+      "test_count": 32
+    },
+    {
+      "duration_seconds": 0.505,
+      "path": "tests/test_groot_oscar_thin_remote_build_packet.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.274,
+      "path": "tests/test_groot_oscar_worker_startup_script.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.169,
+      "path": "tests/test_groot_sonic_policy_endpoint.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.197,
+      "path": "tests/test_grounded_clip_caption_stage.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.066,
+      "path": "tests/test_gsplat_conformance.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.13,
+      "path": "tests/test_handle_graspability.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.569,
+      "path": "tests/test_handle_standoff.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 4.827,
+      "path": "tests/test_heldout_appearance_evaluation_v2.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.551,
+      "path": "tests/test_host_resident_launch_inputs.py",
+      "test_count": 23
+    },
+    {
+      "duration_seconds": 0.229,
+      "path": "tests/test_hosted_image_generation_preflight.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.199,
+      "path": "tests/test_hosted_model_inference_preflight.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/test_identity_kyc_background_decisions.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.451,
+      "path": "tests/test_image_editor_backend_registry.py",
+      "test_count": 19
+    },
+    {
+      "duration_seconds": 0.556,
+      "path": "tests/test_impacted_test_selection.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.147,
+      "path": "tests/test_install_paid_lane_evidence_for_consumer.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.934,
+      "path": "tests/test_interiorgs_scene_placement.py",
+      "test_count": 40
+    },
+    {
+      "duration_seconds": 0.081,
+      "path": "tests/test_ios_manifest_coverage.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.221,
+      "path": "tests/test_isaac_driver_support.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 5.91,
+      "path": "tests/test_isaac_g1_kitchen_parity_job.py",
+      "test_count": 113
+    },
+    {
+      "duration_seconds": 3.584,
+      "path": "tests/test_isaac_g1_kitchen_parity_runner.py",
+      "test_count": 178
+    },
+    {
+      "duration_seconds": 0.486,
+      "path": "tests/test_isaac_g1_policy.py",
+      "test_count": 27
+    },
+    {
+      "duration_seconds": 7.945,
+      "path": "tests/test_isaac_g1_site_3dgs_realistic_eval.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.018,
+      "path": "tests/test_isaac_live_geometry_validation.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.356,
+      "path": "tests/test_isaac_nurec_export.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.871,
+      "path": "tests/test_isaac_particlefield_render_job.py",
+      "test_count": 28
+    },
+    {
+      "duration_seconds": 1.329,
+      "path": "tests/test_isaac_persistent_task_executor.py",
+      "test_count": 49
+    },
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/test_isaac_persistent_task_executor_service_heartbeat.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.407,
+      "path": "tests/test_isaac_review_media.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 3.062,
+      "path": "tests/test_isaac_review_renderer_canary.py",
+      "test_count": 36
+    },
+    {
+      "duration_seconds": 0.478,
+      "path": "tests/test_isaac_runtime_task_backend_live_state.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.76,
+      "path": "tests/test_isaac_splat_nurec_render_runner.py",
+      "test_count": 28
+    },
+    {
+      "duration_seconds": 0.567,
+      "path": "tests/test_isaac_splat_render_wiring.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 4.313,
+      "path": "tests/test_isaac_startup_supervisor.py",
+      "test_count": 29
+    },
+    {
+      "duration_seconds": 0.165,
+      "path": "tests/test_isaac_supervised_startup_runtime.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.422,
+      "path": "tests/test_isaac_task_review_renderer.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.057,
+      "path": "tests/test_isaac_worker_image_healthcheck.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.388,
+      "path": "tests/test_isaac_worker_image_manifest.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 7.849,
+      "path": "tests/test_isaac_worker_remote_build_packet.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.201,
+      "path": "tests/test_isaac_worker_runtime_preflight.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.173,
+      "path": "tests/test_isaac_worker_source_overlay.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.292,
+      "path": "tests/test_issue_retained_scene_render_paid_attempt_authority.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.431,
+      "path": "tests/test_job_transport.py",
+      "test_count": 19
+    },
+    {
+      "duration_seconds": 0.117,
+      "path": "tests/test_joint_agent_articulation_review.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.272,
+      "path": "tests/test_joint_agent_execution_receipt.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.266,
+      "path": "tests/test_joint_agent_live_lane.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.324,
+      "path": "tests/test_judge_spend_governor.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 1.701,
+      "path": "tests/test_kitchen_asset_startup_gate.py",
+      "test_count": 36
+    },
+    {
+      "duration_seconds": 0.142,
+      "path": "tests/test_kitchen_attempt_lineage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.14,
+      "path": "tests/test_kitchen_random_task_selection.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.649,
+      "path": "tests/test_kitchen_task_scaling_preflight.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.29,
+      "path": "tests/test_kitchen_task_scaling_task_file.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.615,
+      "path": "tests/test_lambda_provider_adapter.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.249,
+      "path": "tests/test_lane_hardware_requirements.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.627,
+      "path": "tests/test_lane_resume.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.367,
+      "path": "tests/test_lane_terminal_contract_rehearsal.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.729,
+      "path": "tests/test_launch_bundle.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.02,
+      "path": "tests/test_launch_proof_policy.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.248,
+      "path": "tests/test_launch_provenance.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.055,
+      "path": "tests/test_launch_readiness_packet.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.501,
+      "path": "tests/test_lerobot_episode_export.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 1.282,
+      "path": "tests/test_lerobot_export_validation.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.989,
+      "path": "tests/test_lightwheel_kitchen_isaac_scenarios.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 2.592,
+      "path": "tests/test_lightwheel_sink_isaac_bundle.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.571,
+      "path": "tests/test_live_pipeline_control_plane.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.292,
+      "path": "tests/test_live_pipeline_control_plane_coverage_edges.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.147,
+      "path": "tests/test_live_pipeline_forwarding_secret_setup.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.617,
+      "path": "tests/test_live_pipeline_import_isolation.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.585,
+      "path": "tests/test_live_pipeline_input_intake.py",
+      "test_count": 28
+    },
+    {
+      "duration_seconds": 4.6,
+      "path": "tests/test_live_pipeline_intake_service.py",
+      "test_count": 52
+    },
+    {
+      "duration_seconds": 0.219,
+      "path": "tests/test_live_pipeline_manifest_alert.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.227,
+      "path": "tests/test_live_pipeline_proof_audit.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.8,
+      "path": "tests/test_live_pipeline_setup.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.064,
+      "path": "tests/test_live_pipeline_setup_doc_contract.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.21,
+      "path": "tests/test_live_profile_builder_contract.py",
+      "test_count": 54
+    },
+    {
+      "duration_seconds": 0.17,
+      "path": "tests/test_live_profile_golden_equivalence.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.479,
+      "path": "tests/test_live_profile_manifest_publication_seams.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.263,
+      "path": "tests/test_live_robot_eval_closure_coverage_edges.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.567,
+      "path": "tests/test_local_bundle_workflow.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.169,
+      "path": "tests/test_local_evidence_adapters.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.796,
+      "path": "tests/test_local_reconstruction_adapters.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.727,
+      "path": "tests/test_local_render_preview.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 1.616,
+      "path": "tests/test_lucky_g1_reference_adapter_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.143,
+      "path": "tests/test_machine_quarantine_registry.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.333,
+      "path": "tests/test_major_capability_scenario_suite.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 7.261,
+      "path": "tests/test_manipulation_task_stack.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.623,
+      "path": "tests/test_marble_sim_asset_handoff.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.392,
+      "path": "tests/test_materialization_edges.py",
+      "test_count": 40
+    },
+    {
+      "duration_seconds": 0.19,
+      "path": "tests/test_materialize_inpaint360_virtual_masks.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.195,
+      "path": "tests/test_materialize_task_evaluation_standing_launch_authorization.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.387,
+      "path": "tests/test_materializer_cli.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 17.124,
+      "path": "tests/test_materializer_reachability.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.684,
+      "path": "tests/test_measurement_adapter_execution.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.107,
+      "path": "tests/test_measurement_adapter_execution_diagnostics.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.262,
+      "path": "tests/test_measurement_adapter_runtime.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.13,
+      "path": "tests/test_measurement_chrono_bootstrap.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.558,
+      "path": "tests/test_measurement_chrono_dem_cuda_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 6.125,
+      "path": "tests/test_measurement_chrono_dem_vast_bundle.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.911,
+      "path": "tests/test_measurement_chrono_dem_vast_canary.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.057,
+      "path": "tests/test_measurement_chrono_granular_adapter.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.077,
+      "path": "tests/test_measurement_deformation_granular_chrono_development_suite.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.976,
+      "path": "tests/test_measurement_direct_tactile_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.379,
+      "path": "tests/test_measurement_dlo_lab_cable_adapter.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 6.635,
+      "path": "tests/test_measurement_dlo_lab_vast_bundle.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.599,
+      "path": "tests/test_measurement_dlo_lab_vast_canary.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.083,
+      "path": "tests/test_measurement_drake_bootstrap.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.067,
+      "path": "tests/test_measurement_drake_rigid_adapter.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.172,
+      "path": "tests/test_measurement_engine_capability_profiles.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.865,
+      "path": "tests/test_measurement_geometry_contact_development_suite.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.054,
+      "path": "tests/test_measurement_geometry_contact_drake_development_suite.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.092,
+      "path": "tests/test_measurement_geometry_contact_isaac_physx_development_suite.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.769,
+      "path": "tests/test_measurement_geometry_contact_sapien_development_suite.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.797,
+      "path": "tests/test_measurement_geometry_kinematic_development_suite.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.312,
+      "path": "tests/test_measurement_isaac_physx_rigid_adapter.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.049,
+      "path": "tests/test_measurement_isaac_runtime_release.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 5.004,
+      "path": "tests/test_measurement_isaac_vast_bundle.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 1.328,
+      "path": "tests/test_measurement_isaac_vast_canary.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.252,
+      "path": "tests/test_measurement_method_research_catalog.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.59,
+      "path": "tests/test_measurement_mujoco_articulation_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.68,
+      "path": "tests/test_measurement_mujoco_flex_cloth_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.494,
+      "path": "tests/test_measurement_mujoco_granular_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.504,
+      "path": "tests/test_measurement_mujoco_insertion_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.79,
+      "path": "tests/test_measurement_mujoco_worker.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 59.132,
+      "path": "tests/test_measurement_newton_rigid_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.235,
+      "path": "tests/test_measurement_observation_qualification.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.958,
+      "path": "tests/test_measurement_opencv_observation_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.446,
+      "path": "tests/test_measurement_pinocchio_coal_kinematic_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 21.015,
+      "path": "tests/test_measurement_pyelastica_cable_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.279,
+      "path": "tests/test_measurement_qualification_benchmarks.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.169,
+      "path": "tests/test_measurement_research_admission.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.216,
+      "path": "tests/test_measurement_research_monitor.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.16,
+      "path": "tests/test_measurement_research_monitoring.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.479,
+      "path": "tests/test_measurement_routed_execution.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.45,
+      "path": "tests/test_measurement_routing_worked_examples.py",
+      "test_count": 19
+    },
+    {
+      "duration_seconds": 0.535,
+      "path": "tests/test_measurement_sapien_rigid_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.152,
+      "path": "tests/test_measurement_sensor_stream_pairing.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.172,
+      "path": "tests/test_measurement_site_evidence_bridge.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.137,
+      "path": "tests/test_measurement_site_evidence_compiler.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.401,
+      "path": "tests/test_measurement_world_model_action_fidelity_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.044,
+      "path": "tests/test_method_input_scope.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.082,
+      "path": "tests/test_model_source_pins.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.054,
+      "path": "tests/test_mujoco_eval_media.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 3.58,
+      "path": "tests/test_mujoco_g1_simulator_command.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 2.246,
+      "path": "tests/test_mujoco_g1_simulator_command_coverage.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.203,
+      "path": "tests/test_mujoco_g1_simulator_command_proxy_modes.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 5.548,
+      "path": "tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py",
+      "test_count": 36
+    },
+    {
+      "duration_seconds": 1.238,
+      "path": "tests/test_mujoco_g1_wam_vla_policy_endpoint_eval_coverage_edges.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.283,
+      "path": "tests/test_mujoco_scene_scenario_packet.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.181,
+      "path": "tests/test_mujoco_worker_runtime_preflight.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.506,
+      "path": "tests/test_multi_embodiment_conformance.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.094,
+      "path": "tests/test_mushroom_processed_proxy.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.44,
+      "path": "tests/test_native_360_colmap_plan.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.457,
+      "path": "tests/test_native_360_frame_dataset.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.439,
+      "path": "tests/test_native_360_normalization.py",
+      "test_count": 36
+    },
+    {
+      "duration_seconds": 0.127,
+      "path": "tests/test_native_360_pose_request.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.069,
+      "path": "tests/test_native_articulated_construction_plan.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.117,
+      "path": "tests/test_native_articulated_control_plan.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.306,
+      "path": "tests/test_native_articulated_graph_plan.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.101,
+      "path": "tests/test_native_articulated_motion_geometry.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.184,
+      "path": "tests/test_native_articulated_task_state.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.069,
+      "path": "tests/test_native_franka_action_math.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.139,
+      "path": "tests/test_native_franka_pose_servo.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.046,
+      "path": "tests/test_native_pose_transforms.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.315,
+      "path": "tests/test_native_runtime_backend_coverage.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.101,
+      "path": "tests/test_native_runtime_cosmos_adapter.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.094,
+      "path": "tests/test_native_runtime_rollout_state.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.829,
+      "path": "tests/test_native_runtime_service.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.141,
+      "path": "tests/test_native_runtime_strategy.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 3.481,
+      "path": "tests/test_native_task_arena_bundle.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 0.093,
+      "path": "tests/test_native_task_arena_cli.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.234,
+      "path": "tests/test_native_task_arena_construction_worker.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.138,
+      "path": "tests/test_native_task_arena_controls_worker.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.048,
+      "path": "tests/test_native_task_arena_device_readback.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.061,
+      "path": "tests/test_native_task_arena_import_scope.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.52,
+      "path": "tests/test_native_task_arena_live_lane.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.402,
+      "path": "tests/test_native_task_arena_packet.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.364,
+      "path": "tests/test_native_task_arena_paid_authority.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.048,
+      "path": "tests/test_native_task_arena_preconstruction.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.264,
+      "path": "tests/test_native_task_arena_readback.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.253,
+      "path": "tests/test_native_task_arena_runtime.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.332,
+      "path": "tests/test_native_task_arena_scene_plan.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.072,
+      "path": "tests/test_native_task_camera_observability.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.171,
+      "path": "tests/test_native_task_construction_plan.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.351,
+      "path": "tests/test_native_task_control_plan.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.096,
+      "path": "tests/test_native_task_episode_environment.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.143,
+      "path": "tests/test_native_task_gpu_collision_qualification.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.21,
+      "path": "tests/test_native_task_isaaclab_launch.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.048,
+      "path": "tests/test_native_task_robot_contact_topology.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.642,
+      "path": "tests/test_native_task_runtime_contract.py",
+      "test_count": 25
+    },
+    {
+      "duration_seconds": 1.276,
+      "path": "tests/test_native_task_runtime_source_packet.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.641,
+      "path": "tests/test_new_site_diagnostic_canary_gpu.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.332,
+      "path": "tests/test_new_site_diagnostic_smoke.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.398,
+      "path": "tests/test_new_site_task_evaluation.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.534,
+      "path": "tests/test_new_site_task_evaluation_run.py",
+      "test_count": 49
+    },
+    {
+      "duration_seconds": 0.856,
+      "path": "tests/test_noise_degraded_policy_command_adapter.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.301,
+      "path": "tests/test_nurec_openusd_packaging.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.27,
+      "path": "tests/test_nurec_volume_codec.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.076,
+      "path": "tests/test_nvidia_asset_conditioning_review.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.233,
+      "path": "tests/test_nvidia_experiment_resource.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.287,
+      "path": "tests/test_nvidia_nim_model_preflight.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.092,
+      "path": "tests/test_nvidia_siggraph_completion.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.132,
+      "path": "tests/test_nvidia_siggraph_policy.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.417,
+      "path": "tests/test_nvidia_warehouse_native_camera_canary.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.318,
+      "path": "tests/test_nvidia_warehouse_native_camera_gpu_admission.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.34,
+      "path": "tests/test_nvidia_warehouse_native_camera_gpu_bundle.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.143,
+      "path": "tests/test_nvidia_warehouse_workcell.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.988,
+      "path": "tests/test_object_geometry_stage_coverage_edges.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.231,
+      "path": "tests/test_object_index_runners.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.217,
+      "path": "tests/test_object_index_splat_analyzer_runner.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 1.372,
+      "path": "tests/test_object_index_stage.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.606,
+      "path": "tests/test_official_g1_policy_handoff.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.334,
+      "path": "tests/test_omniverse_library_preflight.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.313,
+      "path": "tests/test_openai_candidate_paid_admission.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.036,
+      "path": "tests/test_openai_phase2.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.123,
+      "path": "tests/test_openai_phase2_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.111,
+      "path": "tests/test_openpi_checkpoint_inventory.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.251,
+      "path": "tests/test_openpi_droid_policy_runtime.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.151,
+      "path": "tests/test_openpi_policy_ranking_gpu_admission.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.195,
+      "path": "tests/test_openpi_policy_ranking_gpu_bootstrap.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 6.469,
+      "path": "tests/test_openpi_policy_ranking_gpu_job.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 7.748,
+      "path": "tests/test_openpi_policy_ranking_remote_build_packet.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.669,
+      "path": "tests/test_openpi_policy_ranking_runpod.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.293,
+      "path": "tests/test_openvla_policy_command_adapter.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.258,
+      "path": "tests/test_openvla_policy_provider_smoke.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.276,
+      "path": "tests/test_operational_logging.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.113,
+      "path": "tests/test_orchestrator_consent_toctou.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.075,
+      "path": "tests/test_oscar_action_control_contracts.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.162,
+      "path": "tests/test_oscar_cosmos_wam_command_adapter.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 89.314,
+      "path": "tests/test_oscar_cosmos_wam_evaluator.py",
+      "test_count": 58
+    },
+    {
+      "duration_seconds": 0.115,
+      "path": "tests/test_oscar_cpu_import_probe.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 13.093,
+      "path": "tests/test_oscar_isaac_closed_loop_eval.py",
+      "test_count": 137
+    },
+    {
+      "duration_seconds": 1.099,
+      "path": "tests/test_oscar_resident_worker.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.089,
+      "path": "tests/test_oscar_review_views.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.607,
+      "path": "tests/test_oscar_runtime_asset_contract.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.665,
+      "path": "tests/test_oscar_runtime_source_provenance.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.909,
+      "path": "tests/test_oscar_visual_augmentation_generation_runner.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.136,
+      "path": "tests/test_oscar_visual_augmentation_packet.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.348,
+      "path": "tests/test_oscar_wam_command_adapter.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.1,
+      "path": "tests/test_oscar_wam_dual_stream_contract.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.349,
+      "path": "tests/test_oscar_wam_gpu_image.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.622,
+      "path": "tests/test_oscar_wam_provider_bundle.py",
+      "test_count": 33
+    },
+    {
+      "duration_seconds": 4.902,
+      "path": "tests/test_oscar_wam_provider_command_adapter.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.08,
+      "path": "tests/test_output_artifact_retention.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.548,
+      "path": "tests/test_output_run_transaction.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.182,
+      "path": "tests/test_ovrtx_render_residency.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.848,
+      "path": "tests/test_owner_gpu_proof_runner.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.117,
+      "path": "tests/test_paid_issuer_same_goal_reconciliation.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 9.525,
+      "path": "tests/test_paid_lane_bundle_cli_contract.py",
+      "test_count": 72
+    },
+    {
+      "duration_seconds": 1.302,
+      "path": "tests/test_paid_lane_guard.py",
+      "test_count": 35
+    },
+    {
+      "duration_seconds": 2.524,
+      "path": "tests/test_paid_lane_terminal_artifact_contract.py",
+      "test_count": 47
+    },
+    {
+      "duration_seconds": 1.609,
+      "path": "tests/test_paid_launch_concurrency.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 1.188,
+      "path": "tests/test_paid_marketplace_launch_gate.py",
+      "test_count": 24
+    },
+    {
+      "duration_seconds": 5.836,
+      "path": "tests/test_paid_provider_lane_lease.py",
+      "test_count": 25
+    },
+    {
+      "duration_seconds": 0.028,
+      "path": "tests/test_paid_repair_spend_chain.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.297,
+      "path": "tests/test_paid_resource_admission.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 4.925,
+      "path": "tests/test_paid_resource_allocator.py",
+      "test_count": 52
+    },
+    {
+      "duration_seconds": 23.514,
+      "path": "tests/test_paid_resource_allocator_verifier.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 1.317,
+      "path": "tests/test_paid_worker_image_diagnostic_gate.py",
+      "test_count": 24
+    },
+    {
+      "duration_seconds": 0.105,
+      "path": "tests/test_paired_target_articulated_kinematic_path.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.123,
+      "path": "tests/test_paired_target_interaction_affordance_candidate.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.135,
+      "path": "tests/test_paired_target_native_arena_request.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.194,
+      "path": "tests/test_paired_target_native_camera_rig_candidate.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.212,
+      "path": "tests/test_paired_target_native_construction_bindings.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.586,
+      "path": "tests/test_paired_target_native_import_bundle.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.363,
+      "path": "tests/test_paired_target_native_import_live_lane.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.775,
+      "path": "tests/test_paired_target_native_import_vast.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.091,
+      "path": "tests/test_paired_target_native_preflight.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.101,
+      "path": "tests/test_paired_target_native_render_request.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.279,
+      "path": "tests/test_palatial_physready.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.385,
+      "path": "tests/test_palatial_physready_coverage_edges.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.32,
+      "path": "tests/test_particlefield_usd.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.364,
+      "path": "tests/test_perception_adapter.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.616,
+      "path": "tests/test_perception_fusion.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.197,
+      "path": "tests/test_perception_views.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.432,
+      "path": "tests/test_pipe_beta_privacy_rights_gates.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.14,
+      "path": "tests/test_pipeline_settings.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.218,
+      "path": "tests/test_placement_validation.py",
+      "test_count": 43
+    },
+    {
+      "duration_seconds": 2.802,
+      "path": "tests/test_policy_autoresearch.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.803,
+      "path": "tests/test_policy_autoresearch_coverage_edges.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.376,
+      "path": "tests/test_policy_autoresearch_local_evaluator.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.183,
+      "path": "tests/test_policy_autoresearch_mujoco_evaluator_coverage.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.195,
+      "path": "tests/test_policy_autoresearch_owner_gpu_evaluator_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.161,
+      "path": "tests/test_policy_autoresearch_wam_fixture_evaluator.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 5.244,
+      "path": "tests/test_policy_evaluation_contracts.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 0.609,
+      "path": "tests/test_policy_improvement_run.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.257,
+      "path": "tests/test_policy_ranking_causal_conditioning.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.086,
+      "path": "tests/test_policy_ranking_cosmos3_edge_terminal.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.189,
+      "path": "tests/test_policy_ranking_cosmos3_followup_evidence.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 4.437,
+      "path": "tests/test_policy_ranking_cosmos_causal_screen.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.69,
+      "path": "tests/test_policy_ranking_cosmos_reasoner_gpu_admission.py",
+      "test_count": 19
+    },
+    {
+      "duration_seconds": 0.502,
+      "path": "tests/test_policy_ranking_disjoint_preflight.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.174,
+      "path": "tests/test_policy_ranking_droid_kinematics.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.385,
+      "path": "tests/test_policy_ranking_droid_reference.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.151,
+      "path": "tests/test_policy_ranking_droid_reference_bundle.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.785,
+      "path": "tests/test_policy_ranking_evaluator_diagnostic.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.092,
+      "path": "tests/test_policy_ranking_evaluator_diagnostic_cosmos_bundle.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.057,
+      "path": "tests/test_policy_ranking_evaluator_diagnostic_gemini.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.195,
+      "path": "tests/test_policy_ranking_evaluator_diagnostic_gemini_batch.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.369,
+      "path": "tests/test_policy_ranking_evaluator_diagnostic_gemini_matrix.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.308,
+      "path": "tests/test_policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.198,
+      "path": "tests/test_policy_ranking_evaluator_diagnostic_openai.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.577,
+      "path": "tests/test_policy_ranking_evaluator_diagnostic_openai_batch.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.613,
+      "path": "tests/test_policy_ranking_evidence.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.03,
+      "path": "tests/test_policy_ranking_experiment_2.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.221,
+      "path": "tests/test_policy_ranking_experiment_2_adjudication.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.201,
+      "path": "tests/test_policy_ranking_label_free_chunk_selection.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 5.678,
+      "path": "tests/test_policy_ranking_ladder.py",
+      "test_count": 27
+    },
+    {
+      "duration_seconds": 0.216,
+      "path": "tests/test_policy_ranking_phase_b_high_motion_selection.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.947,
+      "path": "tests/test_policy_ranking_phase_b_replay.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.085,
+      "path": "tests/test_policy_ranking_power_analysis.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.195,
+      "path": "tests/test_policy_ranking_powered_droid_analysis.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.787,
+      "path": "tests/test_policy_ranking_powered_droid_bundle.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.261,
+      "path": "tests/test_policy_ranking_powered_droid_confirmation.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.099,
+      "path": "tests/test_policy_ranking_roboarena_analysis.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.391,
+      "path": "tests/test_policy_ranking_roboarena_calibration.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.046,
+      "path": "tests/test_policy_ranking_roboarena_collapse_audit.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.392,
+      "path": "tests/test_policy_ranking_roboarena_crop_audit.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.213,
+      "path": "tests/test_policy_ranking_roboarena_evaluator_openai.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.538,
+      "path": "tests/test_policy_ranking_successor_cosmos.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 1.473,
+      "path": "tests/test_policy_ranking_successor_cosmos_provider_runtime.py",
+      "test_count": 29
+    },
+    {
+      "duration_seconds": 1.353,
+      "path": "tests/test_policy_ranking_successor_gpu_admission.py",
+      "test_count": 28
+    },
+    {
+      "duration_seconds": 0.25,
+      "path": "tests/test_policy_ranking_successor_retained_session.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.084,
+      "path": "tests/test_policy_ranking_task_instruction_extraction.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 2.592,
+      "path": "tests/test_policy_ranking_thesis.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.369,
+      "path": "tests/test_policy_ranking_thesis_judge_openai.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.088,
+      "path": "tests/test_policy_ranking_wam_validity.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.389,
+      "path": "tests/test_policy_wam_closed_loop.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.113,
+      "path": "tests/test_policy_wam_reliability_gate.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.492,
+      "path": "tests/test_polycam_developer_source_profile.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.135,
+      "path": "tests/test_portable_evidence_receipt_mirror.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.65,
+      "path": "tests/test_pose_image_consistency.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.072,
+      "path": "tests/test_post_capture_evidence_cli.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.696,
+      "path": "tests/test_post_capture_evidence_spine.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 8.78,
+      "path": "tests/test_post_training_data_package.py",
+      "test_count": 50
+    },
+    {
+      "duration_seconds": 0.633,
+      "path": "tests/test_postshot_windows_worker.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.186,
+      "path": "tests/test_postshot_worker_contracts.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 17.714,
+      "path": "tests/test_pr179_review_regressions.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.286,
+      "path": "tests/test_preloaded_worker_image_evidence.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.163,
+      "path": "tests/test_privacy_model_cache.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.156,
+      "path": "tests/test_privacy_processing.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 7.123,
+      "path": "tests/test_privacy_runner_service.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.228,
+      "path": "tests/test_privacy_service_runtime_coverage.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.107,
+      "path": "tests/test_processed_observation_dataset.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.19,
+      "path": "tests/test_product_spine_e2e.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.202,
+      "path": "tests/test_product_spine_import_boundaries.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.423,
+      "path": "tests/test_production_gpu_campaign_budget.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.72,
+      "path": "tests/test_production_gpu_campaign_control_plane.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.136,
+      "path": "tests/test_production_gpu_host_image_contract.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.091,
+      "path": "tests/test_production_gpu_image_contract.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.091,
+      "path": "tests/test_production_gpu_launch_qualification.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.06,
+      "path": "tests/test_production_gpu_release_candidate.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.06,
+      "path": "tests/test_production_gpu_reliability_qualification.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.128,
+      "path": "tests/test_production_gpu_replenishment_probe.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.061,
+      "path": "tests/test_production_gpu_rollback_drill.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.213,
+      "path": "tests/test_production_gpu_runpod_autoscaler.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.061,
+      "path": "tests/test_production_gpu_warm_bind_probe.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.483,
+      "path": "tests/test_production_gpu_warm_watchdog.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.243,
+      "path": "tests/test_production_gpu_worker_agent.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.354,
+      "path": "tests/test_production_gpu_worker_pool.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 1.692,
+      "path": "tests/test_production_handoff_readiness.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.539,
+      "path": "tests/test_production_runtime_env_guard.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.216,
+      "path": "tests/test_production_runtime_env_guard_allocator_import.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.313,
+      "path": "tests/test_proof_contracts.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.162,
+      "path": "tests/test_provider_archive.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.104,
+      "path": "tests/test_provider_attempt_classification.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.144,
+      "path": "tests/test_provider_billing_reconciler.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.759,
+      "path": "tests/test_provider_bundle_staging_common.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.267,
+      "path": "tests/test_provider_evidence_retention.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.138,
+      "path": "tests/test_provider_nurec_isaac_preparation.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.144,
+      "path": "tests/test_provider_nurec_robot_placement.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.191,
+      "path": "tests/test_provider_nurec_task_evaluation.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.548,
+      "path": "tests/test_provider_phase_trace.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.172,
+      "path": "tests/test_provider_preview_edges.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.807,
+      "path": "tests/test_provider_preview_qa.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.09,
+      "path": "tests/test_provider_python_build_plan.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 1.781,
+      "path": "tests/test_provider_race.py",
+      "test_count": 38
+    },
+    {
+      "duration_seconds": 1.212,
+      "path": "tests/test_provider_reliability_manifest.py",
+      "test_count": 39
+    },
+    {
+      "duration_seconds": 0.138,
+      "path": "tests/test_provider_robot_placement_evidence.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.092,
+      "path": "tests/test_provider_runtime_bundle_contract.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.135,
+      "path": "tests/test_provider_runtime_capacity.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.139,
+      "path": "tests/test_provider_splat_import.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.186,
+      "path": "tests/test_provider_staging_verification.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.355,
+      "path": "tests/test_provider_transport.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.248,
+      "path": "tests/test_provider_worker_contract.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.11,
+      "path": "tests/test_provider_worker_endpoint_manifest.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 2.762,
+      "path": "tests/test_provider_worker_policy_command_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.209,
+      "path": "tests/test_ptdp_scalability_benchmark.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 1.33,
+      "path": "tests/test_public_benchmark_anchor.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.097,
+      "path": "tests/test_public_processed_task_testbed.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.199,
+      "path": "tests/test_public_reference_admission.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 7.109,
+      "path": "tests/test_public_scene_agent_cad_replacement_visual_review.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.156,
+      "path": "tests/test_public_scene_artifixer3d_bundle.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.504,
+      "path": "tests/test_public_scene_artifixer3d_candidate_inputs.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.356,
+      "path": "tests/test_public_scene_artifixer3d_dual_target_inputs.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.642,
+      "path": "tests/test_public_scene_artifixer3d_dual_target_runner.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 1.111,
+      "path": "tests/test_public_scene_artifixer3d_dual_target_vast.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.151,
+      "path": "tests/test_public_scene_artifixer3d_final_composite.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 3.475,
+      "path": "tests/test_public_scene_artifixer3d_vast.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 4.005,
+      "path": "tests/test_public_scene_aura_adapter.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.98,
+      "path": "tests/test_public_scene_aura_exact_residual_bundle.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.502,
+      "path": "tests/test_public_scene_aura_exact_residual_compositor.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.549,
+      "path": "tests/test_public_scene_aura_exact_residual_preflight.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.629,
+      "path": "tests/test_public_scene_aura_exact_residual_vast.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.429,
+      "path": "tests/test_public_scene_aura_exact_residual_visual_abstention.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.389,
+      "path": "tests/test_public_scene_aura_execution.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.318,
+      "path": "tests/test_public_scene_aura_human_review.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.19,
+      "path": "tests/test_public_scene_aura_native_render.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.33,
+      "path": "tests/test_public_scene_aura_residual_backend_admission.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.094,
+      "path": "tests/test_public_scene_aura_visual_abstention.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.075,
+      "path": "tests/test_public_scene_broad_repair_aura_packet.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.213,
+      "path": "tests/test_public_scene_broad_repair_support.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.53,
+      "path": "tests/test_public_scene_cad_inspection_capture.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 8.4,
+      "path": "tests/test_public_scene_calibrated_object_masks.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.27,
+      "path": "tests/test_public_scene_content_agents_preflight.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.32,
+      "path": "tests/test_public_scene_execution_authority.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 1.024,
+      "path": "tests/test_public_scene_host_input_intake.py",
+      "test_count": 24
+    },
+    {
+      "duration_seconds": 0.189,
+      "path": "tests/test_public_scene_hybrid_replacement_seal.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.313,
+      "path": "tests/test_public_scene_infusion_adapter.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.191,
+      "path": "tests/test_public_scene_infusion_compose.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 3.353,
+      "path": "tests/test_public_scene_inpaint360_adapter.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.366,
+      "path": "tests/test_public_scene_inpaint360_author_archive.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.297,
+      "path": "tests/test_public_scene_inpaint360_execution.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.655,
+      "path": "tests/test_public_scene_inpainting_backend_admission.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 2.891,
+      "path": "tests/test_public_scene_inpainting_inputs.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 1.046,
+      "path": "tests/test_public_scene_inpainting_locality.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.48,
+      "path": "tests/test_public_scene_method_prerequisites.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.042,
+      "path": "tests/test_public_scene_repair_preflight_contract.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.279,
+      "path": "tests/test_public_scene_replacement_depth_composition.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.669,
+      "path": "tests/test_public_scene_residual_inpainting_packet.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.099,
+      "path": "tests/test_public_scene_sam31_task_inputs.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.183,
+      "path": "tests/test_public_scene_scannetpp_access.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.109,
+      "path": "tests/test_public_scene_segment_mask_repair_preflight.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.433,
+      "path": "tests/test_public_scene_simready_control.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.144,
+      "path": "tests/test_public_scene_simready_human_review.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.565,
+      "path": "tests/test_public_scene_simready_isaac_vast.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.309,
+      "path": "tests/test_public_scene_simready_match_review.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.541,
+      "path": "tests/test_public_scene_simready_native.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.208,
+      "path": "tests/test_public_scene_simready_replacement.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.254,
+      "path": "tests/test_public_scene_simready_visual_review.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 1.801,
+      "path": "tests/test_public_scene_suite_admission.py",
+      "test_count": 51
+    },
+    {
+      "duration_seconds": 0.767,
+      "path": "tests/test_public_scene_suite_index.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 3.925,
+      "path": "tests/test_public_scene_suite_materializer.py",
+      "test_count": 32
+    },
+    {
+      "duration_seconds": 0.199,
+      "path": "tests/test_public_scene_task_selection.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.348,
+      "path": "tests/test_public_scene_viewpoint_survey.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.938,
+      "path": "tests/test_public_scientific_claims.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.352,
+      "path": "tests/test_publish_task_evaluation_launch_profiles.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.416,
+      "path": "tests/test_pubsub_handoff_listener.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.08,
+      "path": "tests/test_pytest_full_lane_evidence.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.18,
+      "path": "tests/test_python_interpreter_matrix.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.1,
+      "path": "tests/test_qualification_alias_contract.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 4.843,
+      "path": "tests/test_qualification_alpha.py",
+      "test_count": 27
+    },
+    {
+      "duration_seconds": 0.655,
+      "path": "tests/test_qualification_coverage_edges.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.149,
+      "path": "tests/test_qualification_support_outputs.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.758,
+      "path": "tests/test_quality_gap_ledger.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.432,
+      "path": "tests/test_rank_fidelity_statistics.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 1.242,
+      "path": "tests/test_raw_bundle_intake_verifier.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 22.11,
+      "path": "tests/test_readiness_manifest_producibility.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.034,
+      "path": "tests/test_readiness_matrix_docs.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.168,
+      "path": "tests/test_reconstruction_appearance_asset.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.321,
+      "path": "tests/test_reconstruction_capability.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.477,
+      "path": "tests/test_reconstruction_colmap_dataset.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.866,
+      "path": "tests/test_reconstruction_control_plane.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.119,
+      "path": "tests/test_reconstruction_enhancement_audit.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.311,
+      "path": "tests/test_reconstruction_execution_readiness.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.233,
+      "path": "tests/test_reconstruction_failure_diagnosis.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 1.444,
+      "path": "tests/test_reconstruction_frame_dataset.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.805,
+      "path": "tests/test_reconstruction_gaussian_trainer.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.231,
+      "path": "tests/test_reconstruction_generated_repair.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.878,
+      "path": "tests/test_reconstruction_geometry_compiler.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 1.362,
+      "path": "tests/test_reconstruction_geometry_contracts.py",
+      "test_count": 27
+    },
+    {
+      "duration_seconds": 0.96,
+      "path": "tests/test_reconstruction_gpu_admission.py",
+      "test_count": 23
+    },
+    {
+      "duration_seconds": 0.1,
+      "path": "tests/test_reconstruction_gpu_operation_bootstrap.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 1.083,
+      "path": "tests/test_reconstruction_gpu_operation_bundle.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.337,
+      "path": "tests/test_reconstruction_heldout_evaluation.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.142,
+      "path": "tests/test_reconstruction_heldout_request_compiler.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.718,
+      "path": "tests/test_reconstruction_hermetic_verticals.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.239,
+      "path": "tests/test_reconstruction_isaac_image_release.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.195,
+      "path": "tests/test_reconstruction_pose_refinement.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.173,
+      "path": "tests/test_reconstruction_provider_contracts.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.382,
+      "path": "tests/test_reconstruction_terminal_report.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.368,
+      "path": "tests/test_reconstruction_training_request_compiler.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.135,
+      "path": "tests/test_reconstruction_validation_contracts.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.331,
+      "path": "tests/test_reconstruction_vast_operation.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.924,
+      "path": "tests/test_reconstruction_vast_worker_smoke.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.717,
+      "path": "tests/test_reconstruction_worker_build_receipt_normalization.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.296,
+      "path": "tests/test_reconstruction_worker_contracts.py",
+      "test_count": 31
+    },
+    {
+      "duration_seconds": 0.293,
+      "path": "tests/test_reconstruction_worker_image.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.449,
+      "path": "tests/test_reconstruction_worker_license_inventory.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 1.03,
+      "path": "tests/test_reconstruction_worker_remote_build_packet.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.144,
+      "path": "tests/test_reconstruction_worker_smoke_receipt.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.242,
+      "path": "tests/test_reference_selection.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.053,
+      "path": "tests/test_registered_replacement_asset.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.14,
+      "path": "tests/test_registered_scene_components.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.381,
+      "path": "tests/test_release_engineering_contracts.py",
+      "test_count": 25
+    },
+    {
+      "duration_seconds": 1.139,
+      "path": "tests/test_release_evidence_graph.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.699,
+      "path": "tests/test_release_quality_governance.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 1.655,
+      "path": "tests/test_render_lock.py",
+      "test_count": 23
+    },
+    {
+      "duration_seconds": 1.401,
+      "path": "tests/test_render_visual_qc.py",
+      "test_count": 37
+    },
+    {
+      "duration_seconds": 0.79,
+      "path": "tests/test_rendered_scene_task_target_orchestrator.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.18,
+      "path": "tests/test_repair_embedded_carrier.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.256,
+      "path": "tests/test_repeatable_flag_tables.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.102,
+      "path": "tests/test_replacement_asset_frame_registration.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.422,
+      "path": "tests/test_replacement_colour_fidelity.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.359,
+      "path": "tests/test_replacement_construction_bindings.py",
+      "test_count": 29
+    },
+    {
+      "duration_seconds": 0.221,
+      "path": "tests/test_retained_gpu_session_lifecycle.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.866,
+      "path": "tests/test_retrieval_index_geometry_source.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.248,
+      "path": "tests/test_retrieval_index_stage_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.107,
+      "path": "tests/test_retrieval_model_download_gate.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.107,
+      "path": "tests/test_rigid_frame_transforms.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.141,
+      "path": "tests/test_robot_eval_calibration.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.26,
+      "path": "tests/test_robot_eval_dataset.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 1.154,
+      "path": "tests/test_robot_eval_dataset_coverage_edges.py",
+      "test_count": 31
+    },
+    {
+      "duration_seconds": 0.292,
+      "path": "tests/test_robot_eval_execution_coverage_edges.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.303,
+      "path": "tests/test_robot_eval_gpu_startup_pipeline.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.142,
+      "path": "tests/test_robot_eval_job_claims.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 237.085,
+      "path": "tests/test_robot_eval_job_orchestrator.py",
+      "test_count": 192
+    },
+    {
+      "duration_seconds": 1.983,
+      "path": "tests/test_robot_eval_job_orchestrator_coverage.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.148,
+      "path": "tests/test_robot_eval_job_request_contract.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.51,
+      "path": "tests/test_robot_eval_provider_input_setup.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.242,
+      "path": "tests/test_robot_eval_provider_launcher.py",
+      "test_count": 23
+    },
+    {
+      "duration_seconds": 0.605,
+      "path": "tests/test_robot_eval_provider_race_launcher.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.42,
+      "path": "tests/test_robot_eval_startup_architecture_audit.py",
+      "test_count": 23
+    },
+    {
+      "duration_seconds": 0.395,
+      "path": "tests/test_robot_eval_worker_coverage_edges.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.819,
+      "path": "tests/test_robot_initial_observation.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.264,
+      "path": "tests/test_robot_kinematics.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.601,
+      "path": "tests/test_robot_profile.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.162,
+      "path": "tests/test_robot_skeleton_projection.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.595,
+      "path": "tests/test_roboworld_evaluator.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.473,
+      "path": "tests/test_roboworld_progress_judge.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.349,
+      "path": "tests/test_rollout_vision_label_openai_coverage.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.477,
+      "path": "tests/test_run_e2e.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 1.316,
+      "path": "tests/test_run_e2e_coverage.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.304,
+      "path": "tests/test_run_public_indoor_proxy.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.215,
+      "path": "tests/test_run_summary_aggregation.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.389,
+      "path": "tests/test_runner_robot_profile.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.166,
+      "path": "tests/test_runner_service_wrappers.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.882,
+      "path": "tests/test_runpod_live_execution_proof.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 2.672,
+      "path": "tests/test_runpod_provider_adapter.py",
+      "test_count": 44
+    },
+    {
+      "duration_seconds": 6.63,
+      "path": "tests/test_runpod_wam_async_runner.py",
+      "test_count": 52
+    },
+    {
+      "duration_seconds": 0.487,
+      "path": "tests/test_runpod_wam_paid_lane_guard.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.458,
+      "path": "tests/test_runpod_wam_teardown.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.056,
+      "path": "tests/test_runtime_ephemeral_trust.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.67,
+      "path": "tests/test_runtime_security_controls.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.238,
+      "path": "tests/test_safe_env.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 2.016,
+      "path": "tests/test_safe_outbound_http.py",
+      "test_count": 25
+    },
+    {
+      "duration_seconds": 0.283,
+      "path": "tests/test_sage_collision_identity.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.598,
+      "path": "tests/test_sam31_gpu_admission.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.244,
+      "path": "tests/test_sam31_paid_attempt_authority.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.64,
+      "path": "tests/test_sam31_paid_resource_allocator_lane.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.905,
+      "path": "tests/test_sam31_provider_launch_packet.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.404,
+      "path": "tests/test_sam31_source_track_canary_worker.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.076,
+      "path": "tests/test_sam31_source_track_image.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 1.045,
+      "path": "tests/test_sam31_source_track_provider.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.855,
+      "path": "tests/test_sam31_source_tracks_authority_issuer.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.414,
+      "path": "tests/test_sam31_terminal_evidence_seal.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 1.039,
+      "path": "tests/test_sam31_vast_source_track_canary.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.448,
+      "path": "tests/test_same_capture_lineage.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.519,
+      "path": "tests/test_sc3_eval_protocol.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 16.059,
+      "path": "tests/test_sc3_fidelity_contracts.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.323,
+      "path": "tests/test_sc3_statistical_claim_truth.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.426,
+      "path": "tests/test_scaniverse_asset_import.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.637,
+      "path": "tests/test_scene_asset_preflight_coverage.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.962,
+      "path": "tests/test_scene_eval_autogen.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 3.756,
+      "path": "tests/test_scene_placement.py",
+      "test_count": 98
+    },
+    {
+      "duration_seconds": 0.667,
+      "path": "tests/test_scene_semantics.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.525,
+      "path": "tests/test_scene_shortlist_screening.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.422,
+      "path": "tests/test_scene_target_derivation.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.164,
+      "path": "tests/test_scene_task_target_pipeline.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.334,
+      "path": "tests/test_scene_wam_policy_episode_packet.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.193,
+      "path": "tests/test_scripted_control_receipt_contact_envelope.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.097,
+      "path": "tests/test_sealed_bundle_argv_contract.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 5.16,
+      "path": "tests/test_sealed_camera_render.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.265,
+      "path": "tests/test_second_scene_freeze.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.632,
+      "path": "tests/test_semantic_collision_validation.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.428,
+      "path": "tests/test_semantic_contribution_renderer.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.179,
+      "path": "tests/test_semantic_dedup_stage.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 1.013,
+      "path": "tests/test_semantic_gaussian_lifting.py",
+      "test_count": 19
+    },
+    {
+      "duration_seconds": 0.834,
+      "path": "tests/test_semantic_geometry_benchmark.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.644,
+      "path": "tests/test_semantic_oriented_box.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.707,
+      "path": "tests/test_semantic_source_track_import.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.186,
+      "path": "tests/test_semantic_teacher_image_edit_allocator.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.886,
+      "path": "tests/test_semantic_teacher_image_edit_lane_cli.py",
+      "test_count": 19
+    },
+    {
+      "duration_seconds": 0.118,
+      "path": "tests/test_semantic_teacher_image_edit_live_profile.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 3.168,
+      "path": "tests/test_semantic_teacher_image_edit_provider_lane.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.624,
+      "path": "tests/test_semantic_teacher_image_edit_vast.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.964,
+      "path": "tests/test_semantic_teacher_image_edit_worker.py",
+      "test_count": 34
+    },
+    {
+      "duration_seconds": 0.898,
+      "path": "tests/test_shared_doctrine_lock.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.694,
+      "path": "tests/test_shared_doctrine_sync.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.526,
+      "path": "tests/test_sim_only_beta_deployment_parity_proof.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.644,
+      "path": "tests/test_sim_only_beta_local_gate.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.63,
+      "path": "tests/test_sim_only_beta_release_gate.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 1.435,
+      "path": "tests/test_sim_only_provider_execution_planner.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.872,
+      "path": "tests/test_simpler_public_vast.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.445,
+      "path": "tests/test_simready_asset_lane.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.446,
+      "path": "tests/test_simready_assets.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 1.393,
+      "path": "tests/test_simready_cad_agent_contract.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 0.771,
+      "path": "tests/test_simready_graph_asset.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.881,
+      "path": "tests/test_simready_isaac_live_lane.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.357,
+      "path": "tests/test_simready_render_appearance.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.124,
+      "path": "tests/test_simready_rule_calibration.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 1.525,
+      "path": "tests/test_simulation_automation.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.266,
+      "path": "tests/test_simulation_automation_coverage_edges.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.542,
+      "path": "tests/test_simulator_beta_readiness.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 4.268,
+      "path": "tests/test_single_g1_kitchen_episode_runpod.py",
+      "test_count": 35
+    },
+    {
+      "duration_seconds": 9.585,
+      "path": "tests/test_single_g1_kitchen_qualification_session.py",
+      "test_count": 56
+    },
+    {
+      "duration_seconds": 1.86,
+      "path": "tests/test_site_eval_director.py",
+      "test_count": 17
+    },
+    {
+      "duration_seconds": 0.297,
+      "path": "tests/test_site_memory_utils.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 3.333,
+      "path": "tests/test_site_operator_fail_closed_gates.py",
+      "test_count": 48
+    },
+    {
+      "duration_seconds": 0.704,
+      "path": "tests/test_site_reference_backfill.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.682,
+      "path": "tests/test_site_reference_database_contract.py",
+      "test_count": 40
+    },
+    {
+      "duration_seconds": 2.24,
+      "path": "tests/test_site_reference_database_local_fixture.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 2.027,
+      "path": "tests/test_site_task_testbed_compiler.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 7.34,
+      "path": "tests/test_site_world_packaging.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.902,
+      "path": "tests/test_skypilot_provisioner.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.125,
+      "path": "tests/test_small_cli_entrypoints.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.262,
+      "path": "tests/test_small_coverage_gaps.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.29,
+      "path": "tests/test_small_launch_and_proof_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.247,
+      "path": "tests/test_small_owner_variation_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.219,
+      "path": "tests/test_small_policy_and_client_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.901,
+      "path": "tests/test_small_runtime_helper_coverage.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.124,
+      "path": "tests/test_sparse_view_interpolation.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.573,
+      "path": "tests/test_spend_admission_lock.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 1.222,
+      "path": "tests/test_spend_authority_consumption_root.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.845,
+      "path": "tests/test_spend_authority_ledger_migration.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.621,
+      "path": "tests/test_splat_backends.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.121,
+      "path": "tests/test_splat_bbox_target_binding.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.413,
+      "path": "tests/test_splat_scene_analysis.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.584,
+      "path": "tests/test_splat_scene_render.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 0.119,
+      "path": "tests/test_splat_transform_collision.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.301,
+      "path": "tests/test_splatfacto_execution_packet.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.883,
+      "path": "tests/test_stage_graph.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 0.166,
+      "path": "tests/test_stage_outcome.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.75,
+      "path": "tests/test_stage_paid_lane_bundle.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.965,
+      "path": "tests/test_stance_configuration_agent.py",
+      "test_count": 23
+    },
+    {
+      "duration_seconds": 0.162,
+      "path": "tests/test_standard_splat_conversion.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.972,
+      "path": "tests/test_startup_spend_reconciliation.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.365,
+      "path": "tests/test_storage_trigger.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.144,
+      "path": "tests/test_submit_task_evaluation_launch.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 2.404,
+      "path": "tests/test_success_claim_contracts.py",
+      "test_count": 57
+    },
+    {
+      "duration_seconds": 0.146,
+      "path": "tests/test_swap_candidates_coverage.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.461,
+      "path": "tests/test_task_candidate_control_plane.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.517,
+      "path": "tests/test_task_candidate_discovery.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.925,
+      "path": "tests/test_task_episode_baseline.py",
+      "test_count": 22
+    },
+    {
+      "duration_seconds": 1.006,
+      "path": "tests/test_task_eval_run_report.py",
+      "test_count": 23
+    },
+    {
+      "duration_seconds": 0.254,
+      "path": "tests/test_task_evaluation_artifact_manifest.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.767,
+      "path": "tests/test_task_evaluation_capture_reconstruction_routing.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 0.481,
+      "path": "tests/test_task_evaluation_control_plane_release.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.749,
+      "path": "tests/test_task_evaluation_launch_catalog_reconciliation.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.306,
+      "path": "tests/test_task_evaluation_launch_deploy_wiring.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 2.252,
+      "path": "tests/test_task_evaluation_launch_dispatcher.py",
+      "test_count": 36
+    },
+    {
+      "duration_seconds": 0.183,
+      "path": "tests/test_task_evaluation_launch_progress.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.828,
+      "path": "tests/test_task_evaluation_launch_supervisor.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.085,
+      "path": "tests/test_task_evaluation_launch_webapp_sync.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.11,
+      "path": "tests/test_task_evaluation_method_catalog.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.428,
+      "path": "tests/test_task_evaluation_prelaunch_skills.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.249,
+      "path": "tests/test_task_evaluation_profile_preflight.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.582,
+      "path": "tests/test_task_evaluation_run_control_plane.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.19,
+      "path": "tests/test_task_evaluation_run_state.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.356,
+      "path": "tests/test_task_evaluation_standing_launch_authorization.py",
+      "test_count": 26
+    },
+    {
+      "duration_seconds": 25.409,
+      "path": "tests/test_task_evaluation_supervisor.py",
+      "test_count": 69
+    },
+    {
+      "duration_seconds": 0.175,
+      "path": "tests/test_task_evaluation_supervisor_manager.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.434,
+      "path": "tests/test_task_evaluation_supervisor_openai_cost_authority.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.363,
+      "path": "tests/test_task_evaluation_supervisor_pigey_runtime.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.563,
+      "path": "tests/test_task_evaluation_supervisor_vast_recovery_adapter.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 1.172,
+      "path": "tests/test_task_evaluation_terminal_resource_release.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.783,
+      "path": "tests/test_task_site_measurement_routing.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.27,
+      "path": "tests/test_task_targets_coverage.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.07,
+      "path": "tests/test_teleport_reconstruction_adapter.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.347,
+      "path": "tests/test_temporal_alignment.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 1.14,
+      "path": "tests/test_terminal_resource_release_redrive.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.043,
+      "path": "tests/test_terraform_state_backend.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.302,
+      "path": "tests/test_thin_release_image_contract.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.173,
+      "path": "tests/test_third_scene_execution_authority_manifest.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.361,
+      "path": "tests/test_tier4_customer_outputs.py",
+      "test_count": 31
+    },
+    {
+      "duration_seconds": 0.372,
+      "path": "tests/test_torchvision_rendered_scene_analyzer.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.131,
+      "path": "tests/test_trajectory_augmentation.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.217,
+      "path": "tests/test_unallocated_provider_closure.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.332,
+      "path": "tests/test_unitree_g1_policy_execution.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.382,
+      "path": "tests/test_unitree_groot_n17_sonic_policy_command_adapter.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.579,
+      "path": "tests/test_unitree_groot_n17_sonic_policy_runtime.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.361,
+      "path": "tests/test_unitree_groot_n17_sonic_policy_server_command.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.689,
+      "path": "tests/test_unitree_groot_n17_sonic_policy_server_preflight.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.681,
+      "path": "tests/test_unitree_groot_n17_sonic_provider_smoke.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.132,
+      "path": "tests/test_unitree_groot_n17_sonic_runpod_image_contract.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.671,
+      "path": "tests/test_unitree_groot_n17_sonic_sim2sim_command.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.366,
+      "path": "tests/test_unitree_groot_n17_sonic_vast_image_canary.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 11.151,
+      "path": "tests/test_unitree_groot_n17_sonic_vast_persistent_session.py",
+      "test_count": 80
+    },
+    {
+      "duration_seconds": 0.264,
+      "path": "tests/test_unitree_groot_n17_sonic_vast_policy_command.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.192,
+      "path": "tests/test_unitree_groot_sonic_provider_readiness.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.133,
+      "path": "tests/test_unitree_groot_sonic_wam_image_contract.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.202,
+      "path": "tests/test_unitree_groot_sonic_wam_remote_build_packet.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.488,
+      "path": "tests/test_unitree_lerobot_policy_command_adapter.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.359,
+      "path": "tests/test_unitree_lerobot_policy_runtime.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.403,
+      "path": "tests/test_unitree_unifolm_gpu_image.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.536,
+      "path": "tests/test_unitree_unifolm_policy_command_adapter.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.381,
+      "path": "tests/test_unitree_unifolm_policy_provider_smoke.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.562,
+      "path": "tests/test_unitree_unifolm_runpod_server.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.171,
+      "path": "tests/test_unitree_unifolm_vla_server_bridge.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.556,
+      "path": "tests/test_usd_content_joint_agent_packet.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.178,
+      "path": "tests/test_validate_pubsub_handoff_infra.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 6.752,
+      "path": "tests/test_vast_authorized_probe_runner.py",
+      "test_count": 14
+    },
+    {
+      "duration_seconds": 4.001,
+      "path": "tests/test_vast_bundle_staging.py",
+      "test_count": 21
+    },
+    {
+      "duration_seconds": 0.155,
+      "path": "tests/test_vast_cuda_runtime_probe.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 1.388,
+      "path": "tests/test_vast_independent_watchdog_control.py",
+      "test_count": 11
+    },
+    {
+      "duration_seconds": 0.088,
+      "path": "tests/test_vast_instance_payload_parsing.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 19.351,
+      "path": "tests/test_vast_provider_adapter.py",
+      "test_count": 133
+    },
+    {
+      "duration_seconds": 0.356,
+      "path": "tests/test_vast_retained_instance.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.046,
+      "path": "tests/test_vast_safe_status.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 0.629,
+      "path": "tests/test_vast_session_budget_contract.py",
+      "test_count": 10
+    },
+    {
+      "duration_seconds": 1.353,
+      "path": "tests/test_vast_wam_async_runner.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 7.641,
+      "path": "tests/test_vast_wam_authorized_runner.py",
+      "test_count": 16
+    },
+    {
+      "duration_seconds": 0.181,
+      "path": "tests/test_vast_wam_teardown.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.136,
+      "path": "tests/test_video_codec.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.199,
+      "path": "tests/test_video_to_world_service_runtime.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.413,
+      "path": "tests/test_vulkan_raytracing_preflight_selection.py",
+      "test_count": 9
+    },
+    {
+      "duration_seconds": 0.915,
+      "path": "tests/test_wam_action_consistency_contract.py",
+      "test_count": 20
+    },
+    {
+      "duration_seconds": 0.706,
+      "path": "tests/test_wam_async_runner_common.py",
+      "test_count": 13
+    },
+    {
+      "duration_seconds": 0.082,
+      "path": "tests/test_wam_auxiliary_observation.py",
+      "test_count": 1
+    },
+    {
+      "duration_seconds": 1.153,
+      "path": "tests/test_wam_compute_providers.py",
+      "test_count": 15
+    },
+    {
+      "duration_seconds": 0.229,
+      "path": "tests/test_wam_conditioning_fidelity.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 8.341,
+      "path": "tests/test_wam_derived_observation_harness.py",
+      "test_count": 27
+    },
+    {
+      "duration_seconds": 0.134,
+      "path": "tests/test_wam_episode_consistency_label_gemini.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.158,
+      "path": "tests/test_wam_episode_consistency_label_local.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.179,
+      "path": "tests/test_wam_episode_consistency_label_openai.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.251,
+      "path": "tests/test_wam_eval_substrate.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 3.515,
+      "path": "tests/test_wam_fixture_evaluator.py",
+      "test_count": 31
+    },
+    {
+      "duration_seconds": 2.443,
+      "path": "tests/test_wam_generated_video_review.py",
+      "test_count": 25
+    },
+    {
+      "duration_seconds": 0.489,
+      "path": "tests/test_wam_generated_video_success_label_gemini.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.249,
+      "path": "tests/test_wam_generated_video_success_label_openai.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 0.322,
+      "path": "tests/test_wam_isaac_evaluation_hierarchy.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.668,
+      "path": "tests/test_wam_model_runtime_bootstrap.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 1.153,
+      "path": "tests/test_wam_perception_harness_gpu_image.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.943,
+      "path": "tests/test_wam_provider_object_store.py",
+      "test_count": 12
+    },
+    {
+      "duration_seconds": 0.423,
+      "path": "tests/test_wam_provider_output.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.23,
+      "path": "tests/test_wam_provider_poll_state.py",
+      "test_count": 5
+    },
+    {
+      "duration_seconds": 0.597,
+      "path": "tests/test_wam_provider_runtime.py",
+      "test_count": 8
+    },
+    {
+      "duration_seconds": 0.573,
+      "path": "tests/test_wam_rollout_reliability.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 0.279,
+      "path": "tests/test_wam_rollout_reliability_session.py",
+      "test_count": 6
+    },
+    {
+      "duration_seconds": 1.686,
+      "path": "tests/test_wam_score_claim_gate.py",
+      "test_count": 31
+    },
+    {
+      "duration_seconds": 0.132,
+      "path": "tests/test_wam_strict_action_consistency_scorer_client.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 4.416,
+      "path": "tests/test_wam_vla_policy_endpoint_setup.py",
+      "test_count": 7
+    },
+    {
+      "duration_seconds": 0.14,
+      "path": "tests/test_warehouse_isaac_scenarios.py",
+      "test_count": 2
+    },
+    {
+      "duration_seconds": 0.487,
+      "path": "tests/test_warm_render_broker.py",
+      "test_count": 4
+    },
+    {
+      "duration_seconds": 1.361,
+      "path": "tests/test_warm_render_server.py",
+      "test_count": 24
+    },
+    {
+      "duration_seconds": 1.404,
+      "path": "tests/test_webapp_sync.py",
+      "test_count": 30
+    },
+    {
+      "duration_seconds": 1.807,
+      "path": "tests/test_website_reachable_probe_kinds.py",
+      "test_count": 39
+    },
+    {
+      "duration_seconds": 1.614,
+      "path": "tests/test_world_model_candidate_parity.py",
+      "test_count": 18
+    },
+    {
+      "duration_seconds": 0.238,
+      "path": "tests/test_worldlabs_asset_materialization.py",
+      "test_count": 3
+    },
+    {
+      "duration_seconds": 0.265,
+      "path": "tests/test_zz_mujoco_g1_wam_vla_policy_endpoint_eval_full_suite_coverage.py",
+      "test_count": 2
+    }
+  ],
+  "schema_version": "blueprint.full_lane_duration_baseline.v1",
+  "source_junit_sha256": "9167501a62feee9867afc8324c86dc223562dab719bfec37b5584d94577ea1ba",
+  "source_repository_sha": "809d0304ccd616a0a85da8055afa02e9784b622a",
+  "source_run_id": 31897024458,
+  "test_count": 12866,
+  "total_duration_seconds": 1477.009
+}

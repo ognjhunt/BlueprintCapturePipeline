@@ -88,6 +88,26 @@ def test_telemetry_labels_one_worker_execution_as_serial(tmp_path: Path) -> None
     assert len(result["parallelization"]["shards"]) == 1
 
 
+def test_telemetry_labels_independent_serial_shards_without_xdist(
+    tmp_path: Path,
+) -> None:
+    junit = tmp_path / "junit.xml"
+    _write_junit(junit)
+
+    result = MODULE.build_telemetry(
+        junit=junit,
+        repository_sha="a" * 40,
+        workers=4,
+        strategy="deterministic_file_preserving_serial_shards",
+    )
+
+    assert result["parallelization"]["strategy"] == (
+        "deterministic_file_preserving_serial_shards"
+    )
+    assert result["parallelization"]["workers"] == 4
+    assert len(result["parallelization"]["shards"]) == 4
+
+
 def test_telemetry_rejects_duplicate_or_unbound_nodeids(tmp_path: Path) -> None:
     junit = tmp_path / "junit.xml"
     _write_junit(junit)

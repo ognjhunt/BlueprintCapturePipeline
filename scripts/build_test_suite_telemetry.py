@@ -99,13 +99,31 @@ def _shard_files(
 
 
 def build_telemetry(
-    *, junit: Path, repository_sha: str, workers: int
+    *,
+    junit: Path,
+    repository_sha: str,
+    workers: int,
+    strategy: str | None = None,
 ) -> dict[str, Any]:
     repository_sha = repository_sha.strip().lower()
     if SHA_PATTERN.fullmatch(repository_sha) is None:
         raise ValueError("repository_sha_invalid")
     if workers < 1:
         raise ValueError("workers_invalid")
+    resolved_strategy = strategy or (
+        "serial" if workers == 1 else "pytest_xdist_loadfile"
+    )
+    valid_strategies = {
+        "serial",
+        "pytest_xdist_loadfile",
+        "deterministic_file_preserving_serial_shards",
+    }
+    if resolved_strategy not in valid_strategies:
+        raise ValueError("parallelization_strategy_invalid")
+    if workers == 1 and resolved_strategy != "serial":
+        raise ValueError("parallelization_strategy_worker_mismatch")
+    if workers > 1 and resolved_strategy == "serial":
+        raise ValueError("parallelization_strategy_worker_mismatch")
     try:
         root = ET.parse(junit).getroot()
     except (ET.ParseError, OSError) as exc:
@@ -193,7 +211,7 @@ def build_telemetry(
             "line_coverage_collected": False,
         },
         "parallelization": {
-            "strategy": "serial" if workers == 1 else "pytest_xdist_loadfile",
+            "strategy": resolved_strategy,
             "workers": workers,
             "serial_case_duration_seconds": _round(total_duration),
             "theoretical_lower_bound_seconds": _round(
@@ -244,6 +262,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--junit", type=Path, required=True)
     parser.add_argument("--repository-sha", required=True)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--strategy",
+        choices=(
+            "serial",
+            "pytest_xdist_loadfile",
+            "deterministic_file_preserving_serial_shards",
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
@@ -251,6 +277,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             junit=args.junit.resolve(),
             repository_sha=args.repository_sha,
             workers=args.workers,
+            strategy=args.strategy,
         )
         _write_json_atomic(args.output.resolve(), result)
     except (OSError, UnicodeError, ValueError) as exc:

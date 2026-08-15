@@ -81,9 +81,15 @@ startup evidence only. It is not WAM/policy execution or SC3 rank-fidelity
 evidence and does not close `EVID-03`.
 
 Deploying a Pipeline commit requires `Full Test Lane / Full pytest lane on CPU
-runner` to have passed for that exact commit SHA, or a fresh manual
-`workflow_dispatch` full-lane run on that SHA before deploy. `deploy/scripts/deploy.sh`
-enforces this with:
+runner` to have passed in a fresh `workflow_dispatch` run with reason
+`production_deployment_promotion` on that exact protected-main commit SHA.
+The lane assigns whole test files deterministically across four independent
+serial shards. Each shard retains its own collection, JUnit, and verification
+receipt; the canonical job proves their disjoint union has no duplicates,
+omissions, failures, errors, or skips before rebuilding the existing canonical
+JUnit and `cpu_full.json` artifact. The deploy verifier revalidates every shard
+and the aggregate rather than trusting job status alone. No shard uses xdist or
+reduces the collected test surface. `deploy/scripts/deploy.sh` enforces this with:
 
 ```bash
 FULL_TEST_LANE_COMMIT="$(git rev-parse HEAD)" \

@@ -22,6 +22,7 @@ if __package__ in {None, ""}:  # Direct ``python scripts/...`` execution.
 
 from scripts.verify_full_lane_collection import verify as verify_full_lane_collection
 from scripts.build_cpu_full_lane_evidence import validate_cpu_full_lane_evidence
+from scripts.full_lane_sharding import FullLaneShardError, validate_sharded_artifact
 
 
 RUN_URL_PATTERN = re.compile(r"^/([^/]+)/([^/]+)/actions/runs/([1-9][0-9]*)/?$")
@@ -32,10 +33,21 @@ CANONICAL_PRODUCTION_DISPLAY_TITLE = (
     "Full Test Lane / production_deployment_promotion"
 )
 CANONICAL_JOB_NAME = "Full pytest lane on CPU runner"
-REQUIRED_SUCCESSFUL_STEPS = {
+SHARD_COUNT = 4
+CANONICAL_SHARD_JOB_NAMES = {
+    f"Full pytest shard {index} of {SHARD_COUNT}" for index in range(SHARD_COUNT)
+}
+REQUIRED_SUCCESSFUL_SHARD_STEPS = {
     "Collect full lane",
-    "Run full lane",
-    "Verify exact full-lane collection",
+    "Build deterministic full-lane shard plan",
+    "Run full lane shard",
+    "Verify exact full-lane shard",
+    "Upload full-lane shard evidence",
+}
+REQUIRED_SUCCESSFUL_AGGREGATE_STEPS = {
+    "Aggregate exact full-lane shards",
+    "Build fail-closed CPU full-lane evidence",
+    "Upload full lane report",
 }
 
 
@@ -156,9 +168,37 @@ def validate_run_metadata(
             for step in steps
             if isinstance(step, Mapping)
         }
-        for step_name in sorted(REQUIRED_SUCCESSFUL_STEPS):
+        for step_name in sorted(REQUIRED_SUCCESSFUL_AGGREGATE_STEPS):
             if step_results.get(step_name) != "success":
                 blockers.append(f"required_step_not_success:{step_name}")
+
+    shard_jobs = {
+        str(job.get("name") or ""): job
+        for job in job_rows
+        if isinstance(job, Mapping)
+        and str(job.get("name") or "") in CANONICAL_SHARD_JOB_NAMES
+    }
+    if set(shard_jobs) != CANONICAL_SHARD_JOB_NAMES:
+        blockers.append("canonical_full_lane_shard_job_set_invalid")
+    else:
+        for job_name in sorted(shard_jobs):
+            shard_job = shard_jobs[job_name]
+            if shard_job.get("status") != "completed":
+                blockers.append(f"canonical_full_lane_shard_not_completed:{job_name}")
+            if shard_job.get("conclusion") != "success":
+                blockers.append(f"canonical_full_lane_shard_not_success:{job_name}")
+            raw_steps = shard_job.get("steps")
+            steps = raw_steps if isinstance(raw_steps, list) else []
+            step_results = {
+                str(step.get("name") or ""): str(step.get("conclusion") or "")
+                for step in steps
+                if isinstance(step, Mapping)
+            }
+            for step_name in sorted(REQUIRED_SUCCESSFUL_SHARD_STEPS):
+                if step_results.get(step_name) != "success":
+                    blockers.append(
+                        f"required_shard_step_not_success:{job_name}:{step_name}"
+                    )
 
     artifact_name = f"full-test-lane-{expected_run_id}"
     raw_artifacts = artifacts.get("artifacts")
@@ -191,13 +231,20 @@ def validate_downloaded_artifact(artifact_dir: Path, *, expected_sha: str) -> di
     executed = artifact_dir / "full-test-lane-executed.json"
     junit = artifact_dir / "full-test-lane-junit.xml"
     cpu_evidence = artifact_dir / "cpu_full.json"
-    required = (planned, executed, junit, cpu_evidence)
+    shard_aggregate = artifact_dir / "full-test-lane-shard-aggregate.json"
+    required = (planned, executed, junit, cpu_evidence, shard_aggregate)
     symlinks = [path.name for path in required if path.is_symlink()]
     if symlinks:
         raise ProvenanceError("full_lane_artifact_symlinks_forbidden:" + ",".join(symlinks))
     missing = [path.name for path in required if not path.is_file()]
     if missing:
         raise ProvenanceError("full_lane_artifact_files_missing:" + ",".join(missing))
+    try:
+        shard_payload = validate_sharded_artifact(
+            artifact_dir, repository_sha=expected_sha
+        )
+    except FullLaneShardError as exc:
+        raise ProvenanceError(f"full_lane_shard_evidence_invalid:{exc}") from exc
     collection_blockers = verify_full_lane_collection(planned, executed)
     if collection_blockers:
         raise ProvenanceError("full_lane_collection_invalid:" + ",".join(collection_blockers))
@@ -241,6 +288,8 @@ def validate_downloaded_artifact(artifact_dir: Path, *, expected_sha: str) -> di
         "test_count": test_count,
         "skipped_count": skipped,
         "nodeids_sha256": planned_payload["nodeids_sha256"],
+        "shard_count": shard_payload["shard_count"],
+        "shard_plan_digest": shard_payload["plan_digest"],
         "files": {
             path.name: {"size_bytes": path.stat().st_size, "sha256": _sha256(path)}
             for path in required
