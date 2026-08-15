@@ -49,6 +49,14 @@ MANIFEST_MEMBER = "provider_runtime/adp_retained_scene_gpu_render_manifest.json"
 CANDIDATE_MEMBER = "provider_runtime/input/direct_evidence_successor_set.json"
 REQUEST_MEMBER = "provider_runtime/source_request_manifest.json"
 AUTHORITY_MEMBER = "provider_runtime/execution_authority.json"
+VENDOR_MEMBER_ROOT = "provider_runtime/renderer/node_modules"
+REQUIRED_VENDOR_PACKAGES = (
+    "@sparkjsdev/spark",
+    "fflate",
+    "playwright",
+    "playwright-core",
+    "three",
+)
 DEFAULT_PRODUCTION_ROOTS = (Path("/var/lib/blueprint"),)
 MAX_ARCHIVE_MEMBERS = 4_096
 MAX_ARCHIVE_MEMBER_BYTES = 512 * 1024**2
@@ -248,6 +256,104 @@ def _extract_member(
         raise RetainedSceneRenderPacketError([code])
     destination.chmod(0o440)
     return _record(destination)
+
+
+def _extract_vendor_tree(
+    archive: zipfile.ZipFile,
+    members: Mapping[str, zipfile.ZipInfo],
+    manifest: Mapping[str, Any],
+    destination: Path,
+) -> dict[str, Any]:
+    """Reopen the exact sealed renderer dependencies without a host npm install."""
+
+    identity = manifest.get("renderer_identity")
+    expected_counts = (
+        identity.get("vendor_packages") if isinstance(identity, Mapping) else None
+    )
+    if (
+        not isinstance(expected_counts, Mapping)
+        or set(expected_counts) != set(REQUIRED_VENDOR_PACKAGES)
+        or any(
+            not isinstance(expected_counts[package], int)
+            or isinstance(expected_counts[package], bool)
+            or expected_counts[package] <= 0
+            for package in REQUIRED_VENDOR_PACKAGES
+        )
+    ):
+        raise RetainedSceneRenderPacketError(
+            ["retained_scene_sealed_rebuild_vendor_manifest_invalid"]
+        )
+    if destination.exists() or destination.is_symlink():
+        raise RetainedSceneRenderPacketError(
+            ["retained_scene_sealed_rebuild_vendor_destination_collision"]
+        )
+
+    extracted: dict[str, list[dict[str, Any]]] = {}
+    for package in REQUIRED_VENDOR_PACKAGES:
+        prefix = f"{VENDOR_MEMBER_ROOT}/{package}/"
+        package_members = sorted(
+            (name, info)
+            for name, info in members.items()
+            if name.startswith(prefix) and not name.endswith("/")
+        )
+        if len(package_members) != expected_counts[package]:
+            raise RetainedSceneRenderPacketError(
+                ["retained_scene_sealed_rebuild_vendor_manifest_invalid"]
+            )
+        package_records: list[dict[str, Any]] = []
+        for name, info in package_members:
+            relative = Path(name).relative_to(VENDOR_MEMBER_ROOT)
+            mode = info.external_attr >> 16
+            if not relative.parts or (mode and not stat.S_ISREG(mode)):
+                raise RetainedSceneRenderPacketError(
+                    ["retained_scene_sealed_rebuild_vendor_member_invalid"]
+                )
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() or target.is_symlink():
+                raise RetainedSceneRenderPacketError(
+                    ["retained_scene_sealed_rebuild_vendor_destination_collision"]
+                )
+            digest = hashlib.sha256()
+            written = 0
+            try:
+                with archive.open(info) as source, target.open("xb") as output:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        output.write(chunk)
+                        digest.update(chunk)
+                        written += len(chunk)
+            except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                raise RetainedSceneRenderPacketError(
+                    ["retained_scene_sealed_rebuild_vendor_member_invalid"]
+                ) from exc
+            if written != info.file_size:
+                raise RetainedSceneRenderPacketError(
+                    ["retained_scene_sealed_rebuild_vendor_member_invalid"]
+                )
+            # The host-side reopened tree is immutable input. Preserve only
+            # executable bits needed by package entrypoints; never inherit a
+            # writable mode from the predecessor archive.
+            target.chmod(0o440 | (stat.S_IMODE(mode) & 0o111))
+            package_records.append(
+                {
+                    "relative_path": relative.as_posix(),
+                    "sha256": "sha256:" + digest.hexdigest(),
+                    "size_bytes": written,
+                }
+            )
+        extracted[package] = package_records
+
+    value: dict[str, Any] = {
+        "schema_version": "adp009d_retained_scene_renderer_vendor_reopen.v1",
+        "source_bundle_member_root": VENDOR_MEMBER_ROOT,
+        "package_file_counts": {
+            package: len(extracted[package]) for package in REQUIRED_VENDOR_PACKAGES
+        },
+        "files": extracted,
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    return value
 
 
 def _link_exact(source: Path, destination: Path) -> None:
@@ -556,6 +662,16 @@ def rebuild_retained_scene_bundle_from_sealed_predecessor(
         )
         authority = _validate_authority(authority_path)
 
+        vendor_root = root / "rehydrated_renderer_vendor" / "node_modules"
+        vendor_receipt = _extract_vendor_tree(
+            archive,
+            members,
+            manifest,
+            vendor_root,
+        )
+        vendor_receipt_path = root / "rehydrated_renderer_vendor" / "receipt.json"
+        _write_json(vendor_receipt_path, vendor_receipt)
+
         request_expected = manifest.get("request")
         request_raw = _member_bytes(archive, members, REQUEST_MEMBER)
         request_digest, request_size = _expected_record(
@@ -591,6 +707,7 @@ def rebuild_retained_scene_bundle_from_sealed_predecessor(
         "absolute_authoring_paths_followed": False,
         "source_rows_reopened": True,
         "indices_reconstructed_byte_identical": True,
+        "renderer_vendor_reopened_from_sealed_predecessor": True,
     }
     rebound["receipt_digest"] = canonical_digest(rebound, digest_field="receipt_digest")
     _assert_emitted_paths_local(rebound, (root,))
@@ -607,7 +724,7 @@ def rebuild_retained_scene_bundle_from_sealed_predecessor(
         "render_scope": str(old_request.get("render_scope") or "shared_union"),
         "candidate_set_path": candidate_path.relative_to(root).as_posix(),
         "execution_authority_path": authority_path.relative_to(root).as_posix(),
-        "renderer_vendor_root": "tools/splat_render/node_modules",
+        "renderer_vendor_root": "rehydrated_renderer_vendor/node_modules",
         "task_lanes": sorted(request_lanes, key=lambda row: row["task_id"]),
         "private_upload_policy": copy.deepcopy(old_request.get("private_upload_policy")),
     }
@@ -661,6 +778,12 @@ def rebuild_retained_scene_bundle_from_sealed_predecessor(
         "execution_authority": {
             **_record(authority_path),
             "authority_digest": authority["authority_digest"],
+        },
+        "renderer_vendor": {
+            **_record(vendor_receipt_path),
+            "package_file_counts": vendor_receipt["package_file_counts"],
+            "receipt_digest": vendor_receipt["receipt_digest"],
+            "reopened_from_sealed_predecessor": True,
         },
         "request": {
             **_record(request_path),

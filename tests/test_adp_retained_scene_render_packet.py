@@ -1016,9 +1016,6 @@ def test_rebuilds_current_commit_bundle_from_sealed_host_predecessor(
     )
     predecessor_commit = predecessor["blueprint_commit"]
 
-    renderer_vendor = repo / "tools/splat_render/node_modules"
-    for package in ("@sparkjsdev/spark", "fflate", "playwright", "playwright-core", "three"):
-        shutil.copytree(vendor / package, renderer_vendor / package)
     (repo / "CURRENT_RELEASE").write_text("rebuild producer fixture\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
     subprocess.run(
@@ -1123,6 +1120,25 @@ raise SystemExit(main(sys.argv[2:]))
     )
     assert not Path(rebuilt_request["candidate_set_path"]).is_absolute()
     assert not Path(rebuilt_request["execution_authority_path"]).is_absolute()
+    assert rebuilt_request["renderer_vendor_root"] == (
+        "rehydrated_renderer_vendor/node_modules"
+    )
+    assert not (repo / "tools/splat_render/node_modules").exists()
+    vendor_receipt = json.loads(
+        (output_root / "rehydrated_renderer_vendor/receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert vendor_receipt["package_file_counts"] == {
+        "@sparkjsdev/spark": 1,
+        "fflate": 1,
+        "playwright": 1,
+        "playwright-core": 1,
+        "three": 1,
+    }
+    assert receipt["renderer_vendor"]["receipt_digest"] == vendor_receipt[
+        "receipt_digest"
+    ]
     assert all(
         not Path(row["camera_contract_path"]).is_absolute()
         for row in rebuilt_request["task_lanes"]
