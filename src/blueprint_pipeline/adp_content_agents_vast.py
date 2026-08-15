@@ -568,12 +568,7 @@ def validate_content_agents_paid_attempt_authority(
     hard_ttl_seconds: int,
     allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
-    """Bind one explicit paid Content Agents attempt to exact local receipts.
-
-    Bundle construction, config preflight, and allocator dry-runs intentionally
-    do not require this grant. It is an execution-only, single-use capability
-    layered over the immutable bundle and local preflight receipts.
-    """
+    """Bind one execution-only Content Agents attempt to immutable receipts."""
 
     value = dict(authority)
     errors: list[str] = []
