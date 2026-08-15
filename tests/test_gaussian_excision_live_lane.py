@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
 pytestmark = pytest.mark.usefixtures(
@@ -139,6 +140,68 @@ def test_the_prior_attempt_receipt_is_carried_into_argv(lane, tmp_path: Path) ->
 
     assert "--adp-gaussian-excision-previous-attempt-receipt" in argv
     assert argv[argv.index("--adp-gaussian-excision-previous-attempt-receipt") + 1] == str(prior)
+
+
+def test_ordinal_two_profile_derives_and_binds_its_prior_receipt(lane, tmp_path: Path) -> None:
+    prior = tmp_path / "prior_attempt_receipt.json"
+    prior_value = {"schema_version": "adp_gaussian_excision_attempt_receipt.v1"}
+    prior_value["receipt_digest"] = canonical_digest(
+        prior_value, digest_field="receipt_digest"
+    )
+    prior.write_text(json.dumps(prior_value), encoding="utf-8")
+    authority = json.loads(lane["authority"].read_text(encoding="utf-8"))
+    authority.update(
+        {
+            "paid_attempt_ordinal": 2,
+            "previous_attempt_receipt_digest": prior_value["receipt_digest"],
+            "prior_terminal_attempts": [{"result_path": str(prior)}],
+        }
+    )
+    lane["authority"].write_text(json.dumps(authority), encoding="utf-8")
+
+    profile = _build(lane)
+    argv = profile["allocator"]["argv"]
+    inputs = {row["name"]: row for row in profile["immutable_inputs"]}
+
+    assert argv[argv.index("--adp-gaussian-excision-previous-attempt-receipt") + 1] == str(prior)
+    assert inputs["previous_attempt_receipt"]["digest"] == "sha256:" + hashlib.sha256(
+        prior.read_bytes()
+    ).hexdigest()
+    assert inputs["paid_attempt_authority"]["path"] == str(lane["authority"])
+
+
+def test_ordinal_two_profile_refuses_to_drop_the_prior_receipt(lane) -> None:
+    authority = json.loads(lane["authority"].read_text(encoding="utf-8"))
+    authority["paid_attempt_ordinal"] = 2
+    lane["authority"].write_text(json.dumps(authority), encoding="utf-8")
+
+    with pytest.raises(TaskEvaluationLaunchError, match="previous_attempt_receipt_missing"):
+        _build(lane)
+
+
+def test_ordinal_two_profile_refuses_a_prior_receipt_not_bound_by_authority(
+    lane, tmp_path: Path
+) -> None:
+    prior = tmp_path / "prior_attempt_receipt.json"
+    prior_value = {"schema_version": "adp_gaussian_excision_attempt_receipt.v1"}
+    prior_value["receipt_digest"] = canonical_digest(
+        prior_value, digest_field="receipt_digest"
+    )
+    prior.write_text(json.dumps(prior_value), encoding="utf-8")
+    authority = json.loads(lane["authority"].read_text(encoding="utf-8"))
+    authority.update(
+        {
+            "paid_attempt_ordinal": 2,
+            "previous_attempt_receipt_digest": "sha256:" + "a" * 64,
+            "prior_terminal_attempts": [{"result_path": str(prior)}],
+        }
+    )
+    lane["authority"].write_text(json.dumps(authority), encoding="utf-8")
+
+    with pytest.raises(
+        TaskEvaluationLaunchError, match="previous_attempt_receipt_authority_mismatch"
+    ):
+        _build(lane)
 
 
 def test_the_machine_avoidlist_is_carried_and_digest_bound(lane, tmp_path: Path) -> None:

@@ -75,6 +75,10 @@ from .paid_resource_admission import (
     require_paid_resource_admission,
 )
 from .paid_resource_cli_arguments import add_cpu_arguments as _add_cpu_arguments
+from .provider_machine_avoidlist import (
+    content_agents_machine_avoidlist_path as _content_agents_machine_avoidlist_path,
+    simready_isaac_machine_avoidlist_path as _simready_isaac_machine_avoidlist_path,
+)
 from .hosted_model_inference_preflight import (
     BACKENDS as HOSTED_MODEL_BACKENDS,
     PROBE_PROFILE as HOSTED_MODEL_PROBE_PROFILE,
@@ -322,77 +326,7 @@ DETACHED_GPU_CANARY_LOCK = "detached_gpu_canary_supervisor.lock"
 TERMINAL_RESOURCE_RELEASE_WORKER_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_WORKER"
 )
-CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME = "adp-content-agents-vast-machine-avoidlist.json"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
-
-
-def _content_agents_machine_avoidlist_path(
-    *, job_dir: str | Path, explicit_path: str | Path | None
-) -> Path | None:
-    """Reuse Content Agents bad-host evidence across control-plane launches.
-
-    A Task Evaluation launch gives each attempt a fresh
-    ``<state>/<launch>/allocator/content-agents-job`` directory.  Letting the
-    Vast adapter choose its ordinary job-local default therefore discards the
-    avoidlist before the next zero-retry attempt can use it.  Resolve one
-    lane-scoped path beside the launch directories and import any retained
-    job-local lists written by older releases.
-
-    Non-control-plane callers keep the adapter's existing local default.  An
-    explicit allocator argument always wins.
-    """
-
-    if explicit_path:
-        return Path(explicit_path).expanduser().resolve()
-    resolved_job = Path(job_dir).expanduser().resolve()
-    if resolved_job.name != "content-agents-job" or resolved_job.parent.name != "allocator":
-        return None
-    launch_root = resolved_job.parent.parent
-    state_root = launch_root.parent
-    shared = state_root / "provider-machine-avoidlists" / CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME
-
-    machine_ids: set[int] = set()
-    entries: list[dict[str, Any]] = []
-    seen_entries: set[str] = set()
-    candidates = [shared]
-    candidates.extend(
-        sorted(state_root.glob("*/allocator/content-agents-job/vast_machine_avoidlist.json"))
-    )
-    for candidate in candidates:
-        if not candidate.is_file():
-            continue
-        try:
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, Mapping) or payload.get("schema_version") != "vast_machine_avoidlist.v1":
-            continue
-        for value in payload.get("machine_ids") or []:
-            if isinstance(value, int) and not isinstance(value, bool):
-                machine_ids.add(value)
-        for value in payload.get("entries") or []:
-            if not isinstance(value, Mapping):
-                continue
-            row = dict(value)
-            machine_id = row.get("machine_id")
-            if isinstance(machine_id, int) and not isinstance(machine_id, bool):
-                machine_ids.add(machine_id)
-            identity = json.dumps(row, sort_keys=True, separators=(",", ":"))
-            if identity not in seen_entries:
-                seen_entries.add(identity)
-                entries.append(row)
-    if machine_ids or entries:
-        write_json(
-            shared,
-            {
-                "schema_version": "vast_machine_avoidlist.v1",
-                "status": "completed",
-                "machine_ids": sorted(machine_ids),
-                "entries": entries,
-                "raw_secret_values_recorded": False,
-            },
-        )
-    return shared
 
 
 def admit_openai_api_candidate(**kwargs: Any) -> AdmissionResult:
@@ -3790,6 +3724,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 except ValueError as exc:
                     blockers.append(str(exc))
+            content_agents_machine_avoidlist = _content_agents_machine_avoidlist_path(
+                job_dir=args.adp_job_dir,
+                explicit_path=args.adp_machine_avoidlist,
+            )
+            machine_avoidlist_sha256 = None
+            if content_agents_machine_avoidlist is not None:
+                if not content_agents_machine_avoidlist.is_file():
+                    if args.adp_machine_avoidlist:
+                        blockers.append("adp_content_agents_machine_avoidlist_missing")
+                else:
+                    machine_avoidlist_sha256 = (
+                        "sha256:"
+                        + hashlib.sha256(
+                            content_agents_machine_avoidlist.read_bytes()
+                        ).hexdigest()
+                    )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP_CONTENT_AGENTS_PROBE_KIND,
@@ -3816,6 +3766,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "allowed_active_vast_instance_ids": sorted(
                     set(args.adp_allowed_active_vast_instance_id)
                 ),
+                "machine_avoidlist_sha256": machine_avoidlist_sha256,
                 "retry_cap": 0,
             }
             allocation_binding_digest = (
@@ -3917,10 +3868,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
-                content_agents_machine_avoidlist = _content_agents_machine_avoidlist_path(
-                    job_dir=args.adp_job_dir,
-                    explicit_path=args.adp_machine_avoidlist,
-                )
                 result = run_content_agents_vast(
                     job_dir=args.adp_job_dir,
                     paid_resource_admission_grant=grant,
@@ -4327,14 +4274,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 except ValueError:
                     blockers.append("simready_isaac_paid_attempt_authority_invalid")
+            simready_machine_avoidlist = _simready_isaac_machine_avoidlist_path(
+                job_dir=args.adp_job_dir,
+                explicit_path=args.adp_machine_avoidlist,
+            )
             avoidlist_sha256 = None
-            if args.adp_machine_avoidlist:
-                avoidlist_path = Path(args.adp_machine_avoidlist).expanduser().resolve()
-                if not avoidlist_path.is_file():
-                    blockers.append("simready_isaac_machine_avoidlist_missing")
+            if simready_machine_avoidlist is not None:
+                if not simready_machine_avoidlist.is_file():
+                    if args.adp_machine_avoidlist:
+                        blockers.append("simready_isaac_machine_avoidlist_missing")
                 else:
                     avoidlist_sha256 = (
-                        "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
+                        "sha256:"
+                        + hashlib.sha256(
+                            simready_machine_avoidlist.read_bytes()
+                        ).hexdigest()
                     )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
@@ -4428,7 +4382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     paid_attempt_authority=paid_attempt_authority,
                     bundle_receipt_sha256=receipt_sha256,
                     execute=args.execute,
-                    machine_avoidlist_path=args.adp_machine_avoidlist,
+                    machine_avoidlist_path=simready_machine_avoidlist,
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,

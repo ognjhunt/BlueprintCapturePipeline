@@ -562,8 +562,11 @@ def run_simready_isaac_vast(
     provider_run = attempt_root / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
     local_avoidlist = job / "adp009b_simready_isaac_machine_avoidlist.json"
-    if machine_avoidlist_path is not None:
-        shutil.copy2(Path(machine_avoidlist_path).expanduser().resolve(), local_avoidlist)
+    resolved_avoidlist = (
+        Path(machine_avoidlist_path).expanduser().resolve()
+        if machine_avoidlist_path is not None
+        else local_avoidlist
+    )
     adapter: dict[str, Any] = {}
     try:
         with _mutation_authority():
@@ -602,7 +605,7 @@ def run_simready_isaac_vast(
                 preferred_gpu_keywords=("L40S", "RTX 4090", "RTX A6000", "RTX A5000"),
                 prefer_isaac_rt=True,
                 allowed_active_instance_ids=allowed_active_instance_ids,
-                machine_avoidlist_path=local_avoidlist,
+                machine_avoidlist_path=resolved_avoidlist,
                 instance_label_prefix="blueprint-adp009b-simready-",
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,

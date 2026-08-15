@@ -2551,10 +2551,14 @@ def test_canonical_allocator_reuses_retained_content_agents_bad_hosts(
     shared = (
         state_root
         / "provider-machine-avoidlists"
-        / allocator.CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME
+        / "adp-content-agents-vast-machine-avoidlist.json"
     )
     assert observed["machine_avoidlist_path"] == shared
     assert json.loads(shared.read_text(encoding="utf-8"))["machine_ids"] == [51579]
+    admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
+    assert admission["allocation_binding"]["machine_avoidlist_sha256"] == (
+        "sha256:" + hashlib.sha256(shared.read_bytes()).hexdigest()
+    )
 
 
 def test_canonical_allocator_discloses_public_sage_bytes(

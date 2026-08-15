@@ -25,6 +25,7 @@ from dataclasses import replace
 from typing import Any, Sequence
 
 from blueprint_pipeline.adp_gaussian_excision_vast import PROBE_KIND
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
     LaneLiveProfileContext,
@@ -72,6 +73,25 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             blockers.append("attempt_authority_bundle_mismatch")
         if authority.get("hard_attempt_spend_cap_usd") != EXACT_MAX_SPEND_USD:
             blockers.append("attempt_authority_spend_cap_mismatch")
+        ordinal = authority.get("paid_attempt_ordinal")
+        prior = context.extra_paths.get("previous_attempt_receipt")
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1:
+            blockers.append("attempt_authority_ordinal_invalid")
+        if isinstance(ordinal, int) and ordinal > 1 and prior is None:
+            blockers.append("previous_attempt_receipt_missing_for_ordinal")
+        if isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal > 1 and prior:
+            try:
+                previous = json.loads(prior.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                blockers.append("previous_attempt_receipt_invalid")
+            else:
+                previous_digest = previous.get("receipt_digest")
+                if previous_digest != canonical_digest(
+                    previous, digest_field="receipt_digest"
+                ):
+                    blockers.append("previous_attempt_receipt_digest_invalid")
+                if authority.get("previous_attempt_receipt_digest") != previous_digest:
+                    blockers.append("previous_attempt_receipt_authority_mismatch")
 
     avoidlist = context.extra_paths.get("machine_avoidlist")
     if avoidlist is not None and not avoidlist.is_file():
@@ -118,6 +138,11 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             "path": context.bundle_path,
             "digest": context.bundle_sha256,
         },
+        {
+            "name": "paid_attempt_authority",
+            "path": str(context.extra_paths["attempt_authority"]),
+            "digest": file_digest(context.extra_paths["attempt_authority"]),
+        },
     ]
     avoidlist = context.extra_paths.get("machine_avoidlist")
     if avoidlist is not None:
@@ -126,6 +151,15 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
                 "name": "machine_avoidlist",
                 "path": str(avoidlist),
                 "digest": file_digest(avoidlist),
+            }
+        )
+    prior = context.extra_paths.get("previous_attempt_receipt")
+    if prior is not None:
+        rows.append(
+            {
+                "name": "previous_attempt_receipt",
+                "path": str(prior),
+                "digest": file_digest(prior),
             }
         )
     return rows
@@ -160,7 +194,19 @@ def build_gaussian_excision_live_profile(
 ) -> dict[str, Any]:
     """Derive a live profile from the bundle receipt it will run."""
 
-    extra: dict[str, Any] = {"attempt_authority": attempt_authority_path}
+    authority_path = Path(attempt_authority_path).expanduser().resolve()
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    ordinal = authority.get("paid_attempt_ordinal", 1)
+    if (
+        previous_attempt_receipt_path is None
+        and isinstance(ordinal, int)
+        and not isinstance(ordinal, bool)
+        and ordinal > 1
+    ):
+        attempts = authority.get("prior_terminal_attempts") or []
+        if attempts and isinstance(attempts[-1], dict):
+            previous_attempt_receipt_path = attempts[-1].get("result_path")
+    extra: dict[str, Any] = {"attempt_authority": authority_path}
     names = list(SPEC.extra_path_names)
     if machine_avoidlist_path is not None:
         extra["machine_avoidlist"] = machine_avoidlist_path

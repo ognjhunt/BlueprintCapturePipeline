@@ -448,6 +448,58 @@ def test_canonical_allocator_binds_exact_bundle_and_withholds_dry_run_grant(
     ]
 
 
+def test_canonical_allocator_reuses_retained_simready_bad_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = tmp_path / "bundle_receipt.json"
+    write_json(receipt, _bundle(tmp_path))
+    state_root = tmp_path / "launch-runs"
+    prior = (
+        state_root
+        / "prior-launch"
+        / "allocator"
+        / "simready-isaac-job"
+        / "adp009b_simready_isaac_machine_avoidlist.json"
+    )
+    write_json(
+        prior,
+        {
+            "schema_version": "vast_machine_avoidlist.v1",
+            "status": "completed",
+            "machine_ids": [140718],
+            "entries": [{"machine_id": 140718, "reason": "heartbeat_missing"}],
+            "raw_secret_values_recorded": False,
+        },
+    )
+    current_job = state_root / "current-launch" / "allocator" / "simready-isaac-job"
+    args = _allocator_args(tmp_path, receipt)
+    args[args.index("--adp-job-dir") + 1] = str(current_job)
+    observed: dict = {}
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_simready_isaac_vast",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+
+    assert allocator.main(args) == 0
+    shared = (
+        state_root
+        / "provider-machine-avoidlists"
+        / "adp009b-simready-isaac-vast-machine-avoidlist.json"
+    )
+    assert observed["machine_avoidlist_path"] == shared
+    assert json.loads(shared.read_text(encoding="utf-8"))["machine_ids"] == [140718]
+    admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
+    assert admission["allocation_binding"]["machine_avoidlist_sha256"] == (
+        "sha256:" + hashlib.sha256(shared.read_bytes()).hexdigest()
+    )
+
+
 def test_allocator_execute_requires_paid_attempt_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
