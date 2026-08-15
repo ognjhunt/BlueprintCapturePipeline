@@ -608,12 +608,12 @@ def install_packet_archive(
                 [path for path in staging.rglob("*") if path.is_dir()], reverse=True
             ):
                 os.chown(directory, uid, gid)
-                os.chmod(directory, 0o750)
+                os.chmod(directory, 0o750)  # nosec B103 - group traverse; files 0440
             for path in [path for path in staging.rglob("*") if path.is_file()]:
                 os.chown(path, uid, gid)
                 os.chmod(path, 0o440)
             os.chown(staging, uid, gid)
-            os.chmod(staging, 0o750)
+            os.chmod(staging, 0o750)  # nosec B103 - group traverse; files 0440
             for row in records:
                 path = staging.joinpath(*PurePosixPath(str(row["relative_path"])).parts)
                 if _consumer_digest(path, account=account, uid=uid) != row["sha256"]:
