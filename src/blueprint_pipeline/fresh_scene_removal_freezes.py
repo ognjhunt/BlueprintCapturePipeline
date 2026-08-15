@@ -67,9 +67,7 @@ def _record(path: Path, *, root: Path | None = None) -> dict[str, Any]:
     return record
 
 
-def _verified_receipt_relative(
-    *, receipt_root: Path, record: object, code: str
-) -> Path:
+def _verified_receipt_relative(*, receipt_root: Path, record: object, code: str) -> Path:
     if not isinstance(record, Mapping):
         raise FreshSceneRemovalFreezeError(code)
     relative = str(record.get("relative_path") or "")
@@ -88,15 +86,11 @@ def _verified_receipt_relative(
     return path
 
 
-def _verified_receipt_record(
-    *, receipt_root: Path, record: object, code: str
-) -> Path:
+def _verified_receipt_record(*, receipt_root: Path, record: object, code: str) -> Path:
     if not isinstance(record, Mapping):
         raise FreshSceneRemovalFreezeError(code)
     if record.get("relative_path"):
-        return _verified_receipt_relative(
-            receipt_root=receipt_root, record=record, code=code
-        )
+        return _verified_receipt_relative(receipt_root=receipt_root, record=record, code=code)
     unresolved = Path(str(record.get("path") or "")).expanduser()
     path = unresolved.resolve()
     if (
@@ -115,20 +109,18 @@ def materialize_fresh_scene_removal_freezes(
     """Build per-task excision and all-camera segment freezes, without spend."""
 
     value = dict(request)
-    if (
-        value.get("schema_version") != REQUEST_SCHEMA_VERSION
-        or value.get("request_digest")
-        != canonical_digest(value, digest_field="request_digest")
-    ):
+    if value.get("schema_version") != REQUEST_SCHEMA_VERSION or value.get(
+        "request_digest"
+    ) != canonical_digest(value, digest_field="request_digest"):
         raise FreshSceneRemovalFreezeError("fresh_scene_removal_request_invalid")
     output = Path(output_root).expanduser().resolve()
     if output.is_symlink() or (output.exists() and any(output.iterdir())):
         raise FreshSceneRemovalFreezeError("fresh_scene_removal_output_not_empty")
     source_splat = Path(str(value.get("source_standard_splat_path") or "")).expanduser().resolve()
     source_collision = Path(str(value.get("source_collision_path") or "")).expanduser().resolve()
-    registered_frame = Path(
-        str(value.get("registered_frame_receipt_path") or "")
-    ).expanduser().resolve()
+    registered_frame = (
+        Path(str(value.get("registered_frame_receipt_path") or "")).expanduser().resolve()
+    )
     for path in (source_splat, source_collision, registered_frame):
         if path.is_symlink() or not path.is_file():
             raise FreshSceneRemovalFreezeError("fresh_scene_removal_source_missing")
@@ -142,10 +134,18 @@ def materialize_fresh_scene_removal_freezes(
         != "calibrated_inferred_object_masks_materialized_pending_review"
         or mask_receipt.get("receipt_digest")
         != canonical_digest(mask_receipt, digest_field="receipt_digest")
-        or (mask_receipt.get("selection_authority") or {}).get(
-            "all_selected_tracks_human_review_accepted"
+        or not (
+            (mask_receipt.get("selection_authority") or {}).get(
+                "all_selected_tracks_review_accepted"
+            )
+            is True
+            and (mask_receipt.get("selection_authority") or {}).get("reviewer_kind")
+            in {"human", "ai"}
+            or (mask_receipt.get("selection_authority") or {}).get(
+                "all_selected_tracks_human_review_accepted"
+            )
+            is True
         )
-        is not True
     ):
         raise FreshSceneRemovalFreezeError("fresh_scene_removal_mask_receipt_invalid")
     task_rows = mask_receipt.get("tasks")
@@ -187,14 +187,11 @@ def materialize_fresh_scene_removal_freezes(
         task_freeze_record = mask_row["task_freeze"]
         if (
             task_freeze.get("task_id") != task_id
-            or task_freeze.get("task_freeze_digest")
-            != task_freeze_record.get("task_freeze_digest")
+            or task_freeze.get("task_freeze_digest") != task_freeze_record.get("task_freeze_digest")
             or task_freeze.get("task_freeze_digest")
             != canonical_digest(task_freeze, digest_field="task_freeze_digest")
         ):
-            raise FreshSceneRemovalFreezeError(
-                "fresh_scene_removal_task_freeze_binding_invalid"
-            )
+            raise FreshSceneRemovalFreezeError("fresh_scene_removal_task_freeze_binding_invalid")
         camera_path = _verified_receipt_relative(
             receipt_root=receipt_root,
             record=mask_row.get("camera_contract"),

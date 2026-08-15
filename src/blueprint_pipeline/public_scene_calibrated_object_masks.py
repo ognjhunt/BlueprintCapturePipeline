@@ -122,7 +122,8 @@ def _verified_source_tracks(path: Path) -> dict[str, Any]:
     if (
         value.get("schema_version") != SOURCE_TRACK_SCHEMA_VERSION
         or value.get("status") != "completed"
-        or value.get("result_digest") != canonical_json_digest(
+        or value.get("result_digest")
+        != canonical_json_digest(
             {key: item for key, item in value.items() if key != "result_digest"}
         )
         or not isinstance(bindings, Mapping)
@@ -234,20 +235,13 @@ def materialize_calibrated_object_mask_set(
     """Materialize task-local calibrated images and inferred object masks."""
 
     output = Path(output_root).expanduser().resolve()
-    if (
-        output.is_symlink()
-        or (output.exists() and any(output.iterdir()))
-    ):
+    if output.is_symlink() or (output.exists() and any(output.iterdir())):
         raise CalibratedObjectMaskError(["calibrated_masks_input_or_output_root_invalid"])
     task_paths = [
-        _file(path, code="calibrated_masks_task_freeze_missing")
-        for path in task_freeze_paths
+        _file(path, code="calibrated_masks_task_freeze_missing") for path in task_freeze_paths
     ]
     try:
-        tasks = [
-            _read(path, code="calibrated_masks_task_freeze_invalid")
-            for path in task_paths
-        ]
+        tasks = [_read(path, code="calibrated_masks_task_freeze_invalid") for path in task_paths]
         task_set = validate_task_freeze_set(tasks)
     except ValueError as exc:
         raise CalibratedObjectMaskError(["calibrated_masks_task_freeze_invalid"]) from exc
@@ -272,9 +266,12 @@ def materialize_calibrated_object_mask_set(
             selected_track_ids_by_task=selected_track_ids_by_task,
         )
     except ValueError as exc:
-        raise CalibratedObjectMaskError(
-            ["calibrated_masks_review_receipt_invalid"]
-        ) from exc
+        raise CalibratedObjectMaskError(["calibrated_masks_review_receipt_invalid"]) from exc
+    reviewer_kind = (
+        "ai"
+        if review.get("schema_version") == "public_scene_sam31_track_selection_ai_visual_review.v1"
+        else "human"
+    )
 
     output.mkdir(parents=True)
 
@@ -294,12 +291,12 @@ def materialize_calibrated_object_mask_set(
         )
         image_root = Path(str(task_input.get("source_image_root") or "")).expanduser().resolve()
         raw_camera_frame_map = task_input.get("camera_frame_map")
-        if image_root.is_symlink() or not image_root.is_dir() or not isinstance(
-            raw_camera_frame_map, Mapping
+        if (
+            image_root.is_symlink()
+            or not image_root.is_dir()
+            or not isinstance(raw_camera_frame_map, Mapping)
         ):
-            raise CalibratedObjectMaskError(
-                [f"calibrated_masks_task_inputs_invalid:{task_id}"]
-            )
+            raise CalibratedObjectMaskError([f"calibrated_masks_task_inputs_invalid:{task_id}"])
         source_tracks = _verified_source_tracks(source_track_path)
         tracks = _track_map(source_tracks)
         frames = _frame_map(source_tracks)
@@ -319,9 +316,7 @@ def materialize_calibrated_object_mask_set(
             )
         selected = tuple(sorted(set(str(item) for item in selected_track_ids_by_task[task_id])))
         if not selected or any(not item or item not in tracks for item in selected):
-            raise CalibratedObjectMaskError(
-                [f"calibrated_masks_selected_tracks_invalid:{task_id}"]
-            )
+            raise CalibratedObjectMaskError([f"calibrated_masks_selected_tracks_invalid:{task_id}"])
         task_root = output / "tasks" / task_id
         image_output = task_root / "images"
         mask_root = task_root / "masks"
@@ -351,9 +346,14 @@ def materialize_calibrated_object_mask_set(
                     int(camera["intrinsics"]["width"]),
                     int(camera["intrinsics"]["height"]),
                 )
-                if image.format != "PNG" or image.size != expected or image.size != (
-                    int(frame["width"]),
-                    int(frame["height"]),
+                if (
+                    image.format != "PNG"
+                    or image.size != expected
+                    or image.size
+                    != (
+                        int(frame["width"]),
+                        int(frame["height"]),
+                    )
                 ):
                     raise CalibratedObjectMaskError(
                         [f"calibrated_masks_camera_source_binding_invalid:{task_id}:{camera_id}"]
@@ -423,7 +423,10 @@ def materialize_calibrated_object_mask_set(
                 Path(reviewed_track_selection_receipt_path).expanduser().resolve()
             ),
             "review_receipt_digest": review["receipt_digest"],
-            "all_selected_tracks_human_review_accepted": True,
+            "reviewer_kind": reviewer_kind,
+            "all_selected_tracks_review_accepted": True,
+            "all_selected_tracks_human_review_accepted": (reviewer_kind == "human"),
+            "all_selected_tracks_ai_visual_review_accepted": (reviewer_kind == "ai"),
             "cross_prompt_instance_deduplication_inferred": False,
             "mask_dilation_pixels": 0,
             "mask_values": [0, 255],
@@ -449,8 +452,7 @@ def materialize_calibrated_object_mask_set_from_tool_request(
     """Execute the registered Agents SDK tool request after digest validation."""
 
     if (
-        request.get("schema_version")
-        != "fresh_scene_calibrated_mask_tool_request.v1"
+        request.get("schema_version") != "fresh_scene_calibrated_mask_tool_request.v1"
         or request.get("request_digest")
         != canonical_digest(dict(request), digest_field="request_digest")
         or not isinstance(request.get("task_freeze_paths"), list)
@@ -463,9 +465,7 @@ def materialize_calibrated_object_mask_set_from_tool_request(
         task_freeze_paths=[str(path) for path in request["task_freeze_paths"]],
         task_inputs=request["task_inputs"],
         selected_track_ids_by_task=request["selected_track_ids_by_task"],
-        reviewed_track_selection_receipt_path=str(
-            request["reviewed_track_selection_receipt_path"]
-        ),
+        reviewed_track_selection_receipt_path=str(request["reviewed_track_selection_receipt_path"]),
         output_root=output_root,
     )
 
@@ -492,15 +492,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     selected_path = _file(
         args.selected_tracks_json, code="calibrated_masks_selected_track_map_missing"
     )
-    selected = _read(
-        selected_path, code="calibrated_masks_selected_track_map_invalid"
-    )
-    task_inputs_path = _file(
-        args.task_inputs_json, code="calibrated_masks_task_inputs_missing"
-    )
-    task_inputs = _read(
-        task_inputs_path, code="calibrated_masks_task_inputs_invalid"
-    )
+    selected = _read(selected_path, code="calibrated_masks_selected_track_map_invalid")
+    task_inputs_path = _file(args.task_inputs_json, code="calibrated_masks_task_inputs_missing")
+    task_inputs = _read(task_inputs_path, code="calibrated_masks_task_inputs_invalid")
     materialize_calibrated_object_mask_set(
         task_freeze_paths=args.task_freeze,
         task_inputs=task_inputs,
