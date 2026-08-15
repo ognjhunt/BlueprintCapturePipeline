@@ -349,6 +349,7 @@ def materialize_sam31_track_selection_review_candidate(
                 frame,
                 selected_track_ids=selected,
                 code=f"sam31_review_selected_track_missing:{task_id}:{camera_id}",
+                allow_empty_selected_tracks=True,
             )
             mask_path = mask_task_root / f"{camera_id}.png"
             Image.fromarray(mask, mode="L").save(mask_path, format="PNG", optimize=False)

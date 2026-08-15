@@ -177,7 +177,11 @@ def _frame_map(value: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _decode_union(
-    frame: Mapping[str, Any], *, selected_track_ids: set[str], code: str
+    frame: Mapping[str, Any],
+    *,
+    selected_track_ids: set[str],
+    code: str,
+    allow_empty_selected_tracks: bool = False,
 ) -> np.ndarray:
     width = int(frame["width"])
     height = int(frame["height"])
@@ -212,6 +216,8 @@ def _decode_union(
                 raise CalibratedObjectMaskError([code])
             output[start : start + length] = 255
             previous_end = start + length
+    if allow_empty_selected_tracks and not observed and not np.any(output):
+        return output.reshape((height, width))
     if observed != selected_track_ids or not np.any(output):
         raise CalibratedObjectMaskError([code])
     return output.reshape((height, width))
@@ -367,6 +373,7 @@ def materialize_calibrated_object_mask_set(
                 frame,
                 selected_track_ids=set(selected),
                 code=f"calibrated_masks_selected_track_missing:{task_id}:{camera_id}",
+                allow_empty_selected_tracks=True,
             )
             destination = mask_root / f"{camera_id}.png"
             Image.fromarray(mask, mode="L").save(destination, format="PNG", optimize=False)

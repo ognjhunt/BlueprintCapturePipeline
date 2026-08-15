@@ -129,6 +129,10 @@ def _validate_frame_registry(
         pts = _finite(row.get("decoded_pts_seconds"))
         if pts is None or pts < 0.0:
             blockers.append(f"frame_registry_pts_invalid:{frame_id}")
+        width = _positive_int(row.get("width"))
+        height = _positive_int(row.get("height"))
+        if width is None or height is None or width * height > 100_000_000:
+            blockers.append(f"frame_registry_dimensions_invalid:{frame_id}")
         if row.get("encoder_retained") is not True:
             blockers.append(f"frame_registry_encoder_retention_not_proven:{frame_id}")
         frames[frame_id] = dict(row)
@@ -276,7 +280,23 @@ def import_semantic_source_tracks(
     seen_tracks: set[str] = set()
     observation_count = 0
     normalized_tracks: list[dict[str, Any]] = []
-    frame_masks: Dict[str, dict[str, Any]] = {}
+    # Retain every validated source frame, including views where the selected
+    # object has no above-threshold mask.  Dropping those frames made the
+    # normalized result impossible to compare with the calibrated camera set
+    # and hid an important negative observation from human review.
+    frame_masks: Dict[str, dict[str, Any]] = {
+        frame_id: {
+            "source_frame_id": frame_id,
+            "source_frame_digest": frame.get("source_frame_digest"),
+            "decoded_pts_seconds": frame.get("decoded_pts_seconds"),
+            "camera_record_digest": frame.get("camera_record_digest"),
+            "width": frame.get("width"),
+            "height": frame.get("height"),
+            "mask_encoding": MASK_ENCODING,
+            "track_masks": [],
+        }
+        for frame_id, frame in frames.items()
+    }
     for raw_track in raw_tracks:
         if not isinstance(raw_track, Mapping):
             blockers.append("provider_track_invalid")

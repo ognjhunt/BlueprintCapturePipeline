@@ -437,6 +437,121 @@ def test_review_acceptance_rehashes_exact_overlay_bytes(tmp_path: Path) -> None:
         )
 
 
+def test_review_candidate_preserves_eight_views_when_one_selected_mask_is_empty(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    cameras = json.loads(fixture["cameras"].read_text(encoding="utf-8"))
+    source = json.loads(fixture["source"].read_text(encoding="utf-8"))
+    frame_masks = source["frame_masks"]
+    images = fixture["images"]
+    for index in range(2, 8):
+        camera_id = f"camera_{index}"
+        image = np.full((3, 4, 3), 10 + index, dtype=np.uint8)
+        image_path = images / f"{camera_id}.png"
+        Image.fromarray(image, mode="RGB").save(image_path)
+        camera = {
+            "camera_id": camera_id,
+            "T_world_camera_provider_frame": [
+                [1.0, 0.0, 0.0, float(index)],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "intrinsics": {
+                "model": "PINHOLE",
+                "fx": 2.0,
+                "fy": 2.0,
+                "cx": 2.0,
+                "cy": 1.5,
+                "width": 4,
+                "height": 3,
+            },
+        }
+        cameras.append(camera)
+        track_masks = [
+            {
+                "track_id": "washer-track",
+                "runs": [{"start": index, "length": 1, "probability": 0.95}],
+            },
+            {
+                "track_id": "laptop-track",
+                "runs": [{"start": 8, "length": 2, "probability": 0.9}],
+            },
+        ]
+        frame_masks.append(
+            {
+                "source_frame_id": camera_id,
+                "source_frame_digest": _sha(image_path),
+                "decoded_pts_seconds": float(index),
+                "camera_record_digest": canonical_json_digest(camera),
+                "width": 4,
+                "height": 3,
+                "mask_encoding": MASK_ENCODING,
+                "track_masks": track_masks,
+                "mask_artifact_digest": canonical_json_digest(track_masks),
+            }
+        )
+    frame_masks[0]["track_masks"] = [
+        row for row in frame_masks[0]["track_masks"] if row["track_id"] == "washer-track"
+    ]
+    frame_masks[0]["mask_artifact_digest"] = canonical_json_digest(
+        frame_masks[0]["track_masks"]
+    )
+    source["bindings"]["frame_masks_digest"] = canonical_json_digest(frame_masks)
+    source["result_digest"] = canonical_json_digest(
+        {key: value for key, value in source.items() if key != "result_digest"}
+    )
+    fixture["cameras"].write_text(json.dumps(cameras), encoding="utf-8")
+    fixture["source"].write_text(json.dumps(source), encoding="utf-8")
+    camera_map = {f"camera_{index}": f"camera_{index}" for index in range(8)}
+    for task_input in fixture["task_inputs"].values():
+        task_input["camera_frame_map"] = camera_map
+
+    candidate = materialize_sam31_track_selection_review_candidate(
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task={
+            "task_a": ["washer-track"],
+            "task_b": ["laptop-track"],
+        },
+        output_root=tmp_path / "eight-view-review",
+    )
+
+    task_b = next(row for row in candidate["review_media"] if row["task_id"] == "task_b")
+    assert task_b["camera_count"] == 8
+    assert len(task_b["frames"]) == 8
+    empty = next(row for row in task_b["frames"] if row["camera_id"] == "camera_0")
+    assert empty["foreground_pixel_count"] == 0
+
+    candidate_path = (
+        tmp_path
+        / "eight-view-review"
+        / "public_scene_sam31_track_selection_review_candidate.v1.json"
+    )
+    receipt_path = tmp_path / "eight-view-review-accepted.json"
+    seal_sam31_track_selection_review(
+        candidate_path=candidate_path,
+        reviewed_by="fixture-reviewer",
+        reviewed_on="2026-08-15",
+        output_path=receipt_path,
+    )
+    calibrated = materialize_calibrated_object_mask_set(
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task={
+            "task_a": ["washer-track"],
+            "task_b": ["laptop-track"],
+        },
+        reviewed_track_selection_receipt_path=receipt_path,
+        output_root=tmp_path / "eight-view-calibrated-masks",
+    )
+    assert calibrated["camera_count_total"] == 16
+    task_b_masks = tmp_path / "eight-view-calibrated-masks/tasks/task_b/masks"
+    assert len(list(task_b_masks.glob("*.png"))) == 8
+    assert np.count_nonzero(np.asarray(Image.open(task_b_masks / "camera_0.png"))) == 0
+
+
 def test_review_candidate_and_accept_clis(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     task_inputs_path = tmp_path / "task-inputs.json"
