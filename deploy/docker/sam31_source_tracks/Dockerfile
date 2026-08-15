@@ -40,7 +40,19 @@ RUN python -m pip install \
 RUN python -m pip install \
     "git+https://github.com/facebookresearch/sam3.git@${SAM31_CODE_REVISION}"
 
-RUN python -m pip install ".[cloud,runtime,validation]"
+RUN python -m pip install ".[cloud,validation]"
+
+# The pinned upstream package's model-builder reaches einops and pycocotools
+# without declaring them as base requirements.  Keep the image on SAM 3.1's
+# declared numpy<2 contract and verify the exact production entrypoint after
+# every install is complete.
+RUN python -m pip install \
+    einops==0.8.2 \
+    numpy==1.26.4 \
+    pycocotools==2.0.10 \
+    scipy==1.16.2 \
+    && python -m pip check \
+    && python -c "from sam3.model_builder import build_sam3_multiplex_video_predictor; assert callable(build_sam3_multiplex_video_predictor)"
 
 RUN groupadd --gid "${APP_GID}" blueprint \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \

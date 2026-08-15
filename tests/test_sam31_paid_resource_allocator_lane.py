@@ -289,6 +289,7 @@ def test_sam31_allocator_lane_dry_run_never_reads_secrets(tmp_path: Path) -> Non
     args = _args(tmp_path, execute=False)
     args.sam31_attempt_authority = None
     Path(args.provider_launch_request).write_text("{}", encoding="utf-8")
+    write_json(Path(args.preflight_bundle), {"provider": "vast"})
     result = run_sam31_paid_resource_allocator_lane(
         args,
         checkout_commit="c" * 40,
@@ -297,6 +298,27 @@ def test_sam31_allocator_lane_dry_run_never_reads_secrets(tmp_path: Path) -> Non
         execute_canary=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("canary executed")),
     )
     assert result["status"] == "dry_run_ready"
+
+
+def test_sam31_allocator_lane_dry_run_types_missing_live_preflight(
+    tmp_path: Path,
+) -> None:
+    args = _args(tmp_path, execute=False)
+    args.sam31_attempt_authority = None
+    Path(args.provider_launch_request).write_text("{}", encoding="utf-8")
+
+    result = run_sam31_paid_resource_allocator_lane(
+        args,
+        checkout_commit="c" * 40,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["sam31_dry_run_preflight_missing_or_unsafe"]
+    assert result["provider_mutations_performed"] == 0
+    assert result["continuing_spend_from_this_run"] is False
+    assert Path(args.adapter_output).is_file()
+    assert Path(result["artifact_manifest_path"]).is_file()
+    assert Path(result["teardown_manifest_path"]).is_file()
 
 
 def test_sam31_allocator_lane_refuses_nonprivate_token_before_provider(

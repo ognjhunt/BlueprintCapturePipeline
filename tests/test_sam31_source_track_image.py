@@ -17,6 +17,18 @@ def test_sam31_source_track_image_is_separate_pinned_and_nonroot() -> None:
     assert "torch==2.10.0" in dockerfile
     assert "torchvision==0.25.0" in dockerfile
     assert "facebookresearch/sam3.git@${SAM31_CODE_REVISION}" in dockerfile
+    assert '".[cloud,validation]"' in dockerfile
+    assert '".[cloud,runtime,validation]"' not in dockerfile
+    assert "einops==0.8.2" in dockerfile
+    assert "numpy==1.26.4" in dockerfile
+    assert "opencv-python" not in dockerfile
+    assert "pycocotools==2.0.10" in dockerfile
+    assert "scipy==1.16.2" in dockerfile
+    assert "python -m pip check" in dockerfile
+    assert (
+        "from sam3.model_builder import build_sam3_multiplex_video_predictor; "
+        "assert callable(build_sam3_multiplex_video_predictor)"
+    ) in dockerfile
     assert "sam3.1_multiplex.pt" not in dockerfile
     assert "COPY ." not in dockerfile
     assert "USER blueprint:blueprint" in dockerfile
