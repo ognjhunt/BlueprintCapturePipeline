@@ -10,16 +10,26 @@ contains only the public descriptor needed to select that exact profile.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import pwd
+import stat
+import subprocess  # nosec B404 - fixed runuser/sha256sum argv over validated paths
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from blueprint_pipeline.host_resident_launch_inputs import PRODUCTION_LAUNCH_INPUT_ROOTS
 from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
+
+DEFAULT_SERVICE_ACCOUNT = "blueprint"
+RUNUSER_PATH = "/usr/sbin/runuser"
+SHA256SUM_PATH = "/usr/bin/sha256sum"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -41,14 +51,111 @@ def _write_exact(path: Path, payload: bytes) -> bool:
         return False
 
 
+def _under_production_root(path: Path) -> bool:
+    value = str(path)
+    return any(
+        value == root or value.startswith(root.rstrip("/") + "/")
+        for root in PRODUCTION_LAUNCH_INPUT_ROOTS
+    )
+
+
+def _service_identity(target_root: Path, service_account: str | None) -> tuple[str, int, int]:
+    """Resolve the consumer account without weakening production defaults.
+
+    Library callers publish into temporary directories in tests and local
+    rehearsals, where no ``blueprint`` account exists. Production roots always
+    resolve the real service account and fail closed when the host was not
+    provisioned; an omitted account outside those roots means the caller
+    itself is the consumer.
+    """
+
+    account = service_account
+    if account is None:
+        account = (
+            DEFAULT_SERVICE_ACCOUNT
+            if _under_production_root(target_root)
+            else pwd.getpwuid(os.geteuid()).pw_name
+        )
+    try:
+        entry = pwd.getpwnam(account)
+    except KeyError as exc:
+        raise TaskEvaluationLaunchError(
+            f"launch_profile_service_account_missing:{account}"
+        ) from exc
+    return account, entry.pw_uid, entry.pw_gid
+
+
+def _digest_as_account(path: Path, *, account: str, uid: int) -> str:
+    if os.geteuid() == uid:
+        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    if os.geteuid() != 0:
+        return ""
+    try:
+        completed = subprocess.run(  # nosec B603 - fixed executable and argv
+            [RUNUSER_PATH, "-u", account, "--", SHA256SUM_PATH, str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return ""
+    return "sha256:" + completed.stdout.split()[0]
+
+
+def _seal_immutable_input_permissions(
+    profile: Mapping[str, Any], *, target_root: Path, service_account: str | None
+) -> None:
+    """Make exact profile inputs read-only and prove the service can read them."""
+
+    account, uid, gid = _service_identity(target_root, service_account)
+    inputs: dict[Path, tuple[str, str]] = {}
+    for item in profile.get("immutable_inputs") or []:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("name") or "invalid")
+        path = Path(str(item.get("path") or "")).expanduser()
+        if path.is_symlink() or not path.is_file():
+            raise TaskEvaluationLaunchError(f"launch_profile_immutable_input_missing:{name}")
+        resolved = path.resolve()
+        if _under_production_root(target_root) and not _under_production_root(resolved):
+            raise TaskEvaluationLaunchError(
+                f"launch_profile_immutable_input_outside_control_plane:{name}"
+            )
+        inputs[resolved] = (name, str(item.get("digest") or ""))
+
+    for path, (name, expected_digest) in inputs.items():
+        try:
+            os.chown(path, -1, gid)
+            path.chmod(stat.S_IRUSR | stat.S_IRGRP)
+        except OSError as exc:
+            raise TaskEvaluationLaunchError(
+                f"launch_profile_immutable_input_permission_install_failed:{name}"
+            ) from exc
+        observed = _digest_as_account(path, account=account, uid=uid)
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if (
+            observed != expected_digest
+            or path.stat().st_gid != gid
+            or mode != stat.S_IRUSR | stat.S_IRGRP
+        ):
+            raise TaskEvaluationLaunchError(
+                f"launch_profile_immutable_input_consumer_unreadable:{name}"
+            )
+
+
 def publish_profiles(
     *,
     profile_paths: Sequence[str | Path],
     profile_dir: str | Path,
     webapp_catalog_out: str | Path,
+    service_account: str | None = None,
 ) -> dict[str, Any]:
     published: list[dict[str, Any]] = []
     target_root = Path(profile_dir).expanduser().resolve()
+    target_root.mkdir(parents=True, exist_ok=True)
     for source_value in profile_paths:
         source_input = Path(source_value).expanduser()
         if source_input.is_symlink():
@@ -59,6 +166,14 @@ def publish_profiles(
         profile = _read(source)
         blockers = validate_launch_profile(profile)
         blockers.extend(verify_profile_immutable_inputs(profile))
+        if blockers:
+            raise TaskEvaluationLaunchError(",".join(sorted(set(blockers))))
+        _seal_immutable_input_permissions(
+            profile, target_root=target_root, service_account=service_account
+        )
+        # Permission installation is metadata-only. Reopen every input after
+        # it so a partial or racy handoff cannot publish changed bytes.
+        blockers = verify_profile_immutable_inputs(profile)
         if blockers:
             raise TaskEvaluationLaunchError(",".join(sorted(set(blockers))))
         payload = (json.dumps(profile, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -104,12 +219,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--profile", action="append", required=True)
     parser.add_argument("--profile-dir", required=True)
     parser.add_argument("--webapp-catalog-out", required=True)
+    parser.add_argument(
+        "--service-account",
+        help=(
+            "Account that must read immutable profile inputs. Defaults to blueprint "
+            "for production roots and the invoking account elsewhere."
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         result = publish_profiles(
             profile_paths=args.profile,
             profile_dir=args.profile_dir,
             webapp_catalog_out=args.webapp_catalog_out,
+            service_account=args.service_account,
         )
     except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError) as exc:
         print(
