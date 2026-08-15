@@ -40,18 +40,15 @@ RUN python -m pip install \
 RUN python -m pip install \
     "git+https://github.com/facebookresearch/sam3.git@${SAM31_CODE_REVISION}"
 
-RUN python -m pip install ".[cloud,runtime,validation]"
+RUN python -m pip install ".[cloud,validation]"
 
 # The pinned upstream package's model-builder reaches einops and pycocotools
-# without declaring them as base requirements.  The later Blueprint runtime
-# install also selects current OpenCV wheels that require NumPy 2, outside
-# SAM 3.1's declared numpy<2 contract.  Restore the tested compatible closure
-# and verify the exact production entrypoint after every install is complete.
+# without declaring them as base requirements.  Keep the image on SAM 3.1's
+# declared numpy<2 contract and verify the exact production entrypoint after
+# every install is complete.
 RUN python -m pip install \
     einops==0.8.2 \
     numpy==1.26.4 \
-    opencv-python==4.11.0.86 \
-    opencv-python-headless==4.11.0.86 \
     pycocotools==2.0.10 \
     scipy==1.16.2 \
     && python -m pip check \
