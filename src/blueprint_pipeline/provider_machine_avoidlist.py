@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 import json
 from pathlib import Path
+import shutil
 from typing import Any
 
 from .common import write_json
@@ -103,9 +105,38 @@ def simready_isaac_machine_avoidlist_path(
     )
 
 
+def stage_machine_avoidlist_for_attempt(
+    *, source_path: str | Path | None, destination_path: str | Path
+) -> Path | None:
+    """Copy one admission-bound snapshot to a provider-mutable attempt path."""
+
+    if source_path is None:
+        return None
+    source = Path(source_path).expanduser().resolve()
+    if not source.is_file():
+        return None
+    destination = Path(destination_path).expanduser().resolve()
+    if source == destination:
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    if destination.exists():
+        if not destination.is_file() or hashlib.sha256(
+            destination.read_bytes()
+        ).hexdigest() != source_digest:
+            raise ValueError("provider_machine_avoidlist_attempt_path_conflict")
+        return destination
+    shutil.copy2(source, destination)
+    if hashlib.sha256(destination.read_bytes()).hexdigest() != source_digest:
+        destination.unlink(missing_ok=True)
+        raise ValueError("provider_machine_avoidlist_attempt_copy_mismatch")
+    return destination
+
+
 __all__ = [
     "CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME",
     "SIMREADY_ISAAC_MACHINE_AVOIDLIST_FILENAME",
     "content_agents_machine_avoidlist_path",
     "simready_isaac_machine_avoidlist_path",
+    "stage_machine_avoidlist_for_attempt",
 ]
