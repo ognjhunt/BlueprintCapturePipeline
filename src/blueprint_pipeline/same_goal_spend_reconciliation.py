@@ -80,7 +80,14 @@ def _digest(value: Any) -> bool:
 
 def _source(role: str, path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
     record = _record(path)
-    digest_field = next((field for field in _DIGEST_FIELDS if field in value), None)
+    digest_fields = _DIGEST_FIELDS
+    if role == "provider_zero":
+        digest_fields = (
+            "provider_zero_receipt_digest",
+            "provider_zero_digest",
+            "receipt_digest",
+        )
+    digest_field = next((field for field in digest_fields if field in value), None)
     source: dict[str, Any] = {
         "role": role,
         "schema_version": value.get("schema_version"),
