@@ -492,6 +492,106 @@ def test_runtime_requires_composed_static_triangle_meshes(tmp_path: Path) -> Non
     assert observed["approximation"] == "none"
 
 
+def test_newton_sage_adapter_deactivates_only_nonrepresentable_floorplan(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "sage_task_collision.usda"
+    source.write_text(
+        '''#usda 1.0
+(
+    defaultPrim = "Root"
+)
+def Xform "Root"
+{
+    def Mesh "SM_floorplan"
+    {
+    }
+    def Mesh "_LTFTHJVAZ3VMPTUJU888888"
+    {
+    }
+}
+''',
+        encoding="utf-8",
+    )
+    source_bytes = source.read_bytes()
+
+    adapter, receipt = isaac_runtime._materialize_newton_sage_collision_adapter(
+        source, output_dir=tmp_path / "output"
+    )
+
+    Usd = pytest.importorskip("pxr.Usd")
+    source_stage = Usd.Stage.Open(str(source))
+    adapter_stage = Usd.Stage.Open(str(adapter))
+    assert source_stage.GetPrimAtPath("/Root/SM_floorplan").IsActive()
+    assert not adapter_stage.GetPrimAtPath("/Root/SM_floorplan").IsActive()
+    assert adapter_stage.GetPrimAtPath(
+        "/Root/_LTFTHJVAZ3VMPTUJU888888"
+    ).IsActive()
+    assert source.read_bytes() == source_bytes
+    assert receipt["source_derivative_mutated"] is False
+    assert receipt["disabled_source_prim_paths"] == ["/Root/SM_floorplan"]
+    assert receipt["comparison_eligible"] is False
+    assert receipt["claim_ceiling"] == "newton_controls_only"
+    assert receipt["source_derivative_sha256"] == _digest(source)
+    assert receipt["adapter_sha256"] == _digest(adapter)
+    assert receipt["receipt_digest"] == isaac_runtime._canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    with pytest.raises(
+        RuntimeError, match="adp009d_newton_sage_collision_adapter_exists"
+    ):
+        isaac_runtime._materialize_newton_sage_collision_adapter(
+            source, output_dir=tmp_path / "output"
+        )
+
+
+def test_newton_sage_runtime_profile_subtracts_exact_floorplan_row() -> None:
+    manifest = {
+        "active_source_prim_count": 15,
+        "derived_point_count": 80_484,
+        "derived_face_count": 26_828,
+        "source_prim_rows": [
+            {
+                "source_prim": "/Root/SM_floorplan",
+                "derived_point_count": 3_525,
+                "derived_face_count": 1_175,
+            }
+        ],
+    }
+
+    assert isaac_runtime._newton_sage_collision_runtime_profile(manifest) == {
+        "active_mesh_count": 14,
+        "active_point_count": 76_959,
+        "active_face_count": 25_653,
+        "rigid_body_count": 0,
+        "triangle_mesh_count": 14,
+    }
+
+
+@pytest.mark.parametrize("floorplan_row_count", [0, 2])
+def test_newton_sage_runtime_profile_rejects_ambiguous_floorplan_rows(
+    floorplan_row_count: int,
+) -> None:
+    manifest = {
+        "active_source_prim_count": 15,
+        "derived_point_count": 80_484,
+        "derived_face_count": 26_828,
+        "source_prim_rows": [
+            {
+                "source_prim": "/Root/SM_floorplan",
+                "derived_point_count": 3_525,
+                "derived_face_count": 1_175,
+            }
+            for _ in range(floorplan_row_count)
+        ],
+    }
+
+    with pytest.raises(
+        RuntimeError, match="adp009d_newton_sage_floorplan_row_invalid"
+    ):
+        isaac_runtime._newton_sage_collision_runtime_profile(manifest)
+
+
 def test_runtime_binds_official_droid_franka_and_sealed_anchor() -> None:
     assert isaac_runtime.ARENA_REVISION == "8b4a3a47fc53de23e8205089d71109a2e2348acd"
     assert isaac_runtime.ISAAC_LAB_REVISION == "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
@@ -3227,8 +3327,9 @@ def test_newton_contact_partner_filters_bind_exact_can_and_sage_shapes() -> None
     newton_sage = runtime._sage_collision_filter_kwargs("newton")
     assert set(newton_sage) == {"filter_shape_prim_expr"}
     expressions = newton_sage["filter_shape_prim_expr"]
-    assert len(expressions) == 15
+    assert len(expressions) == 14
     assert len(expressions) == len(set(expressions))
+    assert "SM_floorplan" not in runtime.NEWTON_SAGE_COLLISION_SHAPE_LABELS
     for label, expression in zip(
         runtime.NEWTON_SAGE_COLLISION_SHAPE_LABELS,
         expressions,
