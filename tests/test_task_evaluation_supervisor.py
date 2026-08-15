@@ -320,10 +320,69 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     assert [tool.name for tool in captured["agent"].tools] == ["inspect_fixture"]
     assert captured["kwargs"]["max_turns"] == 2
     assert captured["kwargs"]["run_config"].trace_include_sensitive_data is False
+    assert captured["kwargs"]["run_config"].tracing_disabled is True
+    assert captured["agent"].model_settings.store is False
     assert result.provider == "openai"
     assert result.sdk_version == importlib.metadata.version("openai-agents")
     assert result.usage["total_tokens"] == 12
     assert result.usage["projected_max_cost_usd"] > 0
+
+    multimodal_input = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Inspect the exact image."},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,AA==",
+                    "detail": "high",
+                },
+            ],
+        }
+    ]
+    multimodal = invoker.invoke(
+        AgentsSDKAgentSpec(
+            run_id="sdk-multimodal-test",
+            capability="fixture_multimodal_review",
+            name="Blueprint fixture visual reviewer",
+            instructions="Return a typed fixture result only.",
+            model="gpt-5.6-terra",
+            max_turns=1,
+            max_output_tokens=1_000,
+            max_input_tokens=250_000,
+        ),
+        multimodal_input,
+    )
+    assert captured["input"] == multimodal_input
+    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(0.64)
+
+
+def test_multimodal_sdk_invocation_requires_explicit_input_token_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    invoker = OpenAIAgentsSDKInvoker(
+        OpenAIAgentsSDKConfig(
+            allow_live_invocation=True,
+            max_inference_cost_usd=1.0,
+        )
+    )
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="multimodal_input_token_ceiling_missing",
+    ):
+        invoker.invoke(
+            AgentsSDKAgentSpec(
+                run_id="sdk-multimodal-missing-ceiling",
+                capability="fixture_multimodal_review",
+                name="Blueprint fixture visual reviewer",
+                instructions="No provider call should occur.",
+                model="gpt-5.6-terra",
+                max_turns=1,
+                max_output_tokens=1_000,
+            ),
+            [{"role": "user", "content": [{"type": "input_text", "text": "x"}]}],
+        )
 
 
 def test_live_sdk_requires_and_enforces_inference_budget(

@@ -60,31 +60,21 @@ STAGE_CONTRACTS: tuple[dict[str, Any], ...] = (
     },
     {
         "stage_id": "sam31_track_selection_review",
-        "schemas": (
-            "public_scene_sam31_track_selection_review.v1",
-            "public_scene_sam31_track_selection_ai_visual_review.v1",
-        ),
+        "schemas": ("public_scene_sam31_track_selection_ai_visual_review.v1",),
         "digest_fields": ("receipt_digest",),
-        "accepted_statuses": (
-            "selected_tracks_human_review_accepted",
-            "selected_tracks_ai_visual_review_accepted",
-        ),
+        "accepted_statuses": ("selected_tracks_ai_visual_review_accepted",),
         "accepted_schema_status_pairs": (
-            (
-                "public_scene_sam31_track_selection_review.v1",
-                "selected_tracks_human_review_accepted",
-            ),
             (
                 "public_scene_sam31_track_selection_ai_visual_review.v1",
                 "selected_tracks_ai_visual_review_accepted",
             ),
         ),
         "cardinality": "one",
-        "producer": "sam31_track_selection_review",
-        "implementation": (
-            "blueprint_pipeline.public_scene_sam31_track_selection_review"
+        "producer": "sam31_openai_agents_sdk_visual_reviewer",
+        "implementation": "blueprint_pipeline.public_scene_sam31_ai_visual_reviewer",
+        "backend": (
+            "digest-bound 16-overlay OpenAI Agents SDK structured visual review"
         ),
-        "backend": "deterministic selected-mask overlays plus named visual acceptance",
         "next_blocker": "fresh_scene_sam31_track_selection_review_missing",
     },
     {

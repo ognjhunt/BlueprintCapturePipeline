@@ -16,14 +16,22 @@ from blueprint_pipeline.public_scene_calibrated_object_masks import (
     CalibratedObjectMaskError,
     materialize_calibrated_object_mask_set,
 )
+from blueprint_pipeline.public_scene_sam31_ai_visual_reviewer import (
+    AI_REVIEW_RECEIPT_NAME,
+    EXECUTION_RECEIPT_NAME,
+    run_sam31_ai_visual_review,
+)
 from blueprint_pipeline.public_scene_sam31_track_selection_review import (
+    AI_EXECUTION_SCHEMA_VERSION,
     AI_RECEIPT_SCHEMA_VERSION,
     AI_REVIEW_METHOD,
     Sam31TrackSelectionReviewError,
     materialize_sam31_track_selection_review_candidate,
+    materialize_sam31_ai_visual_review_rights,
     seal_sam31_track_selection_ai_review,
     seal_sam31_track_selection_review,
     validate_sam31_track_selection_review,
+    validate_sam31_ai_visual_review_rights,
 )
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     canonical_json_digest,
@@ -151,13 +159,19 @@ def _task(task_id: str, slot: int) -> dict:
     return validate_task_freeze(task)
 
 
-def _fixture(tmp_path: Path) -> dict[str, object]:
+def _fixture(
+    tmp_path: Path,
+    *,
+    camera_count: int = 2,
+    empty_laptop_camera: str | None = None,
+) -> dict[str, object]:
     tmp_path.mkdir(parents=True, exist_ok=True)
+    camera_ids = tuple(f"camera_{index}" for index in range(camera_count))
     cameras = []
     images = tmp_path / "images"
     images.mkdir()
     frame_masks = []
-    for index, camera_id in enumerate(("camera_0", "camera_1")):
+    for index, camera_id in enumerate(camera_ids):
         image = np.full((3, 4, 3), 10 + index, dtype=np.uint8)
         image_path = images / f"{camera_id}.png"
         Image.fromarray(image, mode="RGB").save(image_path)
@@ -180,6 +194,21 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
             },
         }
         cameras.append(camera)
+        track_masks = [
+            {
+                "track_id": "washer-track",
+                "runs": [{"start": index % 4, "length": 2, "probability": 0.95}],
+            }
+        ]
+        if camera_id != empty_laptop_camera:
+            track_masks.append(
+                {
+                    "track_id": "laptop-track",
+                    "runs": [
+                        {"start": 8 + (index % 3), "length": 2, "probability": 0.9}
+                    ],
+                }
+            )
         frame_masks.append(
             {
                 "source_frame_id": camera_id,
@@ -189,16 +218,7 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
                 "width": 4,
                 "height": 3,
                 "mask_encoding": MASK_ENCODING,
-                "track_masks": [
-                    {
-                        "track_id": "washer-track",
-                        "runs": [{"start": index, "length": 2, "probability": 0.95}],
-                    },
-                    {
-                        "track_id": "laptop-track",
-                        "runs": [{"start": 8 + index, "length": 2, "probability": 0.9}],
-                    },
-                ],
+                "track_masks": track_masks,
             }
         )
     for row in frame_masks:
@@ -209,12 +229,12 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         {
             "track_id": "washer-track",
             "label": "washer",
-            "supporting_frame_ids": ["camera_0", "camera_1"],
+            "supporting_frame_ids": list(camera_ids),
         },
         {
             "track_id": "laptop-track",
             "label": "laptop",
-            "supporting_frame_ids": ["camera_0", "camera_1"],
+            "supporting_frame_ids": list(camera_ids),
         },
     ]
     source = {
@@ -249,7 +269,7 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
                 "camera_contract_path": str(camera_path),
                 "source_image_root": str(images),
                 "camera_frame_map": {
-                    camera_id: camera_id for camera_id in ("camera_0", "camera_1")
+                    camera_id: camera_id for camera_id in camera_ids
                 },
             }
             for task_id in ("task_a", "task_b")
@@ -279,6 +299,80 @@ def _review(
         output_path=receipt,
     )
     return receipt
+
+
+def _run_production_ai_review(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_path: Path,
+    output_root: Path,
+    decision: str,
+) -> tuple[dict, dict]:
+    import agents
+
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    frame_decisions = []
+    for task in candidate["review_media"]:
+        for frame in task["frames"]:
+            rejected = decision == "rejected" and not frame_decisions
+            empty = int(frame["foreground_pixel_count"]) == 0
+            frame_decisions.append(
+                {
+                    "task_id": task["task_id"],
+                    "camera_id": frame["camera_id"],
+                    "target_visibility": (
+                        "absent_or_fully_occluded"
+                        if empty
+                        else "visible_or_partially_visible"
+                    ),
+                    "selected_mask_matches_target": not rejected,
+                    "decision": "rejected" if rejected else "accepted",
+                    "rationale": "Fixture visual decision for the exact overlay.",
+                }
+            )
+
+    class _Usage:
+        def model_dump(self, *, mode: str) -> dict:
+            assert mode == "json"
+            return {"requests": 1, "input_tokens": 100, "output_tokens": 40}
+
+    class _Result:
+        final_output = {
+            "decision": decision,
+            "summary": "Fixture visual review.",
+            "frames": frame_decisions,
+        }
+        context_wrapper = type("Context", (), {"usage": _Usage()})()
+
+    captured: dict = {}
+
+    def _run_sync(agent, input_value, **kwargs):
+        captured["input"] = input_value
+        captured["agent"] = agent
+        captured["run_config"] = kwargs["run_config"]
+        return _Result()
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_run_sync))
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_sam31_ai_visual_reviewer._utc_now",
+        lambda: "2026-08-15T13:30:00Z",
+    )
+    rights_path = output_root.parent / f"{output_root.name}-rights.json"
+    materialize_sam31_ai_visual_review_rights(
+        candidate_path=candidate_path,
+        accepted_by="nijelhunt_1",
+        accepted_on="2026-08-15",
+        human_authority_reference="fixture-explicit-user-authorization",
+        output_path=rights_path,
+    )
+    captured["rights_path"] = rights_path
+    result = run_sam31_ai_visual_review(
+        candidate_path=candidate_path,
+        rights_attestation_path=rights_path,
+        output_root=output_root,
+    )
+    return result, captured
 
 
 def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Path) -> None:
@@ -318,8 +412,9 @@ def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Pat
 
 def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = _fixture(tmp_path)
+    fixture = _fixture(tmp_path, camera_count=8, empty_laptop_camera="camera_0")
     selected = {"task_a": ["washer-track"], "task_b": ["laptop-track"]}
     candidate_root = tmp_path / "ai-review-candidate"
     candidate = materialize_sam31_track_selection_review_candidate(
@@ -328,34 +423,56 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
         selected_track_ids_by_task=selected,
         output_root=candidate_root,
     )
-    receipt_path = tmp_path / "ai-review.json"
-    receipt = seal_sam31_track_selection_ai_review(
-        candidate_path=(
-            candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
-        ),
-        reviewer_id="codex-visual-reviewer",
-        model="gpt-5",
-        model_version="2026-08-15",
-        review_method=AI_REVIEW_METHOD,
-        reviewed_at="2026-08-15T13:30:00Z",
-        decision="accepted",
-        output_path=receipt_path,
+    candidate_path = (
+        candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
     )
+    result, captured = _run_production_ai_review(
+        monkeypatch=monkeypatch,
+        candidate_path=candidate_path,
+        output_root=tmp_path / "production-ai-review",
+        decision="accepted",
+    )
+    receipt_path = tmp_path / "production-ai-review" / AI_REVIEW_RECEIPT_NAME
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 
+    assert result["decision"] == "accepted"
+    image_items = captured["input"][0]["content"][2::2]
+    assert len(image_items) == 16
+    assert all(item["image_url"].startswith("data:image/png;base64,") for item in image_items)
+    assert captured["agent"].model_settings.store is False
+    assert captured["run_config"].tracing_disabled is True
+    assert captured["run_config"].trace_include_sensitive_data is False
+    execution_path = tmp_path / "production-ai-review" / EXECUTION_RECEIPT_NAME
+    original_execution = execution_path.read_bytes()
+    execution = json.loads(original_execution)
+    empty_decision = next(
+        row
+        for row in execution["structured_output"]["frames"]
+        if row["task_id"] == "task_b" and row["camera_id"] == "camera_0"
+    )
+    assert empty_decision["target_visibility"] == "absent_or_fully_occluded"
+    assert empty_decision["decision"] == "accepted"
+    assert next(
+        row
+        for row in execution["frame_inventory"]
+        if row["task_id"] == "task_b" and row["camera_id"] == "camera_0"
+    )["foreground_pixel_count"] == 0
     assert receipt["schema_version"] == AI_RECEIPT_SCHEMA_VERSION
     assert receipt["status"] == "selected_tracks_ai_visual_review_accepted"
     assert receipt["reviewer"] == {
         "kind": "ai",
-        "identity": "codex-visual-reviewer",
-        "model": "gpt-5",
-        "model_version": "2026-08-15",
+        "identity": "blueprint-openai-agents-sdk-sam31-visual-reviewer",
+        "runtime": "openai_agents_sdk",
+        "model": "gpt-5.6-terra",
+        "model_version": "gpt-5.6-terra",
+        "sdk_version": receipt["reviewer"]["sdk_version"],
         "method": AI_REVIEW_METHOD,
     }
     assert receipt["review_scope"]["candidate_digest"] == candidate["candidate_digest"]
     assert receipt["review_scope"]["review_media_digest"] == canonical_json_digest(
         candidate["review_media"]
     )
-    assert receipt["review_scope"]["review_frame_count"] == 4
+    assert receipt["review_scope"]["review_frame_count"] == 16
     assert receipt["claim_boundary"]["human_review_completed"] is False
     assert receipt["claim_boundary"]["ai_visual_review_completed"] is True
     assert "reviewed_by" not in receipt
@@ -382,11 +499,91 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
     assert authority["all_selected_tracks_ai_visual_review_accepted"] is True
     assert authority["all_selected_tracks_human_review_accepted"] is False
 
+    rights_path = captured["rights_path"]
+    original_rights = rights_path.read_bytes()
+    for field, invalid_value in (
+        ("training_opt_in", True),
+        ("default_abuse_monitoring_retention_max_days", 31),
+        ("zero_data_retention_claimed", True),
+        ("response_store", True),
+        ("tracing_disabled", False),
+        ("trace_sensitive_data_included", True),
+        ("frame_publication_authorized", True),
+        ("max_inference_spend_usd", 1.01),
+    ):
+        invalid_rights = json.loads(original_rights)
+        invalid_rights[field] = invalid_value
+        invalid_rights["attestation_digest"] = canonical_digest(
+            invalid_rights, digest_field="attestation_digest"
+        )
+        rights_path.write_text(json.dumps(invalid_rights), encoding="utf-8")
+        with pytest.raises(
+            Sam31TrackSelectionReviewError,
+            match="rights_attestation_invalid",
+        ):
+            validate_sam31_ai_visual_review_rights(
+                candidate_path=candidate_path,
+                rights_attestation_path=rights_path,
+            )
+    rights_path.write_bytes(original_rights)
+
+    for field, invalid_value in (
+        ("response_store", True),
+        ("tracing_disabled", False),
+        ("trace_sensitive_data_included", True),
+    ):
+        invalid_execution = json.loads(original_execution)
+        invalid_execution[field] = invalid_value
+        invalid_execution["execution_receipt_digest"] = canonical_digest(
+            invalid_execution, digest_field="execution_receipt_digest"
+        )
+        execution_path.write_text(
+            json.dumps(invalid_execution), encoding="utf-8"
+        )
+        with pytest.raises(Sam31TrackSelectionReviewError, match="execution_receipt_invalid"):
+            validate_sam31_track_selection_review(
+                receipt_path=receipt_path,
+                task_freeze_paths=fixture["tasks"],
+                task_inputs=fixture["task_inputs"],
+                selected_track_ids_by_task=selected,
+            )
+        execution_path.write_bytes(original_execution)
+
+    changed_rights = json.loads(original_rights)
+    changed_rights["accepted_by"] = "different-human"
+    changed_rights["attestation_digest"] = canonical_digest(
+        changed_rights, digest_field="attestation_digest"
+    )
+    rights_path.write_text(json.dumps(changed_rights), encoding="utf-8")
+    with pytest.raises(Sam31TrackSelectionReviewError, match="execution_receipt_invalid"):
+        validate_sam31_track_selection_review(
+            receipt_path=receipt_path,
+            task_freeze_paths=fixture["tasks"],
+            task_inputs=fixture["task_inputs"],
+            selected_track_ids_by_task=selected,
+        )
+    rights_path.write_bytes(original_rights)
+
+    execution["structured_output"]["frames"][0]["rationale"] = "Locally rewritten prose."
+    execution["structured_output_digest"] = canonical_digest(execution["structured_output"])
+    execution["execution_receipt_digest"] = canonical_digest(
+        execution, digest_field="execution_receipt_digest"
+    )
+    execution_path.write_text(json.dumps(execution), encoding="utf-8")
+    with pytest.raises(Sam31TrackSelectionReviewError, match="execution_receipt_invalid"):
+        validate_sam31_track_selection_review(
+            receipt_path=receipt_path,
+            task_freeze_paths=fixture["tasks"],
+            task_inputs=fixture["task_inputs"],
+            selected_track_ids_by_task=selected,
+        )
+
 
 def test_ai_visual_review_rejection_and_missing_identity_fail_closed(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = _fixture(tmp_path)
+    fixture = _fixture(tmp_path, camera_count=8, empty_laptop_camera="camera_0")
     selected = {"task_a": ["washer-track"], "task_b": ["laptop-track"]}
     candidate_root = tmp_path / "ai-review-candidate"
     materialize_sam31_track_selection_review_candidate(
@@ -396,17 +593,15 @@ def test_ai_visual_review_rejection_and_missing_identity_fail_closed(
         output_root=candidate_root,
     )
     candidate_path = candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
-    rejected_path = tmp_path / "rejected.json"
-    rejected = seal_sam31_track_selection_ai_review(
+    result, _captured = _run_production_ai_review(
+        monkeypatch=monkeypatch,
         candidate_path=candidate_path,
-        reviewer_id="codex-visual-reviewer",
-        model="gpt-5",
-        model_version="2026-08-15",
-        review_method=AI_REVIEW_METHOD,
-        reviewed_at="2026-08-15T13:30:00Z",
+        output_root=tmp_path / "rejected-review",
         decision="rejected",
-        output_path=rejected_path,
     )
+    rejected_path = tmp_path / "rejected-review" / AI_REVIEW_RECEIPT_NAME
+    rejected = json.loads(rejected_path.read_text(encoding="utf-8"))
+    assert result["decision"] == "rejected"
     assert rejected["status"] == "selected_tracks_ai_visual_review_rejected"
     assert rejected["all_selected_tracks_accepted"] is False
     with pytest.raises(Sam31TrackSelectionReviewError, match="receipt_invalid"):
@@ -425,38 +620,47 @@ def test_ai_visual_review_rejection_and_missing_identity_fail_closed(
             output_root=tmp_path / "rejected-masks-must-not-exist",
         )
 
-    with pytest.raises(Sam31TrackSelectionReviewError, match="candidate_invalid"):
+    forged = tmp_path / "forged-execution.json"
+    forged.write_text(
+        json.dumps(
+            {
+                "schema_version": AI_EXECUTION_SCHEMA_VERSION,
+                "status": "ai_visual_review_execution_completed",
+                "provider_called": True,
+                "decision": "accepted",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(Sam31TrackSelectionReviewError, match="execution_receipt_invalid"):
         seal_sam31_track_selection_ai_review(
             candidate_path=candidate_path,
-            reviewer_id="codex-visual-reviewer",
-            model="gpt-5",
-            model_version="2026-08-15",
-            review_method="arbitrary-caller-prose",
-            reviewed_at="2026-08-15T13:30:00Z",
-            decision="accepted",
+            review_execution_receipt_path=forged,
             output_path=tmp_path / "must-not-exist.json",
         )
-    with pytest.raises(Sam31TrackSelectionReviewError, match="candidate_invalid"):
-        seal_sam31_track_selection_ai_review(
-            candidate_path=candidate_path,
-            reviewer_id="",
-            model="gpt-5",
-            model_version="2026-08-15",
-            review_method=AI_REVIEW_METHOD,
-            reviewed_at="2026-08-15T13:30:00Z",
-            decision="accepted",
-            output_path=tmp_path / "missing-identity.json",
+
+
+def test_ai_visual_review_refuses_under_reservation_and_over_cap(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="input_reservation_must_be_fixed"):
+        run_sam31_ai_visual_review(
+            candidate_path=tmp_path / "not-read.json",
+            rights_attestation_path=tmp_path / "not-read-rights.json",
+            output_root=tmp_path / "under-reserved",
+            max_input_tokens=249_999,
         )
-    with pytest.raises(Sam31TrackSelectionReviewError, match="candidate_invalid"):
-        seal_sam31_track_selection_ai_review(
-            candidate_path=candidate_path,
-            reviewer_id="codex-visual-reviewer",
-            model="gpt-5",
-            model_version="2026-08-15",
-            review_method=AI_REVIEW_METHOD,
-            reviewed_at="2026-08-15T13:30:00Z",
-            decision="",
-            output_path=tmp_path / "missing-decision.json",
+    with pytest.raises(RuntimeError, match="cost_cap_must_be_fixed"):
+        run_sam31_ai_visual_review(
+            candidate_path=tmp_path / "not-read.json",
+            rights_attestation_path=tmp_path / "not-read-rights.json",
+            output_root=tmp_path / "over-cap",
+            max_cost_usd=1.01,
+        )
+    with pytest.raises(RuntimeError, match="model_must_be_fixed"):
+        run_sam31_ai_visual_review(
+            candidate_path=tmp_path / "not-read.json",
+            rights_attestation_path=tmp_path / "not-read-rights.json",
+            output_root=tmp_path / "wrong-model",
+            model="unapproved-model",
         )
 
 

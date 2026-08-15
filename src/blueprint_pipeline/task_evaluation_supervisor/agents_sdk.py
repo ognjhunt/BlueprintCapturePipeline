@@ -83,6 +83,7 @@ class AgentsSDKAgentSpec:
     model: str
     max_turns: int
     max_output_tokens: int
+    max_input_tokens: int | None = None
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
     output_type: type[BaseModel] = AgentsSDKCapabilityOutput
 
@@ -102,7 +103,11 @@ class AgentsSDKInvocationResult:
 
 
 class AgentsSDKInvoker(Protocol):
-    def invoke(self, spec: AgentsSDKAgentSpec, input_text: str) -> AgentsSDKInvocationResult: ...
+    def invoke(
+        self,
+        spec: AgentsSDKAgentSpec,
+        input_value: str | list[dict[str, Any]],
+    ) -> AgentsSDKInvocationResult: ...
 
 
 @dataclass(frozen=True)
@@ -156,15 +161,33 @@ class OpenAIAgentsSDKInvoker:
         self._record_reservation = record_reservation
         self._record_completion = record_completion
 
-    def invoke(self, spec: AgentsSDKAgentSpec, input_text: str) -> AgentsSDKInvocationResult:
+    def invoke(
+        self,
+        spec: AgentsSDKAgentSpec,
+        input_value: str | list[dict[str, Any]],
+    ) -> AgentsSDKInvocationResult:
         if not self.config.allow_live_invocation:
             raise AgentsSDKInvocationBlocked("live_agents_sdk_invocation_not_authorized")
         if not env_truthy(LIVE_AGENTS_SDK_ENV):
             raise AgentsSDKInvocationBlocked(f"missing_env_{LIVE_AGENTS_SDK_ENV}")
-        # One UTF-8 byte per token is deliberately conservative. Reserving the
-        # maximum output before the call keeps retry/failure paths inside the
-        # run's deterministic ceiling even when provider billing arrives later.
-        input_token_ceiling = len(input_text.encode("utf-8"))
+        # One UTF-8 byte per token is deliberately conservative for text. Image
+        # tokenization is provider/model dependent, so multimodal callers must
+        # declare an explicit conservative ceiling rather than treating base64
+        # transport bytes as tokens or silently under-reserving the call.
+        if isinstance(input_value, str):
+            input_token_ceiling = len(input_value.encode("utf-8"))
+            input_kind = "text"
+            input_digest = canonical_digest({"input_text": input_value})
+        elif isinstance(input_value, list) and input_value:
+            if spec.max_input_tokens is None or not 1 <= spec.max_input_tokens <= 1_000_000:
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multimodal_input_token_ceiling_missing"
+                )
+            input_token_ceiling = spec.max_input_tokens
+            input_kind = "multimodal"
+            input_digest = canonical_digest({"input": input_value})
+        else:
+            raise AgentsSDKInvocationBlocked("agents_sdk_input_invalid")
         projected_max_cost = (
             input_token_ceiling * self.config.input_cost_per_million_tokens_usd
             + spec.max_output_tokens * self.config.output_cost_per_million_tokens_usd
@@ -181,7 +204,7 @@ class OpenAIAgentsSDKInvoker:
                 "run_id": spec.run_id,
                 "capability": capability_id,
                 "model": spec.model,
-                "input_digest": canonical_digest({"input_text": input_text}),
+                "input_digest": input_digest,
                 "max_turns": spec.max_turns,
                 "max_output_tokens": spec.max_output_tokens,
             }
@@ -192,7 +215,9 @@ class OpenAIAgentsSDKInvoker:
             "run_id": spec.run_id,
             "capability": capability_id,
             "model": spec.model,
-            "input_digest": canonical_digest({"input_text": input_text}),
+            "input_digest": input_digest,
+            "input_kind": input_kind,
+            "input_token_ceiling": input_token_ceiling,
             "max_turns": spec.max_turns,
             "max_output_tokens": spec.max_output_tokens,
             "projected_max_cost_usd": projected_max_cost,
@@ -263,7 +288,7 @@ class OpenAIAgentsSDKInvoker:
         started = time.monotonic()
         result = Runner.run_sync(
             agent,
-            input_text,
+            input_value,
             max_turns=spec.max_turns,
             run_config=RunConfig(
                 workflow_name="Blueprint Task Evaluation Supervisor",
