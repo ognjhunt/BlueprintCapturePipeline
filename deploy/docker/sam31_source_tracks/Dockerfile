@@ -42,13 +42,14 @@ RUN python -m pip install \
 
 RUN python -m pip install ".[cloud,validation]"
 
-# The pinned upstream package's model-builder reaches einops and pycocotools
-# without declaring them as base requirements.  Keep the image on SAM 3.1's
-# declared numpy<2 contract and verify the exact production entrypoint after
-# every install is complete.
+# The pinned upstream package's model-builder reaches einops, psutil, and
+# pycocotools without declaring them as base requirements.  Keep the image on
+# SAM 3.1's declared numpy<2 contract and verify the exact production entrypoint
+# after every install is complete.
 RUN python -m pip install \
     einops==0.8.2 \
     numpy==1.26.4 \
+    psutil==7.2.2 \
     pycocotools==2.0.10 \
     scipy==1.16.2 \
     && python -m pip check \

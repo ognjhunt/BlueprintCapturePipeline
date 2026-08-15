@@ -22,6 +22,7 @@ def test_sam31_source_track_image_is_separate_pinned_and_nonroot() -> None:
     assert "einops==0.8.2" in dockerfile
     assert "numpy==1.26.4" in dockerfile
     assert "opencv-python" not in dockerfile
+    assert "psutil==7.2.2" in dockerfile
     assert "pycocotools==2.0.10" in dockerfile
     assert "scipy==1.16.2" in dockerfile
     assert "python -m pip check" in dockerfile
