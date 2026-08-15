@@ -338,6 +338,51 @@ def test_provider_runner_failure_diagnostics_are_stable_and_sanitized() -> None:
     assert "secret" not in json.dumps(unsafe)
 
 
+def test_provider_runner_accepts_exact_legacy_camera_partition_without_counts() -> None:
+    runner = _provider_runner_module()
+    camera_ids = [
+        "front_medium",
+        "front_working",
+        "left_translate",
+        "right_translate",
+        "far_left",
+        "far_right",
+        "raised_left",
+        "low_right",
+    ]
+    camera_split = {
+        "calibration_camera_ids": [
+            "front_medium",
+            "front_working",
+            "left_translate",
+            "low_right",
+            "raised_left",
+            "right_translate",
+        ],
+        "heldout_camera_ids": ["far_left", "far_right"],
+    }
+
+    calibration = runner.validated_camera_split(
+        camera_split, {camera_id: {} for camera_id in camera_ids}
+    )
+
+    assert calibration == camera_split["calibration_camera_ids"]
+
+
+def test_provider_runner_rejects_present_camera_count_mismatch() -> None:
+    runner = _provider_runner_module()
+    camera_split = {
+        "calibration_camera_ids": ["front", "side"],
+        "heldout_camera_ids": ["heldout"],
+        "camera_count": 0,
+    }
+
+    with pytest.raises(ValueError, match="gaussian_excision_camera_split_invalid"):
+        runner.validated_camera_split(
+            camera_split, {camera_id: {} for camera_id in ("front", "side", "heldout")}
+        )
+
+
 def test_provider_runner_import_preflight_reports_full_missing_set(
     tmp_path: Path,
 ) -> None:
