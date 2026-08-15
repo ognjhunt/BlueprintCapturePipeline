@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
 from blueprint_pipeline.sam31_vast_source_track_canary import (
     Sam31VastCanaryError,
     _bootstrap_script,
+    _default_result_fetcher,
     _watchdog_valid,
     run_sam31_vast_source_track_canary,
     validate_sam31_runtime_result,
@@ -285,6 +288,55 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
     for secret in (TOKEN, INPUT_URL, PUT_URL, GET_URL):
         assert secret not in persisted
     assert not list((tmp_path / "leases").glob("*.lease.json"))
+
+
+def test_output_404_polls_until_worker_upload_is_available(
+    tmp_path: Path, monkeypatch
+) -> None:
+    attempts = 0
+
+    def request(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.HTTPError(GET_URL, 404, "Not Found", None, None)
+        return type(
+            "Response",
+            (),
+            {"status": 200, "body": json.dumps(_runtime_result()).encode("utf-8")},
+        )()
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_vast_source_track_canary.safe_http_request", request
+    )
+    sleeps: list[float] = []
+    now = 1000.0
+
+    def clock() -> float:
+        nonlocal now
+        now += 1.0
+        return now
+
+    result = run_sam31_vast_source_track_canary(
+        bound_request=_bound_request(),
+        preflight=_preflight(),
+        job_dir=tmp_path,
+        input_bundle_get_url=INPUT_URL,
+        output_put_url=PUT_URL,
+        output_get_url=GET_URL,
+        hf_token=TOKEN,
+        provider=_Provider(),
+        paid_resource_admission_grant=_grant(),
+        result_fetcher=_default_result_fetcher,
+        sleeper=sleeps.append,
+        clock=clock,
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+
+    assert attempts == 2
+    assert sleeps
+    assert result["status"] == "completed"
+    assert result["provider_zero_verified"] is True
 
 
 def test_global_nonzero_refuses_before_launch(tmp_path: Path) -> None:

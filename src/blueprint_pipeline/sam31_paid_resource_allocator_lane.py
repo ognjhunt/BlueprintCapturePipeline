@@ -385,6 +385,11 @@ def run_sam31_paid_resource_allocator_lane(
         / "teardown_receipt.json"
     )
     teardown = _load_object(teardown_path) if teardown_path.is_file() else {}
+    if (
+        teardown.get("status") == "PASS"
+        and teardown.get("provider_zero_verified") is True
+    ):
+        result["provider_zero_verified"] = True
     watchdog = close_watchdog(
         job_dir=adapter_path.parent,
         handle=handle,
