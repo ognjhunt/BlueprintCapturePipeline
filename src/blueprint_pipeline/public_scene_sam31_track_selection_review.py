@@ -19,6 +19,7 @@ from typing import Any
 from PIL import Image, ImageChops
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .dual_task_rehearsal_contract import validate_task_freeze
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 from .task_evaluation_supervisor.inference_reservations import (
     INFERENCE_COMPLETION_SCHEMA_VERSION,
@@ -28,6 +29,7 @@ from .task_evaluation_supervisor.inference_reservations import (
 
 
 CANDIDATE_SCHEMA_VERSION = "public_scene_sam31_track_selection_review_candidate.v1"
+PREPARED_INPUTS_SCHEMA_VERSION = "public_scene_sam31_track_selection_inputs.v1"
 RECEIPT_SCHEMA_VERSION = "public_scene_sam31_track_selection_review.v1"
 AI_RECEIPT_SCHEMA_VERSION = "public_scene_sam31_track_selection_ai_visual_review.v1"
 AI_EXECUTION_SCHEMA_VERSION = "public_scene_sam31_ai_visual_review_execution.v1"
@@ -119,6 +121,40 @@ def _verify_record(record: object, *, root: Path) -> Path:
     return path
 
 
+def _verify_absolute_record(record: object, *, code: str) -> Path:
+    if not isinstance(record, Mapping) or not str(record.get("path") or "").startswith("/"):
+        raise Sam31TrackSelectionReviewError(code)
+    path = Path(str(record["path"])).resolve()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or record.get("size_bytes") != path.stat().st_size
+        or record.get("sha256") != _sha256(path)
+    ):
+        raise Sam31TrackSelectionReviewError(code)
+    return path
+
+
+def _verified_relative_record(
+    record: object, *, root: Path, code: str
+) -> Path:
+    if not isinstance(record, Mapping) or not str(record.get("relative_path") or ""):
+        raise Sam31TrackSelectionReviewError(code)
+    path = (root / str(record["relative_path"])).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise Sam31TrackSelectionReviewError(code) from exc
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or record.get("size_bytes") != path.stat().st_size
+        or record.get("sha256") != _sha256(path)
+    ):
+        raise Sam31TrackSelectionReviewError(code)
+    return path
+
+
 def _validate_candidate_file(candidate_path: Path, candidate: Mapping[str, Any]) -> None:
     if (
         candidate.get("schema_version") != CANDIDATE_SCHEMA_VERSION
@@ -140,6 +176,15 @@ def _validate_candidate_file(candidate_path: Path, candidate: Mapping[str, Any])
         != root / "candidate_masks"
     ):
         raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
+    prepared_record = candidate.get("prepared_inputs")
+    if prepared_record is not None:
+        prepared_path = _verify_record(prepared_record, root=root)
+        prepared = _read(
+            prepared_path, code="sam31_review_prepared_inputs_invalid"
+        )[1]
+        if prepared_record.get("receipt_digest") != prepared.get("receipt_digest"):
+            raise Sam31TrackSelectionReviewError("sam31_review_prepared_inputs_invalid")
+        load_validated_sam31_track_selection_inputs(prepared_path)
     task_ids = [str(row.get("task_id") or "") for row in bindings if isinstance(row, Mapping)]
     if len(task_ids) != len(bindings) or not all(task_ids) or len(set(task_ids)) != len(task_ids):
         raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
@@ -147,6 +192,9 @@ def _validate_candidate_file(candidate_path: Path, candidate: Mapping[str, Any])
         _verify_record(binding.get("task_freeze"), root=root)
         _verify_record(binding.get("source_track_result"), root=root)
         _verify_record(binding.get("camera_contract"), root=root)
+        if "task_input_packet" in binding or "calibrated_view_receipt" in binding:
+            _verify_record(binding.get("task_input_packet"), root=root)
+            _verify_record(binding.get("calibrated_view_receipt"), root=root)
     if [str(row.get("task_id") or "") for row in review_media] != task_ids:
         raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
     for task in review_media:
@@ -651,6 +699,273 @@ def _validate_ai_execution_receipt(
         raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
 
 
+def _resolve_prepared_task(
+    *,
+    task_input_packet_path: str | Path,
+    source_track_result_path: str | Path,
+    selected_track_ids: Sequence[str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    packet_path, packet = _read(
+        task_input_packet_path, code="sam31_review_task_input_packet_invalid"
+    )
+    task_id = str(packet.get("task_id") or "")
+    selected = sorted(set(str(item) for item in selected_track_ids))
+    if (
+        packet.get("schema_version") != "public_scene_sam31_task_input_packet.v1"
+        or packet.get("status") != "prepared_no_upload_no_execution"
+        or packet.get("receipt_digest")
+        != canonical_digest(packet, digest_field="receipt_digest")
+        or not task_id
+        or not selected
+        or packet.get("paid_execution_started") is not False
+        or packet.get("provider_mutations_performed") != 0
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_task_input_packet_invalid")
+
+    freeze_record = packet.get("task_freeze")
+    receipt_record = packet.get("calibrated_view_receipt")
+    freeze_path = _verify_absolute_record(
+        freeze_record, code="sam31_review_task_input_packet_invalid"
+    )
+    receipt_path = _verify_absolute_record(
+        receipt_record, code="sam31_review_task_input_packet_invalid"
+    )
+    freeze = validate_task_freeze(
+        _read(freeze_path, code="sam31_review_task_freeze_invalid")[1]
+    )
+    calibrated = _read(
+        receipt_path, code="sam31_review_calibrated_view_receipt_invalid"
+    )[1]
+    if (
+        freeze.get("task_id") != task_id
+        or freeze_record.get("task_freeze_digest") != freeze.get("task_freeze_digest")
+        or calibrated.get("schema_version")
+        != "public_scene_interiorgs_edit_input_receipt.v2"
+        or calibrated.get("status") != "render_derived_input_packet_materialized"
+        or calibrated.get("receipt_digest")
+        != canonical_digest(calibrated, digest_field="receipt_digest")
+        or receipt_record.get("receipt_digest") != calibrated.get("receipt_digest")
+        or calibrated.get("scene", {}).get("task_id") != task_id
+        or packet.get("camera_count") != len(packet.get("camera_frame_map") or {})
+    ):
+        raise Sam31TrackSelectionReviewError(
+            "sam31_review_calibrated_view_receipt_invalid"
+        )
+    artifacts = calibrated.get("derived_artifacts")
+    camera_record = artifacts.get("cameras") if isinstance(artifacts, Mapping) else None
+    image_records = artifacts.get("images") if isinstance(artifacts, Mapping) else None
+    if not isinstance(image_records, list):
+        raise Sam31TrackSelectionReviewError(
+            "sam31_review_calibrated_view_receipt_invalid"
+        )
+    source_root = receipt_path.parent
+    camera_path = _verified_relative_record(
+        camera_record,
+        root=source_root,
+        code="sam31_review_calibrated_view_receipt_invalid",
+    )
+    image_paths: dict[str, Path] = {}
+    for record in image_records:
+        camera_id = str(record.get("camera_id") or "") if isinstance(record, Mapping) else ""
+        if not camera_id or camera_id in image_paths:
+            raise Sam31TrackSelectionReviewError(
+                "sam31_review_calibrated_view_receipt_invalid"
+            )
+        image_paths[camera_id] = _verified_relative_record(
+            record,
+            root=source_root,
+            code="sam31_review_calibrated_view_receipt_invalid",
+        )
+    image_roots = {path.parent for path in image_paths.values()}
+    camera_frame_map = packet.get("camera_frame_map")
+    if (
+        len(image_roots) != 1
+        or not isinstance(camera_frame_map, Mapping)
+        or set(camera_frame_map) != set(image_paths)
+        or any(path != next(iter(image_roots)) / f"{camera_id}.png" for camera_id, path in image_paths.items())
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_task_input_packet_invalid")
+
+    tracks_path, tracks = _read(
+        source_track_result_path, code="sam31_review_source_tracks_invalid"
+    )
+    available = {
+        str(row.get("track_id") or "")
+        for row in tracks.get("track_registry") or []
+        if isinstance(row, Mapping)
+    }
+    if (
+        tracks.get("schema_version") != "semantic_source_track_import_result.v1"
+        or tracks.get("status") != "completed"
+        or tracks.get("result_digest")
+        != canonical_json_digest(
+            {key: value for key, value in tracks.items() if key != "result_digest"}
+        )
+        or any(track_id not in available for track_id in selected)
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_source_tracks_invalid")
+    task_input = {
+        "source_track_result_path": str(tracks_path),
+        "camera_contract_path": str(camera_path),
+        "source_image_root": str(next(iter(image_roots))),
+        "camera_frame_map": {
+            str(camera_id): str(frame_id)
+            for camera_id, frame_id in sorted(camera_frame_map.items())
+        },
+        "task_input_packet_path": str(packet_path),
+        "calibrated_view_receipt_path": str(receipt_path),
+    }
+    row = {
+        "task_id": task_id,
+        "task_input_packet": {
+            **_record(packet_path),
+            "receipt_digest": packet["receipt_digest"],
+        },
+        "calibrated_view_receipt": {
+            **_record(receipt_path),
+            "receipt_digest": calibrated["receipt_digest"],
+        },
+        "task_freeze": {
+            **_record(freeze_path),
+            "task_freeze_digest": freeze["task_freeze_digest"],
+        },
+        "source_track_result": {
+            **_record(tracks_path),
+            "result_digest": tracks["result_digest"],
+        },
+        "camera_contract": _record(camera_path),
+        "source_image_root": str(next(iter(image_roots))),
+        "camera_frame_map": task_input["camera_frame_map"],
+        "selected_track_ids": selected,
+    }
+    return row, task_input
+
+
+def materialize_sam31_track_selection_inputs(
+    *,
+    task_input_packet_paths: Sequence[str | Path],
+    source_track_result_paths_by_task: Mapping[str, str | Path],
+    selected_track_ids_by_task: Mapping[str, Sequence[str]],
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Derive the review inputs from retained task packets without operator JSON glue."""
+
+    output = Path(output_root).expanduser().resolve()
+    if output.is_symlink() or (output.exists() and any(output.iterdir())):
+        raise Sam31TrackSelectionReviewError("sam31_review_prepared_inputs_output_not_empty")
+    rows: list[dict[str, Any]] = []
+    task_inputs: dict[str, dict[str, Any]] = {}
+    for packet_path in task_input_packet_paths:
+        packet = _read(packet_path, code="sam31_review_task_input_packet_invalid")[1]
+        task_id = str(packet.get("task_id") or "")
+        if task_id in task_inputs:
+            raise Sam31TrackSelectionReviewError("sam31_review_prepared_task_set_invalid")
+        row, task_input = _resolve_prepared_task(
+            task_input_packet_path=packet_path,
+            source_track_result_path=str(source_track_result_paths_by_task.get(task_id) or ""),
+            selected_track_ids=selected_track_ids_by_task.get(task_id, []),
+        )
+        rows.append(row)
+        task_inputs[task_id] = task_input
+    if (
+        not 1 <= len(rows) <= 5
+        or set(task_inputs) != set(source_track_result_paths_by_task)
+        or set(task_inputs) != set(selected_track_ids_by_task)
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_prepared_task_set_invalid")
+    output.mkdir(parents=True, exist_ok=True)
+    task_inputs_path = output / "task-inputs.json"
+    selected_path = output / "selected-tracks.json"
+    task_inputs_path.write_text(canonical_json(task_inputs) + "\n", encoding="utf-8")
+    selected_path.write_text(
+        canonical_json(
+            {
+                task_id: sorted(set(str(item) for item in selected_track_ids_by_task[task_id]))
+                for task_id in sorted(selected_track_ids_by_task)
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    receipt: dict[str, Any] = {
+        "schema_version": PREPARED_INPUTS_SCHEMA_VERSION,
+        "status": "task_packet_inputs_resolved_ready_for_visual_review",
+        "task_count": len(rows),
+        "tasks": sorted(rows, key=lambda row: row["task_id"]),
+        "task_inputs": _record(task_inputs_path, root=output),
+        "selected_tracks": _record(selected_path, root=output),
+        "provider_compute_mutation_performed": False,
+        "paid_resource_allocated": False,
+        "raw_secret_values_recorded": False,
+        "blockers": [],
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = output / f"{PREPARED_INPUTS_SCHEMA_VERSION}.json"
+    receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    load_validated_sam31_track_selection_inputs(receipt_path)
+    return receipt
+
+
+def load_validated_sam31_track_selection_inputs(
+    receipt_path: str | Path,
+) -> tuple[list[str], dict[str, dict[str, Any]], dict[str, list[str]]]:
+    """Reopen a prepared-input receipt and revalidate every transitive source byte."""
+
+    path, receipt = _read(
+        receipt_path, code="sam31_review_prepared_inputs_invalid"
+    )
+    rows = receipt.get("tasks")
+    if (
+        receipt.get("schema_version") != PREPARED_INPUTS_SCHEMA_VERSION
+        or receipt.get("status")
+        != "task_packet_inputs_resolved_ready_for_visual_review"
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+        or not isinstance(rows, list)
+        or not 1 <= len(rows) <= 5
+        or receipt.get("task_count") != len(rows)
+        or receipt.get("provider_compute_mutation_performed") is not False
+        or receipt.get("paid_resource_allocated") is not False
+        or receipt.get("raw_secret_values_recorded") is not False
+        or receipt.get("blockers") != []
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_prepared_inputs_invalid")
+    root = path.parent
+    task_inputs_path = _verify_record(receipt.get("task_inputs"), root=root)
+    selected_path = _verify_record(receipt.get("selected_tracks"), root=root)
+    task_inputs = _read(task_inputs_path, code="sam31_review_prepared_inputs_invalid")[1]
+    selected = _read(selected_path, code="sam31_review_prepared_inputs_invalid")[1]
+    freezes: list[str] = []
+    expected_inputs: dict[str, dict[str, Any]] = {}
+    expected_selected: dict[str, list[str]] = {}
+    for raw_row in rows:
+        if not isinstance(raw_row, Mapping):
+            raise Sam31TrackSelectionReviewError("sam31_review_prepared_inputs_invalid")
+        task_id = str(raw_row.get("task_id") or "")
+        packet_path = _verify_absolute_record(
+            raw_row.get("task_input_packet"),
+            code="sam31_review_prepared_inputs_invalid",
+        )
+        tracks_path = _verify_absolute_record(
+            raw_row.get("source_track_result"),
+            code="sam31_review_prepared_inputs_invalid",
+        )
+        row, task_input = _resolve_prepared_task(
+            task_input_packet_path=packet_path,
+            source_track_result_path=tracks_path,
+            selected_track_ids=raw_row.get("selected_track_ids") or [],
+        )
+        if row != raw_row or task_id in expected_inputs:
+            raise Sam31TrackSelectionReviewError("sam31_review_prepared_inputs_invalid")
+        expected_inputs[task_id] = task_input
+        expected_selected[task_id] = list(row["selected_track_ids"])
+        freezes.append(str(row["task_freeze"]["path"]))
+    if task_inputs != expected_inputs or selected != expected_selected:
+        raise Sam31TrackSelectionReviewError("sam31_review_prepared_inputs_invalid")
+    return freezes, expected_inputs, expected_selected
+
+
 def _selection_bindings(
     *,
     task_freeze_paths: Sequence[str | Path],
@@ -702,8 +1017,7 @@ def _selection_bindings(
             or any(item not in available for item in selected)
         ):
             raise Sam31TrackSelectionReviewError("sam31_review_source_tracks_invalid")
-        bindings.append(
-            {
+        binding: dict[str, Any] = {
                 "task_id": task_id,
                 "task_freeze": {
                     **_record(freeze_path),
@@ -726,7 +1040,18 @@ def _selection_bindings(
                     if row.get("track_id") in selected
                 ),
             }
-        )
+        packet_path_value = str(raw_input.get("task_input_packet_path") or "")
+        receipt_path_value = str(raw_input.get("calibrated_view_receipt_path") or "")
+        if bool(packet_path_value) != bool(receipt_path_value):
+            raise Sam31TrackSelectionReviewError("sam31_review_task_inputs_invalid")
+        if packet_path_value:
+            packet_path = Path(packet_path_value).expanduser().resolve()
+            receipt_path = Path(receipt_path_value).expanduser().resolve()
+            if any(path.is_symlink() or not path.is_file() for path in (packet_path, receipt_path)):
+                raise Sam31TrackSelectionReviewError("sam31_review_task_inputs_invalid")
+            binding["task_input_packet"] = _record(packet_path)
+            binding["calibrated_view_receipt"] = _record(receipt_path)
+        bindings.append(binding)
     if (
         not 1 <= len(bindings) <= 5
         or len({row["task_id"] for row in bindings}) != len(bindings)
@@ -755,6 +1080,7 @@ def materialize_sam31_track_selection_review_candidate(
     task_inputs: Mapping[str, Mapping[str, Any]],
     selected_track_ids_by_task: Mapping[str, Sequence[str]],
     output_root: str | Path,
+    prepared_inputs_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Render exact selected masks over calibrated frames, pending visual review."""
 
@@ -867,6 +1193,18 @@ def materialize_sam31_track_selection_review_candidate(
         },
         "candidate_digest": "",
     }
+    if prepared_inputs_path is not None:
+        prepared_path, prepared = _read(
+            prepared_inputs_path, code="sam31_review_prepared_inputs_invalid"
+        )
+        if prepared.get("receipt_digest") != canonical_digest(
+            prepared, digest_field="receipt_digest"
+        ):
+            raise Sam31TrackSelectionReviewError("sam31_review_prepared_inputs_invalid")
+        candidate["prepared_inputs"] = {
+            **_record(prepared_path),
+            "receipt_digest": prepared["receipt_digest"],
+        }
     candidate["candidate_digest"] = canonical_digest(candidate, digest_field="candidate_digest")
     output.mkdir(parents=True, exist_ok=True)
     destination = output / f"{CANDIDATE_SCHEMA_VERSION}.json"
@@ -1106,10 +1444,32 @@ def validate_sam31_track_selection_review(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    prepare = commands.add_parser("prepare-inputs")
+    prepare.add_argument("--task-input-packet", action="append", required=True)
+    prepare.add_argument(
+        "--source-track-result",
+        action="append",
+        required=True,
+        metavar="TASK_ID=PATH",
+    )
+    prepare.add_argument(
+        "--selected-track",
+        action="append",
+        required=True,
+        metavar="TASK_ID=TRACK_ID",
+    )
+    prepare.add_argument("--output-root", required=True)
     candidate = commands.add_parser("candidate")
-    candidate.add_argument("--task-freeze", action="append", required=True)
-    candidate.add_argument("--task-inputs", required=True)
-    candidate.add_argument("--selected-tracks", required=True)
+    candidate.add_argument("--task-freeze", action="append")
+    candidate.add_argument("--task-inputs")
+    candidate.add_argument("--selected-tracks")
+    candidate.add_argument(
+        "--prepared-inputs",
+        help=(
+            "Validated public_scene_sam31_track_selection_inputs.v1 receipt; "
+            "mutually exclusive with manual task input arguments."
+        ),
+    )
     candidate.add_argument("--output-root", required=True)
     accept = commands.add_parser("accept")
     accept.add_argument("--candidate", required=True)
@@ -1127,18 +1487,56 @@ def main(argv: Sequence[str] | None = None) -> int:
     authorize_ai.add_argument("--human-authority-reference", required=True)
     authorize_ai.add_argument("--output", required=True)
     args = parser.parse_args(argv)
-    if args.command == "candidate":
-        _task_inputs_path, task_inputs = _read(
-            args.task_inputs, code="sam31_review_task_inputs_invalid"
+    if args.command == "prepare-inputs":
+        source_tracks: dict[str, str] = {}
+        for value in args.source_track_result:
+            task_id, separator, path = value.partition("=")
+            if not separator or not task_id or not path or task_id in source_tracks:
+                raise Sam31TrackSelectionReviewError(
+                    "sam31_review_source_track_assignment_invalid"
+                )
+            source_tracks[task_id] = path
+        selected_tracks: dict[str, list[str]] = {}
+        for value in args.selected_track:
+            task_id, separator, track_id = value.partition("=")
+            if not separator or not task_id or not track_id:
+                raise Sam31TrackSelectionReviewError(
+                    "sam31_review_selected_track_assignment_invalid"
+                )
+            selected_tracks.setdefault(task_id, []).append(track_id)
+        materialize_sam31_track_selection_inputs(
+            task_input_packet_paths=args.task_input_packet,
+            source_track_result_paths_by_task=source_tracks,
+            selected_track_ids_by_task=selected_tracks,
+            output_root=args.output_root,
         )
-        _selected_path, selected_tracks = _read(
-            args.selected_tracks, code="sam31_review_selected_tracks_invalid"
-        )
+    elif args.command == "candidate":
+        if args.prepared_inputs:
+            if args.task_freeze or args.task_inputs or args.selected_tracks:
+                raise Sam31TrackSelectionReviewError(
+                    "sam31_review_candidate_input_modes_conflict"
+                )
+            task_freezes, task_inputs, selected_tracks = (
+                load_validated_sam31_track_selection_inputs(args.prepared_inputs)
+            )
+        else:
+            if not args.task_freeze or not args.task_inputs or not args.selected_tracks:
+                raise Sam31TrackSelectionReviewError(
+                    "sam31_review_candidate_inputs_missing"
+                )
+            task_freezes = args.task_freeze
+            _task_inputs_path, task_inputs = _read(
+                args.task_inputs, code="sam31_review_task_inputs_invalid"
+            )
+            _selected_path, selected_tracks = _read(
+                args.selected_tracks, code="sam31_review_selected_tracks_invalid"
+            )
         materialize_sam31_track_selection_review_candidate(
-            task_freeze_paths=args.task_freeze,
+            task_freeze_paths=task_freezes,
             task_inputs=task_inputs,
             selected_track_ids_by_task=selected_tracks,
             output_root=args.output_root,
+            prepared_inputs_path=args.prepared_inputs,
         )
     elif args.command == "accept":
         seal_sam31_track_selection_review(
@@ -1167,6 +1565,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "AI_RECEIPT_SCHEMA_VERSION",
     "AI_EXECUTION_SCHEMA_VERSION",
+    "PREPARED_INPUTS_SCHEMA_VERSION",
     "AI_RIGHTS_SCHEMA_VERSION",
     "AI_REVIEW_METHOD",
     "AI_REVIEW_CAPABILITY",
@@ -1181,9 +1580,11 @@ __all__ = [
     "RECEIPT_SCHEMA_VERSION",
     "Sam31TrackSelectionReviewError",
     "materialize_sam31_track_selection_review_candidate",
+    "materialize_sam31_track_selection_inputs",
     "materialize_sam31_ai_visual_review_rights",
     "build_sam31_ai_visual_review_input",
     "load_validated_sam31_track_selection_review_candidate",
+    "load_validated_sam31_track_selection_inputs",
     "resolve_sam31_review_media_path",
     "seal_sam31_track_selection_ai_review",
     "seal_sam31_track_selection_review",

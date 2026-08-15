@@ -26,6 +26,7 @@ from blueprint_pipeline.public_scene_sam31_track_selection_review import (
     AI_RECEIPT_SCHEMA_VERSION,
     AI_REVIEW_METHOD,
     Sam31TrackSelectionReviewError,
+    load_validated_sam31_track_selection_inputs,
     materialize_sam31_track_selection_review_candidate,
     materialize_sam31_ai_visual_review_rights,
     seal_sam31_track_selection_ai_review,
@@ -275,6 +276,77 @@ def _fixture(
             for task_id in ("task_a", "task_b")
         },
     }
+
+
+def _task_packets_for_fixture(
+    tmp_path: Path, fixture: dict[str, object]
+) -> list[Path]:
+    cameras_path = fixture["cameras"]
+    images_root = fixture["images"]
+    cameras = json.loads(cameras_path.read_text(encoding="utf-8"))
+    image_records = [
+        {
+            "camera_id": row["camera_id"],
+            "relative_path": f"images/{row['camera_id']}.png",
+            "sha256": _sha(images_root / f"{row['camera_id']}.png"),
+            "size_bytes": (images_root / f"{row['camera_id']}.png").stat().st_size,
+        }
+        for row in cameras
+    ]
+    camera_record = {
+        "relative_path": cameras_path.name,
+        "sha256": _sha(cameras_path),
+        "size_bytes": cameras_path.stat().st_size,
+    }
+    camera_map = {row["camera_id"]: row["camera_id"] for row in cameras}
+    packet_paths: list[Path] = []
+    for task_path in fixture["tasks"]:
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        task_id = task["task_id"]
+        receipt = {
+            "schema_version": "public_scene_interiorgs_edit_input_receipt.v2",
+            "status": "render_derived_input_packet_materialized",
+            "scene": {"task_id": task_id},
+            "derived_artifacts": {
+                "cameras": camera_record,
+                "images": image_records,
+            },
+            "receipt_digest": "",
+        }
+        receipt["receipt_digest"] = canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+        receipt_path = tmp_path / f"{task_id}-calibrated-receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        packet = {
+            "schema_version": "public_scene_sam31_task_input_packet.v1",
+            "status": "prepared_no_upload_no_execution",
+            "task_id": task_id,
+            "calibrated_view_receipt": {
+                "path": str(receipt_path),
+                "sha256": _sha(receipt_path),
+                "size_bytes": receipt_path.stat().st_size,
+                "receipt_digest": receipt["receipt_digest"],
+            },
+            "task_freeze": {
+                "path": str(task_path),
+                "sha256": _sha(task_path),
+                "size_bytes": task_path.stat().st_size,
+                "task_freeze_digest": task["task_freeze_digest"],
+            },
+            "camera_frame_map": camera_map,
+            "camera_count": len(camera_map),
+            "paid_execution_started": False,
+            "provider_mutations_performed": 0,
+            "receipt_digest": "",
+        }
+        packet["receipt_digest"] = canonical_digest(
+            packet, digest_field="receipt_digest"
+        )
+        packet_path = tmp_path / f"{task_id}-task-input-packet.json"
+        packet_path.write_text(json.dumps(packet), encoding="utf-8")
+        packet_paths.append(packet_path)
+    return packet_paths
 
 
 def _review(
@@ -951,3 +1023,116 @@ def test_review_candidate_and_accept_clis(tmp_path: Path) -> None:
         },
     )
     assert receipt["reviewed_by"] == "cli-reviewer"
+
+
+def test_task_packet_preparation_drives_candidate_and_calibrated_mask_clis(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path, camera_count=8, empty_laptop_camera="camera_0")
+    packets = _task_packets_for_fixture(tmp_path, fixture)
+    prepared_root = tmp_path / "prepared-review-inputs"
+    prepare_command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.public_scene_sam31_track_selection_review",
+        "prepare-inputs",
+    ]
+    for packet in packets:
+        prepare_command.extend(["--task-input-packet", str(packet)])
+    prepare_command.extend(
+        [
+            "--source-track-result",
+            f"task_a={fixture['source']}",
+            "--source-track-result",
+            f"task_b={fixture['source']}",
+            "--selected-track",
+            "task_a=washer-track",
+            "--selected-track",
+            "task_b=laptop-track",
+            "--output-root",
+            str(prepared_root),
+        ]
+    )
+    subprocess.run(prepare_command, check=True)
+    prepared_receipt = (
+        prepared_root / "public_scene_sam31_track_selection_inputs.v1.json"
+    )
+    freezes, task_inputs, selected = load_validated_sam31_track_selection_inputs(
+        prepared_receipt
+    )
+    assert len(freezes) == 2
+    assert set(task_inputs) == {"task_a", "task_b"}
+    assert selected == {
+        "task_a": ["washer-track"],
+        "task_b": ["laptop-track"],
+    }
+
+    candidate_root = tmp_path / "prepared-cli-candidate"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blueprint_pipeline.public_scene_sam31_track_selection_review",
+            "candidate",
+            "--prepared-inputs",
+            str(prepared_receipt),
+            "--output-root",
+            str(candidate_root),
+        ],
+        check=True,
+    )
+    candidate_path = (
+        candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
+    )
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    assert sum(row["camera_count"] for row in candidate["review_media"]) == 16
+    task_b = next(row for row in candidate["review_media"] if row["task_id"] == "task_b")
+    assert next(
+        row for row in task_b["frames"] if row["camera_id"] == "camera_0"
+    )["foreground_pixel_count"] == 0
+
+    review_receipt = tmp_path / "prepared-cli-review.json"
+    seal_sam31_track_selection_review(
+        candidate_path=candidate_path,
+        reviewed_by="fixture-reviewer",
+        reviewed_on="2026-08-15",
+        output_path=review_receipt,
+    )
+    calibrated_root = tmp_path / "prepared-cli-calibrated-masks"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blueprint_pipeline.public_scene_calibrated_object_masks",
+            "--prepared-inputs",
+            str(prepared_receipt),
+            "--reviewed-track-selection-receipt",
+            str(review_receipt),
+            "--output-root",
+            str(calibrated_root),
+        ],
+        check=True,
+    )
+    calibrated = json.loads(
+        (calibrated_root / "public_scene_calibrated_object_mask_set.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert calibrated["camera_count_total"] == 16
+    assert np.count_nonzero(
+        np.asarray(Image.open(calibrated_root / "tasks/task_b/masks/camera_0.png"))
+    ) == 0
+
+    original_packet = packets[0].read_bytes()
+    changed_packet = json.loads(original_packet)
+    changed_packet["camera_count"] = 7
+    changed_packet["receipt_digest"] = canonical_digest(
+        changed_packet, digest_field="receipt_digest"
+    )
+    packets[0].write_text(json.dumps(changed_packet), encoding="utf-8")
+    with pytest.raises(
+        Sam31TrackSelectionReviewError,
+        match="prepared_inputs_invalid",
+    ):
+        load_validated_sam31_track_selection_inputs(prepared_receipt)
+    packets[0].write_bytes(original_packet)
