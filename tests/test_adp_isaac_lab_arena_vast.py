@@ -357,6 +357,90 @@ def test_live_transport_emits_allocator_artifact_manifest(
     }
 
 
+def test_live_transport_without_watchdog_does_not_close_a_missing_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    prepared_bundle = {
+        "status": "ready",
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": arena._file_sha256(bundle_path),
+    }
+
+    def fake_stage(*, job_dir, **_kwargs):
+        staging = Path(job_dir)
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text("https://example.invalid/object\n")
+        return {"status": "completed"}
+
+    def fake_adapter(*, job_dir, **_kwargs):
+        provider = Path(job_dir)
+        provider.mkdir(parents=True, exist_ok=True)
+        write_json(provider / "vast_provider_adapter_result.json", {"status": "completed"})
+        write_json(
+            provider / "vast_teardown_manifest.json",
+            {"continuing_spend_from_this_run": False},
+        )
+        with zipfile.ZipFile(provider / "vast_provider_runtime_output.zip", "w") as archive:
+            archive.writestr(
+                "adp_arena_native_canary.json",
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "candidate_policy_queried": False,
+                        "blockers": [],
+                    }
+                ),
+            )
+        return {
+            "status": "completed",
+            "blockers": [],
+            "estimated_cost_usd": 0.1,
+            "vast_instance_ids": [123],
+            "continuing_spend_from_this_run": False,
+            "provider_create_attempted": True,
+        }
+
+    monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(
+        arena,
+        "cleanup_staged_wam_provider_objects",
+        lambda _path: {"all_objects_absent": True},
+    )
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(
+        arena,
+        "require_pre_spend_preflight",
+        lambda **_kwargs: {"status": "PASS", "blockers": []},
+    )
+    monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 60)
+    monkeypatch.setattr(
+        arena,
+        "close_independent_vast_watchdog",
+        lambda **_kwargs: pytest.fail("watchdog close called without an armed handle"),
+    )
+
+    result = arena.run_arena_native_control_vast(
+        approval_path=tmp_path / "unused.json",
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=prepared_bundle,
+        hard_cap_usd=1.0,
+        hard_ttl_seconds=3600,
+        require_independent_watchdog=False,
+    )
+
+    assert result["status"] == "completed"
+    assert result["independent_watchdog"] == {"status": "not_required"}
+
+
 def test_live_transport_blocks_before_storage_or_compute_when_watchdog_is_not_armed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

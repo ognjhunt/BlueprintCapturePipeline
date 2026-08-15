@@ -54,6 +54,7 @@ def run_adp009d_native_microcheck_vast(
         instance_label_prefix="blueprint-adp009d-",
         blocker_prefix="adp009d",
         min_gpu_ram_mb=46_000,
+        require_independent_watchdog=True,
         forward_hf_token=authorize_gated_backbone,
         allowed_active_instance_ids=allowed_active_instance_ids,
         candidate_policy_query_expected=bool(

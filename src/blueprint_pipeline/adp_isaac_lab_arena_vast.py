@@ -534,7 +534,8 @@ def run_arena_native_control_vast(
             }
             _write_run_result(job, attempt_root, result)
             return result
-    watchdog_close: dict[str, Any] = {"status": "not_closed"}
+    if watchdog_handle is not None:
+        watchdog_close = {"status": "not_closed"}
     try:
         with _vast_authority_environment(
             gated_backbone_authorized=forward_hf_token
@@ -612,17 +613,20 @@ def run_arena_native_control_vast(
         )
     finally:
         try:
-            watchdog_close = close_independent_vast_watchdog(
-                job_dir=provider_run,
-                handle=watchdog_handle,
-                instance_ids=[int(value) for value in adapter.get("vast_instance_ids") or []],
-                provider_teardown_completed=(
-                    adapter.get("continuing_spend_from_this_run") is False
-                ),
-                provider_allocation_impossible=(
-                    adapter.get("provider_create_attempted") is False
-                ),
-            )
+            if watchdog_handle is not None:
+                watchdog_close = close_independent_vast_watchdog(
+                    job_dir=provider_run,
+                    handle=watchdog_handle,
+                    instance_ids=[
+                        int(value) for value in adapter.get("vast_instance_ids") or []
+                    ],
+                    provider_teardown_completed=(
+                        adapter.get("continuing_spend_from_this_run") is False
+                    ),
+                    provider_allocation_impossible=(
+                        adapter.get("provider_create_attempted") is False
+                    ),
+                )
         finally:
             cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     extracted = _extract_provider_output(

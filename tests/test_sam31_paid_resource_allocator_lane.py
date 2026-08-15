@@ -10,6 +10,11 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.sam31_paid_resource_allocator_lane import (
     run_sam31_paid_resource_allocator_lane,
 )
+from blueprint_pipeline.sam31_vast_source_track_canary import (
+    PRELAUNCH_INVENTORY_RECEIPT_NAME,
+    PRELAUNCH_INVENTORY_SCHEMA_VERSION,
+    Sam31VastCanaryError,
+)
 
 
 def _args(tmp_path: Path, *, execute: bool) -> Namespace:
@@ -63,9 +68,7 @@ class _ReadOnlyProvider:
         }
 
 
-def test_sam31_allocator_lane_routes_exact_private_inputs(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_sam31_allocator_lane_routes_exact_private_inputs(tmp_path: Path, monkeypatch) -> None:
     args = _args(tmp_path, execute=True)
     write_json(Path(args.provider_launch_request), {"request": True})
     write_json(Path(args.preflight_bundle), {"provider": "vast"})
@@ -239,9 +242,7 @@ def test_sam31_allocator_exception_preserves_terminal_provider_zero(
                 "teardown_receipt_digest": "sha256:" + "d" * 64,
             },
         )
-        raise urllib.error.HTTPError(
-            "https://objects.example/output", 404, "Not Found", None, None
-        )
+        raise urllib.error.HTTPError("https://objects.example/output", 404, "Not Found", None, None)
 
     def stage(**kwargs):
         root = Path(kwargs["job_dir"])
@@ -283,6 +284,156 @@ def test_sam31_allocator_exception_preserves_terminal_provider_zero(
     teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())
     assert teardown["status"] == "completed"
     assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_sam31_allocator_jit_nonzero_is_terminal_without_run_spend(
+    tmp_path: Path, monkeypatch
+) -> None:
+    args = _args(tmp_path, execute=True)
+    write_json(Path(args.provider_launch_request), {"request": True})
+    write_json(Path(args.preflight_bundle), {"provider": "vast"})
+    write_json(
+        Path(args.sam31_attempt_authority),
+        {"request_authority_id": "fixture-authority"},
+    )
+    write_json(Path(args.sam31_input_bundle_receipt), {"receipt": True})
+    Path(args.sam31_input_bundle).write_bytes(b"bundle")
+    _write_private(Path(args.sam31_hf_token_file), "hf-secret", mode=0o640)
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.validate_sam31_paid_attempt_authority",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.sam31_paid_resource_allocator_lane.consume_sam31_paid_attempt_authority_once",
+        lambda *_args, **_kwargs: {"status": "consumed"},
+    )
+    started = tmp_path / "watchdog" / "started.txt"
+
+    def execute(**kwargs):
+        canary_root = Path(kwargs["job_dir"])
+        canary_root.mkdir(parents=True)
+        snapshots = [
+            {
+                "label": "scoped",
+                "name_prefix": "blueprint-sam31-source-tracks-",
+                "inventory": {
+                    "api_confirmed": True,
+                    "live_resource_count": 0,
+                    "resources": [],
+                },
+            },
+            {
+                "label": "global",
+                "name_prefix": "",
+                "inventory": {
+                    "api_confirmed": True,
+                    "live_resource_count": 1,
+                    "resources": [{"id": 991, "label": "provider-returned-row"}],
+                },
+            },
+        ]
+        receipt = {
+            "schema_version": PRELAUNCH_INVENTORY_SCHEMA_VERSION,
+            "status": "blocked",
+            "blocker": "sam31_provider_not_zero_before_launch",
+            "provider": "vast",
+            "request_digest": "sha256:" + "1" * 64,
+            "bound_request_digest": "sha256:" + "2" * 64,
+            "provider_mutations_performed": 0,
+            "initial_provider_zero_status": "nonzero",
+            "provider_zero_status": "nonzero",
+            "inventory_snapshots": snapshots,
+            "postfailure_inventory_snapshots": snapshots,
+            "postfailure_inventory_digest": canonical_digest(
+                {"inventory_snapshots": snapshots},
+                digest_field="postfailure_inventory_digest",
+            ),
+            "captured_at": "2026-08-15T10:54:12Z",
+            "raw_secret_values_recorded": False,
+        }
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+        write_json(canary_root / PRELAUNCH_INVENTORY_RECEIPT_NAME, receipt)
+        provider_zero = {
+            "provider_zero_status": "nonzero",
+            "provider_zero_verified": False,
+        }
+        provider_zero["provider_zero_receipt_digest"] = canonical_digest(
+            provider_zero, digest_field="provider_zero_receipt_digest"
+        )
+        write_json(canary_root / "provider_zero_verification.json", provider_zero)
+        teardown = {
+            "status": "FAIL",
+            "instance_id": None,
+            "provider_mutations_performed": 0,
+            "continuing_spend_from_this_run": False,
+            "provider_zero_verified": False,
+            "provider_zero_status": "nonzero",
+            "provider_zero_receipt_digest": provider_zero["provider_zero_receipt_digest"],
+        }
+        teardown["teardown_receipt_digest"] = canonical_digest(
+            teardown, digest_field="teardown_receipt_digest"
+        )
+        write_json(canary_root / "teardown_receipt.json", teardown)
+        raise Sam31VastCanaryError("sam31_provider_not_zero_before_launch")
+
+    def stage(**kwargs):
+        root = Path(kwargs["job_dir"])
+        root.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            _write_private(root / name, "https://objects.example/value")
+        return {"status": "completed", "blockers": []}
+
+    def close_watchdog(**kwargs):
+        receipt_path = (
+            Path(kwargs["job_dir"])
+            / "independent_vast_watchdog"
+            / "groot_oscar_runpod_canary_watchdog.json"
+        )
+        write_json(receipt_path, {"status": "cancelled_no_allocation"})
+        return {"status": "cancelled_no_allocation"}
+
+    result = run_sam31_paid_resource_allocator_lane(
+        args,
+        checkout_commit="c" * 40,
+        prepare=lambda **kwargs: (
+            write_json(Path(kwargs["bound_request_out"]), {"bound": True})
+            or {"status": "execute_ready", "blockers": []}
+        ),
+        provider_factory=lambda _name: _ReadOnlyProvider(),
+        execute_canary=execute,
+        stage_bundle=stage,
+        cleanup_bundle=lambda *_args, **_kwargs: {"all_objects_absent": True},
+        arm_watchdog=lambda **_kwargs: (
+            {
+                "watchdog_pid": 123,
+                "watchdog_started_epoch": 1_000,
+                "watchdog_deadline_epoch": 9_999_999_999,
+                "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
+            },
+            SimpleNamespace(started_instance_id_path=started),
+        ),
+        close_watchdog=close_watchdog,
+    )
+
+    assert result["status"] == "failed"
+    assert result["provider_mutations_performed"] == 0
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["provider_zero_verified"] is False
+    assert result["provider_zero_status"] == "nonzero"
+    assert result["provider_zero_receipt_digest"]
+    assert result["independent_watchdog"]["status"] == "cancelled_no_allocation"
+    assert "sam31_provider_not_zero_before_launch" in result["blockers"][0]
+    assert Path(result["prelaunch_provider_inventory_receipt_path"]).is_file()
+    teardown = json.loads(Path(result["teardown_manifest_path"]).read_text())
+    assert teardown["status"] == "not_required_provider_adapter_never_invoked"
+    assert teardown["continuing_spend_from_this_run"] is False
+    manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
+    assert "sam31_prelaunch_provider_inventory" in manifest["observed_roles"]
+    assert "sam31_provider_zero_verification" in manifest["observed_roles"]
 
 
 def test_sam31_allocator_lane_dry_run_never_reads_secrets(tmp_path: Path) -> None:

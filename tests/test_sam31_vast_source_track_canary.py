@@ -18,10 +18,13 @@ from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     canonical_json_digest,
 )
 from blueprint_pipeline.sam31_vast_source_track_canary import (
+    PRELAUNCH_INVENTORY_RECEIPT_NAME,
+    PRELAUNCH_INVENTORY_SCHEMA_VERSION,
     Sam31VastCanaryError,
     _bootstrap_script,
     _default_result_fetcher,
     _watchdog_valid,
+    prelaunch_inventory_provider_zero_status,
     run_sam31_vast_source_track_canary,
     validate_sam31_runtime_result,
 )
@@ -276,9 +279,10 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
     assert result["provider_mutations_performed"] == 2
     assert result["comparative_policy_ranking_verdict"] == "thesis_not_supported"
     assert Path(result["source_track_import_result_path"]).is_file()
-    assert result["source_track_import_result_digest"] == _runtime_result()[
-        "normalized_source_tracks"
-    ]["result_digest"]
+    assert (
+        result["source_track_import_result_digest"]
+        == _runtime_result()["normalized_source_tracks"]["result_digest"]
+    )
     assert provider.requests[0]["create_payload"]["env"]
     persisted = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
@@ -290,9 +294,7 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
     assert not list((tmp_path / "leases").glob("*.lease.json"))
 
 
-def test_output_404_polls_until_worker_upload_is_available(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_output_404_polls_until_worker_upload_is_available(tmp_path: Path, monkeypatch) -> None:
     attempts = 0
 
     def request(*_args, **_kwargs):
@@ -340,7 +342,29 @@ def test_output_404_polls_until_worker_upload_is_available(
 
 
 def test_global_nonzero_refuses_before_launch(tmp_path: Path) -> None:
-    provider = _Provider(initially_live=True)
+    provider_row = {
+        "id": 991,
+        "label": "provider-returned-row",
+        "status": "running",
+    }
+
+    class ObservedGlobalRowProvider(_Provider):
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            if name_prefix:
+                return {
+                    "api_confirmed": True,
+                    "live_resource_count": 0,
+                    "resources": [],
+                    "queried_name_prefix": name_prefix,
+                }
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 1,
+                "resources": [provider_row],
+                "queried_name_prefix": name_prefix,
+            }
+
+    provider = ObservedGlobalRowProvider()
     with pytest.raises(Sam31VastCanaryError, match="provider_not_zero_before_launch"):
         run_sam31_vast_source_track_canary(
             bound_request=_bound_request(),
@@ -356,6 +380,199 @@ def test_global_nonzero_refuses_before_launch(tmp_path: Path) -> None:
             watchdog_validator=lambda _watchdog, _now, _ttl: True,
         )
     assert provider.requests == []
+    receipt_path = tmp_path / PRELAUNCH_INVENTORY_RECEIPT_NAME
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["schema_version"] == PRELAUNCH_INVENTORY_SCHEMA_VERSION
+    assert receipt["status"] == "blocked"
+    assert receipt["blocker"] == "sam31_provider_not_zero_before_launch"
+    assert receipt["provider_mutations_performed"] == 0
+    assert receipt["provider_zero_status"] == "nonzero"
+    assert prelaunch_inventory_provider_zero_status(receipt) == "nonzero"
+    assert receipt["inventory_snapshots"] == [
+        {
+            "label": "scoped",
+            "name_prefix": "blueprint-sam31-source-tracks-",
+            "inventory": {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+                "queried_name_prefix": "blueprint-sam31-source-tracks-",
+            },
+        },
+        {
+            "label": "global",
+            "name_prefix": "",
+            "inventory": {
+                "api_confirmed": True,
+                "live_resource_count": 1,
+                "resources": [provider_row],
+                "queried_name_prefix": "",
+            },
+        },
+    ]
+    assert receipt["postfailure_inventory_snapshots"] == receipt["inventory_snapshots"]
+    teardown = json.loads((tmp_path / "teardown_receipt.json").read_text())
+    assert teardown["status"] == "FAIL"
+    assert teardown["provider_zero_status"] == "nonzero"
+    assert teardown["provider_zero_verified"] is False
+    assert teardown["provider_mutations_performed"] == 0
+    assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_jit_nonzero_recovered_zero_is_retained_before_raise(tmp_path: Path) -> None:
+    provider_row = {"id": 991, "label": "provider-returned-row"}
+
+    class RecoveredZeroProvider(_Provider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inventory_calls = 0
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            self.inventory_calls += 1
+            initial_global = self.inventory_calls == 2
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 1 if initial_global else 0,
+                "resources": [provider_row] if initial_global else [],
+                "queried_name_prefix": name_prefix,
+            }
+
+    provider = RecoveredZeroProvider()
+    with pytest.raises(Sam31VastCanaryError, match="provider_not_zero_before_launch"):
+        run_sam31_vast_source_track_canary(
+            bound_request=_bound_request(),
+            preflight=_preflight(),
+            job_dir=tmp_path,
+            input_bundle_get_url=INPUT_URL,
+            output_put_url=PUT_URL,
+            output_get_url=GET_URL,
+            hf_token=TOKEN,
+            provider=provider,
+            paid_resource_admission_grant=_grant(),
+            clock=lambda: 1000.0,
+            watchdog_validator=lambda _watchdog, _now, _ttl: True,
+        )
+
+    receipt = json.loads((tmp_path / PRELAUNCH_INVENTORY_RECEIPT_NAME).read_text(encoding="utf-8"))
+    assert provider.inventory_calls == 4
+    assert receipt["initial_provider_zero_status"] == "nonzero"
+    assert receipt["provider_zero_status"] == "verified_zero"
+    assert prelaunch_inventory_provider_zero_status(receipt) == "verified_zero"
+    assert receipt["postfailure_inventory_snapshots"][1]["inventory"]["live_resource_count"] == 0
+    zero = json.loads((tmp_path / "provider_zero_verification.json").read_text())
+    assert zero["status"] == "PASS"
+    assert zero["provider_zero_verified"] is True
+    assert zero["provider_zero_receipt_digest"] == canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    teardown = json.loads((tmp_path / "teardown_receipt.json").read_text())
+    assert teardown["status"] == "PASS"
+    assert teardown["provider_zero_verified"] is True
+    assert teardown["continuing_spend_from_this_run"] is False
+
+
+def test_jit_postfailure_api_unconfirmed_is_not_provider_zero(tmp_path: Path) -> None:
+    class UnconfirmedPostfailureProvider(_Provider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inventory_calls = 0
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            self.inventory_calls += 1
+            if self.inventory_calls <= 2:
+                return {
+                    "api_confirmed": True,
+                    "live_resource_count": 1,
+                    "resources": [{"id": 991, "label": "provider-returned-row"}],
+                }
+            return {
+                "api_confirmed": False,
+                "live_resource_count": 0,
+                "resources": [],
+                "blockers": ["vast_inventory_api_unconfirmed"],
+            }
+
+    with pytest.raises(Sam31VastCanaryError, match="provider_not_zero_before_launch"):
+        run_sam31_vast_source_track_canary(
+            bound_request=_bound_request(),
+            preflight=_preflight(),
+            job_dir=tmp_path,
+            input_bundle_get_url=INPUT_URL,
+            output_put_url=PUT_URL,
+            output_get_url=GET_URL,
+            hf_token=TOKEN,
+            provider=UnconfirmedPostfailureProvider(),
+            paid_resource_admission_grant=_grant(),
+            clock=lambda: 1000.0,
+            watchdog_validator=lambda _watchdog, _now, _ttl: True,
+        )
+
+    receipt = json.loads((tmp_path / PRELAUNCH_INVENTORY_RECEIPT_NAME).read_text(encoding="utf-8"))
+    assert receipt["provider_zero_status"] == "api_unconfirmed"
+    assert prelaunch_inventory_provider_zero_status(receipt) == "api_unconfirmed"
+    zero = json.loads((tmp_path / "provider_zero_verification.json").read_text())
+    assert zero["status"] == "FAIL"
+    assert zero["provider_zero_verified"] is False
+    assert zero["api_confirmed"] is False
+    teardown = json.loads((tmp_path / "teardown_receipt.json").read_text())
+    assert teardown["status"] == "FAIL"
+    assert teardown["provider_zero_status"] == "api_unconfirmed"
+
+
+def test_initial_jit_exception_is_retained_without_error_message(tmp_path: Path) -> None:
+    class InitialScopedFailureProvider(_Provider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inventory_calls = 0
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            self.inventory_calls += 1
+            if self.inventory_calls == 1:
+                raise RuntimeError("provider response detail must not persist")
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+                "queried_name_prefix": name_prefix,
+            }
+
+    provider = InitialScopedFailureProvider()
+    with pytest.raises(Sam31VastCanaryError, match="provider_not_zero_before_launch"):
+        run_sam31_vast_source_track_canary(
+            bound_request=_bound_request(),
+            preflight=_preflight(),
+            job_dir=tmp_path,
+            input_bundle_get_url=INPUT_URL,
+            output_put_url=PUT_URL,
+            output_get_url=GET_URL,
+            hf_token=TOKEN,
+            provider=provider,
+            paid_resource_admission_grant=_grant(),
+            clock=lambda: 1000.0,
+            watchdog_validator=lambda _watchdog, _now, _ttl: True,
+        )
+
+    assert provider.inventory_calls == 4
+    receipt = json.loads((tmp_path / PRELAUNCH_INVENTORY_RECEIPT_NAME).read_text(encoding="utf-8"))
+    initial_scoped = receipt["inventory_snapshots"][0]["inventory"]
+    assert receipt["initial_provider_zero_status"] == "api_unconfirmed"
+    assert receipt["provider_zero_status"] == "verified_zero"
+    assert initial_scoped == {
+        "api_confirmed": False,
+        "live_resource_count": None,
+        "resources": [],
+        "blockers": ["sam31_initial_inventory_api_unconfirmed"],
+        "error_type": "RuntimeError",
+    }
+    retained = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    )
+    assert "provider response detail must not persist" not in retained
+    teardown = json.loads((tmp_path / "teardown_receipt.json").read_text())
+    assert teardown["status"] == "PASS"
+    assert teardown["provider_zero_verified"] is True
 
 
 def test_missing_grant_refuses_before_provider_access(tmp_path: Path) -> None:

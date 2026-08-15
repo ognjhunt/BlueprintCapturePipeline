@@ -21,7 +21,11 @@ from .sam31_paid_attempt_authority import (
     consume_sam31_paid_attempt_authority_once,
     validate_sam31_paid_attempt_authority,
 )
-from .sam31_vast_source_track_canary import run_sam31_vast_source_track_canary
+from .sam31_vast_source_track_canary import (
+    PRELAUNCH_INVENTORY_RECEIPT_NAME,
+    prelaunch_inventory_provider_zero_status,
+    run_sam31_vast_source_track_canary,
+)
 from .task_evaluation_artifact_manifest import (
     seal_lane_terminal_artifacts,
     seal_unallocated_provider_teardown,
@@ -84,9 +88,7 @@ def _write_terminal_result(
             reason="semantic_sam31_source_tracks_no_provider_allocation",
         )
     else:
-        source_teardown = Path(
-            str(result.get("source_teardown_receipt_path") or "")
-        ).expanduser()
+        source_teardown = Path(str(result.get("source_teardown_receipt_path") or "")).expanduser()
         source = _load_object(source_teardown) if source_teardown.is_file() else {}
         watchdog = result.get("independent_watchdog")
         watchdog = watchdog if isinstance(watchdog, dict) else {}
@@ -104,15 +106,11 @@ def _write_terminal_result(
                     "vast_instance_ids": (
                         [int(instance_id)] if str(instance_id or "").isdigit() else []
                     ),
-                    "continuing_spend_from_this_run": result.get(
-                        "continuing_spend_from_this_run"
-                    ),
+                    "continuing_spend_from_this_run": result.get("continuing_spend_from_this_run"),
                     "source_teardown_receipt_path": (
                         str(source_teardown.resolve()) if source else None
                     ),
-                    "source_teardown_receipt_digest": source.get(
-                        "teardown_receipt_digest"
-                    ),
+                    "source_teardown_receipt_digest": source.get("teardown_receipt_digest"),
                     "independent_watchdog_status": watchdog.get("status"),
                 },
             )
@@ -121,9 +119,7 @@ def _write_terminal_result(
         {
             "schema_version": "semantic_sam31_allocator_adapter_result.v1",
             "status": result.get("status"),
-            "provider_mutations_performed": result.get(
-                "provider_mutations_performed", 0
-            ),
+            "provider_mutations_performed": result.get("provider_mutations_performed", 0),
             "instance_id": result.get("instance_id"),
             "provider_zero_verified": result.get("provider_zero_verified"),
             "blockers": list(result.get("blockers") or []),
@@ -201,9 +197,7 @@ def run_sam31_paid_resource_allocator_lane(
             job_dir=adapter_path.parent,
             max_live_minutes=max(2, (args.sam31_hard_ttl_seconds + 59) // 60),
             generated_at=utc_now_iso(),
-            allowed_active_instance_ids=getattr(
-                args, "sam31_allowed_active_vast_instance_id", []
-            ),
+            allowed_active_instance_ids=getattr(args, "sam31_allowed_active_vast_instance_id", []),
             pod_name_prefix="blueprint-sam31-source-tracks-",
         )
         if handle is None:
@@ -277,9 +271,7 @@ def run_sam31_paid_resource_allocator_lane(
             )
         if not args.execute:
             return admission
-        return _write_terminal_result(
-            Path(args.adapter_output).expanduser().resolve(), admission
-        )
+        return _write_terminal_result(Path(args.adapter_output).expanduser().resolve(), admission)
 
     blockers: list[str] = []
     hf_token, token_blockers = _read_private_secret(args.sam31_hf_token_file)
@@ -352,11 +344,14 @@ def run_sam31_paid_resource_allocator_lane(
             )
         return _write_terminal_result(adapter_path, result)
 
+    canary_root = adapter_path.parent / "sam31_vast_source_track_canary"
+    prelaunch_inventory_receipt_path = canary_root / PRELAUNCH_INVENTORY_RECEIPT_NAME
+    provider_zero_receipt_path = canary_root / "provider_zero_verification.json"
     try:
         result = execute_canary(
             bound_request=_load_object(args.bound_request_out),
             preflight=_load_object(preflight_path),
-            job_dir=adapter_path.parent / "sam31_vast_source_track_canary",
+            job_dir=canary_root,
             input_bundle_get_url=(staging_dir / "provider_bundle_url.txt").read_text().strip(),
             output_put_url=(staging_dir / "provider_output_put_url.txt").read_text().strip(),
             output_get_url=(staging_dir / "provider_output_get_url.txt").read_text().strip(),
@@ -365,12 +360,34 @@ def run_sam31_paid_resource_allocator_lane(
             paid_resource_admission_grant=grant,
         )
     except (OSError, RuntimeError, ValueError) as exc:
+        prelaunch_inventory_receipt = (
+            _load_object(prelaunch_inventory_receipt_path)
+            if prelaunch_inventory_receipt_path.is_file()
+            else {}
+        )
+        provider_zero_status = prelaunch_inventory_provider_zero_status(prelaunch_inventory_receipt)
+        provider_zero_receipt = (
+            _load_object(provider_zero_receipt_path) if provider_zero_receipt_path.is_file() else {}
+        )
+        provider_zero_receipt_digest_valid = provider_zero_receipt.get(
+            "provider_zero_receipt_digest"
+        ) == canonical_digest(provider_zero_receipt, digest_field="provider_zero_receipt_digest")
         result = {
             "schema_version": "semantic_sam31_vast_source_track_execution.v1",
             "status": "failed",
             "instance_id": None,
             "provider_mutations_performed": 0,
-            "provider_zero_verified": False,
+            "provider_zero_verified": provider_zero_status == "verified_zero",
+            "provider_zero_status": provider_zero_status,
+            "provider_zero_receipt_digest": (
+                provider_zero_receipt.get("provider_zero_receipt_digest")
+                if provider_zero_receipt.get("provider_zero_status") == provider_zero_status
+                and provider_zero_receipt_digest_valid
+                else None
+            ),
+            "prelaunch_provider_inventory_receipt_path": (
+                str(prelaunch_inventory_receipt_path) if prelaunch_inventory_receipt else None
+            ),
             "blockers": [f"sam31_canary_failed:{redacted_failure_detail(exc)}"],
             "raw_secret_values_recorded": False,
             "scientific_qualification_inferred": False,
@@ -390,15 +407,15 @@ def run_sam31_paid_resource_allocator_lane(
         result["provider_mutations_performed"] = max(
             1, int(result.get("provider_mutations_performed") or 0)
         )
-    teardown_path = (
-        adapter_path.parent
-        / "sam31_vast_source_track_canary"
-        / "teardown_receipt.json"
-    )
+    teardown_path = adapter_path.parent / "sam31_vast_source_track_canary" / "teardown_receipt.json"
     teardown = _load_object(teardown_path) if teardown_path.is_file() else {}
     if (
         teardown.get("status") == "PASS"
         and teardown.get("provider_zero_verified") is True
+        and (
+            not prelaunch_inventory_receipt_path.is_file()
+            or result.get("provider_zero_status") == "verified_zero"
+        )
     ):
         result["provider_zero_verified"] = True
     watchdog = close_watchdog(
@@ -416,9 +433,7 @@ def run_sam31_paid_resource_allocator_lane(
     )
     result["source_teardown_receipt_path"] = str(teardown_path)
     runtime_artifact_path = (
-        adapter_path.parent
-        / "sam31_vast_source_track_canary"
-        / "provider_runtime_result.json"
+        adapter_path.parent / "sam31_vast_source_track_canary" / "provider_runtime_result.json"
     )
     normalized_tracks_path = (
         adapter_path.parent
@@ -436,15 +451,24 @@ def run_sam31_paid_resource_allocator_lane(
         / "groot_oscar_runpod_canary_watchdog.json"
     )
     result["independent_watchdog"] = watchdog
-    result["continuing_spend_from_this_run"] = not (
-        result.get("provider_zero_verified") is True
-        and watchdog.get("status") == "provider_terminal"
-        and cleanup.get("all_objects_absent") is True
+    no_allocation_terminal = (
+        instance_id is None
+        and result.get("provider_mutations_performed") == 0
+        and watchdog.get("status") == "cancelled_no_allocation"
+    )
+    result["continuing_spend_from_this_run"] = (
+        False
+        if no_allocation_terminal
+        else not (
+            result.get("provider_zero_verified") is True
+            and watchdog.get("status") == "provider_terminal"
+            and cleanup.get("all_objects_absent") is True
+        )
     )
     if cleanup.get("all_objects_absent") is not True:
         result["status"] = "failed"
         result.setdefault("blockers", []).append("sam31_object_store_zero_not_proven")
-    if watchdog.get("status") != "provider_terminal":
+    if watchdog.get("status") != "provider_terminal" and not no_allocation_terminal:
         result["status"] = "failed"
         result.setdefault("blockers", []).append("sam31_watchdog_not_terminal")
     result["blockers"] = sorted(set(result.get("blockers") or []))
@@ -454,6 +478,8 @@ def run_sam31_paid_resource_allocator_lane(
         "sam31_source_teardown_receipt": teardown_path,
         "sam31_watchdog_receipt": Path(result["watchdog_receipt_path"]),
         "sam31_object_store_cleanup": Path(result["object_store_cleanup_path"]),
+        "sam31_prelaunch_provider_inventory": prelaunch_inventory_receipt_path,
+        "sam31_provider_zero_verification": provider_zero_receipt_path,
     }
     return _write_terminal_result(
         adapter_path,

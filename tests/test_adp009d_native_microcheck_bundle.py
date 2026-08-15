@@ -1041,6 +1041,7 @@ def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyP
     assert observed["preferred_gpu_keywords"] == ("L40S", "RTX 6000 Ada", "RTX A6000")
     assert observed["provider_bundle_kind"] == "adp009d_isaac"
     assert observed["forward_hf_token"] is False
+    assert observed["require_independent_watchdog"] is True
     assert observed["allowed_active_instance_ids"] == ()
     assert observed["candidate_policy_query_expected"] is False
 
@@ -1724,6 +1725,13 @@ def test_robot_contact_sensor_is_read_only_and_part_of_the_native_scene() -> Non
             "_phase(\"embodiment_configuration\")"
         )
     ]
+    contact_sensor_asset = source[
+        source.index("class ContactSensorAsset") : source.index(
+            "_phase(\"embodiment_configuration\")"
+        )
+    ]
+    assert "def get_event_cfg(self):" in contact_sensor_asset
+    assert "return self.name, None" in contact_sensor_asset
 
 
 def test_robot_contact_sensor_targets_nested_robotiq_fingers_per_backend() -> None:
