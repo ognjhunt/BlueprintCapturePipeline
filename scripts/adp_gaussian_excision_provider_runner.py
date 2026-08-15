@@ -218,6 +218,53 @@ def load_class_labels(mask_root: Path, camera_id: str) -> np.ndarray:
     return np.argmax(stack, axis=0).astype(np.float32)
 
 
+def validated_camera_split(
+    camera_split: Mapping[str, Any], cameras_by_id: Mapping[str, Any]
+) -> list[str]:
+    """Validate a freeze camera partition, including legacy count-less freezes.
+
+    Early production freezes bound the complete calibration and held-out ID
+    lists but predated the redundant ``*_count`` fields.  Reopen those exact
+    immutable lists while still rejecting any present count that disagrees
+    with the ID partition.
+    """
+
+    calibration_raw = camera_split.get("calibration_camera_ids")
+    heldout_raw = camera_split.get("heldout_camera_ids")
+    if (
+        not isinstance(calibration_raw, list)
+        or not isinstance(heldout_raw, list)
+        or any(not isinstance(value, str) or not value for value in calibration_raw)
+        or any(not isinstance(value, str) or not value for value in heldout_raw)
+    ):
+        raise ValueError("gaussian_excision_camera_split_invalid")
+    calibration = list(calibration_raw)
+    heldout_list = list(heldout_raw)
+    heldout = set(heldout_list)
+    expected_counts = {
+        "camera_count": len(calibration) + len(heldout_list),
+        "calibration_camera_count": len(calibration),
+        "heldout_camera_count": len(heldout_list),
+    }
+    for field, expected in expected_counts.items():
+        observed = camera_split.get(field)
+        if observed is not None and (
+            isinstance(observed, bool)
+            or not isinstance(observed, int)
+            or observed != expected
+        ):
+            raise ValueError("gaussian_excision_camera_split_invalid")
+    if (
+        len(calibration) < 2
+        or len(set(calibration)) != len(calibration)
+        or len(heldout) != len(heldout_list)
+        or heldout.intersection(calibration)
+        or set(calibration).union(heldout) != set(cameras_by_id)
+    ):
+        raise ValueError("gaussian_excision_camera_split_invalid")
+    return calibration
+
+
 def _save_render(path: Path, tensor: Any) -> None:
     values = tensor.detach().float().clamp(0.0, 1.0).cpu().numpy()
     image = np.rint(np.moveaxis(values[:3], 0, 2) * 255.0).astype(np.uint8)
@@ -248,16 +295,7 @@ def execute(*, runtime_dir: Path, source_dir: Path, output_dir: Path) -> dict[st
         str(row["camera_id"]): row for row in cameras_value if isinstance(row, Mapping)
     }
     camera_split = freeze["camera_split"]
-    calibration = list(camera_split["calibration_camera_ids"])
-    heldout = set(camera_split["heldout_camera_ids"])
-    camera_count = int(camera_split.get("camera_count") or 0)
-    if (
-        heldout.intersection(calibration)
-        or len(calibration) < 2
-        or len(calibration) + len(heldout) != camera_count
-        or set(calibration).union(heldout) != set(cameras_by_id)
-    ):
-        raise ValueError("gaussian_excision_camera_split_invalid")
+    calibration = validated_camera_split(camera_split, cameras_by_id)
     model = GaussianModel(3)
     model.load_ply(str(scene_path))
     background = torch.zeros(3, dtype=torch.float32, device="cuda")
