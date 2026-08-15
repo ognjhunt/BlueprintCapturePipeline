@@ -3040,6 +3040,81 @@ def test_vast_adapter_restricts_to_allowed_machine_ids() -> None:
     assert selected["machine_id"] == 222
 
 
+def test_vast_offer_selection_fail_closes_to_allowed_country_codes() -> None:
+    offers = [
+        {
+            "id": 1,
+            "ask_contract_id": 1,
+            "gpu_name": "RTX 4090",
+            "gpu_ram_mb": 49140,
+            "dph_total": 0.20,
+            "driver_version": "580.159.03",
+            "machine_id": 111,
+            "reliability": 0.999,
+            "direct_port_count": 99,
+            "geolocation": "hong_kong_hk",
+        },
+        {
+            "id": 2,
+            "ask_contract_id": 2,
+            "gpu_name": "RTX 4090",
+            "gpu_ram_mb": 49140,
+            "dph_total": 0.40,
+            "driver_version": "580.159.03",
+            "machine_id": 222,
+            "reliability": 0.998,
+            "direct_port_count": 99,
+            "geolocation": "ontario_ca",
+        },
+    ]
+
+    selected = _select_offer(
+        offers,
+        max_hourly_rate=1.0,
+        prefer_isaac_rt=False,
+        allowed_geolocation_country_codes={"ca", "us"},
+    )
+
+    assert selected is not None
+    assert selected["machine_id"] == 222
+    assert (
+        _select_offer(
+            offers[:1],
+            max_hourly_rate=1.0,
+            prefer_isaac_rt=False,
+            allowed_geolocation_country_codes={"ca", "us"},
+        )
+        is None
+    )
+    manifest = _offer_selection_manifest(
+        generated_at="2026-08-15T00:00:00Z",
+        status_code=200,
+        offers=offers,
+        selected_offer=selected,
+        max_hourly_rate=1.0,
+        min_gpu_ram_mb=0,
+        require_known_supported_isaac_driver=False,
+        excluded_machine_ids=(),
+        allowed_machine_ids=(),
+        machine_avoidlist_path=Path("/tmp/avoidlist.json"),
+        avoidlist_status=None,
+        blockers=[],
+        prefer_isaac_rt=False,
+        allowed_geolocation_country_codes={"ca", "us"},
+    )
+    assert manifest["allowed_geolocation_country_codes"] == ["ca", "us"]
+    assert manifest["geolocation_country_allowlist_active"] is True
+    assert manifest["geolocation_country_allowed_offer_count"] == 1
+    assert manifest["quality_filtered_offer_count"] == 1
+    with pytest.raises(ValueError, match="invalid_vast_allowed_geolocation_country_code"):
+        _select_offer(
+            offers,
+            max_hourly_rate=1.0,
+            prefer_isaac_rt=False,
+            allowed_geolocation_country_codes={"usa"},
+        )
+
+
 def test_vast_adapter_wam_selection_can_prefer_workstation_gpu_over_isaac_rt_pool() -> None:
     selected = _select_offer(
         [

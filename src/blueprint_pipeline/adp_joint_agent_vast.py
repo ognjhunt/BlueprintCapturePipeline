@@ -41,6 +41,7 @@ from .nvidia_nim_model_preflight import (
     SCHEMA_VERSION as NIM_PREFLIGHT_SCHEMA_VERSION,
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .openai_api_geography import openai_vast_country_allowlist
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .provider_python_build_plan import materialize_python_build_plan
 from .provider_bundle_rehearsal import (
@@ -1094,9 +1095,10 @@ def run_joint_agent_vast(
     _materialize_closeout_reserve(closeout_reserve)
     adapter: dict[str, Any] = {}
     try:
-        with _authority_environment(
-            str((bundle.get("model") or {}).get("backend") or "nvidia_nim")
-        ):
+        model_backend = str(
+            (bundle.get("model") or {}).get("backend") or "nvidia_nim"
+        )
+        with _authority_environment(model_backend):
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
                 mode="live-startup-probe",
@@ -1137,6 +1139,9 @@ def run_joint_agent_vast(
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
                 machine_avoidlist_path=machine_avoidlist_path,
+                allowed_geolocation_country_codes=(
+                    openai_vast_country_allowlist(model_backend)
+                ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {

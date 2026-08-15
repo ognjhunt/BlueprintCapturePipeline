@@ -27,6 +27,12 @@ from blueprint_pipeline.content_agents_execution_route import (
     materialize_content_agents_execution_route,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.openai_api_geography import (
+    OPENAI_API_SUPPORTED_COUNTRIES_SOURCE,
+    OPENAI_API_SUPPORTED_COUNTRY_CODES,
+    openai_vast_country_allowlist,
+    vast_geolocation_country_code,
+)
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.simready_cad_agent_contract import (
     INSPECTION_SCHEMA_VERSION,
@@ -4031,3 +4037,55 @@ def test_the_preflight_accepts_a_path_keyed_or_name_keyed_texture_spec(
             pf._bundle_config_semantics(bundle)
         except pf.ContentAgentsBundlePreflightError as exc:
             assert "material_texture_key_unresolvable" not in str(exc)
+
+
+def test_durable_candidate_bundle_cli_reaches_production_builder() -> None:
+    command = [sys.executable, str(ROOT / "scripts/build_content_agents_candidate_bundle.py"), "--help"]
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(ROOT / "src")
+
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert "--content-agents-root" in completed.stdout
+    assert "--job-dir" in completed.stdout
+
+
+def test_openai_vast_geography_policy_is_official_and_fail_closed() -> None:
+    assert OPENAI_API_SUPPORTED_COUNTRIES_SOURCE.startswith("https://help.openai.com/")
+    assert {"ca", "kr", "us"} <= OPENAI_API_SUPPORTED_COUNTRY_CODES
+    assert "hk" not in OPENAI_API_SUPPORTED_COUNTRY_CODES
+    assert vast_geolocation_country_code("california_us") == "us"
+    assert vast_geolocation_country_code("hong_kong_hk") == "hk"
+    assert vast_geolocation_country_code("unknown") is None
+    assert openai_vast_country_allowlist("openai") == OPENAI_API_SUPPORTED_COUNTRY_CODES
+    assert openai_vast_country_allowlist("nvidia_nim") == frozenset()
+
+
+def test_content_agents_live_worker_forwards_openai_country_allowlist() -> None:
+    source = inspect.getsource(content_agents.run_content_agents_vast)
+    assert "allowed_geolocation_country_codes" in source
+    assert "OPENAI_API_SUPPORTED_COUNTRY_CODES" in source
+
+
+def test_every_vast_worker_that_forwards_openai_is_country_constrained() -> None:
+    sources = ROOT / "src/blueprint_pipeline"
+    openai_vast_workers = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sources.glob("*vast*.py")
+        if "OPENAI_API_KEY" in path.read_text(encoding="utf-8")
+        and "run_vast_provider_adapter(" in path.read_text(encoding="utf-8")
+    }
+
+    assert set(openai_vast_workers) == {
+        "adp_content_agents_vast.py",
+        "adp_joint_agent_vast.py",
+    }
+    for source in openai_vast_workers.values():
+        assert "allowed_geolocation_country_codes" in source
