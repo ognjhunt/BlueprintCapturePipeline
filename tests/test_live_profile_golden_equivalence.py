@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
+
 pytestmark = pytest.mark.usefixtures(
     "_materialize_generated_manifest_publication_fixture"
 )
@@ -189,7 +191,8 @@ def test_content_agents_profile_is_byte_identical_to_the_hand_written_builder(
         encoding="utf-8",
     )
     preflight = root / "preflight.json"
-    preflight.write_text(json.dumps({"status": "passed"}), encoding="utf-8")
+    preflight_value = {"status": "passed", "receipt_digest": "sha256:" + "1" * 64}
+    preflight.write_text(json.dumps(preflight_value), encoding="utf-8")
     attempt = root / "attempt_authority.json"
     attempt.write_text(
         json.dumps(
@@ -198,6 +201,9 @@ def test_content_agents_profile_is_byte_identical_to_the_hand_written_builder(
                 "maximum_hourly_rate_usd": 1.0,
                 "maximum_single_resource_ttl_seconds": 7200,
                 "bundle_sha256": digest,
+                "config_preflight_receipt_sha256": "sha256:"
+                + hashlib.sha256(preflight.read_bytes()).hexdigest(),
+                "config_preflight_receipt_digest": preflight_value["receipt_digest"],
             }
         ),
         encoding="utf-8",
@@ -217,6 +223,49 @@ def test_content_agents_profile_is_byte_identical_to_the_hand_written_builder(
     )
 
     _compare(_normalized(profile, root), _golden("content_agents"))
+
+
+def test_content_agents_profile_rejects_preflight_authority_drift(tmp_path: Path) -> None:
+    builder = _load("build_content_agents_live_profile")
+    root = tmp_path.resolve()
+    bundle = root / "bundle.zip"
+    bundle.write_bytes(b"content-agents-bundle")
+    digest = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
+    receipt = root / "receipt.json"
+    receipt.write_text(
+        json.dumps({"status": "ready", "bundle_path": str(bundle), "bundle_sha256": digest}),
+        encoding="utf-8",
+    )
+    preflight = root / "preflight.json"
+    preflight.write_text(
+        json.dumps({"status": "passed", "receipt_digest": "sha256:" + "2" * 64}),
+        encoding="utf-8",
+    )
+    authority = root / "authority.json"
+    authority.write_text(
+        json.dumps(
+            {
+                "hard_attempt_spend_cap_usd": 3.0,
+                "maximum_hourly_rate_usd": 1.0,
+                "maximum_single_resource_ttl_seconds": 7200,
+                "bundle_sha256": digest,
+                "config_preflight_receipt_sha256": "sha256:" + "0" * 64,
+                "config_preflight_receipt_digest": "sha256:" + "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskEvaluationLaunchError, match="preflight_.*_mismatch"):
+        builder.build_content_agents_live_profile(
+            bundle_receipt_path=receipt,
+            config_preflight_path=preflight,
+            attempt_authority_path=authority,
+            source_commit=COMMIT,
+            candidate_id="b-earth",
+            raw_manifest_uri=URI,
+            revision="drift",
+        )
 
 
 def test_sam31_profile_is_byte_identical_to_the_hand_written_builder(

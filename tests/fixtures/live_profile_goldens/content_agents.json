@@ -61,9 +61,14 @@
    "path": "{ROOT}/preflight.json"
   },
   {
-   "digest": "sha256:<0>",
-   "name": "content_agents_bundle",
-   "path": "{ROOT}/bundle.zip"
+    "digest": "sha256:<0>",
+    "name": "content_agents_bundle",
+    "path": "{ROOT}/bundle.zip"
+  },
+  {
+    "digest": "sha256:<3>",
+    "name": "paid_attempt_authority",
+    "path": "{ROOT}/attempt_authority.json"
   }
  ],
  "profile_digest": "sha256:<3>",

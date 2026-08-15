@@ -55,6 +55,7 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
     # was issued against, or the allocator refuses at the paid boundary having
     # already been handed a provider.
     authority_path = context.extra_paths.get("attempt_authority")
+    authority: dict[str, Any] | None = None
     if authority_path is None or not authority_path.is_file():
         blockers.append("attempt_authority_missing")
     else:
@@ -70,6 +71,14 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
     preflight = context.extra_paths.get("config_preflight")
     if preflight is None or not preflight.is_file():
         blockers.append("config_preflight_missing")
+    elif authority is not None:
+        preflight_value = _read(preflight)
+        if authority.get("config_preflight_receipt_sha256") != file_digest(preflight):
+            blockers.append("attempt_authority_preflight_sha256_mismatch")
+        if authority.get("config_preflight_receipt_digest") != preflight_value.get(
+            "receipt_digest"
+        ):
+            blockers.append("attempt_authority_preflight_digest_mismatch")
     return blockers
 
 
@@ -105,6 +114,11 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             # The path the receipt resolved to here, not the one it was built at.
             "path": context.bundle_path,
             "digest": context.bundle_sha256,
+        },
+        {
+            "name": "paid_attempt_authority",
+            "path": str(context.extra_paths["attempt_authority"]),
+            "digest": file_digest(context.extra_paths["attempt_authority"]),
         },
     ]
 
