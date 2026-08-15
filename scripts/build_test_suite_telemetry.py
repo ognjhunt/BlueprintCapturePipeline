@@ -193,7 +193,7 @@ def build_telemetry(
             "line_coverage_collected": False,
         },
         "parallelization": {
-            "strategy": "pytest_xdist_loadfile",
+            "strategy": "serial" if workers == 1 else "pytest_xdist_loadfile",
             "workers": workers,
             "serial_case_duration_seconds": _round(total_duration),
             "theoretical_lower_bound_seconds": _round(
