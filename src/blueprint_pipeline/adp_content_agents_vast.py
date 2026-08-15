@@ -49,6 +49,7 @@ from .openai_successor_models import (
     OPENAI_REASONING_EFFORT,
     OPENAI_TEXT_MODEL,
 )
+from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
 from .public_scene_simready_native import materialize_native_probe
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .provider_bundle_rehearsal import (
@@ -1378,10 +1379,7 @@ def _validate_remote_configs(
         name: yaml.safe_load(path.read_text(encoding="utf-8"))
         for name, path in config_sources.items()
     }
-    material_path = (
-        source
-        / "apps/material_agent/data/materials/material_libs_default/materials.yaml"
-    )
+    material_path = source / "apps/material_agent/data/materials/material_libs_default/materials.yaml"
     material = dict(payloads.get("material_agent.yaml") or {})
     texture = dict(payloads.get("texture_agent.yaml") or {})
     physics = dict(payloads.get("physics_agent.yaml") or {})
@@ -2114,6 +2112,7 @@ def run_content_agents_vast(
                 machine_avoidlist_path=machine_avoidlist_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
+                allowed_geolocation_country_codes=OPENAI_API_SUPPORTED_COUNTRY_CODES,
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {

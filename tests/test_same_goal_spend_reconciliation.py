@@ -186,6 +186,50 @@ def test_materializer_prefers_provider_zero_schema_digest(tmp_path: Path) -> Non
     )
 
 
+def test_materializer_binds_legacy_simready_result_digest_by_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "fixture")
+    result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+    result["schema_version"] = "adp009b_simready_isaac_vast_run.v1"
+    result["result_digest"] = "sha256:" + "1" * 64
+    result.pop("receipt_digest")
+    fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+
+    output, value = _materialize(tmp_path / "fixture", "simready_isaac", fixture)
+
+    terminal = next(
+        source
+        for source in value["entries"][0]["source_receipts"]
+        if source["role"] == "terminal_result"
+    )
+    assert terminal["digest_field"] is None
+    assert terminal["legacy_digest_gap"] == (
+        "exact_source_bytes_sha256_bound_no_canonical_digest"
+    )
+    assert terminal["legacy_present_digest_field"] == "result_digest"
+    assert bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="simready_isaac",
+    )["actual_total_usd"] == 0.025
+
+
+def test_materializer_rejects_noncanonical_result_digest_for_modern_schema(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "fixture")
+    result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+    result["result_digest"] = "sha256:" + "1" * 64
+    result.pop("receipt_digest")
+    fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError, match="same_goal_spend_source_digest_invalid:terminal_result"
+    ):
+        _materialize(tmp_path / "fixture", "simready_isaac", fixture)
+
+
 def test_materializer_refuses_billing_not_bound_by_source_receipt(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path / "fixture")
     billing = json.loads(fixture["billing"].read_text(encoding="utf-8"))

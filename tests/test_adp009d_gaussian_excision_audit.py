@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import hashlib
 import importlib.util
+import os
+import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 import zipfile
@@ -949,6 +952,41 @@ def test_attempt_and_recovery_receipts_join_files_without_upgrading_claims(
     assert attempt["provider_absence_confirmed"] is True
     assert attempt["proof_boundaries"]["gaussian_ownership_qualified"] is False
     assert attempt["proof_boundaries"]["policy_outcome_available"] is False
+
+    command = [
+        sys.executable,
+        str(
+            Path(__file__).resolve().parents[1]
+            / "scripts/materialize_gaussian_excision_attempt_receipt.py"
+        ),
+        "--evidence-root",
+        str(tmp_path),
+        "--bundle-receipt",
+        str(tmp_path / "bundle.json"),
+        "--run-result",
+        str(tmp_path / "run.json"),
+        "--execution-result",
+        str(tmp_path / "execution.json"),
+        "--teardown-manifest",
+        str(tmp_path / "teardown.json"),
+        "--watchdog-evidence",
+        str(tmp_path / "watchdog.json"),
+        "--output",
+        str(tmp_path / "attempt-cli.json"),
+    ]
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert json.loads(completed.stdout)["status"] == "sealed"
+    cli_attempt = json.loads((tmp_path / "attempt-cli.json").read_text())
+    assert cli_attempt["receipt_digest"] == attempt["receipt_digest"]
 
     dependency = {
         "schema_version": excision_vast.DEPENDENCY_WHEELHOUSE_SCHEMA,

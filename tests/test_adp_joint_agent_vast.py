@@ -719,8 +719,12 @@ def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
     assert (observed["paid_resource_admission_grant"] is not None) is execute
 
 
-def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("model_backend", "secret_env"),
+    [("nvidia_nim", "NVIDIA_API_KEY"), ("openai", "OPENAI_API_KEY")],
+)
+def test_live_run_arms_watchdog_before_adapter_and_constrains_openai_geography(
+    monkeypatch, tmp_path: Path, model_backend: str, secret_env: str
 ) -> None:
     events: list[str] = []
     started_path = tmp_path / "started_instance.txt"
@@ -745,9 +749,12 @@ def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
         events.append("adapter")
         assert kwargs["started_instance_id_path"] == started_path
         assert kwargs["provider_bundle_kind"] == "adp_joint_agent"
+        assert bool(kwargs["allowed_geolocation_country_codes"]) is (
+            model_backend == "openai"
+        )
         assert kwargs["paid_resource_admission_grant"] is grant
-        assert __import__("os").environ["NVIDIA_API_KEY"] == "fixture-nvidia"
-        assert __import__("os").environ["BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"] == "NVIDIA_API_KEY"
+        assert __import__("os").environ[secret_env] == "fixture-model-key"
+        assert __import__("os").environ["BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"] == secret_env
         output_zip = Path(kwargs["provider_runtime_output_zip"])
         output_zip.parent.mkdir(parents=True)
         retained_rows = []
@@ -800,14 +807,20 @@ def test_live_run_arms_watchdog_before_adapter_and_forwards_only_nvidia_key(
         "blueprint_pipeline.adp_joint_agent_vast.close_independent_vast_watchdog",
         lambda **kwargs: {"status": "provider_terminal"},
     )
-    monkeypatch.setenv("NVIDIA_API_KEY", "fixture-nvidia")
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv(secret_env, "fixture-model-key")
     grant = object()
+
+    bundle = _prepared_bundle(tmp_path)
+    if model_backend == "openai":
+        bundle["model"] = {"backend": "openai", "id": "fixture-openai-model"}
 
     result = run_joint_agent_vast(
         job_dir=tmp_path / "job",
         paid_resource_admission_grant=grant,  # type: ignore[arg-type]
         execute=True,
-        prepared_bundle=_prepared_bundle(tmp_path),
+        prepared_bundle=bundle,
     )
 
     assert events == ["watchdog", "adapter"]

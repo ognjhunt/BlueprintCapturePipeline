@@ -51,10 +51,21 @@ from .gpu_selection_policy import (
     resolve_gpu_selection_policy,
 )
 from .logging_utils import log_event
+from .openai_api_geography import (
+    normalize_vast_country_allowlist,
+    vast_country_policy_manifest,
+    vast_geolocation_allowed,
+)
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
+)
+from .vast_offer_selection_helpers import (
+    keyword_match_rank as _keyword_match_rank,
+    machine_id_set as _machine_id_set,
+    regex_match_rank as _regex_match_rank,
+    version_at_least as _version_at_least,
 )
 from .provider_attempt_classification import classify_provider_attempt
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
@@ -1480,44 +1491,6 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
     }
 
 
-def _keyword_match_rank(value: Any, keywords: Sequence[str]) -> int:
-    if not keywords:
-        return 0
-    haystack = _string(value).lower()
-    return 0 if any(_string(keyword).lower() in haystack for keyword in keywords) else 1
-
-
-def _regex_match_rank(value: Any, pattern: str) -> int:
-    text = _string(value)
-    regex = _string(pattern)
-    if not regex:
-        return 0
-    try:
-        return 0 if re.search(regex, text, flags=re.IGNORECASE) else 1
-    except re.error:
-        return 1
-
-
-def _machine_id_set(values: Iterable[Any]) -> set[int]:
-    result: set[int] = set()
-    for value in values:
-        number = _number(value)
-        if number is not None:
-            result.add(int(number))
-    return result
-
-
-def _version_at_least(value: Any, minimum: str) -> bool:
-    if not minimum:
-        return True
-    observed = _version_tuple(value)
-    required = _version_tuple(minimum)
-    if not observed or not required:
-        return False
-    width = max(len(observed), len(required))
-    return observed + (0,) * (width - len(observed)) >= required + (0,) * (width - len(required))
-
-
 def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {
@@ -1680,9 +1653,13 @@ def _select_offer(
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
+    allowed_geolocation_country_codes: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
+    allowed_countries = normalize_vast_country_allowlist(
+        allowed_geolocation_country_codes
+    )
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
     summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
     candidates = [
@@ -1715,6 +1692,7 @@ def _select_offer(
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and (not require_avx or item.get("has_avx") is True)
         and _version_at_least(item.get("driver_version"), minimum_driver_version)
+        and vast_geolocation_allowed(item.get("geolocation"), allowed_countries)
     ]
     if require_known_supported_isaac_driver:
         candidates = [
@@ -1790,6 +1768,7 @@ def _offer_selection_manifest(
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
     disk_gb: int = 0,
     required_provider_disk_gb: int = 0,
+    allowed_geolocation_country_codes: Iterable[str] = (),
 ) -> dict[str, Any]:
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
     summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
@@ -1811,6 +1790,9 @@ def _offer_selection_manifest(
     )
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
+    allowed_countries = normalize_vast_country_allowlist(
+        allowed_geolocation_country_codes
+    )
     excluded_offer_count = sum(
         1 for item in summaries if int(_number(item.get("machine_id")) or -1) in excluded
     )
@@ -1846,6 +1828,7 @@ def _offer_selection_manifest(
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and _version_at_least(item.get("driver_version"), minimum_driver_version)
+        and vast_geolocation_allowed(item.get("geolocation"), allowed_countries)
     )
     return {
         "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -1870,6 +1853,7 @@ def _offer_selection_manifest(
         "require_direct_port": require_direct_port,
         "preferred_gpu_keywords": list(preferred_gpu_keywords),
         "preferred_geolocation_regex": preferred_geolocation_regex,
+        **vast_country_policy_manifest(summaries, allowed_countries),
         "prefer_isaac_rt": prefer_isaac_rt,
         "gpu_selection_policy": policy_manifest(policy),
         "quality_filtered_offer_count": quality_filtered_offer_count,
@@ -6273,6 +6257,7 @@ def run_vast_provider_adapter(
     forward_hf_token: bool = True,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
+    allowed_geolocation_country_codes: Iterable[str] = (),
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
@@ -6342,6 +6327,9 @@ def run_vast_provider_adapter(
         raise ValueError("invalid_vast_minimum_driver_version")
     resolved_preferred_geolocation_regex = _string(
         preferred_geolocation_regex or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
+    )
+    resolved_allowed_geolocation_country_codes = normalize_vast_country_allowlist(
+        allowed_geolocation_country_codes
     )
     resolved_prefer_isaac_rt = (
         _is_isaac_provider_bundle(provider_bundle_kind)
@@ -7427,6 +7415,7 @@ def run_vast_provider_adapter(
                 gpu_selection_policy=gpu_selection_policy,
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
+                allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
             )
             offer_blockers: list[str] = []
             if not selected_offer:
@@ -7436,6 +7425,8 @@ def run_vast_provider_adapter(
                     offer_blockers.append("no_vast_offer_meeting_min_compute_cap")
                 if resolved_minimum_driver_version:
                     offer_blockers.append("no_vast_offer_meeting_minimum_driver_version")
+                if resolved_allowed_geolocation_country_codes:
+                    offer_blockers.append("no_vast_offer_in_allowed_geolocation_country")
                 if vcc.any_offer_exceeds_ceiling(offers, resolved_max_compute_cap):
                     offer_blockers.append("no_vast_offer_at_or_below_max_compute_cap")
                 offer_blockers.append(
@@ -7468,6 +7459,7 @@ def run_vast_provider_adapter(
                 create_retry_attempts=create_retry_attempts,
                 disk_gb=resolved_disk_gb,
                 required_provider_disk_gb=required_provider_disk_gb,
+                allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
             )
             write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
             _append_phase(
@@ -7609,6 +7601,7 @@ def run_vast_provider_adapter(
                     create_retry_attempts=create_retry_attempts,
                     disk_gb=resolved_disk_gb,
                     required_provider_disk_gb=required_provider_disk_gb,
+                    allowed_geolocation_country_codes=resolved_allowed_geolocation_country_codes,
                 )
                 write_json(
                     resolved_job_dir / "vast_offer_selection_manifest.json",

@@ -43,6 +43,15 @@ _DIGEST_FIELDS = (
     "provider_zero_digest",
     "provider_zero_receipt_digest",
 )
+_LEGACY_NONCANONICAL_DIGEST_FIELDS = frozenset(
+    {
+        (
+            "terminal_result",
+            "adp009b_simready_isaac_vast_run.v1",
+            "result_digest",
+        ),
+    }
+)
 
 
 def _sha256(path: Path) -> str:
@@ -100,9 +109,24 @@ def _source(role: str, path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
         )
     else:
         digest = value.get(digest_field)
-        if digest != canonical_digest(value, digest_field=digest_field):
+        if digest == canonical_digest(value, digest_field=digest_field):
+            record["receipt_digest"] = digest
+        elif (
+            role,
+            str(value.get("schema_version") or ""),
+            digest_field,
+        ) in _LEGACY_NONCANONICAL_DIGEST_FIELDS:
+            # The original SimReady result writer populated ``result_digest``
+            # before the repository standardized canonical self-digests. Bind
+            # its exact retained bytes through the validator's existing legacy
+            # marker instead of blessing that historical value as canonical.
+            source["digest_field"] = None
+            source["legacy_digest_gap"] = (
+                "exact_source_bytes_sha256_bound_no_canonical_digest"
+            )
+            source["legacy_present_digest_field"] = digest_field
+        else:
             raise ValueError(f"same_goal_spend_source_digest_invalid:{role}")
-        record["receipt_digest"] = digest
     return source
 
 
