@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 
+import blueprint_pipeline.fresh_scene_supervisor_bindings as bindings_module
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.fresh_scene_supervisor_bindings import (
     FreshSceneSupervisorBindingError,
     compile_fresh_scene_supervisor_bindings,
+    main,
     materialize_fresh_scene_supervisor_bindings,
 )
 
@@ -452,3 +454,153 @@ def test_semantic_teacher_binding_rehashes_registry_rights_and_transitive_frames
         match="fresh_scene_tool_request_input_bytes_changed",
     ):
         compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
+
+
+def test_cli_materializes_all_four_missing_fresh_scene_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        bindings_module, "configured_launch_input_roots", lambda: (tmp_path,)
+    )
+
+    removal_source = _removal_request(tmp_path / "removal-inputs")
+    removal_value = json.loads(removal_source.read_text(encoding="utf-8"))
+    tasks_path = _write(tmp_path / "removal-tasks.json", removal_value["tasks"])
+    removal_output = tmp_path / "requests/removal.json"
+    assert (
+        main(
+            [
+                "request-removal-freezes",
+                "--source-standard-splat",
+                removal_value["source_standard_splat_path"],
+                "--source-collision",
+                removal_value["source_collision_path"],
+                "--registered-frame-receipt",
+                removal_value["registered_frame_receipt_path"],
+                "--calibrated-mask-set-receipt",
+                removal_value["calibrated_mask_set_receipt_path"],
+                "--tasks-json",
+                str(tasks_path),
+                "--output",
+                str(removal_output),
+            ]
+        )
+        == 0
+    )
+
+    cutout_source = _cutout_request(tmp_path / "cutout-inputs")
+    cutout_value = json.loads(cutout_source.read_text(encoding="utf-8"))
+    sweeps_path = _write(
+        tmp_path / "cutout-sweeps.json",
+        cutout_value["sweep_freeze_paths_by_task"],
+    )
+    manifests_path = _write(
+        tmp_path / "cutout-manifests.json",
+        cutout_value["contribution_manifest_paths_by_task"],
+    )
+    cutout_output = tmp_path / "requests/cutout.json"
+    cutout_argv = [
+        "request-segment-cutout",
+        "--source-standard-splat",
+        cutout_value["source_standard_splat_path"],
+    ]
+    for task_freeze in reversed(cutout_value["task_freeze_paths"]):
+        cutout_argv.extend(["--task-freeze", task_freeze])
+    cutout_argv.extend(
+        [
+            "--sweep-freezes-json",
+            str(sweeps_path),
+            "--contribution-manifests-json",
+            str(manifests_path),
+            "--output",
+            str(cutout_output),
+        ]
+    )
+    assert main(cutout_argv) == 0
+
+    candidate_source = _artifixer_candidate_request(tmp_path / "candidate-inputs")
+    candidate_value = json.loads(candidate_source.read_text(encoding="utf-8"))
+    candidate_output = tmp_path / "requests/candidate.json"
+    assert (
+        main(
+            [
+                "request-artifixer-candidate",
+                "--segment-cutout-set",
+                candidate_value["segment_cutout_set_path"],
+                "--execution-authority",
+                candidate_value["execution_authority_path"],
+                "--selected-task-id",
+                "task_a",
+                "--output",
+                str(candidate_output),
+            ]
+        )
+        == 0
+    )
+
+    teacher_source = _semantic_teacher_edit_request(tmp_path / "teacher-inputs")
+    teacher_value = json.loads(teacher_source.read_text(encoding="utf-8"))
+    teacher_output = tmp_path / "requests/teacher.json"
+    assert (
+        main(
+            [
+                "request-semantic-teacher-edit",
+                "--source-candidate-inputs-receipt",
+                teacher_value["source_candidate_inputs_receipt_path"],
+                "--backend-registry",
+                teacher_value["backend_registry_path"],
+                "--backend-id",
+                teacher_value["backend_id"],
+                "--rights-attestation",
+                teacher_value["rights_attestation_path"],
+                "--selected-task-id",
+                "task_a",
+                "--prompt-policy",
+                teacher_value["prompt_policy"],
+                "--output",
+                str(teacher_output),
+            ]
+        )
+        == 0
+    )
+
+    schemas = {
+        removal_output: "fresh_scene_removal_freeze_tool_request.v1",
+        cutout_output: "fresh_scene_segment_cutout_tool_request.v1",
+        candidate_output: "fresh_scene_artifixer_candidate_preparation_request.v1",
+        teacher_output: "fresh_scene_semantic_teacher_image_edit_request.v1",
+    }
+    for path, schema in schemas.items():
+        value = json.loads(path.read_text(encoding="utf-8"))
+        assert value["schema_version"] == schema
+        assert value["request_digest"] == canonical_digest(
+            value, digest_field="request_digest"
+        )
+    teacher_request = json.loads(teacher_output.read_text(encoding="utf-8"))
+    assert teacher_request["retry_count"] == 0
+    assert teacher_request["output_format"] == "png"
+    assert teacher_request["rights_attestation_path"] == str(
+        Path(teacher_value["rights_attestation_path"]).resolve()
+    )
+
+    status = _status(tmp_path / "status.json")
+    binding_path = tmp_path / "binding.json"
+    materialize_fresh_scene_supervisor_bindings(
+        preparation_status_path=status,
+        removal_freeze_request_path=removal_output,
+        segment_cutout_request_path=cutout_output,
+        artifixer_candidate_request_path=candidate_output,
+        semantic_teacher_edit_request_path=teacher_output,
+        output_path=binding_path,
+        roots=[tmp_path],
+    )
+    compiled = compile_fresh_scene_supervisor_bindings(
+        binding_path, roots=[tmp_path]
+    )
+    assert compiled["requested_tool_ids"] == [
+        "inspect_fresh_scene_preparation",
+        "materialize_fresh_scene_artifixer_candidate",
+        "materialize_fresh_scene_removal_freezes",
+        "materialize_fresh_scene_segment_cutout",
+        "materialize_fresh_scene_semantic_teacher_edit_packet",
+    ]
