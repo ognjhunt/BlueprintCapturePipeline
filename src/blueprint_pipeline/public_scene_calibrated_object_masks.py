@@ -472,10 +472,10 @@ def materialize_calibrated_object_mask_set_from_tool_request(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task-freeze", action="append", required=True)
+    parser.add_argument("--task-freeze", action="append")
     parser.add_argument(
         "--task-inputs-json",
-        required=True,
+        required=False,
         help=(
             "JSON mapping task_id to source_track_result_path, camera_contract_path, "
             "source_image_root, and camera_frame_map."
@@ -483,20 +483,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--selected-tracks-json",
-        required=True,
+        required=False,
         help="JSON object mapping each task_id to one or more exact SAM track IDs.",
+    )
+    parser.add_argument(
+        "--prepared-inputs",
+        help=(
+            "Validated public_scene_sam31_track_selection_inputs.v1 receipt; "
+            "mutually exclusive with manual task input arguments."
+        ),
     )
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--reviewed-track-selection-receipt", required=True)
     args = parser.parse_args(argv)
-    selected_path = _file(
-        args.selected_tracks_json, code="calibrated_masks_selected_track_map_missing"
-    )
-    selected = _read(selected_path, code="calibrated_masks_selected_track_map_invalid")
-    task_inputs_path = _file(args.task_inputs_json, code="calibrated_masks_task_inputs_missing")
-    task_inputs = _read(task_inputs_path, code="calibrated_masks_task_inputs_invalid")
+    if args.prepared_inputs:
+        if args.task_freeze or args.task_inputs_json or args.selected_tracks_json:
+            raise CalibratedObjectMaskError(["calibrated_masks_input_modes_conflict"])
+        from .public_scene_sam31_track_selection_review import (
+            load_validated_sam31_track_selection_inputs,
+        )
+
+        task_freezes, task_inputs, selected = load_validated_sam31_track_selection_inputs(
+            args.prepared_inputs
+        )
+    else:
+        if not args.task_freeze or not args.task_inputs_json or not args.selected_tracks_json:
+            raise CalibratedObjectMaskError(["calibrated_masks_inputs_missing"])
+        task_freezes = args.task_freeze
+        selected_path = _file(
+            args.selected_tracks_json, code="calibrated_masks_selected_track_map_missing"
+        )
+        selected = _read(selected_path, code="calibrated_masks_selected_track_map_invalid")
+        task_inputs_path = _file(
+            args.task_inputs_json, code="calibrated_masks_task_inputs_missing"
+        )
+        task_inputs = _read(task_inputs_path, code="calibrated_masks_task_inputs_invalid")
     materialize_calibrated_object_mask_set(
-        task_freeze_paths=args.task_freeze,
+        task_freeze_paths=task_freezes,
         task_inputs=task_inputs,
         selected_track_ids_by_task=selected,
         reviewed_track_selection_receipt_path=args.reviewed_track_selection_receipt,
