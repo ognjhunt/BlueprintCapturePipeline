@@ -37,6 +37,9 @@ DEFAULT_REMOTE_PYTHON = Path(
     "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
 )
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
+MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024**2
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 8 * 1024**3
+SERVICE_READBACK_TIMEOUT_SECONDS = 30
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,254}\Z")
@@ -318,12 +321,16 @@ def _service_identity(account: str | None) -> tuple[str, int, int]:
 def _consumer_digest(path: Path, *, account: str, uid: int) -> str:
     if uid == os.getuid():
         return _sha256_file(path)
-    result = subprocess.run(  # nosec B603 - absolute executable and fixed argv
-        ["/usr/sbin/runuser", "-u", account, "--", "/usr/bin/sha256sum", str(path)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # nosec B603 - absolute executable and fixed argv
+            ["/usr/sbin/runuser", "-u", account, "--", "/usr/bin/sha256sum", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SERVICE_READBACK_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PublicSceneHostInputError(f"service_readback_failed:{path.name}") from exc
     if result.returncode != 0 or not result.stdout.strip():
         raise PublicSceneHostInputError(f"service_readback_failed:{path.name}")
     return "sha256:" + result.stdout.split()[0]
@@ -334,10 +341,18 @@ def _validated_archive(archive: zipfile.ZipFile) -> dict[str, Any]:
     names = [info.filename for info in infos]
     if len(names) != len(set(names)) or "packet.json" not in names:
         raise PublicSceneHostInputError("packet_archive_members_invalid")
+    uncompressed_bytes = 0
     for info in infos:
         path = PurePosixPath(info.filename)
         if path.is_absolute() or ".." in path.parts or info.is_dir():
             raise PublicSceneHostInputError("packet_archive_member_unsafe")
+        if info.file_size <= 0 or info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise PublicSceneHostInputError("packet_archive_member_size_exceeds_limit")
+        uncompressed_bytes += info.file_size
+        if uncompressed_bytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise PublicSceneHostInputError(
+                "packet_archive_uncompressed_size_exceeds_limit"
+            )
     try:
         packet = json.loads(archive.read("packet.json"))
     except (KeyError, UnicodeError, json.JSONDecodeError) as exc:

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import pwd
+import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -14,6 +17,64 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 def _sha(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _archive_with_members(members: dict[str, bytes]) -> io.BytesIO:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    stream.seek(0)
+    return stream
+
+
+def test_archive_rejects_oversized_member_before_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake, "MAX_ARCHIVE_MEMBER_BYTES", 4)
+    with _archive_with_members({"packet.json": b"12345"}) as stream:
+        with zipfile.ZipFile(stream, "r") as archive:
+            with pytest.raises(
+                intake.PublicSceneHostInputError,
+                match="packet_archive_member_size_exceeds_limit",
+            ):
+                intake._validated_archive(archive)
+
+
+def test_archive_rejects_oversized_aggregate_before_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake, "MAX_ARCHIVE_MEMBER_BYTES", 4)
+    monkeypatch.setattr(intake, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 5)
+    with _archive_with_members(
+        {"packet.json": b"123", "inputs/scene.usd": b"456"}
+    ) as stream:
+        with zipfile.ZipFile(stream, "r") as archive:
+            with pytest.raises(
+                intake.PublicSceneHostInputError,
+                match="packet_archive_uncompressed_size_exceeds_limit",
+            ):
+                intake._validated_archive(archive)
+
+
+def test_service_readback_timeout_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def timeout(*_args: object, **kwargs: object) -> None:
+        observed.update(kwargs)
+        raise subprocess.TimeoutExpired(cmd="runuser", timeout=int(kwargs["timeout"]))
+
+    monkeypatch.setattr(intake.subprocess, "run", timeout)
+    with pytest.raises(
+        intake.PublicSceneHostInputError,
+        match="service_readback_failed:input.usd",
+    ):
+        intake._consumer_digest(
+            tmp_path / "input.usd", account="blueprint", uid=os.getuid() + 1
+        )
+    assert observed["timeout"] == intake.SERVICE_READBACK_TIMEOUT_SECONDS == 30
 
 
 def test_cli_installs_rights_bound_scene_inputs_for_service_account(
