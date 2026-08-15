@@ -7,10 +7,9 @@ output_dir="${BLUEPRINT_ADP_RETAINED_SCENE_RENDER_OUTPUT_DIR:-${BLUEPRINT_ADP_GA
 mkdir -p "${output_dir}"
 
 if [[ "${BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL:-}" == "1" ]]; then
-  node "${runtime_dir}/adp_retained_scene_render_provider_runner.mjs" \
+  python3 "${runtime_dir}/adp_retained_scene_render_rehearsal.py" \
     --runtime "${runtime_dir}" \
-    --output "${output_dir}" \
-    --rehearsal
+    --output "${output_dir}"
 else
   node "${runtime_dir}/adp_retained_scene_render_provider_runner.mjs" \
     --runtime "${runtime_dir}" \

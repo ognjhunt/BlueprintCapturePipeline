@@ -756,6 +756,10 @@ def build_retained_scene_gpu_render_bundle(
             "scripts/adp_retained_scene_render_provider_runner.mjs",
             "adp_retained_scene_render_provider_runner.mjs",
         ),
+        (
+            "scripts/adp_retained_scene_render_rehearsal.py",
+            "adp_retained_scene_render_rehearsal.py",
+        ),
     ):
         source = repo / source_relative
         if not source.is_file() or source.is_symlink():
