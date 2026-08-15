@@ -7,6 +7,9 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
+import scripts.materialize_task_evaluation_standing_launch_authorization as materializer
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     EXECUTE_ENV,
@@ -200,6 +203,29 @@ def test_materializer_refuses_to_replace_a_different_authorization(tmp_path: Pat
         assert "standing_authorization_immutable_conflict" in str(exc)
     else:  # pragma: no cover - assertion aid
         raise AssertionError("different authorization bytes were overwritten")
+
+
+def test_failed_consumer_readback_never_exposes_an_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, profile = _profile(tmp_path)
+    issued_at, expires_at = _times()
+    output_dir = tmp_path / "standing-authorizations"
+    monkeypatch.setattr(materializer, "_digest_as_account", lambda *args, **kwargs: "")
+
+    with pytest.raises(ValueError, match="consumer_readback_failed"):
+        materialize_standing_launch_authorization(
+            profile_path=profile_path,
+            output_dir=output_dir,
+            authorized_by="authorized-human",
+            authorization_reference="pre-submit-task-a-authority",
+            issued_at=issued_at,
+            expires_at=expires_at,
+            max_launches=1,
+            max_total_spend_usd=1.0,
+        )
+
+    assert not (output_dir / f"{profile['profile_id']}.json").exists()
 
 
 def test_cli_materializes_before_launch_id_exists_and_is_idempotent(

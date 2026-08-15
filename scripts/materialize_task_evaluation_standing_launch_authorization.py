@@ -115,20 +115,58 @@ def _digest_as_account(path: Path, *, account: str, uid: int) -> str:
     return "sha256:" + completed.stdout.split()[0]
 
 
-def _write_exact(path: Path, payload: bytes) -> bool:
+def _verify_installed(
+    path: Path, *, payload: bytes, account: str, uid: int, gid: int
+) -> None:
+    expected = "sha256:" + hashlib.sha256(payload).hexdigest()
+    observed = _digest_as_account(path, account=account, uid=uid)
+    if (
+        observed != expected
+        or path.stat().st_gid != gid
+        or stat.S_IMODE(path.stat().st_mode) != stat.S_IRUSR | stat.S_IRGRP
+    ):
+        raise TaskEvaluationLaunchError(
+            "standing_authorization_consumer_readback_failed"
+        )
+
+
+def _install_exact(
+    path: Path, *, payload: bytes, account: str, uid: int, gid: int
+) -> bool:
+    """Verify hidden bytes first, then expose the canonical name atomically."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise TaskEvaluationLaunchError("standing_authorization_target_invalid")
-    try:
-        with path.open("xb") as stream:
-            stream.write(payload)
-        return True
-    except FileExistsError:
+    if path.exists():
         if not path.is_file() or path.read_bytes() != payload:
             raise TaskEvaluationLaunchError(
                 f"standing_authorization_immutable_conflict:{path.name}"
             )
+        _verify_installed(path, payload=payload, account=account, uid=uid, gid=gid)
         return False
+
+    staging = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        with staging.open("xb") as stream:
+            stream.write(payload)
+        if staging.stat().st_gid != gid:
+            os.chown(staging, -1, gid)
+        staging.chmod(stat.S_IRUSR | stat.S_IRGRP)
+        _verify_installed(staging, payload=payload, account=account, uid=uid, gid=gid)
+        try:
+            os.link(staging, path, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise TaskEvaluationLaunchError(
+                f"standing_authorization_immutable_conflict:{path.name}"
+            ) from exc
+    except OSError as exc:
+        raise TaskEvaluationLaunchError(
+            "standing_authorization_permission_install_failed"
+        ) from exc
+    finally:
+        staging.unlink(missing_ok=True)
+    return True
 
 
 def materialize_standing_launch_authorization(
@@ -191,25 +229,10 @@ def materialize_standing_launch_authorization(
     account, uid, gid = _service_identity(target_root, service_account)
     payload = (json.dumps(authorization, sort_keys=True, separators=(",", ":")) + "\n").encode()
     target = target_root / f"{profile['profile_id']}.json"
-    created = _write_exact(target, payload)
-    try:
-        if target.stat().st_gid != gid:
-            os.chown(target, -1, gid)
-        target.chmod(stat.S_IRUSR | stat.S_IRGRP)
-    except OSError as exc:
-        raise TaskEvaluationLaunchError(
-            "standing_authorization_permission_install_failed"
-        ) from exc
-    observed = _digest_as_account(target, account=account, uid=uid)
     expected = "sha256:" + hashlib.sha256(payload).hexdigest()
-    if (
-        observed != expected
-        or target.stat().st_gid != gid
-        or stat.S_IMODE(target.stat().st_mode) != stat.S_IRUSR | stat.S_IRGRP
-    ):
-        raise TaskEvaluationLaunchError(
-            "standing_authorization_consumer_readback_failed"
-        )
+    created = _install_exact(
+        target, payload=payload, account=account, uid=uid, gid=gid
+    )
     return {
         "schema_version": "task_evaluation_standing_launch_authorization_publication.v1",
         "status": "published",
