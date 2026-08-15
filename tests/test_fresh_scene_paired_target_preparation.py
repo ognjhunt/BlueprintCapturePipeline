@@ -122,8 +122,8 @@ def test_fresh_scene_accepts_ai_review_schema_only_with_ai_status(tmp_path: Path
             }
         elif contract["stage_id"] == "sam31_track_selection_review":
             value = {
-                "schema_version": review_contract["schemas"][1],
-                "status": review_contract["accepted_statuses"][1],
+                "schema_version": review_contract["schemas"][0],
+                "status": review_contract["accepted_statuses"][0],
                 "receipt_digest": "",
             }
             value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
