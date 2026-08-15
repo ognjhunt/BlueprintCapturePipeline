@@ -145,3 +145,73 @@ def test_gaussian_issuer_cannot_omit_or_tamper_shared_reconciliation(
             prior_attempt_receipt_path=prior,
             prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
         )
+
+
+def _issue_gaussian_with_prior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prior_doc: dict[str, object]
+) -> dict[str, object]:
+    """The 2026-08-15 chain 0813 -> 22:30 -> next needed ordinal 3; the issuer
+    hardcoded `2` for any prior, so a third corrective attempt could never be
+    authorized (`previous_attempt_ordinal_mismatch`)."""
+
+    issuer = _load("issue_gaussian_excision_paid_attempt_authority")
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+    prior = tmp_path / "prior.json"
+    prior.write_text(json.dumps(prior_doc), encoding="utf-8")
+    monkeypatch.setattr(
+        issuer,
+        "resolve_host_resident_bundle_receipt",
+        lambda _path: {"blockers": [], "receipt": {"bundle_sha256": "sha256:" + "a" * 64}},
+    )
+    captured: dict[str, object] = {}
+
+    def capture_validate(value, *_a, **_k):
+        captured.update(value)
+        return value
+
+    monkeypatch.setattr(
+        issuer, "validate_gaussian_excision_paid_attempt_authority", capture_validate
+    )
+    monkeypatch.setattr(
+        issuer, "bind_lane_prior_spend", lambda **_kwargs: _fake_binding("gaussian_excision")
+    )
+    issuer.issue_gaussian_excision_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        authorized_by="user",
+        authority_reference="goal",
+        prior_attempt_receipt_path=prior,
+        prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
+    )
+    return captured
+
+
+def test_gaussian_issuer_extends_ordinal_past_second_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = _issue_gaussian_with_prior(
+        tmp_path,
+        monkeypatch,
+        {"receipt_digest": "sha256:" + "7" * 64, "paid_attempt_ordinal": 2},
+    )
+    assert authority["paid_attempt_ordinal"] == 3
+
+
+def test_gaussian_issuer_pins_legacy_prior_to_second_ordinal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = _issue_gaussian_with_prior(
+        tmp_path, monkeypatch, {"receipt_digest": "sha256:" + "7" * 64}
+    )
+    assert authority["paid_attempt_ordinal"] == 2
+
+
+def test_gaussian_issuer_refuses_invalid_prior_ordinal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ValueError, match="previous_attempt_ordinal_invalid"):
+        _issue_gaussian_with_prior(
+            tmp_path,
+            monkeypatch,
+            {"receipt_digest": "sha256:" + "7" * 64, "paid_attempt_ordinal": 0},
+        )

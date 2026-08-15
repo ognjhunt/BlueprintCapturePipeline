@@ -211,12 +211,20 @@ OPENAI_API_SUPPORTED_COUNTRY_CODES = frozenset(
 
 
 def vast_geolocation_country_code(value: object) -> str | None:
-    """Return the terminal Vast country code, or ``None`` if unprovable."""
+    """Return the terminal Vast country code, or ``None`` if unprovable.
+
+    Vast reports geolocation in two shapes: underscore slugs
+    (``california_us``) and display strings from the live offers endpoint
+    (``Sweden, SE`` — sometimes with an empty region, ``, CA``). The code is
+    accepted only when a separator proves the terminal two letters are a
+    country suffix rather than the tail of a word; anything else stays
+    unprovable and fails closed.
+    """
 
     text = str(value or "").strip().lower()
     if len(text) == 2 and text.isalpha():
         return text
-    if len(text) >= 4 and text[-3] == "_" and text[-2:].isalpha():
+    if len(text) >= 4 and text[-2:].isalpha() and text[-3] in {"_", " ", ","}:
         return text[-2:]
     return None
 
