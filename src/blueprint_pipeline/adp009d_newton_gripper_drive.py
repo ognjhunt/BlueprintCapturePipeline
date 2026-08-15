@@ -141,13 +141,17 @@ def configure_newton_gripper_drive_candidate(
     from isaaclab_arena.embodiments.droid.actions import (
         BinaryJointPositionZeroToOneAction,
     )
+    from isaaclab.utils.array import convert_to_torch
 
     max_step = float(candidate["maximum_target_step_rad"])
 
     class RateLimitedBinaryJointPositionAction(BinaryJointPositionZeroToOneAction):
         def process_actions(self, actions):
             super().process_actions(actions)
-            current = self._asset.data.joint_pos[:, self._joint_ids]
+            # Newton exposes articulation state as a Warp array.  Convert the
+            # complete array before applying Isaac Lab's Python-list joint
+            # selection; Warp array indexing does not accept list indices.
+            current = convert_to_torch(self._asset.data.joint_pos)[:, self._joint_ids]
             self._processed_actions = self._processed_actions.clamp(
                 min=current - max_step, max=current + max_step
             )
