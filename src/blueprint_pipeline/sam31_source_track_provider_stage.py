@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
 import shutil
 import tempfile
@@ -209,7 +210,7 @@ def _official_predictor_factory(profile: Mapping[str, Any]) -> Any:
         )
     except (ImportError, ModuleNotFoundError) as exc:
         raise ValueError("sam31_runtime_not_installed") from exc
-    return build_sam3_multiplex_video_predictor(
+    predictor = build_sam3_multiplex_video_predictor(
         checkpoint_path=str(checkpoint),
         max_num_objects=int(profile["max_num_objects"]),
         multiplex_count=int(profile["multiplex_count"]),
@@ -219,6 +220,41 @@ def _official_predictor_factory(profile: Mapping[str, Any]) -> Any:
         default_output_prob_thresh=float(profile["output_probability_threshold"]),
         async_loading_frames=bool(profile["async_loading_frames"]),
     )
+    return _adapt_multiplex_start_session(predictor)
+
+
+def _adapt_multiplex_start_session(predictor: Any) -> Any:
+    """Bridge the pinned predictor's base/session signatures.
+
+    SAM 3.1 revision 96914d24 has a narrow upstream mismatch: its base
+    predictor always passes ``offload_state_to_cpu`` to ``model.init_state``,
+    while the multiplex model returned by the official builder does not accept
+    that keyword.  Blueprint never requests state offload.  Accept only the
+    explicit false value and delegate every other argument unchanged.
+    """
+
+    model = getattr(predictor, "model", None)
+    init_state = getattr(model, "init_state", None)
+    if not callable(init_state):
+        raise ValueError("sam31_runtime_start_session_api_invalid")
+    try:
+        parameters = inspect.signature(init_state).parameters
+    except (TypeError, ValueError) as exc:
+        raise ValueError("sam31_runtime_start_session_api_invalid") from exc
+    if "offload_state_to_cpu" in parameters:
+        return predictor
+    if "resource_path" not in parameters:
+        raise ValueError("sam31_runtime_start_session_api_invalid")
+
+    def compatible_init_state(
+        *args: Any, offload_state_to_cpu: bool = False, **kwargs: Any
+    ) -> Any:
+        if offload_state_to_cpu is not False:
+            raise ValueError("sam31_runtime_state_offload_unsupported")
+        return init_state(*args, **kwargs)
+
+    model.init_state = compatible_init_state
+    return predictor
 
 
 def _artifact(path: Path) -> dict[str, Any]:
