@@ -184,6 +184,17 @@ def run_sam31_paid_resource_allocator_lane(
     preflight_path = args.preflight_bundle
     handoff: dict[str, Any] | None = None
     handle = None
+    if not args.execute:
+        preflight_file = Path(str(preflight_path or "")).expanduser()
+        if preflight_file.is_symlink() or not preflight_file.is_file():
+            result = {
+                "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
+                "status": "blocked",
+                "blockers": ["sam31_dry_run_preflight_missing_or_unsafe"],
+                "provider_mutations_performed": 0,
+                "paid_execution_started": False,
+            }
+            return _write_terminal_result(Path(args.adapter_output), result)
     if args.execute:
         adapter_path = Path(args.adapter_output).expanduser().resolve()
         handoff, handle = arm_watchdog(
