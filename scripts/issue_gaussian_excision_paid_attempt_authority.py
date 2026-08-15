@@ -48,6 +48,22 @@ class GaussianExcisionAuthorityError(ValueError):
     """The attempt authority cannot be issued against this receipt."""
 
 
+def _next_paid_attempt_ordinal(prior: Mapping[str, Any]) -> int:
+    """The chain extends one past the sealed predecessor's own ordinal.
+
+    Legacy receipts predate the ordinal field; the validator pins the
+    successor of such a receipt to ordinal 2, so that is what an absent
+    field derives to.
+    """
+
+    ordinal = prior.get("paid_attempt_ordinal")
+    if ordinal is None:
+        return 2
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
+        raise GaussianExcisionAuthorityError("previous_attempt_ordinal_invalid")
+    return ordinal + 1
+
+
 def _read(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, Mapping):
@@ -110,7 +126,7 @@ def issue_gaussian_excision_paid_attempt_authority(
         "freeze_digest": bundle.get("freeze_digest"),
         "bundle_sha256": bundle.get("bundle_sha256"),
         "corrective_blueprint_commit": bundle.get("blueprint_commit"),
-        "paid_attempt_ordinal": 1 if prior is None else 2,
+        "paid_attempt_ordinal": 1 if prior is None else _next_paid_attempt_ordinal(prior),
         "maximum_paid_attempts": 1,
         "maximum_automatic_retries": 0,
         "automatic_paid_retry_authorized": False,
