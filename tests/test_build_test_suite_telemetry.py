@@ -63,6 +63,7 @@ def test_telemetry_reports_duration_parametrization_and_file_shards(tmp_path: Pa
             "case_duration_seconds": 3.0,
         }
     ]
+    assert result["parallelization"]["strategy"] == "pytest_xdist_loadfile"
     shards = result["parallelization"]["shards"]
     assert [shard["estimated_case_duration_seconds"] for shard in shards] == [4.0, 4.0]
     assert sorted(path for shard in shards for path in shard["files"]) == [
@@ -70,6 +71,21 @@ def test_telemetry_reports_duration_parametrization_and_file_shards(tmp_path: Pa
         "tests/test_b.py",
         "tests/test_c.py",
     ]
+
+
+def test_telemetry_labels_one_worker_execution_as_serial(tmp_path: Path) -> None:
+    junit = tmp_path / "junit.xml"
+    _write_junit(junit)
+
+    result = MODULE.build_telemetry(
+        junit=junit,
+        repository_sha="a" * 40,
+        workers=1,
+    )
+
+    assert result["parallelization"]["strategy"] == "serial"
+    assert result["parallelization"]["workers"] == 1
+    assert len(result["parallelization"]["shards"]) == 1
 
 
 def test_telemetry_rejects_duplicate_or_unbound_nodeids(tmp_path: Path) -> None:
