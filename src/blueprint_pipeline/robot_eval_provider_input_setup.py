@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
+from .adp009d_live_readiness import LEGACY_LIVE_PROFILE_BUILDER
 from .common import ensure_dir, parse_gs_uri, read_json_any, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .robot_eval_job_orchestrator import (
@@ -65,7 +66,7 @@ S3_REGION_ENV_VAR_ALTERNATIVES = ("AWS_REGION", "AWS_DEFAULT_REGION")
 # manifest URI. Generated manifests for these builders share this one
 # content-addressed, full-byte-readback publication contract.
 LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS = {
-    "build_adp009d_840313_live_profile.py": "exact_commit_raw_github",
+    LEGACY_LIVE_PROFILE_BUILDER: "exact_commit_raw_github",
     "build_arena_native_control_live_profile.py": "gcs_content_addressed_full_readback",
     "build_artifixer3d_live_profile.py": "gcs_content_addressed_full_readback",
     "build_content_agents_live_profile.py": "gcs_content_addressed_full_readback",

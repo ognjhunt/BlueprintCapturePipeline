@@ -15,6 +15,7 @@ import pytest
 from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline import adp_gaussian_excision_vast as excision_vast
+from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import vast_provider_adapter as vast_adapter
 from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
@@ -492,6 +493,190 @@ def _paid_attempt_authority(
     return authority
 
 
+def _write_json(path: Path, value: Mapping[str, object]) -> None:
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _bound_file_record(
+    path: Path, *, receipt_digest: object | None = None
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "path": str(path.resolve()),
+        "size_bytes": path.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+    if receipt_digest is not None:
+        record["receipt_digest"] = receipt_digest
+    return record
+
+
+def _prior_gaussian_spend_reconciliation(
+    tmp_path: Path, previous_path: Path
+) -> Path:
+    previous = json.loads(previous_path.read_text(encoding="utf-8"))
+    instance_id = 123
+    teardown = {
+        "schema_version": "vast_teardown_manifest.v1",
+        "status": "PASS",
+        "continuing_spend_from_this_run": False,
+        "vast_instance_ids": [instance_id],
+    }
+    teardown_path = tmp_path / "prior-teardown.json"
+    _write_json(teardown_path, teardown)
+    provider_zero: dict[str, object] = {
+        "schema_version": "task_evaluation_post_teardown_provider_zero.v1",
+        "status": "provider_zero_confirmed",
+        "provider_zero_verified": True,
+        "continuing_spend_from_this_run": False,
+    }
+    provider_zero["receipt_digest"] = canonical_digest(
+        provider_zero, digest_field="receipt_digest"
+    )
+    provider_zero_path = tmp_path / "prior-provider-zero.json"
+    _write_json(provider_zero_path, provider_zero)
+    billing = {
+        "schema_version": "vast.official.charges.v1",
+        "results": [{"source": f"instance-{instance_id}", "amount": 0.0}],
+    }
+    billing_path = tmp_path / "prior-official-billing.json"
+    _write_json(billing_path, billing)
+    billing_source: dict[str, object] = {
+        "schema_version": "blueprint.provider_billing_source_receipt.v1",
+        "status": "reconciled",
+        "sources": [
+            {
+                "provider": "vast",
+                "retained_path": str(billing_path.resolve()),
+                "response_digest": _bound_file_record(billing_path)["sha256"],
+                "response_size_bytes": billing_path.stat().st_size,
+            }
+        ],
+    }
+    billing_source["receipt_digest"] = canonical_digest(
+        billing_source, digest_field="receipt_digest"
+    )
+    billing_source_path = tmp_path / "prior-billing-source.json"
+    _write_json(billing_source_path, billing_source)
+    sources = [
+        {
+            "role": "terminal_result",
+            "schema_version": previous["schema_version"],
+            "digest_field": "receipt_digest",
+            "record": _bound_file_record(
+                previous_path, receipt_digest=previous["receipt_digest"]
+            ),
+        },
+        {
+            "role": "teardown_manifest",
+            "schema_version": teardown["schema_version"],
+            "digest_field": None,
+            "legacy_digest_gap": (
+                "exact_source_bytes_sha256_bound_no_canonical_digest"
+            ),
+            "record": _bound_file_record(teardown_path),
+        },
+        {
+            "role": "provider_zero",
+            "schema_version": provider_zero["schema_version"],
+            "digest_field": "receipt_digest",
+            "record": _bound_file_record(
+                provider_zero_path,
+                receipt_digest=provider_zero["receipt_digest"],
+            ),
+        },
+        {
+            "role": "official_billing_response",
+            "schema_version": billing["schema_version"],
+            "digest_field": None,
+            "legacy_digest_gap": (
+                "exact_source_bytes_sha256_bound_no_canonical_digest"
+            ),
+            "record": _bound_file_record(billing_path),
+        },
+        {
+            "role": "provider_billing_source_receipt",
+            "schema_version": billing_source["schema_version"],
+            "digest_field": "receipt_digest",
+            "record": _bound_file_record(
+                billing_source_path,
+                receipt_digest=billing_source["receipt_digest"],
+            ),
+        },
+    ]
+    bindings = [
+        {
+            "kind": "cost_usd",
+            "source_role": "official_billing_response",
+            "json_path": ["results", 0, "amount"],
+            "expected_value": 0.0,
+        },
+        {
+            "kind": "continuing_spend",
+            "source_role": "terminal_result",
+            "json_path": ["continuing_spend_from_this_run"],
+            "expected_value": False,
+        },
+        {
+            "kind": "instance_id",
+            "source_role": "official_billing_response",
+            "json_path": ["results", 0, "source"],
+            "expected_value": f"instance-{instance_id}",
+        },
+        {
+            "kind": "authority_digest",
+            "source_role": "terminal_result",
+            "json_path": ["authorization_consumption", "authorization_digest"],
+            "expected_value": previous["authorization_consumption"][
+                "authorization_digest"
+            ],
+        },
+        {
+            "kind": "provider_zero",
+            "source_role": "provider_zero",
+            "json_path": ["provider_zero_verified"],
+            "expected_value": True,
+        },
+        {
+            "kind": "bundle_sha256",
+            "source_role": "terminal_result",
+            "json_path": ["bundle_sha256"],
+            "expected_value": previous["bundle_sha256"],
+        },
+    ]
+    entry: dict[str, object] = {
+        "schema_version": "adp_same_goal_spend_entry.v1",
+        "goal_id": "arm-decision-proof-v1",
+        "attempt_id": "gaussian-excision-prior-1",
+        "lane": "gaussian_excision",
+        "evidence_kind": "fully_bound_official_billing",
+        "provider_instance_id": instance_id,
+        "cost_usd": 0.0,
+        "authority_digest": previous["authorization_consumption"][
+            "authorization_digest"
+        ],
+        "bundle_sha256": previous["bundle_sha256"],
+        "continuing_spend_from_this_run": False,
+        "provider_zero_confirmed": True,
+        "source_receipts": sources,
+        "bindings": bindings,
+    }
+    entry["entry_digest"] = canonical_digest(entry, digest_field="entry_digest")
+    reconciliation: dict[str, object] = {
+        "schema_version": "adp_same_goal_spend_reconciliation.v1",
+        "status": "all_same_goal_paid_attempts_terminal_and_provider_zero",
+        "goal_id": "arm-decision-proof-v1",
+        "entries": [entry],
+        "entry_count": 1,
+        "total_cost_usd": 0.0,
+    }
+    reconciliation["receipt_digest"] = canonical_digest(
+        reconciliation, digest_field="receipt_digest"
+    )
+    reconciliation_path = tmp_path / "prior-spend-reconciliation.json"
+    _write_json(reconciliation_path, reconciliation)
+    return reconciliation_path
+
+
 def test_paid_attempt_authority_binds_the_exact_external_instance_allowlist(
     tmp_path: Path,
 ) -> None:
@@ -601,9 +786,15 @@ def test_corrected_paid_attempt_authority_binds_legacy_terminal_receipt(
         "schema_version": "adp_gaussian_excision_attempt_receipt.v1",
         "status": "sealed_blocked_attempt",
         "freeze_digest": bundle["freeze_digest"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "estimated_cost_usd": 0.5,
         "retry_cap": 0,
         "continuing_spend": False,
+        "continuing_spend_from_this_run": False,
         "provider_absence_confirmed": True,
+        "authorization_consumption": {
+            "authorization_digest": "sha256:" + "9" * 64,
+        },
     }
     previous["receipt_digest"] = canonical_digest(
         previous, digest_field="receipt_digest"
@@ -612,6 +803,26 @@ def test_corrected_paid_attempt_authority_binds_legacy_terminal_receipt(
         bundle,
         ordinal=2,
         previous_attempt_receipt_digest=str(previous["receipt_digest"]),
+    )
+    previous_path = tmp_path / "previous-attempt.json"
+    _write_json(previous_path, previous)
+    reconciliation_path = _prior_gaussian_spend_reconciliation(
+        tmp_path, previous_path
+    )
+    binding = bind_lane_prior_spend(
+        prior_result_paths=[previous_path],
+        reconciliation_path=reconciliation_path,
+        lane="gaussian_excision",
+    )
+    authority.update(
+        {
+            "prior_terminal_attempts": binding["prior_terminal_attempts"],
+            "prior_spend_reconciliation": binding["reconciliation"],
+            "prior_actual_provider_spend_usd": binding["actual_total_usd"],
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
     )
 
     validated = excision_vast.validate_gaussian_excision_paid_attempt_authority(

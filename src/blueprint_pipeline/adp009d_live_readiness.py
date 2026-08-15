@@ -15,6 +15,7 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "task_evaluation_runtime_readiness.v1"
+LEGACY_LIVE_PROFILE_BUILDER = "build_adp009d_840313_live_profile.py"
 PROFILE_ID = "adp009d-840313-franka-live-v1"
 SOURCE_BUNDLE_DIGEST = (
     "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
