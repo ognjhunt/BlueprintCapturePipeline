@@ -78,6 +78,7 @@ from .paid_resource_cli_arguments import add_cpu_arguments as _add_cpu_arguments
 from .provider_machine_avoidlist import (
     content_agents_machine_avoidlist_path as _content_agents_machine_avoidlist_path,
     simready_isaac_machine_avoidlist_path as _simready_isaac_machine_avoidlist_path,
+    stage_machine_avoidlist_for_attempt as _stage_machine_avoidlist_for_attempt,
 )
 from .hosted_model_inference_preflight import (
     BACKENDS as HOSTED_MODEL_BACKENDS,
@@ -3868,6 +3869,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
+                provider_machine_avoidlist = _stage_machine_avoidlist_for_attempt(
+                    source_path=content_agents_machine_avoidlist,
+                    destination_path=(
+                        Path(args.adp_job_dir) / "vast_machine_avoidlist.json"
+                    ),
+                )
                 result = run_content_agents_vast(
                     job_dir=args.adp_job_dir,
                     paid_resource_admission_grant=grant,
@@ -3878,7 +3885,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
                     public_image=ADP_CONTENT_AGENTS_IMAGE,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
-                    machine_avoidlist_path=content_agents_machine_avoidlist,
+                    machine_avoidlist_path=provider_machine_avoidlist,
                 )
             write_json(Path(args.adapter_output), result)
             success = result.get("status") in {"dry_run_ready", "completed"}
@@ -4375,6 +4382,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provider_mutations_performed": 0,
                 }
             else:
+                provider_machine_avoidlist = _stage_machine_avoidlist_for_attempt(
+                    source_path=simready_machine_avoidlist,
+                    destination_path=(
+                        Path(args.adp_job_dir)
+                        / "adp009b_simready_isaac_machine_avoidlist.json"
+                    ),
+                )
                 result = run_simready_isaac_vast(
                     job_dir=args.adp_job_dir,
                     prepared_bundle=prepared_bundle,
@@ -4382,7 +4396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     paid_attempt_authority=paid_attempt_authority,
                     bundle_receipt_sha256=receipt_sha256,
                     execute=args.execute,
-                    machine_avoidlist_path=simready_machine_avoidlist,
+                    machine_avoidlist_path=provider_machine_avoidlist,
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,

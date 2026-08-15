@@ -2541,11 +2541,15 @@ def test_canonical_allocator_reuses_retained_content_agents_bad_hosts(
         "_control_plane_checkout_blockers",
         lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
     )
-    monkeypatch.setattr(
-        allocator,
-        "run_content_agents_vast",
-        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
-    )
+    def fake_run(**kwargs: object) -> dict[str, str]:
+        observed.update(kwargs)
+        attempt_avoidlist = Path(str(kwargs["machine_avoidlist_path"]))
+        value = json.loads(attempt_avoidlist.read_text(encoding="utf-8"))
+        value["machine_ids"].append(61680)
+        write_json(attempt_avoidlist, value)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_content_agents_vast", fake_run)
 
     assert allocator.main(args) == 0
     shared = (
@@ -2553,8 +2557,11 @@ def test_canonical_allocator_reuses_retained_content_agents_bad_hosts(
         / "provider-machine-avoidlists"
         / "adp-content-agents-vast-machine-avoidlist.json"
     )
-    assert observed["machine_avoidlist_path"] == shared
+    assert observed["machine_avoidlist_path"] == current_job / "vast_machine_avoidlist.json"
     assert json.loads(shared.read_text(encoding="utf-8"))["machine_ids"] == [51579]
+    assert json.loads(
+        Path(str(observed["machine_avoidlist_path"])).read_text(encoding="utf-8")
+    )["machine_ids"] == [51579, 61680]
     admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
     assert admission["allocation_binding"]["machine_avoidlist_sha256"] == (
         "sha256:" + hashlib.sha256(shared.read_bytes()).hexdigest()
