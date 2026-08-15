@@ -746,6 +746,7 @@ def _repo(root: Path) -> tuple[Path, Path]:
     for name in (
         "run_adp_retained_scene_render_provider_runtime.sh",
         "adp_retained_scene_render_provider_runner.mjs",
+        "adp_retained_scene_render_rehearsal.py",
     ):
         shutil.copy2(checkout / "scripts" / name, scripts / name)
     vendor = root / "vendor"
@@ -893,10 +894,26 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     request_path = tmp_path / "request.json"
     _write_json(request_path, request)
 
-    receipt = build_retained_scene_gpu_render_bundle(
-        request_path=request_path, repo_root=repo, job_dir=tmp_path / "job"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    node_marker = tmp_path / "node-invoked"
+    fake_node = fake_bin / "node"
+    fake_node.write_text(
+        f"#!/bin/sh\ntouch {node_marker}\nexit 97\n",
+        encoding="utf-8",
     )
+    fake_node.chmod(0o755)
+    original_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = f"{fake_bin}{os.pathsep}{original_path}"
 
+    try:
+        receipt = build_retained_scene_gpu_render_bundle(
+            request_path=request_path, repo_root=repo, job_dir=tmp_path / "job"
+        )
+    finally:
+        os.environ["PATH"] = original_path
+
+    assert not node_marker.exists()
     assert receipt["status"] == "ready"
     assert receipt["source_pair_per_task"] is True
     assert receipt["retained_frame_per_task"] is True
@@ -908,6 +925,7 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     assert "provider_runtime/input/shared_deleted_source_layer.ply" in names
     assert "provider_runtime/input/shared_retained_scene.ply" in names
     assert "provider_runtime/input/direct_evidence_successor_set.json" in names
+    assert "provider_runtime/adp_retained_scene_render_rehearsal.py" in names
     assert (tmp_path / "job/provider_runtime/input/shared_deleted_source_layer.ply").stat().st_ino == (
         tmp_path / "direct_set/shared_scene_union/deleted_source_gaussians.ply"
     ).stat().st_ino
@@ -978,6 +996,27 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     )
     assert "adp_retained_scene_render_provider_bundle" in probe
     assert "apt-get" not in probe
+
+    tampered = tmp_path / "job/provider_runtime/input/shared_deleted_source_layer.ply"
+    tampered.unlink()
+    tampered.write_bytes(b"tampered\n")
+    tampered_output = tmp_path / "tampered-rehearsal"
+    tampered_environment = os.environ.copy()
+    tampered_environment.update(
+        {
+            "BLUEPRINT_PROVIDER_BUNDLE_REHEARSAL": "1",
+            "BLUEPRINT_ADP_RETAINED_SCENE_RENDER_OUTPUT_DIR": str(tampered_output),
+        }
+    )
+    tampered_result = subprocess.run(
+        ["bash", str(bundled_shell)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=tampered_environment,
+    )
+    assert tampered_result.returncode == 2
+    assert not (tampered_output / "provider_bundle_rehearsal.json").exists()
 
 
 def test_rebuilds_current_commit_bundle_from_sealed_host_predecessor(
