@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import os
+import re
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -1004,6 +1005,162 @@ def test_seals_two_task_bundle_and_rehearses_exact_uploaded_entrypoint(tmp_path:
     )
     assert "adp_retained_scene_render_provider_bundle" in probe
     assert "apt-get" not in probe
+
+
+def test_rebuilds_current_commit_bundle_from_sealed_host_predecessor(
+    tmp_path: Path,
+) -> None:
+    candidate_path, inputs = _inputs(tmp_path)
+    original_candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    repo, vendor = _repo(tmp_path)
+    authority = _authority(tmp_path / "authority.json")
+    request = build_retained_scene_gpu_render_request(
+        {
+            "schema_version": "adp009d_retained_scene_gpu_render_request.v1",
+            "program_id": "arm-decision-proof-v1",
+            "adp_item": "ADP-009D",
+            "frozen_before_render_execution": True,
+            "learned_policy_outcomes_accessed": False,
+            "candidate_set_path": str(candidate_path),
+            "execution_authority_path": str(authority),
+            "renderer_vendor_root": str(vendor),
+            "task_lanes": inputs["lanes"],
+            "private_upload_policy": {
+                "raw_dataset_bytes_upload": False,
+                "private_derived_upload": True,
+                "provider_training": False,
+                "publication": False,
+                "retention": "bounded_to_goal_then_provider_zero",
+            },
+        }
+    )
+    request_path = tmp_path / "predecessor-request.json"
+    _write_json(request_path, request)
+    predecessor = build_retained_scene_gpu_render_bundle(
+        request_path=request_path,
+        repo_root=repo,
+        job_dir=tmp_path / "predecessor-job",
+    )
+    predecessor_commit = predecessor["blueprint_commit"]
+
+    renderer_vendor = repo / "tools/splat_render/node_modules"
+    for package in ("@sparkjsdev/spark", "fflate", "playwright", "playwright-core", "three"):
+        shutil.copytree(vendor / package, renderer_vendor / package)
+    (repo / "CURRENT_RELEASE").write_text("rebuild producer fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-m",
+            "current release",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    current_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert current_commit != predecessor_commit
+
+    output_root = tmp_path / "host-inputs" / "retained-scene-current"
+    cli_program = """
+from pathlib import Path
+import sys
+import blueprint_pipeline.retained_scene_sealed_bundle_rebuild as sealed_rebuild
+from scripts.build_retained_scene_render_bundle import main
+
+sealed_rebuild.DEFAULT_PRODUCTION_ROOTS = (Path(sys.argv[1]).resolve(),)
+raise SystemExit(main(sys.argv[2:]))
+"""
+    cli = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            cli_program,
+            str(tmp_path),
+            "--sealed-predecessor-bundle",
+            predecessor["bundle_path"],
+            "--source-standard-splat",
+            str(tmp_path / "direct_set/source.ply"),
+            "--repo-root",
+            str(repo),
+            "--output-root",
+            str(output_root),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert cli.returncode == 0, cli.stderr
+    cli_result = json.loads(cli.stdout)
+    assert cli_result["status"] == "ready"
+    assert cli_result["blueprint_commit"] == current_commit
+    receipt_path = Path(cli_result["receipt_path"])
+    assert receipt_path == (
+        output_root / "adp009d_retained_scene_sealed_bundle_rebuild.v1.json"
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+    assert receipt["status"] == "ready"
+    assert receipt["source_commit_sha"] == current_commit
+    assert receipt["provider_mutation_performed"] is False
+    assert receipt["paid_resource_used"] is False
+    assert receipt["scientific_execution_performed"] is False
+    assert receipt["website_trigger_proven"] is False
+    assert receipt["reconstructed_indices"]["disjoint"] is True
+    assert receipt["reconstructed_indices"]["exhaustive"] is True
+    outputs = original_candidate["shared_scene_union"]["outputs"]
+    assert receipt["reconstructed_indices"]["deleted"]["sha256"] == outputs[
+        "deleted_source_indices"
+    ]["sha256"]
+    assert receipt["reconstructed_indices"]["retained"]["sha256"] == outputs[
+        "retained_source_indices"
+    ]["sha256"]
+    rebuilt_candidate = json.loads(
+        (output_root / "rehydrated_scene/direct_evidence_successor_set.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert rebuilt_candidate["sealed_predecessor_rebuild"][
+        "absolute_authoring_paths_followed"
+    ] is False
+    assert rebuilt_candidate["source_standard_splat"]["path"].startswith(
+        str(output_root)
+    )
+    for row in rebuilt_candidate["task_candidates"]:
+        assert row["task_freeze"]["path"].startswith(str(output_root))
+    serialized = canonical_json(rebuilt_candidate)
+    assert str(tmp_path / "freezes") not in serialized
+    assert str(candidate_path) not in serialized
+    rebuilt_request = json.loads(
+        (output_root / "retained_scene_gpu_render_request.current.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert not Path(rebuilt_request["candidate_set_path"]).is_absolute()
+    assert not Path(rebuilt_request["execution_authority_path"]).is_absolute()
+    assert all(
+        not Path(row["camera_contract_path"]).is_absolute()
+        for row in rebuilt_request["task_lanes"]
+    )
+    rebuilt_bundle_receipt = json.loads(
+        Path(receipt["bundle_receipt"]["path"]).read_text(encoding="utf-8")
+    )
+    assert rebuilt_bundle_receipt["blueprint_commit"] == current_commit
+    assert validate_retained_scene_render_bundle(rebuilt_bundle_receipt)[
+        "bundle_sha256"
+    ] == rebuilt_bundle_receipt["bundle_sha256"]
 
 
 @pytest.mark.parametrize(
