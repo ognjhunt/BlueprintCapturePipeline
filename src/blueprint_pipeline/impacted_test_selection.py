@@ -33,6 +33,7 @@ SENTINEL_TESTS = (
 )
 
 CROSS_CUTTING_FILES = {
+    ".github/workflows/full-test-lane.yml",
     "pyproject.toml",
     "uv.lock",
     "requirements.txt",

@@ -25,6 +25,13 @@ def test_workflow_change_adds_release_contract_tests_without_full_suite() -> Non
     assert "tests/test_release_engineering_contracts.py" in plan["selected_tests"]
 
 
+def test_full_lane_workflow_change_executes_the_changed_full_suite() -> None:
+    plan = MODULE.build_plan(ROOT, [".github/workflows/full-test-lane.yml"])
+
+    assert plan["requires_full_suite"] is True
+    assert "cross_cutting_file:.github/workflows/full-test-lane.yml" in plan["reasons"]
+
+
 def test_source_change_maps_direct_and_importing_tests() -> None:
     plan = MODULE.build_plan(
         ROOT,

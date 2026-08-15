@@ -22,7 +22,10 @@ on:
 
 concurrency:
   group: full-test-lane-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve healthy integration and promotion evidence even when a newer SHA
+  # appears. A superseded result remains diagnostic; it is never provenance for
+  # the newer SHA.
+  cancel-in-progress: false
 
 jobs:
   full-pytest-shard:
