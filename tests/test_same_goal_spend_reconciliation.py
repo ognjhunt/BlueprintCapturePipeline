@@ -163,6 +163,29 @@ def test_cli_derives_cost_and_digests_without_handwritten_ledger(tmp_path: Path)
     assert output.is_file()
 
 
+def test_materializer_prefers_provider_zero_schema_digest(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path / "fixture")
+    zero = json.loads(fixture["zero"].read_text(encoding="utf-8"))
+    zero["receipt_digest"] = "sha256:" + "0" * 64
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    fixture["zero"].write_text(json.dumps(zero), encoding="utf-8")
+
+    _, value = _materialize(tmp_path / "fixture", "retained_scene_render", fixture)
+
+    provider_zero = next(
+        source
+        for source in value["entries"][0]["source_receipts"]
+        if source["role"] == "provider_zero"
+    )
+    assert provider_zero["digest_field"] == "provider_zero_receipt_digest"
+    assert (
+        provider_zero["record"]["receipt_digest"]
+        == zero["provider_zero_receipt_digest"]
+    )
+
+
 def test_materializer_refuses_billing_not_bound_by_source_receipt(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path / "fixture")
     billing = json.loads(fixture["billing"].read_text(encoding="utf-8"))
