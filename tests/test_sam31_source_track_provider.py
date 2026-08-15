@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline.sam31_source_track_provider_stage import (
+    _adapt_multiplex_start_session,
     run_sam31_source_track_stage,
 )
 from blueprint_pipeline.scene_placement.sam31_source_track_provider import (
@@ -72,6 +73,52 @@ class CleanupFailingPredictor(FakePredictor):
         if request["type"] == "close_session":
             raise RuntimeError("simulated cleanup failure")
         return super().handle_request(request=request)
+
+
+class OfficialMultiplexSignatureModel:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def init_state(
+        self,
+        resource_path: str,
+        offload_video_to_cpu: bool = False,
+        async_loading_frames: bool = False,
+        use_torchcodec: bool = False,
+        use_cv2: bool = False,
+        input_is_mp4: bool = False,
+    ) -> dict[str, Any]:
+        call = {
+            "resource_path": resource_path,
+            "offload_video_to_cpu": offload_video_to_cpu,
+            "async_loading_frames": async_loading_frames,
+            "use_torchcodec": use_torchcodec,
+            "use_cv2": use_cv2,
+            "input_is_mp4": input_is_mp4,
+        }
+        self.calls.append(call)
+        return call
+
+
+class OfficialBasePredictorShape:
+    def __init__(self) -> None:
+        self.model = OfficialMultiplexSignatureModel()
+        self.async_loading_frames = False
+
+    def start_session(
+        self,
+        *,
+        resource_path: str,
+        offload_video_to_cpu: bool = False,
+        offload_state_to_cpu: bool = False,
+    ) -> dict[str, Any]:
+        state = self.model.init_state(
+            resource_path=resource_path,
+            offload_video_to_cpu=offload_video_to_cpu,
+            offload_state_to_cpu=offload_state_to_cpu,
+            async_loading_frames=self.async_loading_frames,
+        )
+        return {"session_id": "official-session", "state": state}
 
 
 def _outputs(*, empty: bool = False) -> dict[int, dict[str, Any]]:
@@ -319,7 +366,55 @@ def test_untrusted_runtime_exception_text_is_redacted(tmp_path: Path) -> None:
     )
 
     assert result["status"] == "blocked"
-    assert result["blockers"] == ["sam31_runtime_failed:ValueError"]
+    assert result["blockers"] == [
+        "sam31_runtime_failed:predictor_construction:ValueError"
+    ]
+    assert "supersecret" not in json.dumps(result)
+
+
+def test_adapts_exact_official_multiplex_start_session_signature() -> None:
+    predictor = _adapt_multiplex_start_session(OfficialBasePredictorShape())
+
+    started = predictor.start_session(
+        resource_path="/frames",
+        offload_video_to_cpu=False,
+        offload_state_to_cpu=False,
+    )
+
+    assert started["session_id"] == "official-session"
+    assert predictor.model.calls == [
+        {
+            "resource_path": "/frames",
+            "offload_video_to_cpu": False,
+            "async_loading_frames": False,
+            "use_torchcodec": False,
+            "use_cv2": False,
+            "input_is_mp4": False,
+        }
+    ]
+    with pytest.raises(ValueError, match="sam31_runtime_state_offload_unsupported"):
+        predictor.start_session(
+            resource_path="/frames",
+            offload_state_to_cpu=True,
+        )
+
+
+def test_runtime_failure_reports_bounded_phase_without_exception_text(
+    tmp_path: Path,
+) -> None:
+    class SessionFailingPredictor:
+        def handle_request(self, *, request: Mapping[str, Any]) -> dict[str, Any]:
+            if request["type"] == "start_session":
+                raise TypeError("sam31_token_supersecret")
+            return {"is_success": True}
+
+    result = execute_sam31_source_track_request(
+        _request(),
+        predictor_factory=lambda _: SessionFailingPredictor(),
+        materialized_frame_directory=_frame_directory(tmp_path),
+    )
+
+    assert result["blockers"] == ["sam31_runtime_failed:session_start:TypeError"]
     assert "supersecret" not in json.dumps(result)
 
 

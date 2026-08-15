@@ -60,6 +60,8 @@ _SAFE_EXECUTION_BLOCKERS = {
     "sam31_output_shape_mismatch",
     "sam31_outputs_missing_retained_frames",
     "sam31_runtime_not_installed",
+    "sam31_runtime_start_session_api_invalid",
+    "sam31_runtime_state_offload_unsupported",
     "sam31_session_start_invalid",
     "sam31_stream_frame_invalid",
     "sam31_stream_response_invalid",
@@ -615,8 +617,10 @@ def execute_sam31_source_track_request(
     session_id = ""
     terminal: Dict[str, Any]
     cleanup_failed = False
+    phase = "predictor_construction"
     try:
         predictor = predictor_factory(profile)
+        phase = "session_start"
         started = predictor.handle_request(
             request={
                 "type": "start_session",
@@ -629,6 +633,7 @@ def execute_sam31_source_track_request(
             raise ValueError("sam31_session_start_invalid")
         session_id = str(started["session_id"])
         threshold = float(profile["output_probability_threshold"])
+        phase = "prompt_execution"
         for prompt in prompts:
             _run_prompt(
                 predictor=predictor,
@@ -638,6 +643,7 @@ def execute_sam31_source_track_request(
                 threshold=threshold,
                 observations=observations,
             )
+        phase = "result_normalization"
         provider = _provider_result(request, profile, prompts, observations)
         import_request = _import_request(request, profile, provider)
         status = "completed" if provider["tracks"] else "abstained"
@@ -653,7 +659,7 @@ def execute_sam31_source_track_request(
     except (KeyError, OSError, TypeError, ValueError, RuntimeError) as exc:
         reason = str(exc).strip()
         if reason not in _SAFE_EXECUTION_BLOCKERS:
-            reason = f"sam31_runtime_failed:{type(exc).__name__}"
+            reason = f"sam31_runtime_failed:{phase}:{type(exc).__name__}"
         terminal = blocked_sam31_source_track_run(request, [reason])
     finally:
         if predictor is not None and session_id:
