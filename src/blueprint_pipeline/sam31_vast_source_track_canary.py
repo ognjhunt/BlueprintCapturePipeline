@@ -47,6 +47,9 @@ from .vast_independent_watchdog_control import write_started_vast_instance_id
 EXECUTION_SCHEMA_VERSION = "semantic_sam31_vast_source_track_execution.v1"
 TEARDOWN_SCHEMA_VERSION = "semantic_sam31_vast_teardown_receipt.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "semantic_sam31_vast_provider_zero.v1"
+PRELAUNCH_INVENTORY_SCHEMA_VERSION = "semantic_sam31_prelaunch_inventory_block.v1"
+PRELAUNCH_INVENTORY_RECEIPT_NAME = "prelaunch_provider_inventory_block.json"
+PRELAUNCH_PROVIDER_ZERO_SCHEMA_VERSION = "semantic_sam31_vast_provider_zero_no_allocation.v1"
 PAID_LANE = "semantic_sam31_gpu_canary"
 NAME_PREFIX = "blueprint-sam31-source-tracks-"
 MAX_RESULT_BYTES = 64 * 1024**2
@@ -58,6 +61,186 @@ HF_TOKEN_ENV = "HF_TOKEN"
 
 class Sam31VastCanaryError(ValueError):
     pass
+
+
+def _provider_zero_status_from_snapshots(snapshots: Any) -> str:
+    if not isinstance(snapshots, list) or len(snapshots) != 2:
+        return "unverified"
+    expected = (("scoped", NAME_PREFIX), ("global", ""))
+    inventories: list[Mapping[str, Any]] = []
+    for snapshot, (label, name_prefix) in zip(snapshots, expected, strict=True):
+        if (
+            not isinstance(snapshot, Mapping)
+            or snapshot.get("label") != label
+            or snapshot.get("name_prefix") != name_prefix
+            or not isinstance(snapshot.get("inventory"), Mapping)
+        ):
+            return "unverified"
+        inventories.append(snapshot["inventory"])
+    if not all(row.get("api_confirmed") is True for row in inventories):
+        return "api_unconfirmed"
+    if all(row.get("live_resource_count") == 0 for row in inventories):
+        return "verified_zero"
+    return "nonzero"
+
+
+def prelaunch_inventory_provider_zero_status(value: Mapping[str, Any]) -> str:
+    """Derive provider-zero truth from the exact retained JIT inventory rows."""
+
+    if value.get("schema_version") != PRELAUNCH_INVENTORY_SCHEMA_VERSION or value.get(
+        "receipt_digest"
+    ) != canonical_digest(value, digest_field="receipt_digest"):
+        return "unverified"
+    postfailure_snapshots = value.get("postfailure_inventory_snapshots")
+    if value.get("postfailure_inventory_digest") != canonical_digest(
+        {"inventory_snapshots": postfailure_snapshots},
+        digest_field="postfailure_inventory_digest",
+    ):
+        return "unverified"
+    return _provider_zero_status_from_snapshots(postfailure_snapshots)
+
+
+def _write_prelaunch_inventory_block_receipt(
+    *,
+    root: Path,
+    request: Mapping[str, Any],
+    initial_scoped_inventory: Mapping[str, Any],
+    initial_global_inventory: Mapping[str, Any],
+    postfailure_scoped_inventory: Mapping[str, Any],
+    postfailure_global_inventory: Mapping[str, Any],
+) -> dict[str, Any]:
+    initial_snapshots = [
+        {
+            "label": "scoped",
+            "name_prefix": NAME_PREFIX,
+            "inventory": json.loads(json.dumps(dict(initial_scoped_inventory))),
+        },
+        {
+            "label": "global",
+            "name_prefix": "",
+            "inventory": json.loads(json.dumps(dict(initial_global_inventory))),
+        },
+    ]
+    postfailure_snapshots = [
+        {
+            "label": "scoped",
+            "name_prefix": NAME_PREFIX,
+            "inventory": json.loads(json.dumps(dict(postfailure_scoped_inventory))),
+        },
+        {
+            "label": "global",
+            "name_prefix": "",
+            "inventory": json.loads(json.dumps(dict(postfailure_global_inventory))),
+        },
+    ]
+    postfailure_inventory_digest = canonical_digest(
+        {"inventory_snapshots": postfailure_snapshots},
+        digest_field="postfailure_inventory_digest",
+    )
+    receipt = {
+        "schema_version": PRELAUNCH_INVENTORY_SCHEMA_VERSION,
+        "status": "blocked",
+        "blocker": "sam31_provider_not_zero_before_launch",
+        "provider": "vast",
+        "request_digest": request.get("request_digest"),
+        "bound_request_digest": request.get("bound_request_digest"),
+        "provider_mutations_performed": 0,
+        "initial_provider_zero_status": _provider_zero_status_from_snapshots(initial_snapshots),
+        "provider_zero_status": _provider_zero_status_from_snapshots(postfailure_snapshots),
+        "inventory_snapshots": initial_snapshots,
+        "postfailure_inventory_snapshots": postfailure_snapshots,
+        "postfailure_inventory_digest": postfailure_inventory_digest,
+        "captured_at": utc_now_iso(),
+        "raw_secret_values_recorded": False,
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(root / PRELAUNCH_INVENTORY_RECEIPT_NAME, receipt)
+    return receipt
+
+
+def _inventory_or_api_unconfirmed(
+    provider: GpuRenderProvider, *, name_prefix: str, blocker: str
+) -> Mapping[str, Any]:
+    try:
+        return provider.billable_inventory(name_prefix=name_prefix)
+    except Exception as exc:  # noqa: BLE001 - retain typed API uncertainty
+        return {
+            "api_confirmed": False,
+            "live_resource_count": None,
+            "resources": [],
+            "blockers": [blocker],
+            "error_type": type(exc).__name__,
+        }
+
+
+def _retain_prelaunch_inventory_block_terminal(
+    *,
+    root: Path,
+    request: Mapping[str, Any],
+    provider: GpuRenderProvider,
+    scoped_before: Mapping[str, Any],
+    global_before: Mapping[str, Any],
+) -> None:
+    scoped_after = _inventory_or_api_unconfirmed(
+        provider,
+        name_prefix=NAME_PREFIX,
+        blocker="sam31_postfailure_inventory_api_unconfirmed",
+    )
+    global_after = _inventory_or_api_unconfirmed(
+        provider,
+        name_prefix="",
+        blocker="sam31_postfailure_inventory_api_unconfirmed",
+    )
+    receipt = _write_prelaunch_inventory_block_receipt(
+        root=root,
+        request=request,
+        initial_scoped_inventory=scoped_before,
+        initial_global_inventory=global_before,
+        postfailure_scoped_inventory=scoped_after,
+        postfailure_global_inventory=global_after,
+    )
+    provider_zero_status = prelaunch_inventory_provider_zero_status(receipt)
+    provider_zero = provider_zero_status == "verified_zero"
+    provider_zero_receipt = {
+        "schema_version": PRELAUNCH_PROVIDER_ZERO_SCHEMA_VERSION,
+        "status": "PASS" if provider_zero else "FAIL",
+        "provider": "vast",
+        "request_digest": request.get("request_digest"),
+        "bound_request_digest": request.get("bound_request_digest"),
+        "provider_zero_verified": provider_zero,
+        "provider_zero_status": provider_zero_status,
+        "postfailure_inventory_digest": receipt["postfailure_inventory_digest"],
+        "prelaunch_inventory_receipt_digest": receipt["receipt_digest"],
+        "scoped_live_resource_count": scoped_after.get("live_resource_count"),
+        "global_live_resource_count": global_after.get("live_resource_count"),
+        "api_confirmed": bool(
+            scoped_after.get("api_confirmed") is True and global_after.get("api_confirmed") is True
+        ),
+        "timestamp": utc_now_iso(),
+    }
+    provider_zero_receipt["provider_zero_receipt_digest"] = canonical_digest(
+        provider_zero_receipt, digest_field="provider_zero_receipt_digest"
+    )
+    write_json(root / "provider_zero_verification.json", provider_zero_receipt)
+    teardown = {
+        "schema_version": TEARDOWN_SCHEMA_VERSION,
+        "status": "PASS" if provider_zero else "FAIL",
+        "provider": "vast",
+        "request_digest": request.get("request_digest"),
+        "bound_request_digest": request.get("bound_request_digest"),
+        "instance_id": None,
+        "terminate_result": {"status": "not_required_no_allocation"},
+        "provider_mutations_performed": 0,
+        "continuing_spend_from_this_run": False,
+        "provider_zero_verified": provider_zero,
+        "provider_zero_status": provider_zero_status,
+        "provider_zero_receipt_digest": provider_zero_receipt["provider_zero_receipt_digest"],
+        "timestamp": utc_now_iso(),
+    }
+    teardown["teardown_receipt_digest"] = canonical_digest(
+        teardown, digest_field="teardown_receipt_digest"
+    )
+    write_json(root / "teardown_receipt.json", teardown)
 
 
 def _nested_keys(value: Any) -> set[str]:
@@ -98,23 +281,19 @@ def _watchdog_valid(
     try:
         pid = int(watchdog.get("watchdog_pid") or watchdog.get("pid") or 0)
         started = float(
-            watchdog.get("watchdog_started_epoch")
-            or watchdog.get("started_epoch")
-            or 0
+            watchdog.get("watchdog_started_epoch") or watchdog.get("started_epoch") or 0
         )
         deadline = float(
-            watchdog.get("watchdog_deadline_epoch")
-            or watchdog.get("deadline_epoch")
-            or 0
+            watchdog.get("watchdog_deadline_epoch") or watchdog.get("deadline_epoch") or 0
         )
     except (TypeError, ValueError):
         return False
     if (
         watchdog.get("status") != "armed"
         or watchdog.get("independent_process") is not True
-        or not str(
-            watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or ""
-        ).startswith(NAME_PREFIX)
+        or not str(watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or "").startswith(
+            NAME_PREFIX
+        )
         or pid <= 0
         or started <= 0
         or started > now_epoch
@@ -343,17 +522,32 @@ def run_sam31_vast_source_track_canary(
     )
     if not validator(watchdog, started_at, hard_ttl):
         raise Sam31VastCanaryError("sam31_independent_watchdog_not_live")
-    watchdog_prefix = str(
-        watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or ""
-    )
+    watchdog_prefix = str(watchdog.get("name_prefix") or watchdog.get("pod_name_prefix") or "")
     name = f"{watchdog_prefix}{request_digest.removeprefix('sha256:')[:12]}"
-    scoped_before = provider.billable_inventory(name_prefix=NAME_PREFIX)
-    global_before = provider.billable_inventory(name_prefix="")
+    scoped_before = _inventory_or_api_unconfirmed(
+        provider,
+        name_prefix=NAME_PREFIX,
+        blocker="sam31_initial_inventory_api_unconfirmed",
+    )
+    global_before = _inventory_or_api_unconfirmed(
+        provider,
+        name_prefix="",
+        blocker="sam31_initial_inventory_api_unconfirmed",
+    )
     if not all(
         row.get("api_confirmed") is True and row.get("live_resource_count") == 0
         for row in (scoped_before, global_before)
     ):
-        raise Sam31VastCanaryError("sam31_provider_not_zero_before_launch")
+        try:
+            raise Sam31VastCanaryError("sam31_provider_not_zero_before_launch")
+        finally:
+            _retain_prelaunch_inventory_block_terminal(
+                root=root,
+                request=request,
+                provider=provider,
+                scoped_before=scoped_before,
+                global_before=global_before,
+            )
 
     reconciliation = build_paid_provider_lane_reconciliation(
         provider="vast",
@@ -634,7 +828,10 @@ __all__ = [
     "EXECUTION_SCHEMA_VERSION",
     "NAME_PREFIX",
     "PAID_LANE",
+    "PRELAUNCH_INVENTORY_RECEIPT_NAME",
+    "PRELAUNCH_INVENTORY_SCHEMA_VERSION",
     "Sam31VastCanaryError",
+    "prelaunch_inventory_provider_zero_status",
     "run_sam31_vast_source_track_canary",
     "validate_sam31_runtime_result",
 ]
