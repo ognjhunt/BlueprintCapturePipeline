@@ -292,12 +292,17 @@ def _validate_frames(request: Mapping[str, Any], blockers: list[str]) -> list[di
     return frames
 
 
-def _validate_prompts(request: Mapping[str, Any], blockers: list[str]) -> list[dict[str, str]]:
+def _validate_prompts(
+    request: Mapping[str, Any],
+    blockers: list[str],
+    *,
+    frame_count: int,
+) -> list[dict[str, Any]]:
     raw = request.get("prompts")
     if not isinstance(raw, list) or not raw or len(raw) > _MAX_PROMPTS:
         blockers.append("prompts_missing_empty_or_too_large")
         return []
-    prompts: list[dict[str, str]] = []
+    prompts: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in raw:
         if not isinstance(row, Mapping):
@@ -306,6 +311,7 @@ def _validate_prompts(request: Mapping[str, Any], blockers: list[str]) -> list[d
         prompt_id = _identifier(row.get("prompt_id"))
         text = str(row.get("text") or "").strip()
         label = str(row.get("output_label") or "").strip()
+        anchor_frame_index = row.get("anchor_frame_index", 0)
         if (
             not prompt_id
             or prompt_id in seen
@@ -313,11 +319,21 @@ def _validate_prompts(request: Mapping[str, Any], blockers: list[str]) -> list[d
             or len(text) > 256
             or not label
             or len(label) > 256
+            or isinstance(anchor_frame_index, bool)
+            or not isinstance(anchor_frame_index, int)
+            or not 0 <= anchor_frame_index < frame_count
         ):
             blockers.append("prompt_identity_or_text_invalid")
             continue
         seen.add(prompt_id)
-        prompts.append({"prompt_id": prompt_id, "text": text, "output_label": label})
+        prompts.append(
+            {
+                "prompt_id": prompt_id,
+                "text": text,
+                "output_label": label,
+                "anchor_frame_index": anchor_frame_index,
+            }
+        )
     return prompts
 
 
@@ -341,7 +357,7 @@ def _validate_request(
             blockers.append(f"binding_digest_invalid:{field}")
     profile = _validate_profile(request, blockers)
     frames = _validate_frames(request, blockers)
-    prompts = _validate_prompts(request, blockers)
+    prompts = _validate_prompts(request, blockers, frame_count=len(frames))
     if not materialized_frame_directory.is_dir():
         blockers.append("materialized_frame_directory_missing")
     else:
@@ -451,11 +467,12 @@ def _run_prompt(
     observations: dict[tuple[str, int], list[dict[str, Any]]],
 ) -> None:
     predictor.handle_request(request={"type": "reset_session", "session_id": session_id})
+    anchor_frame_index = int(prompt["anchor_frame_index"])
     initial = predictor.handle_request(
         request={
             "type": "add_prompt",
             "session_id": session_id,
-            "frame_index": 0,
+            "frame_index": anchor_frame_index,
             "text": prompt["text"],
             "output_prob_thresh": threshold,
         }
@@ -463,17 +480,17 @@ def _run_prompt(
     by_frame: dict[int, Mapping[str, Any]] = {}
     if (
         isinstance(initial, Mapping)
-        and initial.get("frame_index") == 0
+        and initial.get("frame_index") == anchor_frame_index
         and isinstance(initial.get("outputs"), Mapping)
     ):
-        by_frame[0] = initial["outputs"]
+        by_frame[anchor_frame_index] = initial["outputs"]
     stream_seen: set[int] = set()
     stream = predictor.handle_stream_request(
         request={
             "type": "propagate_in_video",
             "session_id": session_id,
-            "propagation_direction": "forward",
-            "start_frame_index": 0,
+            "propagation_direction": "both",
+            "start_frame_index": anchor_frame_index,
             "max_frame_num_to_track": len(frames),
             "output_prob_thresh": threshold,
         }
@@ -567,6 +584,10 @@ def _provider_result(
             "mask_support": "thresholded_binary_mask",
             "run_probability": "object_detection_score_on_binary_support",
             "prompt_ids": [row["prompt_id"] for row in prompts],
+            "prompt_anchor_frame_indices": {
+                row["prompt_id"]: row["anchor_frame_index"] for row in prompts
+            },
+            "bidirectional_propagation": True,
             "cross_prompt_instance_deduplication_performed": False,
             "source_frame_semantics_only": True,
             "model_self_grading_permitted": False,

@@ -57,7 +57,8 @@ class FakePredictor:
         if request["type"] == "start_session":
             return {"session_id": "session-1"}
         if request["type"] == "add_prompt":
-            return {"frame_index": 0, "outputs": self.outputs[0]}
+            frame_index = int(request["frame_index"])
+            return {"frame_index": frame_index, "outputs": self.outputs[frame_index]}
         return {"is_success": True}
 
     def handle_stream_request(self, *, request: Mapping[str, Any]):
@@ -270,6 +271,13 @@ def test_executes_official_multiplex_shape_into_source_bound_tracks(tmp_path: Pa
         "object_detection_score_on_binary_support"
     )
     assert provider["provider_metadata"]["cross_prompt_instance_deduplication_performed"] is False
+    assert provider["provider_metadata"]["prompt_anchor_frame_indices"] == {"chair": 0}
+    assert provider["provider_metadata"]["bidirectional_propagation"] is True
+    propagation = next(
+        row for row in predictor.requests if row["type"] == "propagate_in_video"
+    )
+    assert propagation["start_frame_index"] == 0
+    assert propagation["propagation_direction"] == "both"
     assert result["metric_box_ready"] is False
     assert result["collision_ready"] is False
     assert result["comparative_policy_ranking_verdict"] == "thesis_not_supported"
@@ -298,6 +306,49 @@ def test_replay_is_deterministic_and_empty_model_result_abstains(tmp_path: Path)
     assert first["status"] == "abstained"
     assert first["provider_result"]["tracks"] == []
     assert first["warnings"] == ["sam31_returned_no_tracks"]
+
+
+def test_explicit_prompt_anchor_propagates_bidirectionally_from_nonfirst_frame(
+    tmp_path: Path,
+) -> None:
+    request = _request()
+    request["prompts"][0]["anchor_frame_index"] = 1
+    predictor = FakePredictor(_outputs())
+
+    result = execute_sam31_source_track_request(
+        request,
+        predictor_factory=_factory(predictor),
+        materialized_frame_directory=_frame_directory(tmp_path),
+    )
+
+    assert result["status"] == "completed"
+    add_prompt = next(row for row in predictor.requests if row["type"] == "add_prompt")
+    propagation = next(
+        row for row in predictor.requests if row["type"] == "propagate_in_video"
+    )
+    assert add_prompt["frame_index"] == 1
+    assert propagation["start_frame_index"] == 1
+    assert propagation["propagation_direction"] == "both"
+    assert result["provider_result"]["provider_metadata"][
+        "prompt_anchor_frame_indices"
+    ] == {"chair": 1}
+
+
+@pytest.mark.parametrize("anchor", [-1, 2, True])
+def test_rejects_out_of_range_or_non_integer_prompt_anchor(
+    tmp_path: Path, anchor: object
+) -> None:
+    request = _request()
+    request["prompts"][0]["anchor_frame_index"] = anchor
+
+    result = execute_sam31_source_track_request(
+        request,
+        predictor_factory=_factory(FakePredictor(_outputs())),
+        materialized_frame_directory=_frame_directory(tmp_path),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["prompt_identity_or_text_invalid"]
 
 
 def test_multiple_prompts_keep_namespaced_tracks_without_claiming_deduplication(
