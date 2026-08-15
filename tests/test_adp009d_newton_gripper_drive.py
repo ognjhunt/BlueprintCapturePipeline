@@ -57,6 +57,8 @@ def test_native_trace_requires_finite_speed_bounded_settled_motion() -> None:
 def test_runtime_configuration_is_newton_only_and_rate_limits_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    converted_values: list[object] = []
+
     class SourceAction:
         def process_actions(self, _actions):
             self._processed_actions = _FakeTensor(1.0)
@@ -81,11 +83,25 @@ def test_runtime_configuration_is_newton_only_and_rate_limits_target(
                 return min
             return self.value
 
+    class _FakeWarpArray:
+        def __getitem__(self, key):
+            if isinstance(key, tuple) and any(isinstance(item, list) for item in key):
+                raise TypeError("'<' not supported between instances of 'list' and 'int'")
+            return _FakeTensor(0.2)
+
     actions_module = types.ModuleType("isaaclab_arena.embodiments.droid.actions")
     actions_module.BinaryJointPositionZeroToOneAction = SourceAction
     monkeypatch.setitem(
         sys.modules, "isaaclab_arena.embodiments.droid.actions", actions_module
     )
+    array_module = types.ModuleType("isaaclab.utils.array")
+
+    def convert_to_torch(value: object) -> _FakeTensor:
+        converted_values.append(value)
+        return _FakeTensor(0.2)
+
+    array_module.convert_to_torch = convert_to_torch
+    monkeypatch.setitem(sys.modules, "isaaclab.utils.array", array_module)
     actuator = types.SimpleNamespace(
         stiffness=None, damping=None, armature=None, velocity_limit=1.0
     )
@@ -103,11 +119,11 @@ def test_runtime_configuration_is_newton_only_and_rate_limits_target(
     assert receipt["status"] == "applied_for_native_identification"
     assert actuator.armature == pytest.approx(0.1375)
     action = action_cfg.class_type()
-    action._asset = types.SimpleNamespace(
-        data=types.SimpleNamespace(joint_pos=_FakeTensor(0.2))
-    )
+    joint_pos = _FakeWarpArray()
+    action._asset = types.SimpleNamespace(data=types.SimpleNamespace(joint_pos=joint_pos))
     action._joint_ids = [0]
     action.process_actions(None)
+    assert converted_values == [joint_pos]
     assert action._processed_actions == pytest.approx(0.2 + 1 / 15)
 
 
