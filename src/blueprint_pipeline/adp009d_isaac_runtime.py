@@ -2202,6 +2202,11 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
         def get_object_cfg(self):
             return self.name, self.sensor_cfg
 
+        def get_event_cfg(self):
+            """Expose Arena's no-event asset contract for read-only sensors."""
+
+            return self.name, None
+
     class SpawnerObject(Object):
         """Use Arena's composition seam without importing its full asset registry."""
 
