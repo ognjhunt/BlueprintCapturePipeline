@@ -17,6 +17,7 @@ import pwd
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,14 +32,19 @@ from .decision_evidence_contracts import canonical_digest
 REQUEST_SCHEMA = "public_scene_host_input_request.v1"
 PACKET_SCHEMA = "public_scene_host_input_packet.v1"
 RECEIPT_SCHEMA = "public_scene_host_input_installation_receipt.v1"
+RIGHTS_RECEIPT_SCHEMA = "public_scene_rights_authority.v1"
 DEFAULT_DESTINATION_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
 PRODUCTION_ROOTS = (DEFAULT_DESTINATION_ROOT,)
 DEFAULT_REMOTE_PYTHON = Path(
     "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
 )
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
+MAX_ARCHIVE_MEMBERS = 16
+MAX_ARCHIVE_INPUT_BYTES = 2 * 1024**3
+MAX_ARCHIVE_COMPRESSED_BYTES = 2 * 1024**3
 MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024**2
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 8 * 1024**3
+MAX_ARCHIVE_COMPRESSION_RATIO = 100.0
 SERVICE_READBACK_TIMEOUT_SECONDS = 30
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -101,6 +107,26 @@ def _commit(value: Any) -> str:
     return text
 
 
+def _verified_checkout_head() -> str:
+    root = Path(__file__).resolve().parents[2]
+    try:
+        result = subprocess.run(  # nosec B603 - absolute executable and fixed argv
+            ["/usr/bin/git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SERVICE_READBACK_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PublicSceneHostInputError("checkout_head_verification_failed") from exc
+    if result.returncode != 0:
+        raise PublicSceneHostInputError("checkout_head_verification_failed")
+    try:
+        return _commit(result.stdout.strip())
+    except PublicSceneHostInputError as exc:
+        raise PublicSceneHostInputError("checkout_head_verification_failed") from exc
+
+
 def _under(path: Path, roots: Sequence[Path]) -> Path:
     resolved = path.expanduser().resolve()
     allowed = tuple(root.expanduser().resolve() for root in roots)
@@ -147,8 +173,8 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
         if not path.is_file() or _sha256_file(path) != expected:
             raise PublicSceneHostInputError(f"rights_receipt_bytes_mismatch:{receipt_id}")
         value = _json(path)
-        if not str(value.get("schema_version") or ""):
-            raise PublicSceneHostInputError(f"rights_receipt_schema_missing:{receipt_id}")
+        if value.get("schema_version") != RIGHTS_RECEIPT_SCHEMA:
+            raise PublicSceneHostInputError(f"rights_receipt_schema_invalid:{receipt_id}")
         if _rights_state(value) not in _APPROVED_RIGHTS_STATES:
             raise PublicSceneHostInputError(f"rights_receipt_not_approved:{receipt_id}")
         if value.get("agent_accepted_terms") is True:
@@ -245,13 +271,16 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
     if support_count > 5:
         raise PublicSceneHostInputError("task_support_file_count_exceeds_five")
 
+    source_commit = _commit(request.get("source_commit_sha"))
+    if source_commit != _verified_checkout_head():
+        raise PublicSceneHostInputError("source_commit_sha_mismatch")
     metadata = {
         "schema_version": PACKET_SCHEMA,
         "program_id": "arm-decision-proof-v1",
         "adp_item": str(request.get("adp_item") or "ADP-009B"),
         "scene_id": scene_id,
         "packet_id": packet_id,
-        "source_commit_sha": _commit(request.get("source_commit_sha")),
+        "source_commit_sha": source_commit,
         "rights_receipts": [
             {
                 key: value
@@ -339,20 +368,42 @@ def _consumer_digest(path: Path, *, account: str, uid: int) -> str:
 def _validated_archive(archive: zipfile.ZipFile) -> dict[str, Any]:
     infos = archive.infolist()
     names = [info.filename for info in infos]
-    if len(names) != len(set(names)) or "packet.json" not in names:
+    if (
+        not names
+        or len(names) > MAX_ARCHIVE_MEMBERS
+        or len(names) != len(set(names))
+        or "packet.json" not in names
+    ):
         raise PublicSceneHostInputError("packet_archive_members_invalid")
     uncompressed_bytes = 0
+    compressed_bytes = 0
     for info in infos:
         path = PurePosixPath(info.filename)
-        if path.is_absolute() or ".." in path.parts or info.is_dir():
+        mode = (info.external_attr >> 16) & 0xFFFF
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or "\\" in info.filename
+            or info.is_dir()
+            or not stat.S_ISREG(mode)
+            or info.flag_bits & 0x1
+            or info.compress_type not in {zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED}
+        ):
             raise PublicSceneHostInputError("packet_archive_member_unsafe")
         if info.file_size <= 0 or info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
             raise PublicSceneHostInputError("packet_archive_member_size_exceeds_limit")
+        if info.compress_size <= 0:
+            raise PublicSceneHostInputError("packet_archive_compressed_size_invalid")
         uncompressed_bytes += info.file_size
+        compressed_bytes += info.compress_size
         if uncompressed_bytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
             raise PublicSceneHostInputError(
                 "packet_archive_uncompressed_size_exceeds_limit"
             )
+        if compressed_bytes > MAX_ARCHIVE_COMPRESSED_BYTES:
+            raise PublicSceneHostInputError("packet_archive_compressed_size_exceeds_limit")
+        if info.file_size / info.compress_size > MAX_ARCHIVE_COMPRESSION_RATIO:
+            raise PublicSceneHostInputError("packet_archive_compression_ratio_exceeds_limit")
     try:
         packet = json.loads(archive.read("packet.json"))
     except (KeyError, UnicodeError, json.JSONDecodeError) as exc:
@@ -363,7 +414,9 @@ def _validated_archive(archive: zipfile.ZipFile) -> dict[str, Any]:
         raise PublicSceneHostInputError("packet_manifest_digest_invalid")
     _safe_id(packet.get("scene_id"), field="scene_id")
     _safe_id(packet.get("packet_id"), field="packet_id")
-    _commit(packet.get("source_commit_sha"))
+    source_commit = _commit(packet.get("source_commit_sha"))
+    if source_commit != _verified_checkout_head():
+        raise PublicSceneHostInputError("source_commit_sha_mismatch")
     expected = {"packet.json"}
     rights_digests: dict[str, set[str]] = {}
     rights_rows = packet.get("rights_receipts")
@@ -387,7 +440,9 @@ def _validated_archive(archive: zipfile.ZipFile) -> dict[str, Any]:
         authorized = receipt.get("authorized_source_sha256") if isinstance(receipt, dict) else None
         if (
             not isinstance(receipt, dict)
+            or receipt.get("schema_version") != RIGHTS_RECEIPT_SCHEMA
             or _rights_state(receipt) not in _APPROVED_RIGHTS_STATES
+            or receipt.get("agent_accepted_terms") is True
             or not isinstance(authorized, list)
             or not authorized
             or any(not _DIGEST.fullmatch(str(value)) for value in authorized)
@@ -443,6 +498,15 @@ def install_packet_archive(
 ) -> dict[str, Any]:
     """Atomically install one packet and prove consumer-readable digests."""
 
+    try:
+        offset = archive_source.tell()
+        archive_source.seek(0, 2)
+        archive_input_bytes = archive_source.tell()
+        archive_source.seek(offset)
+    except (OSError, AttributeError) as exc:
+        raise PublicSceneHostInputError("packet_archive_input_unseekable") from exc
+    if archive_input_bytes <= 0 or archive_input_bytes > MAX_ARCHIVE_INPUT_BYTES:
+        raise PublicSceneHostInputError("packet_archive_input_size_exceeds_limit")
     root = _under(Path(destination_root), allowed_roots or PRODUCTION_ROOTS)
     root.mkdir(parents=True, exist_ok=True)
     account, uid, gid = _service_identity(service_account)
@@ -480,13 +544,20 @@ def install_packet_archive(
                 "packet_id": packet_id,
                 "source_commit_sha": packet["source_commit_sha"],
                 "packet_digest": packet["packet_digest"],
+                "authoritative_request_digest": packet["packet_digest"],
+                "request_identity_source": "verified_packet_manifest",
                 "destination_root": str(target),
                 "service_account": account,
                 "service_readable": True,
                 "files": list(records),
                 "provider_mutation_performed": False,
                 "paid_resource_used": False,
-                "secrets_retained": False,
+                "secret_patterns_scanned": [
+                    "openai_api_key_like",
+                    "private_key_pem",
+                ],
+                "secret_pattern_scan_scope": "bounded_patterns_only",
+                "raw_secret_values_recorded": False,
                 "blockers": [],
             }
             receipt["receipt_digest"] = canonical_digest(
@@ -536,11 +607,25 @@ def install_packet_archive(
     return receipt
 
 
-def _archive_for_request(request: Path) -> tempfile.SpooledTemporaryFile[bytes]:
+def _archive_for_request(
+    request: Path,
+) -> tuple[tempfile.SpooledTemporaryFile[bytes], dict[str, Any]]:
     temporary = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b")
-    build_packet_archive(request, temporary)
+    packet = build_packet_archive(request, temporary)
     temporary.seek(0)
-    return temporary
+    return temporary, packet
+
+
+def _copy_bounded_archive_input(source: BinaryIO, destination: BinaryIO) -> None:
+    copied = 0
+    while True:
+        content = source.read(1024 * 1024)
+        if not content:
+            return
+        copied += len(content)
+        if copied > MAX_ARCHIVE_INPUT_BYTES:
+            raise PublicSceneHostInputError("packet_archive_input_size_exceeds_limit")
+        destination.write(content)
 
 
 def upload_packet(
@@ -565,7 +650,8 @@ def upload_packet(
             DEFAULT_SERVICE_ACCOUNT,
         ]
     )
-    with _archive_for_request(Path(request_path)) as archive:
+    archive, packet = _archive_for_request(Path(request_path))
+    with archive:
         result = subprocess.run(  # nosec B603 - fixed executable, validated host
             ["/usr/bin/ssh", "-o", "BatchMode=yes", host, command],
             stdin=archive,
@@ -587,6 +673,17 @@ def upload_packet(
         or receipt.get("status") != "installed"
     ):
         raise PublicSceneHostInputError("host_input_upload_receipt_invalid")
+    expected = {
+        "packet_digest": packet["packet_digest"],
+        "authoritative_request_digest": packet["packet_digest"],
+        "scene_id": packet["scene_id"],
+        "packet_id": packet["packet_id"],
+        "source_commit_sha": packet["source_commit_sha"],
+        "destination_root": str(_under(root / packet["packet_id"], (root,))),
+        "service_account": DEFAULT_SERVICE_ACCOUNT,
+    }
+    if any(receipt.get(field) != value for field, value in expected.items()):
+        raise PublicSceneHostInputError("host_input_upload_receipt_binding_mismatch")
     return receipt
 
 
@@ -617,7 +714,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             destination_root=args.destination_root,
         )
     elif args.command == "stage":
-        with _archive_for_request(args.request) as archive:
+        archive, _packet = _archive_for_request(args.request)
+        with archive:
             receipt = install_packet_archive(
                 archive,
                 destination_root=args.destination_root,
@@ -628,7 +726,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             with tempfile.SpooledTemporaryFile(
                 max_size=16 * 1024 * 1024, mode="w+b"
             ) as stream:
-                shutil.copyfileobj(sys.stdin.buffer, stream, length=1024 * 1024)
+                _copy_bounded_archive_input(sys.stdin.buffer, stream)
                 stream.seek(0)
                 receipt = install_packet_archive(
                     stream,
