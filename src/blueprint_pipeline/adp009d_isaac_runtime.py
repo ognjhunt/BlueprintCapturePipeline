@@ -172,6 +172,9 @@ APPROVED_CAN_ADAPTER_FILENAME = "approved_can_physx_sdf_adapter.usda"
 APPROVED_CAN_NEWTON_ADAPTER_FILENAME = "approved_can_newton_generic_adapter.usda"
 TASK_COLLISION_DERIVATIVE_FILENAME = "sage_task_collision.usda"
 TASK_COLLISION_MANIFEST_FILENAME = "sage_task_collision_manifest.json"
+NEWTON_TASK_COLLISION_ADAPTER_FILENAME = (
+    "sage_task_collision_newton_controls_adapter.usda"
+)
 NEWTON_ROBOT_INERTIAL_OVERLAY_RECEIPT_FILENAME = (
     "newton_robot_inertial_overlay_receipt.json"
 )
@@ -327,7 +330,7 @@ CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH = "{ENV_REGEX_NS}/sage_collision"
 # rigid body.  Newton therefore needs shape-level filters.  These suffixes are
 # the exact 15 active shapes in the digest-bound task-collision derivative;
 # suffix globs work whether Newton labels shapes by bare name or full USD path.
-NEWTON_SAGE_COLLISION_SHAPE_LABELS = (
+SAGE_TASK_COLLISION_SHAPE_LABELS = (
     "SM_floorplan",
     "Z6TL2HRVAIIBIPTUKE888888",
     "ZBRQEFBVAI3DWPTUKY888888",
@@ -343,6 +346,12 @@ NEWTON_SAGE_COLLISION_SHAPE_LABELS = (
     "_K7DXDRVAZU7IPTULI888888_004",
     "_LTFTHJVAZ3VMPTUJU888888",
     "_PROTIZVAJTMCPTULU888888",
+)
+NEWTON_INCOMPATIBLE_CONCAVE_COLLISION_LABELS = ("SM_floorplan",)
+NEWTON_SAGE_COLLISION_SHAPE_LABELS = tuple(
+    label
+    for label in SAGE_TASK_COLLISION_SHAPE_LABELS
+    if label not in NEWTON_INCOMPATIBLE_CONCAVE_COLLISION_LABELS
 )
 NEWTON_SAGE_COLLISION_FILTER_SHAPE_EXPRS = tuple(
     f"*{label}" for label in NEWTON_SAGE_COLLISION_SHAPE_LABELS
@@ -477,6 +486,113 @@ def _sage_collision_filter_kwargs(physics_backend: str) -> dict[str, list[str]]:
             )
         }
     return {"filter_prim_paths_expr": [CONTACT_SAGE_COLLISION_FILTER_PRIM_PATH]}
+
+
+def _newton_sage_collision_adapter_text(source_path: Path) -> str:
+    """Deactivate the one room-scale mesh Newton cannot represent faithfully.
+
+    MuJoCo and MuJoCo-Warp collide a generic mesh through its convex hull.  The
+    sealed ``SM_floorplan`` is a concave room surface, so its convex hull fills
+    the workcell and starts every Franka link deeply penetrating collision.
+    The controls-only Newton lane keeps the sealed derivative immutable and
+    composes this explicit backend adapter instead.  The remaining task/support
+    shapes are unchanged; this is not comparison-eligible geometry.
+    """
+
+    source = source_path.resolve().as_posix()
+    return f'''#usda 1.0
+(
+    defaultPrim = "Root"
+    subLayers = [
+        @{source}@
+    ]
+)
+
+over "Root"
+{{
+    over "SM_floorplan" (
+        active = false
+    )
+    {{
+    }}
+}}
+'''
+
+
+def _materialize_newton_sage_collision_adapter(
+    source_path: Path, *, output_dir: Path
+) -> tuple[Path, dict[str, Any]]:
+    """Write and digest-bind the Newton controls-only collision overlay."""
+
+    if not source_path.is_file():
+        raise RuntimeError("adp009d_newton_sage_collision_source_missing")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    adapter_path = output_dir / NEWTON_TASK_COLLISION_ADAPTER_FILENAME
+    if adapter_path.exists():
+        raise RuntimeError("adp009d_newton_sage_collision_adapter_exists")
+    adapter_path.write_text(
+        _newton_sage_collision_adapter_text(source_path), encoding="utf-8"
+    )
+    receipt: dict[str, Any] = {
+        "schema_version": "adp009d_newton_sage_collision_adapter.v1",
+        "status": "ready",
+        "physics_backend": "newton",
+        "source_derivative_sha256": _sha256(source_path),
+        "adapter_sha256": _sha256(adapter_path),
+        "disabled_source_prim_paths": ["/Root/SM_floorplan"],
+        "retained_shape_labels": list(NEWTON_SAGE_COLLISION_SHAPE_LABELS),
+        "source_derivative_mutated": False,
+        "reason": "mujoco_convex_hull_would_fill_concave_room_volume",
+        "comparison_eligible": False,
+        "claim_ceiling": "newton_controls_only",
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = _canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return adapter_path, receipt
+
+
+def _newton_sage_collision_runtime_profile(
+    task_collision_manifest: dict[str, Any],
+) -> dict[str, int]:
+    """Derive the exact live profile after the one typed Newton exclusion."""
+
+    rows = task_collision_manifest.get("source_prim_rows")
+    if not isinstance(rows, list):
+        raise RuntimeError("adp009d_newton_sage_collision_rows_missing")
+    excluded = [
+        row
+        for row in rows
+        if isinstance(row, dict) and row.get("source_prim") == "/Root/SM_floorplan"
+    ]
+    if len(excluded) != 1:
+        raise RuntimeError("adp009d_newton_sage_floorplan_row_invalid")
+    row = excluded[0]
+    try:
+        point_count = int(task_collision_manifest["derived_point_count"]) - int(
+            row["derived_point_count"]
+        )
+        face_count = int(task_collision_manifest["derived_face_count"]) - int(
+            row["derived_face_count"]
+        )
+        mesh_count = int(task_collision_manifest["active_source_prim_count"]) - 1
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("adp009d_newton_sage_floorplan_row_invalid") from exc
+    profile = {
+        "active_mesh_count": mesh_count,
+        "active_point_count": point_count,
+        "active_face_count": face_count,
+        "rigid_body_count": 0,
+        "triangle_mesh_count": mesh_count,
+    }
+    if (
+        mesh_count != len(NEWTON_SAGE_COLLISION_SHAPE_LABELS)
+        or point_count <= 0
+        or face_count <= 0
+    ):
+        raise RuntimeError("adp009d_newton_sage_collision_profile_invalid")
+    return profile
 
 
 # The worker imports the episode adapter under a flattened module name, so this
@@ -2156,7 +2272,12 @@ def _probe_finger_collision_envelope() -> dict[str, Any]:
     return result
 
 
-def _build_environment(runtime: Path, args: argparse.Namespace):
+def _build_environment(
+    runtime: Path,
+    args: argparse.Namespace,
+    *,
+    sage_collision_path: Path,
+):
     import torch
     import isaaclab.sim as sim_utils
     from isaaclab.sensors.contact_sensor import ContactSensorCfg
@@ -2365,7 +2486,7 @@ def _build_environment(runtime: Path, args: argparse.Namespace):
     sage = Object(
         name="sage_collision",
         object_type=ObjectType.BASE,
-        usd_path=str(runtime / "assets" / TASK_COLLISION_DERIVATIVE_FILENAME),
+        usd_path=str(sage_collision_path),
         initial_pose=Pose.identity(),
         spawn_cfg_addon={"visible": False},
     )
@@ -2677,13 +2798,14 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         "rigid_body_count": 0,
         "triangle_mesh_count": int(task_collision_manifest["active_source_prim_count"]),
     }
+    live_expected_sage_profile = expected_sage_profile
     task_collision_shape_labels = tuple(
         str(row.get("source_prim", "")).rsplit("/", 1)[-1]
         for row in task_collision_manifest.get("source_prim_rows", [])
     )
     if (
         expected_sage_profile != SAGE_RUNTIME_PROFILE
-        or task_collision_shape_labels != NEWTON_SAGE_COLLISION_SHAPE_LABELS
+        or task_collision_shape_labels != SAGE_TASK_COLLISION_SHAPE_LABELS
         or task_collision_manifest.get("candidate_source_prim_count") != 16
         or task_collision_manifest.get("source_face_count") != 47_359
         or task_collision_manifest.get("roi_min_m") != [2.4681748, -4.3100837, -0.1]
@@ -2693,6 +2815,29 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         or float(task_collision_manifest.get("relative_surface_area_error", math.inf)) > 1.0e-6
     ):
         raise RuntimeError("sage_task_collision_profile_invalid")
+    newton_sage_collision_adapter: dict[str, Any] | None = None
+    live_task_collision_path = task_collision_path
+    if backend == "newton":
+        (
+            live_task_collision_path,
+            newton_sage_collision_adapter,
+        ) = _materialize_newton_sage_collision_adapter(
+            task_collision_path,
+            output_dir=output,
+        )
+        if (
+            not isinstance(newton_sage_collision_adapter, dict)
+            or newton_sage_collision_adapter.get("status") != "ready"
+            or newton_sage_collision_adapter.get("source_derivative_sha256")
+            != task_collision_manifest.get("derivative_sha256")
+            or newton_sage_collision_adapter.get("disabled_source_prim_paths")
+            != ["/Root/SM_floorplan"]
+            or newton_sage_collision_adapter.get("comparison_eligible") is not False
+        ):
+            raise RuntimeError("adp009d_newton_sage_collision_adapter_invalid")
+        live_expected_sage_profile = _newton_sage_collision_runtime_profile(
+            task_collision_manifest
+        )
     sage_overlay_stage = Usd.Stage.Open(str(task_collision_path))
     if sage_overlay_stage is None:
         raise RuntimeError("sage_task_collision_derivative_unreadable")
@@ -2789,11 +2934,19 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                 overview_camera_plan,
                 newton_actuator_limit_mapping,
                 gravity_real_actuation,
-            ) = _build_environment(runtime, args)
+            ) = _build_environment(
+                runtime,
+                args,
+                sage_collision_path=live_task_collision_path,
+            )
         except Exception as exc:
             if backend == "newton":
                 existing = getattr(exc, "diagnostics", None)
                 diagnostics = dict(existing) if isinstance(existing, dict) else {}
+                if newton_sage_collision_adapter is not None:
+                    diagnostics["newton_sage_collision_adapter"] = (
+                        newton_sage_collision_adapter
+                    )
                 overlay_receipt_path = (
                     output / NEWTON_ROBOT_INERTIAL_OVERLAY_RECEIPT_FILENAME
                 )
@@ -2917,7 +3070,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
         live_sage_collision = _inspect_sage_static_triangle_colliders(
             live_stage,
             SAGE_LIVE_ROOT_PRIM,
-            expected_profile=expected_sage_profile,
+            expected_profile=live_expected_sage_profile,
         )
         _phase("live_collider_validation", "completed")
         reset_rows: list[dict[str, Any]] = []
@@ -4511,6 +4664,7 @@ def _run(runtime: Path, output: Path, args: argparse.Namespace) -> dict[str, Any
                     newton_robot_inertial_overlay_receipt
                 ),
                 "newton_actuator_limit_mapping": newton_actuator_limit_mapping,
+                "newton_sage_collision_adapter": newton_sage_collision_adapter,
                 "gravity_real_actuation": gravity_real_actuation,
                 "static_sage_collision_validation": static_sage_collision,
                 "live_sage_collision_validation": live_sage_collision,
