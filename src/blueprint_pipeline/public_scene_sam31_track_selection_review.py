@@ -1,9 +1,9 @@
-"""Render and seal human review of SAM track selections for 1--5 tasks.
+"""Render and seal human or AI review of SAM track selections for 1--5 tasks.
 
 The candidate packet is deterministic visual support.  A separate acceptance
 receipt binds the exact task freezes, normalized SAM results, selected track
 IDs, and review media.  Downstream mask materialization must reopen that
-receipt; a naked digest or an agent's prose is not selection authority.
+receipt; a naked digest or unbound reviewer prose is not selection authority.
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 
 CANDIDATE_SCHEMA_VERSION = "public_scene_sam31_track_selection_review_candidate.v1"
 RECEIPT_SCHEMA_VERSION = "public_scene_sam31_track_selection_review.v1"
+AI_RECEIPT_SCHEMA_VERSION = "public_scene_sam31_track_selection_ai_visual_review.v1"
+AI_REVIEW_METHOD = "exact_overlay_visual_inspection"
 
 
 class Sam31TrackSelectionReviewError(ValueError):
@@ -75,9 +77,7 @@ def _record_path(record: Mapping[str, Any], *, root: Path) -> Path:
         try:
             path.relative_to(root.resolve())
         except ValueError as exc:
-            raise Sam31TrackSelectionReviewError(
-                "sam31_review_media_record_invalid"
-            ) from exc
+            raise Sam31TrackSelectionReviewError("sam31_review_media_record_invalid") from exc
     return path
 
 
@@ -96,8 +96,7 @@ def _verify_record(record: object, *, root: Path) -> Path:
 def _validate_candidate_file(candidate_path: Path, candidate: Mapping[str, Any]) -> None:
     if (
         candidate.get("schema_version") != CANDIDATE_SCHEMA_VERSION
-        or candidate.get("status")
-        != "selected_track_overlays_materialized_pending_human_review"
+        or candidate.get("status") != "selected_track_overlays_materialized_pending_human_review"
         or candidate.get("candidate_digest")
         != canonical_digest(candidate, digest_field="candidate_digest")
     ):
@@ -156,16 +155,12 @@ def _validate_candidate_file(candidate_path: Path, candidate: Mapping[str, Any])
                     or foreground != frame.get("foreground_pixel_count")
                     or foreground != histogram[255]
                 ):
-                    raise Sam31TrackSelectionReviewError(
-                        "sam31_review_media_content_invalid"
-                    )
+                    raise Sam31TrackSelectionReviewError("sam31_review_media_content_invalid")
                 color = Image.new("RGB", source.size, (255, 0, 160))
                 alpha = mask.point(lambda value: 128 if value else 0)
                 expected_overlay = Image.composite(color, source, alpha)
                 if ImageChops.difference(expected_overlay, overlay).getbbox() is not None:
-                    raise Sam31TrackSelectionReviewError(
-                        "sam31_review_media_content_invalid"
-                    )
+                    raise Sam31TrackSelectionReviewError("sam31_review_media_content_invalid")
 
 
 def _selection_bindings(
@@ -273,7 +268,7 @@ def materialize_sam31_track_selection_review_candidate(
     selected_track_ids_by_task: Mapping[str, Sequence[str]],
     output_root: str | Path,
 ) -> dict[str, Any]:
-    """Render exact selected masks over calibrated frames, pending human review."""
+    """Render exact selected masks over calibrated frames, pending visual review."""
 
     from .public_scene_calibrated_object_masks import (
         _camera_rows,
@@ -328,8 +323,7 @@ def materialize_sam31_track_selection_review_candidate(
                 not image_path.is_file()
                 or image_path.is_symlink()
                 or _sha256(image_path) != frame.get("source_frame_digest")
-                or canonical_json_digest(cameras[camera_id])
-                != frame.get("camera_record_digest")
+                or canonical_json_digest(cameras[camera_id]) != frame.get("camera_record_digest")
             ):
                 raise Sam31TrackSelectionReviewError("sam31_review_source_image_invalid")
             with Image.open(image_path) as image:
@@ -342,9 +336,7 @@ def materialize_sam31_track_selection_review_candidate(
                     or image.size != expected_size
                     or image.size != (int(frame["width"]), int(frame["height"]))
                 ):
-                    raise Sam31TrackSelectionReviewError(
-                        "sam31_review_source_image_invalid"
-                    )
+                    raise Sam31TrackSelectionReviewError("sam31_review_source_image_invalid")
             mask = _decode_union(
                 frame,
                 selected_track_ids=selected,
@@ -387,9 +379,7 @@ def materialize_sam31_track_selection_review_candidate(
         },
         "candidate_digest": "",
     }
-    candidate["candidate_digest"] = canonical_digest(
-        candidate, digest_field="candidate_digest"
-    )
+    candidate["candidate_digest"] = canonical_digest(candidate, digest_field="candidate_digest")
     output.mkdir(parents=True, exist_ok=True)
     destination = output / f"{CANDIDATE_SCHEMA_VERSION}.json"
     destination.write_text(canonical_json(candidate) + "\n", encoding="utf-8")
@@ -440,6 +430,82 @@ def seal_sam31_track_selection_review(
     return receipt
 
 
+def seal_sam31_track_selection_ai_review(
+    *,
+    candidate_path: str | Path,
+    reviewer_id: str,
+    model: str,
+    model_version: str,
+    review_method: str,
+    reviewed_at: str,
+    decision: str,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal a named AI review of the exact candidate media and selection bytes."""
+
+    candidate_file, candidate = _read(candidate_path, code="sam31_review_candidate_invalid")
+    _validate_candidate_file(candidate_file, candidate)
+    reviewer_identity = str(reviewer_id).strip()
+    model = str(model).strip()
+    model_version = str(model_version).strip()
+    review_method = str(review_method).strip()
+    reviewed_at = str(reviewed_at).strip()
+    decision = str(decision).strip()
+    if (
+        not reviewer_identity
+        or not model
+        or not model_version
+        or review_method != AI_REVIEW_METHOD
+        or not reviewed_at
+        or decision not in {"accepted", "rejected"}
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
+    reviewer = {
+        "kind": "ai",
+        "identity": reviewer_identity,
+        "model": model,
+        "model_version": model_version,
+        "method": review_method,
+    }
+    accepted = decision == "accepted"
+    review_media = candidate["review_media"]
+    receipt: dict[str, Any] = {
+        "schema_version": AI_RECEIPT_SCHEMA_VERSION,
+        "status": f"selected_tracks_ai_visual_review_{decision}",
+        "candidate": {
+            **_record(candidate_file),
+            "candidate_digest": candidate["candidate_digest"],
+        },
+        "selection_bindings": candidate["selection_bindings"],
+        "task_count": candidate["task_count"],
+        "reviewer": reviewer,
+        "reviewed_at": reviewed_at,
+        "decision": decision,
+        "review_scope": {
+            "candidate_digest": candidate["candidate_digest"],
+            "review_media_digest": canonical_json_digest(review_media),
+            "review_frame_count": sum(len(row["frames"]) for row in review_media),
+        },
+        "all_selected_tracks_accepted": accepted,
+        "claim_boundary": {
+            "track_selection_reviewed": accepted,
+            "human_review_completed": False,
+            "ai_visual_review_completed": True,
+            "object_identity_qualified": False,
+            "gaussian_ownership_qualified": False,
+            "physical_evidence": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    destination = Path(output_path).expanduser().resolve()
+    if destination.exists() or destination.is_symlink():
+        raise Sam31TrackSelectionReviewError("sam31_review_output_exists")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+    return receipt
+
+
 def validate_sam31_track_selection_review(
     *,
     receipt_path: str | Path,
@@ -447,17 +513,48 @@ def validate_sam31_track_selection_review(
     task_inputs: Mapping[str, Mapping[str, Any]],
     selected_track_ids_by_task: Mapping[str, Sequence[str]],
 ) -> dict[str, Any]:
-    """Reopen a human receipt and prove it accepts these exact selection inputs."""
+    """Reopen a review receipt and prove it accepts these exact selection inputs."""
 
     _path, receipt = _read(receipt_path, code="sam31_review_receipt_invalid")
-    if (
-        receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION
-        or receipt.get("status") != "selected_tracks_human_review_accepted"
-        or receipt.get("all_selected_tracks_accepted") is not True
-        or receipt.get("agent_selected_tracks_without_human_review") is not False
-        or receipt.get("receipt_digest")
-        != canonical_digest(receipt, digest_field="receipt_digest")
-    ):
+    schema_version = receipt.get("schema_version")
+    if schema_version == RECEIPT_SCHEMA_VERSION:
+        if (
+            receipt.get("status") != "selected_tracks_human_review_accepted"
+            or receipt.get("all_selected_tracks_accepted") is not True
+            or receipt.get("agent_selected_tracks_without_human_review") is not False
+            or receipt.get("receipt_digest")
+            != canonical_digest(receipt, digest_field="receipt_digest")
+        ):
+            raise Sam31TrackSelectionReviewError("sam31_review_receipt_invalid")
+    elif schema_version == AI_RECEIPT_SCHEMA_VERSION:
+        reviewer = receipt.get("reviewer")
+        if (
+            receipt.get("status") != "selected_tracks_ai_visual_review_accepted"
+            or receipt.get("decision") != "accepted"
+            or receipt.get("all_selected_tracks_accepted") is not True
+            or not isinstance(reviewer, Mapping)
+            or reviewer.get("kind") != "ai"
+            or reviewer.get("method") != AI_REVIEW_METHOD
+            or not all(
+                str(reviewer.get(field) or "").strip()
+                for field in ("identity", "model", "model_version")
+            )
+            or not str(receipt.get("reviewed_at") or "").strip()
+            or any(
+                field in receipt
+                for field in (
+                    "reviewed_by",
+                    "reviewed_on",
+                    "agent_selected_tracks_without_human_review",
+                )
+            )
+            or receipt.get("claim_boundary", {}).get("human_review_completed") is not False
+            or receipt.get("claim_boundary", {}).get("ai_visual_review_completed") is not True
+            or receipt.get("receipt_digest")
+            != canonical_digest(receipt, digest_field="receipt_digest")
+        ):
+            raise Sam31TrackSelectionReviewError("sam31_review_receipt_invalid")
+    else:
         raise Sam31TrackSelectionReviewError("sam31_review_receipt_invalid")
     candidate_record = receipt.get("candidate")
     if not isinstance(candidate_record, Mapping):
@@ -466,23 +563,34 @@ def validate_sam31_track_selection_review(
         str(candidate_record.get("path") or ""), code="sam31_review_candidate_invalid"
     )
     if (
-        _record(candidate_path) != {
-            key: candidate_record.get(key) for key in ("path", "size_bytes", "sha256")
-        }
+        _record(candidate_path)
+        != {key: candidate_record.get(key) for key in ("path", "size_bytes", "sha256")}
         or candidate.get("candidate_digest") != candidate_record.get("candidate_digest")
         or candidate.get("candidate_digest")
         != canonical_digest(candidate, digest_field="candidate_digest")
     ):
         raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
     _validate_candidate_file(candidate_path, candidate)
+    if schema_version == AI_RECEIPT_SCHEMA_VERSION:
+        review_scope = receipt.get("review_scope")
+        if (
+            not isinstance(review_scope, Mapping)
+            or review_scope.get("candidate_digest") != candidate["candidate_digest"]
+            or review_scope.get("review_media_digest")
+            != canonical_json_digest(candidate["review_media"])
+            or review_scope.get("review_frame_count")
+            != sum(len(row["frames"]) for row in candidate["review_media"])
+        ):
+            raise Sam31TrackSelectionReviewError("sam31_review_receipt_invalid")
     expected = _selection_bindings(
         task_freeze_paths=task_freeze_paths,
         task_inputs=task_inputs,
         selected_track_ids_by_task=selected_track_ids_by_task,
     )
-    if receipt.get("selection_bindings") != expected or candidate.get(
-        "selection_bindings"
-    ) != expected:
+    if (
+        receipt.get("selection_bindings") != expected
+        or candidate.get("selection_bindings") != expected
+    ):
         raise Sam31TrackSelectionReviewError("sam31_review_selection_mismatch")
     return receipt
 
@@ -500,6 +608,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     accept.add_argument("--reviewed-by", required=True)
     accept.add_argument("--reviewed-on", required=True)
     accept.add_argument("--output", required=True)
+    accept_ai = commands.add_parser("accept-ai")
+    accept_ai.add_argument("--candidate", required=True)
+    accept_ai.add_argument("--reviewer-id", required=True)
+    accept_ai.add_argument("--model", required=True)
+    accept_ai.add_argument("--model-version", required=True)
+    accept_ai.add_argument("--review-method", required=True)
+    accept_ai.add_argument("--reviewed-at", required=True)
+    accept_ai.add_argument("--decision", choices=("accepted", "rejected"), required=True)
+    accept_ai.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     if args.command == "candidate":
         _task_inputs_path, task_inputs = _read(
@@ -514,21 +631,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             selected_track_ids_by_task=selected_tracks,
             output_root=args.output_root,
         )
-    else:
+    elif args.command == "accept":
         seal_sam31_track_selection_review(
             candidate_path=args.candidate,
             reviewed_by=args.reviewed_by,
             reviewed_on=args.reviewed_on,
             output_path=args.output,
         )
+    else:
+        seal_sam31_track_selection_ai_review(
+            candidate_path=args.candidate,
+            reviewer_id=args.reviewer_id,
+            model=args.model,
+            model_version=args.model_version,
+            review_method=args.review_method,
+            reviewed_at=args.reviewed_at,
+            decision=args.decision,
+            output_path=args.output,
+        )
     return 0
 
 
 __all__ = [
+    "AI_RECEIPT_SCHEMA_VERSION",
+    "AI_REVIEW_METHOD",
     "CANDIDATE_SCHEMA_VERSION",
     "RECEIPT_SCHEMA_VERSION",
     "Sam31TrackSelectionReviewError",
     "materialize_sam31_track_selection_review_candidate",
+    "seal_sam31_track_selection_ai_review",
     "seal_sam31_track_selection_review",
     "validate_sam31_track_selection_review",
 ]

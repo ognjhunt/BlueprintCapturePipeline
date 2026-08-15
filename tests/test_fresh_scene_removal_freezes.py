@@ -74,9 +74,7 @@ def Xform "Root"
         },
         "receipt_digest": "",
     }
-    registered["receipt_digest"] = canonical_digest(
-        registered, digest_field="receipt_digest"
-    )
+    registered["receipt_digest"] = canonical_digest(registered, digest_field="receipt_digest")
     registered_path = tmp_path / "registered-frame.json"
     registered_path.write_text(canonical_json(registered) + "\n", encoding="utf-8")
     receipt_root = tmp_path / "reviewed-masks"
@@ -113,7 +111,9 @@ def Xform "Root"
             mask_path = masks / f"{camera_id}.png"
             assert cv2.imwrite(str(image_path), np.zeros((48, 64, 3), dtype=np.uint8))
             assert cv2.imwrite(str(mask_path), outer)
-            image_rows.append({"camera_id": camera_id, "image": _relative(image_path, receipt_root)})
+            image_rows.append(
+                {"camera_id": camera_id, "image": _relative(image_path, receipt_root)}
+            )
             mask_rows.append({"camera_id": camera_id, "mask": _relative(mask_path, receipt_root)})
         task_rows.append(
             {
@@ -146,9 +146,7 @@ def Xform "Root"
         },
         "receipt_digest": "",
     }
-    mask_receipt["receipt_digest"] = canonical_digest(
-        mask_receipt, digest_field="receipt_digest"
-    )
+    mask_receipt["receipt_digest"] = canonical_digest(mask_receipt, digest_field="receipt_digest")
     mask_receipt_path = receipt_root / "public_scene_calibrated_object_mask_set.v1.json"
     mask_receipt_path.write_text(canonical_json(mask_receipt) + "\n", encoding="utf-8")
     task_requests = {
@@ -197,6 +195,25 @@ def test_materializes_two_task_excision_and_segment_sweep_freezes(tmp_path: Path
     assert all(row["camera_count"] == 5 for row in result["tasks"])
 
 
+def test_accepts_ai_visual_review_authority_without_human_claim(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    receipt_path = fixture["mask_receipt"]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["selection_authority"] = {
+        "reviewer_kind": "ai",
+        "all_selected_tracks_review_accepted": True,
+        "all_selected_tracks_ai_visual_review_accepted": True,
+        "all_selected_tracks_human_review_accepted": False,
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+
+    result = materialize_fresh_scene_removal_freezes(
+        request=fixture["request"], output_root=tmp_path / "ai-reviewed-output"
+    )
+    assert result["task_count"] == 2
+
+
 def test_rejects_mask_bytes_changed_after_review(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     mask = tmp_path / "reviewed-masks/tasks/task_1/masks/front.png"
@@ -227,9 +244,7 @@ def test_segment_sweep_uses_all_frozen_cameras(tmp_path: Path) -> None:
     replay_root = tmp_path / "replayed-sweep"
     replay = materialize_segment_contribution_sweep_freeze(
         excision_freeze_path=(
-            tmp_path
-            / "output"
-            / result["tasks"][0]["excision_freeze"]["relative_path"]
+            tmp_path / "output" / result["tasks"][0]["excision_freeze"]["relative_path"]
         ),
         output_root=replay_root,
     )

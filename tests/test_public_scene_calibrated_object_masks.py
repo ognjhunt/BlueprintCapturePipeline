@@ -17,8 +17,11 @@ from blueprint_pipeline.public_scene_calibrated_object_masks import (
     materialize_calibrated_object_mask_set,
 )
 from blueprint_pipeline.public_scene_sam31_track_selection_review import (
+    AI_RECEIPT_SCHEMA_VERSION,
+    AI_REVIEW_METHOD,
     Sam31TrackSelectionReviewError,
     materialize_sam31_track_selection_review_candidate,
+    seal_sam31_track_selection_ai_review,
     seal_sam31_track_selection_review,
     validate_sam31_track_selection_review,
 )
@@ -138,9 +141,7 @@ def _task(task_id: str, slot: int) -> dict:
                     "dependency": None,
                 }
             ],
-            "collision_pairs": [
-                {"link_a": "body", "link_b": "door", "collision_enabled": True}
-            ],
+            "collision_pairs": [{"link_a": "body", "link_b": "door", "collision_enabled": True}],
             "success_predicate": {
                 "combination": "all",
                 "joint_intervals": {"door_hinge": [0.5, 1.0]},
@@ -271,8 +272,7 @@ def _review(
     receipt = tmp_path / "review-receipt.json"
     seal_sam31_track_selection_review(
         candidate_path=(
-            candidate_root
-            / "public_scene_sam31_track_selection_review_candidate.v1.json"
+            candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
         ),
         reviewed_by="fixture-reviewer",
         reviewed_on="2026-08-13",
@@ -288,6 +288,11 @@ def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Pat
         "task_b": ["laptop-track"],
     }
     review = _review(tmp_path, fixture, selected)
+    legacy_receipt = json.loads(review.read_text(encoding="utf-8"))
+    assert legacy_receipt["schema_version"] == "public_scene_sam31_track_selection_review.v1"
+    assert legacy_receipt["status"] == "selected_tracks_human_review_accepted"
+    assert "reviewer" not in legacy_receipt
+    assert "decision" not in legacy_receipt
     result = materialize_calibrated_object_mask_set(
         task_freeze_paths=fixture["tasks"],
         task_inputs=fixture["task_inputs"],
@@ -300,9 +305,7 @@ def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Pat
     assert result["camera_count_total"] == 4
     assert result["claim_boundary"]["masks_are_model_inferred_candidates"] is True
     assert result["selection_authority"]["mask_dilation_pixels"] == 0
-    assert result["selection_authority"][
-        "all_selected_tracks_human_review_accepted"
-    ] is True
+    assert result["selection_authority"]["all_selected_tracks_human_review_accepted"] is True
     mask = np.asarray(
         Image.open(tmp_path / "output/tasks/task_a/masks/camera_0.png"),
         dtype=np.uint8,
@@ -311,6 +314,150 @@ def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Pat
     assert int(np.count_nonzero(mask)) == 2
     copied = tmp_path / "output/tasks/task_a/images/camera_0.png"
     assert copied.read_bytes() == (fixture["images"] / "camera_0.png").read_bytes()
+
+
+def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    selected = {"task_a": ["washer-track"], "task_b": ["laptop-track"]}
+    candidate_root = tmp_path / "ai-review-candidate"
+    candidate = materialize_sam31_track_selection_review_candidate(
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task=selected,
+        output_root=candidate_root,
+    )
+    receipt_path = tmp_path / "ai-review.json"
+    receipt = seal_sam31_track_selection_ai_review(
+        candidate_path=(
+            candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
+        ),
+        reviewer_id="codex-visual-reviewer",
+        model="gpt-5",
+        model_version="2026-08-15",
+        review_method=AI_REVIEW_METHOD,
+        reviewed_at="2026-08-15T13:30:00Z",
+        decision="accepted",
+        output_path=receipt_path,
+    )
+
+    assert receipt["schema_version"] == AI_RECEIPT_SCHEMA_VERSION
+    assert receipt["status"] == "selected_tracks_ai_visual_review_accepted"
+    assert receipt["reviewer"] == {
+        "kind": "ai",
+        "identity": "codex-visual-reviewer",
+        "model": "gpt-5",
+        "model_version": "2026-08-15",
+        "method": AI_REVIEW_METHOD,
+    }
+    assert receipt["review_scope"]["candidate_digest"] == candidate["candidate_digest"]
+    assert receipt["review_scope"]["review_media_digest"] == canonical_json_digest(
+        candidate["review_media"]
+    )
+    assert receipt["review_scope"]["review_frame_count"] == 4
+    assert receipt["claim_boundary"]["human_review_completed"] is False
+    assert receipt["claim_boundary"]["ai_visual_review_completed"] is True
+    assert "reviewed_by" not in receipt
+    assert "reviewed_on" not in receipt
+    assert "agent_selected_tracks_without_human_review" not in receipt
+
+    validated = validate_sam31_track_selection_review(
+        receipt_path=receipt_path,
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task=selected,
+    )
+    assert validated["receipt_digest"] == receipt["receipt_digest"]
+    calibrated = materialize_calibrated_object_mask_set(
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task=selected,
+        reviewed_track_selection_receipt_path=receipt_path,
+        output_root=tmp_path / "ai-reviewed-masks",
+    )
+    authority = calibrated["selection_authority"]
+    assert authority["reviewer_kind"] == "ai"
+    assert authority["all_selected_tracks_review_accepted"] is True
+    assert authority["all_selected_tracks_ai_visual_review_accepted"] is True
+    assert authority["all_selected_tracks_human_review_accepted"] is False
+
+
+def test_ai_visual_review_rejection_and_missing_identity_fail_closed(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    selected = {"task_a": ["washer-track"], "task_b": ["laptop-track"]}
+    candidate_root = tmp_path / "ai-review-candidate"
+    materialize_sam31_track_selection_review_candidate(
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task=selected,
+        output_root=candidate_root,
+    )
+    candidate_path = candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
+    rejected_path = tmp_path / "rejected.json"
+    rejected = seal_sam31_track_selection_ai_review(
+        candidate_path=candidate_path,
+        reviewer_id="codex-visual-reviewer",
+        model="gpt-5",
+        model_version="2026-08-15",
+        review_method=AI_REVIEW_METHOD,
+        reviewed_at="2026-08-15T13:30:00Z",
+        decision="rejected",
+        output_path=rejected_path,
+    )
+    assert rejected["status"] == "selected_tracks_ai_visual_review_rejected"
+    assert rejected["all_selected_tracks_accepted"] is False
+    with pytest.raises(Sam31TrackSelectionReviewError, match="receipt_invalid"):
+        validate_sam31_track_selection_review(
+            receipt_path=rejected_path,
+            task_freeze_paths=fixture["tasks"],
+            task_inputs=fixture["task_inputs"],
+            selected_track_ids_by_task=selected,
+        )
+    with pytest.raises(CalibratedObjectMaskError, match="calibrated_masks_review_receipt_invalid"):
+        materialize_calibrated_object_mask_set(
+            task_freeze_paths=fixture["tasks"],
+            task_inputs=fixture["task_inputs"],
+            selected_track_ids_by_task=selected,
+            reviewed_track_selection_receipt_path=rejected_path,
+            output_root=tmp_path / "rejected-masks-must-not-exist",
+        )
+
+    with pytest.raises(Sam31TrackSelectionReviewError, match="candidate_invalid"):
+        seal_sam31_track_selection_ai_review(
+            candidate_path=candidate_path,
+            reviewer_id="codex-visual-reviewer",
+            model="gpt-5",
+            model_version="2026-08-15",
+            review_method="arbitrary-caller-prose",
+            reviewed_at="2026-08-15T13:30:00Z",
+            decision="accepted",
+            output_path=tmp_path / "must-not-exist.json",
+        )
+    with pytest.raises(Sam31TrackSelectionReviewError, match="candidate_invalid"):
+        seal_sam31_track_selection_ai_review(
+            candidate_path=candidate_path,
+            reviewer_id="",
+            model="gpt-5",
+            model_version="2026-08-15",
+            review_method=AI_REVIEW_METHOD,
+            reviewed_at="2026-08-15T13:30:00Z",
+            decision="accepted",
+            output_path=tmp_path / "missing-identity.json",
+        )
+    with pytest.raises(Sam31TrackSelectionReviewError, match="candidate_invalid"):
+        seal_sam31_track_selection_ai_review(
+            candidate_path=candidate_path,
+            reviewer_id="codex-visual-reviewer",
+            model="gpt-5",
+            model_version="2026-08-15",
+            review_method=AI_REVIEW_METHOD,
+            reviewed_at="2026-08-15T13:30:00Z",
+            decision="",
+            output_path=tmp_path / "missing-decision.json",
+        )
 
 
 def test_rejects_unbound_camera_and_missing_selected_track(tmp_path: Path) -> None:
@@ -323,9 +470,7 @@ def test_rejects_unbound_camera_and_missing_selected_track(tmp_path: Path) -> No
     cameras = json.loads(fixture["cameras"].read_text())
     cameras[0]["intrinsics"]["fx"] = 9.0
     fixture["cameras"].write_text(json.dumps(cameras), encoding="utf-8")
-    with pytest.raises(
-        CalibratedObjectMaskError, match="calibrated_masks_review_receipt_invalid"
-    ):
+    with pytest.raises(CalibratedObjectMaskError, match="calibrated_masks_review_receipt_invalid"):
         materialize_calibrated_object_mask_set(
             task_freeze_paths=fixture["tasks"],
             task_inputs=fixture["task_inputs"],
@@ -343,9 +488,7 @@ def test_rejects_unbound_camera_and_missing_selected_track(tmp_path: Path) -> No
         fixture,
         {"task_a": ["washer-track"], "task_b": ["laptop-track"]},
     )
-    with pytest.raises(
-        CalibratedObjectMaskError, match="calibrated_masks_review_receipt_invalid"
-    ):
+    with pytest.raises(CalibratedObjectMaskError, match="calibrated_masks_review_receipt_invalid"):
         materialize_calibrated_object_mask_set(
             task_freeze_paths=fixture["tasks"],
             task_inputs=fixture["task_inputs"],
@@ -371,9 +514,7 @@ def test_review_candidate_supports_five_tasks_and_receipt_rejects_tamper(
         task["source_object"]["instance_id"] = f"source-{index}"
         task["removal_plan"]["removal_id"] = f"removal-{index}"
         task["removal_plan"]["mask_set_id"] = f"masks-{index}"
-        task["task_freeze_digest"] = canonical_digest(
-            task, digest_field="task_freeze_digest"
-        )
+        task["task_freeze_digest"] = canonical_digest(task, digest_field="task_freeze_digest")
         path = tmp_path / f"{task_id}.json"
         path.write_text(json.dumps(task), encoding="utf-8")
         tasks.append(path)
@@ -391,8 +532,7 @@ def test_review_candidate_supports_five_tasks_and_receipt_rejects_tamper(
     receipt_path = tmp_path / "five-review.json"
     seal_sam31_track_selection_review(
         candidate_path=(
-            candidate_root
-            / "public_scene_sam31_track_selection_review_candidate.v1.json"
+            candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
         ),
         reviewed_by="fixture-reviewer",
         reviewed_on="2026-08-13",
@@ -428,8 +568,7 @@ def test_review_acceptance_rehashes_exact_overlay_bytes(tmp_path: Path) -> None:
     with pytest.raises(Sam31TrackSelectionReviewError, match="media_record_invalid"):
         seal_sam31_track_selection_review(
             candidate_path=(
-                candidate_root
-                / "public_scene_sam31_track_selection_review_candidate.v1.json"
+                candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
             ),
             reviewed_by="fixture-reviewer",
             reviewed_on="2026-08-13",
@@ -495,9 +634,7 @@ def test_review_candidate_preserves_eight_views_when_one_selected_mask_is_empty(
     frame_masks[0]["track_masks"] = [
         row for row in frame_masks[0]["track_masks"] if row["track_id"] == "washer-track"
     ]
-    frame_masks[0]["mask_artifact_digest"] = canonical_json_digest(
-        frame_masks[0]["track_masks"]
-    )
+    frame_masks[0]["mask_artifact_digest"] = canonical_json_digest(frame_masks[0]["track_masks"])
     source["bindings"]["frame_masks_digest"] = canonical_json_digest(frame_masks)
     source["result_digest"] = canonical_json_digest(
         {key: value for key, value in source.items() if key != "result_digest"}
@@ -581,9 +718,7 @@ def test_review_candidate_and_accept_clis(tmp_path: Path) -> None:
         ]
     )
     subprocess.run(command, check=True)
-    candidate_path = (
-        candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
-    )
+    candidate_path = candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
     receipt_path = tmp_path / "cli-review.json"
     subprocess.run(
         [
