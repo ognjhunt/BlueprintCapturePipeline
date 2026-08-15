@@ -323,6 +323,38 @@ def test_untrusted_runtime_exception_text_is_redacted(tmp_path: Path) -> None:
     assert "supersecret" not in json.dumps(result)
 
 
+def test_rejects_checkpoint_incompatible_multiplex_count_before_runtime(
+    tmp_path: Path,
+) -> None:
+    request = _request()
+    request["provider_profile"]["multiplex_count"] = 5
+    request["provider_profile"]["profile_digest"] = canonical_json_digest(
+        {
+            key: value
+            for key, value in request["provider_profile"].items()
+            if key != "profile_digest"
+        }
+    )
+    called = False
+
+    def forbidden_factory(_: Mapping[str, Any]) -> FakePredictor:
+        nonlocal called
+        called = True
+        return FakePredictor(_outputs())
+
+    result = execute_sam31_source_track_request(
+        request,
+        predictor_factory=forbidden_factory,
+        materialized_frame_directory=_frame_directory(tmp_path),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "provider_profile_multiplex_count_checkpoint_mismatch"
+    ]
+    assert called is False
+
+
 def test_fails_closed_on_missing_frame_or_wrong_mask_dimensions(tmp_path: Path) -> None:
     request = _request()
     missing = {0: _outputs()[0]}

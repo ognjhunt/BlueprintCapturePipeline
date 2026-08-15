@@ -29,6 +29,11 @@ RUN_RESULT_SCHEMA_VERSION = "semantic_sam31_source_track_run_result.v1"
 RUNTIME_API = "meta_sam3_object_multiplex_handle_request.v1"
 CHECKPOINT_FAMILY = "facebook/sam3.1"
 FRAME_INPUT_MODE = "ordered_hash_bound_jpeg_derivatives.v1"
+# The released SAM 3.1 multiplex checkpoint is trained with sixteen slots.
+# Upstream uses this value to size checkpoint-bound embeddings and memory
+# convolutions, so it is a runtime architecture identity rather than a tunable
+# per-request capacity.  ``max_num_objects`` remains the semantic output cap.
+CHECKPOINT_MULTIPLEX_COUNT = 16
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -207,6 +212,8 @@ def _validate_profile(request: Mapping[str, Any], blockers: list[str]) -> Dict[s
         value = _positive_int(profile.get(field))
         if value is None or value > 10_000:
             blockers.append(f"provider_profile_{field}_invalid")
+    if profile.get("multiplex_count") != CHECKPOINT_MULTIPLEX_COUNT:
+        blockers.append("provider_profile_multiplex_count_checkpoint_mismatch")
     for field in ("use_fa3", "compile", "warm_up", "async_loading_frames"):
         if not isinstance(profile.get(field), bool):
             blockers.append(f"provider_profile_{field}_declaration_missing")
@@ -672,6 +679,7 @@ def execute_sam31_source_track_request(
 
 __all__ = [
     "CHECKPOINT_FAMILY",
+    "CHECKPOINT_MULTIPLEX_COUNT",
     "FRAME_INPUT_MODE",
     "RUN_REQUEST_SCHEMA_VERSION",
     "RUN_RESULT_SCHEMA_VERSION",
