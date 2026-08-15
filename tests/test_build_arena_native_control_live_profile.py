@@ -39,6 +39,10 @@ from blueprint_pipeline.adp_founder_sim_protocol import APPROVAL_SCHEMA_VERSION,
 from blueprint_pipeline.adp_isaac_lab_arena_vast import PROBE_KIND
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRANSPORT = REPO_ROOT / "src" / "blueprint_pipeline" / "adp_isaac_lab_arena_vast.py"
 _SPEC = importlib.util.spec_from_file_location(
@@ -397,7 +401,8 @@ def test_every_flag_reaches_the_profile_it_decides(tmp_path: Path) -> None:
     assert _argument(argv, "--adp-max-hourly-rate-usd") == "0.5"
     assert _argument(argv, "--adp-hard-ttl-seconds") == "7200"
     assert profile["allocator"]["max_spend_usd"] == 1.0
-    assert profile["evaluation_run_spec"]["uri"] == URI
+    assert profile["evaluation_run_spec"]["uri"].startswith("gs://fixture/")
+    assert profile["manifest_publication"]["provider_full_byte_readback_verified"] is True
 
 
 def test_a_refused_profile_is_reported_rather_than_written(tmp_path: Path) -> None:

@@ -41,6 +41,7 @@ from blueprint_pipeline.host_resident_launch_inputs import (
     HostResidentInputError,
     resolve_host_resident_bundle_receipt,
 )
+from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
 
 
 class GaussianExcisionAuthorityError(ValueError):
@@ -60,6 +61,7 @@ def issue_gaussian_excision_paid_attempt_authority(
     authorized_by: str,
     authority_reference: str,
     prior_attempt_receipt_path: str | Path | None = None,
+    prior_spend_reconciliation_path: str | Path | None = None,
     authorized_on: str | None = None,
 ) -> dict[str, Any]:
     """Derive the attempt authority, then refuse to emit an invalid one."""
@@ -86,6 +88,11 @@ def issue_gaussian_excision_paid_attempt_authority(
         if not prior_file.is_file() or prior_file.is_symlink():
             raise GaussianExcisionAuthorityError("authority_prior_attempt_receipt_missing")
         prior = _read(prior_file)
+    prior_spend = bind_lane_prior_spend(
+        prior_result_paths=(() if prior is None else (prior_file,)),
+        reconciliation_path=prior_spend_reconciliation_path,
+        lane="gaussian_excision",
+    )
 
     # The spend cap and TTL belong to the bundle, not to this issuer: the
     # validator compares the authority against the receipt's own values, so
@@ -116,6 +123,9 @@ def issue_gaussian_excision_paid_attempt_authority(
     }
     if prior is not None:
         authority["previous_attempt_receipt_digest"] = prior.get("receipt_digest")
+    authority["prior_terminal_attempts"] = prior_spend["prior_terminal_attempts"]
+    authority["prior_spend_reconciliation"] = prior_spend["reconciliation"]
+    authority["prior_actual_provider_spend_usd"] = prior_spend["actual_total_usd"]
     authority["authorization_digest"] = canonical_digest(
         authority, digest_field="authorization_digest"
     )
@@ -148,6 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--authorized-on")
+    parser.add_argument("--prior-spend-reconciliation")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
 
@@ -157,6 +168,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             authorized_by=args.authorized_by,
             authority_reference=args.authority_reference,
             prior_attempt_receipt_path=args.prior_result,
+            prior_spend_reconciliation_path=args.prior_spend_reconciliation,
             authorized_on=args.authorized_on,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:

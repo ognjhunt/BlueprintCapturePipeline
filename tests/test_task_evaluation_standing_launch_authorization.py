@@ -376,4 +376,3 @@ def test_dispatcher_never_consults_on_a_dry_run(
         )["admitted"]
         is False
     )
-

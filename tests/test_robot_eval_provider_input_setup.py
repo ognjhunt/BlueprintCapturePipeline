@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import sys
@@ -318,6 +320,109 @@ def test_manifest_scripts_rewrite_and_annotation_helpers(
 
     env_file = setup._write_env_file(tmp_path / "env" / "provider.sh", {"A": "one two"})
     assert "export A='one two'" in Path(env_file["path"]).read_text(encoding="utf-8")
+
+
+def test_s3_validation_streams_full_bytes_with_bare_internal_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.bin"
+    payload = b"a" * (1024 * 1024 + 17)
+    source.write_bytes(payload)
+    observed: dict[str, object] = {}
+
+    class Client:
+        def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+            observed.update(bucket=Bucket, key=Key)
+            return {"Body": io.BytesIO(payload)}
+
+    class Boto3:
+        @staticmethod
+        def client(service: str, **kwargs: object) -> Client:
+            observed.update(service=service, kwargs=kwargs)
+            return Client()
+
+    monkeypatch.setitem(sys.modules, "boto3", Boto3())
+    validation = setup._validate_uploaded_object(
+        source, "s3://fixture-bucket/path/source.bin"
+    )
+
+    digest = hashlib.sha256(payload).hexdigest()
+    assert validation["status"] == "validated"
+    assert validation["object_sha256"] == digest
+    assert validation["expected_sha256"] == digest
+    assert validation["full_byte_readback_performed"] is True
+    assert observed["bucket"] == "fixture-bucket"
+    assert observed["key"] == "path/source.bin"
+
+
+def test_content_addressed_publication_requires_full_digest_readback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "request.json"
+    source.write_text(json.dumps({"schema_version": "request.v1"}), encoding="utf-8")
+    objects: dict[tuple[str, str], bytes] = {}
+    tamper = {"enabled": False}
+
+    class Blob:
+        def __init__(self, bucket: str, key: str) -> None:
+            self.bucket = bucket
+            self.key = key
+
+        def upload_from_filename(self, filename: str, *, if_generation_match: int) -> None:
+            assert if_generation_match == 0
+            identity = (self.bucket, self.key)
+            if identity in objects:
+                raise RuntimeError("precondition failed")
+            payload = Path(filename).read_bytes()
+            objects[identity] = (b"x" * len(payload)) if tamper["enabled"] else payload
+
+        def download_to_filename(self, filename: str) -> None:
+            Path(filename).write_bytes(objects[(self.bucket, self.key)])
+
+    class Bucket:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def blob(self, key: str) -> Blob:
+            return Blob(self.name, key)
+
+    class Client:
+        def bucket(self, name: str) -> Bucket:
+            return Bucket(name)
+
+    storage_module = types.SimpleNamespace(Client=Client)
+    google_module = types.ModuleType("google")
+    cloud_module = types.ModuleType("google.cloud")
+    cloud_module.storage = storage_module
+    google_module.cloud = cloud_module
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.cloud", cloud_module)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", storage_module)
+
+    receipt = setup.publish_content_addressed_manifest(
+        source=source,
+        destination_prefix="gs://fixture-bucket/launch-manifests",
+        receipt_path=tmp_path / "publication.json",
+        profile_builder="build_retained_scene_render_live_profile.py",
+    )
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert receipt["published_uri"].endswith(f"/sha256/{digest[:2]}/{digest}.json")
+    assert receipt["provider_full_byte_readback_verified"] is True
+    assert receipt["remote_sha256"] == "sha256:" + digest
+
+    second = tmp_path / "second.json"
+    second.write_text(json.dumps({"schema_version": "request.v2"}), encoding="utf-8")
+    tamper["enabled"] = True
+    with pytest.raises(ValueError, match="uploaded_object_digest_mismatch"):
+        setup.publish_content_addressed_manifest(
+            source=second,
+            destination_prefix="gs://fixture-bucket/launch-manifests",
+            receipt_path=tmp_path / "tampered-publication.json",
+            profile_builder="build_retained_scene_render_live_profile.py",
+        )
+    assert setup.upload_file(
+        source, "s3://fixture-bucket/key", exclusive=True
+    )["blockers"] == ["exclusive_create_unsupported_for_scheme:s3"]
     assert setup._dedupe([" a ", "a", "", "b"]) == ["a", "b"]
     assert setup._storage_upload_commands(source="/tmp/a", destination_uri="gs://bucket/a") == [
         'test -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" || { echo "missing GOOGLE_APPLICATION_CREDENTIALS" >&2; exit 2; }',

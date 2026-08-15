@@ -5,10 +5,16 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
 from blueprint_pipeline.semantic_teacher_image_edit_bundle import (
     BUNDLE_RECEIPT_SCHEMA_VERSION,
+)
+
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
 )
 
 
@@ -126,7 +132,10 @@ def _build(tmp_path: Path, monkeypatch):
         dry_run_receipt_path=paths["dry_run"],
         token_file_path=paths["token"],
         source_commit=COMMIT,
-        raw_manifest_uri=f"https://example.invalid/{COMMIT}/semantic-teacher.json",
+        raw_manifest_uri=(
+            f"https://raw.githubusercontent.com/example/repo/{COMMIT}/"
+            "semantic-teacher.json"
+        ),
     )
     return profile, paths
 

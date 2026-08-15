@@ -49,6 +49,10 @@ from blueprint_pipeline.production_gpu_campaign_budget import (
 )
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_new_site_diagnostic_canary_live_profile.py"
 ALLOCATOR = REPO_ROOT / "src" / "blueprint_pipeline" / "paid_resource_allocator.py"

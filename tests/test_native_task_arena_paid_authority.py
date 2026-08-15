@@ -102,12 +102,25 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
     predecessor = _predecessor(tmp_path / "predecessor")
     receipt_path, prepared = _prepared_bundle(tmp_path / "bundle")
     monkeypatch.setattr(paid, "_bundle_loader", lambda _mode: lambda *_args, **_kwargs: prepared)
+    reconciled = {
+        "prior_terminal_attempts": [{"result": _record(predecessor["canonical_result"])}],
+        "reconciliation": {
+            "path": str(tmp_path / "reconciliation.json"),
+            "sha256": "sha256:" + "9" * 64,
+        },
+        "actual_total_usd": 0.025,
+    }
+    monkeypatch.setattr(paid, "bind_lane_prior_spend", lambda **_kwargs: reconciled)
+    monkeypatch.setattr(
+        paid, "validate_bound_lane_prior_spend", lambda *_args, **_kwargs: reconciled
+    )
 
     authority = paid.materialize_native_task_arena_paid_attempt_authority(
         bundle_receipt_path=receipt_path,
         prior_authority_path=predecessor["authority"],
         prior_result_path=predecessor["result"],
         prior_provider_zero_path=predecessor["zero"],
+        prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
         authorization_reference="user-directed native construction",
         authorized_by="user",
         authorized_on="2026-08-13",
@@ -118,7 +131,9 @@ def test_real_shape_predecessor_alias_and_authority_are_digest_bound(
         output_path=tmp_path / "attempt_authority.json",
     )
 
-    assert authority["aggregate_goal_spend_before_attempt_usd"] == 11.304443
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 11.236507
+    assert authority["prior_terminal_attempt"]["attempt_cost_usd"] == 0.092936
+    assert authority["prior_terminal_attempt"]["actual_provider_charge_usd"] == 0.025
     assert authority["prior_terminal_attempt"]["terminal_result"]["path"] == str(
         predecessor["canonical_result"]
     )

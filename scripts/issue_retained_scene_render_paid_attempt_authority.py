@@ -24,7 +24,6 @@ Reads retained bytes only; performs no provider mutation and rents nothing.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,14 +38,11 @@ from blueprint_pipeline.host_resident_launch_inputs import (
     HostResidentInputError,
     resolve_host_resident_bundle_receipt,
 )
+from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
 
 
 class AttemptAuthorityError(ValueError):
     """The attempt authority cannot be issued against these bytes."""
-
-
-def _sha256(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -56,23 +52,6 @@ def _read(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
-def _prior_attempt(path: Path) -> dict[str, Any]:
-    """Describe one prior terminal result exactly as the validator re-reads it."""
-
-    if path.is_symlink() or not path.is_file():
-        raise AttemptAuthorityError(f"prior_terminal_attempt_missing:{path.name}")
-    result = _read(path)
-    cost = result.get("estimated_cost_usd")
-    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or float(cost) < 0.0:
-        raise AttemptAuthorityError(f"prior_terminal_attempt_cost_invalid:{path.name}")
-    return {
-        "result_path": str(path.resolve()),
-        "result_sha256": _sha256(path),
-        "receipt_digest": str(result.get("receipt_digest") or ""),
-        "estimated_cost_usd": float(cost),
-    }
-
-
 def issue_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
@@ -80,6 +59,7 @@ def issue_paid_attempt_authority(
     max_hourly_rate_usd: float,
     hard_ttl_seconds: int,
     prior_result_paths: Sequence[str | Path] = (),
+    prior_spend_reconciliation_path: str | Path | None = None,
     authorized_on: str | None = None,
 ) -> dict[str, Any]:
     """Derive the attempt authority, then refuse to emit an invalid one."""
@@ -109,7 +89,15 @@ def issue_paid_attempt_authority(
     # match exactly and they are edited in different places.
     allowlist = sorted({int(item) for item in paid.get("external_instance_allowlist") or []})
 
-    priors = [_prior_attempt(Path(item).expanduser()) for item in prior_result_paths]
+    try:
+        prior_spend = bind_lane_prior_spend(
+            prior_result_paths=prior_result_paths,
+            reconciliation_path=prior_spend_reconciliation_path,
+            lane="retained_scene_render",
+        )
+    except ValueError as exc:
+        raise AttemptAuthorityError(str(exc)) from exc
+    priors = prior_spend["prior_terminal_attempts"]
     authority: dict[str, Any] = {
         "schema_version": PAID_ATTEMPT_AUTHORITY_SCHEMA,
         "authority_kind": "explicit_user_direction_in_current_goal",
@@ -130,6 +118,8 @@ def issue_paid_attempt_authority(
         "maximum_hourly_rate_usd": max_hourly_rate_usd,
         "external_active_instance_allowlist": allowlist,
         "prior_terminal_attempts": priors,
+        "prior_spend_reconciliation": prior_spend["reconciliation"],
+        "prior_actual_provider_spend_usd": prior_spend["actual_total_usd"],
     }
     if priors:
         authority["manual_reissue_after_prior_terminal_attempt"] = True
@@ -157,6 +147,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="Who is approving one paid attempt. Recorded in the authority.",
     )
+    parser.add_argument(
+        "--prior-spend-reconciliation",
+        help=(
+            "Lane-local adp_same_goal_spend_reconciliation.v1 that binds every "
+            "--prior-result to official billing, teardown, and provider-zero."
+        ),
+    )
     parser.add_argument("--max-hourly-rate-usd", type=float, required=True)
     parser.add_argument("--hard-ttl-seconds", type=int, required=True)
     parser.add_argument(
@@ -179,6 +176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             hard_ttl_seconds=args.hard_ttl_seconds,
             prior_result_paths=args.prior_result,
+            prior_spend_reconciliation_path=args.prior_spend_reconciliation,
             authorized_on=args.authorized_on,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:

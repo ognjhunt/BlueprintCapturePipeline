@@ -36,6 +36,10 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     canonical_digest,
 )
 
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
     "build_reconstruction_worker_smoke_live_profile",

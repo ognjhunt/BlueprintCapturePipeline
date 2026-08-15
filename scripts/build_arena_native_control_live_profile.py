@@ -182,6 +182,7 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
 
 SPEC = LaneLiveProfileSpec(
     profile_id_prefix="adp-arena-native-control-live",
+    profile_builder="build_arena_native_control_live_profile.py",
     probe_kind=PROBE_KIND,
     min_ttl_seconds=MIN_TTL_SECONDS,
     max_ttl_seconds=MAX_TTL_SECONDS,
@@ -272,7 +273,9 @@ FLAGS: dict[str, Flag] = {
         "source_commit", "The commit the control plane is running.", required=True
     ),
     "--raw-manifest-uri": Flag(
-        "raw_manifest_uri", "Immutable URI recorded as this run's spec.", required=True
+        "raw_manifest_uri",
+        "Local digest-bound GCS publication receipt for this run spec.",
+        required=True,
     ),
     "--machine-avoidlist": Flag(
         "machine_avoidlist_path", "Optional Vast machines this launch must not take."

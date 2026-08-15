@@ -25,6 +25,10 @@ from blueprint_pipeline.sam31_source_track_canary_worker import (
     BUNDLE_RECEIPT_SCHEMA_VERSION as SAM31_BUNDLE_RECEIPT_SCHEMA_VERSION,
 )
 
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
+
 
 def _digest(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()

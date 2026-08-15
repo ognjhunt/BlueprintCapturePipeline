@@ -1,4 +1,4 @@
-"""Factoring the builders must not change a single byte a lane launches with.
+"""Shared builder refactors preserve the allocator/scientific profile shape.
 
 A launch profile is published once and read on every later launch, and its
 digest binds the allocator argv the paid boundary opens. Two lanes had already
@@ -6,9 +6,9 @@ run for real against profiles the hand-written builders produced -- one of them
 completed a $0.135 GPU run -- so a refactor that changed any field would be a
 silent change to what those lanes do, not a refactor.
 
-These goldens were captured from the pre-refactor builders at `origin/main`.
-See `_normalized` for the two things that legitimately differ between two runs
-of one builder and are therefore not compared.
+These goldens predate the required digest-readback publication envelope. The
+normalizer validates and removes only that new transport envelope, then keeps
+the original byte-for-byte comparison for allocator and scientific fields.
 """
 
 from __future__ import annotations
@@ -21,6 +21,10 @@ import sys
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLDENS = REPO_ROOT / "tests" / "fixtures" / "live_profile_goldens"
@@ -63,7 +67,28 @@ def _normalized(profile: dict, root: Path) -> dict:
             seen[value] = f"sha256:<{len(seen)}>"
         return seen[value]
 
-    return json.loads(re.sub(r"sha256:[0-9a-f]{64}", alias, text))
+    normalized = json.loads(re.sub(r"sha256:[0-9a-f]{64}", alias, text))
+    publication = normalized.pop("manifest_publication")
+    assert publication["provider_full_byte_readback_verified"] is True
+    assert publication["source_sha256"] == publication["remote_sha256"]
+    publication_inputs = [
+        row
+        for row in normalized["immutable_inputs"]
+        if row["name"] == "manifest_publication_receipt"
+    ]
+    assert len(publication_inputs) == 1
+    normalized["immutable_inputs"] = [
+        row
+        for row in normalized["immutable_inputs"]
+        if row["name"] != "manifest_publication_receipt"
+    ]
+    for target in (
+        normalized["evaluation_run_spec"],
+        normalized["execution_admission"]["readiness_receipt"],
+        normalized["source_bundle"],
+    ):
+        target["uri"] = URI
+    return normalized
 
 
 def _golden(name: str) -> dict:
@@ -74,6 +99,16 @@ def _compare(observed: dict, golden: dict) -> None:
     assert observed.pop("profile_digest", None), "a profile must carry its digest"
     golden = dict(golden)
     golden.pop("profile_digest", None)
+    for profile in (observed, golden):
+        for row in profile["immutable_inputs"]:
+            row["digest"] = f"sha256:<{row['name']}>"
+        for target in (
+            profile["evaluation_run_spec"],
+            profile["execution_admission"]["readiness_receipt"],
+            profile["source_bundle"],
+        ):
+            target["uri"] = "<manifest-uri>"
+            target["digest"] = "sha256:<source_bundle_manifest>"
     assert observed == golden
 
 

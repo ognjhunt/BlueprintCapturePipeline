@@ -109,6 +109,7 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
 
 SPEC = LaneLiveProfileSpec(
     profile_id_prefix="adp-artifixer3d-live",
+    profile_builder="build_artifixer3d_live_profile.py",
     probe_kind=PROBE_KIND,
     min_ttl_seconds=MIN_TTL_SECONDS,
     max_ttl_seconds=MAX_TTL_SECONDS,
@@ -152,7 +153,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bundle-receipt", required=True)
     parser.add_argument("--attempt-authority", required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--raw-manifest-uri", required=True)
+    parser.add_argument(
+        "--raw-manifest-uri",
+        required=True,
+        help="Local digest-bound GCS publication receipt for this run spec.",
+    )
     parser.add_argument(
         "--revision",
         help="Distinguish a rebuilt profile whose inputs changed at the same commit.",

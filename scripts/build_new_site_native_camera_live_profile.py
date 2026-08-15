@@ -161,7 +161,11 @@ FLAGS: dict[str, Flag] = {
         type=int,
     ),
     "--source-commit": Flag("source_commit", "The commit the control plane runs.", True),
-    "--raw-manifest-uri": Flag("raw_manifest_uri", "Public URI of the run spec.", True),
+    "--raw-manifest-uri": Flag(
+        "raw_manifest_uri",
+        "Local digest-bound GCS publication receipt for this run spec.",
+        True,
+    ),
     "--campaign-total-spend-cap-usd": Flag(
         "campaign_total_spend_cap_usd",
         "Campaign spend ceiling.",
@@ -446,6 +450,7 @@ DEFAULT_CAMPAIGN = CampaignLimits(
 
 SPEC = LaneLiveProfileSpec(
     profile_id_prefix=PROFILE_ID_PREFIX,
+    profile_builder="build_new_site_native_camera_live_profile.py",
     probe_kind=PROBE_KIND,
     min_ttl_seconds=MIN_TTL_SECONDS,
     max_ttl_seconds=MAX_TTL_SECONDS,

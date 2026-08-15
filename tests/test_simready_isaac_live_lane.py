@@ -20,6 +20,10 @@ import pytest
 
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "b" * 40
 URI = f"https://raw.githubusercontent.com/example/repo/{COMMIT}/simready.json"

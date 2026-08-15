@@ -41,6 +41,7 @@ from .paid_attempt_authority import (
     active_instance_allowlist_metadata_error,
     flatten_active_instance_allowlist,
     normalize_active_instance_allowlist,
+    validate_bound_lane_prior_spend,
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .openai_successor_models import (
@@ -655,6 +656,10 @@ def validate_content_agents_paid_attempt_authority(
         value, digest_field="authorization_digest"
     ):
         errors.append("authorization_digest_invalid")
+    try:
+        validate_bound_lane_prior_spend(value, lane="content_agents")
+    except ValueError:
+        errors.append("prior_spend_reconciliation_invalid")
     if errors:
         raise ValueError(
             "adp_content_agents_paid_attempt_authority_invalid:"

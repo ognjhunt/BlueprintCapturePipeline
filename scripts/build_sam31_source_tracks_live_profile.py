@@ -29,10 +29,8 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
-from blueprint_pipeline.task_evaluation_live_profile import (
-    RUN_ROOT,
-    shared_control_surface,
-)
+from blueprint_pipeline import task_evaluation_live_profile as live_profile_contract
+from blueprint_pipeline.task_evaluation_live_profile import RUN_ROOT, shared_control_surface
 
 
 #: The one terminal artifact this lane adds to the shared contract.
@@ -122,10 +120,41 @@ def build_sam31_source_tracks_live_profile(
     profile_id = f"adp-sam31-source-tracks-live-{source_commit}"
     if revision:
         profile_id = f"{profile_id}-{revision}"
-    request_digest = str(request["request_digest"])
+    request_digest = _digest(request_file)
     allowlist = list(
         (authority.get("active_instance_allowlist") or {}).get(
             "external_provider_owned", []
+        )
+    )
+    immutable_inputs = [
+        {
+            "name": "source_bundle_manifest",
+            "path": str(request_file),
+            "digest": _digest(request_file),
+        },
+        {
+            "name": "evaluation_run_spec",
+            "path": str(receipt_file),
+            "digest": _digest(receipt_file),
+        },
+        {
+            "name": "sam31_input_bundle",
+            "path": str(bundle_file),
+            "digest": _digest(bundle_file),
+        },
+        {
+            "name": "sam31_paid_attempt_authority",
+            "path": str(authority_file),
+            "digest": _digest(authority_file),
+        },
+    ]
+    manifest_uri, manifest_publication, immutable_inputs = (
+        live_profile_contract.bind_live_profile_manifest_publication(
+            reference=raw_manifest_uri,
+            source_commit=source_commit,
+            run_spec_digest=request_digest,
+            profile_builder="build_sam31_source_tracks_live_profile.py",
+            immutable_inputs=immutable_inputs,
         )
     )
     profile: dict[str, Any] = {
@@ -189,42 +218,23 @@ def build_sam31_source_tracks_live_profile(
         "execution_admission": {
             "live_enabled": True,
             "blockers": [],
-            "readiness_receipt": {"uri": raw_manifest_uri, "digest": request_digest},
+            "readiness_receipt": {"uri": manifest_uri, "digest": request_digest},
         },
-        "evaluation_run_spec": {"uri": raw_manifest_uri, "digest": request_digest},
+        "evaluation_run_spec": {"uri": manifest_uri, "digest": request_digest},
         "source_bundle": {
             "bundle_id": f"sam31-source-tracks-{source_commit[:12]}",
             "source_kind": "interiorgs_sage",
-            "uri": raw_manifest_uri,
+            "uri": manifest_uri,
             "digest": request_digest,
         },
-        "immutable_inputs": [
-            {
-                "name": "source_bundle_manifest",
-                "path": str(request_file),
-                "digest": _digest(request_file),
-            },
-            {
-                "name": "evaluation_run_spec",
-                "path": str(receipt_file),
-                "digest": _digest(receipt_file),
-            },
-            {
-                "name": "sam31_input_bundle",
-                "path": str(bundle_file),
-                "digest": _digest(bundle_file),
-            },
-            {
-                "name": "sam31_paid_attempt_authority",
-                "path": str(authority_file),
-                "digest": _digest(authority_file),
-            },
-        ],
+        "immutable_inputs": immutable_inputs,
         "runtime_environment": {},
         **shared_control_surface(
             additional_required_path_fields=(SOURCE_TRACK_RESULT_FIELD,)
         ),
     }
+    if manifest_publication is not None:
+        profile["manifest_publication"] = manifest_publication
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
     validation = [
         *validate_launch_profile(profile),
@@ -244,7 +254,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--attempt-authority", required=True)
     parser.add_argument("--hf-token-file", required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--raw-manifest-uri", required=True)
+    parser.add_argument(
+        "--raw-manifest-uri",
+        required=True,
+        help="Local digest-bound GCS publication receipt for this run spec.",
+    )
     parser.add_argument("--revision")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)

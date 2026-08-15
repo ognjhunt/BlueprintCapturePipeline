@@ -26,7 +26,11 @@ from .native_task_arena_controls_bundle import (
     load_verified_native_task_arena_controls_bundle,
 )
 from .native_task_arena_policy_bundle import load_verified_native_task_arena_policy_bundle
-from .paid_attempt_authority import normalize_active_instance_allowlist
+from .paid_attempt_authority import (
+    bind_lane_prior_spend,
+    normalize_active_instance_allowlist,
+    validate_bound_lane_prior_spend,
+)
 from .spend_authority_consumption_root import consumption_root
 
 
@@ -150,6 +154,7 @@ def validate_terminal_spend_chain(
     return {
         "authority_digest": authorization_digest,
         "attempt_cost_usd": round(cost, 6),
+        "aggregate_goal_spend_before_attempt_usd": round(before, 6),
         "aggregate_goal_spend_after_attempt_usd": round(before + cost, 6),
         "aggregate_goal_spend_cap_usd": cap,
         "records": {
@@ -178,6 +183,7 @@ def materialize_native_task_arena_paid_attempt_authority(
     prior_authority_path: str | Path,
     prior_result_path: str | Path,
     prior_provider_zero_path: str | Path,
+    prior_spend_reconciliation_path: str | Path,
     authorization_reference: str,
     authorized_by: str,
     authorized_on: str,
@@ -206,8 +212,17 @@ def materialize_native_task_arena_paid_attempt_authority(
         result_path=prior_result_path,
         provider_zero_path=prior_provider_zero_path,
     )
+    reconciled = bind_lane_prior_spend(
+        prior_result_paths=(prior["records"]["terminal_result"]["path"],),
+        reconciliation_path=prior_spend_reconciliation_path,
+        lane="native_task_arena",
+    )
     allowed = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
-    prior_spend = prior["aggregate_goal_spend_after_attempt_usd"]
+    prior_spend = round(
+        prior["aggregate_goal_spend_before_attempt_usd"]
+        + reconciled["actual_total_usd"],
+        6,
+    )
     aggregate_cap = min(AGGREGATE_GOAL_SPEND_CAP_USD, prior["aggregate_goal_spend_cap_usd"])
     if (
         not authorization_reference.strip()
@@ -254,7 +269,11 @@ def materialize_native_task_arena_paid_attempt_authority(
             **prior["records"],
             "authority_digest": prior["authority_digest"],
             "attempt_cost_usd": prior["attempt_cost_usd"],
+            "actual_provider_charge_usd": reconciled["actual_total_usd"],
         },
+        "prior_terminal_attempts": reconciled["prior_terminal_attempts"],
+        "prior_spend_reconciliation": reconciled["reconciliation"],
+        "prior_actual_provider_spend_usd": reconciled["actual_total_usd"],
         "active_instance_allowlist": {
             "external_provider_owned": list(allowed),
             "same_goal_concurrent": [],
@@ -351,11 +370,21 @@ def validate_native_task_arena_paid_attempt_authority(
             result_path=paths["terminal_result"],
             provider_zero_path=paths["provider_zero"],
         )
+        reconciled = validate_bound_lane_prior_spend(
+            value, lane="native_task_arena"
+        )
+        actual_after = round(
+            prior["aggregate_goal_spend_before_attempt_usd"]
+            + reconciled["actual_total_usd"],
+            6,
+        )
         if (
             predecessor.get("authority_digest") != prior["authority_digest"]
             or predecessor.get("attempt_cost_usd") != prior["attempt_cost_usd"]
+            or predecessor.get("actual_provider_charge_usd")
+            != reconciled["actual_total_usd"]
             or value.get("aggregate_goal_spend_before_attempt_usd")
-            != prior["aggregate_goal_spend_after_attempt_usd"]
+            != actual_after
             or value.get("aggregate_goal_spend_cap_usd")
             != prior["aggregate_goal_spend_cap_usd"]
             or value.get("aggregate_goal_spend_before_attempt_usd", 0) + hard_cap_usd

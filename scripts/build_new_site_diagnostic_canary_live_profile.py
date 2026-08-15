@@ -143,7 +143,11 @@ PARAMS: dict[str, Param] = {
         type=int,
     ),
     "source_commit": Param("--source-commit", required=True),
-    "raw_manifest_uri": Param("--raw-manifest-uri", required=True),
+    "raw_manifest_uri": Param(
+        "--raw-manifest-uri",
+        "Local digest-bound GCS publication receipt for this run spec.",
+        required=True,
+    ),
     "revision": Param(
         "--revision", "Distinguish a rebuilt profile whose inputs changed at the same commit."
     ),
@@ -380,6 +384,7 @@ def _spec(settings: CampaignSettings = CampaignSettings()) -> LaneLiveProfileSpe
         # The campaign refuses any pod name outside the teardown watchdog's
         # scope, and the watchdog only reaps instances under this prefix.
         profile_id_prefix=f"{CANARY_NAME_PREFIX}new-site",
+        profile_builder="build_new_site_diagnostic_canary_live_profile.py",
         probe_kind=NEW_SITE_CANARY_PROBE_KIND,
         min_ttl_seconds=MIN_TTL_SECONDS,
         max_ttl_seconds=MAX_LANE_TTL_SECONDS,

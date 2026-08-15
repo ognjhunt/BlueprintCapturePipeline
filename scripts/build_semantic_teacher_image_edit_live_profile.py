@@ -209,12 +209,9 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
     return immutable
 
 
-def _run_spec_digest(context: LaneLiveProfileContext) -> str:
-    return str(_read(context.extra_paths["dry_run_receipt"])["dry_run_digest"])
-
-
 SPEC = LaneLiveProfileSpec(
     profile_id_prefix="adp-semantic-teacher-image-edit-live",
+    profile_builder="build_semantic_teacher_image_edit_live_profile.py",
     probe_kind=PROBE_KIND,
     min_ttl_seconds=MIN_TTL_SECONDS,
     max_ttl_seconds=MAX_TTL_SECONDS,
@@ -223,7 +220,6 @@ SPEC = LaneLiveProfileSpec(
     lane_argv=_lane_argv,
     immutable_inputs=_immutable_inputs,
     lane_blockers=_lane_blockers,
-    run_spec_digest=_run_spec_digest,
     extra_path_names=("attempt_authority", "dry_run_receipt", "token_file"),
 )
 
@@ -265,7 +261,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dry-run-receipt", required=True)
     parser.add_argument("--token-file", required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--raw-manifest-uri", required=True)
+    parser.add_argument(
+        "--raw-manifest-uri",
+        required=True,
+        help="Local digest-bound GCS publication receipt for this run spec.",
+    )
     parser.add_argument("--revision")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)

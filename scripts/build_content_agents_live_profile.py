@@ -112,6 +112,7 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
 def _spec(candidate_id: str) -> LaneLiveProfileSpec:
     return LaneLiveProfileSpec(
         profile_id_prefix=f"adp-content-agents-live-{candidate_id}",
+        profile_builder="build_content_agents_live_profile.py",
         probe_kind=PROBE_KIND,
         min_ttl_seconds=MIN_TTL_SECONDS,
         max_ttl_seconds=MAX_TTL_SECONDS,
@@ -166,7 +167,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="Which CAD candidate this profile runs, e.g. a-earthtojake-text-to-cad.",
     )
-    parser.add_argument("--raw-manifest-uri", required=True)
+    parser.add_argument(
+        "--raw-manifest-uri",
+        required=True,
+        help="Local digest-bound GCS publication receipt for this run spec.",
+    )
     parser.add_argument(
         "--revision",
         help="Distinguish a rebuilt profile whose inputs changed at the same commit.",

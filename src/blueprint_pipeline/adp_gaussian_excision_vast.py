@@ -29,6 +29,7 @@ from .paid_attempt_authority import (
     active_instance_allowlist_metadata_error,
     flatten_active_instance_allowlist,
     normalize_active_instance_allowlist,
+    validate_bound_lane_prior_spend,
 )
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .provider_bundle_rehearsal import (
@@ -259,6 +260,14 @@ def validate_gaussian_excision_paid_attempt_authority(
         value, digest_field="authorization_digest"
     ):
         errors.append("authorization_digest_invalid")
+    try:
+        reconciled = validate_bound_lane_prior_spend(
+            value, lane="gaussian_excision"
+        )
+        if (ordinal == 1) != (not reconciled["prior_terminal_attempts"]):
+            errors.append("prior_spend_reconciliation_ordinal_mismatch")
+    except ValueError:
+        errors.append("prior_spend_reconciliation_invalid")
 
     if ordinal == 1:
         if prior_digest is not None or previous_attempt_receipt is not None:

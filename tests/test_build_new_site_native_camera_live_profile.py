@@ -50,8 +50,13 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_gpu_bundle import (
     BUNDLE_SCHEMA_VERSION,
     RECEIPT_SCHEMA_VERSION,
 )
+
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
+
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

@@ -22,6 +22,7 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
+from .paid_attempt_authority import bind_lane_prior_spend
 from .provider_bundle_rehearsal import provider_bundle_rehearsal_blockers
 from .task_evaluation_artifact_manifest import (
     seal_unallocated_provider_teardown,
@@ -231,45 +232,35 @@ def validate_retained_scene_render_paid_attempt_authority(
     else:
         if prior_attempts and value.get("manual_reissue_after_prior_terminal_attempt") is not True:
             errors.append("prior_terminal_attempt_manual_reissue_missing")
-        seen_receipts: set[str] = set()
-        for row in prior_attempts:
-            if not isinstance(row, Mapping):
-                errors.append("prior_terminal_attempts_invalid")
-                continue
-            result_path = Path(str(row.get("result_path") or "")).expanduser().resolve()
-            expected_sha256 = str(row.get("result_sha256") or "")
-            expected_digest = str(row.get("receipt_digest") or "")
-            expected_cost = row.get("estimated_cost_usd")
-            if (
-                not result_path.is_file()
-                or result_path.is_symlink()
-                or expected_sha256 != _sha256(result_path)
-                or expected_digest in seen_receipts
-                or isinstance(expected_cost, bool)
-                or not isinstance(expected_cost, (int, float))
-                or float(expected_cost) < 0.0
-            ):
-                errors.append("prior_terminal_attempt_receipt_invalid")
-                continue
-            seen_receipts.add(expected_digest)
+        reconciliation = value.get("prior_spend_reconciliation")
+        if prior_attempts:
             try:
-                result = _read(result_path)
-            except ValueError:
-                errors.append("prior_terminal_attempt_receipt_invalid")
-                continue
-            if (
-                result.get("schema_version") != RESULT_SCHEMA
-                or result.get("status") not in {"completed", "blocked"}
-                or result.get("receipt_digest")
-                != canonical_digest(result, digest_field="receipt_digest")
-                or result.get("receipt_digest") != expected_digest
-                or result.get("continuing_spend_from_this_run") is not False
-                or result.get("all_staged_objects_absent") is not True
-                or result.get("estimated_cost_usd") != expected_cost
-            ):
-                errors.append("prior_terminal_attempt_receipt_invalid")
-                continue
-            prior_spend_usd += float(expected_cost)
+                if not isinstance(reconciliation, Mapping):
+                    raise ValueError("prior_spend_reconciliation_required")
+                observed = bind_lane_prior_spend(
+                    prior_result_paths=[
+                        str((row.get("result") or {}).get("path") or "")
+                        for row in prior_attempts
+                        if isinstance(row, Mapping)
+                    ],
+                    reconciliation_path=str(reconciliation.get("path") or ""),
+                    lane="retained_scene_render",
+                )
+                if (
+                    observed["prior_terminal_attempts"] != prior_attempts
+                    or observed["reconciliation"] != reconciliation
+                    or observed["actual_total_usd"]
+                    != value.get("prior_actual_provider_spend_usd")
+                ):
+                    raise ValueError("prior_spend_reconciliation_record_mismatch")
+                prior_spend_usd = float(observed["actual_total_usd"])
+            except (TypeError, ValueError):
+                errors.append("prior_terminal_attempt_reconciliation_invalid")
+        elif (
+            reconciliation is not None
+            or value.get("prior_actual_provider_spend_usd") != 0.0
+        ):
+            errors.append("prior_spend_reconciliation_without_prior_attempt")
     if prior_spend_usd + max_hourly_rate_usd * hard_ttl_seconds / 3600.0 > float(
         prepared_bundle.get("hard_total_spend_cap_usd") or 0.0
     ):

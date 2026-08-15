@@ -168,6 +168,7 @@ def _immutable_inputs(link: ArenaLink):
 def _spec(link: ArenaLink, *, with_avoidlist: bool) -> LaneLiveProfileSpec:
     return LaneLiveProfileSpec(
         profile_id_prefix=link.profile_id_prefix,
+        profile_builder="build_native_task_arena_live_profile.py",
         probe_kind=link.probe_kind,
         min_ttl_seconds=MIN_TTL_SECONDS,
         max_ttl_seconds=MAX_TTL_SECONDS,
@@ -253,7 +254,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         target.add_argument("--packet-dir", required=True)
         target.add_argument("--runtime-source-packet", required=True)
         target.add_argument("--source-commit", required=True)
-        target.add_argument("--raw-manifest-uri", required=True)
+        target.add_argument(
+            "--raw-manifest-uri",
+            required=True,
+            help="Local digest-bound GCS publication receipt for this run spec.",
+        )
         target.add_argument("--machine-avoidlist")
         target.add_argument(
             "--revision",

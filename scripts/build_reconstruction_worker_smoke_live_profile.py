@@ -68,6 +68,7 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_launch_profile,
     verify_profile_immutable_inputs,
 )
+from blueprint_pipeline import task_evaluation_live_profile as live_profile_contract
 from blueprint_pipeline.task_evaluation_live_profile import (
     PROFILE_SCHEMA_VERSION,
     PROGRAM_ID,
@@ -110,7 +111,11 @@ PARAMETERS: dict[str, dict[str, Any]] = {
         "help": "Mode-0600 file holding the signed result GET URL.",
     },
     "source_commit": {"flag": "--source-commit", "required": True},
-    "raw_manifest_uri": {"flag": "--raw-manifest-uri", "required": True},
+    "raw_manifest_uri": {
+        "flag": "--raw-manifest-uri",
+        "required": True,
+        "help": "Local digest-bound GCS publication receipt for this run spec.",
+    },
     "max_hourly_rate_usd": {
         "flag": "--max-hourly-rate-usd",
         "required": True,
@@ -268,7 +273,28 @@ def build_reconstruction_worker_smoke_live_profile(
         # Published profiles are immutable, so a profile whose inputs changed
         # needs its own id rather than a conflicting rewrite of an existing one.
         profile_id = f"{profile_id}-{revision}"
-    request_digest = str(request["request_digest"])
+    request_digest = _file_digest(request_file)
+    immutable_inputs = [
+        {
+            "name": "source_bundle_manifest",
+            "path": str(request_file),
+            "digest": _file_digest(request_file),
+        },
+        {
+            "name": "evaluation_run_spec",
+            "path": str(request_file),
+            "digest": _file_digest(request_file),
+        },
+    ]
+    manifest_uri, manifest_publication, immutable_inputs = (
+        live_profile_contract.bind_live_profile_manifest_publication(
+            reference=raw_manifest_uri,
+            source_commit=source_commit,
+            run_spec_digest=request_digest,
+            profile_builder="build_reconstruction_worker_smoke_live_profile.py",
+            immutable_inputs=immutable_inputs,
+        )
+    )
 
     profile: dict[str, Any] = {
         "schema_version": PROFILE_SCHEMA_VERSION,
@@ -309,34 +335,25 @@ def build_reconstruction_worker_smoke_live_profile(
         "execution_admission": {
             "live_enabled": True,
             "blockers": [],
-            "readiness_receipt": {"uri": raw_manifest_uri, "digest": request_digest},
+            "readiness_receipt": {"uri": manifest_uri, "digest": request_digest},
         },
-        "evaluation_run_spec": {"uri": raw_manifest_uri, "digest": request_digest},
+        "evaluation_run_spec": {"uri": manifest_uri, "digest": request_digest},
         "source_bundle": {
             "bundle_id": f"reconstruction-worker-smoke-{source_commit[:12]}",
             "source_kind": "interiorgs_sage",
-            "uri": raw_manifest_uri,
+            "uri": manifest_uri,
             "digest": request_digest,
         },
         # The sealed request is the only input of this launch that is both
         # digest-stable and not a secret. The signed URL files rotate and the
         # preflight seed is rewritten by the launch itself, so pinning either
         # would fail the launch after the one it was authored for.
-        "immutable_inputs": [
-            {
-                "name": "source_bundle_manifest",
-                "path": str(request_file),
-                "digest": _file_digest(request_file),
-            },
-            {
-                "name": "evaluation_run_spec",
-                "path": str(request_file),
-                "digest": _file_digest(request_file),
-            },
-        ],
+        "immutable_inputs": immutable_inputs,
         "runtime_environment": {},
         **shared_control_surface(),
     }
+    if manifest_publication is not None:
+        profile["manifest_publication"] = manifest_publication
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
 
     validation = [

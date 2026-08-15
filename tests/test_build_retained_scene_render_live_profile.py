@@ -20,6 +20,10 @@ import pytest
 
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
     "build_retained_scene_render_live_profile",

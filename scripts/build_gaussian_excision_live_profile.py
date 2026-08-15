@@ -133,6 +133,7 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
 
 SPEC = LaneLiveProfileSpec(
     profile_id_prefix="adp-gaussian-excision-live",
+    profile_builder="build_gaussian_excision_live_profile.py",
     probe_kind=PROBE_KIND,
     # A single admitted value, expressed as a degenerate band.
     min_ttl_seconds=EXACT_HARD_TTL_SECONDS - 1,
@@ -189,7 +190,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bundle-receipt", required=True)
     parser.add_argument("--attempt-authority", required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--raw-manifest-uri", required=True)
+    parser.add_argument(
+        "--raw-manifest-uri",
+        required=True,
+        help="Local digest-bound GCS publication receipt for this run spec.",
+    )
     parser.add_argument(
         "--revision",
         help="Distinguish a rebuilt profile whose inputs changed at the same commit.",

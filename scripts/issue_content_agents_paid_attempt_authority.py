@@ -40,6 +40,7 @@ from blueprint_pipeline.host_resident_launch_inputs import (
     HostResidentInputError,
     resolve_host_resident_bundle_receipt,
 )
+from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
 
 
 class ContentAgentsAuthorityError(ValueError):
@@ -66,6 +67,8 @@ def issue_content_agents_paid_attempt_authority(
     max_hourly_rate_usd: float,
     hard_cap_usd: float,
     hard_ttl_seconds: int,
+    prior_result_paths: Sequence[str | Path] = (),
+    prior_spend_reconciliation_path: str | Path | None = None,
     authorized_on: str | None = None,
 ) -> dict[str, Any]:
     """Derive the attempt authority, then refuse to emit an invalid one."""
@@ -101,6 +104,11 @@ def issue_content_agents_paid_attempt_authority(
         raise ContentAgentsAuthorityError(
             "authority_config_preflight_binds_a_different_bundle_receipt"
         )
+    prior_spend = bind_lane_prior_spend(
+        prior_result_paths=prior_result_paths,
+        reconciliation_path=prior_spend_reconciliation_path,
+        lane="content_agents",
+    )
 
     authority: dict[str, Any] = {
         "schema_version": PAID_ATTEMPT_AUTHORITY_SCHEMA,
@@ -133,6 +141,9 @@ def issue_content_agents_paid_attempt_authority(
         # concurrent operator's instance is recognised by its own label at the
         # prelaunch guard, which is where that question belongs.
         "active_instance_allowlist": [],
+        "prior_terminal_attempts": prior_spend["prior_terminal_attempts"],
+        "prior_spend_reconciliation": prior_spend["reconciliation"],
+        "prior_actual_provider_spend_usd": prior_spend["actual_total_usd"],
     }
     authority["authorization_digest"] = canonical_digest(
         authority, digest_field="authorization_digest"
@@ -168,6 +179,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hard-cap-usd", type=float, required=True)
     parser.add_argument("--hard-ttl-seconds", type=int, required=True)
     parser.add_argument("--authorized-on")
+    parser.add_argument("--prior-result", action="append", default=[])
+    parser.add_argument("--prior-spend-reconciliation")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
 
@@ -180,6 +193,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             hard_cap_usd=args.hard_cap_usd,
             hard_ttl_seconds=args.hard_ttl_seconds,
+            prior_result_paths=args.prior_result,
+            prior_spend_reconciliation_path=args.prior_spend_reconciliation,
             authorized_on=args.authorized_on,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:

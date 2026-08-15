@@ -25,6 +25,8 @@ Reads retained bytes only; performs no provider mutation and rents nothing.
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -34,6 +36,7 @@ from .host_resident_launch_inputs import (
     launch_profile_residency_blockers,
     resolve_host_resident_bundle_receipt,
 )
+from .robot_eval_provider_input_setup import LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS
 from .task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     TaskEvaluationLaunchError,
@@ -146,6 +149,9 @@ class LaneLiveProfileSpec:
 
     #: Prefixes the profile id. The commit (and any revision) is appended.
     profile_id_prefix: str
+    #: Exact operator-facing builder filename bound by a generated-manifest
+    #: publication receipt.
+    profile_builder: str
     probe_kind: str
     #: The allocator refuses a TTL outside this band for this probe, so a
     #: profile outside it is refused after a provider has been handed over.
@@ -173,6 +179,112 @@ class LaneLiveProfileSpec:
     subcommand: str = "gpu-canary"
     provider: str = "vast"
     extra_path_names: Sequence[str] = field(default_factory=tuple)
+
+
+def bind_live_profile_manifest_publication(
+    *,
+    reference: str,
+    source_commit: str,
+    run_spec_digest: str,
+    profile_builder: str,
+    immutable_inputs: Sequence[Mapping[str, Any]],
+) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]]]:
+    """Resolve a pinned URI or fail-closed publication receipt into a URI.
+
+    Exact-commit raw GitHub inputs are immutable by construction. Every other
+    reference must be a local, self-digesting publication receipt; accepting a
+    bare generated URI would let an operator bypass provider readback.
+    """
+
+    normalized = str(reference or "").strip()
+    publication_seam = LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS.get(profile_builder)
+    if publication_seam is None:
+        raise TaskEvaluationLaunchError("manifest_publication_profile_builder_unregistered")
+    pinned = re.fullmatch(
+        rf"https://raw\.githubusercontent\.com/[^/]+/[^/]+/{re.escape(source_commit)}/.+",
+        normalized,
+    )
+    inputs = [dict(item) for item in immutable_inputs]
+    if publication_seam == "exact_commit_raw_github" and pinned:
+        return normalized, None, inputs
+    if publication_seam == "exact_commit_raw_github":
+        raise TaskEvaluationLaunchError("exact_commit_raw_github_manifest_required")
+    receipt_path = Path(normalized).expanduser().resolve()
+    if receipt_path.is_symlink() or not receipt_path.is_file():
+        raise TaskEvaluationLaunchError("manifest_publication_receipt_required")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationLaunchError("manifest_publication_receipt_invalid") from exc
+    source = receipt.get("source") if isinstance(receipt, Mapping) else None
+    published_uri = str(receipt.get("published_uri") or "") if isinstance(receipt, Mapping) else ""
+    digest_identity = run_spec_digest.removeprefix("sha256:")
+    expected_uri_suffix = (
+        f"/sha256/{digest_identity[:2]}/{digest_identity}.json"
+    )
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("schema_version")
+        != "task_evaluation_immutable_manifest_publication.v1"
+        or receipt.get("status") != "published"
+        or receipt.get("profile_builder") != profile_builder
+        or receipt.get("publication_seam") != "gcs_content_addressed_full_readback"
+        or not published_uri.startswith("gs://")
+        or not published_uri.endswith(expected_uri_suffix)
+        or receipt.get("storage_scheme") != "gs"
+        or not isinstance(source, Mapping)
+        or source.get("sha256") != run_spec_digest
+        or receipt.get("remote_sha256") != run_spec_digest
+        or source.get("size_bytes") != receipt.get("remote_size_bytes")
+        or receipt.get("provider_full_byte_readback_verified") is not True
+        or receipt.get("content_addressed_key") is not True
+        or receipt.get("exclusive_create") is not True
+        or receipt.get("blockers") != []
+        or receipt.get("provider_compute_mutation_performed") is not False
+        or receipt.get("paid_resource_allocated") is not False
+        or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(receipt.get("upload_receipt_digest") or "")
+        )
+        or receipt.get("raw_secret_values_recorded") is not False
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+    ):
+        raise TaskEvaluationLaunchError("manifest_publication_receipt_invalid")
+    source_path = Path(str(source.get("path") or "")).expanduser().resolve()
+    source_inputs = [
+        item for item in inputs if item.get("name") == "source_bundle_manifest"
+    ]
+    if (
+        len(source_inputs) != 1
+        or source_path.is_symlink()
+        or not source_path.is_file()
+        or source.get("size_bytes") != source_path.stat().st_size
+        or file_digest(source_path) != run_spec_digest
+        or Path(str(source_inputs[0].get("path") or "")).expanduser().resolve()
+        != source_path
+        or source_inputs[0].get("digest") != run_spec_digest
+    ):
+        raise TaskEvaluationLaunchError("manifest_publication_source_not_immutable_input")
+    inputs.append(
+        {
+            "name": "manifest_publication_receipt",
+            "path": str(receipt_path),
+            "digest": file_digest(receipt_path),
+        }
+    )
+    return (
+        published_uri,
+        {
+            "receipt_path": str(receipt_path),
+            "receipt_digest": receipt["receipt_digest"],
+            "published_uri": published_uri,
+            "source_sha256": run_spec_digest,
+            "remote_sha256": run_spec_digest,
+            "profile_builder": profile_builder,
+            "provider_full_byte_readback_verified": True,
+        },
+        inputs,
+    )
 
 
 def build_lane_live_profile(
@@ -253,10 +365,29 @@ def build_lane_live_profile(
         if spec.declared_spend is not None
         else context.max_spend_usd
     )
+    immutable_inputs = spec.immutable_inputs(context)
+    source_manifests = [
+        item
+        for item in immutable_inputs
+        if item.get("name") == "source_bundle_manifest"
+    ]
+    if spec.run_spec_digest is None and len(source_manifests) != 1:
+        raise TaskEvaluationLaunchError("source_bundle_manifest_input_not_unique")
     run_spec_digest = (
         spec.run_spec_digest(context)
         if spec.run_spec_digest is not None
-        else context.bundle_sha256
+        else str(source_manifests[0].get("digest") or "")
+    )
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", run_spec_digest):
+        raise TaskEvaluationLaunchError("live_profile_run_spec_digest_invalid")
+    manifest_uri, manifest_publication, immutable_inputs = (
+        bind_live_profile_manifest_publication(
+            reference=raw_manifest_uri,
+            source_commit=source_commit,
+            run_spec_digest=run_spec_digest,
+            profile_builder=spec.profile_builder,
+            immutable_inputs=immutable_inputs,
+        )
     )
 
     profile: dict[str, Any] = {
@@ -284,19 +415,21 @@ def build_lane_live_profile(
         "execution_admission": {
             "live_enabled": True,
             "blockers": [],
-            "readiness_receipt": {"uri": raw_manifest_uri, "digest": run_spec_digest},
+            "readiness_receipt": {"uri": manifest_uri, "digest": run_spec_digest},
         },
-        "evaluation_run_spec": {"uri": raw_manifest_uri, "digest": run_spec_digest},
+        "evaluation_run_spec": {"uri": manifest_uri, "digest": run_spec_digest},
         "source_bundle": {
             "bundle_id": spec.source_bundle_id(context),
             "source_kind": spec.source_kind,
-            "uri": raw_manifest_uri,
+            "uri": manifest_uri,
             "digest": run_spec_digest,
         },
-        "immutable_inputs": spec.immutable_inputs(context),
+        "immutable_inputs": immutable_inputs,
         "runtime_environment": {},
         **shared_control_surface(required_providers=spec.required_providers),
     }
+    if manifest_publication is not None:
+        profile["manifest_publication"] = manifest_publication
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
 
     validation = [

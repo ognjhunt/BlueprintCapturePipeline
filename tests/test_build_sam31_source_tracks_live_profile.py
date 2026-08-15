@@ -14,6 +14,10 @@ from blueprint_pipeline.sam31_source_track_canary_worker import BUNDLE_RECEIPT_S
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
+pytestmark = pytest.mark.usefixtures(
+    "_materialize_generated_manifest_publication_fixture"
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
@@ -127,6 +131,7 @@ def test_profile_binds_all_nonsecret_immutable_inputs(tmp_path: Path) -> None:
         "evaluation_run_spec",
         "sam31_input_bundle",
         "sam31_paid_attempt_authority",
+        "manifest_publication_receipt",
     }
     assert all("token" not in row["name"] for row in inputs.values())
 
