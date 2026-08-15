@@ -103,6 +103,91 @@ def _valid_packet_archive(
     )
 
 
+def _local_limit_request(tmp_path: Path, sizes: tuple[int, int, int]) -> Path:
+    paths = [tmp_path / "rights.json", tmp_path / "scene.usd", tmp_path / "frame.json"]
+    for path, size in zip(paths, sizes):
+        path.write_bytes(b"x" * size)
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(
+            {
+                "schema_version": intake.REQUEST_SCHEMA,
+                "scene_id": "new-scene-001",
+                "packet_id": "new-scene-001-public-source-v1",
+                "source_commit_sha": intake._verified_checkout_head(),
+                "rights_receipts": [
+                    {
+                        "receipt_id": "scene-rights",
+                        "path": str(paths[0]),
+                        "sha256": _sha(paths[0]),
+                    }
+                ],
+                "files": [
+                    {
+                        "role": "collision_usd",
+                        "path": str(paths[1]),
+                        "sha256": _sha(paths[1]),
+                    },
+                    {
+                        "role": "shared_frame_registration",
+                        "path": str(paths[2]),
+                        "sha256": _sha(paths[2]),
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return request
+
+
+@pytest.mark.parametrize(
+    ("sizes", "constant", "limit", "blocker"),
+    [
+        (
+            (3, 1, 1),
+            "MAX_ARCHIVE_MEMBER_BYTES",
+            2,
+            "local_input_member_size_exceeds_limit",
+        ),
+        (
+            (1, 2, 2),
+            "MAX_ARCHIVE_UNCOMPRESSED_BYTES",
+            4,
+            "local_input_aggregate_size_exceeds_limit",
+        ),
+        (
+            (1, 1, 1),
+            "MAX_ARCHIVE_MEMBERS",
+            3,
+            "local_input_member_count_exceeds_limit",
+        ),
+    ],
+)
+def test_local_limits_fail_before_any_source_read(
+    sizes: tuple[int, int, int],
+    constant: str,
+    limit: int,
+    blocker: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _local_limit_request(tmp_path, sizes)
+    monkeypatch.setattr(intake, constant, limit)
+    monkeypatch.setattr(
+        intake,
+        "_sha256_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("source hashed before limits")),
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: (_ for _ in ()).throw(AssertionError("source read before limits")),
+    )
+    with pytest.raises(intake.PublicSceneHostInputError, match=blocker):
+        intake._load_request(request)
+
+
 def test_archive_rejects_oversized_member_before_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -299,6 +384,46 @@ def test_upload_rejects_self_digested_receipt_with_wrong_binding(
         )
 
 
+@pytest.mark.parametrize("failure", ["timeout", "oserror"])
+def test_upload_transport_is_bounded_and_typed(
+    failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = {
+        "packet_digest": "sha256:" + "a" * 64,
+        "scene_id": "new-scene-001",
+        "packet_id": "new-scene-001-public-source-v1",
+        "source_commit_sha": intake._verified_checkout_head(),
+    }
+    destination = tmp_path / "inputs"
+    monkeypatch.setattr(intake, "PRODUCTION_ROOTS", (destination,))
+    monkeypatch.setattr(
+        intake,
+        "_archive_for_request",
+        lambda _request: (io.BytesIO(b"packet"), packet),
+    )
+    observed: dict[str, object] = {}
+
+    def fail(argv: list[str], **kwargs: object) -> None:
+        observed["argv"] = argv
+        observed.update(kwargs)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, int(kwargs["timeout"]))
+        raise OSError("simulated ssh launch failure")
+
+    monkeypatch.setattr(intake.subprocess, "run", fail)
+    with pytest.raises(
+        intake.PublicSceneHostInputError,
+        match="host_input_upload_failed:transport",
+    ):
+        intake.upload_packet(
+            request_path=tmp_path / "request.json",
+            host="paperclip-prod-01",
+            destination_root=destination,
+        )
+    assert observed["timeout"] == intake.HOST_UPLOAD_TIMEOUT_SECONDS == 1800
+    assert "ConnectTimeout=30" in observed["argv"]
+
+
 def test_cli_installs_rights_bound_scene_inputs_for_service_account(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -405,7 +530,9 @@ def test_cli_installs_rights_bound_scene_inputs_for_service_account(
     assert receipt["provider_mutation_performed"] is False
     assert receipt["paid_resource_used"] is False
     assert receipt["secret_pattern_scan_scope"] == "bounded_patterns_only"
-    assert receipt["raw_secret_values_recorded"] is False
+    assert receipt["raw_secret_values_recorded_in_receipt"] is False
+    assert "raw_secret_values_recorded" not in receipt
+    assert "secrets_retained" not in receipt
     assert receipt["authoritative_request_digest"] == receipt["packet_digest"]
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"

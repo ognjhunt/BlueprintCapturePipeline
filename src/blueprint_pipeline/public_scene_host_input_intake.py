@@ -46,6 +46,8 @@ MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024**2
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 8 * 1024**3
 MAX_ARCHIVE_COMPRESSION_RATIO = 100.0
 SERVICE_READBACK_TIMEOUT_SECONDS = 30
+SSH_CONNECT_TIMEOUT_SECONDS = 30
+HOST_UPLOAD_TIMEOUT_SECONDS = 1800
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,254}\Z")
@@ -144,6 +146,33 @@ def _rights_state(receipt: Mapping[str, Any]) -> str:
     return str(receipt.get("status") or receipt.get("reviewer_status") or "")
 
 
+def _preflight_local_members(
+    raw_rights: list[Any], raw_files: list[Any]
+) -> tuple[list[tuple[Path, int]], list[tuple[Path, int]]]:
+    if 1 + len(raw_rights) + len(raw_files) > MAX_ARCHIVE_MEMBERS:
+        raise PublicSceneHostInputError("local_input_member_count_exceeds_limit")
+    observed: list[tuple[Path, int]] = []
+    aggregate_bytes = 0
+    for raw in [*raw_rights, *raw_files]:
+        if not isinstance(raw, Mapping):
+            raise PublicSceneHostInputError("local_input_member_record_invalid")
+        path = Path(str(raw.get("path") or "")).expanduser().resolve()
+        if path.is_symlink() or not path.is_file():
+            raise PublicSceneHostInputError("local_input_member_missing_or_unsafe")
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise PublicSceneHostInputError("local_input_member_stat_failed") from exc
+        if size <= 0 or size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise PublicSceneHostInputError("local_input_member_size_exceeds_limit")
+        aggregate_bytes += size
+        if aggregate_bytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise PublicSceneHostInputError("local_input_aggregate_size_exceeds_limit")
+        observed.append((path, size))
+    rights_count = len(raw_rights)
+    return observed[:rights_count], observed[rights_count:]
+
+
 def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     request_file = Path(request_path).expanduser().resolve()
     request = _json(request_file)
@@ -158,6 +187,10 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
     raw_rights = request.get("rights_receipts")
     if not isinstance(raw_rights, list) or not raw_rights:
         raise PublicSceneHostInputError("rights_receipts_missing")
+    raw_files = request.get("files")
+    if not isinstance(raw_files, list):
+        raise PublicSceneHostInputError("source_files_missing")
+    rights_members, source_members = _preflight_local_members(raw_rights, raw_files)
     rights: dict[str, dict[str, Any]] = {}
     packed: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_rights):
@@ -166,11 +199,11 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
         receipt_id = _safe_id(raw.get("receipt_id"), field="rights_receipt_id")
         if receipt_id in rights:
             raise PublicSceneHostInputError("rights_receipt_id_duplicate")
-        path = Path(str(raw.get("path") or "")).expanduser().resolve()
+        path, size = rights_members[index]
         expected = _expected_digest(
             raw.get("sha256"), field=f"rights_receipts_{index}_sha256"
         )
-        if not path.is_file() or _sha256_file(path) != expected:
+        if _sha256_file(path) != expected:
             raise PublicSceneHostInputError(f"rights_receipt_bytes_mismatch:{receipt_id}")
         value = _json(path)
         if value.get("schema_version") != RIGHTS_RECEIPT_SCHEMA:
@@ -203,13 +236,10 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
                 "archive_path": f"rights/{index:02d}-{path.name}",
                 "relative_path": f"rights/{index:02d}-{path.name}",
                 "sha256": expected,
-                "size_bytes": path.stat().st_size,
+                "size_bytes": size,
             }
         )
 
-    raw_files = request.get("files")
-    if not isinstance(raw_files, list):
-        raise PublicSceneHostInputError("source_files_missing")
     core_counts = {"collision_usd": 0, "shared_frame_registration": 0}
     support_count = 0
     destination_names: set[str] = set()
@@ -224,9 +254,9 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
             _safe_id(raw.get("task_id"), field="task_id")
         else:
             raise PublicSceneHostInputError(f"source_file_role_invalid:{role}")
-        path = Path(str(raw.get("path") or "")).expanduser().resolve()
+        path, size = source_members[index]
         expected = _expected_digest(raw.get("sha256"), field=f"files_{index}_sha256")
-        if not path.is_file() or path.stat().st_size <= 0 or _sha256_file(path) != expected:
+        if _sha256_file(path) != expected:
             raise PublicSceneHostInputError(f"source_file_bytes_mismatch:{role}")
         if role == "collision_usd" and path.suffix.lower() not in {".usd", ".usda", ".usdc"}:
             raise PublicSceneHostInputError("collision_usd_extension_invalid")
@@ -263,7 +293,7 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
                 "archive_path": relative,
                 "relative_path": relative,
                 "sha256": expected,
-                "size_bytes": path.stat().st_size,
+                "size_bytes": size,
             }
         )
     if core_counts != {"collision_usd": 1, "shared_frame_registration": 1}:
@@ -557,7 +587,7 @@ def install_packet_archive(
                     "private_key_pem",
                 ],
                 "secret_pattern_scan_scope": "bounded_patterns_only",
-                "raw_secret_values_recorded": False,
+                "raw_secret_values_recorded_in_receipt": False,
                 "blockers": [],
             }
             receipt["receipt_digest"] = canonical_digest(
@@ -651,14 +681,26 @@ def upload_packet(
         ]
     )
     archive, packet = _archive_for_request(Path(request_path))
-    with archive:
-        result = subprocess.run(  # nosec B603 - fixed executable, validated host
-            ["/usr/bin/ssh", "-o", "BatchMode=yes", host, command],
-            stdin=archive,
-            capture_output=True,
-            text=False,
-            check=False,
-        )
+    try:
+        with archive:
+            result = subprocess.run(  # nosec B603 - fixed executable, validated host
+                [
+                    "/usr/bin/ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+                    host,
+                    command,
+                ],
+                stdin=archive,
+                capture_output=True,
+                text=False,
+                check=False,
+                timeout=HOST_UPLOAD_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PublicSceneHostInputError("host_input_upload_failed:transport") from exc
     if result.returncode != 0:
         raise PublicSceneHostInputError(f"host_input_upload_failed:{result.returncode}")
     try:
