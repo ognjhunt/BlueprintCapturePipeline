@@ -157,3 +157,80 @@ def test_rejects_tampered_calibrated_image(tmp_path: Path) -> None:
             output_root=tmp_path / "output",
             ffmpeg_executable=fixture["ffmpeg"],
         )
+
+
+def test_resolves_explicit_anchor_camera_to_model_frame_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path)
+    fixture["prompts"].write_text(
+        json.dumps(
+            [
+                {
+                    "prompt_id": "washer",
+                    "text": "washer",
+                    "output_label": "washer",
+                    "anchor_camera_id": "right",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_encode(*, output_path: Path, **_: object) -> list[str]:
+        output_path.write_bytes(b"lossless-sequence-fixture")
+        return ["fixture-ffmpeg", "ffv1"]
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_sam31_task_inputs._encode_lossless_sequence",
+        fake_encode,
+    )
+    result = materialize_public_scene_sam31_task_inputs(
+        calibrated_view_receipt_path=fixture["receipt"],
+        task_freeze_path=fixture["task"],
+        provider_profile_path=fixture["profile"],
+        prompts_path=fixture["prompts"],
+        output_root=tmp_path / "output",
+        ffmpeg_executable=fixture["ffmpeg"],
+    )
+
+    request = json.loads(
+        (tmp_path / "output/semantic_sam31_source_track_run_request.v1.json").read_text()
+    )
+    assert result["prompts"] == request["prompts"]
+    assert request["prompts"] == [
+        {
+            "prompt_id": "washer",
+            "text": "washer",
+            "output_label": "washer",
+            "anchor_camera_id": "right",
+            "anchor_frame_index": 1,
+        }
+    ]
+
+
+def test_rejects_unknown_prompt_anchor_camera(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    fixture["prompts"].write_text(
+        json.dumps(
+            [
+                {
+                    "prompt_id": "washer",
+                    "text": "washer",
+                    "output_label": "washer",
+                    "anchor_camera_id": "missing",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PublicSceneSam31InputError, match="prompt_anchor_unknown"):
+        materialize_public_scene_sam31_task_inputs(
+            calibrated_view_receipt_path=fixture["receipt"],
+            task_freeze_path=fixture["task"],
+            provider_profile_path=fixture["profile"],
+            prompts_path=fixture["prompts"],
+            output_root=tmp_path / "output",
+            ffmpeg_executable=fixture["ffmpeg"],
+        )

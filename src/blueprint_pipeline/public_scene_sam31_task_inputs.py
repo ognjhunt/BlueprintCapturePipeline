@@ -180,6 +180,37 @@ def materialize_public_scene_sam31_task_inputs(
     png_root.mkdir()
     jpeg_root.mkdir()
     ordered_camera_ids = sorted(cameras)
+    resolved_prompts: list[dict[str, Any]] = []
+    for raw_prompt in prompts_value:
+        if not isinstance(raw_prompt, Mapping):
+            raise PublicSceneSam31InputError("sam31_task_input_prompt_invalid")
+        prompt = dict(raw_prompt)
+        raw_camera_id = prompt.get("anchor_camera_id")
+        anchor_camera_id = str(raw_camera_id or "").strip()
+        raw_frame_index = prompt.get("anchor_frame_index")
+        if raw_camera_id is not None and not anchor_camera_id:
+            raise PublicSceneSam31InputError("sam31_task_input_prompt_anchor_invalid")
+        if anchor_camera_id:
+            if anchor_camera_id not in cameras:
+                raise PublicSceneSam31InputError("sam31_task_input_prompt_anchor_unknown")
+            resolved_index = ordered_camera_ids.index(anchor_camera_id)
+            if raw_frame_index is not None and raw_frame_index != resolved_index:
+                raise PublicSceneSam31InputError("sam31_task_input_prompt_anchor_conflict")
+        elif raw_frame_index is None:
+            # Compatibility for retained prompt packets. New-scene producers
+            # should name the task-object anchor camera explicitly so source
+            # filename ordering cannot silently choose the tracking seed.
+            resolved_index = 0
+        elif (
+            isinstance(raw_frame_index, bool)
+            or not isinstance(raw_frame_index, int)
+            or not 0 <= raw_frame_index < len(ordered_camera_ids)
+        ):
+            raise PublicSceneSam31InputError("sam31_task_input_prompt_anchor_invalid")
+        else:
+            resolved_index = raw_frame_index
+        prompt["anchor_frame_index"] = resolved_index
+        resolved_prompts.append(prompt)
     source_rows: list[dict[str, Any]] = []
     for index, camera_id in enumerate(ordered_camera_ids):
         row = images[camera_id]
@@ -290,7 +321,7 @@ def materialize_public_scene_sam31_task_inputs(
         "frame_registry": frame_registry,
         "frame_artifacts": frame_artifacts,
         "provider_profile": profile,
-        "prompts": prompts_value,
+        "prompts": resolved_prompts,
         "allowed_evidence_uses": ["semantic_analysis"],
     }
     request_path = output / "semantic_sam31_source_track_run_request.v1.json"
@@ -311,7 +342,7 @@ def materialize_public_scene_sam31_task_inputs(
             **_record(profile_path),
             "profile_digest": profile["profile_digest"],
         },
-        "prompts": prompts_value,
+        "prompts": resolved_prompts,
         "camera_frame_map": camera_frame_map,
         "camera_count": len(source_rows),
         "retained_sequence": _record(retained_sequence, root=output),
