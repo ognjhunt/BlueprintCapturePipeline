@@ -39,6 +39,8 @@ def _fixture() -> tuple[dict, dict]:
             "sync_map_row_digest": SHA_C,
             "camera_record_digest": "sha256:" + str(index + 2) * 64,
             "encoder_retained": True,
+            "width": 4,
+            "height": 2,
         }
         for index in (1, 2)
     ]
@@ -243,10 +245,34 @@ def test_empty_provider_result_abstains_without_inventing_objects() -> None:
 
     assert result["status"] == "abstained"
     assert result["track_registry"] == []
-    assert result["frame_masks"] == []
+    assert len(result["frame_masks"]) == 2
+    assert all(row["track_masks"] == [] for row in result["frame_masks"])
+    assert all(
+        row["mask_artifact_digest"] == canonical_json_digest([])
+        for row in result["frame_masks"]
+    )
     assert result["claim_ceiling"] == "no_source_tracks_detected"
     assert "provider_returned_no_tracks" in result["warnings"]
     assert result["comparative_policy_ranking_verdict"] == "thesis_not_supported"
+
+
+def test_retains_valid_source_frame_with_no_above_threshold_track_mask() -> None:
+    request, provider = _fixture()
+    provider["tracks"][0]["observations"] = provider["tracks"][0]["observations"][:1]
+    _rebind_provider(request, provider)
+
+    result = import_semantic_source_tracks(request, provider)
+
+    assert result["status"] == "completed"
+    assert [row["source_frame_id"] for row in result["frame_masks"]] == [
+        "frame-1",
+        "frame-2",
+    ]
+    assert result["frame_masks"][0]["track_masks"]
+    assert result["frame_masks"][1]["track_masks"] == []
+    assert result["frame_masks"][1]["mask_artifact_digest"] == canonical_json_digest(
+        []
+    )
 
 
 def test_track_and_observation_order_does_not_change_normalized_registries() -> None:
