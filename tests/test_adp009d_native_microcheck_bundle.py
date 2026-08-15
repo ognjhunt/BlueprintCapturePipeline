@@ -756,6 +756,7 @@ def test_native_bundle_ships_newton_gripper_drive_contract(tmp_path: Path) -> No
 
     runtime = tmp_path / "bundle" / "provider_runtime"
     assert (runtime / "adp009d_newton_gripper_drive.py").is_file()
+    assert (runtime / "adp009d_newton_collision_adapter.py").is_file()
 
 
 def test_runtime_applies_newton_actuator_mapping_without_retuning(
