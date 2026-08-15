@@ -4,10 +4,12 @@ import pytest
 
 from blueprint_pipeline.adp009d_hold_trace import (
     ARM_JOINT_NAMES,
+    DEFAULT_MAX_HOLD_SETTLE_SAMPLES,
     HoldTraceError,
     classify_arm_hold_trace,
     extract_arm_effort_limits,
     extract_arm_sample,
+    hold_settle_decision,
 )
 
 
@@ -312,3 +314,62 @@ def test_extract_arm_effort_limits_prefers_the_simulated_limit_field() -> None:
 
 def test_extract_arm_effort_limits_returns_none_when_absent() -> None:
     assert extract_arm_effort_limits(_FakeRobot(), to_list=list) is None
+
+
+def test_settle_decision_continues_a_converging_trace_after_minimum() -> None:
+    samples = [_sample(index, -1.6 - 0.02 * index) for index in range(40)]
+    trace = classify_arm_hold_trace(
+        samples, requested_joint_positions_rad=HOLD_TARGET, tolerance_rad=0.01
+    )
+
+    assert trace["convergence"] == "converging"
+    assert hold_settle_decision(trace, minimum_samples=40) == "continue"
+
+
+def test_settle_decision_requires_five_consecutive_in_tolerance_samples() -> None:
+    samples = [_sample(index, -2.4) for index in range(35)]
+    samples.extend(_sample(index, HOLD_TARGET[3]) for index in range(35, 40))
+    trace = classify_arm_hold_trace(
+        samples, requested_joint_positions_rad=HOLD_TARGET, tolerance_rad=0.01
+    )
+
+    assert hold_settle_decision(trace, minimum_samples=40) == "within_tolerance"
+
+
+def test_settle_decision_stops_a_stable_offset_after_minimum() -> None:
+    trace = classify_arm_hold_trace(
+        [_sample(index, -2.4) for index in range(40)],
+        requested_joint_positions_rad=HOLD_TARGET,
+        tolerance_rad=0.01,
+    )
+
+    assert hold_settle_decision(trace, minimum_samples=40) == "settled_out_of_tolerance"
+
+
+def test_settle_decision_stops_at_the_bounded_maximum() -> None:
+    samples = [
+        _sample(index, -1.0 - (1.5 * index / (DEFAULT_MAX_HOLD_SETTLE_SAMPLES - 1)))
+        for index in range(DEFAULT_MAX_HOLD_SETTLE_SAMPLES)
+    ]
+    trace = classify_arm_hold_trace(
+        samples, requested_joint_positions_rad=HOLD_TARGET, tolerance_rad=0.01
+    )
+
+    assert trace["convergence"] == "converging"
+    assert (
+        hold_settle_decision(trace, minimum_samples=40)
+        == "maximum_samples_reached"
+    )
+
+
+def test_settle_decision_rejects_unbounded_or_malformed_inputs() -> None:
+    trace = classify_arm_hold_trace(
+        [_sample(index, -2.4) for index in range(40)],
+        requested_joint_positions_rad=HOLD_TARGET,
+        tolerance_rad=0.01,
+    )
+
+    with pytest.raises(HoldTraceError, match="adp009d_hold_settle_bounds_invalid"):
+        hold_settle_decision(trace, minimum_samples=0)
+    with pytest.raises(HoldTraceError, match="adp009d_hold_settle_trace_invalid"):
+        hold_settle_decision({}, minimum_samples=40)
