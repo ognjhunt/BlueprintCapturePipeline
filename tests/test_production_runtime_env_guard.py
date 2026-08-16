@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from blueprint_pipeline.production_runtime_env_guard import (
+    _check_runtime_source_identity,
     build_production_runtime_env_guard,
 )
 from blueprint_pipeline.spend_authority_ledger_migration import (
@@ -276,3 +279,49 @@ def test_guard_does_not_create_a_lock_directory_that_was_never_provisioned(tmp_p
     assert report["status"] == "ready", report["blockers"]
     assert report["paid_launch_lock_slots"]["status"] == "not_provisioned"
     assert not base.parent.exists()
+
+
+def test_guard_blocks_when_the_running_code_is_not_the_configured_repo(tmp_path):
+    """Production regression: a stale PYTHONPATH pinned every service to an old release.
+
+    The deploy updated the release tree and the active symlink correctly, so
+    nothing it checked was wrong. Meanwhile the env file's PYTHONPATH still
+    pointed at a months-old checkout, and the code that actually ran had a URI
+    allowlist predating r2:// -- freshly published launch profiles were
+    rejected as invalid and intake could not restart. The failure has to be
+    detectable where the divergence is, not three layers downstream.
+    """
+
+    stale = tmp_path / "old-release"
+    (stale / "src").mkdir(parents=True)
+
+    detail, blockers = _check_runtime_source_identity(
+        {"BLUEPRINT_PIPELINE_REPO": str(stale)}
+    )
+
+    assert blockers == ["runtime_source_root_outside_configured_repo"]
+    assert detail["status"] == "blocked"
+    assert detail["configured_repo"] == str(stale)
+    assert detail["loaded_source_root"] != detail["expected_source_root"]
+
+
+def test_guard_passes_when_the_running_code_is_the_configured_repo():
+    import blueprint_pipeline
+
+    repo_root = Path(blueprint_pipeline.__file__).resolve().parent.parent.parent
+
+    detail, blockers = _check_runtime_source_identity(
+        {"BLUEPRINT_PIPELINE_REPO": str(repo_root)}
+    )
+
+    assert blockers == []
+    assert detail["status"] == "passed"
+
+
+def test_an_unnamed_source_repo_reports_rather_than_blocks():
+    """Absence is not divergence: a host that never names a repo claims nothing."""
+
+    detail, blockers = _check_runtime_source_identity({})
+
+    assert blockers == []
+    assert detail["status"] == "not_configured"

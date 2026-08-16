@@ -6,6 +6,7 @@ import argparse
 import importlib
 import json
 import os
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from .host_resident_launch_inputs import published_profile_residency_report
 from .task_evaluation_launch_catalog import LaunchCatalogError, reconcile_public_catalog
 
 LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
+RUNTIME_SOURCE_REPO_ENV = "BLUEPRINT_PIPELINE_REPO"
 LAUNCH_PUBLIC_CATALOG_PATH_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
 
 SCHEMA_VERSION = "blueprint.production_runtime_env_guard.v1"
@@ -286,6 +288,47 @@ def _check_launch_input_residency(
     return report, []
 
 
+def _check_runtime_source_identity(
+    source: Mapping[str, str], package: Any | None = None
+) -> tuple[dict[str, Any], list[str]]:
+    """Prove the code that is running is the code this host says it runs.
+
+    A stale ``PYTHONPATH`` silently pins every service to an old checkout no
+    matter which release is deployed, and the deploy has no reason to notice: it
+    updates the release tree and the active symlink, both correctly. On
+    2026-08-16 production imported a months-old release whose URI allowlist
+    predated ``r2://``, so freshly published launch profiles were rejected as
+    invalid and intake could not restart. Every component was behaving
+    correctly on the code it had, which is exactly why nothing named the cause.
+    """
+
+    configured = str(source.get(RUNTIME_SOURCE_REPO_ENV) or "").strip()
+    module = sys.modules[__name__.rsplit(".", 1)[0]] if package is None else package
+    module_file = getattr(module, "__file__", None)
+    loaded_root = (
+        Path(module_file).resolve().parent.parent if module_file else None
+    )
+    detail: dict[str, Any] = {
+        "configured_repo": configured,
+        "loaded_source_root": str(loaded_root) if loaded_root else None,
+    }
+    if not configured:
+        # Nothing to diverge from: a host that never names a source repo is not
+        # claiming to run one, so this reports rather than blocks. The defect
+        # being caught is disagreement, not absence.
+        return {**detail, "status": "not_configured"}, []
+    if loaded_root is None:
+        return {**detail, "status": "blocked"}, ["runtime_source_root_unresolved"]
+    expected = (Path(configured).expanduser().resolve() / "src")
+    if loaded_root != expected:
+        return {
+            **detail,
+            "expected_source_root": str(expected),
+            "status": "blocked",
+        }, ["runtime_source_root_outside_configured_repo"]
+    return {**detail, "expected_source_root": str(expected), "status": "passed"}, []
+
+
 def build_production_runtime_env_guard(
     env: Mapping[str, str] | None = None,
     import_module: Callable[[str], Any] | None = None,
@@ -335,6 +378,9 @@ def build_production_runtime_env_guard(
     lock_slots, lock_slot_blockers = _check_paid_launch_lock_slots(source)
     blockers.extend(lock_slot_blockers)
 
+    runtime_source, runtime_source_blockers = _check_runtime_source_identity(source)
+    blockers.extend(runtime_source_blockers)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -347,6 +393,7 @@ def build_production_runtime_env_guard(
         "launch_profile_catalog": catalog,
         "launch_input_residency": residency,
         "paid_launch_lock_slots": lock_slots,
+        "runtime_source_identity": runtime_source,
         "claim_boundary": (
             "This guard verifies production fail-closed runtime posture, that "
             "every control-plane entrypoint imports, that no spend-authority "
