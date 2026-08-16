@@ -36,6 +36,7 @@ from .host_resident_launch_inputs import (
     launch_profile_residency_blockers,
     resolve_host_resident_bundle_receipt,
 )
+from .paid_attempt_authority import validate_same_goal_spend_reconciliation
 from .robot_eval_provider_input_setup import LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS
 from .task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
@@ -56,6 +57,109 @@ PROGRAM_ID = "arm-decision-proof-v1"
 
 def file_digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def expand_prior_spend_immutable_inputs(
+    immutable_inputs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expose every local prior-spend dependency to profile publication.
+
+    A paid-attempt authority binds a lane-local reconciliation, and that
+    reconciliation in turn binds the terminal result, teardown, provider-zero,
+    and official-billing receipts it proves. The allocator reopens all of
+    those files as the service account. Binding only the authority itself in a
+    live profile lets a root-authored, service-unreadable nested receipt survive
+    publication and fail at the paid boundary.
+
+    Keep this expansion in the shared profile skeleton so every paid issuer gets
+    the same consumer-readability preflight. The canonical reconciliation
+    validator also reopens and digest-checks each source before any paths are
+    added to the profile.
+    """
+
+    expanded = [dict(item) for item in immutable_inputs]
+    observed_paths = {
+        str(Path(str(item.get("path") or "")).expanduser().resolve())
+        for item in expanded
+        if str(item.get("path") or "").strip()
+    }
+    for item in tuple(expanded):
+        name = str(item.get("name") or "")
+        if "authority" not in name:
+            continue
+        authority_path = Path(str(item.get("path") or "")).expanduser().resolve()
+        if authority_path.suffix.lower() != ".json":
+            continue
+        try:
+            authority = json.loads(authority_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationLaunchError(
+                f"live_profile_authority_input_invalid:{name}"
+            ) from exc
+        if not isinstance(authority, Mapping):
+            raise TaskEvaluationLaunchError(
+                f"live_profile_authority_input_invalid:{name}"
+            )
+        reconciliation_record = authority.get("prior_spend_reconciliation")
+        if reconciliation_record is None:
+            continue
+        if not isinstance(reconciliation_record, Mapping):
+            raise TaskEvaluationLaunchError(
+                f"live_profile_prior_spend_dependency_invalid:{name}"
+            )
+        reconciliation_path = Path(
+            str(reconciliation_record.get("path") or "")
+        ).expanduser().resolve()
+        try:
+            reconciliation, observed_record = validate_same_goal_spend_reconciliation(
+                reconciliation_path,
+                expected_total_cost_usd=authority.get(
+                    "prior_actual_provider_spend_usd"
+                ),
+            )
+        except (OSError, ValueError) as exc:
+            raise TaskEvaluationLaunchError(
+                f"live_profile_prior_spend_dependency_invalid:{name}"
+            ) from exc
+        if observed_record != dict(reconciliation_record):
+            raise TaskEvaluationLaunchError(
+                f"live_profile_prior_spend_dependency_invalid:{name}"
+            )
+
+        dependencies: list[tuple[str, Mapping[str, Any]]] = [
+            ("reconciliation", reconciliation_record)
+        ]
+        for entry_index, entry in enumerate(reconciliation.get("entries") or []):
+            if not isinstance(entry, Mapping):
+                raise TaskEvaluationLaunchError(
+                    f"live_profile_prior_spend_dependency_invalid:{name}"
+                )
+            for source in entry.get("source_receipts") or []:
+                if not isinstance(source, Mapping) or not isinstance(
+                    source.get("record"), Mapping
+                ):
+                    raise TaskEvaluationLaunchError(
+                        f"live_profile_prior_spend_dependency_invalid:{name}"
+                    )
+                role = str(source.get("role") or "source")
+                dependencies.append(
+                    (f"entry_{entry_index}_{role}", source["record"])
+                )
+
+        for suffix, record in dependencies:
+            path = Path(str(record.get("path") or "")).expanduser().resolve()
+            resolved = str(path)
+            if resolved in observed_paths:
+                continue
+            expanded.append(
+                {
+                    "name": f"{name}_prior_spend_{suffix}",
+                    "path": resolved,
+                    "digest": str(record.get("sha256") or ""),
+                }
+            )
+            observed_paths.add(resolved)
+    return expanded
 
 
 def shared_control_surface(
@@ -365,7 +469,9 @@ def build_lane_live_profile(
         if spec.declared_spend is not None
         else context.max_spend_usd
     )
-    immutable_inputs = spec.immutable_inputs(context)
+    immutable_inputs = expand_prior_spend_immutable_inputs(
+        spec.immutable_inputs(context)
+    )
     source_manifests = [
         item
         for item in immutable_inputs

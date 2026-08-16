@@ -14,6 +14,10 @@ from blueprint_pipeline.same_goal_spend_reconciliation import (
     SUPPORTED_LANES,
     materialize_same_goal_spend_reconciliation,
 )
+from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
+from blueprint_pipeline.task_evaluation_live_profile import (
+    expand_prior_spend_immutable_inputs,
+)
 
 
 def _write(path: Path, value: dict[str, object]) -> Path:
@@ -124,6 +128,76 @@ def test_materializer_produces_each_issuer_lane_ledger(tmp_path: Path, lane: str
     )
     assert binding["actual_total_usd"] == 0.025
     assert binding["prior_terminal_attempts"][0]["estimated_cost_usd"] == 0.015933
+
+
+def test_live_profile_expands_every_nested_prior_spend_receipt(tmp_path: Path) -> None:
+    """The dispatcher user must preflight the same files the allocator reopens."""
+
+    fixture = _fixture(tmp_path / "fixture")
+    output, _ = _materialize(tmp_path / "fixture", "gaussian_excision", fixture)
+    binding = bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="gaussian_excision",
+    )
+    authority = _write(
+        tmp_path / "authority.json",
+        {
+            "prior_terminal_attempts": binding["prior_terminal_attempts"],
+            "prior_spend_reconciliation": binding["reconciliation"],
+            "prior_actual_provider_spend_usd": binding["actual_total_usd"],
+        },
+    )
+    inputs = expand_prior_spend_immutable_inputs(
+        [
+            {
+                "name": "paid_attempt_authority",
+                "path": str(authority),
+                "digest": "sha256:" + "0" * 64,
+            }
+        ]
+    )
+
+    observed = {Path(row["path"]) for row in inputs}
+    assert observed == {
+        authority.resolve(),
+        output.resolve(),
+        *(path.resolve() for path in fixture.values()),
+    }
+    assert len(inputs) == 7
+
+
+def test_live_profile_rejects_changed_nested_prior_spend_bytes(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path / "fixture")
+    output, _ = _materialize(tmp_path / "fixture", "gaussian_excision", fixture)
+    binding = bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="gaussian_excision",
+    )
+    authority = _write(
+        tmp_path / "authority.json",
+        {
+            "prior_terminal_attempts": binding["prior_terminal_attempts"],
+            "prior_spend_reconciliation": binding["reconciliation"],
+            "prior_actual_provider_spend_usd": binding["actual_total_usd"],
+        },
+    )
+    fixture["zero"].write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="live_profile_prior_spend_dependency_invalid:paid_attempt_authority",
+    ):
+        expand_prior_spend_immutable_inputs(
+            [
+                {
+                    "name": "paid_attempt_authority",
+                    "path": str(authority),
+                    "digest": "sha256:" + "0" * 64,
+                }
+            ]
+        )
 
 
 def test_cli_derives_cost_and_digests_without_handwritten_ledger(tmp_path: Path) -> None:
