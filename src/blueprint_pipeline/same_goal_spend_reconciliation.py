@@ -212,7 +212,10 @@ def _entry(
     )
     bundle_path, bundle_sha256 = _json_path(result, ("bundle_sha256",))
     zero_binding_path, zero_confirmed = _json_path(
-        zero, ("provider_zero_verified",), ("provider_zero_confirmed",)
+        zero,
+        ("provider_zero_verified",),
+        ("provider_zero_confirmed",),
+        ("provider_zero_api_confirmed",),
     )
     estimate_path, estimated_cost = _json_path(
         result, ("estimated_cost_usd",), ("cost_usd",)
