@@ -20,6 +20,7 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 import re
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -33,10 +34,13 @@ MAX_PROVIDER_RESPONSE_BYTES = 48 * 1024 * 1024
 MAX_GENERATED_PNG_BYTES = 32 * 1024 * 1024
 MAX_INPUT_PNG_BYTES = 32 * 1024 * 1024
 MAX_IMAGE_PIXELS = 64 * 1024 * 1024
+MAX_PROVIDER_ERROR_BYTES = 64 * 1024
 RESERVED_MULTIPART_FIELDS = frozenset(
     {"image", "mask", "model", "prompt", "response_format", "size"}
 )
 _MULTIPART_FIELD = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+_PROVIDER_ERROR_IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}")
+_PROVIDER_REQUEST_ID = re.compile(r"req_[A-Za-z0-9_-]{1,128}")
 USAGE_TOKEN_FIELDS = (
     "input_tokens",
     "output_tokens",
@@ -162,6 +166,84 @@ def _valid_https_endpoint(value: Any) -> bool:
         and not parsed.query
         and not parsed.fragment
     )
+
+
+def _safe_provider_identifier(value: Any, *, token: str) -> str | None:
+    """Return one inert provider discriminator, never diagnostic prose or secrets."""
+
+    if not isinstance(value, str) or _PROVIDER_ERROR_IDENTIFIER.fullmatch(value) is None:
+        return None
+    lowered = value.lower()
+    if (
+        (token and token in value)
+        or value.startswith(("sk-", "sk_"))
+        or any(marker in lowered for marker in ("secret", "bearer", "api_key", "apikey"))
+    ):
+        return None
+    return value
+
+
+def _safe_provider_request_id(value: Any, *, token: str) -> str | None:
+    if (
+        not isinstance(value, str)
+        or _PROVIDER_REQUEST_ID.fullmatch(value) is None
+        or (token and token in value)
+    ):
+        return None
+    return value
+
+
+def _sanitized_http_failure(error: HTTPError, *, token: str) -> dict[str, Any]:
+    """Extract only bounded, non-prose OpenAI failure discriminators.
+
+    The response body is parsed in memory solely to recover ``error.type`` and
+    ``error.code``. It is never retained. Messages, parameters, URLs, response
+    headers, and authorization material are deliberately excluded.
+    """
+
+    provider_error_type: str | None = None
+    provider_error_code: str | None = None
+    try:
+        payload = error.read(MAX_PROVIDER_ERROR_BYTES + 1)
+        if len(payload) <= MAX_PROVIDER_ERROR_BYTES:
+            decoded = json.loads(payload.decode("utf-8"))
+            detail = decoded.get("error") if isinstance(decoded, Mapping) else None
+            if isinstance(detail, Mapping):
+                provider_error_type = _safe_provider_identifier(
+                    detail.get("type"), token=token
+                )
+                provider_error_code = _safe_provider_identifier(
+                    detail.get("code"), token=token
+                )
+    except (
+        AttributeError,
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ):
+        pass
+    headers = error.headers
+    request_id = _safe_provider_request_id(
+        headers.get("x-request-id") if headers is not None else None,
+        token=token,
+    )
+    status = error.code if isinstance(error.code, int) and 100 <= error.code <= 599 else None
+    result: dict[str, Any] = {
+        "schema_version": "semantic_teacher_provider_failure.v1",
+        "transport_error_type": "http_error",
+        "http_status": status,
+        "provider_error_type": provider_error_type,
+        "provider_error_code": provider_error_code,
+        "provider_request_id": request_id,
+        "raw_provider_body_recorded": False,
+        "raw_provider_headers_recorded": False,
+        "raw_secret_values_recorded": False,
+        "failure_digest": "",
+    }
+    result["failure_digest"] = _canonical_digest(result, field="failure_digest")
+    return result
 
 
 def _multipart(
@@ -315,6 +397,11 @@ def execute_semantic_teacher_image_edits(
         or execution.get("transport_kind") != "hosted_image_edit"
         or not _valid_https_endpoint(execution.get("endpoint"))
         or execution.get("masked_image_edit_supported") is not True
+        or not isinstance(execution.get("input_fidelity_parameter_supported"), bool)
+        or (
+            execution.get("input_fidelity_parameter_supported") is False
+            and "input_fidelity" in (default_options or {})
+        )
         or execution.get("external_disclosure_required") is not True
         or not str(execution.get("model_snapshot") or "").strip()
         or not options_valid
@@ -482,11 +569,20 @@ def execute_semantic_teacher_image_edits(
                     )
                 destination = task_output / f"{expected_index:05d}.png"
                 destination.write_bytes(generated)
-            except (OSError, SemanticTeacherImageEditWorkerError) as exc:
+            except (HTTPError, OSError, SemanticTeacherImageEditWorkerError) as exc:
+                provider_failure = (
+                    _sanitized_http_failure(exc, token=token)
+                    if isinstance(exc, HTTPError)
+                    else None
+                )
                 blocker = (
-                    str(exc)
-                    if isinstance(exc, SemanticTeacherImageEditWorkerError)
-                    else "semantic_teacher_provider_request_failed"
+                    "semantic_teacher_provider_http_error"
+                    if isinstance(exc, HTTPError)
+                    else (
+                        str(exc)
+                        if isinstance(exc, SemanticTeacherImageEditWorkerError)
+                        else "semantic_teacher_provider_request_failed"
+                    )
                 )
                 frame_rows.append(
                     {
@@ -500,6 +596,7 @@ def execute_semantic_teacher_image_edits(
                         "provider_usage": None,
                         "computed_editor_cost_usd": None,
                         "billing_qualified": False,
+                        "provider_failure": provider_failure,
                     }
                 )
                 for pending_index in range(expected_index + 1, len(frames)):
@@ -516,6 +613,7 @@ def execute_semantic_teacher_image_edits(
                             "provider_usage": None,
                             "computed_editor_cost_usd": None,
                             "billing_qualified": False,
+                            "provider_failure": None,
                         }
                     )
                 task_rows.append(
@@ -542,6 +640,7 @@ def execute_semantic_teacher_image_edits(
                                     "provider_usage": None,
                                     "computed_editor_cost_usd": None,
                                     "billing_qualified": False,
+                                    "provider_failure": None,
                                 }
                                 for pending_index, pending in enumerate(pending_frames)
                             ],
@@ -567,6 +666,7 @@ def execute_semantic_teacher_image_edits(
                     "successful_request_count": len(partial_frames),
                     "retry_count": 0,
                     "blockers": [blocker],
+                    "terminal_provider_failure": provider_failure,
                     "tasks": task_rows,
                     "partial_png_inventory": partial_frames,
                     "provider_usage_totals": {
@@ -608,6 +708,7 @@ def execute_semantic_teacher_image_edits(
                     "provider_usage": usage,
                     "computed_editor_cost_usd": usage_cost,
                     "billing_qualified": usage is not None,
+                    "provider_failure": None,
                     "visual_reviewed": False,
                     "multiview_consistency_qualified": False,
                 }

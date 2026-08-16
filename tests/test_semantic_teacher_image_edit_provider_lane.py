@@ -79,6 +79,7 @@ def _packet(tmp_path: Path, *, task_count: int, cameras_per_task: int = 2) -> Pa
             + "a" * 64,
             "masked_image_edit_supported": True,
             "high_fidelity_input_supported": True,
+            "input_fidelity_parameter_supported": True,
             "output_formats": ["png"],
             "mask_encoding": "rgba_alpha_zero_edit_region_png",
             "external_disclosure_required": True,

@@ -965,14 +965,17 @@ def _extract_and_validate_output(
             destination.write_bytes(payload)
     runtime_path = output_root / f"{RUNTIME_RESULT_SCHEMA_VERSION}.json"
     runtime = _read(runtime_path, code="semantic_teacher_runtime_result_invalid")
+    runtime_status = runtime.get("status")
+    runtime_completed = (
+        runtime_status == "completed_unreviewed_semantic_teacher_candidates"
+    )
+    runtime_failed = runtime_status == "failed_with_retained_partial_inventory"
     if (
         runtime.get("schema_version") != RUNTIME_RESULT_SCHEMA_VERSION
         or runtime.get("result_digest")
         != canonical_digest(runtime, digest_field="result_digest")
-        or runtime.get("status")
-        != "completed_unreviewed_semantic_teacher_candidates"
+        or not (runtime_completed or runtime_failed)
         or runtime.get("task_count") != expected_task_count
-        or runtime.get("request_count") != expected_camera_count
         or runtime.get("retry_count") != 0
         or runtime.get("raw_secret_values_recorded") is not False
         or runtime.get("appearance_qualified") is not False
@@ -982,17 +985,87 @@ def _extract_and_validate_output(
         != expected_binding.get("backend_entry_digest")
         or runtime.get("adapter_id") != expected_binding.get("adapter_id")
         or runtime.get("model_snapshot") != expected_binding.get("model_snapshot")
+        or (
+            runtime_completed
+            and (
+                runtime.get("request_count") != expected_camera_count
+                or runtime.get("attempted_request_count") != expected_camera_count
+                or runtime.get("successful_request_count") != expected_camera_count
+            )
+        )
+        or (
+            runtime_failed
+            and (
+                isinstance(runtime.get("attempted_request_count"), bool)
+                or not isinstance(runtime.get("attempted_request_count"), int)
+                or not 1
+                <= runtime.get("attempted_request_count")
+                <= expected_camera_count
+                or runtime.get("request_count")
+                != runtime.get("attempted_request_count")
+                or isinstance(runtime.get("successful_request_count"), bool)
+                or not isinstance(runtime.get("successful_request_count"), int)
+                or not 0
+                <= runtime.get("successful_request_count")
+                < runtime.get("attempted_request_count")
+                or not isinstance(runtime.get("blockers"), list)
+                or not runtime.get("blockers")
+                or any(
+                    not isinstance(blocker, str) or not blocker
+                    for blocker in runtime.get("blockers") or []
+                )
+            )
+        )
     ):
         raise SemanticTeacherImageEditVastError(
             "semantic_teacher_runtime_result_invalid"
         )
     referenced: set[str] = set()
+    referenced_records: list[dict[str, Any]] = []
     observed_order: list[dict[str, Any]] = []
+    failed_frames: list[Mapping[str, Any]] = []
     for task in runtime.get("tasks") or []:
         observed_camera_ids: list[str] = []
-        for frame in task.get("frames") or []:
+        frames = task.get("frames") if isinstance(task, Mapping) else None
+        if (
+            not isinstance(frames, list)
+            or task.get("camera_count") != len(frames)
+        ):
+            raise SemanticTeacherImageEditVastError(
+                "semantic_teacher_runtime_frame_inventory_invalid"
+            )
+        for expected_frame_index, frame in enumerate(frames):
+            if (
+                not isinstance(frame, Mapping)
+                or frame.get("frame_index") != expected_frame_index
+            ):
+                raise SemanticTeacherImageEditVastError(
+                    "semantic_teacher_runtime_frame_inventory_invalid"
+                )
             observed_camera_ids.append(str(frame.get("camera_id") or ""))
-            record = frame.get("semantic_teacher_frame") or {}
+            record = frame.get("semantic_teacher_frame")
+            if record is None:
+                if runtime_completed or frame.get("terminal_state") not in {
+                    "failed_after_request_attempt",
+                    "not_attempted_after_terminal_failure",
+                }:
+                    raise SemanticTeacherImageEditVastError(
+                        "semantic_teacher_runtime_frame_inventory_invalid"
+                    )
+                if frame.get("terminal_state") == "failed_after_request_attempt":
+                    failed_frames.append(frame)
+                continue
+            if not isinstance(record, Mapping):
+                raise SemanticTeacherImageEditVastError(
+                    "semantic_teacher_runtime_frame_inventory_invalid"
+                )
+            if (
+                runtime_failed
+                and frame.get("terminal_state") != "completed_unreviewed_candidate"
+            ):
+                raise SemanticTeacherImageEditVastError(
+                    "semantic_teacher_runtime_frame_inventory_invalid"
+                )
             name = str(record.get("relative_path") or "")
             path = (output_root / name).resolve()
             if (
@@ -1006,6 +1079,7 @@ def _extract_and_validate_output(
                     "semantic_teacher_runtime_frame_inventory_invalid"
                 )
             referenced.add(name)
+            referenced_records.append(dict(record))
         observed_order.append(
             {
                 "task_id": str(task.get("task_id") or ""),
@@ -1013,10 +1087,45 @@ def _extract_and_validate_output(
             }
         )
     observed_frames = {name for name in observed if _TEACHER_FRAME.fullmatch(name)}
-    if len(referenced) != expected_camera_count or referenced != observed_frames:
+    if (
+        referenced != observed_frames
+        or (
+            runtime_completed
+            and len(referenced) != expected_camera_count
+        )
+        or (
+            runtime_failed
+            and (
+                len(referenced) != runtime.get("successful_request_count")
+                or len(failed_frames) != 1
+                or runtime.get("partial_png_inventory") != referenced_records
+                or failed_frames[0].get("failure_code")
+                not in (runtime.get("blockers") or [])
+            )
+        )
+    ):
         raise SemanticTeacherImageEditVastError(
             "semantic_teacher_runtime_frame_inventory_invalid"
         )
+    if runtime_failed:
+        provider_failure = failed_frames[0].get("provider_failure")
+        if provider_failure is not None and (
+            not isinstance(provider_failure, Mapping)
+            or provider_failure.get("schema_version")
+            != "semantic_teacher_provider_failure.v1"
+            or provider_failure.get("failure_digest")
+            != canonical_digest(provider_failure, digest_field="failure_digest")
+            or provider_failure.get("raw_provider_body_recorded") is not False
+            or provider_failure.get("raw_provider_headers_recorded") is not False
+            or provider_failure.get("raw_secret_values_recorded") is not False
+        ):
+            raise SemanticTeacherImageEditVastError(
+                "semantic_teacher_runtime_provider_failure_invalid"
+            )
+        if runtime.get("terminal_provider_failure") != provider_failure:
+            raise SemanticTeacherImageEditVastError(
+                "semantic_teacher_runtime_provider_failure_invalid"
+            )
     if (
         observed_order != expected_binding.get("task_camera_order")
         or canonical_digest({"tasks": observed_order})
@@ -1568,6 +1677,14 @@ def _execute_semantic_teacher_image_edit_vast(
                             expected_camera_count=int(receipt["camera_count"]),
                             expected_binding=runtime_binding,
                         )
+                        if runtime_result.get("status") == (
+                            "failed_with_retained_partial_inventory"
+                        ):
+                            blockers.extend(
+                                str(value)
+                                for value in runtime_result.get("blockers") or []
+                                if str(value)
+                            )
                     except (
                         OSError,
                         zipfile.BadZipFile,
@@ -1949,7 +2066,12 @@ def _execute_semantic_teacher_image_edit_vast(
             digest_field="provider_zero_digest",
         )
     retained_result: dict[str, Any] | None = None
-    if runtime_result is not None and provider_zero_receipt is not None:
+    if (
+        runtime_result is not None
+        and runtime_result.get("status")
+        == "completed_unreviewed_semantic_teacher_candidates"
+        and provider_zero_receipt is not None
+    ):
         try:
             retained_result = materialize_semantic_teacher_image_edit_result(
                 runtime_output_root=root / "runtime_output",

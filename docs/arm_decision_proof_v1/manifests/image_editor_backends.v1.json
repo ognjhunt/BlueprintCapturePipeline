@@ -40,6 +40,7 @@
         "runtime_image_identity": "nvcr.io/nvidia/pytorch@sha256:0981807f1a51a156563e28b59dc2e7a9b5c1c7d85d1169d4965c5fd91fa38bcb",
         "masked_image_edit_supported": true,
         "high_fidelity_input_supported": true,
+        "input_fidelity_parameter_supported": false,
         "output_formats": [
           "png"
         ],
@@ -51,7 +52,6 @@
         "mask_encoding": "rgba_alpha_zero_edit_region_png",
         "external_disclosure_required": true,
         "default_options": {
-          "input_fidelity": "high",
           "output_format": "png",
           "quality": "high"
         },
@@ -82,7 +82,7 @@
         "zero_data_retention_eligible": true,
         "source_url": "https://developers.openai.com/api/docs/guides/your-data"
       },
-      "notes": "Semantic-teacher image editing only. Selection is explicit in each immutable packet; this row is not a Python default. A run additionally requires a human rights attestation and fresh paid authority."
+      "notes": "Semantic-teacher image editing only. GPT Image 2 always processes image inputs at high fidelity, so input_fidelity is intentionally omitted because the API does not allow changing it. Selection is explicit in each immutable packet; this row is not a Python default. A run additionally requires a human rights attestation and fresh paid authority."
     }
   ]
 }

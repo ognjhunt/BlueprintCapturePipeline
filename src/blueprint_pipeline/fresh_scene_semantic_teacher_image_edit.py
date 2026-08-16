@@ -167,6 +167,11 @@ def _validated_backend(
         or not str(execution.get("model_snapshot") or "").strip()
         or execution.get("masked_image_edit_supported") is not True
         or execution.get("high_fidelity_input_supported") is not True
+        or not isinstance(execution.get("input_fidelity_parameter_supported"), bool)
+        or (
+            execution.get("input_fidelity_parameter_supported") is False
+            and "input_fidelity" in default_options
+        )
         or not isinstance(output_formats, list)
         or "png" not in output_formats
         or execution.get("mask_encoding") not in SUPPORTED_MASK_ENCODINGS

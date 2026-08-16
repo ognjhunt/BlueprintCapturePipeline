@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.image_editor_backend_registry import (
     ARTIFIXER_DIRECT_CAPABILITY,
     DEFAULT_REGISTRY_PATH,
@@ -57,6 +58,18 @@ def test_the_shipped_registry_loads_and_covers_the_backends_in_use() -> None:
 
     assert DEFAULT_REGISTRY_PATH.is_file()
     assert {"artifixer", "vibe_image_edit"} <= set(registry)
+
+
+def test_gpt_image_2_omits_the_unsupported_input_fidelity_parameter() -> None:
+    backend = load_registry()["openai_gpt_image_2_2026_04_21_semantic_teacher"]
+    execution = backend["execution"]
+
+    assert execution["high_fidelity_input_supported"] is True
+    assert execution["input_fidelity_parameter_supported"] is False
+    assert "input_fidelity" not in execution["default_options"]
+    assert canonical_digest(backend) == (
+        "sha256:fd4669469e0d4f8155acb6687824817ce13147a39bb5f417734a987584b69fb7"
+    )
 
 
 def test_the_bundle_takes_its_admissible_set_from_the_registry() -> None:
