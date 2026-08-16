@@ -25,8 +25,9 @@ def _secrets(tmp_path: Path) -> Path:
 
 
 class _Transport:
-    def __init__(self) -> None:
+    def __init__(self, *, digitalocean_generated_at: str = "2026-08-10T16:30:00Z") -> None:
         self.requests: list[tuple[str, str]] = []
+        self.digitalocean_generated_at = digitalocean_generated_at
 
     def __call__(self, request, _timeout: float) -> bytes:
         self.requests.append((request.full_url, request.headers.get("Authorization", "")))
@@ -57,7 +58,7 @@ class _Transport:
         if parsed.path.endswith("/balance"):
             return json.dumps(
                 {
-                    "generated_at": "2026-08-10T16:30:00Z",
+                    "generated_at": self.digitalocean_generated_at,
                     "month_to_date_usage": "2.00",
                 }
             ).encode()
@@ -138,6 +139,38 @@ def test_failed_refresh_preserves_prior_export(tmp_path: Path) -> None:
         )
 
     assert export.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_accepts_digitalocean_daily_balance_after_24_hour_boundary(
+    tmp_path: Path,
+) -> None:
+    result = reconcile_provider_billing(
+        secrets_dir=_secrets(tmp_path),
+        billing_export_path=tmp_path / "export.json",
+        audit_root=tmp_path / "audit",
+        start_at="2026-01-01T00:00:00Z",
+        now=datetime(2026, 8, 16, 3, 31, tzinfo=timezone.utc),
+        transport=_Transport(digitalocean_generated_at="2026-08-15T03:16:38Z"),
+    )
+
+    assert result["status"] == "reconciled"
+    assert result["provider_totals_usd"]["digitalocean"] == 8.0
+
+
+def test_rejects_digitalocean_balance_older_than_two_daily_intervals(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        ProviderBillingReconciliationError, match="digitalocean_balance_stale"
+    ):
+        reconcile_provider_billing(
+            secrets_dir=_secrets(tmp_path),
+            billing_export_path=tmp_path / "export.json",
+            audit_root=tmp_path / "audit",
+            start_at="2026-01-01T00:00:00Z",
+            now=datetime(2026, 8, 16, 3, 31, tzinfo=timezone.utc),
+            transport=_Transport(digitalocean_generated_at="2026-08-14T03:16:38Z"),
+        )
 
 
 def test_secret_symlink_is_rejected_before_network_access(tmp_path: Path) -> None:
