@@ -92,6 +92,12 @@ SCENE_OPTIMIZER_CORE_SHA256 = (
     "sha256:9d98d22eed1eb31da3183bfd4155f3b8eca48576e6eb5947d126e781f0edc671"
 )
 RESULT_SCHEMA_VERSION = "adp_joint_agent_vast_run.v1"
+# Preregistered band for the task-member extent ratio (candidate projected
+# extent divided by the target interval length, per projection constraint).
+# The task member spans its own preregistered interval, so ratios far above
+# 1.0 describe geometry that CONTAINS the member (an assembly shell), not the
+# member itself.
+TARGET_MEMBER_EXTENT_RATIO_BAND = (0.5, 1.5)
 # Model consumers in the pinned released Joint Agent schema. Some are omitted
 # from NVIDIA's BYOA YAML and injected from package defaults at load time, so
 # rewriting only serialized nodes can silently leave a second backend active.
@@ -379,6 +385,7 @@ def _review_contract(
         "target_axis_world": observation.get("joint_axis_world"),
         "target_axis_absolute_dot_minimum": 0.99,
         "target_member_projection_constraints": target_projection_constraints,
+        "target_member_extent_ratio_band": list(TARGET_MEMBER_EXTENT_RATIO_BAND),
         "task_joint_id": task.get("target_joint_id"),
         "compatibility_adapter": compatibility_adapter,
         "freeze_digest": freeze.get("freeze_digest"),
@@ -507,6 +514,21 @@ def build_joint_agent_vast_bundle(
         or authority["freeze_digest"] != freeze.get("freeze_digest")
     ):
         raise ValueError("adp_joint_agent_packet_authority_freeze_join_invalid")
+    # The deterministic review derives link membership from the source-asset
+    # receipt's connected-component AABBs, so the exact receipt travels with
+    # the bundle under the same digest the authority already binds.
+    source_receipt_path = (
+        Path(str(packet_source.get("source_receipt_path") or "")).expanduser().resolve()
+    )
+    source_receipt = _canonical_receipt(
+        source_receipt_path,
+        digest_field="receipt_digest",
+        error="adp_joint_agent_source_receipt_invalid",
+    )
+    if source_receipt["receipt_digest"] != packet_source.get(
+        "source_receipt_digest"
+    ) or not isinstance(source_receipt.get("connected_components"), list):
+        raise ValueError("adp_joint_agent_source_receipt_invalid")
     # All caller-controlled identities are validated before the first output
     # byte is created. A failed preflight therefore never leaves a partial
     # bundle that needs a manual cleanup workaround.
@@ -514,6 +536,9 @@ def build_joint_agent_vast_bundle(
     ensure_dir(runtime / "input")
     ensure_dir(runtime / "blueprint_src" / "blueprint_pipeline")
     shutil.copy2(source_asset, runtime / "input" / "articulated_source.usda")
+    shutil.copy2(
+        source_receipt_path, runtime / "input" / "articulated_source_receipt.json"
+    )
     config = _provider_config(
         packet,
         model_backend=released_backend,
@@ -624,6 +649,10 @@ def build_joint_agent_vast_bundle(
             "size_bytes": (runtime / "scene_optimizer_core.zip").stat().st_size,
         },
         "input_usd_sha256": _sha256(runtime / "input" / "articulated_source.usda"),
+        "source_receipt_sha256": _sha256(
+            runtime / "input" / "articulated_source_receipt.json"
+        ),
+        "source_receipt_digest": source_receipt["receipt_digest"],
         "packet_digest": packet["packet_digest"],
         "execution_authority_digest": authority["authorization_digest"],
         "one_instance_at_a_time": authority.get("one_instance_at_a_time", True),

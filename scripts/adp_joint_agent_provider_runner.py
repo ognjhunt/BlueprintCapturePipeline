@@ -18,6 +18,8 @@ from pxr import Usd, UsdGeom, UsdPhysics
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.joint_agent_articulation_review import (
     JointAgentArticulationReviewError,
+    collect_candidate_bounds,
+    resolve_joint_agent_output,
     review_joint_agent_articulation,
 )
 
@@ -214,54 +216,24 @@ def _run(command: list[str], log_name: str) -> dict[str, Any]:
 
 
 def _candidate_bounds(stage_path: Path, document: Mapping[str, Any]) -> dict[str, Any]:
+    """Measure candidate and parent prims; one bad prim never aborts the run."""
+
     stage = Usd.Stage.Open(str(stage_path))
     if stage is None:
         raise ValueError("joint_agent_optimized_stage_open_failed")
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
-    result: dict[str, Any] = {}
-    for candidate in document.get("candidates") or []:
-        candidate_id = str(candidate.get("candidate_id") or "")
-        paths = [str(item) for item in candidate.get("moving_part_prims") or []]
-        ranges = []
-        for prim_path in paths:
-            prim = stage.GetPrimAtPath(prim_path)
-            if prim.IsValid():
-                ranges.append(cache.ComputeWorldBound(prim).ComputeAlignedRange())
-        if not ranges:
-            result[candidate_id] = {"status": "unmeasured", "moving_part_prims": paths}
-            continue
-        minimum = [min(float(item.GetMin()[axis]) for item in ranges) for axis in range(3)]
-        maximum = [max(float(item.GetMax()[axis]) for item in ranges) for axis in range(3)]
-        result[candidate_id] = {
-            "status": "measured_from_optimized_usd",
-            "moving_part_prims": paths,
-            "aabb_min": minimum,
-            "aabb_max": maximum,
-        }
-    return result
 
-
-def resolve_joint_agent_output(
-    *, working_dir: Path, role: str, relative_glob: str
-) -> Path:
-    """Resolve one released-code output by role without guessing its filename."""
-
-    root = working_dir.resolve()
-    matches = []
-    for candidate in sorted(working_dir.glob(relative_glob)):
-        resolved = candidate.resolve()
-        if (
-            resolved.is_relative_to(root)
-            and not candidate.is_symlink()
-            and candidate.is_file()
-            and candidate.stat().st_size > 0
-        ):
-            matches.append(resolved)
-    if len(matches) != 1:
-        raise ValueError(
-            f"joint_agent_output_role_not_unique:{role}:observed={len(matches)}"
+    def measure_prim(prim_path: str):
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            return None
+        measured_range = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        return (
+            [float(measured_range.GetMin()[axis]) for axis in range(3)],
+            [float(measured_range.GetMax()[axis]) for axis in range(3)],
         )
-    return matches[0]
+
+    return collect_candidate_bounds(document, measure_prim=measure_prim)
 
 
 def _result(blockers: list[str], **values: Any) -> int:
@@ -313,6 +285,23 @@ def main() -> int:
         credential_blockers = model_credential_blockers(manifest)
         if credential_blockers:
             return _result(credential_blockers)
+        source_receipt_path = ROOT / "input/articulated_source_receipt.json"
+        expected_receipt_sha = manifest.get("source_receipt_sha256")
+        if (
+            not isinstance(expected_receipt_sha, str)
+            or not expected_receipt_sha
+            or not source_receipt_path.is_file()
+            or _sha256(source_receipt_path) != expected_receipt_sha
+        ):
+            return _result(["joint_agent_source_receipt_binding_invalid"])
+        source_receipt = _load(source_receipt_path)
+        source_components = source_receipt.get("connected_components")
+        if canonical_digest(
+            source_receipt, digest_field="receipt_digest"
+        ) != source_receipt.get("receipt_digest") or not isinstance(
+            source_components, list
+        ):
+            return _result(["joint_agent_source_receipt_binding_invalid"])
         probe_blockers = scene_optimizer_probe(output_root=OUTPUT)
         if probe_blockers:
             return _result(probe_blockers)
@@ -334,11 +323,13 @@ def main() -> int:
                 inference=inference,
                 joint_agent_inference_executed=False,
             )
+        output_resolution_notes: list[str] = []
         try:
             optimized_path = resolve_joint_agent_output(
                 working_dir=working_dir,
                 role="optimized_source",
                 relative_glob="optimized/*_optimized.usd*",
+                notes=output_resolution_notes,
             )
         except ValueError as exc:
             return _result(
@@ -347,6 +338,7 @@ def main() -> int:
                 inference=inference,
                 joint_agent_inference_executed=True,
                 candidates_sha256=_sha256(candidates_path),
+                output_resolution_notes=output_resolution_notes,
                 retained_artifacts=retain_available_joint_agent_artifacts(
                     output_root=OUTPUT,
                     artifacts={"articulation_candidates": candidates_path},
@@ -379,6 +371,7 @@ def main() -> int:
                 candidates_document=candidates,
                 candidate_bounds=bounds,
                 review_contract=contract,
+                source_components=source_components,
             )
         except JointAgentArticulationReviewError as exc:
             return _result(
@@ -388,6 +381,7 @@ def main() -> int:
                 joint_agent_inference_executed=True,
                 candidates_sha256=_sha256(candidates_path),
                 candidate_bounds_sha256=_sha256(OUTPUT / "joint_candidate_bounds.json"),
+                output_resolution_notes=output_resolution_notes,
                 retained_artifacts=partial_rows,
             )
         review_path = OUTPUT / "joint_agent_articulation_review.json"
@@ -418,6 +412,7 @@ def main() -> int:
                 joint_agent_inference_executed=True,
                 owned_core_publication_executed=False,
                 review_receipt_sha256=_sha256(review_path),
+                output_resolution_notes=output_resolution_notes,
                 retained_artifacts=partial_rows,
             )
         stage = Usd.Stage.Open(str(rigged))
@@ -426,7 +421,9 @@ def main() -> int:
             for prim in stage.Traverse()
             if prim.IsA(UsdPhysics.Joint)
         ] if stage is not None else []
-        if len(joint_paths) != review["assembly_joint_count"]:
+        # The rigger authors one joint per raw candidate document entry; the
+        # link-level assembly_joint_count is the preregistered-contract view.
+        if len(joint_paths) != review["raw_candidate_count"]:
             blockers.append("joint_agent_owned_core_joint_count_readback_mismatch")
         diagnostics = ROOT / "runtime_output/joint_agent_work/joint_rigger/joint_rigger_diagnostics.json"
         validation = ROOT / "runtime_output/joint_agent_work/joint_rigger/joint_rigger_validation.json"
@@ -455,6 +452,7 @@ def main() -> int:
             rigged_usdz_path=str(rigged),
             rigged_usdz_sha256=_sha256(rigged),
             authored_joint_paths=joint_paths,
+            output_resolution_notes=output_resolution_notes,
             retained_artifacts=retained_artifacts,
         )
     except Exception as exc:
