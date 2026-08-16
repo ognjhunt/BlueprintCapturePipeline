@@ -614,6 +614,8 @@ def test_one_instance_run_retains_output_and_proves_every_zero(
     assert result["runtime_image_identity"] == IMAGE
     assert Path(result["artifact_manifest_path"]).is_file()
     assert Path(result["teardown_manifest_path"]).is_file()
+    teardown_manifest = json.loads(Path(result["teardown_manifest_path"]).read_text())
+    assert teardown_manifest["generated_at"].endswith("+00:00")
     assert provider.launch_calls == 1
     assert provider.terminate_calls == 1
     assert store.stage_calls == 1
