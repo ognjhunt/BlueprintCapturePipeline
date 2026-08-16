@@ -145,9 +145,10 @@ def test_materializer_accepts_semantic_teacher_terminal_shapes(tmp_path: Path) -
     result["schema_version"] = "semantic_teacher_image_edit_vast_execution.v1"
     result["cost_usd"] = result.pop("estimated_cost_usd")
     result.pop("receipt_digest")
-    result["execution_result_digest"] = canonical_digest(
-        result, digest_field="execution_result_digest"
-    )
+    # The real semantic terminal also binds its separate provider-zero receipt.
+    # That field is not the terminal's self-digest and must not be selected as one.
+    result["provider_zero_digest"] = "sha256:" + "c" * 64
+    result["execution_digest"] = canonical_digest(result, digest_field="execution_digest")
     fixture["result"].write_text(json.dumps(result), encoding="utf-8")
     teardown = json.loads(fixture["teardown"].read_text(encoding="utf-8"))
     teardown["status"] = "PASS"
