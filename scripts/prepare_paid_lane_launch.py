@@ -46,6 +46,7 @@ class LaneStep:
     argv: tuple[str, ...]
     produces: str
     exports: tuple[tuple[str, str], ...] = ()
+    repeated_argv: tuple[tuple[str, str], ...] = ()
 
 
 SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
@@ -121,6 +122,7 @@ SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
             "{set_root}/semantic_teacher_image_edit_paid_authority.v1.json",
         ),
         produces="{set_root}/semantic_teacher_image_edit_paid_authority.v1.json",
+        repeated_argv=(("--prior-spend-reconciliation", "prior_spend_reconciliations"),),
     ),
     LaneStep(
         step_id="allocator_dry_run",
@@ -185,6 +187,7 @@ SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
             "{set_root}/live_profile-{revision}.v1.json",
         ),
         produces="{set_root}/live_profile-{revision}.v1.json",
+        repeated_argv=(("--excluded-machine-id", "excluded_machine_ids"),),
     ),
     LaneStep(
         step_id="profile_publication",
@@ -267,6 +270,18 @@ def _render(template: str, context: Mapping[str, Any]) -> str:
     return template.format(**context)
 
 
+def _repeated_values(value: Any) -> tuple[str, ...]:
+    """Normalize optional repeated CLI values without inventing empty argv."""
+
+    if value is None or value == "":
+        return ()
+    if isinstance(value, (str, int, float)):
+        return (str(value),)
+    if isinstance(value, Sequence):
+        return tuple(str(item) for item in value if str(item) != "")
+    raise PaidLaneLaunchPreparationError("paid_lane_repeated_argv_invalid")
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -293,6 +308,9 @@ def prepare_paid_lane_launch(
     blockers: list[str] = []
     for step in LANES[lane]:
         argv = [_render(fragment, resolved) for fragment in step.argv]
+        for flag, context_name in step.repeated_argv:
+            for value in _repeated_values(resolved.get(context_name)):
+                argv.extend((flag, value))
         produces = Path(_render(step.produces, resolved))
         returncode = runner(argv)
         if returncode != 0:
@@ -360,6 +378,12 @@ def _context_from_args(args: argparse.Namespace) -> dict[str, str]:
         "hard_ttl_seconds": str(args.hard_ttl_seconds),
         "aggregate_goal_spend_before_usd": str(args.aggregate_goal_spend_before_usd),
         "aggregate_goal_spend_cap_usd": str(args.aggregate_goal_spend_cap_usd),
+        "prior_spend_reconciliations": (
+            [args.prior_spend_reconciliation]
+            if args.prior_spend_reconciliation
+            else []
+        ),
+        "excluded_machine_ids": [str(value) for value in args.excluded_machine_id],
     }
     for entry in args.set or []:
         name, _, value = entry.partition("=")
@@ -393,6 +417,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hard-ttl-seconds", type=int, required=True)
     parser.add_argument("--aggregate-goal-spend-before-usd", type=float, required=True)
     parser.add_argument("--aggregate-goal-spend-cap-usd", type=float, required=True)
+    parser.add_argument("--prior-spend-reconciliation")
+    parser.add_argument(
+        "--excluded-machine-id",
+        action="append",
+        default=[],
+        type=int,
+        help="Vast machine ID the immutable live profile must exclude; repeatable.",
+    )
     parser.add_argument("--set", action="append", help="Extra name=value context entry")
     parser.add_argument("--receipt-out")
     args = parser.parse_args(argv)
