@@ -813,6 +813,56 @@ def test_paid_attempt_authority_accepts_segment_contribution_sweep_purpose(
     assert validated["purpose"] == "released_code_segment_contribution_sweep"
 
 
+def test_first_attempt_accepts_reconciled_same_lane_spend_from_other_freeze(
+    tmp_path: Path,
+) -> None:
+    bundle = _prepared_excision_bundle(tmp_path)
+    prior_result: dict[str, object] = {
+        "schema_version": "adp009b_gaussian_excision_vast_run.v1",
+        "status": "completed",
+        "continuing_spend_from_this_run": False,
+        "estimated_cost_usd": 0.025,
+        "authorization_consumption": {
+            "authorization_digest": "sha256:" + "9" * 64,
+        },
+        "bundle_sha256": "sha256:" + "8" * 64,
+        "freeze_digest": "sha256:" + "7" * 64,
+    }
+    prior_result["receipt_digest"] = canonical_digest(
+        prior_result, digest_field="receipt_digest"
+    )
+    prior_result_path = tmp_path / "task-a-terminal-result.json"
+    _write_json(prior_result_path, prior_result)
+    reconciliation_path = _prior_gaussian_spend_reconciliation(
+        tmp_path, prior_result_path
+    )
+    binding = bind_lane_prior_spend(
+        prior_result_paths=[prior_result_path],
+        reconciliation_path=reconciliation_path,
+        lane="gaussian_excision",
+    )
+    authority = _paid_attempt_authority(bundle)
+    authority.update(
+        {
+            "prior_terminal_attempts": binding["prior_terminal_attempts"],
+            "prior_spend_reconciliation": binding["reconciliation"],
+            "prior_actual_provider_spend_usd": binding["actual_total_usd"],
+        }
+    )
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    validated = excision_vast.validate_gaussian_excision_paid_attempt_authority(
+        authority,
+        prepared_bundle=bundle,
+        previous_attempt_receipt=None,
+    )
+
+    assert validated["paid_attempt_ordinal"] == 1
+    assert validated["prior_actual_provider_spend_usd"] == 0.0
+
+
 def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None:
     result = excision_vast.run_gaussian_excision_vast(
         job_dir=tmp_path / "job",

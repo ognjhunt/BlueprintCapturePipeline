@@ -193,6 +193,58 @@ def test_gaussian_issuer_binds_segment_contribution_sweep_purpose(
     assert captured["purpose"] == "released_code_segment_contribution_sweep"
 
 
+def test_gaussian_first_attempt_carries_cross_freeze_same_lane_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issuer = _load("issue_gaussian_excision_paid_attempt_authority")
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+    task_a_result = tmp_path / "task-a-result.json"
+    task_a_result.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        issuer,
+        "resolve_host_resident_bundle_receipt",
+        lambda _path: {
+            "blockers": [],
+            "receipt": {
+                "bundle_sha256": "sha256:" + "a" * 64,
+                "execution_purpose": "released_code_segment_contribution_sweep",
+            },
+        },
+    )
+    binding = _fake_binding("gaussian_excision")
+    seen: dict[str, object] = {}
+
+    def bind(**kwargs):
+        seen.update(kwargs)
+        return binding
+
+    monkeypatch.setattr(issuer, "bind_lane_prior_spend", bind)
+    captured: dict[str, object] = {}
+
+    def capture_validate(value, *_args, **_kwargs):
+        captured.update(value)
+        return value
+
+    monkeypatch.setattr(
+        issuer, "validate_gaussian_excision_paid_attempt_authority", capture_validate
+    )
+
+    authority = issuer.issue_gaussian_excision_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        authorized_by="user",
+        authority_reference="task-b",
+        prior_spend_result_paths=(task_a_result,),
+        prior_spend_reconciliation_path=tmp_path / "reconciliation.json",
+    )
+
+    assert seen["prior_result_paths"] == (task_a_result,)
+    assert authority["paid_attempt_ordinal"] == 1
+    assert "previous_attempt_receipt_digest" not in authority
+    assert authority["prior_actual_provider_spend_usd"] == 0.025
+    assert captured["prior_spend_reconciliation"] == binding["reconciliation"]
+
+
 def _issue_gaussian_with_prior(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prior_doc: dict[str, object]
 ) -> dict[str, object]:
