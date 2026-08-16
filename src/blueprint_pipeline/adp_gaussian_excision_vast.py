@@ -1381,11 +1381,16 @@ def run_gaussian_excision_vast(
         }
     provider_run = job / "vast_provider_run"
     output_zip = provider_run / "vast_provider_runtime_output.zip"
+    # Resolved once, so the watchdog arms on exactly the names this lane will
+    # label. Restating it at the launch site is how the two drifted apart.
+    excision_instance_label_prefix = str(
+        bundle.get("instance_label_prefix") or "blueprint-adp-gaussian-excision-"
+    )
     watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
         job_dir=job,
         max_live_minutes=remaining_minutes,
         generated_at=utc_now_iso(),
-        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-",
+        pod_name_prefix=excision_instance_label_prefix,
         allowed_active_instance_ids=allowed_active_instance_ids,
     )
     if watchdog_handle is None:
@@ -1451,10 +1456,7 @@ def run_gaussian_excision_vast(
                 machine_avoidlist_path=machine_avoidlist_path,
                 vast_launch_lock_file=job.parent
                 / "gaussian_excision_paid_launch.lock",
-                instance_label_prefix=str(
-                    bundle.get("instance_label_prefix")
-                    or "blueprint-adp-gaussian-excision-"
-                ),
+                instance_label_prefix=watchdog_handle.pod_name_prefix,
                 started_instance_id_path=watchdog_handle.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,

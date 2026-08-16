@@ -234,7 +234,12 @@ def test_retained_scene_render_uses_a_watchdog_canary_prefix(
     )
 
     assert result["status"] == "blocked"
-    assert captured["pod_name_prefix"] == "blueprint-groot-oscar-canary-adp-retained-render-"
+    # The lane's own label, not a borrowed GR00T-family prefix. Arming on a
+    # name this lane never creates left the watchdog's name-scoped sweep
+    # matching an empty set while it still reported provider zero.
+    assert captured["pod_name_prefix"] == (
+        retained_vast.RETAINED_RENDER_INSTANCE_LABEL_PREFIX
+    )
 
 
 def test_retained_scene_render_runner_retains_renderer_failure_diagnostic(

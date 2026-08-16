@@ -47,6 +47,13 @@ CANARY_NAME_PREFIXES = (
     # name family, which its own instances never carry, so the watchdog's
     # name-scoped arm swept an empty set while still reporting provider zero.
     "blueprint-adp-joint-agent-",
+    # Each of these lanes labels its instances with its own prefix. Before they
+    # were listed here, arming refused anything outside this tuple, so each
+    # worked around it by arming on a GR00T-family prefix its own instances
+    # never carry -- leaving the watchdog's name-scoped sweep matching an empty
+    # set while it still reported provider zero.
+    "blueprint-adp-gaussian-excision-",
+    "blueprint-adp-retained-render-",
     "blueprint-native-warehouse-camera-",
     "blueprint-reconstruction-",
     "blueprint-measurement-isaac-",
