@@ -739,3 +739,53 @@ def test_every_recorded_gap_still_lacks_the_evidence_it_claims_to_lack() -> None
             "TRANSPORTS_MISSING_TERMINAL_EVIDENCE and add it to "
             "PAID_LANE_MODULES so it is verified rather than excused."
         )
+
+
+def test_a_lane_that_rented_one_instance_cannot_seal_nothing_and_stay_completed(
+    tmp_path: Path,
+) -> None:
+    """One rented instance is recorded singular, and that must still count.
+
+    Production regression: the reached-a-provider probe matched only keys
+    ending `instance_ids`. Lanes that rent exactly one instance record
+    `instance_id`, so a run that really had rented a GPU was judged never to
+    have reached a provider. The sealer then took its quiet dry-run path,
+    left both manifest paths `None`, and kept the result's `completed` status
+    -- the precise silent-wrong-success this probe exists to prevent, and the
+    same shape as the SimReady run that tore its instance down correctly and
+    sealed nothing.
+    """
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        seal_lane_terminal_artifacts,
+    )
+
+    sealed = seal_lane_terminal_artifacts(
+        {"status": "completed", "blockers": [], "instance_id": "26104412"},
+        attempt_root=tmp_path,
+        lane="adp_example",
+    )
+
+    assert sealed["status"] == "blocked"
+    assert any(
+        blocker.startswith("terminal_artifacts_not_found_under_attempt_root:")
+        for blocker in sealed["blockers"]
+    ), sealed["blockers"]
+
+
+def test_a_dry_run_with_no_instance_still_takes_the_quiet_path(tmp_path: Path) -> None:
+    """The probe must stay narrow: no rented resource means nothing to seal."""
+
+    from blueprint_pipeline.task_evaluation_artifact_manifest import (
+        seal_lane_terminal_artifacts,
+    )
+
+    sealed = seal_lane_terminal_artifacts(
+        {"status": "blocked", "blockers": ["refused_before_provider"]},
+        attempt_root=tmp_path,
+        lane="adp_example",
+    )
+
+    assert "terminal_artifacts_not_found_under_attempt_root" not in " ".join(
+        sealed["blockers"]
+    )

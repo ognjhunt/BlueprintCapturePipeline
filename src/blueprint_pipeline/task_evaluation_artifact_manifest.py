@@ -243,7 +243,13 @@ def _result_reached_a_provider(result: Mapping[str, Any]) -> bool:
     if result.get("estimated_cost_usd") is not None:
         return True
     for key, value in result.items():
-        if key.endswith("instance_ids") and value:
+        # Singular as well as plural. Lanes that rent exactly one instance
+        # record `instance_id`, and matching only the plural form judged them
+        # never to have reached a provider -- so a run that really did rent a
+        # GPU and sealed nothing took the quiet dry-run path and kept its
+        # `completed` status, which is the precise outcome this function exists
+        # to prevent.
+        if (key == "instance_id" or key.endswith("instance_ids")) and value:
             return True
     return False
 
