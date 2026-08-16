@@ -27,7 +27,11 @@ from tests.test_adp_retained_scene_render_packet import (
 
 
 def _fixture(
-    tmp_path: Path, *, task_count: int = 2, relative_mask_records: bool = False
+    tmp_path: Path,
+    *,
+    task_count: int = 2,
+    relative_mask_records: bool = False,
+    source_anchored_mask_records: bool = False,
 ) -> tuple[Path, Path, list[Path]]:
     root = tmp_path / "segment_set"
     source = _source_ply(root / "source.ply")
@@ -50,6 +54,11 @@ def _fixture(
         camera_rows: list[dict[str, object]] = []
         masks: list[dict[str, object]] = []
         source_images: list[dict[str, object]] = []
+        mask_record_root = (
+            tmp_path / "task_inputs" / f"task_{slot}_excision"
+            if source_anchored_mask_records
+            else camera_root
+        )
         for camera_slot in range(2):
             camera_id = f"camera_{camera_slot}"
             camera_rows.append(
@@ -80,7 +89,7 @@ def _fixture(
             ).save(image_path)
             mask_pixels = np.zeros((4, 4), dtype=np.uint8)
             mask_pixels[1:3, 1:3] = 255
-            mask_path = camera_root / "masks" / f"{camera_id}.png"
+            mask_path = mask_record_root / "masks" / f"{camera_id}.png"
             mask_path.parent.mkdir(parents=True, exist_ok=True)
             Image.fromarray(mask_pixels, mode="L").save(mask_path)
             mask_paths.append(mask_path)
@@ -88,8 +97,8 @@ def _fixture(
                 {
                     "camera_id": camera_id,
                     "historical_outer_mask": (
-                        _relative_record(camera_root, mask_path)
-                        if relative_mask_records
+                        _relative_record(mask_record_root, mask_path)
+                        if relative_mask_records or source_anchored_mask_records
                         else _absolute_record(mask_path)
                     ),
                 }
@@ -97,6 +106,23 @@ def _fixture(
             source_images.append({"camera_id": camera_id, **_absolute_record(image_path)})
         camera_path = camera_root / "cameras.json"
         camera_path.write_text(json.dumps(camera_rows) + "\n", encoding="utf-8")
+        contribution: dict[str, object] | None = None
+        if source_anchored_mask_records:
+            source_freeze: dict[str, object] = {
+                "scene": {"publisher_scene_id": "840920", "task_id": f"task_{slot}"},
+                "freeze_digest": "",
+            }
+            source_freeze["freeze_digest"] = canonical_digest(
+                source_freeze, digest_field="freeze_digest"
+            )
+            source_freeze_path = mask_record_root / "source_freeze.json"
+            _write_json(source_freeze_path, source_freeze)
+            contribution = {
+                "source_excision_freeze": {
+                    **_absolute_record(source_freeze_path),
+                    "freeze_digest": source_freeze["freeze_digest"],
+                }
+            }
         sweep: dict[str, object] = {
             "scene": {"publisher_scene_id": "840920", "task_id": f"task_{slot}"},
             "camera_contract": _absolute_record(camera_path),
@@ -106,6 +132,8 @@ def _fixture(
             "replacement_usd_inserted": False,
             "freeze_digest": "",
         }
+        if contribution is not None:
+            sweep["segment_contribution_sweep"] = contribution
         sweep["freeze_digest"] = canonical_digest(sweep, digest_field="freeze_digest")
         sweep_path = camera_root / "sweep.json"
         _write_json(sweep_path, sweep)
@@ -177,6 +205,23 @@ def test_segment_masks_are_the_only_artifixer_generated_support(tmp_path: Path) 
 def test_segment_masks_accept_digest_bound_paths_relative_to_sweep(tmp_path: Path) -> None:
     candidate, authority, _masks = _fixture(
         tmp_path, task_count=2, relative_mask_records=True
+    )
+
+    preflight = materialize_segment_mask_repair_preflight(
+        segment_cutout_set_path=candidate,
+        execution_authority_path=authority,
+        output_path=tmp_path / "preflight.json",
+    )
+
+    assert len(preflight["camera_inputs"]) == 4
+    assert all(row["exact_residual_mask"]["pixel_count"] == 4 for row in preflight["camera_inputs"])
+
+
+def test_segment_masks_use_digest_bound_source_excision_freeze_as_relative_root(
+    tmp_path: Path,
+) -> None:
+    candidate, authority, _masks = _fixture(
+        tmp_path, task_count=2, source_anchored_mask_records=True
     )
 
     preflight = materialize_segment_mask_repair_preflight(
