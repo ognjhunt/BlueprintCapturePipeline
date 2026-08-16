@@ -358,6 +358,19 @@ def materialize_mesh_usd_projection(
     root.GetPrim().SetCustomDataByKey("blueprint:meshPacketDigest", packet["packet_digest"])
     root.GetPrim().SetCustomDataByKey("blueprint:deterministicCadGeneratorUsed", False)
     root.GetPrim().SetCustomDataByKey("blueprint:collisionAuthority", False)
+    # Resolved from a material this loop actually bound, and resolved *before*
+    # the save. `material_for` defines its material lazily, so asking it for the
+    # neutral fallback after saving invents a prim that never reaches the file:
+    # whenever every mesh carried an authored colour -- the intended case, and
+    # the one the receipt reports as `agent_authored_display_colors_preserved` --
+    # the receipt named a material absent from the shipped USD and bound to no
+    # mesh. The texture agent resolves `material_textures` against a material's
+    # alias paths and then its name, so it matched neither, planned zero jobs,
+    # and the run was rejected after the GPU was already rented.
+    default_material_path = str(
+        (materials[None] if None in materials else next(iter(materials.values())))
+        .GetPath()
+    )
     stage.GetRootLayer().Save()
     output_record = _file_record(output)
     receipt: dict[str, Any] = {
@@ -371,7 +384,7 @@ def materialize_mesh_usd_projection(
         "mesh_count": len(prim_paths),
         "point_count": total_points,
         "triangle_count": total_triangles,
-        "default_material_path": str(material_for(None).GetPath()),
+        "default_material_path": default_material_path,
         "agent_authored_display_color_mesh_count": authored_color_mesh_count,
         "neutral_fallback_mesh_count": neutral_fallback_mesh_count,
         "agent_authored_display_colors_preserved": neutral_fallback_mesh_count == 0,
