@@ -374,7 +374,13 @@ def bind_lane_prior_spend(
             or teardown.get("continuing_spend_from_this_run", False) is not False
             or not isinstance(teardown_instance_ids, list)
             or instance_id not in teardown_instance_ids
-            or zero.get("provider_zero_verified", zero.get("provider_zero_confirmed"))
+            or zero.get(
+                "provider_zero_verified",
+                zero.get(
+                    "provider_zero_confirmed",
+                    zero.get("provider_zero_api_confirmed"),
+                ),
+            )
             is not True
             or zero.get("continuing_spend_from_this_run", False) is not False
             or float(charge_rows[0].get("amount", -1)) != float(entry["cost_usd"])

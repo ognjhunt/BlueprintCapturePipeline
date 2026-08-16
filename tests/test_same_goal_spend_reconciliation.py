@@ -153,6 +153,13 @@ def test_materializer_accepts_semantic_teacher_terminal_shapes(tmp_path: Path) -
     teardown["status"] = "PASS"
     teardown["instance_id"] = str(teardown.pop("vast_instance_ids")[0])
     fixture["teardown"].write_text(json.dumps(teardown), encoding="utf-8")
+    zero = json.loads(fixture["zero"].read_text(encoding="utf-8"))
+    zero["provider_zero_api_confirmed"] = zero.pop("provider_zero_verified")
+    zero.pop("receipt_digest")
+    zero["provider_zero_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_digest"
+    )
+    fixture["zero"].write_text(json.dumps(zero), encoding="utf-8")
 
     output, value = _materialize(
         tmp_path / "semantic",
@@ -161,6 +168,11 @@ def test_materializer_accepts_semantic_teacher_terminal_shapes(tmp_path: Path) -
     )
 
     assert value["total_cost_usd"] == 0.025
+    assert next(
+        binding
+        for binding in value["entries"][0]["bindings"]
+        if binding["kind"] == "provider_zero"
+    )["json_path"] == ["provider_zero_api_confirmed"]
     binding = bind_lane_prior_spend(
         prior_result_paths=[fixture["result"]],
         reconciliation_path=output,
