@@ -28,6 +28,7 @@ _DIGEST_FIELDS = (
     "receipt_digest",
     "result_digest",
     "execution_result_digest",
+    "execution_digest",
     "provider_zero_digest",
     "provider_zero_receipt_digest",
 )
