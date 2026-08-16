@@ -302,6 +302,20 @@ def validate_simready_isaac_paid_attempt_authority(
         errors.append("bundle_receipt_sha256_mismatch")
     if value.get("probe_spec_sha256") != prepared_bundle.get("probe_spec_sha256"):
         errors.append("probe_spec_sha256_mismatch")
+    if value.get("scene_id") != prepared_bundle.get("scene_id"):
+        errors.append("scene_id_mismatch")
+    if value.get("candidate_usd_sha256") != prepared_bundle.get(
+        "candidate_usd_sha256"
+    ):
+        errors.append("candidate_usd_sha256_mismatch")
+    if value.get("native_probe_manifest_sha256") != prepared_bundle.get(
+        "native_probe_manifest_sha256"
+    ):
+        errors.append("native_probe_manifest_sha256_mismatch")
+    if value.get("native_probe_manifest_digest") != prepared_bundle.get(
+        "native_probe_manifest_digest"
+    ):
+        errors.append("native_probe_manifest_digest_mismatch")
     if value.get("container_image") != DEFAULT_IMAGE:
         errors.append("container_image_mismatch")
     if value.get("maximum_paid_attempts") != 1:

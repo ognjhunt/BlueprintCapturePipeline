@@ -15,6 +15,7 @@ import shutil
 from typing import Any, Mapping
 
 from .common import ensure_dir, write_json
+from .decision_evidence_contracts import canonical_digest
 
 
 CAMERAS_RELATIVE_PATH = "inpainting_inputs/840313_ins160_v1/cameras.v1.json"
@@ -464,6 +465,10 @@ def materialize_native_probe(
     ensure_dir(target)
     cameras_source = (evidence / CAMERAS_RELATIVE_PATH).resolve()
     composition = replacement_receipt.get("composition") or {}
+    scene = replacement_receipt.get("scene") or {}
+    scene_id = str(scene.get("publisher_scene_id") or "").strip()
+    if not scene_id or Path(scene_id).name != scene_id:
+        raise ValueError("simready_native_scene_id_missing")
     composition_source = (evidence / str(composition.get("relative_path") or "")).resolve()
     asset_copy = composition.get("replacement_asset_copy") or {}
     asset_source = (evidence / str(asset_copy.get("relative_path") or "")).resolve()
@@ -683,6 +688,14 @@ def materialize_native_probe(
     manifest = {
         "schema_version": "adp009b_simready_native_probe.v1",
         "status": "ready",
+        "scene_id": scene_id,
+        "candidate_usd": {
+            "relative_path": (scene / "assets" / asset_source.name).relative_to(
+                target
+            ).as_posix(),
+            "size_bytes": asset_source.stat().st_size,
+            "sha256": _sha256(asset_source),
+        },
         "camera_manifest_sha256": _sha256(cameras_source),
         "composition_sha256": _sha256(composition_source),
         "replacement_asset_sha256": _sha256(asset_source),
@@ -728,7 +741,11 @@ def materialize_native_probe(
             "legacy_isaac_probe_uses_convex_hull_approximation": True,
             "legacy_probe_may_not_substitute_for_adp009d_sdf_admission": True,
         },
+        "manifest_digest": "",
     }
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
     write_json(target / "adp009b_simready_native_probe_manifest.json", manifest)
     return manifest
 

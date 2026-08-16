@@ -29,6 +29,10 @@ def _bundle(tmp_path: Path, *, commit: str = "a" * 40) -> dict:
         "retry_cap": 0,
         "blockers": [],
         "probe_spec_sha256": "sha256:" + "b" * 64,
+        "scene_id": "840920",
+        "candidate_usd_sha256": "sha256:" + "d" * 64,
+        "native_probe_manifest_sha256": "sha256:" + "e" * 64,
+        "native_probe_manifest_digest": "sha256:" + "f" * 64,
         "bundle_path": str(bundle),
         "bundle_sha256": _sha256(bundle),
     }
@@ -55,6 +59,14 @@ def _paid_attempt_authority(
         "bundle_sha256": prepared_bundle["bundle_sha256"],
         "bundle_receipt_sha256": bundle_receipt_sha256,
         "probe_spec_sha256": prepared_bundle["probe_spec_sha256"],
+        "scene_id": prepared_bundle["scene_id"],
+        "candidate_usd_sha256": prepared_bundle["candidate_usd_sha256"],
+        "native_probe_manifest_sha256": prepared_bundle[
+            "native_probe_manifest_sha256"
+        ],
+        "native_probe_manifest_digest": prepared_bundle[
+            "native_probe_manifest_digest"
+        ],
         "container_image": DEFAULT_IMAGE,
         "maximum_paid_attempts": 1,
         "maximum_automatic_retries": 0,
@@ -316,6 +328,43 @@ def test_simready_authority_binds_external_instance_allowlist(tmp_path: Path) ->
         allowed_active_instance_ids=[31],
     )
     with pytest.raises(ValueError, match="external_instance_allowlist_mismatch"):
+        runtime.validate_simready_isaac_paid_attempt_authority(
+            authority,
+            prepared_bundle=prepared_bundle,
+            bundle_receipt_sha256="sha256:" + "c" * 64,
+            max_hourly_rate_usd=1.0,
+            hard_cap_usd=3.0,
+            hard_ttl_seconds=10_800,
+            allowed_active_instance_ids=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "error"),
+    [
+        ("scene_id", "scene_id_mismatch"),
+        ("candidate_usd_sha256", "candidate_usd_sha256_mismatch"),
+        (
+            "native_probe_manifest_sha256",
+            "native_probe_manifest_sha256_mismatch",
+        ),
+        (
+            "native_probe_manifest_digest",
+            "native_probe_manifest_digest_mismatch",
+        ),
+    ],
+)
+def test_simready_authority_rejects_scene_or_candidate_identity_drift(
+    tmp_path: Path, field: str, error: str
+) -> None:
+    prepared_bundle = _bundle(tmp_path)
+    authority = _paid_attempt_authority(prepared_bundle)
+    authority[field] = "different-scene" if field == "scene_id" else "sha256:" + "0" * 64
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    with pytest.raises(ValueError, match=error):
         runtime.validate_simready_isaac_paid_attempt_authority(
             authority,
             prepared_bundle=prepared_bundle,
