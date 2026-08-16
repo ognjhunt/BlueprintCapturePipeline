@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlparse
 
 from .host_resident_launch_inputs import (
     HostResidentInputError,
@@ -355,10 +356,20 @@ def bind_live_profile_manifest_publication(
         != "task_evaluation_immutable_manifest_publication.v1"
         or receipt.get("status") != "published"
         or receipt.get("profile_builder") != profile_builder
-        or receipt.get("publication_seam") != "gcs_content_addressed_full_readback"
-        or not published_uri.startswith("gs://")
+        or receipt.get("publication_seam")
+        not in {
+            "content_addressed_full_readback",
+            # Preserve already-published GCS receipts from before this seam
+            # became provider-neutral.
+            "gcs_content_addressed_full_readback",
+        }
+        or urlparse(published_uri).scheme not in {"gs", "s3", "r2"}
         or not published_uri.endswith(expected_uri_suffix)
-        or receipt.get("storage_scheme") != "gs"
+        or receipt.get("storage_scheme") != urlparse(published_uri).scheme
+        or (
+            receipt.get("publication_seam") == "gcs_content_addressed_full_readback"
+            and receipt.get("storage_scheme") != "gs"
+        )
         or not isinstance(source, Mapping)
         or source.get("sha256") != run_spec_digest
         or receipt.get("remote_sha256") != run_spec_digest

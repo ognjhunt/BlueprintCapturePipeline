@@ -41,7 +41,7 @@ def test_every_website_reachable_builder_has_digest_safe_publication() -> None:
     } == {"build_adp009d_840313_live_profile.py"}
     assert set(LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS.values()) == {
         "exact_commit_raw_github",
-        "gcs_content_addressed_full_readback",
+        "content_addressed_full_readback",
     }
     for builder in documented:
         source = REPO_ROOT / "scripts" / builder
@@ -54,7 +54,7 @@ def test_every_website_reachable_builder_has_digest_safe_publication() -> None:
             # Shared builders bind this filename in LaneLiveProfileSpec; the
             # two custom builders pass it directly to the same helper.
             assert f'profile_builder="{builder}"' in source_text
-            assert "Local digest-bound GCS publication receipt" in source_text
+            assert "Local digest-bound content-addressed publication receipt" in source_text
 
 
 @pytest.mark.parametrize(
@@ -62,7 +62,7 @@ def test_every_website_reachable_builder_has_digest_safe_publication() -> None:
     sorted(
         builder
         for builder, seam in LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS.items()
-        if seam == "gcs_content_addressed_full_readback"
+        if seam == "content_addressed_full_readback"
     ),
 )
 def test_each_generated_builder_executes_the_strict_publication_binder(
@@ -82,7 +82,7 @@ def test_each_generated_builder_executes_the_strict_publication_binder(
             "sha256": digest,
         },
         "profile_builder": profile_builder,
-        "publication_seam": "gcs_content_addressed_full_readback",
+        "publication_seam": "content_addressed_full_readback",
         "published_uri": f"gs://fixture/sha256/{identity[:2]}/{identity}.json",
         "storage_scheme": "gs",
         "remote_size_bytes": source.stat().st_size,
@@ -145,7 +145,7 @@ def test_generated_and_exact_commit_publication_paths_are_fail_closed(
             "sha256": digest,
         },
         "profile_builder": "build_retained_scene_render_live_profile.py",
-        "publication_seam": "gcs_content_addressed_full_readback",
+        "publication_seam": "content_addressed_full_readback",
         "published_uri": (
             "gs://fixture/sha256/"
             f"{digest.removeprefix('sha256:')[:2]}/"
@@ -181,6 +181,32 @@ def test_generated_and_exact_commit_publication_paths_are_fail_closed(
     assert uri == receipt["published_uri"]
     assert binding is not None
     assert bound_inputs[-1]["name"] == "manifest_publication_receipt"
+
+    for scheme, seam in (
+        ("s3", "content_addressed_full_readback"),
+        ("r2", "content_addressed_full_readback"),
+        ("gs", "gcs_content_addressed_full_readback"),
+    ):
+        compatible = json.loads(json.dumps(receipt))
+        compatible["publication_seam"] = seam
+        compatible["published_uri"] = (
+            f"{scheme}://fixture/sha256/"
+            f"{digest.removeprefix('sha256:')[:2]}/"
+            f"{digest.removeprefix('sha256:')}.json"
+        )
+        compatible["storage_scheme"] = scheme
+        compatible["receipt_digest"] = canonical_digest(
+            compatible, digest_field="receipt_digest"
+        )
+        compatible_path = tmp_path / f"publication-{scheme}-{seam}.json"
+        compatible_path.write_text(json.dumps(compatible), encoding="utf-8")
+        assert bind_live_profile_manifest_publication(
+            reference=str(compatible_path),
+            source_commit=commit,
+            run_spec_digest=digest,
+            profile_builder="build_retained_scene_render_live_profile.py",
+            immutable_inputs=inputs,
+        )[0] == compatible["published_uri"]
 
     for name, mutate in (
         (

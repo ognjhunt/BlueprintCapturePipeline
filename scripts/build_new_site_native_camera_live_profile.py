@@ -163,7 +163,7 @@ FLAGS: dict[str, Flag] = {
     "--source-commit": Flag("source_commit", "The commit the control plane runs.", True),
     "--raw-manifest-uri": Flag(
         "raw_manifest_uri",
-        "Local digest-bound GCS publication receipt for this run spec.",
+        "Local digest-bound content-addressed publication receipt for this run spec.",
         True,
     ),
     "--campaign-total-spend-cap-usd": Flag(

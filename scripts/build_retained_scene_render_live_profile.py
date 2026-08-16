@@ -194,7 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--raw-manifest-uri",
         required=True,
-        help="Local digest-bound GCS publication receipt for this run spec.",
+        help="Local digest-bound content-addressed publication receipt for this run spec.",
     )
     parser.add_argument("--max-hourly-rate-usd", type=float, default=2.0)
     parser.add_argument("--hard-ttl-seconds", type=int, default=MAX_TTL_SECONDS)
