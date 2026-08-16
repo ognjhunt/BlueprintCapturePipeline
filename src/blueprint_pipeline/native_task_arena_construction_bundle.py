@@ -18,6 +18,9 @@ from typing import Any
 from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle
+from .native_task_arena_execution_contract import (
+    CONSTRUCTION_RUNTIME_MODULE_NAMES,
+)
 from .native_task_construction_plan import (
     materialize_native_task_construction_phase_plan,
 )
@@ -26,32 +29,6 @@ from .native_task_construction_plan import (
 PROBE_KIND = "native-task-arena-construction"
 PROVIDER_BUNDLE_KIND = "native_task_arena"
 RESULT_SCHEMA_VERSION = "native_task_arena_construction_result.v1"
-
-# Import-time closure of native_task_arena_construction_worker.py.  Keep this
-# explicit and hermetically import-tested: provider startup may not discover
-# missing internal modules one at a time.
-CONSTRUCTION_RUNTIME_MODULE_NAMES = (
-    "articulation_graph_contract.py",
-    "articulated_control_planner.py",
-    "decision_evidence_contracts.py",
-    "native_articulated_construction_plan.py",
-    "native_articulated_motion_geometry.py",
-    "native_articulated_task_state.py",
-    "native_task_construction_plan.py",
-    "native_franka_pose_servo.py",
-    "native_franka_action_math.py",
-    "native_pose_transforms.py",
-    "native_task_arena_readback.py",
-    "native_task_arena_device_readback.py",
-    "native_task_arena_import_scope.py",
-    "native_task_arena_preconstruction.py",
-    "native_task_arena_runtime.py",
-    "native_task_isaaclab_launch.py",
-    "native_task_camera_observability.py",
-    "native_task_runtime_source_packet.py",
-    "native_task_runtime_source_provision.py",
-)
-
 
 def construction_runtime_sources() -> tuple[Path, ...]:
     package = Path(__file__).resolve().parent
