@@ -4,7 +4,7 @@ The Arena DROID asset inherits a very stiff USD position drive while MJWarp
 does not enforce its authored velocity limit.  This module defines one
 reversible, Newton-only identification candidate: retain the sealed stiffness
 and effort/speed limits, add the minimum control-derived effective armature,
-critically damp it, and rate-limit the binary target at the authored speed.
+critically damp it, and rate-limit the binary target below the authored ceiling.
 It remains comparison-ineligible until the native step trace passes.
 """
 
@@ -27,12 +27,26 @@ SOURCE_DAMPING_NM_S_PER_RAD = 0.0114592
 SOURCE_EFFECTIVE_INERTIA_KG_M2 = 3.80173e-7
 SOURCE_EFFORT_LIMIT_NM = 16.5
 SOURCE_VELOCITY_LIMIT_RAD_S = 1.0
+VELOCITY_READBACK_TOLERANCE_RAD_S = 0.05
+# The first retained native trace after the floorplan-contact repair showed a
+# 1.44345 rad/s instantaneous readback from a 1.0 rad/s target ramp even though
+# the drive settled cleanly.  Keep the authored readback ceiling unchanged and
+# derate only the Newton target ramp to leave roughly ten percent margin under
+# that observed transient amplification.  This remains an identification
+# candidate until another native trace passes the unchanged ceiling.
+RETAINED_NATIVE_TRANSIENT_READBACK_RAD_S = 1.4434489011764526
+TARGET_READBACK_SAFETY_MARGIN_FRACTION = 0.90
+NEWTON_TARGET_RATE_LIMIT_RAD_S = (
+    SOURCE_VELOCITY_LIMIT_RAD_S
+    * (SOURCE_VELOCITY_LIMIT_RAD_S + VELOCITY_READBACK_TOLERANCE_RAD_S)
+    / RETAINED_NATIVE_TRANSIENT_READBACK_RAD_S
+    * TARGET_READBACK_SAFETY_MARGIN_FRACTION
+)
 PHYSICS_DT_SECONDS = 1.0 / 120.0
 CONTROL_DECIMATION = 8
 FULL_STROKE_RAD = math.pi / 4.0
 FULL_STROKE_M = 0.085
 MANUFACTURER_SPEED_RANGE_M_S = (0.020, 0.150)
-VELOCITY_READBACK_TOLERANCE_RAD_S = 0.05
 SETTLED_VELOCITY_TOLERANCE_RAD_S = 0.05
 
 
@@ -51,10 +65,10 @@ def build_newton_gripper_drive_candidate() -> dict[str, Any]:
         * PHYSICS_DT_SECONDS
     )
     target_step = (
-        SOURCE_VELOCITY_LIMIT_RAD_S * PHYSICS_DT_SECONDS * CONTROL_DECIMATION
+        NEWTON_TARGET_RATE_LIMIT_RAD_S * PHYSICS_DT_SECONDS * CONTROL_DECIMATION
     )
     fingertip_speed = (
-        SOURCE_VELOCITY_LIMIT_RAD_S * FULL_STROKE_M / FULL_STROKE_RAD
+        NEWTON_TARGET_RATE_LIMIT_RAD_S * FULL_STROKE_M / FULL_STROKE_RAD
     )
     value: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -73,7 +87,7 @@ def build_newton_gripper_drive_candidate() -> dict[str, Any]:
             "damping_nm_s_per_rad": damping,
             "armature_kg_m2": armature,
             "effective_inertia_kg_m2": effective_inertia,
-            "target_rate_limit_rad_s": SOURCE_VELOCITY_LIMIT_RAD_S,
+            "target_rate_limit_rad_s": NEWTON_TARGET_RATE_LIMIT_RAD_S,
             "maximum_target_step_rad": target_step,
         },
         "derivation": {
@@ -86,6 +100,12 @@ def build_newton_gripper_drive_candidate() -> dict[str, Any]:
             "explicit_stability_ratio_limit": 2.0,
             "damping_ratio": 1.0,
             "rated_fingertip_speed_m_s": fingertip_speed,
+            "retained_native_transient_readback_rad_s": (
+                RETAINED_NATIVE_TRANSIENT_READBACK_RAD_S
+            ),
+            "target_readback_safety_margin_fraction": (
+                TARGET_READBACK_SAFETY_MARGIN_FRACTION
+            ),
             "manufacturer_speed_range_m_s": list(MANUFACTURER_SPEED_RANGE_M_S),
         },
         "native_acceptance": {
