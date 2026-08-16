@@ -1,6 +1,8 @@
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -9,6 +11,7 @@ from blueprint_pipeline.provider_billing_reconciler import (
     ProviderBillingReconciliationError,
     reconcile_provider_billing,
 )
+from scripts import gpu_spend_guard as guard
 
 
 NOW = datetime(2026, 8, 10, 17, 0, tzinfo=timezone.utc)
@@ -119,6 +122,69 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
     assert all(row["response_digest"].startswith("sha256:") for row in source["sources"])
     assert all(header.endswith("-value") for _, header in transport.requests)
     assert all("-value" not in json.dumps(row) for row in source["sources"])
+
+
+def test_atomic_service_owned_refresh_is_trusted_by_root_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mirror the production blueprint producer followed by a root guard."""
+
+    export = tmp_path / "guard" / "provider_billing_export.json"
+    export.parent.mkdir()
+    export.write_text("stale\n", encoding="utf-8")
+    stale_inode = export.stat().st_ino
+
+    reconcile_provider_billing(
+        secrets_dir=_secrets(tmp_path),
+        billing_export_path=export,
+        audit_root=tmp_path / "audit",
+        start_at="2026-01-01T00:00:00Z",
+        now=NOW,
+        transport=_Transport(),
+    )
+
+    refreshed = export.stat()
+    assert refreshed.st_ino != stale_inode
+    assert refreshed.st_uid == os.getuid()
+    assert refreshed.st_mode & 0o777 == 0o600
+
+    # The test process represents the sandboxed ``blueprint`` producer.  Make
+    # only the consumer root-like, exactly matching the production mismatch.
+    monkeypatch.setattr(guard.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        guard.pwd,
+        "getpwnam",
+        lambda account: SimpleNamespace(
+            pw_uid=os.getuid()
+            if account == guard.BILLING_EXPORT_PRODUCER_ACCOUNT
+            else 8675309
+        ),
+    )
+
+    result = guard.reconcile_billing_export(
+        billing_export_path=export,
+        instances=[],
+        now=NOW.timestamp(),
+        required=True,
+    )
+
+    assert result["status"] == "reconciled"
+    assert result["blockers"] == []
+
+    # Trusting the exact service owner must not weaken the write boundary.
+    export.chmod(0o620)
+    writable = guard.reconcile_billing_export(
+        billing_export_path=export,
+        instances=[],
+        now=NOW.timestamp(),
+        required=True,
+    )
+    assert writable["status"] == "blocked"
+    assert (
+        "provider_billing_export_writable_by_group_or_world"
+        in writable["blockers"]
+    )
 
 
 def test_failed_refresh_preserves_prior_export(tmp_path: Path) -> None:
