@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import urllib.error
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -54,13 +55,18 @@ class ReconstructionVastSmokeError(ValueError):
 
 
 def _default_result_fetcher(url: str) -> Mapping[str, Any]:
-    response = safe_http_request(
-        url,
-        method="GET",
-        timeout_seconds=30,
-        policy=presigned_transfer_policy(url, max_response_bytes=MAX_RESULT_BYTES),
-        max_response_bytes=MAX_RESULT_BYTES,
-    )
+    try:
+        response = safe_http_request(
+            url,
+            method="GET",
+            timeout_seconds=30,
+            policy=presigned_transfer_policy(url, max_response_bytes=MAX_RESULT_BYTES),
+            max_response_bytes=MAX_RESULT_BYTES,
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise FileNotFoundError("reconstruction_smoke_output_http:404") from exc
+        raise
     if response.status != 200:
         raise FileNotFoundError(f"reconstruction_smoke_output_http:{response.status}")
     value = json.loads(response.body)

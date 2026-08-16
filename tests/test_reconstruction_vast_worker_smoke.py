@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from blueprint_pipeline.paid_resource_admission import (
 )
 from blueprint_pipeline.reconstruction_vast_worker_smoke import (
     ReconstructionVastSmokeError,
+    _default_result_fetcher,
     replay_reconstruction_vast_worker_smoke,
     run_reconstruction_vast_worker_smoke,
     validate_worker_smoke_result,
@@ -31,6 +33,27 @@ from blueprint_pipeline.task_evaluation_live_profile import shared_control_surfa
 SHA = "a" * 40
 D1 = "sha256:" + "1" * 64
 IMAGE = "registry.example/blueprint/reconstruction@sha256:" + "b" * 64
+
+
+def test_default_result_fetcher_treats_initial_object_404_as_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def not_ready(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://objects.example/result",
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.reconstruction_vast_worker_smoke.safe_http_request",
+        not_ready,
+    )
+
+    with pytest.raises(FileNotFoundError, match="output_http:404"):
+        _default_result_fetcher("https://objects.example/result")
 
 
 def _receipt_schema():
