@@ -26,8 +26,12 @@ statement and is required explicitly.
 from __future__ import annotations
 
 import argparse
+import grp
 import hashlib
 import json
+import os
+import pwd
+import stat
 import string
 import subprocess
 import sys
@@ -36,6 +40,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 PREPARATION_SCHEMA_VERSION = "paid_lane_launch_preparation.v1"
+DEFAULT_SERVICE_ACCOUNT = "blueprint"
+DEFAULT_SERVICE_GROUP = "blueprint"
 
 
 @dataclass(frozen=True)
@@ -201,6 +207,10 @@ SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
             "{profile_dir}",
             "--webapp-catalog-out",
             "{webapp_catalog_out}",
+            "--service-account",
+            "{service_account}",
+            "--service-group",
+            "{service_group}",
         ),
         produces="{set_root}/live_profile-{revision}.v1.json",
     ),
@@ -227,6 +237,57 @@ LANES: dict[str, tuple[LaneStep, ...]] = {
 
 class PaidLaneLaunchPreparationError(RuntimeError):
     """Raised before any step runs, so a bad context prepares nothing."""
+
+
+def _prepare_set_root_for_service(
+    set_root: str | Path, *, service_account: str, service_group: str
+) -> Path:
+    """Install only this preparation root for the production consumer.
+
+    Paid-lane preparation commonly runs as root because some builders need the
+    Docker socket.  The children they create are later opened by the hardened
+    service account.  Creating the set root under root's umask left the exact
+    bytes present but made their parent untraversable by that consumer.
+
+    This handoff is deliberately non-recursive.  Later writers remain
+    responsible for the exact files they create, and a token already present
+    below the root keeps its private mode.
+    """
+
+    try:
+        account_entry = pwd.getpwnam(service_account)
+    except KeyError as exc:
+        raise PaidLaneLaunchPreparationError(
+            f"paid_lane_service_account_missing:{service_account}"
+        ) from exc
+    try:
+        group_entry = grp.getgrnam(service_group)
+    except KeyError as exc:
+        raise PaidLaneLaunchPreparationError(
+            f"paid_lane_service_group_missing:{service_group}"
+        ) from exc
+    if (
+        account_entry.pw_gid != group_entry.gr_gid
+        and service_account not in group_entry.gr_mem
+    ):
+        raise PaidLaneLaunchPreparationError(
+            f"paid_lane_service_account_group_mismatch:{service_account}:{service_group}"
+        )
+
+    root = Path(set_root).expanduser()
+    if root.is_symlink():
+        raise PaidLaneLaunchPreparationError("paid_lane_set_root_symlink")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        if root.is_symlink() or not root.is_dir():
+            raise PaidLaneLaunchPreparationError("paid_lane_set_root_invalid")
+        os.chown(root, -1, group_entry.gr_gid)
+        root.chmod(stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+    except OSError as exc:
+        raise PaidLaneLaunchPreparationError(
+            "paid_lane_set_root_permission_install_failed"
+        ) from exc
+    return root.resolve()
 
 
 def _placeholders(template: str) -> set[str]:
@@ -304,6 +365,18 @@ def prepare_paid_lane_launch(
     """Run one lane's ordered preparation and return a fail-closed receipt."""
 
     validate_lane_context(lane, context)
+    if "set_root" in context:
+        account = str(context.get("service_account") or "")
+        group = str(context.get("service_group") or "")
+        if not account or not group:
+            raise PaidLaneLaunchPreparationError(
+                "paid_lane_service_identity_required"
+            )
+        _prepare_set_root_for_service(
+            str(context["set_root"]),
+            service_account=account,
+            service_group=group,
+        )
     resolved: dict[str, Any] = dict(context)
     completed: list[dict[str, Any]] = []
     blockers: list[str] = []
@@ -366,6 +439,8 @@ def _context_from_args(args: argparse.Namespace) -> dict[str, str]:
         "runtime_image_identity": args.runtime_image_identity,
         "profile_dir": args.profile_dir,
         "webapp_catalog_out": args.webapp_catalog_out,
+        "service_account": args.service_account,
+        "service_group": args.service_group,
         "pod_name": args.pod_name,
         "revision": args.revision,
         "authorization_reference": args.authorization_reference,
@@ -404,6 +479,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runtime-image-identity", required=True)
     parser.add_argument("--profile-dir", required=True)
     parser.add_argument("--webapp-catalog-out", required=True)
+    parser.add_argument(
+        "--service-account",
+        default=DEFAULT_SERVICE_ACCOUNT,
+        help="Account that consumes the prepared launch inputs.",
+    )
+    parser.add_argument(
+        "--service-group",
+        default=DEFAULT_SERVICE_GROUP,
+        help="Canonical group allowed to traverse the set and read published inputs.",
+    )
     parser.add_argument("--pod-name", required=True)
     parser.add_argument("--revision", default="r1")
     parser.add_argument("--python", default=sys.executable)

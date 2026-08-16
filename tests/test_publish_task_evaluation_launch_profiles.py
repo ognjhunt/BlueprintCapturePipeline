@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import grp
 import pwd
 import stat
 from pathlib import Path
@@ -267,3 +268,151 @@ def test_cli_uses_the_invoking_account_outside_production_roots(
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "published"
     assert (profile_dir / "profile-local-cli.json").is_file()
+
+
+def test_published_profile_is_group_read_only_and_read_back_as_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exact production regression: the final /etc profile was root:root 0640."""
+
+    fixture = _profile(tmp_path, "profile-final-readback")
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "catalog.json"
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    group = grp.getgrgid(pwd.getpwnam(account).pw_gid).gr_name
+    digest_calls: list[Path] = []
+    chown_calls: list[Path] = []
+    original_digest = publisher._digest_as_account
+    original_chown = publisher.os.chown
+
+    def recording_digest(path: Path, *, account: str, uid: int) -> str:
+        digest_calls.append(Path(path))
+        return original_digest(path, account=account, uid=uid)
+
+    def recording_chown(path: str | Path, uid: int, gid: int) -> None:
+        chown_calls.append(Path(path))
+        original_chown(path, uid, gid)
+
+    monkeypatch.setattr(publisher, "_digest_as_account", recording_digest)
+    monkeypatch.setattr(publisher.os, "chown", recording_chown)
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=profile_dir,
+        webapp_catalog_out=catalog,
+        service_account=account,
+        service_group=group,
+    )
+    target = profile_dir / "profile-final-readback.json"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o440
+    assert target.stat().st_gid == grp.getgrnam(group).gr_gid
+    assert target in digest_calls
+    assert target in chown_calls
+
+    # An identical pre-existing profile with the observed bad mode is repaired,
+    # not accepted merely because its content digest matches.
+    target.chmod(0o640)
+    digest_calls.clear()
+    result = publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=profile_dir,
+        webapp_catalog_out=catalog,
+        service_account=account,
+        service_group=group,
+    )
+    assert result["profiles"][0]["created"] is False
+    assert stat.S_IMODE(target.stat().st_mode) == 0o440
+    assert target in digest_calls
+
+
+def test_publication_fails_closed_when_service_cannot_reopen_final_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root-side digest of the final profile is not consumer evidence."""
+
+    fixture = _profile(tmp_path, "profile-final-unreadable")
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "catalog.json"
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    group = grp.getgrgid(pwd.getpwnam(account).pw_gid).gr_name
+    original_digest = publisher._digest_as_account
+
+    def service_digest(path: Path, *, account: str, uid: int) -> str:
+        if Path(path).name == "profile-final-unreadable.json":
+            return ""
+        return original_digest(path, account=account, uid=uid)
+
+    monkeypatch.setattr(publisher, "_digest_as_account", service_digest)
+
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="launch_profile_consumer_unreadable:profile-final-unreadable.json",
+    ):
+        publisher.publish_profiles(
+            profile_paths=[fixture["path"]],
+            profile_dir=profile_dir,
+            webapp_catalog_out=catalog,
+            service_account=account,
+            service_group=group,
+        )
+
+    assert not catalog.exists()
+
+
+def test_production_input_parents_get_exact_traversal_without_recursive_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A service-readable file is still unreadable through a root-only parent."""
+
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    set_root = control_root / "task-evaluation-inputs" / "semantic-r6"
+    bundle_dir = set_root / "bundle"
+    bundle_dir.mkdir(parents=True)
+    set_root.chmod(0o700)
+    bundle_dir.chmod(0o700)
+    unrelated = set_root / "unrelated"
+    unrelated.mkdir()
+    unrelated.chmod(0o700)
+    token = set_root / "openai_api_key"
+    token.write_text("secret", encoding="utf-8")
+    token.chmod(0o600)
+
+    fixture = _profile(tmp_path, "profile-parent-traversal")
+    old_manifest = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = bundle_dir / "bundle-receipt.json"
+    immutable.write_bytes(old_manifest.read_bytes())
+    immutable.chmod(0o600)
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    group = grp.getgrgid(pwd.getpwnam(account).pw_gid).gr_name
+    profile_dir = control_root / "etc" / "task-evaluation-launch-profiles"
+    catalog = control_root / "state" / "catalog.json"
+
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=profile_dir,
+        webapp_catalog_out=catalog,
+        service_account=account,
+        service_group=group,
+    )
+
+    assert stat.S_IMODE(set_root.stat().st_mode) == 0o710
+    assert stat.S_IMODE(bundle_dir.stat().st_mode) == 0o710
+    assert stat.S_IMODE(immutable.stat().st_mode) == 0o440
+    assert stat.S_IMODE(profile_dir.stat().st_mode) == 0o750
+    assert stat.S_IMODE((profile_dir / "profile-parent-traversal.json").stat().st_mode) == 0o440
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o700
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600
+    assert token.read_text(encoding="utf-8") == "secret"
