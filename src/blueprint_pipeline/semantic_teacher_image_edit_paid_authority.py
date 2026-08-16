@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import math
@@ -32,6 +33,7 @@ _DIGEST_FIELDS = (
     "provider_zero_digest",
     "provider_zero_receipt_digest",
 )
+_USD_NANODOLLAR = Decimal("0.000000001")
 
 
 def _sha256(path: Path) -> str:
@@ -77,6 +79,17 @@ def _finite(value: Any, *, positive: bool = False) -> bool:
         and math.isfinite(float(value))
         and (float(value) > 0 if positive else float(value) >= 0)
     )
+
+
+def _same_usd_amount(left: Any, right: Any) -> bool:
+    """Compare ledger currency at its finest supported (nanodollar) precision."""
+
+    try:
+        return Decimal(str(left)).quantize(_USD_NANODOLLAR) == Decimal(
+            str(right)
+        ).quantize(_USD_NANODOLLAR)
+    except (InvalidOperation, ValueError):
+        return False
 
 
 def _validated_digest(value: Mapping[str, Any], field: Any) -> str:
@@ -127,7 +140,7 @@ def _validate_prior_spend_reconciliation(
         or value.get("receipt_digest")
         != canonical_digest(value, digest_field="receipt_digest")
         or not _finite(value.get("total_cost_usd"))
-        or float(value["total_cost_usd"]) != float(expected_total_cost_usd)
+        or not _same_usd_amount(value["total_cost_usd"], expected_total_cost_usd)
     ):
         raise ValueError("semantic_teacher_prior_spend_reconciliation_invalid")
     seen_attempt_ids: set[str] = set()
