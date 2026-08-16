@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -88,6 +89,134 @@ _QUEUE_RECEIPT_KEYS = {
 
 class WebAppLaunchSubmissionError(ValueError):
     """A typed, secret-free failure at the WebApp submission boundary."""
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("short receipt write")
+        view = view[written:]
+
+
+def _open_receipt_parent(path: Path) -> int:
+    """Open/create a directory path without following any symlink component."""
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    if path.is_absolute():
+        descriptor = os.open(path.anchor, directory_flags)
+        components = path.parts[1:]
+    else:
+        descriptor = os.open(".", directory_flags)
+        components = path.parts
+    try:
+        for component in components:
+            if component in {"", "."}:
+                continue
+            if component == "..":
+                raise WebAppLaunchSubmissionError(
+                    "submission_receipt_parent_unsafe"
+                )
+            try:
+                os.mkdir(component, 0o750, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            next_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=descriptor,
+            )
+            metadata = os.fstat(next_descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                os.close(next_descriptor)
+                raise WebAppLaunchSubmissionError(
+                    "submission_receipt_parent_unsafe"
+                )
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+@dataclass
+class ReceiptReservation:
+    """An exclusive destination inode held open across one WebApp request."""
+
+    destination: Path
+    name: str
+    descriptor: int
+    parent_descriptor: int
+    device: int
+    inode: int
+    sealed: bool = False
+
+    def _destination_is_reserved_inode(self) -> bool:
+        try:
+            current = os.stat(
+                self.name,
+                dir_fd=self.parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return False
+        return current.st_dev == self.device and current.st_ino == self.inode
+
+    def seal(self, value: Mapping[str, Any]) -> None:
+        """Replace the private reservation bytes and expose a durable 0440 receipt."""
+
+        if self.descriptor < 0 or not self._destination_is_reserved_inode():
+            raise WebAppLaunchSubmissionError("submission_receipt_reservation_lost")
+        payload = _canonical_json(value)
+        try:
+            os.lseek(self.descriptor, 0, os.SEEK_SET)
+            os.ftruncate(self.descriptor, 0)
+            _write_all(self.descriptor, payload)
+            os.fsync(self.descriptor)
+            os.fchmod(self.descriptor, 0o440)
+            os.fsync(self.descriptor)
+            if not self._destination_is_reserved_inode():
+                raise WebAppLaunchSubmissionError(
+                    "submission_receipt_reservation_lost"
+                )
+            os.fsync(self.parent_descriptor)
+        except WebAppLaunchSubmissionError:
+            raise
+        except OSError as exc:
+            raise WebAppLaunchSubmissionError(
+                "submission_receipt_write_failed"
+            ) from exc
+        self.sealed = True
+        self.close()
+
+    def abort(self) -> None:
+        """Remove only this process's still-reserved inode."""
+
+        if self.sealed:
+            self.close()
+            return
+        try:
+            if self._destination_is_reserved_inode():
+                os.unlink(self.name, dir_fd=self.parent_descriptor)
+                os.fsync(self.parent_descriptor)
+        except OSError:
+            pass
+        self.close()
+
+    def close(self) -> None:
+        if self.descriptor >= 0:
+            os.close(self.descriptor)
+            self.descriptor = -1
+        if self.parent_descriptor >= 0:
+            os.close(self.parent_descriptor)
+            self.parent_descriptor = -1
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
@@ -348,45 +477,95 @@ def validate_webapp_receipt(
     return receipt
 
 
-def write_receipt_exclusive_atomic(path: str | Path, value: Mapping[str, Any]) -> None:
-    """Publish a complete receipt at a path that must not already exist."""
+def reserve_receipt_exclusive(path: str | Path) -> ReceiptReservation:
+    """Durably reserve the exact receipt inode before any network request."""
 
     destination = Path(path).expanduser()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        raise WebAppLaunchSubmissionError("submission_receipt_already_exists")
-    payload = _canonical_json(value)
-    temporary = destination.parent / f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    if destination.name in {"", ".", ".."}:
+        raise WebAppLaunchSubmissionError("submission_receipt_target_unsafe")
+    try:
+        parent_descriptor = _open_receipt_parent(destination.parent)
+    except WebAppLaunchSubmissionError:
+        raise
+    except OSError as exc:
+        raise WebAppLaunchSubmissionError(
+            "submission_receipt_parent_unsafe"
+        ) from exc
+
     descriptor = -1
+    reservation: ReceiptReservation | None = None
     try:
         descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            destination.name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
             0o600,
+            dir_fd=parent_descriptor,
         )
-        with os.fdopen(descriptor, "wb", closefd=True) as stream:
-            descriptor = -1
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-            os.fchmod(stream.fileno(), 0o440)
-        try:
-            os.link(temporary, destination)
-        except FileExistsError as exc:
-            raise WebAppLaunchSubmissionError("submission_receipt_already_exists") from exc
-        temporary.unlink()
-        directory_descriptor = os.open(
-            destination.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise WebAppLaunchSubmissionError("submission_receipt_target_unsafe")
+        reservation = ReceiptReservation(
+            destination=destination,
+            name=destination.name,
+            descriptor=descriptor,
+            parent_descriptor=parent_descriptor,
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
         )
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        descriptor = -1
+        parent_descriptor = -1
+
+        # Prove the destination is writable, syncable, and chmod-able before
+        # transport.  Mode 000 keeps this non-receipt reservation private until
+        # the validated WebApp response has been sealed in the retained inode.
+        marker = _canonical_json(
+            {
+                "schema_version": OUTPUT_SCHEMA_VERSION,
+                "status": "receipt_reserved_pre_submission",
+                "provider_mutation_performed_by_this_tool": False,
+            }
+        )
+        _write_all(reservation.descriptor, marker)
+        os.fsync(reservation.descriptor)
+        os.fchmod(reservation.descriptor, 0o440)
+        os.fchmod(reservation.descriptor, 0o000)
+        os.fsync(reservation.descriptor)
+        os.fsync(reservation.parent_descriptor)
+        return reservation
+    except FileExistsError as exc:
+        raise WebAppLaunchSubmissionError(
+            "submission_receipt_already_exists"
+        ) from exc
+    except WebAppLaunchSubmissionError:
+        if reservation is not None:
+            reservation.abort()
+        raise
+    except OSError as exc:
+        if reservation is not None:
+            reservation.abort()
+        raise WebAppLaunchSubmissionError(
+            "submission_receipt_reservation_failed"
+        ) from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        temporary.unlink(missing_ok=True)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+
+
+def write_receipt_exclusive_atomic(path: str | Path, value: Mapping[str, Any]) -> None:
+    """Publish a complete receipt through the same exclusive reservation seam."""
+
+    reservation = reserve_receipt_exclusive(path)
+    try:
+        reservation.seal(value)
+    except Exception:
+        reservation.abort()
+        raise
 
 
 def build_submission_evidence(
@@ -438,13 +617,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    reservation: ReceiptReservation | None = None
     try:
         if args.timeout_seconds <= 0 or not math.isfinite(args.timeout_seconds):
             raise WebAppLaunchSubmissionError("launch_submit_timeout_invalid")
-        if Path(args.receipt_out).expanduser().exists():
-            raise WebAppLaunchSubmissionError("submission_receipt_already_exists")
         request, request_body = read_exact_launch_request(args.request)
         secret = read_private_secret_file(args.secret_file)
+        _validate_endpoint(args.endpoint)
+        reservation = reserve_receipt_exclusive(args.receipt_out)
         timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         nonce = uuid.uuid4().hex
         headers = signed_headers(
@@ -478,8 +658,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             timestamp=timestamp,
             nonce=nonce,
         )
-        write_receipt_exclusive_atomic(args.receipt_out, evidence)
+        reservation.seal(evidence)
+        reservation = None
     except (OSError, WebAppLaunchSubmissionError) as exc:
+        if reservation is not None:
+            reservation.abort()
         blocker = (
             str(exc)
             if isinstance(exc, WebAppLaunchSubmissionError)

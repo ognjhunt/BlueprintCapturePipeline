@@ -111,6 +111,8 @@ def test_signs_and_posts_the_exact_request_bytes(monkeypatch, tmp_path, capsys) 
         observed["body"] = http_request.data
         observed["headers"] = dict(http_request.header_items())
         observed["timeout"] = timeout
+        observed["receipt_reserved_during_transport"] = receipt_path.is_file()
+        observed["receipt_mode_during_transport"] = stat_mode(receipt_path)
         return _Response(202, _web_receipt(request))
 
     monkeypatch.setattr(submitter.urllib.request, "urlopen", urlopen)
@@ -129,6 +131,8 @@ def test_signs_and_posts_the_exact_request_bytes(monkeypatch, tmp_path, capsys) 
     )
 
     assert observed["body"] == body
+    assert observed["receipt_reserved_during_transport"] is True
+    assert observed["receipt_mode_during_transport"] == 0o000
     headers = {key.lower(): value for key, value in observed["headers"].items()}
     assert headers["idempotency-key"] == request["launch_id"]
     assert headers["x-blueprint-launch-client-id"] == "blueprint-production-runner"
@@ -321,6 +325,136 @@ def test_existing_receipt_fails_before_network(monkeypatch, tmp_path) -> None:
     )
     assert called is False
     assert receipt_path.read_text() == "user-owned\n"
+
+
+def test_unwritable_receipt_parent_fails_before_network(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    request_path, secret_path, _receipt_path, _body, _request_value = _files(tmp_path)
+    locked_parent = tmp_path / "locked"
+    locked_parent.mkdir()
+    receipt_path = locked_parent / "receipt.json"
+    called = False
+    real_open = submitter.os.open
+
+    def guarded_open(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if path == receipt_path.name and flags & submitter.os.O_CREAT:
+            raise PermissionError("simulated unwritable receipt parent")
+        return real_open(path, flags, *args, **kwargs)
+
+    def urlopen(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal called
+        called = True
+        raise AssertionError("network must not run")
+
+    monkeypatch.setattr(submitter.os, "open", guarded_open)
+    monkeypatch.setattr(submitter.urllib.request, "urlopen", urlopen)
+    assert (
+        submitter.main(
+            [
+                "--request",
+                str(request_path),
+                "--secret-file",
+                str(secret_path),
+                "--receipt-out",
+                str(receipt_path),
+            ]
+        )
+        == 2
+    )
+    assert called is False
+    assert not receipt_path.exists()
+    assert json.loads(capsys.readouterr().out)["blockers"] == [
+        "submission_receipt_reservation_failed"
+    ]
+
+
+def test_symlink_receipt_target_fails_before_network(monkeypatch, tmp_path) -> None:
+    request_path, secret_path, receipt_path, _body, _request_value = _files(tmp_path)
+    victim = tmp_path / "victim.json"
+    victim.write_text("user-owned\n", encoding="utf-8")
+    receipt_path.symlink_to(victim)
+    called = False
+
+    def urlopen(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal called
+        called = True
+        raise AssertionError("network must not run")
+
+    monkeypatch.setattr(submitter.urllib.request, "urlopen", urlopen)
+    assert (
+        submitter.main(
+            [
+                "--request",
+                str(request_path),
+                "--secret-file",
+                str(secret_path),
+                "--receipt-out",
+                str(receipt_path),
+            ]
+        )
+        == 2
+    )
+    assert called is False
+    assert receipt_path.is_symlink()
+    assert victim.read_text() == "user-owned\n"
+
+
+def test_symlink_receipt_parent_fails_before_network(monkeypatch, tmp_path) -> None:
+    request_path, secret_path, _receipt_path, _body, _request_value = _files(tmp_path)
+    actual_parent = tmp_path / "actual"
+    actual_parent.mkdir()
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(actual_parent, target_is_directory=True)
+    receipt_path = linked_parent / "receipt.json"
+    called = False
+
+    def urlopen(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal called
+        called = True
+        raise AssertionError("network must not run")
+
+    monkeypatch.setattr(submitter.urllib.request, "urlopen", urlopen)
+    assert (
+        submitter.main(
+            [
+                "--request",
+                str(request_path),
+                "--secret-file",
+                str(secret_path),
+                "--receipt-out",
+                str(receipt_path),
+            ]
+        )
+        == 2
+    )
+    assert called is False
+    assert not (actual_parent / "receipt.json").exists()
+
+
+def test_main_replay_requires_flag_and_then_seals_receipt(
+    monkeypatch, tmp_path
+) -> None:
+    request_path, secret_path, receipt_path, _body, request = _files(tmp_path)
+    replay = _web_receipt(request, already_exists=True)
+    monkeypatch.setattr(
+        submitter.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response(200, replay),
+    )
+    base_args = [
+        "--request",
+        str(request_path),
+        "--secret-file",
+        str(secret_path),
+        "--receipt-out",
+        str(receipt_path),
+    ]
+    assert submitter.main(base_args) == 2
+    assert not receipt_path.exists()
+    assert submitter.main([*base_args, "--allow-replay"]) == 0
+    assert json.loads(receipt_path.read_text())["status"] == "replayed"
+    assert stat_mode(receipt_path) == 0o440
 
 
 def test_secret_file_may_be_group_readable_but_not_group_writable(tmp_path) -> None:
