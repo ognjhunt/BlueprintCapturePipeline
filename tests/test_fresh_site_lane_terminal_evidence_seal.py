@@ -174,3 +174,61 @@ def test_the_native_camera_lane_seals_the_result_it_really_writes(
         "without this key the run reports allocator_terminal_artifact_missing"
     )
     assert "teardown_manifest_path" in written
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "blueprint_pipeline.openpi_policy_ranking_runpod",
+        "blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission",
+    ],
+    ids=["new_site_diagnostic_canary", "new_site_native_camera"],
+)
+def test_a_completed_run_satisfies_its_own_launch_terminal_contract(
+    tmp_path: Path, module_name: str
+) -> None:
+    """A successful paid run must not end `blocked` on its own contract.
+
+    Production regression: both lanes wrote every receipt flat under the
+    adapter result's directory, while the shared sealer inventories
+    `<root>/vast_provider_run/`. It therefore found no directory, inventoried
+    nothing, and left both manifest paths None -- and the success result named
+    neither `retry_cap` nor `continuing_spend_from_this_run`. A completed,
+    torn-down, provider-zero-confirmed run ended with four blockers.
+    """
+
+    import importlib
+
+    from blueprint_pipeline.task_evaluation_live_profile import (
+        shared_control_surface,
+    )
+
+    module = importlib.import_module(module_name)
+    run_root = tmp_path / "allocator"
+    run_root.mkdir()
+    adapter_output = run_root / "result.json"
+
+    sealed = module._seal_terminal(
+        {
+            "status": "completed",
+            "blockers": [],
+            "provider": "vast",
+            "instance_id": "26104412",
+            "monitor": {
+                "status": "completed",
+                "continuing_spend": False,
+                "provider_absence_confirmed": True,
+            },
+            "continuing_spend": False,
+            "raw_secret_values_recorded": False,
+        },
+        adapter_output,
+    )
+
+    contract = shared_control_surface()["terminal_contract"]
+    for field, expected in (contract.get("required_values") or {}).items():
+        assert sealed.get(field) == expected, (field, sealed.get(field))
+    for field in contract.get("required_path_fields") or []:
+        named = str(sealed.get(field) or "").strip()
+        assert named, field
+        assert Path(named).is_file(), (field, named)
