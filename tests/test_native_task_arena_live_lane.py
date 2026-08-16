@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
 pytestmark = pytest.mark.usefixtures(
@@ -48,20 +49,51 @@ builder = _load()
 def lane(tmp_path: Path) -> dict:
     packet = tmp_path / "packet"
     packet.mkdir()
-    sealed = packet / "native_task_arena_packet.zip"
-    sealed.write_bytes(b"arena-packet")
-    digest = "sha256:" + hashlib.sha256(sealed.read_bytes()).hexdigest()
+    packet_archive = packet / "native_task_arena_packet.zip"
+    packet_archive.write_bytes(b"arena-packet")
     (packet / builder.PACKET_RECEIPT_NAME).write_text(
         json.dumps(
             {
-                "status": "ready",
+                "status": "construction_packet_completed",
                 "implementation_commit": COMMIT,
-                "bundle_path": str(sealed),
-                "bundle_sha256": digest,
             }
         ),
         encoding="utf-8",
     )
+    bundle = tmp_path / "native_task_arena_provider_bundle.zip"
+    bundle.write_bytes(b"arena-provider-bundle")
+    bundle_digest = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
+    bundle_receipt = tmp_path / "native_task_arena_provider_bundle.v1.json"
+    bundle_receipt.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "implementation_commit": COMMIT,
+                "bundle_path": str(bundle),
+                "bundle_sha256": bundle_digest,
+            }
+        ),
+        encoding="utf-8",
+    )
+    authority = {
+        "schema_version": "native_task_arena_paid_attempt_authority.v1",
+        "blueprint_commit": COMMIT,
+        "bundle_sha256": bundle_digest,
+        "bundle_receipt": {
+            "path": str(bundle_receipt.resolve()),
+            "size_bytes": bundle_receipt.stat().st_size,
+            "sha256": "sha256:"
+            + hashlib.sha256(bundle_receipt.read_bytes()).hexdigest(),
+        },
+        "maximum_hourly_rate_usd": 1.0,
+        "hard_attempt_spend_cap_usd": 2.0,
+        "maximum_single_resource_ttl_seconds": 7_200,
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    authority_path = tmp_path / "native_task_arena_paid_authority.v1.json"
+    authority_path.write_text(json.dumps(authority), encoding="utf-8")
     source_packet = tmp_path / "runtime_source_packet.json"
     source_packet.write_text(json.dumps({"status": "ready"}), encoding="utf-8")
     construction = tmp_path / "construction_result.json"
@@ -72,6 +104,8 @@ def lane(tmp_path: Path) -> dict:
     policy_spec.write_text(json.dumps({"candidates": []}), encoding="utf-8")
     return {
         "packet": packet,
+        "bundle_receipt": bundle_receipt,
+        "authority": authority_path,
         "source_packet": source_packet,
         "construction": construction,
         "control": control,
@@ -83,6 +117,8 @@ def _build(lane, link: str, **overrides):
     arguments = {
         "link": link,
         "packet_dir": lane["packet"],
+        "bundle_receipt_path": lane["bundle_receipt"],
+        "attempt_authority_path": lane["authority"],
         "runtime_source_packet_path": lane["source_packet"],
         "source_commit": overrides.pop("source_commit", COMMIT),
         "raw_manifest_uri": URI,
@@ -110,6 +146,23 @@ def test_each_link_routes_its_own_probe_kind(lane, link: str, probe_kind: str) -
     assert argv[argv.index("--probe-kind") + 1] == probe_kind
     assert "--native-task-arena-packet" in argv
     assert "--native-task-arena-runtime-source-packet" in argv
+    assert argv[argv.index("--native-task-arena-bundle-receipt") + 1] == str(
+        lane["bundle_receipt"].resolve()
+    )
+    assert argv[argv.index("--native-task-arena-attempt-authority") + 1] == str(
+        lane["authority"].resolve()
+    )
+
+
+def test_default_budget_matches_the_attempt_authority(lane) -> None:
+    profile = _build(lane, "construction")
+
+    assert profile["allocator"]["max_spend_usd"] == 2.0
+
+
+def test_authority_budget_mismatch_is_refused_before_allocation(lane) -> None:
+    with pytest.raises(TaskEvaluationLaunchError, match="attempt_authority_invalid"):
+        _build(lane, "construction", max_spend_usd=1.5)
 
 
 @pytest.mark.parametrize("link", ["construction", "controls", "policy"])

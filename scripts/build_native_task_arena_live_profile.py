@@ -39,6 +39,10 @@ from blueprint_pipeline.native_task_arena_controls_bundle import (
     PROBE_KIND as CONTROLS_PROBE_KIND,
 )
 from blueprint_pipeline.native_task_arena_policy_bundle import PROBE_KIND as POLICY_PROBE_KIND
+from blueprint_pipeline.native_task_arena_paid_authority import (
+    AUTHORITY_SCHEMA_VERSION,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
     LaneLiveProfileContext,
@@ -51,7 +55,8 @@ from blueprint_pipeline.task_evaluation_live_profile import (
 MIN_TTL_SECONDS = 1_800
 MAX_TTL_SECONDS = 14_400
 
-#: The packet directory holds this; it is the receipt the skeleton binds to.
+#: The packet directory holds this; it is distinct from the provider-bundle
+#: receipt consumed by the shared live-profile skeleton.
 PACKET_RECEIPT_NAME = "native_task_arena_packet_receipt.v1.json"
 
 
@@ -99,12 +104,53 @@ def _lane_blockers(link: ArenaLink):
             found.append(
                 f"bundle_commit_not_source_commit:{receipt.get('implementation_commit')}"
             )
-        for name in ("packet_dir", "runtime_source_packet", *link.predecessors):
+        for name in (
+            "packet_dir",
+            "runtime_source_packet",
+            "attempt_authority",
+            *link.predecessors,
+        ):
             path = context.extra_paths.get(name)
             if path is None or not path.exists():
                 # The allocator names the same absence, but only after it has
                 # been handed a provider.
                 found.append(f"native_task_arena_{name}_missing")
+        packet_receipt = context.extra_paths["packet_dir"] / PACKET_RECEIPT_NAME
+        if not packet_receipt.is_file():
+            found.append("native_task_arena_packet_receipt_missing")
+        authority_path = context.extra_paths.get("attempt_authority")
+        if authority_path is not None and authority_path.is_file():
+            try:
+                authority = json.loads(authority_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                authority = None
+            bundle_record = (
+                authority.get("bundle_receipt")
+                if isinstance(authority, Mapping)
+                else None
+            )
+            if (
+                not isinstance(authority, Mapping)
+                or authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
+                or authority.get("authorization_digest")
+                != canonical_digest(authority, digest_field="authorization_digest")
+                or authority.get("blueprint_commit") != context.source_commit
+                or authority.get("bundle_sha256")
+                != context.receipt.get("bundle_sha256")
+                or authority.get("maximum_hourly_rate_usd")
+                != context.max_hourly_rate_usd
+                or authority.get("hard_attempt_spend_cap_usd")
+                != context.max_spend_usd
+                or authority.get("maximum_single_resource_ttl_seconds")
+                != context.hard_ttl_seconds
+                or not isinstance(bundle_record, Mapping)
+                or Path(str(bundle_record.get("path") or "")).expanduser().resolve()
+                != context.receipt_path
+                or bundle_record.get("sha256") != file_digest(context.receipt_path)
+                or bundle_record.get("size_bytes")
+                != context.receipt_path.stat().st_size
+            ):
+                found.append("native_task_arena_attempt_authority_invalid")
         for value in context.extra_paths.get("allowed_active_instance_ids", ()) or ():
             if int(value) <= 0:
                 found.append("native_task_arena_allowed_active_instance_id_invalid")
@@ -119,6 +165,10 @@ def _lane_argv(link: ArenaLink):
             "--native-task-arena-packet", str(context.extra_paths["packet_dir"]),
             "--native-task-arena-runtime-source-packet",
             str(context.extra_paths["runtime_source_packet"]),
+            "--native-task-arena-bundle-receipt",
+            str(context.receipt_path),
+            "--native-task-arena-attempt-authority",
+            str(context.extra_paths["attempt_authority"]),
             "--adp-job-dir", context.job_dir(link.job_dirname),
             "--adp-max-hourly-rate-usd", str(context.max_hourly_rate_usd),
             "--adp-max-spend-usd", str(context.max_spend_usd),
@@ -136,6 +186,7 @@ def _lane_argv(link: ArenaLink):
 
 def _immutable_inputs(link: ArenaLink):
     def inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
+        packet_receipt = context.extra_paths["packet_dir"] / PACKET_RECEIPT_NAME
         rows = [
             {
                 "name": "source_bundle_manifest",
@@ -144,13 +195,18 @@ def _immutable_inputs(link: ArenaLink):
             },
             {
                 "name": "evaluation_run_spec",
-                "path": str(context.receipt_path),
-                "digest": file_digest(context.receipt_path),
+                "path": str(packet_receipt),
+                "digest": file_digest(packet_receipt),
             },
             {
                 "name": "native_task_arena_runtime_source_packet",
                 "path": str(context.extra_paths["runtime_source_packet"]),
                 "digest": file_digest(context.extra_paths["runtime_source_packet"]),
+            },
+            {
+                "name": "native_task_arena_attempt_authority",
+                "path": str(context.extra_paths["attempt_authority"]),
+                "digest": file_digest(context.extra_paths["attempt_authority"]),
             },
         ]
         # Each predecessor result is pinned by digest: this link's verdict is
@@ -188,6 +244,7 @@ def _spec(link: ArenaLink, *, with_avoidlist: bool) -> LaneLiveProfileSpec:
         extra_path_names=(
             "packet_dir",
             "runtime_source_packet",
+            "attempt_authority",
             *(("machine_avoidlist",) if with_avoidlist else ()),
             *link.predecessors,
         ),
@@ -198,6 +255,8 @@ def build_native_task_arena_live_profile(
     *,
     link: str,
     packet_dir: str | Path,
+    bundle_receipt_path: str | Path,
+    attempt_authority_path: str | Path,
     runtime_source_packet_path: str | Path,
     source_commit: str,
     raw_manifest_uri: str,
@@ -207,7 +266,7 @@ def build_native_task_arena_live_profile(
     machine_avoidlist_path: str | Path | None = None,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
-    max_spend_usd: float = 4.0,
+    max_spend_usd: float = 2.0,
     hard_ttl_seconds: int = 7_200,
 ) -> dict[str, Any]:
     """Derive a live profile from the packet receipt the link will run."""
@@ -217,6 +276,7 @@ def build_native_task_arena_live_profile(
     supplied: dict[str, Any] = {
         "packet_dir": packet,
         "runtime_source_packet": runtime_source_packet_path,
+        "attempt_authority": attempt_authority_path,
         "construction_result": construction_result_path,
         "control_result": control_result_path,
         "policy_execution_spec": policy_execution_spec_path,
@@ -231,11 +291,20 @@ def build_native_task_arena_live_profile(
         name: value
         for name, value in supplied.items()
         if value is not None
-        and (name in entry.predecessors or name in {"packet_dir", "runtime_source_packet", "machine_avoidlist"})
+        and (
+            name in entry.predecessors
+            or name
+            in {
+                "packet_dir",
+                "runtime_source_packet",
+                "attempt_authority",
+                "machine_avoidlist",
+            }
+        )
     }
     return build_lane_live_profile(
         _spec(entry, with_avoidlist=machine_avoidlist_path is not None),
-        bundle_receipt_path=packet / PACKET_RECEIPT_NAME,
+        bundle_receipt_path=bundle_receipt_path,
         source_commit=source_commit,
         raw_manifest_uri=raw_manifest_uri,
         max_hourly_rate_usd=max_hourly_rate_usd,
@@ -252,6 +321,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name, entry in LINKS.items():
         target = sub.add_parser(name, help=f"Probe kind {entry.probe_kind}.")
         target.add_argument("--packet-dir", required=True)
+        target.add_argument("--bundle-receipt", required=True)
+        target.add_argument("--attempt-authority", required=True)
         target.add_argument("--runtime-source-packet", required=True)
         target.add_argument("--source-commit", required=True)
         target.add_argument(
@@ -265,7 +336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             help="Distinguish a rebuilt profile whose inputs changed at the same commit.",
         )
         target.add_argument("--max-hourly-rate-usd", type=float, default=1.0)
-        target.add_argument("--max-spend-usd", type=float, default=4.0)
+        target.add_argument("--max-spend-usd", type=float, default=2.0)
         target.add_argument("--hard-ttl-seconds", type=int, default=7_200)
         target.add_argument("--output", required=True)
         if "construction_result" in entry.predecessors:
@@ -280,6 +351,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         profile = build_native_task_arena_live_profile(
             link=args.link,
             packet_dir=args.packet_dir,
+            bundle_receipt_path=args.bundle_receipt,
+            attempt_authority_path=args.attempt_authority,
             runtime_source_packet_path=args.runtime_source_packet,
             source_commit=args.source_commit,
             raw_manifest_uri=args.raw_manifest_uri,
