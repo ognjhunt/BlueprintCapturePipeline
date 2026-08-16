@@ -216,6 +216,10 @@ def build_native_task_arena_policy_bundle(
             package / name
             for name in (
                 "adp009d_policy_episode.py",
+                # The policy worker imports this at module scope for
+                # GripperConvention; omitting it killed both frozen candidates
+                # on ModuleNotFoundError after the GPU was rented.
+                "adp009d_droid_action_execution.py",
                 "droid_policy_bridge.py",
                 "openpi_droid_policy_runtime.py",
                 "policy_ranking_thesis.py",

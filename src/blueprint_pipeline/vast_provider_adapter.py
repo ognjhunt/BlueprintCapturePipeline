@@ -2120,9 +2120,11 @@ def _blueprint_bundle_preflight(
         "provider_runtime/native_task_packet/native_task_arena_scene_plan.v1.json",
         "provider_runtime/native_task_packet/native_task_arena_packet_receipt.v1.json",
         "provider_runtime/blueprint_pipeline/__init__.py",
-        "provider_runtime/blueprint_pipeline/articulated_control_planner.py",
+        # Only the members every execution mode ships. The two
+        # articulated-construction planners are construction-only, so
+        # requiring them here made the controls and policy bundles fail this
+        # gate no matter what they contained.
         "provider_runtime/blueprint_pipeline/decision_evidence_contracts.py",
-        "provider_runtime/blueprint_pipeline/native_articulated_construction_plan.py",
         "provider_runtime/blueprint_pipeline/native_articulated_motion_geometry.py",
         "provider_runtime/blueprint_pipeline/native_articulated_task_state.py",
         "provider_runtime/blueprint_pipeline/native_franka_pose_servo.py",
