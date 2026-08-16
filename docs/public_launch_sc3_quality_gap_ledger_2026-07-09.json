@@ -6170,7 +6170,7 @@
             {
               "artifact_id": "REL-07-AC-01-EV-03",
               "path": "tests/test_release_quality_governance.py",
-              "sha256": "sha256:fe03545cfa13bf9d059f4366678da5435d6ae811706cc41ccbffcbeec7fc685a",
+              "sha256": "sha256:e71ce52a3c55249445553dca6cad315adfc4c3c214ddf795436bf859726dec59",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -6601,7 +6601,7 @@
             {
               "artifact_id": "REL-10-AC-01-EV-02",
               "path": "scripts/build_supply_chain_evidence.py",
-              "sha256": "sha256:6c0f1fc52c9e71b9f5333beb506da0ac9cf124de7f45e8e3a362da7179325b19",
+              "sha256": "sha256:d59a09ef1d0aeaf707e8876c07902fe00f4c29b5551056847b638c2b510893e7",
               "role": "executable_control",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -6930,7 +6930,7 @@
             {
               "artifact_id": "REL-12-AC-01-EV-03",
               "path": "tests/test_release_quality_governance.py",
-              "sha256": "sha256:fe03545cfa13bf9d059f4366678da5435d6ae811706cc41ccbffcbeec7fc685a",
+              "sha256": "sha256:e71ce52a3c55249445553dca6cad315adfc4c3c214ddf795436bf859726dec59",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7228,7 +7228,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-03",
               "path": "tests/test_release_quality_governance.py",
-              "sha256": "sha256:fe03545cfa13bf9d059f4366678da5435d6ae811706cc41ccbffcbeec7fc685a",
+              "sha256": "sha256:e71ce52a3c55249445553dca6cad315adfc4c3c214ddf795436bf859726dec59",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13805,7 +13805,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-03",
               "path": "tests/test_release_quality_governance.py",
-              "sha256": "sha256:fe03545cfa13bf9d059f4366678da5435d6ae811706cc41ccbffcbeec7fc685a",
+              "sha256": "sha256:e71ce52a3c55249445553dca6cad315adfc4c3c214ddf795436bf859726dec59",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
