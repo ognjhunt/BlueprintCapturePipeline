@@ -110,21 +110,44 @@ def expand_prior_spend_immutable_inputs(
         reconciliation_path = Path(
             str(reconciliation_record.get("path") or "")
         ).expanduser().resolve()
+        uses_shared_lane_reconciliation = (
+            "prior_terminal_attempts" in authority
+            and "prior_actual_provider_spend_usd" in authority
+        )
         try:
-            reconciliation, observed_record = validate_same_goal_spend_reconciliation(
-                reconciliation_path,
-                expected_total_cost_usd=authority.get(
-                    "prior_actual_provider_spend_usd"
-                ),
-            )
-        except (OSError, ValueError) as exc:
+            if uses_shared_lane_reconciliation:
+                reconciliation, observed_record = (
+                    validate_same_goal_spend_reconciliation(
+                        reconciliation_path,
+                        expected_total_cost_usd=authority.get(
+                            "prior_actual_provider_spend_usd"
+                        ),
+                    )
+                )
+                if observed_record != dict(reconciliation_record):
+                    raise ValueError("prior_spend_reconciliation_record_mismatch")
+            else:
+                # The semantic-teacher issuer predates the shared five-lane
+                # reconciliation contract. Its lane validator has already
+                # reopened and validated that schema above; retain support for
+                # it while still exposing any nested receipt paths to profile
+                # publication and its service-account readability check.
+                reconciliation = json.loads(
+                    reconciliation_path.read_text(encoding="utf-8")
+                )
+                if (
+                    reconciliation_path.is_symlink()
+                    or not isinstance(reconciliation, Mapping)
+                    or reconciliation_path.stat().st_size
+                    != reconciliation_record.get("size_bytes")
+                    or file_digest(reconciliation_path)
+                    != reconciliation_record.get("sha256")
+                ):
+                    raise ValueError("prior_spend_reconciliation_record_mismatch")
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
             raise TaskEvaluationLaunchError(
                 f"live_profile_prior_spend_dependency_invalid:{name}"
             ) from exc
-        if observed_record != dict(reconciliation_record):
-            raise TaskEvaluationLaunchError(
-                f"live_profile_prior_spend_dependency_invalid:{name}"
-            )
 
         dependencies: list[tuple[str, Mapping[str, Any]]] = [
             ("reconciliation", reconciliation_record)
