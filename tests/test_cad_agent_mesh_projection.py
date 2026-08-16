@@ -189,3 +189,52 @@ def test_step_extraction_applies_nonidentity_parent_assembly_transform(
     )
     assert packet["meshes"][0]["points_mm"][0] == [12.0, 0.0, 0.0]
     assert packet["meshes"][0]["assembly_transform_applied"] is True
+
+
+def _packet_with_authored_colors(tmp_path: Path) -> Path:
+    packet_path, value = _packet(tmp_path)
+    for index, row in enumerate(value["meshes"]):
+        row["agent_authored_display_color_rgba"] = [0.2 + 0.1 * index, 0.4, 0.6, 1.0]
+    value.pop("packet_digest", None)
+    value["packet_digest"] = canonical_digest(value, digest_field="packet_digest")
+    packet_path.write_text(json.dumps(value), encoding="utf-8")
+    return packet_path
+
+
+def test_default_material_resolves_on_the_saved_stage_when_every_mesh_has_a_color(
+    tmp_path: Path,
+) -> None:
+    """The receipt must name a material the shipped USD actually contains.
+
+    Production regression: `default_material_path` was evaluated after
+    `Save()`, and `material_for` defines its material lazily -- so whenever
+    every mesh carried an authored colour (the intended case, the one the
+    receipt reports as `agent_authored_display_colors_preserved`) the receipt
+    named `/Asset/materials/neutral_fallback`, a prim invented after the file
+    was written and bound to no mesh. The texture agent resolves
+    `material_textures` against a material's alias paths and then its name, so
+    it matched neither, planned zero jobs, and the run was rejected after the
+    GPU was already rented.
+    """
+
+    packet = _packet_with_authored_colors(tmp_path)
+    output = tmp_path / "agent-input.usda"
+
+    receipt = materialize_mesh_usd_projection(packet_path=packet, output_usd_path=output)
+
+    assert receipt["agent_authored_display_colors_preserved"] is True
+    assert receipt["neutral_fallback_mesh_count"] == 0
+
+    stage = Usd.Stage.Open(str(output))
+    declared = receipt["default_material_path"]
+    assert stage.GetPrimAtPath(declared).IsValid(), declared
+
+    bound = {
+        str(
+            UsdShade.MaterialBindingAPI(stage.GetPrimAtPath(prim_path))
+            .ComputeBoundMaterial()[0]
+            .GetPath()
+        )
+        for prim_path in receipt["mesh_prim_paths"]
+    }
+    assert declared in bound, (declared, sorted(bound))
