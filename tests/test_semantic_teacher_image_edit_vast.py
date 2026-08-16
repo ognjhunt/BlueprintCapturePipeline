@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+import urllib.error
 import zipfile
 
 import pytest
@@ -21,6 +22,7 @@ from blueprint_pipeline.semantic_teacher_image_edit_vast import (
     PROBE_KIND,
     SemanticTeacherImageEditVastError,
     _bootstrap_script,
+    _default_result_fetcher,
     _validate_bundle_runtime_bindings,
     run_semantic_teacher_image_edit_vast,
 )
@@ -848,3 +850,18 @@ def test_allocated_timeout_retains_gap_conservative_billing_and_canonical_zero(
     assert (
         job / "semantic_teacher_image_edit_runtime_failure_artifacts.zip"
     ).is_file()
+
+
+def test_default_result_fetcher_treats_object_store_404_as_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(*_args, **_kwargs):
+        raise urllib.error.HTTPError(GET_URL, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.semantic_teacher_image_edit_vast.safe_http_request",
+        missing,
+    )
+
+    with pytest.raises(FileNotFoundError, match="semantic_teacher_output_not_ready"):
+        _default_result_fetcher(GET_URL)
