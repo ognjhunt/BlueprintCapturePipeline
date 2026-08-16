@@ -1725,3 +1725,54 @@ def test_an_armed_launch_id_still_scopes_the_window_to_itself(
 
     assert report["processed_count"] == 0
     assert calls == []
+
+
+def test_a_terminal_stale_launch_id_does_not_strand_a_standing_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prior paid window remained active in the production EnvironmentFile.
+
+    Its launch was already terminal-blocked, but the queue filtered every
+    later website request to that old identifier and repeatedly reported zero
+    processed messages. A terminal one-shot scope must not override the newer
+    request's own digest-bound standing authorization.
+    """
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False)
+    profile = _profile(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    state_root = tmp_path / "control-plane" / "state"
+    state_root.mkdir(parents=True)
+    _write(
+        state_root.parent / "standing-authorizations" / f"{profile['profile_id']}.json",
+        _standing_authorization(profile, max_launches=1),
+    )
+    queue_root = tmp_path / "queue"
+    stale_launch_id = "launch-terminal-stale"
+    _write(queue_root / "blocked" / f"{stale_launch_id}-deadbeef.json", {})
+    request = _request(profile)
+    _write(queue_root / "pending" / f"{request['launch_id']}-abcd1234.json", request)
+    calls: list[list[str]] = []
+
+    report = process_launch_queue(
+        queue_root=queue_root,
+        profile_dir=profile_dir,
+        state_root=state_root,
+        execute=True,
+        execute_launch_id=stale_launch_id,
+        allocator_runner=lambda argv: calls.append(list(argv)) or 1,
+    )
+
+    assert report["processed_count"] == 1
+    assert report["execute_launch_id"] == ""
+    assert report["ignored_terminal_execute_launch_id"] == stale_launch_id
+    assert len(calls) == 1
+    binding = json.loads(
+        (state_root / request["launch_id"] / "launch_binding.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert binding["execute_launch_id"] == ""
