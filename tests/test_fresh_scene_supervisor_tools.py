@@ -406,3 +406,73 @@ def test_agents_sdk_invokes_registry_selected_semantic_teacher_packet_builder(
     assert calls[0]["output_root"] == (
         tmp_path / "generated/semantic_teacher_edit_packet"
     )
+
+
+def test_agents_sdk_invokes_digest_bound_semantic_teacher_handoff(
+    tmp_path: Path,
+) -> None:
+    request = {
+        "schema_version": "fresh_scene_semantic_teacher_artifixer_handoff_request.v1",
+        "result_import_path": "result.json",
+        "semantic_teacher_packet_path": "packet.json",
+        "source_candidate_inputs_receipt_path": "candidate.json",
+        "transition_radius_pixels": 2,
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    calls: list[dict] = []
+
+    def materializer(*, request: dict, output_root: Path) -> dict:
+        calls.append({"request": request, "output_root": output_root})
+        result = {
+            "schema_version": "semantic_teacher_artifixer_handoff.v1",
+            "status": "semantic_teacher_artifixer_handoff_materialized_no_execution",
+            "task_count": 2,
+            "camera_count": 16,
+            "semantic_teacher_receipts": [
+                {"task_id": "task_a", "receipt_digest": "sha256:" + "a" * 64},
+                {"task_id": "task_b", "receipt_digest": "sha256:" + "b" * 64},
+            ],
+            "dual_target_inputs": {"receipt_digest": "sha256:" + "c" * 64},
+            "paid_execution_started": False,
+            "provider_mutations_performed": 0,
+            "visual_reviewed": False,
+            "appearance_qualified": False,
+            "receipt_digest": "",
+        }
+        result["receipt_digest"] = canonical_digest(
+            result, digest_field="receipt_digest"
+        )
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="fresh-scene-tools-test",
+        customer_question="Prepare one fresh scene.",
+        supervisor_output_dir=str(tmp_path),
+        fresh_scene_semantic_teacher_handoff_request=request,
+        fresh_scene_semantic_teacher_handoff_materializer=materializer,
+    )
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=_authority(registry, request["request_digest"]),
+        )
+    }
+
+    observation = bindings[
+        "materialize_fresh_scene_semantic_teacher_artifixer_handoff"
+    ].invoke({"request_digest": request["request_digest"]})
+    assert observation["status"] == "completed"
+    assert observation["cost_usd"] == 0.0
+    assert observation["typed_result"]["task_count"] == 2
+    assert observation["typed_result"]["camera_count"] == 16
+    assert observation["typed_result"]["semantic_teacher_receipt_count"] == 2
+    assert observation["typed_result"]["paid_execution_started"] is False
+    assert observation["typed_result"]["provider_mutations_performed"] == 0
+    assert calls[0]["output_root"] == (
+        tmp_path / "generated/semantic_teacher_artifixer_handoff"
+    )

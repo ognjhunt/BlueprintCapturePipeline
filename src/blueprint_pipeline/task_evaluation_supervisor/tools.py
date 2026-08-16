@@ -216,6 +216,23 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "materialize_fresh_scene_semantic_teacher_artifixer_handoff": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "receipt_digest": {"type": "string"},
+            "status": {
+                "const": "semantic_teacher_artifixer_handoff_materialized_no_execution"
+            },
+            "task_count": {"type": "integer"},
+            "camera_count": {"type": "integer"},
+            "semantic_teacher_receipt_count": {"type": "integer"},
+            "dual_target_receipt_digest": {"type": "string"},
+            "paid_execution_started": {"const": False},
+            "provider_mutations_performed": {"const": 0},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "materialize_sam31_task_inputs": _output_schema(
         {
             "contract_present": {"const": True},
@@ -786,6 +803,18 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             minimum_mode="execute_non_spend",
             timeout_seconds=900.0,
             idempotency="content_addressed_registry_selected_semantic_teacher_packet",
+        ),
+        _descriptor(
+            "materialize_fresh_scene_semantic_teacher_artifixer_handoff",
+            "fresh_scene_semantic_teacher_artifixer_handoff_materialization",
+            expected_artifacts=["semantic_teacher_artifixer_handoff.v1"],
+            input_properties={"request_digest": {"type": "string"}},
+            required_inputs=["request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=900.0,
+            idempotency="content_addressed_semantic_result_to_artifixer_handoff",
         ),
         _descriptor(
             "inspect_capture_build",
@@ -1499,6 +1528,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "materialize_fresh_scene_segment_cutout",
         "materialize_fresh_scene_artifixer_candidate",
         "materialize_fresh_scene_semantic_teacher_edit_packet",
+        "materialize_fresh_scene_semantic_teacher_artifixer_handoff",
         "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
@@ -3258,6 +3288,7 @@ def _bound_artifact(
         "materialize_fresh_scene_segment_cutout",
         "materialize_fresh_scene_artifixer_candidate",
         "materialize_fresh_scene_semantic_teacher_edit_packet",
+        "materialize_fresh_scene_semantic_teacher_artifixer_handoff",
     }:
         root_value = getattr(context, "supervisor_output_dir", None)
         if tool_id == "materialize_sam31_task_inputs":
@@ -3318,7 +3349,7 @@ def _bound_artifact(
 
                 materializer = materialize_fresh_scene_artifixer_candidate_preparation
             output_name = "artifixer_candidate"
-        else:
+        elif tool_id == "materialize_fresh_scene_semantic_teacher_edit_packet":
             source = getattr(context, "fresh_scene_semantic_teacher_edit_request", None)
             materializer = getattr(
                 context, "fresh_scene_semantic_teacher_edit_materializer", None
@@ -3330,6 +3361,22 @@ def _bound_artifact(
 
                 materializer = materialize_semantic_teacher_image_edit_packet
             output_name = "semantic_teacher_edit_packet"
+        else:
+            source = getattr(
+                context, "fresh_scene_semantic_teacher_handoff_request", None
+            )
+            materializer = getattr(
+                context, "fresh_scene_semantic_teacher_handoff_materializer", None
+            )
+            if not callable(materializer):
+                from ..public_scene_artifixer3d_dual_target_inputs import (
+                    _materialize_semantic_teacher_artifixer_handoff_from_tool_request,
+                )
+
+                materializer = (
+                    _materialize_semantic_teacher_artifixer_handoff_from_tool_request
+                )
+            output_name = "semantic_teacher_artifixer_handoff"
         if not isinstance(root_value, str) or not root_value:
             raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
         if not isinstance(source, Mapping) or not callable(materializer):
@@ -3548,6 +3595,56 @@ def _bound_artifact(
                     "artifact_type": (
                         "fresh_scene_semantic_teacher_image_edit_packet.v1"
                     ),
+                }
+            ]
+        if tool_id == "materialize_fresh_scene_semantic_teacher_artifixer_handoff":
+            dual = result.get("dual_target_inputs") if isinstance(result, Mapping) else None
+            semantic = (
+                result.get("semantic_teacher_receipts")
+                if isinstance(result, Mapping)
+                else None
+            )
+            if (
+                not isinstance(result, Mapping)
+                or result.get("schema_version")
+                != "semantic_teacher_artifixer_handoff.v1"
+                or result.get("status")
+                != "semantic_teacher_artifixer_handoff_materialized_no_execution"
+                or result.get("receipt_digest")
+                != canonical_digest(result, digest_field="receipt_digest")
+                or not isinstance(semantic, list)
+                or len(semantic) != int(result.get("task_count") or 0)
+                or not 1 <= len(semantic) <= 5
+                or not isinstance(dual, Mapping)
+                or not str(dual.get("receipt_digest") or "")
+                or result.get("paid_execution_started") is not False
+                or result.get("provider_mutations_performed") != 0
+                or result.get("visual_reviewed") is not False
+                or result.get("appearance_qualified") is not False
+            ):
+                raise ValueError("fresh_scene_semantic_teacher_handoff_invalid")
+            receipt_path = write_phase2_artifact(
+                root_value,
+                "generated/semantic_teacher_artifixer_handoff/tool_receipt.json",
+                result,
+            )
+            return {
+                "contract_present": True,
+                "digest_matches": True,
+                "receipt_digest": result["receipt_digest"],
+                "status": result["status"],
+                "task_count": int(result["task_count"]),
+                "camera_count": int(result["camera_count"]),
+                "semantic_teacher_receipt_count": len(semantic),
+                "dual_target_receipt_digest": str(dual["receipt_digest"]),
+                "paid_execution_started": False,
+                "provider_mutations_performed": 0,
+                "proof_state_changed": False,
+            }, [
+                {
+                    "artifact_path": str(receipt_path.relative_to(Path(root_value))),
+                    "artifact_digest": result["receipt_digest"],
+                    "artifact_type": "semantic_teacher_artifixer_handoff.v1",
                 }
             ]
         if (
@@ -3847,6 +3944,13 @@ def non_spend_tool_bindings(
         if tool_id == "materialize_fresh_scene_semantic_teacher_edit_packet" and (
             not isinstance(
                 getattr(context, "fresh_scene_semantic_teacher_edit_request", None),
+                Mapping,
+            )
+        ):
+            continue
+        if tool_id == "materialize_fresh_scene_semantic_teacher_artifixer_handoff" and (
+            not isinstance(
+                getattr(context, "fresh_scene_semantic_teacher_handoff_request", None),
                 Mapping,
             )
         ):
