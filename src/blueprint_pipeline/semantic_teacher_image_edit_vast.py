@@ -757,6 +757,24 @@ def _watchdog_valid(
     return True
 
 
+def _worker_execution_script() -> str:
+    """Run the worker once while keeping bootstrap logs out of its output root."""
+
+    return r'''set +e
+BLUEPRINT_IMAGE_EDITOR_TOKEN="$(<"$secret_file")" \
+BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR="$output_root" \
+bash "$bundle_root/provider_runtime/run_semantic_teacher_image_edit.sh" \
+  >"$log_root/runtime_stdout.log" 2>"$log_root/runtime_stderr.log"
+worker_status=$?
+set -e
+cleanup_secret
+mkdir -p "$output_root"
+mv "$log_root/runtime_stdout.log" "$output_root/runtime_stdout.log"
+mv "$log_root/runtime_stderr.log" "$output_root/runtime_stderr.log"
+rmdir "$log_root"
+'''
+
+
 def _bootstrap_script() -> str:
     """Return the exact remote transport with one worker invocation."""
 
@@ -766,6 +784,7 @@ bundle_path=/work/semantic_teacher_image_edit_provider_bundle.zip
 bundle_root=/work/semantic_teacher_image_edit_provider_bundle
 output_root=/work/semantic_teacher_image_edit_runtime_output
 output_zip=/work/semantic_teacher_image_edit_runtime_output.zip
+log_root=/work/semantic_teacher_image_edit_runtime_logs
 secret_root=/run/blueprint-secrets
 secret_file="$secret_root/image_editor_token"
 cleanup_secret() {
@@ -791,8 +810,8 @@ if hashlib.sha256(payload).hexdigest() != expected:
     raise SystemExit("semantic_teacher_bundle_digest_mismatch")
 Path(sys.argv[1]).write_bytes(payload)
 PY
-rm -rf "$bundle_root" "$output_root" "$output_zip"
-mkdir -p "$bundle_root" "$output_root" "$secret_root"
+rm -rf "$bundle_root" "$output_root" "$output_zip" "$log_root"
+mkdir -p "$bundle_root" "$log_root" "$secret_root"
 python - "$bundle_path" "$bundle_root" <<'PY'
 import stat, sys, zipfile
 from pathlib import Path
@@ -824,15 +843,7 @@ PY
 printf '%s' "$BLUEPRINT_IMAGE_EDITOR_TOKEN" > "$secret_file"
 chmod 600 "$secret_file"
 unset BLUEPRINT_IMAGE_EDITOR_TOKEN
-set +e
-BLUEPRINT_IMAGE_EDITOR_TOKEN="$(<"$secret_file")" \
-BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR="$output_root" \
-bash "$bundle_root/provider_runtime/run_semantic_teacher_image_edit.sh" \
-  >"$output_root/runtime_stdout.log" 2>"$output_root/runtime_stderr.log"
-worker_status=$?
-set -e
-cleanup_secret
-python - "$output_root" "$output_zip" <<'PY'
+''' + _worker_execution_script() + r'''python - "$output_root" "$output_zip" <<'PY'
 import re, stat, sys, zipfile
 from pathlib import Path
 root, destination = Path(sys.argv[1]).resolve(), Path(sys.argv[2])

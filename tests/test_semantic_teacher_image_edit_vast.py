@@ -5,6 +5,7 @@ from io import BytesIO
 import json
 import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import urllib.error
 import zipfile
@@ -24,6 +25,7 @@ from blueprint_pipeline.semantic_teacher_image_edit_vast import (
     _bootstrap_script,
     _default_result_fetcher,
     _validate_bundle_runtime_bindings,
+    _worker_execution_script,
     run_semantic_teacher_image_edit_vast,
 )
 from blueprint_pipeline.semantic_teacher_image_edit_worker import (
@@ -530,6 +532,19 @@ def test_probe_kind_and_bootstrap_are_single_attempt_and_ephemeral_secret() -> N
     assert "runtime_stderr.log" in script
     assert "semantic_teacher_image_edit_runtime_output.zip" in script
     assert "retry" not in script.lower()
+    worker = 'bash "$bundle_root/provider_runtime/run_semantic_teacher_image_edit.sh"'
+    stage_stdout = (
+        'mv "$log_root/runtime_stdout.log" "$output_root/runtime_stdout.log"'
+    )
+    stage_stderr = (
+        'mv "$log_root/runtime_stderr.log" "$output_root/runtime_stderr.log"'
+    )
+    assert '>"$output_root/runtime_stdout.log"' not in script
+    assert '>"$output_root/runtime_stderr.log"' not in script
+    assert script.index(worker) < script.index(stage_stdout)
+    assert script.index(worker) < script.index(stage_stderr)
+    assert script.index("worker_status=$?") < script.index(stage_stdout)
+    assert script.index(stage_stderr) < script.index('exit "$worker_status"')
 
 
 def test_bootstrap_creates_the_bundle_parent_before_download() -> None:
@@ -546,6 +561,111 @@ def test_bootstrap_creates_the_bundle_parent_before_download() -> None:
     first_download = 'python - "$bundle_path"'
     assert script.count(create_parent) == 1
     assert script.index(create_parent) < script.index(first_download)
+
+
+def _run_worker_execution_fragment(
+    tmp_path: Path,
+    *,
+    worker_body: str,
+    preexisting_output: bytes | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    bundle_root = tmp_path / "bundle"
+    output_root = tmp_path / "runtime-output"
+    log_root = tmp_path / "runtime-logs"
+    secret_root = tmp_path / "secrets"
+    worker = bundle_root / "provider_runtime/run_semantic_teacher_image_edit.sh"
+    worker.parent.mkdir(parents=True)
+    worker.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n" + worker_body,
+        encoding="utf-8",
+    )
+    worker.chmod(0o700)
+    log_root.mkdir()
+    secret_root.mkdir()
+    secret_file = secret_root / "image_editor_token"
+    secret_file.write_text("fixture-secret", encoding="utf-8")
+    if preexisting_output is not None:
+        output_root.mkdir()
+        (output_root / "real-worker-artifact.bin").write_bytes(preexisting_output)
+    wrapper = f'''set -euo pipefail
+bundle_root="$FIXTURE_BUNDLE_ROOT"
+output_root="$FIXTURE_OUTPUT_ROOT"
+log_root="$FIXTURE_LOG_ROOT"
+secret_file="$FIXTURE_SECRET_FILE"
+cleanup_secret() {{
+  unset BLUEPRINT_IMAGE_EDITOR_TOKEN || true
+  rm -f "$secret_file"
+}}
+{_worker_execution_script()}
+exit "$worker_status"
+'''
+    completed = subprocess.run(
+        ["bash", "-c", wrapper],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "FIXTURE_BUNDLE_ROOT": str(bundle_root),
+            "FIXTURE_OUTPUT_ROOT": str(output_root),
+            "FIXTURE_LOG_ROOT": str(log_root),
+            "FIXTURE_SECRET_FILE": str(secret_file),
+        },
+    )
+    return completed, output_root
+
+
+def test_bootstrap_stages_logs_only_after_worker_accepts_empty_output(
+    tmp_path: Path,
+) -> None:
+    completed, output_root = _run_worker_execution_fragment(
+        tmp_path,
+        worker_body=r'''
+if [[ -e "$BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR" ]]; then
+  echo semantic_teacher_runtime_output_not_empty >&2
+  exit 73
+fi
+echo worker-stdout
+echo worker-stderr >&2
+mkdir -p "$BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR"
+printf '{}\n' > "$BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR/semantic_teacher_image_edit_runtime_result.v1.json"
+''',
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (
+        output_root / "semantic_teacher_image_edit_runtime_result.v1.json"
+    ).is_file()
+    assert (output_root / "runtime_stdout.log").read_text() == "worker-stdout\n"
+    assert (output_root / "runtime_stderr.log").read_text() == "worker-stderr\n"
+    assert not (tmp_path / "runtime-logs").exists()
+
+
+def test_bootstrap_preserves_worker_failure_status_logs_and_real_artifacts(
+    tmp_path: Path,
+) -> None:
+    completed, output_root = _run_worker_execution_fragment(
+        tmp_path,
+        preexisting_output=b"do-not-delete",
+        worker_body=r'''
+echo worker-before-output-check
+if find "$BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR" -mindepth 1 -print -quit | grep -q .; then
+  echo semantic_teacher_runtime_output_not_empty >&2
+  exit 73
+fi
+exit 0
+''',
+    )
+
+    assert completed.returncode == 73
+    assert (output_root / "real-worker-artifact.bin").read_bytes() == b"do-not-delete"
+    assert (output_root / "runtime_stdout.log").read_text() == (
+        "worker-before-output-check\n"
+    )
+    assert "semantic_teacher_runtime_output_not_empty" in (
+        output_root / "runtime_stderr.log"
+    ).read_text()
+    assert not (tmp_path / "runtime-logs").exists()
 
 
 def test_watchdog_validator_accepts_realistic_full_ttl_handoff_delay(
