@@ -91,6 +91,19 @@ def _bound_relative(root: Path, value: Any, *, code: str) -> Path:
     return path
 
 
+def _bound_record(root: Path, value: Any, *, code: str) -> Path:
+    """Resolve one digest-bound file record without weakening path confinement."""
+    if not isinstance(value, Mapping):
+        raise SegmentMaskRepairPreflightError([code])
+    has_absolute = bool(str(value.get("path") or ""))
+    has_relative = bool(str(value.get("relative_path") or ""))
+    if has_absolute == has_relative:
+        raise SegmentMaskRepairPreflightError([code])
+    if has_absolute:
+        return _bound_absolute(value, code=code)
+    return _bound_relative(root, value, code=code)
+
+
 def _camera_rows(path: Path) -> dict[str, dict[str, Any]]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -203,7 +216,8 @@ def _task_inputs(
     camera_inputs: list[dict[str, Any]] = []
     mask_pixel_counts: list[int] = []
     for camera_id in sorted(cameras):
-        mask_path = _bound_absolute(
+        mask_path = _bound_record(
+            sweep_path.parent,
             masks[camera_id].get("historical_outer_mask"),
             code="segment_repair_exact_segment_mask_invalid",
         )
