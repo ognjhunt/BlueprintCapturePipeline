@@ -1161,6 +1161,123 @@ def test_allocated_timeout_retains_gap_conservative_billing_and_canonical_zero(
     ).is_file()
 
 
+@pytest.mark.parametrize(
+    "transport_error_kind",
+    ["http-503", "connection-reset", "typed-http-503"],
+    ids=["http-503", "connection-reset", "typed-http-503"],
+)
+def test_transient_output_fetch_error_reuses_one_allocation_and_seals_terminal_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transport_error_kind: str,
+) -> None:
+    fetch_count = 0
+
+    def transient(_url: str) -> bytes:
+        nonlocal fetch_count
+        fetch_count += 1
+        if fetch_count == 1:
+            if transport_error_kind == "http-503":
+                raise urllib.error.HTTPError(
+                    GET_URL, 503, "Service Unavailable", {}, None
+                )
+            if transport_error_kind == "connection-reset":
+                raise urllib.error.URLError(
+                    ConnectionResetError(104, "Connection reset by peer")
+                )
+            raise vast.SemanticTeacherImageEditVastError(
+                "semantic_teacher_output_http:503"
+            )
+        receipt = json.loads(
+            Path(_inputs(tmp_path).semantic_teacher_bundle_receipt).read_text()
+        )
+        return _runtime_archive(
+            runtime_request_digest=receipt["runtime_request_digest"],
+            backend_entry_digest=receipt["backend_entry_digest"],
+        )
+
+    result, provider, store, _calls = _run(
+        tmp_path,
+        monkeypatch,
+        result_fetcher=transient,
+    )
+
+    assert fetch_count == 2
+    assert result["status"] == "completed", result["blockers"]
+    assert result["allocation_count"] == 1
+    assert result["automatic_retry_count"] == 0
+    assert result["retry_cap"] == 0
+    assert result["provider_zero_verified"] is True
+    assert provider.launch_calls == 1
+    assert provider.terminate_calls == 1
+    assert store.stage_calls == 1
+    assert store.cleanup_calls == 1
+    assert Path(result["artifact_manifest_path"]).is_file()
+    assert Path(result["teardown_manifest_path"]).is_file()
+
+
+def test_persistent_secret_bearing_fetch_error_seals_redacted_timeout_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-fixture-secret-value"
+    signed_url = "https://objects.example/output?signature=fixture-signature"
+    fetch_count = 0
+
+    def persistent(_url: str) -> bytes:
+        nonlocal fetch_count
+        fetch_count += 1
+        raise urllib.error.URLError(
+            f"read reset for {signed_url} with Bearer {secret}"
+        )
+
+    result, provider, store, _calls = _run(
+        tmp_path,
+        monkeypatch,
+        result_fetcher=persistent,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["allocation_count"] == 1
+    assert result["automatic_retry_count"] == 0
+    assert result["retry_cap"] == 0
+    assert result["provider_zero_verified"] is True
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["blockers"] == ["semantic_teacher_output_timeout"]
+    assert fetch_count > 1
+    assert provider.launch_calls == 1
+    assert provider.terminate_calls == 1
+    assert store.stage_calls == 1
+    assert store.cleanup_calls == 1
+    job = Path(_inputs(tmp_path).semantic_teacher_job_dir)
+    for receipt in (
+        "billing_receipt.json",
+        "provider_zero_receipt.json",
+        "teardown_receipt.json",
+    ):
+        assert (job / receipt).is_file(), receipt
+    assert Path(result["artifact_manifest_path"]).is_file()
+    assert Path(result["teardown_manifest_path"]).is_file()
+    billing = json.loads((job / "billing_receipt.json").read_text())
+    assert billing["status"] == "conservative_upper_bound_runtime_result_missing"
+    assert billing["attempted_request_count_known"] is False
+    gap = json.loads(
+        (
+            job
+            / "runtime_output"
+            / "semantic_teacher_image_edit_runtime_media_gap.v1.json"
+        ).read_text()
+    )
+    assert gap["gap_type"] == "runtime_timeout"
+    assert gap["reason_code"].startswith(
+        "output_download_timed_out_after_allocation:URLError:"
+    )
+    assert "<redacted>" in gap["reason_code"]
+    serialized = json.dumps({"result": result, "gap": gap})
+    assert secret not in serialized
+    assert "fixture-signature" not in serialized
+
+
 def test_provider_confirmed_absence_ends_output_wait_without_full_ttl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
