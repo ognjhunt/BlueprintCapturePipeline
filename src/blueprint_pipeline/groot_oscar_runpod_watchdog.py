@@ -47,6 +47,11 @@ CANARY_NAME_PREFIXES = (
     "blueprint-measurement-isaac-",
     "blueprint-measurement-dlo-",
     "blueprint-measurement-chrono-dem-",
+    # Production semantic-teacher image edits are one-shot, hard-TTL Vast
+    # jobs.  Their caller adds a collision-free timestamp suffix before this
+    # watchdog is armed, so retain the lane's exact base prefix here rather
+    # than mislabeling the production execution as a generic canary.
+    "blueprint-semantic-teacher-",
     "blueprint-adp-arena-",
     "blueprint-adp009d-",
 )

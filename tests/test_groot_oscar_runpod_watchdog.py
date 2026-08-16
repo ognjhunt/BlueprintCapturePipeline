@@ -144,6 +144,40 @@ def test_watchdog_arms_adp_canary_prefixes(tmp_path, monkeypatch, prefix) -> Non
     assert result["pod_name_prefix"] == prefix
     assert result["provider"] == "vast"
 
+
+def test_watchdog_arms_exact_semantic_teacher_execution_prefix(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
+    prefix = "blueprint-semantic-teacher-20260816t082907438064000-"
+
+    result = arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=3_000.0,
+        pid=os.getpid(),
+        provider_name="vast",
+    )
+
+    assert result["status"] == "armed"
+    assert result["pod_name_prefix"] == prefix
+    assert result["provider"] == "vast"
+
+
+def test_watchdog_rejects_unadmitted_semantic_editor_prefix(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
+
+    with pytest.raises(ValueError, match="watchdog_pod_name_prefix_not_canary_scoped"):
+        arm_watchdog(
+            out_dir=tmp_path,
+            pod_name_prefix="blueprint-semantic-editor-20260816t082907438064000-",
+            deadline_epoch=3_000.0,
+            pid=os.getpid(),
+            provider_name="vast",
+        )
+
 def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence(
     monkeypatch,
 ) -> None:
