@@ -214,6 +214,57 @@ def test_accepts_ai_visual_review_authority_without_human_claim(tmp_path: Path) 
     assert result["task_count"] == 2
 
 
+def test_completes_empty_reviewed_mask_with_registered_core_without_claim_upgrade(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path, task_count=1)
+    receipt_path = fixture["mask_receipt"]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["selection_authority"] = {
+        "reviewer_kind": "ai",
+        "all_selected_tracks_review_accepted": True,
+        "all_selected_tracks_ai_visual_review_accepted": True,
+        "all_selected_tracks_human_review_accepted": False,
+    }
+    mask_path = tmp_path / "reviewed-masks/tasks/task_1/masks/front.png"
+    assert cv2.imwrite(str(mask_path), np.zeros((48, 64), dtype=np.uint8))
+    front_row = next(
+        row for row in receipt["tasks"][0]["masks"] if row["camera_id"] == "front"
+    )
+    front_row["mask"] = _relative(mask_path, receipt_path.parent)
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
+
+    output = tmp_path / "completed-output"
+    result = materialize_fresh_scene_removal_freezes(
+        request=fixture["request"], output_root=output
+    )
+
+    completion = result["tasks"][0]["registered_core_completion"]
+    assert completion["camera_count_with_added_pixels"] >= 1
+    assert completion["added_pixel_count"] > 0
+    assert completion["upgrades_semantic_observation_claim"] is False
+    assert result["claim_boundary"]["reviewed_semantic_masks_are_complete_geometry"] is False
+    freeze_path = output / result["tasks"][0]["excision_freeze"]["relative_path"]
+    freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+    front = next(row for row in freeze["masks"] if row["camera_id"] == "front")
+    assert front["reviewed_semantic_mask_pixel_count"] == 0
+    assert front["registered_core_added_pixel_count"] == front["target_core_pixel_count"]
+    assert front["target_core_is_subset_of_reviewed_semantic_mask"] is False
+    assert front["target_core_is_subset_of_historical_outer_mask"] is True
+    reviewed = Path(front["reviewed_semantic_mask"]["path"])
+    effective = freeze_path.parent / front["historical_outer_mask"]["relative_path"]
+    assert np.count_nonzero(cv2.imread(str(reviewed), cv2.IMREAD_GRAYSCALE)) == 0
+    assert np.count_nonzero(cv2.imread(str(effective), cv2.IMREAD_GRAYSCALE)) > 0
+    assert freeze["mask_method"]["registered_core_completion_is_semantic_observation"] is False
+    assert freeze["mask_method"]["reviewed_semantic_mask_is_complete_geometry"] is False
+    sweep_path = output / result["tasks"][0]["segment_sweep_freeze"]["relative_path"]
+    sweep = json.loads(sweep_path.read_text(encoding="utf-8"))
+    assert sweep["segment_contribution_sweep"]["selection_mask_semantics"] == (
+        "reviewed_semantic_mask_union_registered_sage_target_core"
+    )
+
+
 def test_rejects_mask_bytes_changed_after_review(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     mask = tmp_path / "reviewed-masks/tasks/task_1/masks/front.png"

@@ -185,6 +185,8 @@ def materialize_segment_contribution_sweep_freeze(
     sweep["camera_split"]["camera_split_digest"] = canonical_digest(
         sweep["camera_split"], digest_field="camera_split_digest"
     )
+    mask_method = source.get("mask_method") or {}
+    completion_enabled = bool(mask_method.get("registered_core_completion_enabled"))
     sweep["segment_contribution_sweep"] = {
         "kind": SWEEP_KIND,
         "source_excision_freeze": {
@@ -192,7 +194,12 @@ def materialize_segment_contribution_sweep_freeze(
             "freeze_digest": source["freeze_digest"],
         },
         "selection_classes": ["target_core", "uncertain"],
-        "selection_mask_semantics": "historical_outer_mask_exact_union",
+        "selection_mask_semantics": (
+            "reviewed_semantic_mask_union_registered_sage_target_core"
+            if completion_enabled
+            else "historical_outer_mask_exact_union"
+        ),
+        "registered_core_completion_is_semantic_observation": False,
         "all_frozen_cameras_included": True,
         "factual_gaussian_ownership_claimed": False,
         "protected_background_coupling_allowed_only_with_complete_repair_support": True,
