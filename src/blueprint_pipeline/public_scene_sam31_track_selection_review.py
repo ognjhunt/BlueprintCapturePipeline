@@ -43,15 +43,23 @@ AI_REVIEW_INPUT_TOKEN_CEILING = 250_000
 AI_REVIEW_MAX_COST_USD = 1.0
 AI_REVIEW_DECLARED_USE = "noncommercial_internal_adp_visual_review"
 AI_REVIEW_ACCEPTED_BY = "nijelhunt_1"
+MASK_OBSERVATION_ABOVE_THRESHOLD = "above_threshold_selected_mask"
+MASK_OBSERVATION_NORMALIZED_EMPTY = (
+    "normalized_empty_no_above_threshold_observation"
+)
 
 _AI_REVIEW_PROMPT = (
     "Review every supplied calibrated overlay. Magenta pixels are the selected SAM mask. "
-    "Accept a frame only when those pixels select the named task object and do not materially "
-    "select another object or background. A zero-pixel mask is acceptable only when the named "
-    "target is genuinely absent or fully occluded in that camera; if the target is visible with "
-    "no mask, reject it. Return exactly one decision for every task_id/camera_id pair. Accept "
-    "the whole candidate only when every frame is accepted. This is visual selection review, "
-    "not geometry, physical, or simulator qualification."
+    "This review decides track identity and false-positive contamination, not per-view segmentation "
+    "completeness. For an above_threshold_selected_mask frame, accept only when the magenta pixels "
+    "select the named task object and do not materially select another object or background. For a "
+    "normalized_empty_no_above_threshold_observation frame, the retained source frame is complete "
+    "evidence but SAM selected zero pixels: report the target's actual visibility independently, set "
+    "selected_mask_matches_target=true only if the overlay truly contains no magenta pixels, and do "
+    "not reject merely because the target remains visible. Such acceptance does not qualify coverage. "
+    "Return exactly one decision for every task_id/camera_id pair. Accept the whole candidate only "
+    "when every frame's identity/contamination check is accepted. This is visual track-selection "
+    "review, not segmentation-completeness, geometry, physical, or simulator qualification."
 )
 
 
@@ -228,6 +236,12 @@ def _validate_candidate_file(candidate_path: Path, candidate: Mapping[str, Any])
                     or source.size != overlay.size
                     or foreground != frame.get("foreground_pixel_count")
                     or foreground != histogram[255]
+                    or frame.get("mask_observation_status")
+                    != (
+                        MASK_OBSERVATION_ABOVE_THRESHOLD
+                        if foreground
+                        else MASK_OBSERVATION_NORMALIZED_EMPTY
+                    )
                 ):
                     raise Sam31TrackSelectionReviewError("sam31_review_media_content_invalid")
                 color = Image.new("RGB", source.size, (255, 0, 160))
@@ -294,6 +308,7 @@ def build_sam31_ai_visual_review_input(
                 "selected_track_ids": list(binding["selected_track_ids"]),
                 "selected_track_labels": list(binding["selected_track_labels"]),
                 "foreground_pixel_count": int(frame["foreground_pixel_count"]),
+                "mask_observation_status": str(frame["mask_observation_status"]),
                 "overlay_sha256": overlay_record["sha256"],
                 "overlay_width_height_bound_by_candidate": True,
             }
@@ -490,14 +505,15 @@ def validate_sam31_ai_structured_decision(
         source = expected[key]
         row = observed[key]
         empty = int(source["foreground_pixel_count"]) == 0
-        expected_visibility = (
-            "absent_or_fully_occluded" if empty else "visible_or_partially_visible"
+        expected_observation_status = (
+            MASK_OBSERVATION_NORMALIZED_EMPTY
+            if empty
+            else MASK_OBSERVATION_ABOVE_THRESHOLD
         )
-        if row.get("target_visibility") != expected_visibility:
-            blockers.append(
-                f"{'empty_mask_target_visible' if empty else 'nonempty_mask_target_not_visible'}:"
-                f"{key[0]}:{key[1]}"
-            )
+        if source.get("mask_observation_status") != expected_observation_status:
+            blockers.append(f"mask_observation_status_invalid:{key[0]}:{key[1]}")
+        if not empty and row.get("target_visibility") != "visible_or_partially_visible":
+            blockers.append(f"nonempty_mask_target_not_visible:{key[0]}:{key[1]}")
         if row.get("selected_mask_matches_target") is not True or row.get("decision") != "accepted":
             blockers.append(f"frame_rejected:{key[0]}:{key[1]}")
     derived = "accepted" if not blockers else "rejected"
@@ -1168,6 +1184,11 @@ def materialize_sam31_track_selection_review_candidate(
                     "selected_mask": _record(mask_path, root=output),
                     "overlay": _record(overlay_path, root=output),
                     "foreground_pixel_count": int((mask != 0).sum()),
+                    "mask_observation_status": (
+                        MASK_OBSERVATION_ABOVE_THRESHOLD
+                        if int((mask != 0).sum())
+                        else MASK_OBSERVATION_NORMALIZED_EMPTY
+                    ),
                 }
             )
         review_rows.append(
@@ -1187,6 +1208,7 @@ def materialize_sam31_track_selection_review_candidate(
         },
         "claim_boundary": {
             "human_review_completed": False,
+            "per_view_segmentation_completeness_qualified": False,
             "object_identity_qualified": False,
             "gaussian_ownership_qualified": False,
             "physical_evidence": False,
@@ -1309,6 +1331,7 @@ def seal_sam31_track_selection_ai_review(
             "track_selection_reviewed": accepted,
             "human_review_completed": False,
             "ai_visual_review_completed": True,
+            "per_view_segmentation_completeness_qualified": False,
             "object_identity_qualified": False,
             "gaussian_ownership_qualified": False,
             "physical_evidence": False,

@@ -433,6 +433,7 @@ def materialize_calibrated_object_mask_set(
         },
         "claim_boundary": {
             "masks_are_model_inferred_candidates": True,
+            "per_view_segmentation_completeness_qualified": False,
             "object_identity_qualified": False,
             "gaussian_ownership_qualified": False,
             "removal_qualified": False,
