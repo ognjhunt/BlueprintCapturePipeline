@@ -29,6 +29,11 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from blueprint_pipeline.adp_joint_agent_vast import (
+    DEFAULT_IMAGE as JOINT_AGENT_IMAGE,
+    SOURCE_TREE as JOINT_AGENT_SOURCE_TREE,
+)
+
 from blueprint_pipeline.adp_joint_agent_vast import PROBE_KIND
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
@@ -62,6 +67,27 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
         blockers.append("bundle_claims_simready_authority")
     if receipt.get("provider_zero_required_after_return") is not True:
         blockers.append("bundle_does_not_require_provider_zero")
+    # Mirror the receipt-readable half of the allocator's own binding check,
+    # the way the SimReady builder already does. The dispatcher consumes this
+    # lane's one-launch standing authorization *before* it invokes the
+    # allocator, and `record_launch` is exclusive-create with no release path,
+    # so any allocator-side refusal burns the authorization for zero provider
+    # work and leaves the lane unlaunchable until someone hand-writes a new
+    # authorization file on the control-plane host. A bundle built at another
+    # commit is the recurring case: every merge moves main past the deployed
+    # release.
+    source = receipt.get("blueprint_source")
+    source = source if isinstance(source, dict) else {}
+    if receipt.get("status") != "ready":
+        blockers.append(f"bundle_status_not_ready:{receipt.get('status')}")
+    if source.get("commit") != context.source_commit:
+        blockers.append("bundle_commit_not_source_commit")
+    if source.get("dirty") is not False:
+        blockers.append("bundle_source_tree_dirty")
+    if receipt.get("container_image") != JOINT_AGENT_IMAGE:
+        blockers.append("bundle_container_image_mismatch")
+    if receipt.get("source_tree") != JOINT_AGENT_SOURCE_TREE:
+        blockers.append("bundle_source_tree_mismatch")
     return blockers
 
 

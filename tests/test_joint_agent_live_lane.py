@@ -21,6 +21,11 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.adp_joint_agent_vast import (
+    DEFAULT_IMAGE as JOINT_AGENT_IMAGE,
+    SOURCE_TREE as JOINT_AGENT_SOURCE_TREE,
+)
+
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
 pytestmark = pytest.mark.usefixtures(
@@ -58,6 +63,11 @@ def lane(tmp_path: Path) -> dict:
                 "automatic_paid_retry_allowed": False,
                 "agent_output_is_simready_authority": False,
                 "provider_zero_required_after_return": True,
+                # The allocator reads these too. A fixture without them cannot
+                # express the contract the launch is actually admitted against.
+                "blueprint_source": {"commit": COMMIT, "dirty": False},
+                "container_image": JOINT_AGENT_IMAGE,
+                "source_tree": JOINT_AGENT_SOURCE_TREE,
                 "bundle_path": str(bundle),
                 "bundle_sha256": "sha256:"
                 + hashlib.sha256(bundle.read_bytes()).hexdigest(),
@@ -160,3 +170,41 @@ def test_the_bundle_is_bound_where_it_resolved(lane) -> None:
     assert inputs["joint_agent_bundle"]["digest"] == "sha256:" + hashlib.sha256(
         lane["bundle"].read_bytes()
     ).hexdigest()
+
+
+def test_a_bundle_built_at_another_commit_is_refused_before_the_authority_burns(
+    lane, tmp_path: Path
+) -> None:
+    """The one-launch authorization is consumed before the allocator runs.
+
+    Production regression: the dispatcher consumes this lane's standing
+    authorization and only then invokes the allocator, and `record_launch` is
+    exclusive-create with no release path. The builder mirrored none of the
+    allocator's binding checks, so a bundle built at a different commit than
+    the deployed one -- the recurring case, since every merge moves main past
+    the deployed release -- was published green, burned the authorization for
+    zero provider work, and left the lane unlaunchable until a human
+    hand-wrote a new authorization file on the control-plane host.
+    """
+
+    receipt = json.loads(lane["receipt"].read_text(encoding="utf-8"))
+    receipt["blueprint_source"]["commit"] = "a" * 40
+    lane["receipt"].write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(Exception) as excinfo:
+        _build(lane)
+
+    assert "bundle_commit_not_source_commit" in str(excinfo.value)
+
+
+def test_a_dirty_source_tree_is_refused_before_the_authority_burns(
+    lane, tmp_path: Path
+) -> None:
+    receipt = json.loads(lane["receipt"].read_text(encoding="utf-8"))
+    receipt["blueprint_source"]["dirty"] = True
+    lane["receipt"].write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(Exception) as excinfo:
+        _build(lane)
+
+    assert "bundle_source_tree_dirty" in str(excinfo.value)
