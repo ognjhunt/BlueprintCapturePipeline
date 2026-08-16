@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -198,6 +199,56 @@ def test_live_profile_rejects_changed_nested_prior_spend_bytes(tmp_path: Path) -
                 }
             ]
         )
+
+
+def test_live_profile_expands_legacy_issuer_nested_receipts(tmp_path: Path) -> None:
+    """Older lane validators can keep their schema without hiding dependencies."""
+
+    terminal = _write(tmp_path / "legacy-terminal.json", {"status": "completed"})
+    terminal_record = {
+        "path": str(terminal.resolve()),
+        "size_bytes": terminal.stat().st_size,
+        "sha256": "sha256:" + hashlib.sha256(terminal.read_bytes()).hexdigest(),
+    }
+    reconciliation = _write(
+        tmp_path / "legacy-reconciliation.json",
+        {
+            "schema_version": "legacy_lane_reconciliation.v1",
+            "entries": [
+                {
+                    "source_receipts": [
+                        {"role": "terminal", "record": terminal_record}
+                    ]
+                }
+            ],
+        },
+    )
+    reconciliation_record = {
+        "path": str(reconciliation.resolve()),
+        "size_bytes": reconciliation.stat().st_size,
+        "sha256": "sha256:"
+        + hashlib.sha256(reconciliation.read_bytes()).hexdigest(),
+    }
+    authority = _write(
+        tmp_path / "legacy-authority.json",
+        {"prior_spend_reconciliation": reconciliation_record},
+    )
+
+    inputs = expand_prior_spend_immutable_inputs(
+        [
+            {
+                "name": "legacy_paid_attempt_authority",
+                "path": str(authority),
+                "digest": "sha256:" + "0" * 64,
+            }
+        ]
+    )
+
+    assert {Path(row["path"]) for row in inputs} == {
+        authority.resolve(),
+        reconciliation.resolve(),
+        terminal.resolve(),
+    }
 
 
 def test_cli_derives_cost_and_digests_without_handwritten_ledger(tmp_path: Path) -> None:
