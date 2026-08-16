@@ -1,5 +1,7 @@
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1491,6 +1493,20 @@ def _standing_authorization(profile: dict, *, max_launches: int) -> dict:
     }
 
 
+def _require_one_use_standing_authorization(profile: dict) -> None:
+    profile["standing_launch_authorization"] = {
+        "schema_version": (
+            "task_evaluation_standing_launch_authorization_requirement.v1"
+        ),
+        "required_for_live_execution": True,
+        "maximum_launches": 1,
+        "consumption_must_precede_allocator": True,
+    }
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+
+
 def test_a_standing_authorization_bound_to_one_launch_admits_only_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1545,6 +1561,122 @@ def test_a_standing_authorization_bound_to_one_launch_admits_only_one(
         "standing_authorization_launch" in blocker for blocker in receipts[1]["blockers"]
     ), receipts[1]["blockers"]
     assert receipts[1]["provider_mutation_attempted"] is False
+
+
+def test_one_use_standing_authority_is_atomic_across_distinct_website_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two launch ids racing at the website boundary may allocate only once."""
+
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    monkeypatch.delenv(
+        "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False
+    )
+    profile = _profile(tmp_path)
+    _require_one_use_standing_authorization(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    state_root = tmp_path / "control-plane" / "state"
+    state_root.mkdir(parents=True)
+    standing_dir = state_root.parent / "standing-authorizations"
+    _write(
+        standing_dir / f"{profile['profile_id']}.json",
+        _standing_authorization(profile, max_launches=1),
+    )
+    request_paths: list[Path] = []
+    for index in (1, 2):
+        request = _request(profile)
+        request["launch_id"] = f"joint-agent-website-launch-{index}"
+        request["run_id"] = f"joint-agent-run-{index}"
+        request["idempotency_key"] = request["launch_id"]
+        request["request_digest"] = canonical_digest(
+            request, digest_field="request_digest"
+        )
+        request_path = tmp_path / f"request-{index}.json"
+        _write(request_path, request)
+        request_paths.append(request_path)
+
+    # Force both dispatcher processes past the old non-atomic admission read
+    # before either reaches the new locked check-and-consume boundary.
+    barrier = threading.Barrier(2)
+    original_decision = dispatcher_module._standing_authorization_decision
+
+    def synchronized_decision(*args, **kwargs):
+        decision = original_decision(*args, **kwargs)
+        barrier.wait(timeout=5)
+        return decision
+
+    monkeypatch.setattr(
+        dispatcher_module, "_standing_authorization_decision", synchronized_decision
+    )
+    calls: list[list[str]] = []
+
+    def allocator(argv: list[str]) -> int:
+        assert len(
+            list(
+                (standing_dir / "consumed" / profile["profile_id"]).glob(
+                    "*.json"
+                )
+            )
+        ) == 1, "authority must be durable before allocator staging/allocation"
+        calls.append(list(argv))
+        return 0
+
+    def dispatch(path: Path) -> dict:
+        return dispatch_launch_request(
+            request_path=path,
+            profile_dir=profile_dir,
+            state_root=state_root,
+            execute=True,
+            allocator_runner=allocator,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        receipts = list(executor.map(dispatch, request_paths))
+
+    assert len(calls) == 1
+    assert sum(receipt["provider_mutation_attempted"] is True for receipt in receipts) == 1
+    refused = next(
+        receipt for receipt in receipts if receipt["provider_mutation_attempted"] is False
+    )
+    assert "standing_authorization_consumption_not_recorded" in refused["blockers"]
+    assert "standing_authorization_launches_exhausted" in refused["blockers"]
+    consumption_records = list(
+        (standing_dir / "consumed" / profile["profile_id"]).glob("*.json")
+    )
+    assert len(consumption_records) == 1
+
+
+def test_joint_one_use_requirement_cannot_be_bypassed_by_execute_launch_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(EXECUTE_ENV, "true")
+    monkeypatch.setenv(SECRET_PROFILE_ID_ENV, "canonical-vast-adp")
+    monkeypatch.delenv(
+        "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR", raising=False
+    )
+    profile = _profile(tmp_path)
+    _require_one_use_standing_authorization(profile)
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{profile['profile_id']}.json", profile)
+    request = _request(profile)
+    request_path = tmp_path / "request.json"
+    _write(request_path, request)
+    calls: list[list[str]] = []
+
+    receipt = dispatch_launch_request(
+        request_path=request_path,
+        profile_dir=profile_dir,
+        state_root=tmp_path / "state",
+        execute=True,
+        execute_launch_id=request["launch_id"],
+        allocator_runner=lambda argv: calls.append(list(argv)) or 0,
+    )
+
+    assert receipt["provider_mutation_attempted"] is False
+    assert "one_use_standing_authorization_required" in receipt["blockers"]
+    assert calls == []
 
 
 def test_an_unconfigured_host_still_finds_its_standing_authorizations(
