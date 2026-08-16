@@ -188,6 +188,49 @@ def test_materializer_accepts_semantic_teacher_terminal_shapes(tmp_path: Path) -
     assert reopened["receipt_digest"] == record["receipt_digest"]
 
 
+def test_semantic_teacher_prior_spend_accepts_json_float_serialization_tail(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "semantic-float-tail", amount=0.013)
+    output, value = _materialize(
+        tmp_path / "semantic-float-tail",
+        "semantic_teacher_image_edit_gpu_canary",
+        fixture,
+    )
+    value["total_cost_usd"] = 0.013000000000000001
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    output.chmod(0o640)
+    output.write_text(json.dumps(value), encoding="utf-8")
+
+    reopened, record = _validate_prior_spend_reconciliation(
+        output,
+        expected_total_cost_usd=0.013,
+    )
+
+    assert reopened["total_cost_usd"] == 0.013000000000000001
+    assert record["receipt_digest"] == value["receipt_digest"]
+
+
+def test_semantic_teacher_prior_spend_rejects_one_nanodollar_mismatch(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "semantic-real-mismatch", amount=0.013)
+    output, _ = _materialize(
+        tmp_path / "semantic-real-mismatch",
+        "semantic_teacher_image_edit_gpu_canary",
+        fixture,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="semantic_teacher_prior_spend_reconciliation_invalid",
+    ):
+        _validate_prior_spend_reconciliation(
+            output,
+            expected_total_cost_usd=0.013000001,
+        )
+
+
 def test_live_profile_expands_every_nested_prior_spend_receipt(tmp_path: Path) -> None:
     """The dispatcher user must preflight the same files the allocator reopens."""
 
