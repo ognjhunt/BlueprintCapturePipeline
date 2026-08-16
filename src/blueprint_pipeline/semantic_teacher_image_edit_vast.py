@@ -295,6 +295,7 @@ def _seal_terminal_execution(
         provider_run / TEARDOWN_MANIFEST_NAME,
         {
             "schema_version": "vast_teardown_manifest.v1",
+            "generated_at": utc_now_iso(),
             "status": "completed" if provider_zero_verified else "blocked",
             "vast_instance_ids": instance_ids,
             "teardown_actions_performed": [dict(item) for item in teardown_actions],
