@@ -274,6 +274,9 @@ def run_stage_graph(
     running = 0
     observed_max_overlap = 0
     lock = threading.Lock()
+    completion_lock = threading.Lock()
+    completion_sequence = 0
+    completion_rank: dict[str, int] = {}
 
     def _record_terminal(
         stage_id: str, execution: StageExecution, *, executed: bool = True
@@ -303,6 +306,7 @@ def run_stage_graph(
         )
 
     def _execute(stage: StageSpec) -> StageExecution:
+        nonlocal completion_sequence
         started_at = utc_now_iso()
         started_monotonic = time.monotonic()
         try:
@@ -310,7 +314,7 @@ def run_stage_graph(
         except BaseException as error:  # noqa: BLE001 - typed, retained, fail-closed
             duration = time.monotonic() - started_monotonic
             reason = _bounded_reason(f"{type(error).__name__}: {error}")
-            return StageExecution(
+            execution = StageExecution(
                 stage_id=stage.stage_id,
                 status="failed",
                 outcome=StageOutcome(kind=OutcomeKind.FAILED, reason=reason),
@@ -321,19 +325,28 @@ def run_stage_graph(
                 completed_at=utc_now_iso(),
                 duration_seconds=duration,
             )
-        duration = time.monotonic() - started_monotonic
-        mapped = dict(artifact) if isinstance(artifact, Mapping) else {}
-        return StageExecution(
-            stage_id=stage.stage_id,
-            status="completed",
-            outcome=StageOutcome(kind=OutcomeKind.PRODUCED, artifact=mapped),
-            depends_on=stage.depends_on,
-            paid=stage.paid,
-            serial_group=stage.serial_group,
-            started_at=started_at,
-            completed_at=utc_now_iso(),
-            duration_seconds=duration,
-        )
+        else:
+            duration = time.monotonic() - started_monotonic
+            mapped = dict(artifact) if isinstance(artifact, Mapping) else {}
+            execution = StageExecution(
+                stage_id=stage.stage_id,
+                status="completed",
+                outcome=StageOutcome(kind=OutcomeKind.PRODUCED, artifact=mapped),
+                depends_on=stage.depends_on,
+                paid=stage.paid,
+                serial_group=stage.serial_group,
+                started_at=started_at,
+                completed_at=utc_now_iso(),
+                duration_seconds=duration,
+            )
+        # A FIRST_COMPLETED wait returns a set. When multiple futures finish
+        # before the scheduler wakes, iterating that set invents an arbitrary
+        # completion order. Record the worker-observed order before each
+        # future becomes done, then use it only for observability evidence.
+        with completion_lock:
+            completion_rank[stage.stage_id] = completion_sequence
+            completion_sequence += 1
+        return execution
 
     def _resolve_blocked() -> None:
         # Repeatedly settle stages whose dependencies can no longer all
@@ -443,7 +456,9 @@ def run_stage_graph(
                         break
                 done, _pending = wait(set(futures), return_when=FIRST_COMPLETED)
                 with lock:
-                    for future in done:
+                    for future in sorted(
+                        done, key=lambda item: completion_rank[futures[item]]
+                    ):
                         stage_id = futures.pop(future)
                         execution = future.result()
                         running -= 1
