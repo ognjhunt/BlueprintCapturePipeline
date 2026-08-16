@@ -23,7 +23,7 @@ AUTHORITY_SCHEMA_VERSION = "semantic_teacher_image_edit_paid_authority.v1"
 CONSUMPTION_SCHEMA_VERSION = "semantic_teacher_image_edit_authority_consumption.v1"
 PRIOR_SPEND_RECONCILIATION_SCHEMA_VERSION = "adp_same_goal_spend_reconciliation.v1"
 PRIOR_SPEND_ENTRY_SCHEMA_VERSION = "adp_same_goal_spend_entry.v1"
-MAX_ATTEMPT_SPEND_USD = 5.0
+MAX_ATTEMPT_SPEND_USD = 10.0
 MAX_TTL_SECONDS = 3_600
 _DIGEST_FIELDS = (
     "receipt_digest",

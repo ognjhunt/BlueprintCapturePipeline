@@ -28,12 +28,12 @@ def _sha(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _inputs(tmp_path: Path) -> dict[str, Path]:
+def _inputs(tmp_path: Path, *, attempt_cap_usd: float = 5.0) -> dict[str, Path]:
     authority = {
         "schema_version": "semantic_teacher_image_edit_paid_authority.v1",
         "authorization_digest": "",
         "bundle": {"sha256": BUNDLE},
-        "hard_total_spend_cap_usd": 5.0,
+        "hard_total_spend_cap_usd": attempt_cap_usd,
     }
     authority["authorization_digest"] = canonical_digest(
         authority, digest_field="authorization_digest"
@@ -129,6 +129,23 @@ def test_pending_statement_reserves_full_cap_and_validates_for_next_authority(
     )
     assert reopened == reconciliation
     assert record["total_cost_usd"] == 5.0
+
+
+def test_pending_statement_accepts_new_ten_dollar_attempt_ceiling(
+    tmp_path: Path,
+) -> None:
+    paths = _inputs(tmp_path, attempt_cap_usd=10.0)
+    reservation, reconciliation = _run(tmp_path, paths)
+    assert reservation["cost_usd"] == 10.0
+    assert reconciliation["total_cost_usd"] == 10.0
+
+
+def test_pending_statement_rejects_attempt_above_ten_dollars(
+    tmp_path: Path,
+) -> None:
+    paths = _inputs(tmp_path, attempt_cap_usd=10.01)
+    with pytest.raises(ValueError, match="terminal_evidence_invalid"):
+        _run(tmp_path, paths)
 
 
 def test_posted_charge_cannot_be_mislabeled_pending(tmp_path: Path) -> None:

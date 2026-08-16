@@ -22,6 +22,7 @@ from .decision_evidence_contracts import canonical_digest
 from .semantic_teacher_image_edit_paid_authority import (
     AUTHORITY_SCHEMA_VERSION,
     CONSUMPTION_SCHEMA_VERSION,
+    MAX_ATTEMPT_SPEND_USD,
     PRIOR_SPEND_ENTRY_SCHEMA_VERSION,
     PRIOR_SPEND_RECONCILIATION_SCHEMA_VERSION,
 )
@@ -141,7 +142,7 @@ def materialize_semantic_teacher_pending_spend(
         )
         or isinstance(reserve, bool)
         or not isinstance(reserve, (int, float))
-        or not 0 < float(reserve) <= 5.0
+        or not 0 < float(reserve) <= MAX_ATTEMPT_SPEND_USD
     ):
         raise ValueError("semantic_teacher_pending_terminal_evidence_invalid")
     billing_digest = billing_source.get("receipt_digest")
