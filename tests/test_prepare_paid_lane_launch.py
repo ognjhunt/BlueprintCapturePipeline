@@ -211,3 +211,28 @@ def test_shipped_semantic_teacher_lane_keeps_its_required_order() -> None:
         "profile_publication",
         "terminal_rehearsal",
     ]
+
+
+def test_semantic_teacher_lane_passes_each_tool_the_argument_shape_it_wants() -> None:
+    """Two arguments look interchangeable with a neighbour and are not.
+
+    Both were caught only by running the sequence by hand. The profile builder
+    takes the *local publication receipt path* and resolves whatever it is given
+    as a filesystem path, so handing it the `r2://` URI the receipt contains
+    silently became a relative path under the caller's working directory. The
+    rehearsal resolves its lane module against ``src/blueprint_pipeline``, so it
+    wants a bare filename and rejects a dotted module path as missing.
+    """
+
+    steps = {step.step_id: step for step in prep.LANES["semantic_teacher_image_edit"]}
+
+    profile_argv = list(steps["live_profile"].argv)
+    manifest_argument = profile_argv[profile_argv.index("--raw-manifest-uri") + 1]
+    assert manifest_argument.endswith("manifest_publication_receipt.v1.json")
+    assert "://" not in manifest_argument
+
+    rehearsal_argv = list(steps["terminal_rehearsal"].argv)
+    lane_module = rehearsal_argv[rehearsal_argv.index("--lane-module") + 1]
+    assert lane_module == "semantic_teacher_image_edit_vast.py"
+    assert "." in lane_module and "/" not in lane_module
+    assert not lane_module.startswith("blueprint_pipeline")
