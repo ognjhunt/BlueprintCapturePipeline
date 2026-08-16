@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import threading
 from pathlib import Path
 
@@ -63,3 +64,98 @@ def test_write_text_replaces_symlink_itself_without_overwriting_target(tmp_path:
     assert not target.is_symlink()
     assert target.read_text(encoding="utf-8") == "inside"
     assert outside.read_text(encoding="utf-8") == "outside"
+    # The replaced link must not donate the pointed-to file's identity.
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_write_json_preserves_permissions_of_the_file_it_replaces(
+    tmp_path: Path,
+) -> None:
+    """Production regression: an atomic rewrite silently narrowed a state file.
+
+    ``tempfile.mkstemp`` stages the replacement at ``0600``, so without
+    carrying the previous mode forward every rewrite re-permissions the target
+    and can lock out the account that owns it.
+    """
+
+    target = tmp_path / "spend_ledger.json"
+    target.write_text("{}", encoding="utf-8")
+    target.chmod(0o640)
+
+    common.write_json(target, {"revision": 2})
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert json.loads(target.read_text(encoding="utf-8")) == {"revision": 2}
+
+
+def test_write_json_never_carries_forward_group_or_world_write(tmp_path: Path) -> None:
+    target = tmp_path / "ledger.json"
+    target.write_text("{}", encoding="utf-8")
+    target.chmod(0o666)
+
+    common.write_json(target, {"revision": 2})
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_write_json_creates_a_brand_new_file_owner_only(tmp_path: Path) -> None:
+    target = tmp_path / "fresh.json"
+
+    common.write_json(target, {"revision": 1})
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_write_json_restores_previous_owner_when_the_writer_differs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rewrite by another account must hand the file back to its owner.
+
+    Root rewriting a service-account state file is the exact production
+    failure: the replacement carried root's ownership and the service could
+    never read its own ledger again. Ownership is asserted through the
+    recorded ``chown`` because an unprivileged test cannot change owners.
+    """
+
+    target = tmp_path / "spend_ledger.json"
+    target.write_text('{"total_spend_usd": 16.8586}', encoding="utf-8")
+    previous = target.stat()
+
+    monkeypatch.setattr(common.os, "geteuid", lambda: previous.st_uid + 1)
+    recorded: list[tuple[int, int]] = []
+    real_chown = common.os.chown
+
+    def recording_chown(path: object, uid: int, gid: int) -> None:
+        recorded.append((uid, gid))
+        real_chown(path, uid, gid)
+
+    monkeypatch.setattr(common.os, "chown", recording_chown)
+
+    common.write_json(target, {"total_spend_usd": 17.0})
+
+    assert recorded == [(previous.st_uid, previous.st_gid)]
+    current = target.stat()
+    assert (current.st_uid, current.st_gid) == (previous.st_uid, previous.st_gid)
+
+
+def test_write_json_survives_a_writer_that_may_not_restore_the_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Best-effort ownership restore must never fail an otherwise valid write."""
+
+    target = tmp_path / "ledger.json"
+    target.write_text("{}", encoding="utf-8")
+    previous = target.stat()
+
+    monkeypatch.setattr(common.os, "geteuid", lambda: previous.st_uid + 1)
+
+    def denied_chown(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("not permitted")
+
+    monkeypatch.setattr(common.os, "chown", denied_chown)
+
+    common.write_json(target, {"revision": 3})
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"revision": 3}

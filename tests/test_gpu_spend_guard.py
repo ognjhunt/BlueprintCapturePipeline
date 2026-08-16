@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1778,6 +1779,48 @@ def test_corrupt_spend_ledger_is_preserved_and_blocks_update(tmp_path: Path) -> 
     assert result["blockers"] == ["spend_ledger_existing_state_invalid"]
     assert result["prior_state_preserved"] is True
     assert ledger_path.read_bytes() == corrupt
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root bypasses the permission bits this test relies on"
+)
+def test_unreadable_spend_ledger_blocks_with_its_own_cause(tmp_path: Path) -> None:
+    """An intact ledger the guard cannot read must not be reported as corrupt.
+
+    Production regression: an atomic rewrite by a different account left
+    ``spend_ledger.json`` unreadable to the service account. The read fault was
+    swallowed and reported as invalid existing state, so the blocker pointed at
+    content corruption while the bytes were perfectly valid.
+    """
+
+    ledger_path = tmp_path / "spend.json"
+    intact = json.dumps(
+        {
+            "schema_version": guard.SPEND_LEDGER_SCHEMA_VERSION,
+            "status": "updated",
+            "total_spend_usd": 16.8586,
+        }
+    ).encode("utf-8")
+    ledger_path.write_bytes(intact)
+    ledger_path.chmod(0o000)
+    try:
+        result = guard.update_spend_ledger(
+            [], ledger_path=ledger_path, now=1_800_000_000
+        )
+    finally:
+        ledger_path.chmod(0o600)
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["spend_ledger_unreadable"]
+    assert result["prior_state_preserved"] is True
+    assert ledger_path.read_bytes() == intact
+
+    # The cause has to survive into the fleet gate an operator actually reads.
+    fleet = guard.build_fleet_budget_guard(
+        [], spend_ledger=result, max_daily_spend_usd=25.0, max_total_spend_usd=25.0
+    )
+    assert fleet["status"] == "blocked"
+    assert "spend_ledger:spend_ledger_unreadable" in fleet["blockers"]
 
 
 def test_required_billing_reconciliation_rejects_stale_or_incomplete_export(
