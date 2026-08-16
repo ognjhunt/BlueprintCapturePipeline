@@ -64,6 +64,7 @@ def _inputs(tmp_path: Path) -> dict[str, Path]:
         "provider_absence_confirmed": True,
     }
     zero = {
+        "schema_version": "gpu_spend_guard.v1",
         "provider_zero_verified": True,
         "live_instance_count": 0,
         "provider_zero": {"status": "verified"},
@@ -141,4 +142,29 @@ def test_posted_charge_cannot_be_mislabeled_pending(tmp_path: Path) -> None:
     source["receipt_digest"] = canonical_digest(source, digest_field="receipt_digest")
     _write(paths["billing_source"], source)
     with pytest.raises(ValueError, match="official_charge_not_pending"):
+        _run(tmp_path, paths)
+
+
+def test_legacy_gpu_spend_guard_without_embedded_digest_is_bound_by_file_sha(
+    tmp_path: Path,
+) -> None:
+    paths = _inputs(tmp_path)
+    zero = json.loads(paths["zero"].read_text())
+    zero.pop("receipt_digest")
+    _write(paths["zero"], zero)
+
+    reservation, _reconciliation = _run(tmp_path, paths)
+
+    source = reservation["sources"]["provider_zero"]
+    assert source["sha256"] == _sha(paths["zero"])
+    assert "receipt_digest" not in source
+
+
+def test_invalid_optional_gpu_spend_guard_digest_fails_closed(tmp_path: Path) -> None:
+    paths = _inputs(tmp_path)
+    zero = json.loads(paths["zero"].read_text())
+    zero["receipt_digest"] = DIGEST
+    _write(paths["zero"], zero)
+
+    with pytest.raises(ValueError, match="terminal_evidence_invalid"):
         _run(tmp_path, paths)

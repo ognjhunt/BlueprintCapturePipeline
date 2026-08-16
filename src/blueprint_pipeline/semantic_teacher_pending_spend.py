@@ -108,6 +108,7 @@ def materialize_semantic_teacher_pending_spend(
     bundle_sha256 = (authority.get("bundle") or {}).get("sha256")
     instance_id = str(teardown.get("instance_id") or "")
     reserve = authority.get("hard_total_spend_cap_usd")
+    zero_digest = zero.get("receipt_digest")
     if (
         not attempt_id.strip()
         or authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
@@ -129,9 +130,15 @@ def materialize_semantic_teacher_pending_spend(
         or watchdog.get("status") != "provider_terminal"
         or int(instance_id) not in (watchdog.get("instance_ids") or [])
         or watchdog.get("provider_absence_confirmed") is not True
+        or zero.get("schema_version") != "gpu_spend_guard.v1"
         or zero.get("provider_zero_verified") is not True
         or zero.get("live_instance_count") != 0
         or (zero.get("provider_zero") or {}).get("status") != "verified"
+        or (
+            zero_digest is not None
+            and zero_digest
+            != canonical_digest(zero, digest_field="receipt_digest")
+        )
         or isinstance(reserve, bool)
         or not isinstance(reserve, (int, float))
         or not 0 < float(reserve) <= 5.0
@@ -180,7 +187,10 @@ def materialize_semantic_teacher_pending_spend(
         "consumption": _record(consumption_file),
         "teardown": _record(teardown_file, digest=str(teardown["teardown_digest"])),
         "watchdog": _record(watchdog_file),
-        "provider_zero": _record(zero_file, digest=str(zero["receipt_digest"])),
+        "provider_zero": _record(
+            zero_file,
+            digest=str(zero_digest) if zero_digest is not None else None,
+        ),
         "billing_source": _record(billing_source_file, digest=str(billing_digest)),
         "billing_responses": billing_sources,
     }
