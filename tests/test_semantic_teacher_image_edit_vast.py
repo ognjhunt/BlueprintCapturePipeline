@@ -229,6 +229,7 @@ def _preflight(tmp_path: Path) -> dict:
             "status": "armed",
             "independent_process": True,
             "watchdog_pid": os.getpid(),
+            "watchdog_started_epoch": 900,
             "watchdog_deadline_epoch": 10_000,
             "pod_name_prefix": "blueprint-semantic-teacher-",
             "started_instance_id_path": str(
@@ -494,6 +495,64 @@ def test_probe_kind_and_bootstrap_are_single_attempt_and_ephemeral_secret() -> N
     assert "runtime_stderr.log" in script
     assert "semantic_teacher_image_edit_runtime_output.zip" in script
     assert "retry" not in script.lower()
+
+
+def test_watchdog_validator_accepts_realistic_full_ttl_handoff_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full-TTL watchdog remains valid after ordinary preflight latency."""
+
+    monkeypatch.setattr("os.kill", lambda pid, signal: None)
+    assert vast._watchdog_valid(
+        {
+            "status": "armed",
+            "independent_process": True,
+            "watchdog_pid": 123,
+            "watchdog_started_epoch": 1_000,
+            "watchdog_deadline_epoch": 2_800,
+            "pod_name_prefix": "blueprint-semantic-teacher-bound-run-",
+        },
+        now_epoch=1_000.9,
+        hard_ttl_seconds=1_800,
+    )
+
+
+def test_watchdog_validator_accepts_control_plane_evidence_field_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("os.kill", lambda pid, signal: None)
+    assert vast._watchdog_valid(
+        {
+            "status": "armed",
+            "independent_process": True,
+            "pid": 123,
+            "started_epoch": 1_000,
+            "deadline_epoch": 1_060,
+            "pod_name_prefix": "blueprint-semantic-teacher-bound-run-",
+        },
+        now_epoch=1_005,
+        hard_ttl_seconds=60,
+    )
+
+
+def test_watchdog_validator_rejects_expired_or_short_armed_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("os.kill", lambda pid, signal: None)
+    base = {
+        "status": "armed",
+        "independent_process": True,
+        "watchdog_pid": 123,
+        "watchdog_started_epoch": 1_000,
+        "watchdog_deadline_epoch": 1_060,
+        "pod_name_prefix": "blueprint-semantic-teacher-bound-run-",
+    }
+    assert not vast._watchdog_valid(base, now_epoch=1_060, hard_ttl_seconds=60)
+    assert not vast._watchdog_valid(
+        {**base, "watchdog_deadline_epoch": 1_059},
+        now_epoch=1_005,
+        hard_ttl_seconds=60,
+    )
 
 
 def test_one_instance_run_retains_output_and_proves_every_zero(
