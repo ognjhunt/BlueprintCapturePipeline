@@ -338,6 +338,7 @@ class _Provider:
         self.inspect_absent = inspect_absent
         self.inspect_calls = 0
         self.launch_result = launch_result
+        self.seen_spec = None
 
     def billable_inventory(self, *, name_prefix: str) -> dict:
         live = self.initially_live or self.live
@@ -352,6 +353,7 @@ class _Provider:
         assert spec.image == IMAGE
         assert spec.env["BLUEPRINT_IMAGE_EDITOR_TOKEN"] == TOKEN
         assert spec.env["BLUEPRINT_SEMANTIC_TEACHER_INPUT_BUNDLE_GET_URL"] == INPUT_URL
+        self.seen_spec = spec
         self.seen_token = spec.env["BLUEPRINT_IMAGE_EDITOR_TOKEN"]
         return {"create_payload": {"env_keys": sorted(spec.env)}}
 
@@ -623,6 +625,10 @@ def test_one_instance_run_retains_output_and_proves_every_zero(
     assert teardown_manifest["generated_at"].endswith("+00:00")
     assert provider.launch_calls == 1
     assert provider.terminate_calls == 1
+    assert provider.seen_spec.max_hourly_rate_usd == pytest.approx(0.5)
+    assert provider.seen_spec.min_gpu_ram_mb == 16_000
+    assert "us" in provider.seen_spec.allowed_geolocation_country_codes
+    assert "cn" not in provider.seen_spec.allowed_geolocation_country_codes
     assert store.stage_calls == 1
     assert store.cleanup_calls == 1
     assert len(consumption_calls) == 1

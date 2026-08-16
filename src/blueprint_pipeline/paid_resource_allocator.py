@@ -67,6 +67,7 @@ from .openai_candidate_paid_admission import (
     prepare_openai_api_candidate_admission,
     prepare_pigey_candidate_runtime_admission,
 )
+from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     PaidResourceAdmissionBlocked,
@@ -836,6 +837,9 @@ def _semantic_teacher_capacity_preflight(
         requires_rtx=False,
         vast_launch_mode="args",
         excluded_machine_ids=tuple(excluded_machine_ids),
+        allowed_geolocation_country_codes=tuple(
+            sorted(OPENAI_API_SUPPORTED_COUNTRY_CODES)
+        ),
     )
     request = provider.build_request(spec, job_dir)
     capacity = provider.capacity_preflight(request)

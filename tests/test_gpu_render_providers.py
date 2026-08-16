@@ -1254,9 +1254,10 @@ def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
     assert req["create_endpoint"] == "PUT /asks/{ask_contract_id}/"
     assert req["entrypoint_override"] == "bash"
     assert spec.vast_launch_mode == "args"
-    assert list(RenderLaunchSpec.__dataclass_fields__)[-2:] == [
+    assert list(RenderLaunchSpec.__dataclass_fields__)[-3:] == [
         "vast_launch_mode",
         "excluded_machine_ids",
+        "allowed_geolocation_country_codes",
     ]
     assert req["vast_launch_mode"] == "args"
     assert req["require_direct_port"] is False
@@ -1567,6 +1568,7 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
             "allowed_gpu_keywords": ["L40S"],
             "denied_gpu_keywords": [],
         },
+        "allowed_geolocation_country_codes": [],
     }
     serialized = json.dumps(result)
     assert "vast-secret" not in serialized
@@ -1612,6 +1614,141 @@ def test_vast_capacity_preflight_excludes_immutable_machine_ids(
     assert all(
         row["machine_id"] != 76546 for row in result["viable_gpu_types"]
     )
+
+
+def test_vast_live_selection_uses_authority_envelope_after_advisory_offer_vanishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The advisory offer is evidence of capacity, not a reserved live target."""
+
+    searches = iter(
+        [
+            {
+                "offers": [
+                    {
+                        "ask_contract_id": 101,
+                        "machine_id": 1001,
+                        "gpu_name": "RTX A6000",
+                        "gpu_ram": 48_000,
+                        "dph_total": 0.24,
+                        "compute_cap": 860,
+                        "geolocation": "texas_us",
+                    }
+                ]
+            },
+            {
+                "offers": [
+                    {
+                        "ask_contract_id": 202,
+                        "machine_id": 2002,
+                        "gpu_name": "RTX 4090",
+                        "gpu_ram": 24_000,
+                        "dph_total": 0.35,
+                        "compute_cap": 890,
+                        "geolocation": "germany_de",
+                    }
+                ]
+            },
+        ]
+    )
+    create_paths: list[str] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        assert api_key == "vast-key"
+        if method == "POST" and path == "/bundles/":
+            assert payload["dph_total"]["lte"] == pytest.approx(0.40)
+            return 200, next(searches)
+        create_paths.append(path)
+        return 200, {"new_contract": 777}
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    provider = VastRenderProvider()
+    request = provider.build_request(
+        _spec(
+            max_hourly_rate_usd=0.40,
+            min_gpu_ram_mb=16_000,
+            requires_rtx=False,
+            allowed_geolocation_country_codes=("de", "us"),
+        ),
+        tmp_path,
+    )
+
+    capacity = provider.capacity_preflight(request)
+    assert capacity["status"] == "available"
+    assert capacity["selected_offer"]["ask_contract_id"] == 101
+    assert capacity["selected_offer"]["gpu_ram_mb"] == 48_000
+    assert capacity["selected_offer"]["hourly_rate_usd"] == pytest.approx(0.24)
+    assert capacity["selection_policy"]["allowed_geolocation_country_codes"] == [
+        "de",
+        "us",
+    ]
+
+    live_request = _with_prelaunch_guard(request)
+    live_request["maximum_create_attempts"] = 1
+    launched = provider.launch(tmp_path, live_request)
+
+    assert launched["status"] == "launched"
+    assert launched["instance_id"] == "777"
+    assert launched["create_attempt_count"] == 1
+    assert launched["maximum_create_attempts"] == 1
+    assert create_paths == ["/asks/202/"]
+
+
+def test_vast_openai_geography_rejects_unsupported_only_offers_before_create(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    provider_calls: list[tuple[str, str]] = []
+    unsupported = {
+        "offers": [
+            {
+                "ask_contract_id": 303,
+                "machine_id": 3003,
+                "gpu_name": "RTX 4090",
+                "gpu_ram": 24_000,
+                "dph_total": 0.20,
+                "compute_cap": 890,
+                "geolocation": "beijing_cn",
+            }
+        ]
+    }
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        provider_calls.append((method, path))
+        assert method == "POST"
+        return 200, unsupported
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    provider = VastRenderProvider()
+    request = provider.build_request(
+        _spec(
+            max_hourly_rate_usd=0.40,
+            min_gpu_ram_mb=16_000,
+            requires_rtx=False,
+            allowed_geolocation_country_codes=("us",),
+        ),
+        tmp_path,
+    )
+
+    capacity = provider.capacity_preflight(request)
+    assert capacity["status"] == "blocked"
+    assert capacity["selected_offer"] is None
+
+    live_request = _with_prelaunch_guard(request)
+    live_request["maximum_create_attempts"] = 1
+    blocked = provider.launch(tmp_path, live_request)
+    assert blocked["status"] == "blocked"
+    assert blocked["create_attempt_count"] == 0
+    assert blocked["allocation_created"] is False
+    assert provider_calls == [
+        ("POST", "/bundles/"),
+        ("POST", "/bundles/"),
+    ]
 
 
 def test_vast_ssh_direct_capacity_requires_offer_with_direct_port(

@@ -23,6 +23,7 @@ import zipfile
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
+from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
 from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
@@ -1392,15 +1393,15 @@ def _execute_semantic_teacher_image_edit_vast(
                     int(preflight.get("container_disk_bytes") or 0) // 1024**3,
                 ),
                 volume_gb=0,
-                max_hourly_rate_usd=price,
-                min_gpu_ram_mb=max(
-                    1,
-                    int(preflight.get("gpu_memory_bytes") or 0) // 1_000_000,
-                ),
+                max_hourly_rate_usd=float(hourly_cap),
+                min_gpu_ram_mb=16_000,
                 requires_rtx=False,
                 vast_launch_mode="args",
                 excluded_machine_ids=tuple(
                     int(value) for value in excluded_machine_ids
+                ),
+                allowed_geolocation_country_codes=tuple(
+                    sorted(OPENAI_API_SUPPORTED_COUNTRY_CODES)
                 ),
             )
             provider_request = provider.build_request(spec, root)
