@@ -222,7 +222,6 @@ def build_native_task_arena_policy_bundle(
                 "adp009d_droid_action_execution.py",
                 "droid_policy_bridge.py",
                 "openpi_droid_policy_runtime.py",
-                "policy_ranking_thesis.py",
             )
         )
         receipt = build_native_task_arena_bundle(

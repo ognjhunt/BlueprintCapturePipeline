@@ -35,7 +35,6 @@ POLICY_EXTRA_MODULE_NAMES = (
     "adp009d_droid_action_execution.py",
     "droid_policy_bridge.py",
     "openpi_droid_policy_runtime.py",
-    "policy_ranking_thesis.py",
 )
 
 
@@ -124,12 +123,30 @@ def test_policy_declared_modules_are_an_import_closure() -> None:
         if imported not in declared
     }
 
-    # One break is left, and it is pinned rather than hidden so that it cannot
-    # grow silently. `openpi_droid_policy_runtime` imports `canonical_sha256`
-    # from `policy_ranking_thesis`, which imports `write_json` from `common`,
-    # which re-exports `core.common` -- neither `common` nor the `core`
-    # subpackage is shipped in any arena bundle. Closing it means either
-    # shipping that subpackage or giving the runtime a local digest helper, so
-    # it is a separate change from making the two lanes launchable at all. It
-    # only affects the `pi05_droid` candidate; `groot_n17_droid` imports clean.
-    assert unresolved == {"policy_ranking_thesis -> .common"}
+    assert unresolved == set()
+
+
+def test_the_local_digest_helper_matches_the_one_it_replaced() -> None:
+    """Duplicating an encoder is only safe if it is pinned to the original.
+
+    `openpi_droid_policy_runtime` grew its own `canonical_sha256` so the
+    policy bundle no longer has to ship `policy_ranking_thesis -> common ->
+    core.common`, none of which it carries. The two must not drift: these
+    digests are recorded in runtime receipts and compared across attempts.
+    """
+
+    from blueprint_pipeline.openpi_droid_policy_runtime import (
+        canonical_sha256 as local,
+    )
+    from blueprint_pipeline.policy_ranking_thesis import canonical_sha256 as original
+
+    for value in (
+        {},
+        {"b": 1, "a": 2},
+        {"nested": {"z": [1, 2, {"k": "v"}], "a": None}},
+        {"unicode": "front-to-back transmittance \u00d7 alpha"},
+        [1, 2.5, True, None, "x"],
+        "plain string",
+        1234,
+    ):
+        assert local(value) == original(value), value

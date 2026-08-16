@@ -20,7 +20,27 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .droid_policy_bridge import DROID_OPEN_LOOP_HORIZON, OPENPI_SOURCE_REVISION
-from .policy_ranking_thesis import canonical_sha256
+
+
+def canonical_sha256(value: Any) -> str:
+    """Digest a value the same way `policy_ranking_thesis` does, without it.
+
+    Importing it from there pulled `policy_ranking_thesis -> common ->
+    core.common` into every arena policy bundle, and none of those ship. The
+    `pi05_droid` candidate therefore died on ModuleNotFoundError after the GPU
+    was rented. The encoder is six lines of stdlib and is pinned byte-for-byte
+    against the original by test, so duplicating it costs less than shipping a
+    subpackage the runtime never otherwise touches.
+    """
+
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 SCHEMA_VERSION = "openpi_droid_policy_runtime.v1"
