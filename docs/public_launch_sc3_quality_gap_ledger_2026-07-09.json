@@ -5563,7 +5563,7 @@
             {
               "artifact_id": "RUN-09-AC-01-EV-01",
               "path": "deploy/scripts/deploy.sh",
-              "sha256": "sha256:7747fbf941bb8467408aff52599a2751f8bf6867c9c39c96582b79abcdaeaa38",
+              "sha256": "sha256:31c888f16c5d0bcb7b06402fd4e17024b9b04937c8b0036c171c75895de9a139",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12236,7 +12236,7 @@
             {
               "artifact_id": "RUN-19-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:0004abf65c68bd6431073d22c6743b3344fdaa9a3468c541ab7146ccca540a30",
+              "sha256": "sha256:c38776899fc888698a6927607c9305e0042f69bfa700675e69f05b1eac678780",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12496,7 +12496,7 @@
             {
               "artifact_id": "RUN-21-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:0004abf65c68bd6431073d22c6743b3344fdaa9a3468c541ab7146ccca540a30",
+              "sha256": "sha256:c38776899fc888698a6927607c9305e0042f69bfa700675e69f05b1eac678780",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12626,7 +12626,7 @@
             {
               "artifact_id": "RUN-22-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:0004abf65c68bd6431073d22c6743b3344fdaa9a3468c541ab7146ccca540a30",
+              "sha256": "sha256:c38776899fc888698a6927607c9305e0042f69bfa700675e69f05b1eac678780",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
