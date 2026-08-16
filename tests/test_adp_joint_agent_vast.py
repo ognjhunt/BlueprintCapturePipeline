@@ -176,7 +176,29 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     source = tmp_path / "source.usda"
     source.write_text("#usda 1.0\ndef Xform \"asset\" {}\n", encoding="utf-8")
     source_digest = "sha256:" + __import__("hashlib").sha256(source.read_bytes()).hexdigest()
-    source_receipt_digest = "sha256:" + "1" * 64
+    source_receipt = {
+        "schema_version": "articulated_source_asset.v1",
+        "connected_component_count": 2,
+        "connected_components": [
+            {
+                "component_index": 0,
+                "aabb_min_asset_m": [-0.4, -0.35, 0.0],
+                "aabb_max_asset_m": [0.4, 0.35, 1.9],
+            },
+            {
+                "component_index": 1,
+                "aabb_min_asset_m": [-0.36, 0.17, 0.94],
+                "aabb_max_asset_m": [0.36, 0.35, 1.632],
+            },
+        ],
+        "receipt_digest": "",
+    }
+    source_receipt["receipt_digest"] = canonical_digest(
+        source_receipt, digest_field="receipt_digest"
+    )
+    source_receipt_path = tmp_path / "articulated_source_asset_receipt.json"
+    source_receipt_path.write_text(json.dumps(source_receipt), encoding="utf-8")
+    source_receipt_digest = source_receipt["receipt_digest"]
     config = {
         "project": {"name": "fixture", "working_dir": str(tmp_path / "work")},
         "input": {"usd_path": str(source)},
@@ -212,6 +234,7 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
         "source_asset": {
             "path": str(source),
             "sha256": source_digest,
+            "source_receipt_path": str(source_receipt_path),
             "source_receipt_digest": source_receipt_digest,
         },
         "config": {"path": str(config_path)},
@@ -390,7 +413,25 @@ def test_builder_binds_scene_neutral_joint_runtime(monkeypatch, tmp_path: Path) 
     )
     assert review_contract["maximum_assembly_joint_count"] == 4
     assert review_contract["commanded_task_joint_count"] == 1
+    assert review_contract["minimum_assembly_joint_count"] == 1
+    assert review_contract["required_articulation_root_count"] == 1
+    assert (
+        review_contract["non_task_joint_mode"]
+        == "locked_at_frozen_reset_with_native_readback"
+    )
+    assert review_contract["non_task_joint_motion_tolerance"] == 0.001
+    assert review_contract["target_member_extent_ratio_band"] == list(
+        joint_vast.TARGET_MEMBER_EXTENT_RATIO_BAND
+    )
     assert review_contract["scope_amendment_digest"] == scope_amendment["amendment_digest"]
+    shipped_receipt_path = (
+        tmp_path / "bundle/provider_runtime/input/articulated_source_receipt.json"
+    )
+    assert shipped_receipt_path.is_file()
+    shipped_receipt = json.loads(shipped_receipt_path.read_text(encoding="utf-8"))
+    assert shipped_receipt["receipt_digest"] == source_receipt_digest
+    assert receipt["source_receipt_sha256"] == joint_vast._sha256(shipped_receipt_path)
+    assert receipt["source_receipt_digest"] == source_receipt_digest
     assert "840313" not in (tmp_path / "bundle/provider_runtime/joint_agent.yaml").read_text()
     preflight = _blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight",
@@ -1014,9 +1055,32 @@ def test_provider_runner_review_failure_retains_topology_evidence(
     root = tmp_path / "provider_runtime"
     output = tmp_path / "runtime_output"
     root.mkdir(parents=True)
+    source_receipt = {
+        "schema_version": "articulated_source_asset.v1",
+        "connected_components": [
+            {
+                "component_index": 0,
+                "aabb_min_asset_m": [-1.0, -1.0, 0.0],
+                "aabb_max_asset_m": [1.0, 1.0, 1.9],
+            },
+            {
+                "component_index": 1,
+                "aabb_min_asset_m": [-0.9, -0.9, 0.94],
+                "aabb_max_asset_m": [0.9, 0.9, 1.632],
+            },
+        ],
+        "receipt_digest": "",
+    }
+    source_receipt["receipt_digest"] = canonical_digest(
+        source_receipt, digest_field="receipt_digest"
+    )
+    (root / "input").mkdir(parents=True)
+    source_receipt_path = root / "input/articulated_source_receipt.json"
+    source_receipt_path.write_text(json.dumps(source_receipt), encoding="utf-8")
     manifest = {
         "status": "ready",
         "model": {"backend": "nvidia_nim", "id": NIM_MODEL},
+        "source_receipt_sha256": runner._sha256(source_receipt_path),
     }
     (root / "adp_joint_agent_provider_manifest.json").write_text(
         json.dumps(manifest), encoding="utf-8"
@@ -1033,6 +1097,7 @@ def test_provider_runner_review_failure_retains_topology_evidence(
         "target_joint_type": "revolute",
         "target_axis_world": [0.0, 0.0, 1.0],
         "target_axis_absolute_dot_minimum": 0.99,
+        "target_member_extent_ratio_band": [0.5, 1.5],
         "target_member_projection_constraints": [
             {
                 "axis_world": [0.0, 0.0, 1.0],
