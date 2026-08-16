@@ -81,6 +81,28 @@ def _lock(tmp_path: Path, **overrides) -> Path:
     return path
 
 
+def _provenance(tmp_path: Path, commit: str) -> Path:
+    path = tmp_path / f"provenance-{commit[:8]}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint.deploy_release_provenance.v1",
+                "status": "verified",
+                "git_sha": commit,
+                "run_id": 123,
+                "run_url": "https://github.com/ognjhunt/BlueprintCapturePipeline/actions/runs/123",
+                "workflow_name": "Full Test Lane",
+                "workflow_path": ".github/workflows/full-test-lane.yml",
+                "job_name": "Full pytest lane on CPU runner",
+                "collection": {"test_count": 100},
+                "claim_boundary": {"canonical_full_lane_verified": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_the_canonical_lock_is_checked_by_default() -> None:
     """An operator who forgets the flag still gets the guard."""
 
@@ -191,17 +213,20 @@ def test_the_deploy_does_not_move_a_surface_while_refusing(tmp_path: Path, monke
     monkeypatch.setattr(
         deploy, "_move_source_checkout", lambda repo, commit: moved.append(commit)
     )
+    source = tmp_path / "source"
+    source.mkdir()
     lock = _lock(tmp_path)
 
     with lock.open("r", encoding="utf-8") as holder:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(deploy.ControlPlaneDeployError):
             deploy.deploy_control_plane_commit(
-                source_repo=tmp_path,
+                source_repo=source,
                 source_commit="a" * 40,
                 release_root=tmp_path / "releases",
                 state_root=tmp_path / "state",
                 active_link=tmp_path / "active",
+                release_provenance=_provenance(tmp_path, "a" * 40),
                 paid_launch_locks=(str(lock),),
             )
         fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
@@ -367,6 +392,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         release_root=tmp_path / "releases",
         state_root=tmp_path / "state",
         active_link=active,
+        release_provenance=_provenance(tmp_path, commit),
         paid_launch_locks=(str(lock),),
         intake_runtime_drop_in=tmp_path / "drop-in",
     )
@@ -374,6 +400,34 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert observed == ["restart", "runtime_probe"]
     assert receipt["intake_runtime"]["source_commit"] == commit
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
+    assert receipt["release_provenance"]["git_sha"] == commit
+    assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
+
+
+def test_deploy_refuses_mismatched_promotion_before_moving_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    moved: list[str] = []
+    monkeypatch.setattr(
+        deploy, "_move_source_checkout", lambda repo, commit: moved.append(commit)
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+
+    with pytest.raises(
+        deploy.ControlPlaneDeployError, match="deploy_release_provenance_mismatch"
+    ):
+        deploy.deploy_control_plane_commit(
+            source_repo=source,
+            source_commit="a" * 40,
+            release_root=tmp_path / "releases",
+            state_root=tmp_path / "state",
+            active_link=tmp_path / "active",
+            release_provenance=_provenance(tmp_path, "b" * 40),
+            paid_launch_locks=(),
+        )
+
+    assert moved == []
 
 
 def test_the_receipt_records_every_slot_it_was_exclusive_with(tmp_path: Path) -> None:
