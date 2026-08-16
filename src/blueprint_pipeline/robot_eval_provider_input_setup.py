@@ -62,6 +62,24 @@ R2_ENDPOINT_ENV_VAR_ALTERNATIVES = (
 S3_SECRET_ENV_VARS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 S3_REGION_ENV_VAR_ALTERNATIVES = ("AWS_REGION", "AWS_DEFAULT_REGION")
 
+# Production launch services expose the object-store credentials through the
+# WAM file contract.  The publication helper historically understood only the
+# AWS/R2 spellings, so invoking it from the canonical service environment fell
+# through to boto3's ambient credential lookup.  Keep the existing AWS names
+# first and treat these as file-path aliases; secret values remain in memory
+# only long enough to construct the storage client and are never copied into
+# the process environment or a receipt.
+FILE_ENV_VAR_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "AWS_ACCESS_KEY_ID": ("BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE",),
+    "AWS_SECRET_ACCESS_KEY": (
+        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE",
+    ),
+    "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL": (
+        "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE",
+    ),
+    "AWS_REGION": ("BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE",),
+}
+
 # Every website-reachable live-profile builder accepts an operator-supplied
 # manifest URI. Generated manifests for these builders share this one
 # content-addressed, full-byte-readback publication contract.
@@ -88,8 +106,12 @@ def _file_env_name(env_name: str) -> str:
     return f"{env_name}_FILE"
 
 
-def _read_file_env_value(env_name: str) -> str:
-    path_text = os.getenv(_file_env_name(env_name))
+def _file_env_names(env_name: str) -> tuple[str, ...]:
+    return (_file_env_name(env_name), *FILE_ENV_VAR_ALIASES.get(env_name, ()))
+
+
+def _read_named_file_env_value(file_env_name: str) -> str:
+    path_text = os.getenv(file_env_name)
     if not path_text:
         return ""
     path = Path(path_text).expanduser()
@@ -99,6 +121,14 @@ def _read_file_env_value(env_name: str) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def _read_file_env_value(env_name: str) -> str:
+    for file_env_name in _file_env_names(env_name):
+        value = _read_named_file_env_value(file_env_name)
+        if value:
+            return value
+    return ""
 
 
 def _env_or_file_value(env_name: str) -> str:
@@ -119,9 +149,10 @@ def _first_env_or_file_value(env_names: Sequence[str]) -> str:
 
 def _present_file_env_vars(env_names: Sequence[str]) -> list[str]:
     return [
-        _file_env_name(env_name)
+        file_env_name
         for env_name in env_names
-        if _read_file_env_value(env_name)
+        for file_env_name in _file_env_names(env_name)
+        if _read_named_file_env_value(file_env_name)
     ]
 
 
@@ -1027,7 +1058,9 @@ def _upload_readiness_preflight(
         list(R2_ENDPOINT_ENV_VAR_ALTERNATIVES) if scheme == "r2" else []
     )
     endpoint_file_env_var_alternatives = [
-        _file_env_name(name) for name in endpoint_env_var_alternatives
+        file_env_name
+        for name in endpoint_env_var_alternatives
+        for file_env_name in _file_env_names(name)
     ]
     endpoint_env_var_present = (
         any(_env_or_file_present(name) for name in endpoint_env_var_alternatives)
@@ -1065,7 +1098,9 @@ def _upload_readiness_preflight(
         "required_secret_env_var_count": len(required_secret_env_vars),
         "missing_secret_env_vars": missing_secret_env_vars,
         "accepted_secret_file_env_vars": [
-            _file_env_name(name) for name in required_secret_env_vars
+            file_env_name
+            for name in required_secret_env_vars
+            for file_env_name in _file_env_names(name)
         ],
         "present_secret_file_env_vars": present_secret_file_env_vars,
         "secret_values_recorded": False,
@@ -1073,7 +1108,9 @@ def _upload_readiness_preflight(
         "present_plaintext_env_var_count": len(present_plaintext_env_vars),
         "missing_plaintext_env_vars": missing_plaintext_env_vars,
         "accepted_plaintext_file_env_vars": [
-            _file_env_name(name) for name in required_plaintext_env_vars
+            file_env_name
+            for name in required_plaintext_env_vars
+            for file_env_name in _file_env_names(name)
         ],
         "present_plaintext_file_env_vars": present_plaintext_file_env_vars,
         "r2_endpoint_env_var_alternatives": endpoint_env_var_alternatives,
