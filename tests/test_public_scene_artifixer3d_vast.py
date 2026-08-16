@@ -191,6 +191,27 @@ def _prior_chain(tmp_path: Path) -> tuple[Path, Path]:
     return prior_path, terminal_path
 
 
+def _campaign_start(tmp_path: Path) -> Path:
+    ledger = tmp_path / "appearance-spend-ledger.json"
+    _write(ledger, {"instances": [], "daily_spend_usd": 0.0})
+    receipt: dict[str, object] = {
+        "schema_version": "appearance_campaign_spend_start.v1",
+        "campaign_marker": "artifixer",
+        "prior_goal_spend_usd": 0.0,
+        "aggregate_goal_spend_cap_usd": 12.0,
+        "measured_paid_attempts": [],
+        "measured_from": [_record(ledger)],
+        "provider_mutation_performed": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    path = tmp_path / "appearance-campaign-start.json"
+    _write(path, receipt)
+    return path
+
+
 def test_bundle_kind_and_static_contract_are_registered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -288,6 +309,81 @@ def test_provider_bundle_validation_remains_generic_through_five_objects(
     assert validated["replacement_object_count"] == 5
     assert validated["task_ids"] == [f"task_{index}" for index in range(1, 6)]
     assert validated["task_camera_counts"] == {f"task_{index}": 2 for index in range(1, 6)}
+
+
+def test_paid_authority_accepts_and_reopens_a_measured_campaign_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_path, _ = _bundle(tmp_path, monkeypatch)
+    bundle = validate_artifixer3d_bundle(receipt_path)
+    authority = materialize_artifixer3d_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        campaign_start_receipt_path=_campaign_start(tmp_path),
+        authorization_reference="fixture-measured-campaign-start",
+        authorized_by="fixture_user",
+        authorized_on="2026-08-16",
+        blueprint_commit=bundle["blueprint_source_identity"]["commit"],
+        max_hourly_rate_usd=1.0,
+        hard_cap_usd=3.0,
+        hard_ttl_seconds=7_200,
+        output_path=tmp_path / "authority.json",
+    )
+
+    assert authority["campaign_spend_anchor_kind"] == "measured_campaign_start"
+    assert authority["aggregate_goal_spend_before_attempt_usd"] == 0.0
+    assert authority["prior_aura_authority"] is None
+    assert (
+        validate_artifixer3d_paid_attempt_authority(
+            authority,
+            prepared_bundle=bundle,
+            max_hourly_rate_usd=1.0,
+            hard_cap_usd=3.0,
+            hard_ttl_seconds=7_200,
+            allowed_active_instance_ids=[],
+        )["authorization_digest"]
+        == authority["authorization_digest"]
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"campaign_spend_anchor_kind": "prior_aura_terminal_attempt"},
+        {"prior_aura_authority": {"path": "ambiguous"}},
+    ],
+    ids=["wrong-kind", "both-anchors"],
+)
+def test_paid_authority_rejects_ambiguous_campaign_start_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: dict[str, object]
+) -> None:
+    receipt_path, _ = _bundle(tmp_path, monkeypatch)
+    bundle = validate_artifixer3d_bundle(receipt_path)
+    authority = materialize_artifixer3d_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        campaign_start_receipt_path=_campaign_start(tmp_path),
+        authorization_reference="fixture-measured-campaign-start",
+        authorized_by="fixture_user",
+        authorized_on="2026-08-16",
+        blueprint_commit=bundle["blueprint_source_identity"]["commit"],
+        max_hourly_rate_usd=1.0,
+        hard_cap_usd=3.0,
+        hard_ttl_seconds=7_200,
+        output_path=tmp_path / "authority.json",
+    )
+    authority.update(mutation)
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+
+    with pytest.raises(ValueError, match="spend_anchor"):
+        validate_artifixer3d_paid_attempt_authority(
+            authority,
+            prepared_bundle=bundle,
+            max_hourly_rate_usd=1.0,
+            hard_cap_usd=3.0,
+            hard_ttl_seconds=7_200,
+            allowed_active_instance_ids=[],
+        )
 
 
 def test_paid_authority_chains_prior_spend_and_is_one_shot(

@@ -1034,18 +1034,53 @@ def validate_artifixer3d_paid_attempt_authority(
     )
     if bundle_receipt_path != Path(str(prepared_bundle["receipt_path"])).resolve():
         raise ValueError("artifixer3d_authority_bundle_mismatch")
-    prior_path = _bound(
-        value.get("prior_aura_authority"),
-        code="artifixer3d_authority_prior_chain_unbound",
-    )
-    prior = _validate_prior_authority_chain(prior_path)
-    if prior.get("authorization_digest") != value.get("prior_aura_authority_digest"):
-        raise ValueError("artifixer3d_authority_prior_chain_mismatch")
-    terminal_path = _bound(
-        value.get("prior_terminal_result"),
-        code="artifixer3d_authority_terminal_unbound",
-    )
-    _, terminal_cost = _validate_prior_terminal_result(terminal_path, prior_authority=prior)
+    anchor_kind = value.get("campaign_spend_anchor_kind")
+    terminal_cost: float | None = None
+    if anchor_kind == "prior_aura_terminal_attempt":
+        if (
+            value.get("campaign_start_receipt") is not None
+            or value.get("campaign_start_receipt_digest") is not None
+        ):
+            raise ValueError("artifixer3d_authority_spend_anchor_ambiguous")
+        prior_path = _bound(
+            value.get("prior_aura_authority"),
+            code="artifixer3d_authority_prior_chain_unbound",
+        )
+        prior = _validate_prior_authority_chain(prior_path)
+        if prior.get("authorization_digest") != value.get("prior_aura_authority_digest"):
+            raise ValueError("artifixer3d_authority_prior_chain_mismatch")
+        terminal_path = _bound(
+            value.get("prior_terminal_result"),
+            code="artifixer3d_authority_terminal_unbound",
+        )
+        _, terminal_cost = _validate_prior_terminal_result(
+            terminal_path, prior_authority=prior
+        )
+        anchor_spend = float(prior["prior_goal_spend_usd"]) + terminal_cost
+    elif anchor_kind == "measured_campaign_start":
+        if any(
+            value.get(field) is not None
+            for field in (
+                "prior_aura_authority",
+                "prior_aura_authority_digest",
+                "prior_terminal_result",
+                "prior_terminal_cost_usd",
+            )
+        ):
+            raise ValueError("artifixer3d_authority_spend_anchor_ambiguous")
+        campaign_start_path = _bound(
+            value.get("campaign_start_receipt"),
+            code="artifixer3d_authority_campaign_start_unbound",
+        )
+        campaign_start, anchor_spend = validate_campaign_start_receipt(
+            campaign_start_path
+        )
+        if campaign_start.get("receipt_digest") != value.get(
+            "campaign_start_receipt_digest"
+        ):
+            raise ValueError("artifixer3d_authority_campaign_start_mismatch")
+    else:
+        raise ValueError("artifixer3d_authority_spend_anchor_invalid")
     predecessor_cost = 0.0
     predecessor = value.get("prior_artifixer_attempt")
     if predecessor is not None:
@@ -1100,10 +1135,7 @@ def validate_artifixer3d_paid_attempt_authority(
             or supplemental.get("total_cost_usd") != supplemental_cost
         ):
             raise ValueError("artifixer3d_authority_supplemental_spend_mismatch")
-    prior_spend = round(
-        float(prior["prior_goal_spend_usd"]) + terminal_cost + predecessor_cost + supplemental_cost,
-        6,
-    )
+    prior_spend = round(anchor_spend + predecessor_cost + supplemental_cost, 6)
     if (
         terminal_cost != value.get("prior_terminal_cost_usd")
         or prior_spend != value.get("aggregate_goal_spend_before_attempt_usd")
