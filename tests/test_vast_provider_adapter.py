@@ -5744,6 +5744,110 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
     assert "vast_estimated_spend_exceeded_hard_cap" in validation["blockers"]
 
 
+def test_poll_instance_terminalizes_on_positive_specific_instance_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disappeared contract is terminal evidence, not a reason to burn the TTL."""
+
+    calls = iter(
+        [
+            (
+                200,
+                {
+                    "instances": {
+                        "id": 47_890_266,
+                        "actual_status": "loading",
+                        "cur_state": "running",
+                    }
+                },
+            ),
+            (200, {"instances": []}),
+        ]
+    )
+    sleeps: list[int] = []
+    monkeypatch.setattr(vpa, "_api_json", lambda **_: next(calls))
+    monkeypatch.setattr(vpa.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    status, observations, final_payload = vpa._poll_instance(
+        instance_id=47_890_266,
+        api_key="secret",
+        timeout_seconds=3_600,
+        poll_interval_seconds=17,
+    )
+
+    assert status == "absent"
+    assert final_payload == {"instances": []}
+    assert [row["status"] for row in observations] == ["loading", "absent"]
+    assert observations[-1] == {
+        "observed_at": observations[-1]["observed_at"],
+        "http_status_code": 200,
+        "status": "absent",
+        "actual_status": None,
+        "cur_state": None,
+        "specific_instance_absent": True,
+        "probe_error": None,
+    }
+    assert sleeps == [17]
+
+
+def test_poll_instance_retains_transient_api_error_without_calling_it_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def api(**_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary Vast API failure for secret")
+        return 200, {"instances": {"actual_status": "running", "cur_state": "running"}}
+
+    sleeps: list[int] = []
+    monkeypatch.setattr(vpa, "_api_json", api)
+    monkeypatch.setattr(vpa.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    status, observations, final_payload = vpa._poll_instance(
+        instance_id=47_890_266,
+        api_key="secret",
+        timeout_seconds=3_600,
+        poll_interval_seconds=11,
+    )
+
+    assert status == "running"
+    assert final_payload["instances"]["actual_status"] == "running"
+    assert [row["status"] for row in observations] == ["unknown", "running"]
+    assert observations[0]["specific_instance_absent"] is False
+    assert observations[0]["probe_error"] == (
+        f"RuntimeError: temporary Vast API failure for {vpa.REDACTED_SECRET}"
+    )
+    assert observations[1]["probe_error"] is None
+    assert sleeps == [11]
+
+
+def test_poll_instance_does_not_treat_non_success_empty_body_as_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = iter(
+        [
+            (503, {"instances": []}),
+            (200, {"instances": {"actual_status": "running", "cur_state": "running"}}),
+        ]
+    )
+    monkeypatch.setattr(vpa, "_api_json", lambda **_: next(calls))
+    monkeypatch.setattr(vpa.time, "sleep", lambda _seconds: None)
+
+    status, observations, _ = vpa._poll_instance(
+        instance_id=47_890_266,
+        api_key="secret",
+        timeout_seconds=3_600,
+        poll_interval_seconds=0,
+    )
+
+    assert status == "running"
+    assert [row["status"] for row in observations] == ["unknown", "running"]
+    assert observations[0]["specific_instance_absent"] is False
+
+
 def test_vast_adapter_missing_grant_dominates_provider_create(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

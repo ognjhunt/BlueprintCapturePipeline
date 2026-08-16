@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.paired_target_native_import_vast import MAX_HARD_CAP_USD
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
 pytestmark = pytest.mark.usefixtures(
@@ -62,7 +63,7 @@ def lane(tmp_path: Path) -> dict:
     authority.write_text(
         json.dumps(
             {
-                "hard_attempt_spend_cap_usd": 3.0,
+                "hard_attempt_spend_cap_usd": MAX_HARD_CAP_USD,
                 "maximum_single_resource_ttl_seconds": 7200,
                 "bundle_sha256": digest,
             }
@@ -90,6 +91,14 @@ def test_the_profile_routes_the_paired_target_probe_through_the_allocator(lane) 
     assert "--paired-target-native-import-bundle-receipt" in argv
     assert "--paired-target-native-import-attempt-authority" in argv
     assert profile["allocator"]["retry_cap"] == 0
+
+
+def test_default_profile_budget_matches_the_allocator_authority_ceiling(lane) -> None:
+    profile = _build(lane)
+
+    assert profile["allocator"]["max_spend_usd"] == MAX_HARD_CAP_USD
+    authority = json.loads(lane["authority"].read_text(encoding="utf-8"))
+    assert authority["hard_attempt_spend_cap_usd"] == MAX_HARD_CAP_USD
 
 
 def test_the_shared_controls_are_present(lane) -> None:
