@@ -237,6 +237,7 @@ def materialize_fresh_scene_removal_freezes(
             output_root=excision_root,
             supersample=int(task.get("supersample", 2)),
             render_input_receipt_path=task.get("render_input_receipt_path"),
+            complete_safety_envelope_with_registered_core=True,
             adp_item=str(task.get("adp_item") or "ADP-009D"),
         )
         freeze_path = excision_root / f"{FREEZE_SCHEMA}.json"
@@ -257,6 +258,19 @@ def materialize_fresh_scene_removal_freezes(
                     "freeze_digest": sweep["freeze_digest"],
                 },
                 "camera_count": int(sweep["camera_split"]["camera_count"]),
+                "registered_core_completion": {
+                    "enabled": True,
+                    "camera_count_with_added_pixels": sum(
+                        int(row.get("registered_core_added_pixel_count") or 0) > 0
+                        for row in freeze["masks"]
+                    ),
+                    "added_pixel_count": sum(
+                        int(row.get("registered_core_added_pixel_count") or 0)
+                        for row in freeze["masks"]
+                    ),
+                    "upgrades_semantic_observation_claim": False,
+                    "upgrades_geometry_or_physical_truth_claim": False,
+                },
             }
         )
     receipt: dict[str, Any] = {
@@ -275,6 +289,11 @@ def materialize_fresh_scene_removal_freezes(
         "provider_mutations_performed": 0,
         "agent_selected_gaussian_indices": False,
         "canonical_source_altered": False,
+        "claim_boundary": {
+            "reviewed_semantic_masks_are_complete_geometry": False,
+            "registered_core_completion_is_semantic_observation": False,
+            "registered_core_completion_upgrades_physical_truth": False,
+        },
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")

@@ -430,6 +430,7 @@ def materialize_excision_audit_freeze(
     output_root: str | Path,
     supersample: int = 2,
     render_input_receipt_path: str | Path | None = None,
+    complete_safety_envelope_with_registered_core: bool = False,
     adp_item: str = "ADP-009B",
 ) -> dict[str, Any]:
     """Freeze independent mask zones and a digest-bound split before execution."""
@@ -501,14 +502,25 @@ def materialize_excision_audit_freeze(
         if not outer_path.is_file() or not image_path.is_file():
             raise GaussianExcisionAuditError([f"excision_camera_artifact_missing:{camera_id}"])
         with Image.open(outer_path) as image:
-            outer = np.asarray(image.convert("L"), dtype=np.uint8) >= 128
+            reviewed_semantic_mask = np.asarray(image.convert("L"), dtype=np.uint8) >= 128
         core = _projected_mesh_mask(world, faces, camera, supersample=supersample) >= 128
-        if core.shape != outer.shape or np.any(core & ~outer):
+        if core.shape != reviewed_semantic_mask.shape:
             raise GaussianExcisionAuditError(
                 [f"excision_registered_core_not_inside_safety_envelope:{camera_id}"]
             )
-        uncertain = outer & ~core
-        protected = ~outer
+        registered_core_additions = core & ~reviewed_semantic_mask
+        if np.any(registered_core_additions) and not complete_safety_envelope_with_registered_core:
+            raise GaussianExcisionAuditError(
+                [f"excision_registered_core_not_inside_safety_envelope:{camera_id}"]
+            )
+        safety_envelope = reviewed_semantic_mask | core
+        safety_envelope_path = mask_root / f"{camera_id}.safety_envelope.png"
+        if not cv2.imwrite(
+            str(safety_envelope_path), safety_envelope.astype(np.uint8) * 255
+        ):
+            raise GaussianExcisionAuditError(["excision_mask_write_failed"])
+        uncertain = safety_envelope & ~core
+        protected = ~safety_envelope
         zones = {
             "target_core": core,
             "uncertain": uncertain,
@@ -530,7 +542,13 @@ def materialize_excision_audit_freeze(
                 "protected_pixel_count": int(protected.sum()),
                 "target_core_fraction": fraction,
                 "target_core_is_subset_of_historical_outer_mask": True,
-                "historical_outer_mask": _record(outer_path),
+                "target_core_is_subset_of_reviewed_semantic_mask": not bool(
+                    registered_core_additions.any()
+                ),
+                "reviewed_semantic_mask_pixel_count": int(reviewed_semantic_mask.sum()),
+                "registered_core_added_pixel_count": int(registered_core_additions.sum()),
+                "reviewed_semantic_mask": _record(outer_path),
+                "historical_outer_mask": _record(safety_envelope_path, output),
                 "zones": records,
             }
         )
@@ -593,12 +611,22 @@ def materialize_excision_audit_freeze(
         },
         "mask_method": {
             "target_core": "exact_registered_sage_target_triangle_projection",
-            "uncertain": "historical_outer_mask_minus_registered_sage_target_core",
-            "protected": "outside_historical_outer_mask",
+            "safety_envelope": (
+                "reviewed_semantic_mask_union_registered_sage_target_core"
+                if complete_safety_envelope_with_registered_core
+                else "reviewed_semantic_mask"
+            ),
+            "uncertain": "effective_safety_envelope_minus_registered_sage_target_core",
+            "protected": "outside_effective_safety_envelope",
             "renderer": "blueprint_deterministic_cpu_triangle_union_rasterizer.v1",
             "supersample": supersample,
             "binary_threshold_8bit": 128,
             "historical_outer_mask_is_final_ownership_authority": False,
+            "reviewed_semantic_mask_is_complete_geometry": False,
+            "registered_core_completion_is_semantic_observation": False,
+            "registered_core_completion_enabled": bool(
+                complete_safety_envelope_with_registered_core
+            ),
             "collision_mask_is_exact_appearance_silhouette": False,
         },
         "contribution_method": {
