@@ -15,6 +15,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1909,6 +1910,46 @@ def test_required_billing_reconciliation_accepts_current_complete_usd_export(
     assert result["billing_export_artifact_name"] == "billing.json"
     assert result["billing_export_sha256"].startswith("sha256:")
     assert str(tmp_path) not in json.dumps(result)
+
+
+def test_required_billing_reconciliation_rejects_foreign_owner_even_with_service_trust(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = _epoch(2026, 7, 9, 12, 0, 0)
+    export = tmp_path / "billing.json"
+    export.write_text(
+        json.dumps(
+            {
+                "schema_version": guard.BILLING_EXPORT_SCHEMA_VERSION,
+                "generated_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+                "currency": "USD",
+                "scope": guard.BILLING_EXPORT_SCOPE,
+                "provider_totals_usd": {
+                    "runpod": 0.0,
+                    "vast": 0.0,
+                    "digitalocean": 0.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(guard.os, "geteuid", lambda: export.stat().st_uid + 10_000)
+    monkeypatch.setattr(
+        guard.pwd,
+        "getpwnam",
+        lambda _account: SimpleNamespace(pw_uid=export.stat().st_uid + 20_000),
+    )
+
+    result = guard.reconcile_billing_export(
+        billing_export_path=export,
+        instances=[],
+        now=now,
+        required=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert "provider_billing_export_owner_untrusted" in result["blockers"]
 
 
 def test_required_billing_reconciliation_rejects_unsafe_bounded_inputs(

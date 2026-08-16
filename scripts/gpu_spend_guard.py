@@ -38,6 +38,7 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
 import shlex
 import stat
 import subprocess
@@ -68,6 +69,13 @@ DEFAULT_WARM_LEASE_SECONDS = 15 * 60
 PROVIDERS = ("runpod", "vast", "digitalocean", "gcp", "aws")
 BILLING_BASE_PROVIDERS = ("runpod", "vast", "digitalocean")
 MAX_BILLING_EXPORT_BYTES = 1024 * 1024
+# The official billing reconciler is intentionally sandboxed as the Blueprint
+# service account (see ``blueprint-provider-billing-reconciler.service``).  Its
+# atomic refresh therefore replaces the export with a service-owned inode even
+# when a root operator invoked the consuming guard.  Trust that one canonical
+# producer identity in addition to root and the current effective uid; file
+# type, symlink, size, and group/world-write checks still fail closed below.
+BILLING_EXPORT_PRODUCER_ACCOUNT = "blueprint"
 ALLOWED_PROVIDER_API_HOSTS = frozenset(
     {"rest.runpod.io", "console.vast.ai", "api.digitalocean.com"}
 )
@@ -759,7 +767,16 @@ def reconcile_billing_export(
                     blockers.append(
                         "provider_billing_export_writable_by_group_or_world"
                     )
-                if metadata.st_uid not in {0, os.geteuid()}:
+                trusted_owner_uids = {0, os.geteuid()}
+                try:
+                    trusted_owner_uids.add(
+                        pwd.getpwnam(BILLING_EXPORT_PRODUCER_ACCOUNT).pw_uid
+                    )
+                except KeyError:
+                    # Hosts without the production service account retain the
+                    # original root/current-euid trust boundary.
+                    pass
+                if metadata.st_uid not in trusted_owner_uids:
                     blockers.append("provider_billing_export_owner_untrusted")
 
     payload = _load_json_mapping(billing_export_path) if billing_path_valid else {}
