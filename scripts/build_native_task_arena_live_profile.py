@@ -34,13 +34,18 @@ from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline.native_task_arena_construction_bundle import (
     PROBE_KIND as CONSTRUCTION_PROBE_KIND,
+    load_verified_native_task_arena_construction_bundle,
 )
 from blueprint_pipeline.native_task_arena_controls_bundle import (
     PROBE_KIND as CONTROLS_PROBE_KIND,
+    load_verified_native_task_arena_controls_bundle,
 )
-from blueprint_pipeline.native_task_arena_policy_bundle import PROBE_KIND as POLICY_PROBE_KIND
+from blueprint_pipeline.native_task_arena_policy_bundle import (
+    PROBE_KIND as POLICY_PROBE_KIND,
+    load_verified_native_task_arena_policy_bundle,
+)
 from blueprint_pipeline.native_task_arena_paid_authority import (
-    AUTHORITY_SCHEMA_VERSION,
+    validate_native_task_arena_paid_attempt_authority,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
@@ -93,6 +98,12 @@ LINKS: dict[str, ArenaLink] = {
     ),
 }
 
+BUNDLE_LOADERS = {
+    CONSTRUCTION_PROBE_KIND: load_verified_native_task_arena_construction_bundle,
+    CONTROLS_PROBE_KIND: load_verified_native_task_arena_controls_bundle,
+    POLICY_PROBE_KIND: load_verified_native_task_arena_policy_bundle,
+}
+
 
 def _lane_blockers(link: ArenaLink):
     def blockers(context: LaneLiveProfileContext) -> list[str]:
@@ -118,38 +129,48 @@ def _lane_blockers(link: ArenaLink):
         packet_receipt = context.extra_paths["packet_dir"] / PACKET_RECEIPT_NAME
         if not packet_receipt.is_file():
             found.append("native_task_arena_packet_receipt_missing")
+        prepared_bundle: Mapping[str, Any] | None = None
+        try:
+            packet = json.loads(packet_receipt.read_text(encoding="utf-8"))
+            runtime_source = json.loads(
+                context.extra_paths["runtime_source_packet"].read_text(encoding="utf-8")
+            )
+            if (
+                not isinstance(packet, Mapping)
+                or packet.get("schema_version") != "native_task_arena_packet_receipt.v1"
+                or packet.get("status") != "construction_packet_completed"
+                or packet.get("receipt_digest")
+                != canonical_digest(packet, digest_field="receipt_digest")
+                or not isinstance(runtime_source, Mapping)
+                or runtime_source.get("receipt_digest")
+                != canonical_digest(runtime_source, digest_field="receipt_digest")
+            ):
+                raise ValueError("native_task_arena_predecessor_receipt_invalid")
+            loader = BUNDLE_LOADERS[link.probe_kind]
+            prepared_bundle = loader(
+                context.receipt_path,
+                expected_implementation_commit=context.source_commit,
+                expected_packet_receipt_digest=str(packet["receipt_digest"]),
+                expected_runtime_source_packet_digest=str(
+                    runtime_source["receipt_digest"]
+                ),
+            )
+        except (KeyError, OSError, ValueError, json.JSONDecodeError):
+            found.append("native_task_arena_provider_bundle_invalid")
         authority_path = context.extra_paths.get("attempt_authority")
         if authority_path is not None and authority_path.is_file():
             try:
                 authority = json.loads(authority_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                authority = None
-            bundle_record = (
-                authority.get("bundle_receipt")
-                if isinstance(authority, Mapping)
-                else None
-            )
-            if (
-                not isinstance(authority, Mapping)
-                or authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
-                or authority.get("authorization_digest")
-                != canonical_digest(authority, digest_field="authorization_digest")
-                or authority.get("blueprint_commit") != context.source_commit
-                or authority.get("bundle_sha256")
-                != context.receipt.get("bundle_sha256")
-                or authority.get("maximum_hourly_rate_usd")
-                != context.max_hourly_rate_usd
-                or authority.get("hard_attempt_spend_cap_usd")
-                != context.max_spend_usd
-                or authority.get("maximum_single_resource_ttl_seconds")
-                != context.hard_ttl_seconds
-                or not isinstance(bundle_record, Mapping)
-                or Path(str(bundle_record.get("path") or "")).expanduser().resolve()
-                != context.receipt_path
-                or bundle_record.get("sha256") != file_digest(context.receipt_path)
-                or bundle_record.get("size_bytes")
-                != context.receipt_path.stat().st_size
-            ):
+                if not isinstance(authority, Mapping) or prepared_bundle is None:
+                    raise ValueError("native_task_arena_attempt_authority_invalid")
+                validate_native_task_arena_paid_attempt_authority(
+                    authority,
+                    prepared_bundle=prepared_bundle,
+                    max_hourly_rate_usd=context.max_hourly_rate_usd,
+                    hard_cap_usd=context.max_spend_usd,
+                    hard_ttl_seconds=context.hard_ttl_seconds,
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
                 found.append("native_task_arena_attempt_authority_invalid")
         for value in context.extra_paths.get("allowed_active_instance_ids", ()) or ():
             if int(value) <= 0:

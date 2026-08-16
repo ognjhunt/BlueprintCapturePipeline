@@ -400,6 +400,135 @@ def test_s3_content_addressed_publication_is_exclusive_and_fully_read_back(
     assert blocked["status"] == "blocked"
 
 
+def test_r2_publication_accepts_canonical_wam_file_credentials_without_recording_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "request.json"
+    source.write_text('{"schema_version":"request.v1"}\n', encoding="utf-8")
+    access_key = tmp_path / "wam-access-key"
+    secret_key = tmp_path / "wam-secret-key"
+    endpoint = tmp_path / "wam-endpoint"
+    region = tmp_path / "wam-region"
+    access_key.write_text("wam-access-value", encoding="utf-8")
+    secret_key.write_text("wam-secret-value", encoding="utf-8")
+    endpoint.write_text("https://wam-r2.example", encoding="utf-8")
+    region.write_text("auto", encoding="utf-8")
+    for name, path in {
+        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE": access_key,
+        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE": secret_key,
+        "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE": endpoint,
+        "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE": region,
+    }.items():
+        monkeypatch.setenv(name, str(path))
+    for name in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_ACCESS_KEY_ID_FILE",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SECRET_ACCESS_KEY_FILE",
+        "AWS_REGION",
+        "AWS_REGION_FILE",
+        "AWS_DEFAULT_REGION",
+        "AWS_DEFAULT_REGION_FILE",
+        "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL",
+        "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL_FILE",
+        "R2_ENDPOINT_URL",
+        "R2_ENDPOINT_URL_FILE",
+        "AWS_ENDPOINT_URL",
+        "AWS_ENDPOINT_URL_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    objects: dict[tuple[str, str], bytes] = {}
+    client_kwargs: list[dict[str, object]] = []
+
+    class Client:
+        def put_object(self, **kwargs: object) -> None:
+            objects[(str(kwargs["Bucket"]), str(kwargs["Key"]))] = bytes(kwargs["Body"])
+
+        def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+            return {"Body": io.BytesIO(objects[(Bucket, Key)])}
+
+    class Boto3:
+        @staticmethod
+        def client(service: str, **kwargs: object) -> Client:
+            assert service == "s3"
+            client_kwargs.append(dict(kwargs))
+            return Client()
+
+    monkeypatch.setitem(sys.modules, "boto3", Boto3())
+    receipt = setup.publish_content_addressed_manifest(
+        source=source,
+        destination_prefix="r2://fixture-bucket/launch-manifests",
+        receipt_path=tmp_path / "publication.json",
+        profile_builder="build_semantic_teacher_image_edit_live_profile.py",
+    )
+
+    assert receipt["status"] == "published"
+    assert receipt["provider_full_byte_readback_verified"] is True
+    assert client_kwargs == [
+        {
+            "endpoint_url": "https://wam-r2.example",
+            "region_name": "auto",
+            "aws_access_key_id": "wam-access-value",
+            "aws_secret_access_key": "wam-secret-value",
+        },
+        {
+            "endpoint_url": "https://wam-r2.example",
+            "region_name": "auto",
+            "aws_access_key_id": "wam-access-value",
+            "aws_secret_access_key": "wam-secret-value",
+        },
+    ]
+    retained = json.dumps(receipt, sort_keys=True)
+    for secret in (
+        "wam-access-value",
+        "wam-secret-value",
+        str(access_key),
+        str(secret_key),
+    ):
+        assert secret not in retained
+
+    monkeypatch.setattr(setup, "_module_available", lambda name: name == "boto3")
+    preflight = setup._upload_readiness_preflight(
+        destination_uri="r2://fixture-bucket/launch-manifests/request.json",
+        artifact_write_auth={
+            "required_secret_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+            "required_plaintext_env_vars": ["BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL"],
+        },
+    )
+    assert preflight["status"] == "ready_for_upload_attempt"
+    assert preflight["present_secret_file_env_vars"] == [
+        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE",
+        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE",
+    ]
+    assert preflight["present_plaintext_file_env_vars"] == [
+        "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE"
+    ]
+    assert preflight["secret_values_recorded"] is False
+    assert "wam-access-value" not in json.dumps(preflight, sort_keys=True)
+    assert "wam-secret-value" not in json.dumps(preflight, sort_keys=True)
+
+
+def test_standard_aws_credentials_keep_precedence_over_wam_file_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    access_key = tmp_path / "wam-access-key"
+    secret_key = tmp_path / "wam-secret-key"
+    access_key.write_text("wam-access-value", encoding="utf-8")
+    secret_key.write_text("wam-secret-value", encoding="utf-8")
+    monkeypatch.setenv(
+        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE", str(access_key)
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE", str(secret_key)
+    )
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "aws-access-value")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-value")
+
+    assert setup._env_or_file_value("AWS_ACCESS_KEY_ID") == "aws-access-value"
+    assert setup._env_or_file_value("AWS_SECRET_ACCESS_KEY") == "aws-secret-value"
+
+
 def test_content_addressed_publication_requires_full_digest_readback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

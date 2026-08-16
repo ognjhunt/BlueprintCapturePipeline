@@ -310,6 +310,11 @@ class LaneLiveProfileSpec:
     subcommand: str = "gpu-canary"
     provider: str = "vast"
     extra_path_names: Sequence[str] = field(default_factory=tuple)
+    #: Require the website standing authorization to be a single-use launch
+    #: capability.  The dispatcher consumes it atomically before invoking the
+    #: allocator, so an explicit launch-id scope cannot bypass this lane's
+    #: exactly-once paid boundary.
+    one_use_standing_authority_required: bool = False
 
 
 def bind_live_profile_manifest_publication(
@@ -573,6 +578,15 @@ def build_lane_live_profile(
         "runtime_environment": {},
         **shared_control_surface(required_providers=spec.required_providers),
     }
+    if spec.one_use_standing_authority_required:
+        profile["standing_launch_authorization"] = {
+            "schema_version": (
+                "task_evaluation_standing_launch_authorization_requirement.v1"
+            ),
+            "required_for_live_execution": True,
+            "maximum_launches": 1,
+            "consumption_must_precede_allocator": True,
+        }
     if manifest_publication is not None:
         profile["manifest_publication"] = manifest_publication
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")

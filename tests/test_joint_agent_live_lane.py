@@ -7,9 +7,9 @@ authority, blocking neither deterministic construction nor native simulator
 qualification -- and a profile that launched a bundle which had stopped saying
 so would be publishing a wider claim than the lane earns.
 
-It also takes no attempt authority: its allocator branch does not ask for one,
-so the standing authorization and the bundle's own execution authority are what
-bound the spend.
+It reuses the website standing authorization as a one-use attempt authority.
+The profile makes that requirement explicit so an execute-id fallback cannot
+bypass atomic consumption before allocator invocation.
 """
 
 from __future__ import annotations
@@ -77,14 +77,23 @@ def _build(lane, **overrides):
     )
 
 
-def test_builds_a_profile_that_needs_no_attempt_authority(lane) -> None:
-    """This lane's allocator branch does not ask for one."""
+def test_builds_a_profile_with_one_use_website_authority(lane) -> None:
+    """The shared standing authority, not another lane-specific file, is consumed."""
 
-    argv = _build(lane)["allocator"]["argv"]
+    profile = _build(lane)
+    argv = profile["allocator"]["argv"]
 
     assert not any("attempt-authority" in item for item in argv)
     assert "--adp-joint-agent-bundle-receipt" in argv
     assert argv[argv.index("--probe-kind") + 1] == "adp-usd-joint-agent"
+    assert profile["standing_launch_authorization"] == {
+        "schema_version": (
+            "task_evaluation_standing_launch_authorization_requirement.v1"
+        ),
+        "required_for_live_execution": True,
+        "maximum_launches": 1,
+        "consumption_must_precede_allocator": True,
+    }
 
 
 def test_the_controls_are_the_shared_ones(lane) -> None:
