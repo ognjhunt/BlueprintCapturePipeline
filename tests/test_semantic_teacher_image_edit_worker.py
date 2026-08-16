@@ -4,6 +4,7 @@ import base64
 from io import BytesIO
 import json
 from pathlib import Path
+import urllib.error
 
 import numpy as np
 import pytest
@@ -72,6 +73,7 @@ def _runtime_request(tmp_path: Path, *, frame_count: int = 2) -> tuple[Path, lis
                 "endpoint": "https://editor.example.invalid/v1/images/edits",
                 "model_snapshot": "future-editor-immutable-snapshot",
                 "masked_image_edit_supported": True,
+                "input_fidelity_parameter_supported": True,
                 "external_disclosure_required": True,
                 "supported_output_sizes": ["6x4"],
                 "pricing_binding": {
@@ -270,6 +272,146 @@ def test_provider_failure_is_not_retried(tmp_path: Path) -> None:
             opener=opener,
         )
     assert len(calls) == 1
+
+
+def test_http_failure_retains_only_digest_bound_safe_discriminators(
+    tmp_path: Path,
+) -> None:
+    request_path, _sources = _runtime_request(tmp_path, frame_count=1)
+    token = "fixture-secret-token"
+    body_secret = "body-secret-must-never-be-recorded"
+    header_secret = "header-secret-must-never-be-recorded"
+    response_body = json.dumps(
+        {
+            "error": {
+                "message": f"unsupported input_fidelity {body_secret} {token}",
+                "type": "invalid_request_error",
+                "code": "unsupported_parameter",
+                "param": "input_fidelity",
+            },
+            "authorization": token,
+        }
+    ).encode()
+    calls = []
+
+    def opener(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise urllib.error.HTTPError(
+            "https://editor.example.invalid/v1/images/edits?secret=not-retained",
+            400,
+            f"provider prose {body_secret}",
+            {
+                "x-request-id": "req_fixture123",
+                "authorization": f"Bearer {header_secret}",
+            },
+            BytesIO(response_body),
+        )
+
+    output = tmp_path / "output"
+    with pytest.raises(
+        SemanticTeacherImageEditWorkerError,
+        match="semantic_teacher_provider_http_error",
+    ):
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=output,
+            token=token,
+            opener=opener,
+        )
+    assert len(calls) == 1
+    result = json.loads(
+        (output / "semantic_teacher_image_edit_runtime_result.v1.json").read_text()
+    )
+    failure = result["terminal_provider_failure"]
+    assert failure == result["tasks"][0]["frames"][0]["provider_failure"]
+    assert failure["http_status"] == 400
+    assert failure["provider_error_type"] == "invalid_request_error"
+    assert failure["provider_error_code"] == "unsupported_parameter"
+    assert failure["provider_request_id"] == "req_fixture123"
+    assert failure["failure_digest"] == canonical_digest(
+        failure, digest_field="failure_digest"
+    )
+    assert result["result_digest"] == canonical_digest(
+        result, digest_field="result_digest"
+    )
+    serialized = json.dumps(result)
+    for forbidden in (
+        token,
+        body_secret,
+        header_secret,
+        "provider prose",
+        "?secret=not-retained",
+        "authorization",
+    ):
+        assert forbidden not in serialized
+
+
+def test_http_failure_discards_secret_shaped_discriminators(tmp_path: Path) -> None:
+    request_path, _sources = _runtime_request(tmp_path, frame_count=1)
+    token = "sk-fixture-token"
+    response_body = json.dumps(
+        {
+            "error": {
+                "type": "secret_internal_type",
+                "code": token,
+                "message": token,
+            }
+        }
+    ).encode()
+
+    def opener(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://editor.example.invalid/v1/images/edits",
+            401,
+            token,
+            {"x-request-id": f"req_{token}"},
+            BytesIO(response_body),
+        )
+
+    output = tmp_path / "output"
+    with pytest.raises(SemanticTeacherImageEditWorkerError):
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=output,
+            token=token,
+            opener=opener,
+        )
+    result = json.loads(
+        (output / "semantic_teacher_image_edit_runtime_result.v1.json").read_text()
+    )
+    failure = result["terminal_provider_failure"]
+    assert failure["http_status"] == 401
+    assert failure["provider_error_type"] is None
+    assert failure["provider_error_code"] is None
+    assert failure["provider_request_id"] is None
+    assert token not in json.dumps(result)
+
+
+def test_parameter_unsupported_backend_cannot_send_input_fidelity(
+    tmp_path: Path,
+) -> None:
+    request_path, _sources = _runtime_request(tmp_path, frame_count=1)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    execution = request["backend"]["execution"]
+    execution["input_fidelity_parameter_supported"] = False
+    execution["default_options"]["input_fidelity"] = "high"
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    calls = []
+
+    with pytest.raises(
+        SemanticTeacherImageEditWorkerError,
+        match="semantic_teacher_runtime_request_invalid",
+    ):
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=tmp_path / "output",
+            token="fixture-token",
+            opener=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+    assert calls == []
 
 
 def test_rejects_changed_request_before_any_provider_request(tmp_path: Path) -> None:

@@ -296,11 +296,55 @@ def _runtime_archive(
             "result_digest": "",
         }
     else:
+        provider_failure = {
+            "schema_version": "semantic_teacher_provider_failure.v1",
+            "transport_error_type": "http_error",
+            "http_status": 400,
+            "provider_error_type": "invalid_request_error",
+            "provider_error_code": "unsupported_parameter",
+            "provider_request_id": "req_fixture123",
+            "raw_provider_body_recorded": False,
+            "raw_provider_headers_recorded": False,
+            "raw_secret_values_recorded": False,
+            "failure_digest": "",
+        }
+        provider_failure["failure_digest"] = canonical_digest(
+            provider_failure, digest_field="failure_digest"
+        )
         runtime = {
             "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
-            "status": "blocked",
-            "blockers": ["fixture_worker_failure"],
+            "status": "failed_with_retained_partial_inventory",
+            "source_runtime_request_digest": runtime_request_digest,
+            "backend_id": "fixture-hosted-editor",
+            "backend_entry_digest": backend_entry_digest,
+            "adapter_id": "openai_images_edits_v1",
+            "model_snapshot": "fixture-snapshot",
+            "task_count": 1,
+            "request_count": 1,
+            "attempted_request_count": 1,
+            "successful_request_count": 0,
+            "blockers": ["semantic_teacher_provider_http_error"],
             "retry_count": 0,
+            "tasks": [
+                {
+                    "task_id": "task_a",
+                    "camera_count": 1,
+                    "frames": [
+                        {
+                            "frame_index": 0,
+                            "camera_id": "front",
+                            "terminal_state": "failed_after_request_attempt",
+                            "failure_code": "semantic_teacher_provider_http_error",
+                            "source_rgb_sha256": "sha256:" + "4" * 64,
+                            "edit_mask_sha256": "sha256:" + "5" * 64,
+                            "semantic_teacher_frame": None,
+                            "provider_failure": provider_failure,
+                        }
+                    ],
+                }
+            ],
+            "partial_png_inventory": [],
+            "terminal_provider_failure": provider_failure,
             "raw_secret_values_recorded": False,
             "canonical_source_altered": False,
             "appearance_qualified": False,
@@ -880,6 +924,15 @@ def test_failed_worker_archive_is_preserved_without_paid_retry(
     assert (job / f"runtime_output/{RUNTIME_RESULT_SCHEMA_VERSION}.json").is_file()
     assert (job / "runtime_output/runtime_stdout.log").is_file()
     assert (job / "runtime_output/runtime_stderr.log").is_file()
+    assert result["runtime_result_digest"].startswith("sha256:")
+    assert result["runtime_media_gap_digest"] is None
+    assert result["blockers"] == ["semantic_teacher_provider_http_error"]
+    provider_zero = json.loads((job / "provider_zero_receipt.json").read_text())
+    assert provider_zero["terminal_evidence_kind"] == "runtime_result"
+    assert provider_zero["terminal_result_digest"] == result["runtime_result_digest"]
+    assert not (
+        job / "runtime_output/semantic_teacher_image_edit_runtime_media_gap.v1.json"
+    ).exists()
 
 
 def test_confirmed_no_allocation_closes_zero_without_relaunch(

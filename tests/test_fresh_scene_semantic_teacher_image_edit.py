@@ -75,6 +75,7 @@ def _backend(
             "endpoint": "https://example.invalid/v1/images/edits" if hosted else None,
             "masked_image_edit_supported": True,
             "high_fidelity_input_supported": True,
+            "input_fidelity_parameter_supported": True,
             "output_formats": ["png"],
             "mask_encoding": mask_encoding,
             "external_disclosure_required": external_disclosure_required,
