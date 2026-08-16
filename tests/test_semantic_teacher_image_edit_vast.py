@@ -327,6 +327,7 @@ class _Provider:
         initially_live: bool = False,
         launch_status: str = "launched",
         inspect_absent: bool = False,
+        launch_result: dict | None = None,
     ):
         self.initially_live = initially_live
         self.launch_status = launch_status
@@ -336,6 +337,7 @@ class _Provider:
         self.seen_token = ""
         self.inspect_absent = inspect_absent
         self.inspect_calls = 0
+        self.launch_result = launch_result
 
     def billable_inventory(self, *, name_prefix: str) -> dict:
         live = self.initially_live or self.live
@@ -357,11 +359,14 @@ class _Provider:
         self.launch_calls += 1
         assert request["maximum_create_attempts"] == 1
         assert request["prelaunch_spend_guard"]["maximum_create_attempts"] == 1
+        if self.launch_result is not None:
+            return dict(self.launch_result)
         if self.launch_status != "launched":
             return {
                 "status": self.launch_status,
                 "maximum_create_attempts": 1,
                 "create_attempt_count": 1,
+                "allocation_created": False,
             }
         self.live = True
         return {
@@ -779,6 +784,87 @@ def test_confirmed_no_allocation_closes_zero_without_relaunch(
     assert provider_zero["provider_zero_api_confirmed"] is True
     assert provider_zero["scoped_inventory"]["live_resource_count"] == 0
     assert provider_zero["global_inventory"]["live_resource_count"] == 0
+
+
+def test_no_matching_offer_preserves_zero_attempt_truth_and_provider_blocker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _Provider(
+        launch_result={
+            "status": "blocked",
+            "blockers": ["no_vast_offer_matching_rate_and_gpu_memory"],
+            "maximum_create_attempts": 1,
+            "create_attempt_count": 0,
+            "allocation_created": False,
+        }
+    )
+    result, provider, store, _calls = _run(
+        tmp_path,
+        monkeypatch,
+        provider=provider,
+        watchdog_status="cancelled_no_allocation",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["allocation_count"] == 0
+    assert result["create_attempt_count"] == 0
+    assert result["provider_mutations_performed"] == 0
+    assert result["provider_mutation_outcome_ambiguous"] is False
+    assert "no_vast_offer_matching_rate_and_gpu_memory" in result["blockers"]
+    assert "semantic_teacher_vast_instance_not_created" in result["blockers"]
+    assert "semantic_teacher_vast_create_attempt_contract_invalid" not in result[
+        "blockers"
+    ]
+    assert "semantic_teacher_independent_watchdog_not_closed" not in result[
+        "blockers"
+    ]
+    assert result["provider_zero_verified"] is True
+    assert result["continuing_spend_from_this_run"] is False
+    assert provider.launch_calls == 1
+    assert provider.terminate_calls == 0
+    assert store.cleanup_calls == 1
+
+
+def test_zero_create_attempt_with_contradictory_allocation_is_ambiguous_and_redacted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret_provider_detail = "secret=https://provider.invalid/?token=do-not-retain"
+    provider = _Provider(
+        launch_result={
+            "status": "blocked",
+            "blockers": [
+                "no_vast_offer_matching_rate_and_gpu_memory",
+                secret_provider_detail,
+            ],
+            "maximum_create_attempts": 1,
+            "create_attempt_count": 0,
+            "allocation_created": True,
+        }
+    )
+    result, provider, _store, _calls = _run(
+        tmp_path,
+        monkeypatch,
+        provider=provider,
+        watchdog_status="cancelled_no_allocation",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutation_outcome_ambiguous"] is True
+    assert result["provider_mutations_performed"] == 1
+    assert "semantic_teacher_vast_create_attempt_contract_invalid" in result[
+        "blockers"
+    ]
+    assert "semantic_teacher_vast_create_outcome_ambiguous" in result["blockers"]
+    assert "semantic_teacher_independent_watchdog_not_closed" in result["blockers"]
+    assert "no_vast_offer_matching_rate_and_gpu_memory" in result["blockers"]
+    assert secret_provider_detail not in result["blockers"]
+    persisted = b"\n".join(
+        path.read_bytes()
+        for path in Path(_inputs(tmp_path).semantic_teacher_job_dir).rglob("*")
+        if path.is_file()
+    )
+    assert secret_provider_detail.encode() not in persisted
+    assert provider.terminate_calls == 0
 
 
 def test_authority_consumption_block_closes_watchdog_and_double_zero(

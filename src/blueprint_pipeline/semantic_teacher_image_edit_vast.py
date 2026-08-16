@@ -89,10 +89,50 @@ MAX_OUTPUT_MEMBERS = 3_000
 MAX_OUTPUT_MEMBER_BYTES = 128 * 1024 * 1024
 _PINNED_IMAGE = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
 _TEACHER_FRAME = re.compile(r"tasks/[^/\\]+/[0-9]{5}\.png")
+_SAFE_PROVIDER_BLOCKERS = frozenset(
+    {
+        "no_vast_offer_matching_rate_and_gpu_memory",
+        "vast_instance_not_created",
+        "vast_offer_search_failed",
+        "vast_maximum_create_attempts_invalid",
+        "vast_create_outcome_ambiguous",
+    }
+)
+_SAFE_PROVIDER_HTTP_BLOCKER = re.compile(r"^vast_create_http_error:[0-9]{3}$")
 
 
 class SemanticTeacherImageEditVastError(ValueError):
     """The one-shot provider lifecycle was not safe to enter."""
+
+
+def _sanitized_provider_blockers(value: Any) -> list[str]:
+    """Retain only stable Vast reason codes, never provider prose or secrets."""
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    sanitized: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        if item in _SAFE_PROVIDER_BLOCKERS or _SAFE_PROVIDER_HTTP_BLOCKER.fullmatch(
+            item
+        ):
+            sanitized.append(item)
+    return sorted(set(sanitized))
+
+
+def _confirmed_no_allocation(
+    launch_result: Mapping[str, Any], *, provider_mutations: int
+) -> bool:
+    """Require an explicit, internally consistent zero-allocation outcome."""
+
+    return bool(
+        launch_result.get("status") == "blocked"
+        and not launch_result.get("instance_id")
+        and launch_result.get("allocation_created") is False
+        and launch_result.get("allocation_outcome_ambiguous") is not True
+        and provider_mutations == 0
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -1388,21 +1428,48 @@ def _execute_semantic_teacher_image_edit_vast(
                     paid_resource_admission_grant=paid_resource_admission_grant,
                 )
             )
-            if (
-                launch_result.get("maximum_create_attempts") != 1
-                or launch_result.get("create_attempt_count") != 1
-            ):
+            provider_blockers = _sanitized_provider_blockers(
+                launch_result.get("blockers")
+            )
+            blockers.extend(provider_blockers)
+            confirmed_no_allocation = _confirmed_no_allocation(
+                launch_result, provider_mutations=provider_mutations
+            )
+            create_attempt_count = launch_result.get("create_attempt_count")
+            maximum_create_attempts = launch_result.get("maximum_create_attempts")
+            create_attempt_contract_valid = bool(
+                isinstance(maximum_create_attempts, int)
+                and not isinstance(maximum_create_attempts, bool)
+                and maximum_create_attempts == 1
+                and isinstance(create_attempt_count, int)
+                and not isinstance(create_attempt_count, bool)
+                and (
+                    create_attempt_count == 1
+                    or (create_attempt_count == 0 and confirmed_no_allocation)
+                )
+            )
+            if not create_attempt_contract_valid:
                 blockers.append(
                     "semantic_teacher_vast_create_attempt_contract_invalid"
                 )
-            if launch_result.get("allocation_outcome_ambiguous") is True:
+            allocation_outcome_ambiguous = bool(
+                launch_result.get("allocation_outcome_ambiguous") is True
+                or (
+                    launch_result.get("status") != "launched"
+                    and not confirmed_no_allocation
+                )
+                or (
+                    launch_result.get("status") == "launched"
+                    and not launch_result.get("instance_id")
+                )
+            )
+            if allocation_outcome_ambiguous:
+                launch_result["allocation_outcome_ambiguous"] = True
                 provider_mutations += 1
                 mark_pending_teardown_ambiguous(
                     pending_path,
                     reason="semantic_teacher_vast_create_outcome_ambiguous",
-                    evidence={
-                        "blockers": list(launch_result.get("blockers") or [])
-                    },
+                    evidence={"blockers": provider_blockers},
                 )
                 blockers.append("semantic_teacher_vast_create_outcome_ambiguous")
             elif launch_result.get("status") != "launched" or not launch_result.get(
@@ -1893,7 +1960,20 @@ def _execute_semantic_teacher_image_edit_vast(
             )
         except (OSError, ValueError) as exc:
             blockers.append(f"semantic_teacher_result_import_failed:{exc}")
-    if watchdog_close.get("status") != "provider_terminal":
+    no_allocation_occurred = bool(
+        instance_id is None
+        and allocation_count == 0
+        and provider_mutations == 0
+        and launch_result.get("allocation_outcome_ambiguous") is not True
+    )
+    watchdog_closed = bool(
+        watchdog_close.get("status") == "provider_terminal"
+        or (
+            watchdog_close.get("status") == "cancelled_no_allocation"
+            and no_allocation_occurred
+        )
+    )
+    if not watchdog_closed:
         blockers.append("semantic_teacher_independent_watchdog_not_closed")
     if cleanup.get("all_objects_absent") is not True:
         blockers.append("semantic_teacher_object_store_cleanup_not_proven")
