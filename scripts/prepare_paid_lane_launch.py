@@ -163,6 +163,7 @@ SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
             "{set_root}/dry-run-job/preflight.json",
         ),
         produces="{set_root}/semantic_teacher_image_edit_allocator_dry_run.v1.json",
+        repeated_argv=(("--semantic-teacher-excluded-machine-id", "excluded_machine_ids"),),
     ),
     LaneStep(
         step_id="live_profile",
