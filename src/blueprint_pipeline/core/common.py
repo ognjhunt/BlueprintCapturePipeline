@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +18,10 @@ from typing import Any, Mapping, Tuple
 # (agent_runtime.orchestrator) and the qualification capability envelope
 # stay in lock-step on a single source of truth.
 MAXIMUM_HIDDEN_ZONE_BOUND = 0.35
+
+# Never carried onto an atomically replaced file, so restoring a target's
+# previous permissions can not widen write access.
+_GROUP_WORLD_WRITE = stat.S_IWGRP | stat.S_IWOTH
 
 __all__ = [
     "redacted_failure_detail",
@@ -207,10 +212,51 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
+def _replaceable_target_metadata(path: Path) -> os.stat_result | None:
+    """Return the metadata an atomic replacement must carry forward.
+
+    Symlinks are excluded because :func:`os.replace` swaps the link itself, so
+    the pointed-to file's identity must never leak onto the new bytes.
+    """
+
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return None
+    return metadata if stat.S_ISREG(metadata.st_mode) else None
+
+
+def _carry_forward_target_identity(
+    temporary_path: Path, previous: os.stat_result
+) -> None:
+    """Preserve an existing file's owner and permissions across a replace.
+
+    ``tempfile.mkstemp`` stages the replacement owned by the *writing* process
+    at ``0600``, so without this a root-run rewrite of a service-account state
+    file silently makes it unreadable to the service that owns it. Group and
+    world write bits are never carried forward, so restoring readability can
+    not loosen a permission gate. Both calls are best effort: a writer that
+    lacks the privilege to restore the previous owner is no worse off than
+    before, and the readers report unreadable state as its own distinct cause.
+    """
+
+    try:
+        os.chmod(temporary_path, stat.S_IMODE(previous.st_mode) & ~_GROUP_WORLD_WRITE)
+    except OSError:
+        pass
+    if (previous.st_uid, previous.st_gid) == (os.geteuid(), os.getegid()):
+        return
+    try:
+        os.chown(temporary_path, previous.st_uid, previous.st_gid)
+    except OSError:
+        pass
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     """Commit UTF-8 text without ever exposing a partially truncated target."""
 
     ensure_dir(path.parent)
+    previous = _replaceable_target_metadata(path)
     file_descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",
@@ -222,6 +268,8 @@ def _atomic_write_text(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+        if previous is not None:
+            _carry_forward_target_identity(temporary_path, previous)
         os.replace(temporary_path, path)
         _fsync_directory(path.parent)
     except BaseException:

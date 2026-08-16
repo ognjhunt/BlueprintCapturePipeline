@@ -330,12 +330,28 @@ def total_burn_per_hour(instances: Iterable[GpuInstance]) -> float:
     return sum(i.cost_per_hr for i in instances if i.live)
 
 
-def _load_json_mapping(path: Path) -> dict[str, Any]:
+def _read_json_mapping(path: Path) -> tuple[dict[str, Any], str | None]:
+    """Return the parsed mapping alongside why it could not be read, if it could not.
+
+    ``"unreadable"`` and ``"invalid"`` are kept apart because they demand
+    opposite repairs: unreadable state is intact bytes behind a permission or
+    I/O fault, while invalid state is genuinely corrupt content. Collapsing the
+    two sends an operator hunting for corruption that does not exist.
+    """
+
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    return dict(raw) if isinstance(raw, Mapping) else {}
+        raw_bytes = path.read_bytes()
+    except OSError:
+        return {}, "unreadable"
+    try:
+        raw = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return {}, "invalid"
+    return (dict(raw), None) if isinstance(raw, Mapping) else ({}, "invalid")
+
+
+def _load_json_mapping(path: Path) -> dict[str, Any]:
+    return _read_json_mapping(path)[0]
 
 
 def _sha256_file(path: Path) -> str:
@@ -370,14 +386,21 @@ def update_spend_ledger(
     lock_path = ledger_path.with_name(f".{ledger_path.name}.lock")
     lock_file = lock_path.open("a+b")
     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-    previous = _load_json_mapping(ledger_path) if ledger_path.is_file() else {}
+    previous, previous_failure = (
+        _read_json_mapping(ledger_path) if ledger_path.is_file() else ({}, None)
+    )
     if ledger_path.is_file() and not previous:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
+        blocker = (
+            "spend_ledger_unreadable"
+            if previous_failure == "unreadable"
+            else "spend_ledger_existing_state_invalid"
+        )
         return {
             "schema_version": SPEND_LEDGER_SCHEMA_VERSION,
             "status": "blocked",
-            "blockers": ["spend_ledger_existing_state_invalid"],
+            "blockers": [blocker],
             "ledger_path": str(ledger_path),
             "prior_state_preserved": True,
         }
