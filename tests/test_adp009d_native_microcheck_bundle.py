@@ -1145,6 +1145,21 @@ def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyP
     assert observed["require_independent_watchdog"] is True
     assert observed["allowed_active_instance_ids"] == ()
     assert observed["candidate_policy_query_expected"] is False
+    assert observed["max_compute_cap"] is None
+
+    franka_vast.run_adp009d_native_microcheck_vast(
+        job_dir="job",
+        prepared_bundle={
+            "status": "ready",
+            "physics_backend": "newton",
+            "controls_requested": True,
+            "candidate_policy_queried": False,
+            "policy_candidate_id": None,
+        },
+        paid_resource_admission_grant=None,
+        execute=False,
+    )
+    assert observed["max_compute_cap"] == 0
 
     franka_vast.run_adp009d_native_microcheck_vast(
         job_dir="job",
@@ -1167,6 +1182,42 @@ def test_native_transport_prefers_one_48gb_class_gpu(monkeypatch: pytest.MonkeyP
         execute=False,
     )
     assert observed["candidate_policy_query_expected"] is True
+    assert observed["max_compute_cap"] is None
+
+
+@pytest.mark.parametrize(
+    "bundle",
+    [
+        {
+            "physics_backend": "newton",
+            "controls_requested": False,
+            "candidate_policy_queried": False,
+            "policy_candidate_id": None,
+        },
+        {
+            "physics_backend": "newton",
+            "controls_requested": True,
+            "candidate_policy_queried": None,
+            "policy_candidate_id": None,
+        },
+        {
+            "physics_backend": "newton",
+            "controls_requested": True,
+            "candidate_policy_queried": False,
+            "policy_candidate_id": "groot_n17_droid",
+        },
+        {
+            "physics_backend": "physx",
+            "controls_requested": True,
+            "candidate_policy_queried": False,
+            "policy_candidate_id": None,
+        },
+    ],
+)
+def test_compute_cap_override_fails_closed_outside_newton_controls_only(
+    bundle: dict,
+) -> None:
+    assert franka_vast.controls_only_max_compute_cap(bundle) is None
 
 
 def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
@@ -1295,6 +1346,10 @@ def test_allocator_validates_newton_dry_run_without_provider_mutation(
             "bundle_sha256": "sha256:" + "b" * 64,
             "input_digest": "sha256:" + "c" * 64,
             "control_plan_semantic_digest": "sha256:" + "d" * 64,
+            "physics_backend": "newton",
+            "controls_requested": True,
+            "candidate_policy_queried": False,
+            "policy_candidate_id": None,
         }
 
     def fake_run(**kwargs):
@@ -1316,6 +1371,10 @@ def test_allocator_validates_newton_dry_run_without_provider_mutation(
     assert observed["run"]["execute"] is False
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["allocation_binding"]["physics_backend"] == "newton"
+    assert admission["compute_cap_override_admitted"] is True
+    assert admission["max_compute_cap"] == 0
+    assert admission["allocation_binding"]["compute_cap_override_admitted"] is True
+    assert admission["allocation_binding"]["max_compute_cap"] == 0
 
 
 def test_allocator_blocks_newton_mutation_before_specific_admission(

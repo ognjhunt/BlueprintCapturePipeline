@@ -152,7 +152,10 @@ from .adp_isaac_lab_arena_vast import (
     build_arena_native_control_bundle,
     run_arena_native_control_vast,
 )
-from .adp009d_franka_vast import run_adp009d_native_microcheck_vast
+from .adp009d_franka_vast import (
+    controls_only_max_compute_cap,
+    run_adp009d_native_microcheck_vast,
+)
 from .native_task_arena_construction_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
     build_native_task_arena_construction_bundle,
@@ -5089,6 +5092,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(f"adp009d_bundle_preparation_failed:{type(exc).__name__}")
+            max_compute_cap = (
+                controls_only_max_compute_cap(prepared_bundle)
+                if prepared_bundle is not None
+                else None
+            )
             allocation_binding = {
                 "program_id": "arm-decision-proof-v1",
                 "probe_kind": ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
@@ -5125,6 +5133,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else None
                 ),
                 "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                "max_compute_cap": max_compute_cap,
+                "compute_cap_override_admitted": max_compute_cap == 0,
                 "hard_cap_usd": args.adp_max_spend_usd,
                 "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                 "retry_cap": 0,
@@ -5154,6 +5164,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "probe_kind": ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
                     "control_plane_identity": control_identity,
                     "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
+                    "max_compute_cap": max_compute_cap,
+                    "compute_cap_override_admitted": max_compute_cap == 0,
                     "hard_cap_usd": args.adp_max_spend_usd,
                     "hard_ttl_seconds": args.adp_hard_ttl_seconds,
                     "retry_cap": 0,
