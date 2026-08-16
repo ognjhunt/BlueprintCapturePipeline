@@ -150,7 +150,7 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
 
 def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
     authority = _read(context.extra_paths["attempt_authority"])
-    return [
+    argv = [
         "--semantic-teacher-bundle",
         context.bundle_path,
         "--semantic-teacher-bundle-receipt",
@@ -170,6 +170,9 @@ def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
         "--semantic-teacher-preflight-output",
         context.job_dir("semantic-teacher-preflight.json"),
     ]
+    for machine_id in context.extra_values.get("excluded_machine_ids") or []:
+        argv += ["--semantic-teacher-excluded-machine-id", str(machine_id)]
+    return argv
 
 
 def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
@@ -233,10 +236,18 @@ def build_semantic_teacher_image_edit_live_profile(
     source_commit: str,
     raw_manifest_uri: str,
     revision: str | None = None,
+    excluded_machine_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Build an immutable profile after the unpaid dry run passed."""
 
     authority = _read(Path(attempt_authority_path).expanduser().resolve())
+    normalized_exclusions: list[int] = []
+    for value in excluded_machine_ids:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise TaskEvaluationLaunchError(
+                "semantic_teacher_excluded_machine_id_invalid"
+            )
+        normalized_exclusions.append(value)
     return build_lane_live_profile(
         SPEC,
         bundle_receipt_path=bundle_receipt_path,
@@ -250,6 +261,9 @@ def build_semantic_teacher_image_edit_live_profile(
             "attempt_authority": attempt_authority_path,
             "dry_run_receipt": dry_run_receipt_path,
             "token_file": token_file_path,
+        },
+        extra_values={
+            "excluded_machine_ids": sorted(set(normalized_exclusions)),
         },
     )
 
@@ -267,6 +281,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Local digest-bound content-addressed publication receipt for this run spec.",
     )
     parser.add_argument("--revision")
+    parser.add_argument(
+        "--excluded-machine-id",
+        action="append",
+        type=int,
+        default=[],
+        help="Vast machine ID this immutable semantic-teacher profile must exclude.",
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
@@ -278,6 +299,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_commit=args.source_commit,
             raw_manifest_uri=args.raw_manifest_uri,
             revision=args.revision,
+            excluded_machine_ids=args.excluded_machine_id,
         )
     except (OSError, ValueError, TaskEvaluationLaunchError) as exc:
         print(

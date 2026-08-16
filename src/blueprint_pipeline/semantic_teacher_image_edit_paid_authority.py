@@ -88,13 +88,25 @@ def _validated_digest(value: Mapping[str, Any], field: Any) -> str:
 
 
 def _json_path(value: Any, path: Any) -> Any:
-    if not isinstance(path, list) or not path or any(not isinstance(item, str) for item in path):
+    if not isinstance(path, list) or not path:
         raise ValueError("semantic_teacher_prior_spend_binding_path_invalid")
     current = value
     for component in path:
-        if not isinstance(current, Mapping) or component not in current:
+        if isinstance(component, str) and isinstance(current, Mapping):
+            if component not in current:
+                raise ValueError(
+                    "semantic_teacher_prior_spend_binding_path_invalid"
+                )
+            current = current[component]
+        elif (
+            isinstance(component, int)
+            and not isinstance(component, bool)
+            and isinstance(current, list)
+            and 0 <= component < len(current)
+        ):
+            current = current[component]
+        else:
             raise ValueError("semantic_teacher_prior_spend_binding_path_invalid")
-        current = current[component]
     return current
 
 

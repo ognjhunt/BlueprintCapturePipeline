@@ -175,6 +175,10 @@ class RenderLaunchSpec:
     # every pre-existing field so positional construction remains compatible.
     # Qualification sessions may opt into ssh_direct for a direct SSH endpoint.
     vast_launch_mode: str = "args"
+    # Immutable caller-selected Vast machines that this launch must not use.
+    # Kept in the neutral request so capacity preflight and paid selection apply
+    # the same exclusion set.
+    excluded_machine_ids: tuple[int, ...] = ()
 
     @property
     def bootstrap_script(self) -> str:
@@ -1919,6 +1923,7 @@ class VastRenderProvider(GpuRenderProvider):
             "requires_rtx": spec.requires_rtx,
             "vast_launch_mode": launch_mode,
             "require_direct_port": require_direct_port,
+            "excluded_machine_ids": list(spec.excluded_machine_ids),
             "bootstrap_transport": script_transport,
             "bootstrap_transport_env_keys": sorted(bootstrap_env),
             "entrypoint_override": entrypoint_override,
@@ -2015,6 +2020,9 @@ class VastRenderProvider(GpuRenderProvider):
             "min_reliability": min_reliability,
             "require_direct_port": require_direct_port,
             "preferred_gpu_keywords": preferred_gpu_keywords,
+            "excluded_machine_ids": _string_list(
+                req.get("excluded_machine_ids")
+            ),
             **vcc.capacity_selection_overrides(req),
         }
         selected = _select_offer(offers, **selection_kwargs)
@@ -2112,6 +2120,9 @@ class VastRenderProvider(GpuRenderProvider):
         preferred_gpu_keywords = _string_list(
             request.get("preferred_gpu_keywords")
         )
+        excluded_machine_ids = _string_list(
+            request.get("excluded_machine_ids")
+        )
         if require_avx:
             search_payload = {**search_payload, "has_avx": {"eq": True}}
         try:
@@ -2157,6 +2168,7 @@ class VastRenderProvider(GpuRenderProvider):
                 min_reliability=min_reliability,
                 require_direct_port=require_direct_port,
                 preferred_gpu_keywords=preferred_gpu_keywords,
+                excluded_machine_ids=excluded_machine_ids,
             )
             if not offer:
                 break

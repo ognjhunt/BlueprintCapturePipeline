@@ -321,13 +321,21 @@ def _runtime_archive(
 class _Provider:
     name = "vast"
 
-    def __init__(self, *, initially_live: bool = False, launch_status: str = "launched"):
+    def __init__(
+        self,
+        *,
+        initially_live: bool = False,
+        launch_status: str = "launched",
+        inspect_absent: bool = False,
+    ):
         self.initially_live = initially_live
         self.launch_status = launch_status
         self.live = False
         self.launch_calls = 0
         self.terminate_calls = 0
         self.seen_token = ""
+        self.inspect_absent = inspect_absent
+        self.inspect_calls = 0
 
     def billable_inventory(self, *, name_prefix: str) -> dict:
         live = self.initially_live or self.live
@@ -368,6 +376,24 @@ class _Provider:
         self.terminate_calls += 1
         self.live = False
         return {"status": "stopped", "instance_id": instance_id}
+
+    def inspect(self, instance_id):
+        self.inspect_calls += 1
+        if self.inspect_absent:
+            return {
+                "status": "absent",
+                "instance_id": instance_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+                "blockers": [],
+            }
+        return {
+            "status": "observed",
+            "instance_id": instance_id,
+            "api_confirmed": True,
+            "provider_absence_confirmed": False,
+            "blockers": [],
+        }
 
 
 class _ObjectStore:
@@ -850,6 +876,40 @@ def test_allocated_timeout_retains_gap_conservative_billing_and_canonical_zero(
     assert (
         job / "semantic_teacher_image_edit_runtime_failure_artifacts.zip"
     ).is_file()
+
+
+def test_provider_confirmed_absence_ends_output_wait_without_full_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(vast, "PROVIDER_LIVENESS_POLL_SECONDS", 0.0)
+    fetch_calls = 0
+
+    def missing(_url: str) -> bytes:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        raise FileNotFoundError("not uploaded")
+
+    provider = _Provider(inspect_absent=True)
+    result, _provider, _store, _calls = _run(
+        tmp_path,
+        monkeypatch,
+        provider=provider,
+        result_fetcher=missing,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["semantic_teacher_provider_instance_vanished"]
+    assert result["excluded_machine_ids"] == []
+    assert provider.inspect_calls == vast.PROVIDER_ABSENCE_CONFIRMATIONS_REQUIRED
+    assert fetch_calls == vast.PROVIDER_ABSENCE_CONFIRMATIONS_REQUIRED
+    gap = json.loads(
+        (
+            Path(_inputs(tmp_path).semantic_teacher_job_dir)
+            / "runtime_output"
+            / "semantic_teacher_image_edit_runtime_media_gap.v1.json"
+        ).read_text()
+    )
+    assert gap["gap_type"] == "provider_instance_vanished"
 
 
 def test_default_result_fetcher_treats_object_store_404_as_not_ready(

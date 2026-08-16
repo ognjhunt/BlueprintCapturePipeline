@@ -33,6 +33,7 @@ SUPPORTED_LANES = frozenset(
         "gaussian_excision",
         "native_task_arena",
         "retained_scene_render",
+        "semantic_teacher_image_edit_gpu_canary",
         "simready_isaac",
     }
 )
@@ -144,6 +145,16 @@ def _json_path(value: Mapping[str, Any], *paths: tuple[str, ...]) -> tuple[list[
 
 def _instance_ids(teardown: Mapping[str, Any]) -> list[int]:
     raw = teardown.get("vast_instance_ids")
+    if raw is None:
+        single = teardown.get("instance_id")
+        if (
+            isinstance(single, int)
+            and not isinstance(single, bool)
+            and single > 0
+        ):
+            raw = [single]
+        elif isinstance(single, str) and single.isdigit() and int(single) > 0:
+            raw = [int(single)]
     if (
         not isinstance(raw, list)
         or not raw
@@ -203,7 +214,9 @@ def _entry(
     zero_binding_path, zero_confirmed = _json_path(
         zero, ("provider_zero_verified",), ("provider_zero_confirmed",)
     )
-    estimate_path, estimated_cost = _json_path(result, ("estimated_cost_usd",))
+    estimate_path, estimated_cost = _json_path(
+        result, ("estimated_cost_usd",), ("cost_usd",)
+    )
     del estimate_path
     if (
         result.get("status")

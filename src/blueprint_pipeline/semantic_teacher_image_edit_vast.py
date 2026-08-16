@@ -7,7 +7,7 @@ resource admission grant and an already-armed independent watchdog.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import json
 import math
@@ -80,6 +80,11 @@ INPUT_GET_ENV = "BLUEPRINT_SEMANTIC_TEACHER_INPUT_BUNDLE_GET_URL"
 OUTPUT_PUT_ENV = "BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_PUT_URL"
 TOKEN_ENV = "BLUEPRINT_IMAGE_EDITOR_TOKEN"
 MAX_RESULT_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+# Poll the exact provider contract separately from the object-store result. Two
+# consecutive API-confirmed absences leave a final grace window for a just-
+# uploaded object while avoiding a full-TTL wait after a dead container.
+PROVIDER_LIVENESS_POLL_SECONDS = 30.0
+PROVIDER_ABSENCE_CONFIRMATIONS_REQUIRED = 2
 MAX_OUTPUT_MEMBERS = 3_000
 MAX_OUTPUT_MEMBER_BYTES = 128 * 1024 * 1024
 _PINNED_IMAGE = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
@@ -533,6 +538,21 @@ def _read_token_file(path: str | Path) -> str:
     return token
 
 
+def _provider_instance_absent(provider: Any, instance_id: str) -> bool:
+    """Return true only for an exact API-confirmed provider absence."""
+
+    try:
+        inspection = dict(provider.inspect(instance_id))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return bool(
+        inspection.get("status") == "absent"
+        and inspection.get("api_confirmed") is True
+        and inspection.get("provider_absence_confirmed") is True
+        and not inspection.get("blockers")
+    )
+
+
 def _default_result_fetcher(url: str) -> bytes:
     try:
         response = safe_http_request(
@@ -981,6 +1001,7 @@ def _execute_semantic_teacher_image_edit_vast(
         write_started_vast_instance_id
     ),
     watchdog_closer: Callable[..., Mapping[str, Any]] | None = None,
+    excluded_machine_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Run one immutable bundle; always tear down compute and staged objects."""
 
@@ -1336,6 +1357,9 @@ def _execute_semantic_teacher_image_edit_vast(
                 ),
                 requires_rtx=False,
                 vast_launch_mode="args",
+                excluded_machine_ids=tuple(
+                    int(value) for value in excluded_machine_ids
+                ),
             )
             provider_request = provider.build_request(spec, root)
             provider_request["maximum_create_attempts"] = 1
@@ -1406,13 +1430,29 @@ def _execute_semantic_teacher_image_edit_vast(
                     else:
                         watchdog_instance_binder(binding_path, int(instance_id))
                 output_archive: bytes | None = None
+                provider_absence_confirmations = 0
+                provider_absence_confirmed = False
+                liveness_checked_at = float(clock())
                 while float(clock()) - started_at <= hard_ttl:
                     try:
                         output_archive = result_fetcher(output_get_url)
                         break
                     except (FileNotFoundError, TimeoutError):
-                        if float(clock()) - started_at >= hard_ttl:
+                        now = float(clock())
+                        if now - started_at >= hard_ttl:
                             break
+                        if now - liveness_checked_at >= PROVIDER_LIVENESS_POLL_SECONDS:
+                            liveness_checked_at = now
+                            if _provider_instance_absent(provider, instance_id):
+                                provider_absence_confirmations += 1
+                            else:
+                                provider_absence_confirmations = 0
+                            if (
+                                provider_absence_confirmations
+                                >= PROVIDER_ABSENCE_CONFIRMATIONS_REQUIRED
+                            ):
+                                provider_absence_confirmed = True
+                                break
                         sleeper(
                             min(
                                 5.0,
@@ -1422,7 +1462,13 @@ def _execute_semantic_teacher_image_edit_vast(
                                 ),
                             )
                         )
-                if output_archive is None:
+                if provider_absence_confirmed:
+                    blockers.append("semantic_teacher_provider_instance_vanished")
+                    runtime_gap_type = "provider_instance_vanished"
+                    runtime_gap_reason = (
+                        "provider_confirmed_absent_before_any_output_appeared"
+                    )
+                elif output_archive is None:
                     blockers.append("semantic_teacher_output_timeout")
                     runtime_gap_type = "runtime_timeout"
                     runtime_gap_reason = "output_download_timed_out_after_allocation"
@@ -1875,6 +1921,9 @@ def _execute_semantic_teacher_image_edit_vast(
         "camera_count": receipt.get("camera_count"),
         "provider": "vast",
         "runtime_image_identity": runtime_image_identity,
+        "excluded_machine_ids": sorted(
+            set(int(value) for value in excluded_machine_ids)
+        ),
         "instance_id": instance_id,
         "allocation_count": allocation_count,
         "maximum_create_attempts": 1,
@@ -1995,6 +2044,9 @@ def run_semantic_teacher_image_edit_vast(
         watchdog_validator=watchdog_validator,
         watchdog_instance_binder=watchdog_instance_binder,
         watchdog_closer=watchdog_closer,
+        excluded_machine_ids=getattr(
+            args, "semantic_teacher_excluded_machine_id", []
+        ),
     )
 
 

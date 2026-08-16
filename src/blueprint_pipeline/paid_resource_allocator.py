@@ -821,6 +821,7 @@ def _semantic_teacher_capacity_preflight(
     runtime_image_identity: str,
     job_dir: Path,
     watchdog: Mapping[str, Any],
+    excluded_machine_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     spec = RenderLaunchSpec(
         name=f"{SEMANTIC_TEACHER_NAME_PREFIX}capacity-preflight",
@@ -834,6 +835,7 @@ def _semantic_teacher_capacity_preflight(
         min_gpu_ram_mb=16_000,
         requires_rtx=False,
         vast_launch_mode="args",
+        excluded_machine_ids=tuple(excluded_machine_ids),
     )
     request = provider.build_request(spec, job_dir)
     capacity = provider.capacity_preflight(request)
@@ -858,6 +860,7 @@ def _semantic_teacher_capacity_preflight(
         "schema_version": "semantic_teacher_image_edit_live_preflight.v1",
         "status": "ready",
         "provider": "vast",
+        "excluded_machine_ids": sorted(set(excluded_machine_ids)),
         "watchdog": dict(watchdog),
         "capacity": dict(capacity),
         "gpu_memory_bytes": int(memory_mb) * 1_000_000,
@@ -1535,6 +1538,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--semantic-teacher-dry-run-output")
     gpu.add_argument("--semantic-teacher-dry-run-receipt")
     gpu.add_argument("--semantic-teacher-preflight-output")
+    gpu.add_argument(
+        "--semantic-teacher-excluded-machine-id",
+        action="append",
+        type=int,
+        default=[],
+        help="Immutable Vast machine ID to exclude from semantic-teacher preflight and launch.",
+    )
     gpu.add_argument("--adp-public-reference-manifest")
     gpu.add_argument("--adp-arena-approval")
     gpu.add_argument("--adp009d-approved-can")
@@ -1962,6 +1972,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 missing.append("semantic_teacher_dry_run_output")
             if args.provider != "vast":
                 checkout_blockers.append("semantic_teacher_provider_must_be_vast")
+            if any(
+                isinstance(value, bool) or value <= 0
+                for value in args.semantic_teacher_excluded_machine_id
+            ):
+                checkout_blockers.append(
+                    "semantic_teacher_excluded_machine_id_invalid"
+                )
             if args.execute:
                 missing.extend(
                     name
@@ -2028,6 +2045,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ),
                             job_dir=job_dir,
                             watchdog=handoff,
+                            excluded_machine_ids=(
+                                args.semantic_teacher_excluded_machine_id
+                            ),
                         )
                     except (OSError, RuntimeError, ValueError):
                         close_independent_vast_watchdog_without_allocation(
