@@ -254,6 +254,17 @@ def test_semantic_retry_inputs_reach_authority_and_profile() -> None:
         "/evidence/official-spend.json",
     ]
 
+    dry_run_argv: list[str] = []
+    for flag, context_name in steps["allocator_dry_run"].repeated_argv:
+        for value in prep._repeated_values(resolved[context_name]):
+            dry_run_argv.extend((flag, value))
+    assert dry_run_argv == [
+        "--semantic-teacher-excluded-machine-id",
+        "76546",
+        "--semantic-teacher-excluded-machine-id",
+        "76547",
+    ]
+
     profile_argv: list[str] = []
     for flag, context_name in steps["live_profile"].repeated_argv:
         for value in prep._repeated_values(resolved[context_name]):
