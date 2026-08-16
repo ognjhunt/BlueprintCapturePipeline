@@ -731,6 +731,7 @@ cleanup_secret() {
   rm -f "$secret_file"
 }
 trap cleanup_secret EXIT
+mkdir -p "$(dirname "$bundle_path")"
 python - "$bundle_path" <<'PY'
 import hashlib, os, sys
 from pathlib import Path

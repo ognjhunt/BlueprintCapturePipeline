@@ -525,6 +525,22 @@ def test_probe_kind_and_bootstrap_are_single_attempt_and_ephemeral_secret() -> N
     assert "retry" not in script.lower()
 
 
+def test_bootstrap_creates_the_bundle_parent_before_download() -> None:
+    """The pinned runtime image does not guarantee that /work exists.
+
+    A production container reached the first ``Path.write_bytes`` with no
+    parent directory, failed before any OpenAI request, and then remained live
+    in the provider's log-hold wrapper. The bootstrap must own its writable
+    root instead of relying on image-specific filesystem state.
+    """
+
+    script = _bootstrap_script()
+    create_parent = 'mkdir -p "$(dirname "$bundle_path")"'
+    first_download = 'python - "$bundle_path"'
+    assert script.count(create_parent) == 1
+    assert script.index(create_parent) < script.index(first_download)
+
+
 def test_watchdog_validator_accepts_realistic_full_ttl_handoff_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
