@@ -2020,11 +2020,11 @@ class VastRenderProvider(GpuRenderProvider):
             "min_reliability": min_reliability,
             "require_direct_port": require_direct_port,
             "preferred_gpu_keywords": preferred_gpu_keywords,
-            "excluded_machine_ids": _string_list(
-                req.get("excluded_machine_ids")
-            ),
             **vcc.capacity_selection_overrides(req),
         }
+        excluded_machine_ids = _string_list(req.get("excluded_machine_ids"))
+        if excluded_machine_ids:
+            selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
         selected = _select_offer(offers, **selection_kwargs)
         viable: list[dict[str, Any]] = []
         for offer in offers:
@@ -2159,17 +2159,18 @@ class VastRenderProvider(GpuRenderProvider):
         remaining = list(offers)
         last_blocker = "no_vast_offer_matching_rate_and_gpu_memory"
         for _try in range(maximum_create_attempts):
-            offer = _select_offer(
-                remaining,
-                max_hourly_rate=max_rate,
-                min_gpu_ram_mb=min_ram,
-                require_avx=require_avx,
-                require_known_supported_isaac_driver=require_known_driver,
-                min_reliability=min_reliability,
-                require_direct_port=require_direct_port,
-                preferred_gpu_keywords=preferred_gpu_keywords,
-                excluded_machine_ids=excluded_machine_ids,
-            )
+            selection_kwargs = {
+                "max_hourly_rate": max_rate,
+                "min_gpu_ram_mb": min_ram,
+                "require_avx": require_avx,
+                "require_known_supported_isaac_driver": require_known_driver,
+                "min_reliability": min_reliability,
+                "require_direct_port": require_direct_port,
+                "preferred_gpu_keywords": preferred_gpu_keywords,
+            }
+            if excluded_machine_ids:
+                selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
+            offer = _select_offer(remaining, **selection_kwargs)
             if not offer:
                 break
             ask_id = offer.get("ask_contract_id")
