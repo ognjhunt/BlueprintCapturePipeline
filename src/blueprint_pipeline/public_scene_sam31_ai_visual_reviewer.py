@@ -217,6 +217,7 @@ def run_sam31_ai_visual_review(
         "claim_boundary": {
             "visual_track_selection_review_only": True,
             "human_review_completed": False,
+            "per_view_segmentation_completeness_qualified": False,
             "geometry_qualified": False,
             "physical_evidence": False,
         },

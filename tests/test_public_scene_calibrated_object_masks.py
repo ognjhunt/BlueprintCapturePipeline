@@ -31,6 +31,7 @@ from blueprint_pipeline.public_scene_sam31_track_selection_review import (
     materialize_sam31_ai_visual_review_rights,
     seal_sam31_track_selection_ai_review,
     seal_sam31_track_selection_review,
+    validate_sam31_ai_structured_decision,
     validate_sam31_track_selection_review,
     validate_sam31_ai_visual_review_rights,
 )
@@ -387,15 +388,12 @@ def _run_production_ai_review(
     for task in candidate["review_media"]:
         for frame in task["frames"]:
             rejected = decision == "rejected" and not frame_decisions
-            empty = int(frame["foreground_pixel_count"]) == 0
             frame_decisions.append(
                 {
                     "task_id": task["task_id"],
                     "camera_id": frame["camera_id"],
                     "target_visibility": (
-                        "absent_or_fully_occluded"
-                        if empty
-                        else "visible_or_partially_visible"
+                        "visible_or_partially_visible"
                     ),
                     "selected_mask_matches_target": not rejected,
                     "decision": "rejected" if rejected else "accepted",
@@ -470,6 +468,7 @@ def test_materializes_two_calibrated_object_masks_without_dilation(tmp_path: Pat
     assert result["task_count"] == 2
     assert result["camera_count_total"] == 4
     assert result["claim_boundary"]["masks_are_model_inferred_candidates"] is True
+    assert result["claim_boundary"]["per_view_segmentation_completeness_qualified"] is False
     assert result["selection_authority"]["mask_dilation_pixels"] == 0
     assert result["selection_authority"]["all_selected_tracks_human_review_accepted"] is True
     mask = np.asarray(
@@ -522,13 +521,18 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
         for row in execution["structured_output"]["frames"]
         if row["task_id"] == "task_b" and row["camera_id"] == "camera_0"
     )
-    assert empty_decision["target_visibility"] == "absent_or_fully_occluded"
+    assert empty_decision["target_visibility"] == "visible_or_partially_visible"
     assert empty_decision["decision"] == "accepted"
-    assert next(
+    empty_inventory = next(
         row
         for row in execution["frame_inventory"]
         if row["task_id"] == "task_b" and row["camera_id"] == "camera_0"
-    )["foreground_pixel_count"] == 0
+    )
+    assert empty_inventory["foreground_pixel_count"] == 0
+    assert (
+        empty_inventory["mask_observation_status"]
+        == "normalized_empty_no_above_threshold_observation"
+    )
     assert receipt["schema_version"] == AI_RECEIPT_SCHEMA_VERSION
     assert receipt["status"] == "selected_tracks_ai_visual_review_accepted"
     assert receipt["reviewer"] == {
@@ -547,6 +551,10 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
     assert receipt["review_scope"]["review_frame_count"] == 16
     assert receipt["claim_boundary"]["human_review_completed"] is False
     assert receipt["claim_boundary"]["ai_visual_review_completed"] is True
+    assert (
+        receipt["claim_boundary"]["per_view_segmentation_completeness_qualified"]
+        is False
+    )
     assert "reviewed_by" not in receipt
     assert "reviewed_on" not in receipt
     assert "agent_selected_tracks_without_human_review" not in receipt
@@ -649,6 +657,48 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
             task_inputs=fixture["task_inputs"],
             selected_track_ids_by_task=selected,
         )
+
+
+def test_ai_review_separates_empty_observation_identity_from_visible_target() -> None:
+    inventory = [
+        {
+            "task_id": "task_b_notebook_relocation",
+            "camera_id": "front_left",
+            "foreground_pixel_count": 0,
+            "mask_observation_status": "normalized_empty_no_above_threshold_observation",
+        }
+    ]
+    frame = {
+        "task_id": "task_b_notebook_relocation",
+        "camera_id": "front_left",
+        "target_visibility": "visible_or_partially_visible",
+        "selected_mask_matches_target": True,
+        "decision": "accepted",
+        "rationale": "No magenta pixels select a wrong object in the normalized empty observation.",
+    }
+
+    decision, blockers = validate_sam31_ai_structured_decision(
+        structured_output={"decision": "accepted", "frames": [frame]},
+        frame_inventory=inventory,
+    )
+    assert decision == "accepted"
+    assert blockers == []
+
+    rejected_frame = {**frame, "selected_mask_matches_target": False, "decision": "rejected"}
+    decision, blockers = validate_sam31_ai_structured_decision(
+        structured_output={"decision": "rejected", "frames": [rejected_frame]},
+        frame_inventory=inventory,
+    )
+    assert decision == "rejected"
+    assert blockers == ["frame_rejected:task_b_notebook_relocation:front_left"]
+
+    invalid_inventory = [{**inventory[0], "mask_observation_status": "above_threshold_selected_mask"}]
+    decision, blockers = validate_sam31_ai_structured_decision(
+        structured_output={"decision": "rejected", "frames": [frame]},
+        frame_inventory=invalid_inventory,
+    )
+    assert decision == "rejected"
+    assert "mask_observation_status_invalid:task_b_notebook_relocation:front_left" in blockers
 
 
 def test_ai_visual_review_rejection_and_missing_identity_fail_closed(
