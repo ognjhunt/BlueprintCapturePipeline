@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -189,9 +190,17 @@ def provider_runtime_contract_blockers(
         )
         runner_blocker = "provider_runner_missing_adp009d_articulated_native_runtime_contract"
     elif provider_bundle_kind == "native_task_arena":
+        # The three execution modes name their own result file --
+        # construction, control, policy -- so requiring the construction
+        # literal made the controls and policy entrypoints unsatisfiable and
+        # both lanes unlaunchable, blocked before offer search but after the
+        # one-shot authority was consumed.
         entrypoint_valid = (
             "native_task_arena_worker_failed_without_runtime_result" in entrypoint_text
-            and "native_task_arena_construction_result.v1.json" in entrypoint_text
+            and re.search(
+                r"native_task_arena_[a-z_]+_result\.v1\.json", entrypoint_text
+            )
+            is not None
             and "native_task_arena_process_exited_without_result" in entrypoint_text
         )
         runner_valid = all(
