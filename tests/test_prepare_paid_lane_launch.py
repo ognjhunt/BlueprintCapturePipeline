@@ -236,3 +236,36 @@ def test_semantic_teacher_lane_passes_each_tool_the_argument_shape_it_wants() ->
     assert lane_module == "semantic_teacher_image_edit_vast.py"
     assert "." in lane_module and "/" not in lane_module
     assert not lane_module.startswith("blueprint_pipeline")
+
+
+def test_semantic_retry_inputs_reach_authority_and_profile() -> None:
+    steps = {step.step_id: step for step in prep.LANES["semantic_teacher_image_edit"]}
+    resolved = {
+        "prior_spend_reconciliations": ["/evidence/official-spend.json"],
+        "excluded_machine_ids": [76546, 76547],
+    }
+
+    authority_argv: list[str] = []
+    for flag, context_name in steps["paid_authority"].repeated_argv:
+        for value in prep._repeated_values(resolved[context_name]):
+            authority_argv.extend((flag, value))
+    assert authority_argv == [
+        "--prior-spend-reconciliation",
+        "/evidence/official-spend.json",
+    ]
+
+    profile_argv: list[str] = []
+    for flag, context_name in steps["live_profile"].repeated_argv:
+        for value in prep._repeated_values(resolved[context_name]):
+            profile_argv.extend((flag, value))
+    assert profile_argv == [
+        "--excluded-machine-id",
+        "76546",
+        "--excluded-machine-id",
+        "76547",
+    ]
+
+
+def test_optional_retry_inputs_emit_no_empty_arguments() -> None:
+    assert prep._repeated_values([]) == ()
+    assert prep._repeated_values(None) == ()
