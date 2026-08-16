@@ -1137,6 +1137,7 @@ def process_launch_queue(
     processing.mkdir(parents=True, exist_ok=True)
     execution_scope_launch_id = str(execute_launch_id or "").strip()
     armed = _is_identifier(execution_scope_launch_id)
+    ignored_terminal_execute_launch_id: str | None = None
     # A standing per-profile authorization is the other way a paid launch is
     # admitted. It was unreachable from here: the queue refused for a missing
     # launch id before `dispatch_launch_request` -- the only place that reads a
@@ -1145,6 +1146,28 @@ def process_launch_queue(
     # a stale one silently filtered every newer request out of the queue.
     standing_root = Path(standing_authorization_directory(state_root)).expanduser()
     standing_present = standing_root.is_dir() and any(standing_root.glob("*.json"))
+    sources = sorted(pending.glob("*.json"))
+    if execute and armed and standing_present:
+        scoped_sources = [
+            source
+            for source in sources
+            if source.name.startswith(f"{execution_scope_launch_id}-")
+        ]
+        terminal_scope_exists = any(
+            directory.is_dir()
+            and any(directory.glob(f"{execution_scope_launch_id}-*.json"))
+            for directory in (queue / "completed", queue / "blocked")
+        )
+        if not scoped_sources and terminal_scope_exists:
+            # Exact launch windows are one-shot. A completed/blocked request can
+            # remain in a host EnvironmentFile after its window closes; letting
+            # that stale value keep filtering the queue strands every newer
+            # website request even when it carries a valid standing authority.
+            # Ignore only a terminal scope and keep each newer request subject
+            # to its own digest-bound standing-authorization decision.
+            ignored_terminal_execute_launch_id = execution_scope_launch_id
+            execution_scope_launch_id = ""
+            armed = False
     if execute and not armed and not standing_present:
         return {
             "schema_version": QUEUE_RUN_SCHEMA_VERSION,
@@ -1154,9 +1177,9 @@ def process_launch_queue(
             "blockers": ["execute_launch_id_required"],
             "execute_requested": True,
             "execute_launch_id": None,
+            "ignored_terminal_execute_launch_id": None,
             "automatic_retry_performed": False,
         }
-    sources = sorted(pending.glob("*.json"))
     if execute and armed:
         # A paid activation scoped to one immutable launch ID stays scoped to
         # it: do not claim, dry-run, or mutate any other pending request while
@@ -1217,6 +1240,7 @@ def process_launch_queue(
         "receipts": processed,
         "execute_requested": bool(execute),
         "execute_launch_id": execution_scope_launch_id if execute else None,
+        "ignored_terminal_execute_launch_id": ignored_terminal_execute_launch_id,
         "automatic_retry_performed": False,
     }
 
