@@ -352,6 +352,20 @@ def bind_lane_prior_spend(
             and row.get("source") == f"instance-{instance_id}"
         ]
         teardown_instance_ids = teardown.get("vast_instance_ids")
+        if teardown_instance_ids is None:
+            single_instance_id = teardown.get("instance_id")
+            if (
+                isinstance(single_instance_id, int)
+                and not isinstance(single_instance_id, bool)
+                and single_instance_id > 0
+            ):
+                teardown_instance_ids = [single_instance_id]
+            elif (
+                isinstance(single_instance_id, str)
+                and single_instance_id.isdigit()
+                and int(single_instance_id) > 0
+            ):
+                teardown_instance_ids = [int(single_instance_id)]
         if (
             len(linked_sources) != 1
             or len(charge_rows) != 1
@@ -366,7 +380,7 @@ def bind_lane_prior_spend(
             or float(charge_rows[0].get("amount", -1)) != float(entry["cost_usd"])
         ):
             raise ValueError("prior_terminal_billing_or_zero_invalid")
-        estimate = result.get("estimated_cost_usd")
+        estimate = result.get("estimated_cost_usd", result.get("cost_usd"))
         if not _finite(estimate):
             raise ValueError("prior_terminal_attempt_estimate_invalid")
         rows.append(

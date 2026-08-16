@@ -258,6 +258,9 @@ class LaneLiveProfileContext:
     raw_manifest_uri: str
     #: Lane-specific paths the caller passed through, already resolved.
     extra_paths: Mapping[str, Path]
+    #: Small non-secret scalar/list controls embedded directly into the final
+    #: profile argv and therefore covered by the profile digest.
+    extra_values: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def bundle_sha256(self) -> str:
@@ -436,6 +439,7 @@ def build_lane_live_profile(
     revision: str | None = None,
     max_spend_usd: float | None = None,
     extra_paths: Mapping[str, str | Path] | None = None,
+    extra_values: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Derive one lane's live profile, or refuse with every reason at once."""
 
@@ -492,6 +496,7 @@ def build_lane_live_profile(
         ),
         raw_manifest_uri=raw_manifest_uri,
         extra_paths=resolved_extras,
+        extra_values=dict(extra_values or {}),
     )
 
     blockers.extend(spec.lane_blockers(context))

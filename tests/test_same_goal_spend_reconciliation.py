@@ -15,6 +15,9 @@ from blueprint_pipeline.same_goal_spend_reconciliation import (
     SUPPORTED_LANES,
     materialize_same_goal_spend_reconciliation,
 )
+from blueprint_pipeline.semantic_teacher_image_edit_paid_authority import (
+    _validate_prior_spend_reconciliation,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
     expand_prior_spend_immutable_inputs,
@@ -129,6 +132,47 @@ def test_materializer_produces_each_issuer_lane_ledger(tmp_path: Path, lane: str
     )
     assert binding["actual_total_usd"] == 0.025
     assert binding["prior_terminal_attempts"][0]["estimated_cost_usd"] == 0.015933
+    reopened, record = _validate_prior_spend_reconciliation(
+        output,
+        expected_total_cost_usd=0.025,
+    )
+    assert reopened["receipt_digest"] == record["receipt_digest"]
+
+
+def test_materializer_accepts_semantic_teacher_terminal_shapes(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path / "semantic")
+    result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+    result["schema_version"] = "semantic_teacher_image_edit_vast_execution.v1"
+    result["cost_usd"] = result.pop("estimated_cost_usd")
+    result.pop("receipt_digest")
+    result["execution_result_digest"] = canonical_digest(
+        result, digest_field="execution_result_digest"
+    )
+    fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+    teardown = json.loads(fixture["teardown"].read_text(encoding="utf-8"))
+    teardown["status"] = "PASS"
+    teardown["instance_id"] = str(teardown.pop("vast_instance_ids")[0])
+    fixture["teardown"].write_text(json.dumps(teardown), encoding="utf-8")
+
+    output, value = _materialize(
+        tmp_path / "semantic",
+        "semantic_teacher_image_edit_gpu_canary",
+        fixture,
+    )
+
+    assert value["total_cost_usd"] == 0.025
+    binding = bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane="semantic_teacher_image_edit_gpu_canary",
+    )
+    assert binding["actual_total_usd"] == 0.025
+    assert binding["prior_terminal_attempts"][0]["estimated_cost_usd"] == 0.015933
+    reopened, record = _validate_prior_spend_reconciliation(
+        output,
+        expected_total_cost_usd=0.025,
+    )
+    assert reopened["receipt_digest"] == record["receipt_digest"]
 
 
 def test_live_profile_expands_every_nested_prior_spend_receipt(tmp_path: Path) -> None:

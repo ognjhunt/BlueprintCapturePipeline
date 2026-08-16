@@ -1254,7 +1254,10 @@ def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
     assert req["create_endpoint"] == "PUT /asks/{ask_contract_id}/"
     assert req["entrypoint_override"] == "bash"
     assert spec.vast_launch_mode == "args"
-    assert list(RenderLaunchSpec.__dataclass_fields__)[-1] == "vast_launch_mode"
+    assert list(RenderLaunchSpec.__dataclass_fields__)[-2:] == [
+        "vast_launch_mode",
+        "excluded_machine_ids",
+    ]
     assert req["vast_launch_mode"] == "args"
     assert req["require_direct_port"] is False
 
@@ -1569,6 +1572,46 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
     assert "vast-secret" not in serialized
     assert "provider-runtime-secret" not in serialized
     assert "jupyter_token" not in serialized
+
+
+def test_vast_capacity_preflight_excludes_immutable_machine_ids(
+    monkeypatch,
+) -> None:
+    def fake_api_json(**_kwargs):
+        return 200, {
+            "offers": [
+                {
+                    "ask_contract_id": 1,
+                    "machine_id": 76546,
+                    "gpu_name": "RTX 3090",
+                    "gpu_ram": 24_000,
+                    "dph_total": 0.20,
+                },
+                {
+                    "ask_contract_id": 2,
+                    "machine_id": 84216,
+                    "gpu_name": "RTX 3090",
+                    "gpu_ram": 24_000,
+                    "dph_total": 0.21,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    request = VastRenderProvider().build_request(
+        _spec(excluded_machine_ids=(76546,)), Path("/unused")
+    )
+
+    result = VastRenderProvider().capacity_preflight(request)
+
+    assert result["status"] == "available"
+    assert result["selected_offer"]["machine_id"] == 84216
+    assert all(
+        row["machine_id"] != 76546 for row in result["viable_gpu_types"]
+    )
 
 
 def test_vast_ssh_direct_capacity_requires_offer_with_direct_port(

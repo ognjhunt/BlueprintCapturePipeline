@@ -119,7 +119,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
     }
 
 
-def _build(tmp_path: Path, monkeypatch):
+def _build(tmp_path: Path, monkeypatch, *, excluded_machine_ids=()):
     paths = _fixture(tmp_path)
     monkeypatch.setattr(
         builder,
@@ -136,6 +136,7 @@ def _build(tmp_path: Path, monkeypatch):
             f"https://raw.githubusercontent.com/example/repo/{COMMIT}/"
             "semantic-teacher.json"
         ),
+        excluded_machine_ids=excluded_machine_ids,
     )
     return profile, paths
 
@@ -174,6 +175,24 @@ def test_profile_uses_admitted_dispatch_and_binds_private_inputs(
         "continuing_spend_from_this_run": False,
         "retry_cap": 0,
     }
+
+
+def test_profile_binds_vast_machine_exclusions_into_allocator_argv(
+    tmp_path: Path, monkeypatch
+) -> None:
+    profile, _paths = _build(
+        tmp_path,
+        monkeypatch,
+        excluded_machine_ids=(76546, 76546, 84216),
+    )
+
+    argv = profile["allocator"]["argv"]
+    pairs = [
+        argv[index + 1]
+        for index, value in enumerate(argv[:-1])
+        if value == "--semantic-teacher-excluded-machine-id"
+    ]
+    assert pairs == ["76546", "84216"]
 
 
 def test_semantic_terminal_result_satisfies_shared_dispatcher_contract(

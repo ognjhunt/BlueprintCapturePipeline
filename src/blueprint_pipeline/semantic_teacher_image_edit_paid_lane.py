@@ -177,7 +177,12 @@ def _runtime_media_gap_valid(
         gap.get("schema_version") == RUNTIME_MEDIA_GAP_SCHEMA_VERSION
         and gap.get("status") == "blocked_runtime_result_missing"
         and gap.get("gap_type")
-        in {"runtime_timeout", "runtime_output_missing", "runtime_output_malformed"}
+        in {
+            "runtime_timeout",
+            "runtime_output_missing",
+            "runtime_output_malformed",
+            "provider_instance_vanished",
+        }
         and isinstance(gap.get("reason_code"), str)
         and bool(gap["reason_code"].strip())
         and gap.get("authority_digest") == authority_digest

@@ -201,6 +201,8 @@ def test_allocator_execute_arms_watchdog_then_routes_exact_adapter(
     result = allocator.main(
         [
             *args,
+            "--semantic-teacher-excluded-machine-id",
+            "76546",
             "--semantic-teacher-token-file",
             str(token),
             "--semantic-teacher-dry-run-receipt",
@@ -215,6 +217,42 @@ def test_allocator_execute_arms_watchdog_then_routes_exact_adapter(
 
     assert result == 0
     assert observed["arm"]["pod_name_prefix"] == "blueprint-semantic-teacher-"
+    assert observed["capacity"]["excluded_machine_ids"] == [76546]
     assert observed["adapter"]["checkout_commit"] == SOURCE_COMMIT
     assert observed["close"]["provider_allocation_impossible"] is True
     assert json.loads(adapter_output.read_text(encoding="utf-8"))["status"] == "completed"
+
+
+def test_allocator_refuses_invalid_semantic_teacher_machine_exclusion_before_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_source_checkout_blockers",
+        lambda *_args, **_kwargs: ([], SOURCE_COMMIT),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "get_render_provider",
+        lambda _name: (_ for _ in ()).throw(
+            AssertionError("invalid exclusion reached provider")
+        ),
+    )
+    output = tmp_path / "adapter.json"
+
+    result = allocator.main(
+        [
+            *_base_args(tmp_path),
+            "--semantic-teacher-excluded-machine-id",
+            "0",
+            "--semantic-teacher-dry-run-output",
+            str(tmp_path / "dry-run.json"),
+            "--adapter-output",
+            str(output),
+        ]
+    )
+
+    assert result == 2
+    blocked = json.loads(output.read_text(encoding="utf-8"))
+    assert "semantic_teacher_excluded_machine_id_invalid" in blocked["blockers"]
+    assert blocked["provider_mutations_performed"] == 0
