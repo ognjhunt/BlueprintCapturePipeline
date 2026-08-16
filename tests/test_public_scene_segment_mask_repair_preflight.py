@@ -26,7 +26,9 @@ from tests.test_adp_retained_scene_render_packet import (
 )
 
 
-def _fixture(tmp_path: Path, *, task_count: int = 2) -> tuple[Path, Path, list[Path]]:
+def _fixture(
+    tmp_path: Path, *, task_count: int = 2, relative_mask_records: bool = False
+) -> tuple[Path, Path, list[Path]]:
     root = tmp_path / "segment_set"
     source = _source_ply(root / "source.ply")
     shared = root / "shared_scene_union"
@@ -85,7 +87,11 @@ def _fixture(tmp_path: Path, *, task_count: int = 2) -> tuple[Path, Path, list[P
             masks.append(
                 {
                     "camera_id": camera_id,
-                    "historical_outer_mask": _absolute_record(mask_path),
+                    "historical_outer_mask": (
+                        _relative_record(camera_root, mask_path)
+                        if relative_mask_records
+                        else _absolute_record(mask_path)
+                    ),
                 }
             )
             source_images.append({"camera_id": camera_id, **_absolute_record(image_path)})
@@ -166,6 +172,21 @@ def test_segment_masks_are_the_only_artifixer_generated_support(tmp_path: Path) 
             ),
         }
         assert all(frame["outside_support_changed_pixels"] == 0 for frame in task["frames"])
+
+
+def test_segment_masks_accept_digest_bound_paths_relative_to_sweep(tmp_path: Path) -> None:
+    candidate, authority, _masks = _fixture(
+        tmp_path, task_count=2, relative_mask_records=True
+    )
+
+    preflight = materialize_segment_mask_repair_preflight(
+        segment_cutout_set_path=candidate,
+        execution_authority_path=authority,
+        output_path=tmp_path / "preflight.json",
+    )
+
+    assert len(preflight["camera_inputs"]) == 4
+    assert all(row["exact_residual_mask"]["pixel_count"] == 4 for row in preflight["camera_inputs"])
 
 
 def test_segment_mask_digest_tamper_is_rejected(tmp_path: Path) -> None:
