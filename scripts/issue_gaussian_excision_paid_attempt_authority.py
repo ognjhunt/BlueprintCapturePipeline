@@ -77,6 +77,7 @@ def issue_gaussian_excision_paid_attempt_authority(
     authorized_by: str,
     authority_reference: str,
     prior_attempt_receipt_path: str | Path | None = None,
+    prior_spend_result_paths: Sequence[str | Path] = (),
     prior_spend_reconciliation_path: str | Path | None = None,
     authorized_on: str | None = None,
 ) -> dict[str, Any]:
@@ -104,8 +105,11 @@ def issue_gaussian_excision_paid_attempt_authority(
         if not prior_file.is_file() or prior_file.is_symlink():
             raise GaussianExcisionAuthorityError("authority_prior_attempt_receipt_missing")
         prior = _read(prior_file)
+    spend_results = tuple(prior_spend_result_paths)
+    if not spend_results and prior is not None:
+        spend_results = (prior_file,)
     prior_spend = bind_lane_prior_spend(
-        prior_result_paths=(() if prior is None else (prior_file,)),
+        prior_result_paths=spend_results,
         reconciliation_path=prior_spend_reconciliation_path,
         lane="gaussian_excision",
     )
@@ -179,6 +183,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "from the second attempt onward; the ordinal is derived from it."
         ),
     )
+    parser.add_argument(
+        "--prior-spend-result",
+        action="append",
+        default=[],
+        help=(
+            "A same-lane terminal result bound by --prior-spend-reconciliation. "
+            "Repeat for every reconciled prior attempt. This is spend history, "
+            "not a retry predecessor and does not advance the bundle-local ordinal."
+        ),
+    )
     parser.add_argument("--authorized-on")
     parser.add_argument("--prior-spend-reconciliation")
     parser.add_argument("--output", required=True)
@@ -190,6 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             authorized_by=args.authorized_by,
             authority_reference=args.authority_reference,
             prior_attempt_receipt_path=args.prior_result,
+            prior_spend_result_paths=args.prior_spend_result,
             prior_spend_reconciliation_path=args.prior_spend_reconciliation,
             authorized_on=args.authorized_on,
         )

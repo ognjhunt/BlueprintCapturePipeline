@@ -264,8 +264,16 @@ def validate_gaussian_excision_paid_attempt_authority(
         reconciled = validate_bound_lane_prior_spend(
             value, lane="gaussian_excision"
         )
-        if (ordinal == 1) != (not reconciled["prior_terminal_attempts"]):
-            errors.append("prior_spend_reconciliation_ordinal_mismatch")
+        # The ordinal is local to retries of this exact freeze. Same-lane
+        # campaign spend can legitimately come from another task/freeze, so a
+        # first attempt may still carry reconciled prior terminal work. A retry
+        # must never omit its earlier spend proof.
+        if (
+            isinstance(ordinal, int)
+            and ordinal > 1
+            and not reconciled["prior_terminal_attempts"]
+        ):
+            errors.append("prior_spend_reconciliation_missing_for_retry")
     except ValueError:
         errors.append("prior_spend_reconciliation_invalid")
 
