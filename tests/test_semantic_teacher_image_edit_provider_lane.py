@@ -58,7 +58,13 @@ def _write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _packet(tmp_path: Path, *, task_count: int, cameras_per_task: int = 2) -> Path:
+def _packet(
+    tmp_path: Path,
+    *,
+    task_count: int,
+    cameras_per_task: int = 2,
+    maximum_cost_per_request_usd: float = 0.1,
+) -> Path:
     root = tmp_path / f"packet-{task_count}"
     root.mkdir(parents=True)
     registry_entry = {
@@ -89,7 +95,7 @@ def _packet(tmp_path: Path, *, task_count: int, cameras_per_task: int = 2) -> Pa
                 "billing_unit": "per_request",
                 "currency": "USD",
                 "pricing_identity": "fixture-price-2026-08-13",
-                "max_cost_per_request_usd": 0.1,
+                "max_cost_per_request_usd": maximum_cost_per_request_usd,
                 "usage_required": False,
                 "usd_per_million_tokens": {},
             },
@@ -224,8 +230,20 @@ def _committed_repository(tmp_path: Path) -> tuple[Path, str]:
     return repository, commit
 
 
-def _build(tmp_path: Path, *, task_count: int = 2, suffix: str = "a") -> tuple[dict, Path, Path]:
-    packet = _packet(tmp_path / suffix, task_count=task_count)
+def _build(
+    tmp_path: Path,
+    *,
+    task_count: int = 2,
+    cameras_per_task: int = 2,
+    maximum_cost_per_request_usd: float = 0.1,
+    suffix: str = "a",
+) -> tuple[dict, Path, Path]:
+    packet = _packet(
+        tmp_path / suffix,
+        task_count=task_count,
+        cameras_per_task=cameras_per_task,
+        maximum_cost_per_request_usd=maximum_cost_per_request_usd,
+    )
     repository, commit = _committed_repository(tmp_path / f"repo-{suffix}")
     output = tmp_path / f"bundle-{suffix}"
     receipt = build_semantic_teacher_image_edit_provider_bundle(
@@ -357,6 +375,57 @@ def test_authority_binds_bundle_backend_cardinality_and_caps(tmp_path: Path) -> 
     assert validated["maximum_automatic_retries"] == 0
     assert validated["automatic_paid_retry_authorized"] is False
     assert validated["consumption_root_kind"] == "host_private_atomic_single_use"
+
+
+def test_authority_admits_ten_dollar_hour_long_sixteen_frame_attempt(
+    tmp_path: Path,
+) -> None:
+    receipt, bundle, receipt_path = _build(
+        tmp_path,
+        task_count=2,
+        cameras_per_task=8,
+        maximum_cost_per_request_usd=0.3,
+    )
+    authority = materialize_semantic_teacher_image_edit_paid_authority(
+        bundle_path=bundle,
+        bundle_receipt_path=receipt_path,
+        authorization_reference="User authorized a larger bounded semantic attempt",
+        authorized_by="fixture-user",
+        authorized_on="2026-08-16",
+        source_commit_sha=receipt["source_commit_sha"],
+        backend_entry_digest=receipt["backend_entry_digest"],
+        task_count=2,
+        camera_count=16,
+        maximum_hourly_rate_usd=0.4,
+        hard_total_spend_cap_usd=10.0,
+        hard_ttl_seconds=3_600,
+        aggregate_goal_spend_before_attempt_usd=0.0,
+        aggregate_goal_spend_cap_usd=25.0,
+        output_path=tmp_path / "authority-cap-ten.json",
+    )
+    assert authority["hard_total_spend_cap_usd"] == 10.0
+    assert authority["hard_ttl_seconds"] == 3_600
+
+    with pytest.raises(
+        ValueError, match="semantic_teacher_paid_authority_configuration_invalid"
+    ):
+        materialize_semantic_teacher_image_edit_paid_authority(
+            bundle_path=bundle,
+            bundle_receipt_path=receipt_path,
+            authorization_reference="Attempt exceeds the authorized lane ceiling",
+            authorized_by="fixture-user",
+            authorized_on="2026-08-16",
+            source_commit_sha=receipt["source_commit_sha"],
+            backend_entry_digest=receipt["backend_entry_digest"],
+            task_count=2,
+            camera_count=16,
+            maximum_hourly_rate_usd=0.4,
+            hard_total_spend_cap_usd=10.01,
+            hard_ttl_seconds=3_600,
+            aggregate_goal_spend_before_attempt_usd=0.0,
+            aggregate_goal_spend_cap_usd=25.0,
+            output_path=tmp_path / "authority-over-cap.json",
+        )
 
 
 def test_authority_rejects_nonzero_unreconciled_prior_spend(tmp_path: Path) -> None:
