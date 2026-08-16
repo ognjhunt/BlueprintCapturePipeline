@@ -5299,7 +5299,7 @@
             {
               "artifact_id": "RUN-07-AC-01-EV-01",
               "path": "scripts/gpu_spend_guard.py",
-              "sha256": "sha256:a553f86433f23b741a085e188cf6efea99199e28bb1851c6cd5a8eba1020a2c9",
+              "sha256": "sha256:e14123d8740181a7936116a841a47812aac575e4c7d389e884afd47b563a2d08",
               "role": "executable_control",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5315,7 +5315,7 @@
             {
               "artifact_id": "RUN-07-AC-01-EV-02",
               "path": "tests/test_gpu_spend_guard.py",
-              "sha256": "sha256:e67aba83d5efc58b64b5115fa34391a0147cde068714e7faa2fb38b095e4bf3b",
+              "sha256": "sha256:cb15f82bf8f7adab210a56ae85f155f6f9a783453ba518cd033869ddfc7e41ae",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
