@@ -218,6 +218,24 @@ def _record_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def _combined_dual_receipt(tasks: list[dict[str, str]], path: Path) -> Path:
+    task_ids = [task["task_id"] for task in tasks]
+    task_rows = [
+        json.loads(Path(task["dual_target_inputs_receipt_path"]).read_text())["tasks"][0]
+        for task in tasks
+    ]
+    return _write(
+        path,
+        {
+            "schema_version": "public_scene_artifixer3d_dual_target_inputs.v1",
+            "publisher_scene_id": "840920",
+            "selected_task_ids": task_ids,
+            "tasks": task_rows,
+        },
+        "receipt_digest",
+    )
+
+
 def test_preflight_binds_two_tasks_and_preserves_proof_boundary(tmp_path: Path) -> None:
     tasks = [_fixture(tmp_path, "task_a"), _fixture(tmp_path, "task_b")]
     collision = tmp_path / "collision.usda"
@@ -234,6 +252,89 @@ def test_preflight_binds_two_tasks_and_preserves_proof_boundary(tmp_path: Path) 
     assert result["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
     assert all(len(task["camera_index"]["camera_ids"]) == 8 for task in result["tasks"])
     assert canonical_digest(result, digest_field="receipt_digest") == result["receipt_digest"]
+
+
+def test_preflight_accepts_one_shared_combined_dual_receipt(tmp_path: Path) -> None:
+    tasks = [_fixture(tmp_path, "task_a"), _fixture(tmp_path, "task_b")]
+    combined = _combined_dual_receipt(tasks, tmp_path / "combined-dual.json")
+    for task in tasks:
+        task["dual_target_inputs_receipt_path"] = str(combined)
+    collision = tmp_path / "collision.usda"
+    collision.write_text("#usda 1.0", encoding="utf-8")
+
+    result = materialize_paired_target_native_preflight(
+        scene_id="840920",
+        task_records=tasks,
+        collision_scene_path=collision,
+        output_path=tmp_path / "result.json",
+    )
+
+    bound = [task["dual_target_inputs_receipt"] for task in result["tasks"]]
+    assert {row["path"] for row in bound} == {str(combined.resolve())}
+    assert len({row["receipt_digest"] for row in bound}) == 1
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "reordered", "duplicate"])
+def test_preflight_rejects_combined_dual_task_set_drift(
+    tmp_path: Path, mutation: str
+) -> None:
+    tasks = [_fixture(tmp_path, "task_a"), _fixture(tmp_path, "task_b")]
+    combined_path = _combined_dual_receipt(tasks, tmp_path / "combined-dual.json")
+    combined = json.loads(combined_path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        combined["selected_task_ids"] = combined["selected_task_ids"][:1]
+        combined["tasks"] = combined["tasks"][:1]
+    elif mutation == "extra":
+        extra = dict(combined["tasks"][-1])
+        extra["task_id"] = "task_c"
+        combined["selected_task_ids"].append("task_c")
+        combined["tasks"].append(extra)
+    elif mutation == "reordered":
+        combined["selected_task_ids"].reverse()
+        combined["tasks"].reverse()
+    else:
+        combined["selected_task_ids"][-1] = "task_a"
+        combined["tasks"][-1] = dict(combined["tasks"][0])
+    combined["receipt_digest"] = canonical_digest(
+        combined, digest_field="receipt_digest"
+    )
+    combined_path.write_text(json.dumps(combined), encoding="utf-8")
+    for task in tasks:
+        task["dual_target_inputs_receipt_path"] = str(combined_path)
+    collision = tmp_path / "collision.usda"
+    collision.write_text("#usda 1.0", encoding="utf-8")
+
+    with pytest.raises(PairedTargetNativePreflightError, match="dual_inputs_invalid"):
+        materialize_paired_target_native_preflight(
+            scene_id="840920",
+            task_records=tasks,
+            collision_scene_path=collision,
+            output_path=tmp_path / "result.json",
+        )
+    assert not (tmp_path / "result.json").exists()
+
+
+def test_preflight_rejects_combined_dual_receipt_path_drift(tmp_path: Path) -> None:
+    tasks = [_fixture(tmp_path, "task_a"), _fixture(tmp_path, "task_b")]
+    combined = _combined_dual_receipt(tasks, tmp_path / "combined-dual.json")
+    copied = tmp_path / "copied-combined-dual.json"
+    copied.write_bytes(combined.read_bytes())
+    tasks[0]["dual_target_inputs_receipt_path"] = str(combined)
+    tasks[1]["dual_target_inputs_receipt_path"] = str(copied)
+    collision = tmp_path / "collision.usda"
+    collision.write_text("#usda 1.0", encoding="utf-8")
+
+    with pytest.raises(
+        PairedTargetNativePreflightError,
+        match="combined_dual_binding_mismatch",
+    ):
+        materialize_paired_target_native_preflight(
+            scene_id="840920",
+            task_records=tasks,
+            collision_scene_path=collision,
+            output_path=tmp_path / "result.json",
+        )
+    assert not (tmp_path / "result.json").exists()
 
 
 def test_preflight_rejects_tampered_bytes_and_six_tasks(tmp_path: Path) -> None:
