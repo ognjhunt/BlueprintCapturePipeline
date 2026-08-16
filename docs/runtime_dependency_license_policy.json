@@ -8,6 +8,22 @@
     "expires_on": "2027-07-09"
   },
   "components": {
+    "absl-py==2.5.0": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'Apache-2.0' retrieved 2026-08-15"
+    },
+    "addict==2.4.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: MIT License' retrieved 2026-08-15"
+    },
     "annotated-doc==0.0.4": {
       "license_expression": "MIT",
       "approved": true,
@@ -24,6 +40,22 @@
       "expires_on": "2027-07-09",
       "source": "installed distribution license classifier"
     },
+    "annotated-types==0.8.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15; unchanged from reviewed 0.7.0"
+    },
+    "antlr4-python3-runtime==4.9.3": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'BSD' retrieved 2026-08-15; ANTLR 4 project BSD-3-Clause"
+    },
     "anyio==4.14.1": {
       "license_expression": "MIT",
       "approved": true,
@@ -31,6 +63,14 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "asciitree==0.3.3": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' retrieved 2026-08-15"
     },
     "attrs==26.1.0": {
       "license_expression": "MIT",
@@ -64,6 +104,14 @@
       "expires_on": "2027-07-09",
       "source": "pinned BlueprintContracts distribution metadata"
     },
+    "cbor2==6.1.3": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
+    },
     "certifi==2026.6.17": {
       "license_expression": "MPL-2.0",
       "approved": true,
@@ -71,6 +119,14 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution license classifier"
+    },
+    "certifi==2026.7.22": {
+      "license_expression": "MPL-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MPL-2.0' retrieved 2026-08-15; unchanged from reviewed 2026.6.17"
     },
     "cffi==2.1.0": {
       "license_expression": "MIT-0",
@@ -112,6 +168,14 @@
       "expires_on": "2027-08-14",
       "source": "installed distribution metadata License-Expression"
     },
+    "dataclasses-json==0.6.7": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
     "defusedxml==0.7.1": {
       "license_expression": "Python-2.0",
       "approved": true,
@@ -120,6 +184,14 @@
       "expires_on": "2027-07-10",
       "source": "installed distribution metadata License=PSFL and project license"
     },
+    "deprecated==1.3.1": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
     "distro==1.9.0": {
       "license_expression": "Apache-2.0",
       "approved": true,
@@ -127,6 +199,14 @@
       "reviewed_on": "2026-07-29",
       "expires_on": "2027-07-29",
       "source": "installed distribution license classifier"
+    },
+    "einops==0.8.2": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
     },
     "exceptiongroup==1.3.1": {
       "license_expression": "MIT",
@@ -143,6 +223,46 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "fasteners==0.20": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'Apache-2.0' retrieved 2026-08-15"
+    },
+    "filelock==3.32.2": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
+    },
+    "fire==0.7.1": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache-2.0' retrieved 2026-08-15"
+    },
+    "flatbuffers==25.12.19": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache 2.0' and Apache classifier retrieved 2026-08-15"
+    },
+    "fsspec==2026.7.0": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "wheel dist-info METADATA License-Expression 'BSD-3-Clause' (fsspec-2026.7.0-py3-none-any.whl) retrieved 2026-08-15"
     },
     "google-api-core==2.31.0": {
       "license_expression": "Apache-2.0",
@@ -240,6 +360,14 @@
       "expires_on": "2027-08-01",
       "source": "installed distribution metadata License-Expression and license file"
     },
+    "grpcio==1.83.0": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'Apache-2.0' retrieved 2026-08-15; unchanged from reviewed 1.82.1"
+    },
     "h11==0.16.0": {
       "license_expression": "MIT",
       "approved": true,
@@ -247,6 +375,14 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution license classifier"
+    },
+    "hatchling==1.31.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
     },
     "httpcore==1.0.9": {
       "license_expression": "BSD-3-Clause",
@@ -272,6 +408,14 @@
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License"
     },
+    "hydra-core==1.3.4": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
     "idna==3.18": {
       "license_expression": "BSD-3-Clause",
       "approved": true,
@@ -279,6 +423,30 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "imageio==2.35.1": {
+      "license_expression": "BSD-2-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'BSD-2-Clause' retrieved 2026-08-15"
+    },
+    "jaxtyping==0.3.11": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT License' text and MIT classifier retrieved 2026-08-15"
+    },
+    "jinja2==3.1.6": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: BSD License' retrieved 2026-08-15; Pallets BSD-3-Clause"
     },
     "jiter==0.16.0": {
       "license_expression": "MIT",
@@ -295,6 +463,14 @@
       "reviewed_on": "2026-08-14",
       "expires_on": "2027-08-14",
       "source": "installed distribution metadata License and classifier"
+    },
+    "joblib==1.5.3": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-3-Clause' retrieved 2026-08-15"
     },
     "json-numpy==2.1.1": {
       "license_expression": "MIT",
@@ -320,6 +496,78 @@
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License-Expression"
     },
+    "kornia-rs==0.1.14": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: Apache Software License' retrieved 2026-08-15"
+    },
+    "kornia==0.8.3": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache-2.0' and Apache classifier retrieved 2026-08-15"
+    },
+    "lazy-loader==0.5": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-3-Clause' retrieved 2026-08-15"
+    },
+    "lightning-utilities==0.15.3": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache-2.0' retrieved 2026-08-15"
+    },
+    "lpips==0.1.4": {
+      "license_expression": "BSD-2-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: BSD License' retrieved 2026-08-15; project LICENSE BSD-2-Clause"
+    },
+    "markdown-it-py==4.2.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: MIT License' retrieved 2026-08-15"
+    },
+    "markdown==3.10.3": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-3-Clause' retrieved 2026-08-15"
+    },
+    "markupsafe==3.0.3": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-3-Clause' retrieved 2026-08-15"
+    },
+    "marshmallow==3.26.2": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: MIT License' retrieved 2026-08-15"
+    },
     "mcp==1.28.1": {
       "license_expression": "MIT",
       "approved": true,
@@ -328,6 +576,22 @@
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License"
     },
+    "mdurl==0.1.2": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: MIT License' retrieved 2026-08-15"
+    },
+    "mpmath==1.3.0": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'BSD' and BSD classifier retrieved 2026-08-15"
+    },
     "msgpack==1.2.1": {
       "license_expression": "Apache-2.0",
       "approved": true,
@@ -335,6 +599,54 @@
       "reviewed_on": "2026-08-14",
       "expires_on": "2027-08-14",
       "source": "installed distribution metadata License-Expression"
+    },
+    "mypy-extensions==1.1.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "wheel dist-info METADATA License-Expression 'MIT' (mypy_extensions-1.1.0-py3-none-any.whl) retrieved 2026-08-15"
+    },
+    "narwhals==2.24.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
+    },
+    "networkx==3.6.1": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-3-Clause' retrieved 2026-08-15"
+    },
+    "ninja==1.13.0": {
+      "license_expression": "Apache-2.0 AND BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifiers 'Apache Software License' and 'BSD License' retrieved 2026-08-15"
+    },
+    "numcodecs==0.15.1": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
+    "numpy==1.26.4": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON BSD-3-Clause license text and BSD classifier retrieved 2026-08-15; pre-vendored-expression numpy release"
     },
     "numpy==2.2.6": {
       "license_expression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
@@ -351,6 +663,134 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "locked conditional resolution distribution License-Expression"
+    },
+    "nvidia-cublas-cu12==12.4.2.65": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-cuda-cupti-cu12==12.4.99": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-cuda-nvrtc-cu12==12.4.99": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-cuda-runtime-cu12==12.4.99": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-cudnn-cu12==9.1.0.70": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-cufft-cu12==11.2.0.44": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-curand-cu12==10.3.5.119": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-cusolver-cu12==11.6.0.99": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-cusparse-cu12==12.3.0.142": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-nccl-cu12==2.20.5": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-ncore==19.5.0": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache-2.0' retrieved 2026-08-15; publisher NVIDIA Corporation github.com/NVIDIA/ncore"
+    },
+    "nvidia-nvjitlink-cu12==12.4.99": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "nvidia-nvtx-cu12==12.4.99": {
+      "license_expression": "LicenseRef-NVIDIA-Proprietary",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'NVIDIA Proprietary Software' and classifier 'Other/Proprietary License' retrieved 2026-08-15"
+    },
+    "omegaconf==2.3.1": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: BSD License' retrieved 2026-08-15; project LICENSE BSD-3-Clause"
+    },
+    "onnxruntime-gpu==1.24.4": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT License' and MIT classifier retrieved 2026-08-15"
+    },
+    "opencv-python-headless==4.10.0.84": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache 2.0' and Apache classifier retrieved 2026-08-15; wheel bundles FFmpeg (LGPL) reviewed under the ffmpeg stack component"
     },
     "packaging==25.0": {
       "license_expression": "Apache-2.0 OR BSD-2-Clause",
@@ -400,6 +840,38 @@
       "expires_on": "2027-08-01",
       "source": "installed distribution metadata License-Expression and license file"
     },
+    "packaging==26.2": {
+      "license_expression": "Apache-2.0 OR BSD-2-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'Apache-2.0 OR BSD-2-Clause' retrieved 2026-08-15; unchanged from reviewed 25.0"
+    },
+    "pathlib-abc==0.5.2": {
+      "license_expression": "PSF-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON PSF license text and 'Python Software Foundation License' classifier retrieved 2026-08-15"
+    },
+    "pathspec==1.1.1": {
+      "license_expression": "MPL-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'Mozilla Public License 2.0 (MPL 2.0)' retrieved 2026-08-15"
+    },
+    "piexif==1.1.3": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
     "pillow==12.3.0": {
       "license_expression": "MIT-CMU",
       "approved": true,
@@ -407,6 +879,38 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "pip==24.2": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
+    "platformdirs==4.11.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
+    },
+    "pluggy==1.6.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
+    "plyfile==1.1.3": {
+      "license_expression": "GPL-3.0-or-later",
+      "approved": false,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'GNU General Public License v3 or later (GPLv3+)' and GPLv3 license text retrieved 2026-08-15; copyleft held for human review"
     },
     "proto-plus==1.28.1": {
       "license_expression": "Apache-2.0",
@@ -423,6 +927,14 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution license file"
+    },
+    "protobuf==7.35.1": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License '3-Clause BSD License' retrieved 2026-08-15; unchanged from reviewed 6.33.6"
     },
     "pyasn1-modules==0.4.2": {
       "license_expression": "BSD-2-Clause",
@@ -471,6 +983,14 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "pygments==2.20.0": {
+      "license_expression": "BSD-2-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-2-Clause' retrieved 2026-08-15"
     },
     "python-dateutil==2.9.0.post0": {
       "license_expression": "Apache-2.0 OR BSD-3-Clause",
@@ -536,6 +1056,14 @@
       "expires_on": "2027-07-09",
       "source": "installed distribution license classifier"
     },
+    "rich==15.0.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
     "rpds-py==0.30.0": {
       "license_expression": "MIT",
       "approved": true,
@@ -551,6 +1079,22 @@
       "reviewed_on": "2026-07-29",
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License-Expression"
+    },
+    "scikit-image==0.24.0": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license text 'License: BSD-3-Clause' and BSD classifier retrieved 2026-08-15"
+    },
+    "scikit-learn==1.9.0": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-3-Clause' retrieved 2026-08-15"
     },
     "scipy==1.15.3": {
       "license_expression": "BSD-3-Clause",
@@ -575,6 +1119,38 @@
       "reviewed_on": "2026-08-02",
       "expires_on": "2027-08-02",
       "source": "installed distribution license text and classifier"
+    },
+    "sentry-sdk==2.66.1": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
+    },
+    "setuptools==78.1.1": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "wheel dist-info licenses/LICENSE MIT text (setuptools-78.1.1-py3-none-any.whl) retrieved 2026-08-15"
+    },
+    "simplejpeg==1.9.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
+    },
+    "slangtorch==1.3.18": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: MIT License' retrieved 2026-08-15"
     },
     "sniffio==1.3.1": {
       "license_expression": "MIT OR Apache-2.0",
@@ -616,6 +1192,14 @@
       "expires_on": "2027-08-14",
       "source": "installed distribution metadata License and classifier"
     },
+    "sympy==1.14.0": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'BSD' and BSD classifier retrieved 2026-08-15"
+    },
     "tenacity==9.1.4": {
       "license_expression": "Apache-2.0",
       "approved": true,
@@ -623,6 +1207,46 @@
       "reviewed_on": "2026-08-02",
       "expires_on": "2027-08-02",
       "source": "installed distribution metadata License-Expression"
+    },
+    "tensorboard-data-server==0.7.2": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache 2.0' and Apache classifier retrieved 2026-08-15"
+    },
+    "tensorboard==2.21.0": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache 2.0' and Apache classifier retrieved 2026-08-15"
+    },
+    "termcolor==3.3.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
+    },
+    "threadpoolctl==3.6.0": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'BSD-3-Clause' and BSD classifier retrieved 2026-08-15"
+    },
+    "tifffile==2026.3.3": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'BSD-3-Clause' retrieved 2026-08-15"
     },
     "tomli==2.4.1": {
       "license_expression": "MIT",
@@ -632,6 +1256,30 @@
       "expires_on": "2027-07-09",
       "source": "locked distribution project license"
     },
+    "torch==2.4.1+cu124": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'BSD-3' and BSD classifier for torch 2.4.1 retrieved 2026-08-15; +cu124 is the same-version download.pytorch.org build"
+    },
+    "torchmetrics==1.9.0": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'Apache-2.0' and Apache classifier retrieved 2026-08-15"
+    },
+    "torchvision==0.19.1+cu124": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'BSD' for torchvision 0.19.1 retrieved 2026-08-15; +cu124 is the same-version download.pytorch.org build"
+    },
     "tqdm==4.68.4": {
       "license_expression": "MPL-2.0 AND MIT",
       "approved": true,
@@ -639,6 +1287,38 @@
       "reviewed_on": "2026-07-29",
       "expires_on": "2027-07-29",
       "source": "installed distribution metadata License"
+    },
+    "tqdm==4.70.0": {
+      "license_expression": "MPL-2.0 AND MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MPL-2.0 AND MIT' retrieved 2026-08-15; unchanged from reviewed 4.68.4"
+    },
+    "trimesh==4.4.9": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON MIT license text and MIT classifier retrieved 2026-08-15"
+    },
+    "triton==3.0.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: MIT License' retrieved 2026-08-15"
+    },
+    "trove-classifiers==2026.6.1.19": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: Apache Software License' retrieved 2026-08-15"
     },
     "typing-extensions==4.16.0": {
       "license_expression": "PSF-2.0",
@@ -648,6 +1328,14 @@
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
     },
+    "typing-inspect==0.9.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
+    },
     "typing-inspection==0.4.2": {
       "license_expression": "MIT",
       "approved": true,
@@ -655,6 +1343,22 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "universal-pathlib==0.3.10": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'MIT' retrieved 2026-08-15"
+    },
+    "usd-core==26.3": {
+      "license_expression": "LicenseRef-TOST-1.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'LicenseRef-TOST-1.0' retrieved 2026-08-15; unchanged from reviewed 26.5"
     },
     "usd-core==26.5": {
       "license_expression": "LicenseRef-TOST-1.0",
@@ -680,6 +1384,22 @@
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
     },
+    "wadler-lindig==0.1.7": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON Apache License 2.0 text and Apache classifier retrieved 2026-08-15"
+    },
+    "wandb==0.28.1": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON MIT license text and MIT classifier retrieved 2026-08-15"
+    },
     "websockets==16.0": {
       "license_expression": "BSD-3-Clause",
       "approved": true,
@@ -687,6 +1407,38 @@
       "reviewed_on": "2026-07-09",
       "expires_on": "2027-07-09",
       "source": "installed distribution metadata License-Expression"
+    },
+    "werkzeug==3.1.8": {
+      "license_expression": "BSD-3-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-3-Clause' retrieved 2026-08-15"
+    },
+    "wheel==0.44.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON license classifier 'OSI Approved :: MIT License' retrieved 2026-08-15"
+    },
+    "wrapt==2.3.0": {
+      "license_expression": "BSD-2-Clause",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON License-Expression 'BSD-2-Clause' retrieved 2026-08-15"
+    },
+    "zarr==2.18.7": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-15",
+      "expires_on": "2027-08-15",
+      "source": "PyPI JSON metadata License 'MIT' and MIT classifier retrieved 2026-08-15"
     }
   }
 }
