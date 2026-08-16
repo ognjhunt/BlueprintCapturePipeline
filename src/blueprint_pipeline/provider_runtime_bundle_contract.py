@@ -7,6 +7,10 @@ import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from .native_task_arena_execution_contract import (
+    NATIVE_TASK_ARENA_RESULT_FILENAMES,
+)
+
 
 PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "isaac",
@@ -189,9 +193,12 @@ def provider_runtime_contract_blockers(
         )
         runner_blocker = "provider_runner_missing_adp009d_articulated_native_runtime_contract"
     elif provider_bundle_kind == "native_task_arena":
+        result_names = {
+            name for name in NATIVE_TASK_ARENA_RESULT_FILENAMES if name in entrypoint_text
+        }
         entrypoint_valid = (
             "native_task_arena_worker_failed_without_runtime_result" in entrypoint_text
-            and "native_task_arena_construction_result.v1.json" in entrypoint_text
+            and len(result_names) == 1
             and "native_task_arena_process_exited_without_result" in entrypoint_text
         )
         runner_valid = all(

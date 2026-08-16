@@ -13,6 +13,7 @@ from .adp009d_native_microcheck_bundle import DEFAULT_IMAGE as QUALIFIED_ADP_IMA
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle
 from .native_task_arena_controls_bundle import controls_runtime_sources
+from .native_task_arena_execution_contract import POLICY_EXTRA_RUNTIME_MODULE_NAMES
 from .native_task_runtime_contract import FROZEN_CANDIDATES
 
 
@@ -212,15 +213,7 @@ def build_native_task_arena_policy_bundle(
         )
         package = Path(__file__).resolve().parent
         sources = set(controls_runtime_sources())
-        sources.update(
-            package / name
-            for name in (
-                "adp009d_policy_episode.py",
-                "droid_policy_bridge.py",
-                "openpi_droid_policy_runtime.py",
-                "policy_ranking_thesis.py",
-            )
-        )
+        sources.update(package / name for name in POLICY_EXTRA_RUNTIME_MODULE_NAMES)
         receipt = build_native_task_arena_bundle(
             job_dir=job_dir,
             packet_dir=packet,

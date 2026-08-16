@@ -20,7 +20,6 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .droid_policy_bridge import DROID_OPEN_LOOP_HORIZON, OPENPI_SOURCE_REVISION
-from .policy_ranking_thesis import canonical_sha256
 
 
 SCHEMA_VERSION = "openpi_droid_policy_runtime.v1"
@@ -35,6 +34,25 @@ LOCAL_VERIFICATION_FIELDS = frozenset(
         "local_checkpoint_size_bytes",
     }
 )
+
+
+def canonical_sha256(value: Any) -> str:
+    """Hash one canonical JSON value without importing the ranking campaign.
+
+    This runtime is shipped in the native Arena provider bundle.  Pulling the
+    campaign-level ``policy_ranking_thesis`` module into that bundle also pulls
+    the repository's ``common``/``core`` package tree and made the pi05 worker
+    fail at import time.  Keep the tiny identity primitive beside its consumer.
+    """
+
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
