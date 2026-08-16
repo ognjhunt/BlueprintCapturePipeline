@@ -81,10 +81,23 @@ def lane_seals_under_a_nested_attempt(module: str) -> bool:
             isinstance(node, ast.Assign)
             and any(getattr(target, "id", None) == "provider_run" for target in node.targets)
             and isinstance(node.value, ast.BinOp)
-            and isinstance(node.value.right, ast.Constant)
-            and node.value.right.value == PROVIDER_RUN_DIRNAME
+            and (
+                (
+                    isinstance(node.value.right, ast.Constant)
+                    and node.value.right.value == PROVIDER_RUN_DIRNAME
+                )
+                or (
+                    isinstance(node.value.right, ast.Name)
+                    and node.value.right.id == "PROVIDER_RUN_DIRNAME"
+                )
+            )
         ):
-            return ast.unparse(node.value.left) != "job"
+            # ``root`` is the conventional normalized ``job_dir`` alias used
+            # by lanes that share the terminal-artifact helper.  It is not a
+            # numbered provider attempt.  Treating the imported constant as
+            # unreadable (or treating ``root`` as nested) made the no-spend
+            # rehearsal reject the semantic-teacher lane before launch.
+            return ast.unparse(node.value.left) not in {"job", "root"}
     raise LaneRehearsalError(f"lane_provider_run_root_not_found:{module}")
 
 

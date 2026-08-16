@@ -76,6 +76,21 @@ def test_the_nested_attempt_lane_is_rehearsed_where_it_actually_writes(
     assert receipt["status"] == "would_pass"
 
 
+def test_a_root_alias_and_shared_provider_run_constant_are_not_nested(
+    tmp_path: Path,
+) -> None:
+    """Semantic teacher seals directly under its normalized job-dir root."""
+
+    receipt = rehearsal.rehearse_lane_terminal_contract(
+        profile_path=_profile(tmp_path),
+        lane_module="semantic_teacher_image_edit_vast.py",
+    )
+
+    assert receipt["seals_under_nested_attempt"] is False
+    assert receipt["status"] == "would_pass"
+    assert receipt["blockers"] == []
+
+
 def test_the_rehearsal_reproduces_the_defect_that_cost_a_gpu_run(
     tmp_path: Path, monkeypatch
 ) -> None:
