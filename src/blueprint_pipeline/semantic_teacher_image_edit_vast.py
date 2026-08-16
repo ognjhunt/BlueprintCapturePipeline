@@ -17,6 +17,7 @@ import re
 import stat
 import time
 from typing import Any
+import urllib.error
 import zipfile
 
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
@@ -533,15 +534,20 @@ def _read_token_file(path: str | Path) -> str:
 
 
 def _default_result_fetcher(url: str) -> bytes:
-    response = safe_http_request(
-        url,
-        method="GET",
-        timeout_seconds=60,
-        policy=presigned_transfer_policy(
-            url, max_response_bytes=MAX_RESULT_ARCHIVE_BYTES
-        ),
-        max_response_bytes=MAX_RESULT_ARCHIVE_BYTES,
-    )
+    try:
+        response = safe_http_request(
+            url,
+            method="GET",
+            timeout_seconds=60,
+            policy=presigned_transfer_policy(
+                url, max_response_bytes=MAX_RESULT_ARCHIVE_BYTES
+            ),
+            max_response_bytes=MAX_RESULT_ARCHIVE_BYTES,
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise FileNotFoundError("semantic_teacher_output_not_ready") from exc
+        raise
     if response.status == 404:
         raise FileNotFoundError("semantic_teacher_output_not_ready")
     if response.status != 200:
