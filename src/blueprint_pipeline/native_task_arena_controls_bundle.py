@@ -21,6 +21,13 @@ RESULT_FILENAME = "native_task_arena_control_result.v1.json"
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
     "adp009d_control_episode.py",
+    # `adp009d_control_episode` imports these at module scope, so the declared
+    # list was not an import closure: the controls worker died on
+    # ModuleNotFoundError after Isaac had already launched and the dependency
+    # matrix had passed -- the expensive end of a paid run.
+    "adp009d_contact_envelope.py",
+    "adp009d_newton_gripper_drive.py",
+    "adp009d_physics_backend_comparison.py",
     "adp009d_droid_observation.py",
     "adp009d_isaac_episode_adapter.py",
     "adp009d_task_scoring.py",
