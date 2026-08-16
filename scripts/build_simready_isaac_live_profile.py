@@ -52,6 +52,33 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
     if not 0 < context.max_hourly_rate_usd <= context.max_spend_usd:
         blockers.append("budget_invalid")
 
+    scene_id = str(context.extra_values.get("scene_id") or "")
+    native_manifest_path = context.extra_paths.get("native_probe_manifest")
+    candidate_usd_path = context.extra_paths.get("candidate_usd")
+    native_manifest: dict[str, Any] = {}
+    if native_manifest_path is None or not native_manifest_path.is_file():
+        blockers.append("native_probe_manifest_missing")
+    else:
+        native_manifest = json.loads(native_manifest_path.read_text(encoding="utf-8"))
+        if native_manifest.get("scene_id") != scene_id:
+            blockers.append("native_probe_manifest_scene_mismatch")
+        if (
+            file_digest(native_manifest_path)
+            != receipt.get("native_probe_manifest_sha256")
+        ):
+            blockers.append("native_probe_manifest_digest_mismatch")
+        if (
+            native_manifest.get("manifest_digest")
+            != receipt.get("native_probe_manifest_digest")
+        ):
+            blockers.append("native_probe_manifest_identity_mismatch")
+    if candidate_usd_path is None or not candidate_usd_path.is_file():
+        blockers.append("candidate_usd_missing")
+    elif file_digest(candidate_usd_path) != receipt.get("candidate_usd_sha256"):
+        blockers.append("candidate_usd_digest_mismatch")
+    if receipt.get("scene_id") != scene_id:
+        blockers.append("bundle_scene_id_mismatch")
+
     # The ceiling this profile publishes has to be the one the attempt authority
     # was issued against, or the allocator refuses at the paid boundary having
     # already been handed a provider.
@@ -70,6 +97,20 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             blockers.append("attempt_authority_bundle_mismatch")
         if authority.get("probe_spec_sha256") != receipt.get("probe_spec_sha256"):
             blockers.append("attempt_authority_probe_spec_mismatch")
+        if authority.get("scene_id") != scene_id:
+            blockers.append("attempt_authority_scene_mismatch")
+        if authority.get("candidate_usd_sha256") != receipt.get(
+            "candidate_usd_sha256"
+        ):
+            blockers.append("attempt_authority_candidate_mismatch")
+        if authority.get("native_probe_manifest_sha256") != receipt.get(
+            "native_probe_manifest_sha256"
+        ):
+            blockers.append("attempt_authority_native_manifest_mismatch")
+        if authority.get("native_probe_manifest_digest") != receipt.get(
+            "native_probe_manifest_digest"
+        ):
+            blockers.append("attempt_authority_native_manifest_identity_mismatch")
     return blockers
 
 
@@ -103,6 +144,21 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             "path": context.bundle_path,
             "digest": context.bundle_sha256,
         },
+        {
+            "name": "simready_native_probe_manifest",
+            "path": str(context.extra_paths["native_probe_manifest"]),
+            "digest": file_digest(context.extra_paths["native_probe_manifest"]),
+        },
+        {
+            "name": "simready_candidate_usd",
+            "path": str(context.extra_paths["candidate_usd"]),
+            "digest": file_digest(context.extra_paths["candidate_usd"]),
+        },
+        {
+            "name": "simready_paid_attempt_authority",
+            "path": str(context.extra_paths["attempt_authority"]),
+            "digest": file_digest(context.extra_paths["attempt_authority"]),
+        },
     ]
 
 
@@ -112,16 +168,15 @@ SPEC = LaneLiveProfileSpec(
     probe_kind=PROBE_KIND,
     min_ttl_seconds=MIN_TTL_SECONDS,
     max_ttl_seconds=MAX_TTL_SECONDS,
-    source_bundle_id=lambda context: f"simready-isaac-{context.source_commit[:12]}",
-    # The probe's stage is built over `native/scene/assets/840313_collision.usd`
-    # -- scene 840313, the InteriorGS/SAGE pair. "SimReady" describes what the
-    # asset became, not where the scene came from, and this field records the
-    # latter.
+    source_bundle_id=lambda context: (
+        f"simready-isaac-{context.extra_values['scene_id']}-"
+        f"{context.source_commit[:12]}"
+    ),
     source_kind="interiorgs_sage",
     lane_argv=_lane_argv,
     immutable_inputs=_immutable_inputs,
     lane_blockers=_lane_blockers,
-    extra_path_names=("attempt_authority",),
+    extra_path_names=("attempt_authority", "native_probe_manifest", "candidate_usd"),
 )
 
 
@@ -129,6 +184,9 @@ def build_simready_isaac_live_profile(
     *,
     bundle_receipt_path: str | Path,
     attempt_authority_path: str | Path,
+    native_probe_manifest_path: str | Path,
+    scene_id: str,
+    candidate_usd_path: str | Path,
     source_commit: str,
     raw_manifest_uri: str,
     revision: str | None = None,
@@ -138,6 +196,15 @@ def build_simready_isaac_live_profile(
 ) -> dict[str, Any]:
     """Derive a live profile from the bundle receipt it will run."""
 
+    normalized_scene_id = str(scene_id or "").strip()
+    candidate = Path(candidate_usd_path).expanduser().resolve()
+    if (
+        not normalized_scene_id
+        or Path(normalized_scene_id).name != normalized_scene_id
+        or not candidate.is_file()
+    ):
+        raise TaskEvaluationLaunchError("simready_live_scene_or_candidate_invalid")
+    candidate_revision = file_digest(candidate).removeprefix("sha256:")[:12]
     return build_lane_live_profile(
         SPEC,
         bundle_receipt_path=bundle_receipt_path,
@@ -145,9 +212,14 @@ def build_simready_isaac_live_profile(
         raw_manifest_uri=raw_manifest_uri,
         max_hourly_rate_usd=max_hourly_rate_usd,
         hard_ttl_seconds=hard_ttl_seconds,
-        revision=revision,
+        revision=revision or f"{normalized_scene_id}-{candidate_revision}",
         max_spend_usd=max_spend_usd,
-        extra_paths={"attempt_authority": attempt_authority_path},
+        extra_paths={
+            "attempt_authority": attempt_authority_path,
+            "native_probe_manifest": native_probe_manifest_path,
+            "candidate_usd": candidate,
+        },
+        extra_values={"scene_id": normalized_scene_id},
     )
 
 
@@ -155,6 +227,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-receipt", required=True)
     parser.add_argument("--attempt-authority", required=True)
+    parser.add_argument("--native-probe-manifest", required=True)
+    parser.add_argument("--scene-id", required=True)
+    parser.add_argument("--candidate-usd", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument(
         "--raw-manifest-uri",
@@ -175,6 +250,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         profile = build_simready_isaac_live_profile(
             bundle_receipt_path=args.bundle_receipt,
             attempt_authority_path=args.attempt_authority,
+            native_probe_manifest_path=args.native_probe_manifest,
+            scene_id=args.scene_id,
+            candidate_usd_path=args.candidate_usd,
             source_commit=args.source_commit,
             raw_manifest_uri=args.raw_manifest_uri,
             revision=args.revision,

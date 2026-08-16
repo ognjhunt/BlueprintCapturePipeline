@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from pathlib import PurePosixPath
 import shutil
 import stat
 from typing import Any, Sequence
@@ -117,25 +118,60 @@ def _deterministic_zip(source_root: Path, output: Path) -> None:
 def build_simready_isaac_bundle(
     *,
     probe_root: str | Path,
+    native_probe_manifest_path: str | Path,
+    scene_id: str,
+    candidate_usd_path: str | Path,
     job_dir: str | Path,
     worker_source: str | Path,
     source_commit_sha: str,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     source = Path(probe_root).expanduser().resolve()
+    native_probe_manifest = Path(native_probe_manifest_path).expanduser().resolve()
+    candidate_usd = Path(candidate_usd_path).expanduser().resolve()
     job = Path(job_dir).expanduser().resolve()
     worker = Path(worker_source).expanduser().resolve()
     if not source.is_dir() or not worker.is_file():
         raise ValueError("simready_isaac_bundle_source_missing")
     if len(source_commit_sha) != 40:
         raise ValueError("simready_isaac_bundle_source_commit_invalid")
+    normalized_scene_id = str(scene_id or "").strip()
+    if (
+        not normalized_scene_id
+        or PurePosixPath(normalized_scene_id).name != normalized_scene_id
+        or not normalized_scene_id.replace("_", "a").replace("-", "a").isalnum()
+    ):
+        raise ValueError("simready_isaac_bundle_scene_id_invalid")
     for relative in REQUIRED_NATIVE_FILES:
         if not (source / relative).is_file():
             raise ValueError(f"simready_isaac_bundle_native_file_missing:{relative}")
-    manifest = _read_json(source / "adp009b_simready_native_probe_manifest.json")
-    probe_spec = _read_json(source / "isaac_probe_spec.json")
+    expected_manifest_path = source / "adp009b_simready_native_probe_manifest.json"
     if (
-        manifest.get("status") != "ready"
+        native_probe_manifest != expected_manifest_path
+        or native_probe_manifest.is_symlink()
+    ):
+        raise ValueError("simready_isaac_bundle_native_manifest_path_invalid")
+    manifest = _read_json(native_probe_manifest)
+    probe_spec = _read_json(source / "isaac_probe_spec.json")
+    candidate_record = manifest.get("candidate_usd") or {}
+    candidate_relative = Path(str(candidate_record.get("relative_path") or ""))
+    expected_candidate = (source / candidate_relative).resolve()
+    if (
+        manifest.get("schema_version") != "adp009b_simready_native_probe.v1"
+        or manifest.get("status") != "ready"
+        or manifest.get("scene_id") != normalized_scene_id
+        or manifest.get("manifest_digest")
+        != canonical_digest(manifest, digest_field="manifest_digest")
+        or candidate_relative.is_absolute()
+        or candidate_relative in {Path(""), Path(".")}
+        or source not in expected_candidate.parents
+        or candidate_usd != expected_candidate
+        or candidate_usd.is_symlink()
+        or not candidate_usd.is_file()
+        or candidate_usd.stat().st_size != candidate_record.get("size_bytes")
+        or _sha256(candidate_usd) != candidate_record.get("sha256")
+        or candidate_record.get("sha256")
+        != manifest.get("replacement_asset_sha256")
         or (manifest.get("isaac") or {}).get("status") != "frozen_not_executed"
         or probe_spec.get("status") != "frozen_before_execution"
         or (manifest.get("isaac") or {}).get("probe_spec_sha256")
@@ -158,6 +194,8 @@ def build_simready_isaac_bundle(
         "generated_at": generated,
         "source_commit_sha": source_commit_sha,
         "probe_spec_sha256": _sha256(source / "isaac_probe_spec.json"),
+        "scene_id": normalized_scene_id,
+        "candidate_usd_sha256": _sha256(candidate_usd),
         "status": "bounded_exact_scene_probe",
     }
     for name in (
@@ -169,7 +207,10 @@ def build_simready_isaac_bundle(
     eval_manifest = {
         "schema_version": "isaac_provider_eval_manifest.v1",
         "generated_at": generated,
-        "job_id": "adp009b-exact-simready-840313-ins160",
+        "job_id": (
+            f"adp009b-exact-simready-{normalized_scene_id}-"
+            f"{_sha256(candidate_usd).removeprefix('sha256:')[:12]}"
+        ),
         "relative_paths": {
             "generated_site_scene_usda": "generated_site_scene.usda",
             "generated_site_scene_usd": "generated_site_scene.usd",
@@ -196,11 +237,12 @@ def build_simready_isaac_bundle(
         "generated_at": generated,
         "status": "ready",
         "source_commit_sha": source_commit_sha,
+        "scene_id": normalized_scene_id,
+        "candidate_usd_sha256": _sha256(candidate_usd),
         "container_image": DEFAULT_IMAGE,
         "probe_spec_sha256": _sha256(source / "isaac_probe_spec.json"),
-        "native_probe_manifest_sha256": _sha256(
-            source / "adp009b_simready_native_probe_manifest.json"
-        ),
+        "native_probe_manifest_sha256": _sha256(native_probe_manifest),
+        "native_probe_manifest_digest": manifest["manifest_digest"],
         "input_files": input_records,
         "local_bundle_ready_for_remote_staging": True,
         "provider_zero_required_after_return": True,
@@ -241,12 +283,18 @@ def build_simready_isaac_bundle(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe-root", type=Path, required=True)
+    parser.add_argument("--native-probe-manifest", type=Path, required=True)
+    parser.add_argument("--scene-id", required=True)
+    parser.add_argument("--candidate-usd", type=Path, required=True)
     parser.add_argument("--job-dir", type=Path, required=True)
     parser.add_argument("--worker-source", type=Path, required=True)
     parser.add_argument("--source-commit-sha", required=True)
     args = parser.parse_args(argv)
     receipt = build_simready_isaac_bundle(
         probe_root=args.probe_root,
+        native_probe_manifest_path=args.native_probe_manifest,
+        scene_id=args.scene_id,
+        candidate_usd_path=args.candidate_usd,
         job_dir=args.job_dir,
         worker_source=args.worker_source,
         source_commit_sha=args.source_commit_sha,

@@ -32,7 +32,7 @@ def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _evidence(tmp_path: Path) -> tuple[Path, dict]:
+def _evidence(tmp_path: Path, *, scene_id: str = "840313") -> tuple[Path, dict]:
     evidence = tmp_path / "evidence"
     cameras = evidence / "inpainting_inputs/840313_ins160_v1/cameras.v1.json"
     cameras.parent.mkdir(parents=True)
@@ -129,6 +129,7 @@ def Xform "canned_beverage" (
     )
     collision.write_text("#usda 1.0\n", encoding="utf-8")
     receipt = {
+        "scene": {"publisher_scene_id": scene_id},
         "composition": {
             "composed_replacement_prim_path": "/World/BlueprintReplacement",
             "composed_support_collision_prim_path": (
@@ -303,7 +304,7 @@ def test_native_probe_rejects_changed_collision_bytes(tmp_path: Path) -> None:
 def test_native_isaac_bundle_is_self_contained_and_deterministic(
     tmp_path: Path,
 ) -> None:
-    evidence, replacement_receipt = _evidence(tmp_path)
+    evidence, replacement_receipt = _evidence(tmp_path, scene_id="840920")
     probe_root = tmp_path / "probe"
     materialize_native_probe(
         evidence_root=evidence,
@@ -313,6 +314,16 @@ def test_native_isaac_bundle_is_self_contained_and_deterministic(
 
     receipt = build_simready_isaac_bundle(
         probe_root=probe_root,
+        native_probe_manifest_path=(
+            probe_root / "adp009b_simready_native_probe_manifest.json"
+        ),
+        scene_id="840920",
+        candidate_usd_path=(
+            probe_root
+            / json.loads(
+                (probe_root / "adp009b_simready_native_probe_manifest.json").read_text()
+            )["candidate_usd"]["relative_path"]
+        ),
         job_dir=tmp_path / "job",
         worker_source=ROOT / "scripts/run_adp009b_simready_isaac_worker.py",
         source_commit_sha="a" * 40,
@@ -320,6 +331,10 @@ def test_native_isaac_bundle_is_self_contained_and_deterministic(
     )
 
     assert receipt["status"] == "ready"
+    assert receipt["scene_id"] == "840920"
+    assert receipt["candidate_usd_sha256"] == json.loads(
+        (probe_root / "adp009b_simready_native_probe_manifest.json").read_text()
+    )["candidate_usd"]["sha256"]
     bundle = Path(receipt["bundle_path"])
     assert receipt["bundle_sha256"] == _digest(bundle)
     with zipfile.ZipFile(bundle) as archive:
@@ -345,6 +360,41 @@ def test_native_isaac_bundle_is_self_contained_and_deterministic(
         f"float3 physics:velocity = ({ISAAC_SLIDE_INITIAL_VELOCITY_MPS}, 0.0, 0.0)"
         in (probe_root / "isaac_slide_stage.usda").read_text()
     )
+
+
+@pytest.mark.parametrize(
+    ("scene_id", "tamper_candidate", "expected"),
+    [
+        ("840313", False, "probe_binding_invalid"),
+        ("840920", True, "probe_binding_invalid"),
+    ],
+)
+def test_native_isaac_bundle_rejects_scene_or_candidate_drift(
+    tmp_path: Path, scene_id: str, tamper_candidate: bool, expected: str
+) -> None:
+    evidence, replacement_receipt = _evidence(tmp_path, scene_id="840920")
+    probe_root = tmp_path / "probe"
+    materialize_native_probe(
+        evidence_root=evidence,
+        destination=probe_root,
+        replacement_receipt=replacement_receipt,
+    )
+    manifest_path = probe_root / "adp009b_simready_native_probe_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    candidate = probe_root / manifest["candidate_usd"]["relative_path"]
+    if tamper_candidate:
+        candidate.write_bytes(candidate.read_bytes() + b"# changed\n")
+
+    with pytest.raises(ValueError, match=expected):
+        build_simready_isaac_bundle(
+            probe_root=probe_root,
+            native_probe_manifest_path=manifest_path,
+            scene_id=scene_id,
+            candidate_usd_path=candidate,
+            job_dir=tmp_path / "job",
+            worker_source=ROOT / "scripts/run_adp009b_simready_isaac_worker.py",
+            source_commit_sha="a" * 40,
+        )
 
 
 def test_native_isaac_worker_rejects_changed_stage_before_runtime(

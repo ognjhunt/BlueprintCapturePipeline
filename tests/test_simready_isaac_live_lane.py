@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 pytestmark = pytest.mark.usefixtures(
     "_materialize_generated_manifest_publication_fixture"
@@ -43,12 +44,30 @@ issuer = _load("issue_simready_isaac_paid_attempt_authority")
 
 @pytest.fixture()
 def lane(tmp_path: Path) -> dict:
-    """A ready SimReady bundle and the authority issued against it."""
+    """A Scene 840920 SimReady bundle and the authority issued against it."""
 
     from blueprint_pipeline.public_scene_simready_isaac_vast import DEFAULT_IMAGE
 
     bundle = tmp_path / "simready_bundle.zip"
     bundle.write_bytes(b"simready-isaac-bundle")
+    candidate = tmp_path / "scene-840920-candidate.usda"
+    candidate.write_text("#usda 1.0\n", encoding="utf-8")
+    native_manifest = {
+        "schema_version": "adp009b_simready_native_probe.v1",
+        "status": "ready",
+        "scene_id": "840920",
+        "candidate_usd": {
+            "relative_path": candidate.name,
+            "size_bytes": candidate.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        },
+        "manifest_digest": "",
+    }
+    native_manifest["manifest_digest"] = canonical_digest(
+        native_manifest, digest_field="manifest_digest"
+    )
+    native_manifest_path = tmp_path / "adp009b_simready_native_probe_manifest.json"
+    native_manifest_path.write_text(json.dumps(native_manifest), encoding="utf-8")
     receipt = tmp_path / "adp009b_simready_isaac_bundle_receipt.json"
     receipt.write_text(
         json.dumps(
@@ -59,6 +78,11 @@ def lane(tmp_path: Path) -> dict:
                 "retry_cap": 0,
                 "blockers": [],
                 "probe_spec_sha256": "sha256:" + "c" * 64,
+                "scene_id": "840920",
+                "candidate_usd_sha256": native_manifest["candidate_usd"]["sha256"],
+                "native_probe_manifest_sha256": "sha256:"
+                + hashlib.sha256(native_manifest_path.read_bytes()).hexdigest(),
+                "native_probe_manifest_digest": native_manifest["manifest_digest"],
                 "bundle_path": str(bundle),
                 "bundle_sha256": "sha256:"
                 + hashlib.sha256(bundle.read_bytes()).hexdigest(),
@@ -77,13 +101,22 @@ def lane(tmp_path: Path) -> dict:
     )
     authority_path = tmp_path / "attempt_authority.json"
     authority_path.write_text(json.dumps(authority), encoding="utf-8")
-    return {"receipt": receipt, "authority": authority_path, "bundle": bundle}
+    return {
+        "receipt": receipt,
+        "authority": authority_path,
+        "bundle": bundle,
+        "candidate": candidate,
+        "native_manifest": native_manifest_path,
+    }
 
 
 def _build(lane, **overrides):
     return builder.build_simready_isaac_live_profile(
         bundle_receipt_path=lane["receipt"],
         attempt_authority_path=lane["authority"],
+        native_probe_manifest_path=lane["native_manifest"],
+        scene_id=overrides.pop("scene_id", "840920"),
+        candidate_usd_path=overrides.pop("candidate_usd_path", lane["candidate"]),
         source_commit=overrides.pop("source_commit", COMMIT),
         raw_manifest_uri=URI,
         **overrides,
@@ -98,6 +131,11 @@ def test_the_issuer_derives_every_bound_value_from_the_receipt(lane) -> None:
 
     assert authority["bundle_sha256"] == receipt["bundle_sha256"]
     assert authority["probe_spec_sha256"] == receipt["probe_spec_sha256"]
+    assert authority["scene_id"] == "840920"
+    assert authority["candidate_usd_sha256"] == receipt["candidate_usd_sha256"]
+    assert authority["native_probe_manifest_sha256"] == receipt[
+        "native_probe_manifest_sha256"
+    ]
     assert authority["bundle_receipt_sha256"] == "sha256:" + hashlib.sha256(
         lane["receipt"].read_bytes()
     ).hexdigest()
@@ -198,6 +236,15 @@ def test_the_profile_binds_the_bundle_where_it_actually_resolved(lane) -> None:
     assert inputs["simready_isaac_bundle"]["digest"] == "sha256:" + hashlib.sha256(
         lane["bundle"].read_bytes()
     ).hexdigest()
+    assert inputs["simready_native_probe_manifest"]["path"] == str(
+        lane["native_manifest"]
+    )
+    assert inputs["simready_candidate_usd"]["digest"] == "sha256:" + hashlib.sha256(
+        lane["candidate"].read_bytes()
+    ).hexdigest()
+    assert inputs["simready_paid_attempt_authority"]["path"] == str(
+        lane["authority"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -208,8 +255,16 @@ def test_the_profile_binds_the_bundle_where_it_actually_resolved(lane) -> None:
         ({"source_commit": "d" * 40}, "bundle_commit_not_source_commit"),
         ({"max_spend_usd": 9.0}, "attempt_authority_spend_cap_mismatch"),
         ({"max_hourly_rate_usd": 0.5}, "attempt_authority_hourly_rate_mismatch"),
+        ({"scene_id": "840313"}, "bundle_scene_id_mismatch"),
     ],
-    ids=["ttl-under", "ttl-over", "wrong-commit", "cap-disagrees", "rate-disagrees"],
+    ids=[
+        "ttl-under",
+        "ttl-over",
+        "wrong-commit",
+        "cap-disagrees",
+        "rate-disagrees",
+        "wrong-scene",
+    ],
 )
 def test_refusals_happen_before_a_provider_is_handed_over(
     lane, overrides: dict, expected: str
@@ -236,3 +291,16 @@ def test_revision_yields_a_distinct_profile_id(lane) -> None:
 
     assert _build(lane)["profile_id"] != _build(lane, revision="r2")["profile_id"]
     assert _build(lane, revision="r2")["profile_id"].endswith("-r2")
+
+
+def test_candidate_or_authority_identity_tamper_fails_before_launch(lane) -> None:
+    lane["candidate"].write_bytes(lane["candidate"].read_bytes() + b"# changed\n")
+    with pytest.raises(TaskEvaluationLaunchError, match="candidate_usd_digest_mismatch"):
+        _build(lane)
+
+    lane["candidate"].write_text("#usda 1.0\n", encoding="utf-8")
+    authority = json.loads(lane["authority"].read_text(encoding="utf-8"))
+    authority["candidate_usd_sha256"] = "sha256:" + "9" * 64
+    lane["authority"].write_text(json.dumps(authority), encoding="utf-8")
+    with pytest.raises(TaskEvaluationLaunchError, match="attempt_authority_candidate_mismatch"):
+        _build(lane)
