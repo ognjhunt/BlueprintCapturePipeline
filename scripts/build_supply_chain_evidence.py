@@ -24,6 +24,12 @@ LICENSE_POLICY_SCHEMA = "blueprint.runtime_dependency_license_policy.v1"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 IMAGE_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 RELEASE_ARTIFACT_PATTERN = re.compile(r"^.+(?:\.whl|\.tar\.gz)$")
+LOCK_REQUIREMENT_PATTERN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s\\;]+)")
+# Exact-pin locks for runtime images that are deliberately outside the uv.lock
+# SBOM (reviewed in docs/runtime_dependency_license_policy.json all the same).
+REVIEWED_REQUIREMENTS_LOCKS = (
+    Path("deploy/docker/reconstruction_worker/requirements.lock"),
+)
 
 
 def _mapping(value: object) -> dict[str, Any]:
@@ -56,6 +62,27 @@ def _component_key(name: object, version: object) -> str:
     return f"{str(name or '').strip().lower()}=={str(version or '').strip()}"
 
 
+def read_reviewed_lock_keys(paths: list[Path]) -> frozenset[str]:
+    """Exact ``name==version`` keys pinned by additional reviewed lock files.
+
+    License-policy entries covered by these locks are reviewed for a runtime
+    image outside the uv.lock SBOM, so they are not ``orphaned_license_review``
+    blockers.  A missing lock contributes no exemptions (fail-closed: absence
+    can only produce more blockers, never fewer).
+    """
+
+    keys: set[str] = set()
+    for path in paths:
+        if not path.is_file() or path.is_symlink():
+            continue
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            match = LOCK_REQUIREMENT_PATTERN.match(raw.strip())
+            if match is not None:
+                name = re.sub(r"[-_.]+", "-", match.group(1)).lower()
+                keys.add(f"{name}=={match.group(2)}")
+    return frozenset(keys)
+
+
 def _spdx_id(index: int, name: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9.-]+", "-", name).strip("-.") or "package"
     return f"SPDXRef-Package-{index}-{slug}"
@@ -70,6 +97,7 @@ def build_evidence(
     image_digest: str | None,
     artifact_paths: list[Path],
     today: date,
+    additional_reviewed_component_keys: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     blockers: list[str] = []
     if cyclonedx.get("bomFormat") != "CycloneDX" or cyclonedx.get("specVersion") != "1.5":
@@ -141,7 +169,9 @@ def build_evidence(
                 if expires_on < reviewed_on:
                     blockers.append(f"license_review_interval_invalid:{key}")
         license_rows.append(row)
-    for key in sorted(set(approvals) - current_keys):
+    for key in sorted(
+        set(approvals) - current_keys - set(additional_reviewed_component_keys)
+    ):
         blockers.append(f"orphaned_license_review:{key}")
 
     materials: list[dict[str, Any]] = []
@@ -349,6 +379,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image-digest")
     parser.add_argument("--artifact", type=Path, action="append", default=[])
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--reviewed-requirements-lock",
+        type=Path,
+        action="append",
+        default=None,
+        help=(
+            "Exact-pin lock files (root-relative unless absolute) whose "
+            "reviewed policy entries are exempt from orphaned_license_review; "
+            "defaults to the reconstruction worker image lock"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         cyclonedx = json.loads(args.cyclonedx.read_text(encoding="utf-8"))
@@ -357,6 +398,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[supply-chain] ERROR unreadable_input:{exc}", file=sys.stderr)
         return 1
     root = args.root.resolve()
+    reviewed_locks = (
+        list(REVIEWED_REQUIREMENTS_LOCKS)
+        if args.reviewed_requirements_lock is None
+        else args.reviewed_requirements_lock
+    )
     cdx, spdx, provenance, report = build_evidence(
         root=root,
         cyclonedx=_mapping(cyclonedx),
@@ -365,6 +411,9 @@ def main(argv: list[str] | None = None) -> int:
         image_digest=args.image_digest.strip().lower() if args.image_digest else None,
         artifact_paths=[path.resolve() for path in args.artifact],
         today=date.today(),
+        additional_reviewed_component_keys=read_reviewed_lock_keys(
+            [path if path.is_absolute() else root / path for path in reviewed_locks]
+        ),
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     outputs = {
