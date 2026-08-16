@@ -907,3 +907,194 @@ def test_provider_output_allowlist_retains_raw_artifixer3d_review_frames() -> No
     assert "'/native_appearance/' in '/' + relative" in shell
     assert "parts[0] == 'tasks'" in shell
     assert "provider_runtime/input/checkpoint_reuse" not in shell
+
+
+def _aligned_native_usdz(path: Path) -> dict[str, object]:
+    """Write the exact archive shape `_validate_native_usdz_archive` accepts."""
+
+    import gzip
+    import io
+    import struct
+
+    from blueprint_pipeline.nurec_openusd_packaging import _alignment_extra
+
+    payload = io.BytesIO()
+    with gzip.GzipFile(fileobj=payload, mode="wb", mtime=0) as stream:
+        stream.write(b"nurec-payload")
+    members = [
+        ("default.usda", b"#usda 1.0\n"),
+        ("repaired_scene.nurec", payload.getvalue()),
+        ("gauss.usda", b"#usda 1.0\n"),
+    ]
+    with path.open("wb") as raw:
+        with zipfile.ZipFile(raw, "w", compression=zipfile.ZIP_STORED) as target:
+            for name, body in members:
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_STORED
+                info.create_system = 3
+                info.external_attr = 0o100644 << 16
+                info.file_size = len(body)
+                info.extra = _alignment_extra(raw.tell(), name)
+                with target.open(info, "w", force_zip64=False) as stream:
+                    stream.write(body)
+
+    rows = []
+    with path.open("rb") as handle, zipfile.ZipFile(path, "r") as archive:
+        for info in archive.infolist():
+            handle.seek(info.header_offset)
+            fields = struct.unpack("<IHHHHHIIIHH", handle.read(30))
+            rows.append(
+                {
+                    "filename": info.filename,
+                    "size_bytes": info.file_size,
+                    "data_offset_bytes": info.header_offset + 30 + fields[-2] + fields[-1],
+                    "sha256": "sha256:"
+                    + hashlib.sha256(archive.read(info)).hexdigest(),
+                }
+            )
+    return {
+        "compression": "stored",
+        "payload_alignment_bytes": 64,
+        "all_payload_offsets_aligned": True,
+        "nurec_gzip_mtime_normalized_to_zero": True,
+        "members": rows,
+    }
+
+
+def test_host_rebased_appearance_export_is_usable_by_the_successor_lane(
+    tmp_path: Path,
+) -> None:
+    """The appearance a paid run produces must satisfy its own consumer.
+
+    Production regression: the lane emitted two forms of this record and the
+    paired-target native import preflight could accept neither. The in-pod
+    form self-validates on `export_digest` but names /workspace paths that do
+    not exist on the host; the host-rebased form names real paths but renamed
+    the field to `source_export_digest`, so `_digest_valid(record,
+    "export_digest")` compared None against a digest. There is no third
+    producer -- the only thing in the tree that ever wrote an
+    `appearance_export_receipt_path` was a test that hand-authored one. So a
+    completed ArtiFixer3D run sealed clean and its appearance could not be
+    carried into the next lane by any code that exists.
+    """
+
+    from blueprint_pipeline.paired_target_native_preflight import _digest_valid
+    from blueprint_pipeline.public_scene_artifixer3d_vast import (
+        NATIVE_APPEARANCE_EXPORT_SCHEMA,
+    )
+
+    execution_root = tmp_path / "immutable_execution"
+    frame_rows: list[dict[str, object]] = []
+    for index in range(8):
+        relative = Path("tasks/task_a/artifixer3d_review_frames") / f"{index:05d}.png"
+        path = execution_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"review-frame-{index}".encode())
+        frame_rows.append(
+            {
+                "frame_index": index,
+                "camera_id": f"task_a_camera_{index:05d}",
+                **_record(path, provider_path=f"/provider/runtime_output/{relative}"),
+            }
+        )
+    checkpoint_relative = Path("tasks/task_a/checkpoints/ckpt_30000.pt")
+    checkpoint = execution_root / checkpoint_relative
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_bytes(b"dual-target-checkpoint")
+
+    ply_relative = Path("tasks/task_a/native_appearance/repaired_scene.ply")
+    ply = execution_root / ply_relative
+    ply.parent.mkdir(parents=True, exist_ok=True)
+    ply.write_bytes(b"ply-bytes")
+    usdz_relative = Path("tasks/task_a/native_appearance/repaired_scene.usdz")
+    usdz = execution_root / usdz_relative
+    archive_contract = _aligned_native_usdz(usdz)
+
+    native_appearance = {
+        "schema_version": NATIVE_APPEARANCE_EXPORT_SCHEMA,
+        "status": (
+            "native_appearance_candidates_exported_pending_native_import"
+            "_and_multiview_review"
+        ),
+        "source_checkpoint": _record(
+            checkpoint,
+            provider_path=f"/provider/runtime_output/{checkpoint_relative}",
+        ),
+        "gaussian_count": 1284311,
+        "coordinate_contract": {
+            "source_gaussian_tensor_coordinates_preserved": True,
+            "camera_derived_normalizing_transform_applied": False,
+            "standard_gaussian_ply_transform_matrix": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "isaac_nurec_usdz_wrapper_transform_matrix": [
+                [-1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0, 0.0],
+                [0.0, -1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "usdz_wrapper_transform_role": (
+                "fixed_pinned_3dgrut_to_usd_axis_convention_only"
+            ),
+        },
+        "standard_gaussian_ply": _record(
+            ply, provider_path=f"/provider/runtime_output/{ply_relative}"
+        ),
+        "isaac_nurec_usdz": _record(
+            usdz, provider_path=f"/provider/runtime_output/{usdz_relative}"
+        ),
+        "isaac_nurec_usdz_archive_contract": archive_contract,
+        "usdz_tensor_precision": "float16_pinned_upstream_exporter",
+        "generated_output_is_capture_or_physical_evidence": False,
+        "native_import_qualified": False,
+    }
+    native_appearance["export_digest"] = canonical_digest(
+        native_appearance, digest_field="export_digest"
+    )
+
+    execution = {
+        "tasks": [
+            {
+                "task_id": "task_a",
+                "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+                "training_record_count": 16,
+                "artifixer3d_review_frames": frame_rows,
+                "artifixer3d_checkpoint": _record(
+                    checkpoint,
+                    provider_path=f"/provider/runtime_output/{checkpoint_relative}",
+                ),
+                "native_appearance": native_appearance,
+                "outside_support_invariance_status": (
+                    "deferred_until_final_soft_composite"
+                ),
+                "outside_support_changed_pixels_total": None,
+            }
+        ]
+    }
+
+    raw = _materialize_raw_result(
+        execution=execution,
+        execution_root=execution_root,
+        bundle={
+            "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
+            "phases": ["native_appearance_export"],
+            "task_ids": ["task_a"],
+            "task_camera_counts": {"task_a": 8},
+            "task_training_record_counts": {"task_a": 16},
+            "bundle_sha256": "sha256:bundle",
+            "manifest_digest": "sha256:manifest",
+            "runtime_request_digest": "sha256:request",
+            "replacement_object_count": 1,
+        },
+        closeout={"provider_zero_confirmed": True},
+    )
+
+    exported = raw["tasks"][0]["native_appearance"]
+
+    # The successor lane's own predicate, not a restatement of it.
+    assert _digest_valid(exported, "export_digest")
+    # ...over a USDZ this host can actually open.
+    assert Path(exported["isaac_nurec_usdz"]["path"]).is_file()

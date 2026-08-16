@@ -1516,6 +1516,17 @@ def _materialize_raw_result(
                 "native_import_qualified": False,
                 "source_export_digest": native_appearance_record["export_digest"],
             }
+            # Rebasing onto host paths necessarily invalidates the in-pod
+            # digest, so the record has to re-seal over bytes a host can open.
+            # Without this the successor lane can accept neither form: the
+            # in-pod record self-validates but names /workspace paths that do
+            # not exist here, and this one names real paths while carrying no
+            # `export_digest` at all -- the field its consumer requires. A paid
+            # ArtiFixer3D run therefore completed, sealed clean, and produced
+            # an appearance no code in the tree could carry forward.
+            native_appearance["export_digest"] = canonical_digest(
+                native_appearance, digest_field="export_digest"
+            )
         checkpoint: Path | None = None
         reused_checkpoint_record: dict[str, Any] | None = None
         if render_only_mode:
