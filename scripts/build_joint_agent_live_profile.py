@@ -5,9 +5,10 @@ The bundle has read `status: ready` for some time and the allocator has always
 had a branch for the probe. What was missing was a launch profile, which is the
 one thing that carries a lane across the website boundary.
 
-This lane requires no attempt authority -- its allocator branch does not ask for
-one -- so the standing authorization and the bundle's own execution authority
-are what bound the spend. The TTL band is 5400 to 14400 seconds.
+This lane uses the shared standing website authorization as its one-use paid
+attempt authority.  The profile requires a one-launch authorization, and the
+dispatcher atomically consumes it before the allocator may stage bytes or
+allocate a provider. The TTL band is 5400 to 14400 seconds.
 
 Its claim ceiling is narrow and the bundle says so itself: this is optional
 construction enrichment, it is not SimReady authority, and its failure blocks
@@ -107,6 +108,7 @@ SPEC = LaneLiveProfileSpec(
     immutable_inputs=_immutable_inputs,
     lane_blockers=_lane_blockers,
     extra_path_names=(),
+    one_use_standing_authority_required=True,
 )
 
 

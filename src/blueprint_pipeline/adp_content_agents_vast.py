@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import yaml
-from pxr import Usd, UsdGeom, UsdPhysics
+from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 
 from .task_evaluation_artifact_manifest import (
     seal_lane_terminal_artifacts,
@@ -44,6 +44,11 @@ from .paid_attempt_authority import (
     validate_bound_lane_prior_spend,
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .paired_target_native_construction_bindings import (
+    PairedTargetNativeConstructionBindingsError,
+    validate_paired_target_native_construction_bindings,
+)
+from .public_scene_host_input_intake import RIGHTS_RECEIPT_SCHEMA
 from .openai_successor_models import (
     OPENAI_IMAGE_MODEL,
     OPENAI_REASONING_EFFORT,
@@ -112,6 +117,13 @@ _VAST_MUTATION_ENV = (
 _VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 _FORWARDED_SECRET_NAMES = (
     "OPENAI_API_KEY",
+)
+_APPROVED_REFERENCE_RIGHTS_STATES = frozenset(
+    {
+        "accepted_for_declared_local_import_only",
+        "approved_for_declared_use",
+        "approved_for_internal_use",
+    }
 )
 
 
@@ -770,6 +782,132 @@ def _default_agent_cad_reference_images(
     return paths
 
 
+def _exact_file_record(path: Path) -> dict[str, Any]:
+    resolved = path.expanduser().resolve()
+    if resolved.is_symlink() or not resolved.is_file() or resolved.stat().st_size <= 0:
+        raise ValueError("adp_content_agents_paired_target_input_not_host_resident")
+    return {
+        "path": str(resolved),
+        "size_bytes": resolved.stat().st_size,
+        "sha256": _sha256(resolved),
+    }
+
+
+def _resolve_paired_target_registered_input(
+    *,
+    repo: Path,
+    construction_bindings_path: Path | None,
+    task_id: str | None,
+    reference_sources: Sequence[Path],
+    reference_rights_authority_path: Path | None,
+) -> dict[str, Any]:
+    """Admit one native-qualified registered asset without relabeling it as CAD.
+
+    The construction binding already joins the registered replacement USD to its
+    task freeze and native-import probe.  This adapter selects exactly one row,
+    reopens the USD and reference bytes on the bundle-building host, and requires
+    one human-issued rights receipt to name every disclosed reference digest.
+    """
+
+    if construction_bindings_path is None:
+        raise ValueError("adp_content_agents_paired_target_bindings_missing")
+    bindings_path = construction_bindings_path.expanduser().resolve()
+    try:
+        bindings = validate_paired_target_native_construction_bindings(
+            _read_json(bindings_path)
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        PairedTargetNativeConstructionBindingsError,
+    ) as exc:
+        raise ValueError("adp_content_agents_paired_target_bindings_invalid") from exc
+    if (
+        bindings_path.is_symlink()
+        or not bindings_path.is_file()
+        or bindings.get("construction_digest")
+        != canonical_digest(bindings, digest_field="construction_digest")
+    ):
+        raise ValueError("adp_content_agents_paired_target_bindings_invalid")
+
+    selected = [
+        dict(row)
+        for row in bindings.get("bindings") or []
+        if isinstance(row, Mapping) and row.get("task_id") == str(task_id or "")
+    ]
+    if len(selected) != 1:
+        raise ValueError("adp_content_agents_paired_target_task_selection_invalid")
+    row = selected[0]
+    evidence = row.get("evidence_receipts") or {}
+    usd_record = evidence.get("registered_usd")
+    if not _file_record_matches_current_bytes(usd_record):
+        raise ValueError("adp_content_agents_paired_target_registered_usd_invalid")
+    if row.get("replacement_asset_sha256") != usd_record.get("sha256"):
+        raise ValueError("adp_content_agents_paired_target_registered_usd_mismatch")
+    usd_source = Path(str(usd_record["path"])).expanduser().resolve()
+
+    reference_records = [_exact_file_record(path) for path in reference_sources]
+    if not reference_records or any(
+        Path(record["path"]).read_bytes()[:8] != b"\x89PNG\r\n\x1a\n"
+        for record in reference_records
+    ):
+        raise ValueError("adp_content_agents_paired_target_reference_invalid")
+    if reference_rights_authority_path is None:
+        raise ValueError("adp_content_agents_paired_target_reference_rights_missing")
+    rights_path = reference_rights_authority_path.expanduser().resolve()
+    rights_record = _exact_file_record(rights_path)
+    rights = _read_json(rights_path)
+    rights_status = str(rights.get("status") or rights.get("reviewer_status") or "")
+    rights_scope = str(
+        rights.get("use_ceiling") or rights.get("declared_use_scope") or ""
+    ).strip()
+    authorized_digests = rights.get("authorized_source_sha256")
+    if (
+        rights.get("schema_version") != RIGHTS_RECEIPT_SCHEMA
+        or rights_status not in _APPROVED_REFERENCE_RIGHTS_STATES
+        or rights.get("agent_accepted_terms") is True
+        or not isinstance(authorized_digests, list)
+        or any(record["sha256"] not in authorized_digests for record in reference_records)
+    ):
+        raise ValueError("adp_content_agents_paired_target_reference_rights_invalid")
+
+    binding_record = _exact_file_record(bindings_path)
+    return {
+        "usd_source": usd_source,
+        "config_sources": {
+            f"{agent}_agent.yaml": repo
+            / "docs/arm_decision_proof_v1/assets"
+            / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
+            for agent in ("material", "texture", "physics")
+        },
+        "reference_image_sha256": reference_records[0]["sha256"],
+        "reference_image_sha256s": [record["sha256"] for record in reference_records],
+        "reference_image_authority": (
+            "exact_rights_authority_bound_reference_bytes_for_registered_candidate_"
+            "not_raw_capture_or_physical_truth"
+        ),
+        "variant": "paired_target_registered_v1",
+        "paired_target_construction_bindings": binding_record,
+        "paired_target_construction_digest": bindings["construction_digest"],
+        "paired_target_scene_id": bindings["scene_id"],
+        "paired_target_reference_rights_authority": rights_record,
+        "paired_target_reference_rights_status": rights_status,
+        "paired_target_reference_rights_scope": rights_scope or None,
+        "paired_target_reference_images": reference_records,
+        "task_id": row["task_id"],
+        "asset_id": row["asset_id"],
+        "task_freeze_digest": row["task_freeze_digest"],
+        "registered_asset_receipt_digest": row[
+            "registered_asset_receipt_digest"
+        ],
+        "replacement_asset_sha256": row["replacement_asset_sha256"],
+        "native_import_probe_result_digest": row[
+            "native_import_probe_result_digest"
+        ],
+        "native_simulator_import_qualified": True,
+    }
+
+
 def _resolve_input_variant(
     *,
     repo: Path,
@@ -779,6 +917,9 @@ def _resolve_input_variant(
     variant: str,
     agent_cad_output_manifest_path: Path | None = None,
     agent_mesh_projection_receipt_path: Path | None = None,
+    paired_target_construction_bindings_path: Path | None = None,
+    paired_target_task_id: str | None = None,
+    reference_rights_authority_path: Path | None = None,
 ) -> dict[str, Any]:
     assets = repo / "docs" / "arm_decision_proof_v1" / "assets"
     if variant == "control_v1":
@@ -868,6 +1009,14 @@ def _resolve_input_variant(
                 "physics_validation_receipt_digest"
             ],
         }
+    if variant == "paired_target_registered_v1":
+        return _resolve_paired_target_registered_input(
+            repo=repo,
+            construction_bindings_path=paired_target_construction_bindings_path,
+            task_id=paired_target_task_id,
+            reference_sources=tuple(reference_sources or [reference_source]),
+            reference_rights_authority_path=reference_rights_authority_path,
+        )
     if variant == "agent_cad_v1":
         if agent_cad_output_manifest_path is None:
             raise ValueError("adp_content_agents_agent_cad_output_manifest_missing")
@@ -1229,11 +1378,85 @@ def _materialize_articulated_content_agents_input(
     }
 
 
+def _materialize_paired_target_registered_input(
+    source: Path, destination: Path
+) -> dict[str, Any]:
+    """Create a non-authoritative Content Agents working copy of registered USD."""
+
+    shutil.copy2(source, destination)
+    stage = Usd.Stage.Open(str(destination))
+    if stage is None or not stage.GetDefaultPrim().IsValid():
+        raise ValueError("adp_content_agents_input_default_prim_invalid")
+    meshes = [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)]
+    if not meshes:
+        raise ValueError("adp_content_agents_paired_target_mesh_missing")
+    cleared: list[str] = []
+    for prim in meshes:
+        mesh = UsdGeom.Mesh(prim)
+        if mesh.ComputePurpose() != UsdGeom.Tokens.default_:
+            mesh.GetPurposeAttr().Clear()
+            cleared.append(str(prim.GetPath()))
+    default_path = str(stage.GetDefaultPrim().GetPath()).rstrip("/")
+    material_path = f"{default_path}/Looks/content_agents_advisory"
+    material = UsdShade.Material.Define(stage, material_path)
+    for prim in meshes:
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+    stage.GetRootLayer().Save()
+
+    reopened = Usd.Stage.Open(str(destination))
+    if reopened is None or not reopened.GetDefaultPrim().IsValid():
+        raise ValueError("adp_content_agents_input_reopen_failed")
+    normalized_meshes = [
+        prim for prim in reopened.Traverse() if prim.IsA(UsdGeom.Mesh)
+    ]
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    bounds = cache.ComputeWorldBound(reopened.GetDefaultPrim()).ComputeAlignedRange()
+    if bounds.IsEmpty() or any(
+        UsdGeom.Mesh(prim).ComputePurpose() != UsdGeom.Tokens.default_
+        for prim in normalized_meshes
+    ):
+        raise ValueError("adp_content_agents_input_default_purpose_bbox_invalid")
+    joints = [prim for prim in reopened.Traverse() if prim.IsA(UsdPhysics.Joint)]
+    rigid_bodies = [
+        prim for prim in reopened.Traverse() if prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    ]
+    roots = [
+        prim
+        for prim in reopened.Traverse()
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+    ]
+    if (joints and (len(roots) != 1 or len(rigid_bodies) < 2)) or (
+        not joints and len(roots) > 1
+    ):
+        raise ValueError("adp_content_agents_input_articulation_invalid")
+    return {
+        "source_input_usd_sha256": _sha256(source),
+        "normalized_input_usd_sha256": _sha256(destination),
+        "transformations": [
+            "copy_native_qualified_registered_usd_without_mutating_canonical_bytes",
+            "clear_non_default_mesh_purposes_for_nvidia_0_5_2_bbox",
+            "bind_advisory_working_copy_material_without_geometry_authority",
+        ],
+        "cleared_purpose_prims": sorted(cleared),
+        "default_purpose_bbox_nonempty": True,
+        "paired_target_registered_working_copy": True,
+        "mesh_count": len(normalized_meshes),
+        "mesh_prim_paths": sorted(str(prim.GetPath()) for prim in normalized_meshes),
+        "default_material_path": material_path,
+        "articulation_preserved": True,
+        "joint_count": len(joints),
+        "rigid_body_count": len(rigid_bodies),
+        "articulation_root_count": len(roots),
+    }
+
+
 def _materialize_content_agents_input(
     source: Path, destination: Path, *, variant: str = "control_v1"
 ) -> dict[str, Any]:
     """Derive the exact NVIDIA-compatible USD without mutating canonical bytes."""
 
+    if variant == "paired_target_registered_v1":
+        return _materialize_paired_target_registered_input(source, destination)
     if variant == "agent_cad_v1":
         shutil.copy2(source, destination)
         stage = Usd.Stage.Open(str(destination))
@@ -1355,6 +1578,11 @@ def _derive_joint_agent_plan(
                 raise ValueError("adp_content_agents_joint_agent_mesh_input_invalid")
             reason = "agent_cad_mesh_working_copy_has_no_articulation_task"
             single_rigid_body = False
+        elif input_variant == "paired_target_registered_v1":
+            if root_count != 0 or rigid_body_count not in {0, 1}:
+                raise ValueError("adp_content_agents_joint_agent_registered_input_invalid")
+            reason = "paired_target_registered_candidate_has_no_articulation_task"
+            single_rigid_body = rigid_body_count == 1
         elif root_count != 0 or rigid_body_count != 1:
             raise ValueError("adp_content_agents_joint_agent_rigid_input_invalid")
         else:
@@ -1475,36 +1703,57 @@ def _materialize_remote_configs(
         target = destination / name
         if variant in {"control_v1", "articulated_v1"}:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        elif variant == "agent_cad_v1":
+        elif variant in {"agent_cad_v1", "paired_target_registered_v1"}:
             if not mesh_paths or not material_path.startswith("/"):
-                raise ValueError("adp_content_agents_agent_cad_config_scope_invalid")
+                raise ValueError("adp_content_agents_candidate_config_scope_invalid")
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
             project = payload["project"]
-            project["name"] = "adp_agent_cad_mesh_enrichment"
-            project["session_id"] = "adp_agent_cad_mesh_enrichment"
+            agent_cad = variant == "agent_cad_v1"
+            source_description = (
+                "agent-authored CAD Mesh working copy"
+                if agent_cad
+                else "native-qualified registered replacement working copy"
+            )
+            project_name = (
+                "adp_agent_cad_mesh_enrichment"
+                if agent_cad
+                else "adp_paired_target_registered_enrichment"
+            )
+            project["name"] = project_name
+            project["session_id"] = project_name
             project["description"] = (
                 "NVIDIA Content Agents advisory enrichment on an exact "
-                "agent-authored CAD Mesh working copy; output is not simulator, "
-                "collision, physics, or physical-equivalence authority."
+                f"{source_description}; output is not simulator, collision, "
+                "physics, or physical-equivalence authority."
             )
             if name == "material_agent.yaml":
                 dataset = payload["steps"]["build_dataset_usd"]
                 dataset["prim_filters"]["paths"] = mesh_paths
+                material_subject = (
+                    "Classify visible materials on an agent-authored CAD candidate"
+                    if agent_cad
+                    else "Classify visible materials on the native-qualified "
+                    "registered candidate"
+                )
                 payload["steps"]["build_dataset_prepare_dataset"]["prompts"][
                     "vlm_system"
-                ] = (
-                    "Classify visible materials on an agent-authored CAD "
-                    "candidate using the provided reference image and renders. "
+                ] = material_subject + (
+                    " using the provided reference image and renders. "
                     "Do not infer hidden, collision, physics, or physical truth. "
                     "Select only from the provided material library. "
                     "Available materials: {materials_list} "
                     "Respond as <reasoning>brief reasoning</reasoning>"
                     "<answer>{{\"material\": \"material name\"}}</answer>."
                 )
+                visible_subject = (
+                    "Classify this visible CAD candidate surface. Treat it as "
+                    if agent_cad
+                    else "Classify this visible registered candidate surface. "
+                    "Treat it as "
+                )
                 payload["steps"]["build_dataset_prepare_dataset"]["prompts"][
                     "vlm_user"
-                ] = (
-                    "Classify this visible CAD candidate surface. Treat it as "
+                ] = visible_subject + (
                     "generated candidate appearance, not observed truth."
                 )
             elif name == "texture_agent.yaml":
@@ -1568,7 +1817,10 @@ def _materialize_remote_configs(
                 )
         input_config = payload.get("input") or {}
         input_config["usd_path"] = "../input/source_asset.usda"
-        if variant == "agent_cad_v1" or "reference_images" in input_config:
+        if variant in {
+            "agent_cad_v1",
+            "paired_target_registered_v1",
+        } or "reference_images" in input_config:
             input_config["reference_images"] = reference_relpaths
         payload["input"] = input_config
         target.write_text(
@@ -1603,10 +1855,14 @@ def build_content_agents_vast_bundle(
     content_agents_root: str | Path,
     job_dir: str | Path,
     reference_image_path: str | Path | None = None,
+    reference_image_paths: Sequence[str | Path] | None = None,
     input_variant: str = "control_v1",
     evidence_root: str | Path | None = None,
     agent_cad_output_manifest_path: str | Path | None = None,
     agent_mesh_projection_receipt_path: str | Path | None = None,
+    paired_target_construction_bindings_path: str | Path | None = None,
+    paired_target_task_id: str | None = None,
+    reference_rights_authority_path: str | Path | None = None,
     content_agents_execution_route_path: str | Path | None = None,
     generated_at: str | None = None,
     historical_replay_only: bool = False,
@@ -1618,7 +1874,10 @@ def build_content_agents_vast_bundle(
     InteriorGS source bytes or Aura/InteriorGS appearance frames.
     """
 
-    if historical_replay_only is not True and input_variant != "agent_cad_v1":
+    if historical_replay_only is not True and input_variant not in {
+        "agent_cad_v1",
+        "paired_target_registered_v1",
+    }:
         raise ValueError("deterministic_cad_authoring_removed_use_agent_backend")
     repo = Path(repo_root).expanduser().resolve()
     source = Path(content_agents_root).expanduser().resolve()
@@ -1627,7 +1886,9 @@ def build_content_agents_vast_bundle(
         if agent_cad_output_manifest_path is not None
         else None
     )
-    if input_variant == "agent_cad_v1" and reference_image_path is not None:
+    if input_variant == "agent_cad_v1" and (
+        reference_image_path is not None or reference_image_paths
+    ):
         raise ValueError(
             "adp_content_agents_agent_cad_reference_must_come_from_manifest"
         )
@@ -1636,14 +1897,25 @@ def build_content_agents_vast_bundle(
         and content_agents_execution_route_path is None
     ):
         raise ValueError("adp_content_agents_codex_first_route_missing")
-    if reference_image_path is None:
+    explicit_references = [
+        Path(path).expanduser().resolve() for path in (reference_image_paths or ())
+    ]
+    if reference_image_path is not None:
+        explicit_references.insert(
+            0, Path(reference_image_path).expanduser().resolve()
+        )
+    if not explicit_references:
         if input_variant != "agent_cad_v1":
             raise ValueError("adp_content_agents_reference_image_missing")
         reference_sources = _default_agent_cad_reference_images(agent_output_path)
         reference_source = reference_sources[0]
     else:
-        reference_source = Path(reference_image_path).expanduser().resolve()
-        reference_sources = [reference_source]
+        reference_sources = explicit_references
+        reference_source = reference_sources[0]
+    if input_variant == "paired_target_registered_v1" and any(
+        path.is_symlink() or not path.is_file() for path in reference_sources
+    ):
+        raise ValueError("adp_content_agents_paired_target_input_not_host_resident")
     evidence = Path(evidence_root) if evidence_root is not None else None
     job = Path(job_dir).expanduser().resolve()
     if job.exists() and any(job.iterdir()):
@@ -1669,6 +1941,17 @@ def build_content_agents_vast_bundle(
         agent_mesh_projection_receipt_path=(
             Path(agent_mesh_projection_receipt_path)
             if agent_mesh_projection_receipt_path is not None
+            else None
+        ),
+        paired_target_construction_bindings_path=(
+            Path(paired_target_construction_bindings_path)
+            if paired_target_construction_bindings_path is not None
+            else None
+        ),
+        paired_target_task_id=paired_target_task_id,
+        reference_rights_authority_path=(
+            Path(reference_rights_authority_path)
+            if reference_rights_authority_path is not None
             else None
         ),
     )
@@ -1735,6 +2018,13 @@ def build_content_agents_vast_bundle(
         "physics_agent.yaml",
     } or any(not path.is_file() for path in config_sources.values()):
         raise ValueError("adp_content_agents_config_sources_invalid")
+    usd_source = Path(variant["usd_source"])
+    runtime_usd_name = "source_asset.usda"
+    input_normalization = _materialize_content_agents_input(
+        usd_source,
+        runtime / "input" / runtime_usd_name,
+        variant=str(variant["variant"]),
+    )
     reference_runtime_names = [
         "reference.png" if index == 0 else f"reference_{index + 1:04d}.png"
         for index in range(len(reference_sources))
@@ -1746,21 +2036,20 @@ def build_content_agents_vast_bundle(
         config_sources=config_sources,
         destination=runtime / "configs",
         variant=str(variant["variant"]),
-        agent_mesh_prim_paths=variant.get("mesh_prim_paths"),
-        agent_default_material_path=variant.get("default_material_path"),
+        agent_mesh_prim_paths=(
+            variant.get("mesh_prim_paths")
+            or input_normalization.get("mesh_prim_paths")
+        ),
+        agent_default_material_path=(
+            variant.get("default_material_path")
+            or input_normalization.get("default_material_path")
+        ),
         reference_image_relpaths=reference_runtime_relpaths,
     )
     runtime_configs = {
         name: runtime / "configs" / name for name in config_sources
     }
     _validate_remote_configs(source=source, config_sources=runtime_configs)
-    usd_source = Path(variant["usd_source"])
-    runtime_usd_name = "source_asset.usda"
-    input_normalization = _materialize_content_agents_input(
-        usd_source,
-        runtime / "input" / runtime_usd_name,
-        variant=str(variant["variant"]),
-    )
     joint_agent_plan = _derive_joint_agent_plan(
         input_variant=str(variant["variant"]),
         input_normalization=input_normalization,
@@ -1820,6 +2109,18 @@ def build_content_agents_vast_bundle(
                 "task_id",
                 "asset_id",
                 "replacement_slot",
+                "paired_target_construction_bindings",
+                "paired_target_construction_digest",
+                "paired_target_scene_id",
+                "paired_target_reference_rights_authority",
+                "paired_target_reference_rights_status",
+                "paired_target_reference_rights_scope",
+                "paired_target_reference_images",
+                "task_freeze_digest",
+                "registered_asset_receipt_digest",
+                "replacement_asset_sha256",
+                "native_import_probe_result_digest",
+                "native_simulator_import_qualified",
             }
         },
         "content_agents_execution_route": execution_route_binding,
@@ -1848,6 +2149,7 @@ def build_content_agents_vast_bundle(
         "allowed_use_ceiling": (
             "internal_noncommercial_validation"
             if native_probe is not None
+            or variant["variant"] == "paired_target_registered_v1"
             else "blueprint_owned_control"
         ),
         "runtime_input_binding": {
@@ -1862,8 +2164,13 @@ def build_content_agents_vast_bundle(
         "failure_blocks_deterministic_asset_construction": False,
         "failure_blocks_native_simulator_qualification": False,
         "agent_output_is_simready_authority": False,
-        "canonical_simready_construction_unresolved": variant["variant"]
-        == "agent_cad_v1",
+        "input_native_simulator_import_qualified": variant.get(
+            "native_simulator_import_qualified"
+        )
+        is True,
+        "canonical_simready_construction_unresolved": (
+            variant["variant"] == "agent_cad_v1"
+        ),
         "deterministic_usd_construction_remains_primary": variant["variant"]
         != "agent_cad_v1",
         "local_bundle_ready_for_remote_staging": not blockers,
@@ -2194,28 +2501,46 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--content-agents-root", required=True)
-    parser.add_argument("--reference-image")
+    parser.add_argument(
+        "--reference-image",
+        action="append",
+        help="Repeat for every exact rights-admitted reference image.",
+    )
     parser.add_argument("--job-dir", required=True)
     parser.add_argument(
         "--input-variant",
-        choices=("control_v1", "match_v2", "articulated_v1", "agent_cad_v1"),
+        choices=(
+            "control_v1",
+            "match_v2",
+            "articulated_v1",
+            "agent_cad_v1",
+            "paired_target_registered_v1",
+        ),
         default="control_v1",
     )
     parser.add_argument("--evidence-root")
     parser.add_argument("--agent-cad-output-manifest")
     parser.add_argument("--agent-mesh-projection-receipt")
+    parser.add_argument("--paired-target-construction-bindings")
+    parser.add_argument("--paired-target-task-id")
+    parser.add_argument("--reference-rights-authority")
     parser.add_argument("--content-agents-execution-route")
     parser.add_argument("--historical-replay-only", action="store_true")
     args = parser.parse_args(argv)
     receipt = build_content_agents_vast_bundle(
         repo_root=args.repo_root,
         content_agents_root=args.content_agents_root,
-        reference_image_path=args.reference_image,
+        reference_image_paths=args.reference_image,
         job_dir=args.job_dir,
         input_variant=args.input_variant,
         evidence_root=args.evidence_root,
         agent_cad_output_manifest_path=args.agent_cad_output_manifest,
         agent_mesh_projection_receipt_path=args.agent_mesh_projection_receipt,
+        paired_target_construction_bindings_path=(
+            args.paired_target_construction_bindings
+        ),
+        paired_target_task_id=args.paired_target_task_id,
+        reference_rights_authority_path=args.reference_rights_authority,
         content_agents_execution_route_path=args.content_agents_execution_route,
         historical_replay_only=args.historical_replay_only,
     )
