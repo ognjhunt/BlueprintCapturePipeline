@@ -648,3 +648,61 @@ def test_ovphysx_worker_uses_digest_bound_external_usd_inventory(tmp_path: Path)
     scene.write_text("#usda 1.0\n# changed\n", encoding="utf-8")
     with pytest.raises(ValueError, match="source digest changed"):
         module._scene_inventory({"usd_scene_inventory": inventory}, scene)
+
+
+def test_a_real_bundle_receipt_can_adjudicate_a_retained_execution(
+    tmp_path: Path,
+) -> None:
+    """The salvage path must accept a receipt its own producer emits.
+
+    `adjudicate_retained_simready_isaac_execution` exists so a paid run whose
+    bookkeeping failed can be adjudicated without paying for a retry. It
+    required `probe_names` on the bundle receipt, and the builder never wrote
+    it -- the key was only ever supplied by a hand-authored fixture. The
+    guard is `if execution and probe_names`, so the adjudicator did not merely
+    add a blocker, it never evaluated the probes at all, leaving the ~$2 Isaac
+    retry this function exists to avoid as the only option.
+    """
+
+    from blueprint_pipeline.public_scene_simready_isaac_vast import (
+        adjudicate_retained_simready_isaac_execution,
+    )
+
+    evidence, replacement_receipt = _evidence(tmp_path, scene_id="840920")
+    probe_root = tmp_path / "probe"
+    materialize_native_probe(
+        evidence_root=evidence,
+        destination=probe_root,
+        replacement_receipt=replacement_receipt,
+    )
+    manifest = json.loads(
+        (probe_root / "adp009b_simready_native_probe_manifest.json").read_text()
+    )
+    receipt = build_simready_isaac_bundle(
+        probe_root=probe_root,
+        native_probe_manifest_path=(
+            probe_root / "adp009b_simready_native_probe_manifest.json"
+        ),
+        scene_id="840920",
+        candidate_usd_path=probe_root / manifest["candidate_usd"]["relative_path"],
+        job_dir=tmp_path / "job",
+        worker_source=ROOT / "scripts/run_adp009b_simready_isaac_worker.py",
+        source_commit_sha="a" * 40,
+        generated_at="2026-08-06T00:00:00Z",
+    )
+    receipt_path = tmp_path / "job" / "adp009b_simready_isaac_bundle_receipt.json"
+
+    adjudication = adjudicate_retained_simready_isaac_execution(
+        execution_path=tmp_path / "absent_execution.json",
+        bundle_receipt_path=receipt_path,
+        destination=tmp_path / "adjudication.json",
+        generated_at="2026-08-10T00:00:00+00:00",
+    )
+
+    assert sorted(receipt["probe_names"]) == ["drop", "gripper", "slide", "tip"]
+    # The bundle-side refusals must be gone. The execution is deliberately
+    # absent here, so its own blocker is expected and is not what this pins.
+    assert "simready_isaac_expected_probe_set_missing" not in adjudication["blockers"]
+    assert (
+        "simready_isaac_bundle_receipt_digest_invalid" not in adjudication["blockers"]
+    )
