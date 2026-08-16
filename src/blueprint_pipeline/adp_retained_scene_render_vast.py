@@ -46,6 +46,9 @@ from .spend_authority_consumption_root import (
 )
 
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
+#: The Vast instance label this lane creates. The independent watchdog arms on
+#: the same value so its name-scoped sweep can see what this lane rents.
+RETAINED_RENDER_INSTANCE_LABEL_PREFIX = "blueprint-adp-retained-render-"
 RESULT_SCHEMA = "adp009d_retained_scene_gpu_render_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_authority.v1"
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
@@ -557,7 +560,7 @@ def run_retained_scene_render_vast(
         max_live_minutes=hard_ttl_seconds // 60,
         generated_at=utc_now_iso(),
         allowed_active_instance_ids=allowed_active_instance_ids,
-        pod_name_prefix="blueprint-groot-oscar-canary-adp-retained-render-",
+        pod_name_prefix=RETAINED_RENDER_INSTANCE_LABEL_PREFIX,
     )
     if watchdog is None:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
@@ -637,7 +640,8 @@ def run_retained_scene_render_vast(
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 machine_avoidlist_path=machine_avoidlist_path,
                 vast_launch_lock_file=job.parent / "retained_scene_render_paid_launch.lock",
-                instance_label_prefix="blueprint-adp-retained-render-",
+                # Bound to the armed prefix rather than restated.
+                instance_label_prefix=watchdog_handle.pod_name_prefix,
                 started_instance_id_path=watchdog.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
