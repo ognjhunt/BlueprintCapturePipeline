@@ -75,7 +75,11 @@ from .production_gpu_campaign_budget import (
 )
 from .safe_outbound_http import presigned_transfer_policy
 from .safe_outbound_http import request as safe_http_request
-from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
+from .task_evaluation_artifact_manifest import (
+    PROVIDER_RUN_DIRNAME,
+    TEARDOWN_MANIFEST_NAME,
+    seal_lane_terminal_artifacts,
+)
 
 
 SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_admission.v1"
@@ -127,6 +131,41 @@ def _seal_terminal(result: Mapping[str, Any], adapter_output: str | Path) -> dic
     terminal = dict(result)
     terminal.setdefault("artifact_manifest_path", None)
     terminal.setdefault("teardown_manifest_path", None)
+    # The launch contract reads these two values off this result, and this lane
+    # named neither: a completed run ended `allocator_terminal_value_mismatch`
+    # for both. The lane is retry-0 by construction, and `continuing_spend` is
+    # the same fact the contract asks for under the name it expects.
+    terminal.setdefault("retry_cap", 0)
+    terminal.setdefault(
+        "continuing_spend_from_this_run", terminal.get("continuing_spend") is True
+    )
+    root = Path(adapter_output).expanduser().resolve().parent
+    # The sealer inventories `<root>/vast_provider_run/`, and this lane wrote
+    # every receipt flat under the root instead -- so the sealer found no
+    # directory, inventoried nothing, and left both manifest paths None while
+    # the evidence sat on disk beside it. Materialise the teardown manifest
+    # where the shared sealer looks, but only for an attempt that actually
+    # reached a provider, so a pre-provider refusal is not dressed up as a live
+    # run that lost its evidence.
+    if terminal.get("instance_id"):
+        provider_run = root / PROVIDER_RUN_DIRNAME
+        provider_run.mkdir(parents=True, exist_ok=True)
+        monitor = terminal.get("monitor")
+        monitor = monitor if isinstance(monitor, Mapping) else {}
+        write_json(
+            provider_run / TEARDOWN_MANIFEST_NAME,
+            {
+                "schema_version": "new_site_lane_teardown_manifest.v1",
+                "provider": terminal.get("provider"),
+                "instance_id": str(terminal.get("instance_id")),
+                "continuing_spend_from_this_run": terminal[
+                    "continuing_spend_from_this_run"
+                ],
+                "provider_absence_confirmed": monitor.get(
+                    "provider_absence_confirmed"
+                ),
+            },
+        )
     return seal_lane_terminal_artifacts(
         terminal,
         attempt_root=Path(adapter_output).expanduser().resolve().parent,
