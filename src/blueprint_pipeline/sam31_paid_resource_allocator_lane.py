@@ -177,74 +177,71 @@ def run_sam31_paid_resource_allocator_lane(
             allowed_active_instance_ids=args.sam31_allowed_active_vast_instance_id,
         )
     authority_id = authority.get("request_authority_id") if authority else args.sam31_authority_id
-    preflight_path = args.preflight_bundle
+    adapter_path = Path(args.adapter_output).expanduser().resolve()
+    preflight_file = Path(str(args.preflight_bundle or "")).expanduser()
+    if (
+        not str(args.preflight_bundle or "").strip()
+        or preflight_file.is_symlink()
+        or preflight_file.resolve().parent != adapter_path.parent
+    ):
+        result = {
+            "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
+            "status": "blocked",
+            "blockers": ["sam31_preflight_output_path_not_attempt_local"],
+            "provider_mutations_performed": 0,
+            "paid_execution_started": False,
+        }
+        return _write_terminal_result(adapter_path, result)
+    preflight_path = str(preflight_file.resolve())
     handoff: dict[str, Any] | None = None
     handle = None
-    if not args.execute:
-        preflight_file = Path(str(preflight_path or "")).expanduser()
-        if preflight_file.is_symlink() or not preflight_file.is_file():
-            result = {
-                "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
-                "status": "blocked",
-                "blockers": ["sam31_dry_run_preflight_missing_or_unsafe"],
-                "provider_mutations_performed": 0,
-                "paid_execution_started": False,
-            }
-            return _write_terminal_result(Path(args.adapter_output), result)
-    if args.execute:
-        adapter_path = Path(args.adapter_output).expanduser().resolve()
-        handoff, handle = arm_watchdog(
-            job_dir=adapter_path.parent,
-            max_live_minutes=max(2, (args.sam31_hard_ttl_seconds + 59) // 60),
-            generated_at=utc_now_iso(),
-            allowed_active_instance_ids=getattr(args, "sam31_allowed_active_vast_instance_id", []),
-            pod_name_prefix="blueprint-sam31-source-tracks-",
-        )
-        if handle is None:
-            result = {
-                "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
-                "status": "blocked",
-                "blockers": ["sam31_independent_watchdog_not_armed"],
-                "provider_mutations_performed": 0,
-                "paid_execution_started": False,
-            }
-            return _write_terminal_result(Path(args.adapter_output), result)
-        watchdog_snapshot = {
-            "status": "armed",
-            "independent_process": True,
-            "pid": handoff["watchdog_pid"],
-            "started_epoch": handoff["watchdog_started_epoch"],
-            "deadline_epoch": handoff["watchdog_deadline_epoch"],
-            "name_prefix": handoff["pod_name_prefix"],
-            "started_instance_id_path": str(handle.started_instance_id_path),
+    handoff, handle = arm_watchdog(
+        job_dir=adapter_path.parent,
+        max_live_minutes=max(2, (args.sam31_hard_ttl_seconds + 59) // 60),
+        generated_at=utc_now_iso(),
+        allowed_active_instance_ids=getattr(args, "sam31_allowed_active_vast_instance_id", []),
+        pod_name_prefix="blueprint-sam31-source-tracks-",
+    )
+    if handle is None:
+        result = {
+            "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
+            "status": "blocked",
+            "blockers": ["sam31_independent_watchdog_not_armed"],
+            "provider_mutations_performed": 0,
+            "paid_execution_started": False,
         }
-        try:
-            provider = provider_factory(args.provider)
-            preflight = collect_sam31_vast_preflight(
-                name_prefix="blueprint-sam31-source-tracks-",
-                container_disk_bytes=80 * 1024**3,
-                watchdog=watchdog_snapshot,
-                conflicting_owner_present=False,
-                capacity_probe=provider.capacity_preflight,
-                inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
-                max_hourly_rate_usd=args.sam31_max_hourly_rate_usd,
-            )
-        except (OSError, RuntimeError, ValueError):
-            close_watchdog_without_allocation(job_dir=adapter_path.parent, handle=handle)
-            result = {
-                "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
-                "status": "blocked",
-                "blockers": ["sam31_live_preflight_collection_failed"],
-                "provider_mutations_performed": 0,
-                "paid_execution_started": False,
-            }
-            return _write_terminal_result(adapter_path, result)
-        execution_preflight = (
-            Path(args.adapter_output).expanduser().resolve().parent
-            / "sam31_execution_preflight.json"
+        return _write_terminal_result(adapter_path, result)
+    watchdog_snapshot = {
+        "status": "armed",
+        "independent_process": True,
+        "pid": handoff["watchdog_pid"],
+        "started_epoch": handoff["watchdog_started_epoch"],
+        "deadline_epoch": handoff["watchdog_deadline_epoch"],
+        "name_prefix": handoff["pod_name_prefix"],
+        "started_instance_id_path": str(handle.started_instance_id_path),
+    }
+    try:
+        provider = provider_factory(args.provider)
+        preflight = collect_sam31_vast_preflight(
+            name_prefix="blueprint-sam31-source-tracks-",
+            container_disk_bytes=80 * 1024**3,
+            watchdog=watchdog_snapshot,
+            conflicting_owner_present=False,
+            capacity_probe=provider.capacity_preflight,
+            inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
+            max_hourly_rate_usd=args.sam31_max_hourly_rate_usd,
         )
-        write_json(execution_preflight, preflight)
-        preflight_path = str(execution_preflight)
+    except (OSError, RuntimeError, ValueError):
+        close_watchdog_without_allocation(job_dir=adapter_path.parent, handle=handle)
+        result = {
+            "schema_version": "semantic_sam31_gpu_canary_adapter_result.v1",
+            "status": "blocked",
+            "blockers": ["sam31_live_preflight_collection_failed"],
+            "provider_mutations_performed": 0,
+            "paid_execution_started": False,
+        }
+        return _write_terminal_result(adapter_path, result)
+    write_json(Path(preflight_path), preflight)
 
     admission = prepare(
         request_path=args.provider_launch_request,

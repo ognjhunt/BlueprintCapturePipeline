@@ -436,26 +436,55 @@ def test_sam31_allocator_jit_nonzero_is_terminal_without_run_spend(
     assert "sam31_provider_zero_verification" in manifest["observed_roles"]
 
 
-def test_sam31_allocator_lane_dry_run_never_reads_secrets(tmp_path: Path) -> None:
-    args = _args(tmp_path, execute=False)
-    args.sam31_attempt_authority = None
-    Path(args.provider_launch_request).write_text("{}", encoding="utf-8")
-    write_json(Path(args.preflight_bundle), {"provider": "vast"})
-    result = run_sam31_paid_resource_allocator_lane(
-        args,
-        checkout_commit="c" * 40,
-        prepare=lambda **_kwargs: {"status": "dry_run_ready", "blockers": []},
-        provider_factory=lambda _name: (_ for _ in ()).throw(AssertionError("provider accessed")),
-        execute_canary=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("canary executed")),
-    )
-    assert result["status"] == "dry_run_ready"
-
-
-def test_sam31_allocator_lane_dry_run_types_missing_live_preflight(
+def test_sam31_allocator_lane_dry_run_collects_fresh_preflight_without_secrets(
     tmp_path: Path,
 ) -> None:
     args = _args(tmp_path, execute=False)
     args.sam31_attempt_authority = None
+    Path(args.provider_launch_request).write_text("{}", encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    def prepare(**kwargs):
+        observed["preflight"] = json.loads(Path(kwargs["preflight_path"]).read_text())
+        return {"status": "dry_run_ready", "blockers": []}
+
+    result = run_sam31_paid_resource_allocator_lane(
+        args,
+        checkout_commit="c" * 40,
+        prepare=prepare,
+        provider_factory=lambda _name: _ReadOnlyProvider(),
+        arm_watchdog=lambda **_kwargs: (
+            {
+                "watchdog_pid": 123,
+                "watchdog_started_epoch": 1_000,
+                "watchdog_deadline_epoch": 9_999_999_999,
+                "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
+            },
+            SimpleNamespace(started_instance_id_path=tmp_path / "started.txt"),
+        ),
+        close_watchdog_without_allocation=lambda **_kwargs: observed.setdefault(
+            "watchdog_close", {"status": "provider_terminal"}
+        ),
+        execute_canary=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("canary executed")),
+    )
+    assert result["status"] == "dry_run_ready"
+    assert observed["preflight"]["schema_version"] == (
+        "semantic_sam31_gpu_provider_preflight.v1"
+    )
+    assert observed["preflight"]["status"] == "verified"
+    assert observed["preflight"]["provider_inventory_verified_zero"] is True
+    assert observed["preflight"]["preflight_digest"] == canonical_digest(
+        observed["preflight"], digest_field="preflight_digest"
+    )
+    assert observed["watchdog_close"]["status"] == "provider_terminal"
+
+
+def test_sam31_allocator_lane_refuses_preflight_output_outside_attempt(
+    tmp_path: Path,
+) -> None:
+    args = _args(tmp_path, execute=False)
+    args.sam31_attempt_authority = None
+    args.preflight_bundle = str(tmp_path / "outside" / "preflight.json")
     Path(args.provider_launch_request).write_text("{}", encoding="utf-8")
 
     result = run_sam31_paid_resource_allocator_lane(
@@ -464,7 +493,7 @@ def test_sam31_allocator_lane_dry_run_types_missing_live_preflight(
     )
 
     assert result["status"] == "blocked"
-    assert result["blockers"] == ["sam31_dry_run_preflight_missing_or_unsafe"]
+    assert result["blockers"] == ["sam31_preflight_output_path_not_attempt_local"]
     assert result["provider_mutations_performed"] == 0
     assert result["continuing_spend_from_this_run"] is False
     assert Path(args.adapter_output).is_file()
@@ -596,7 +625,7 @@ def test_sam31_allocator_closes_watchdog_when_live_preflight_raises(
     assert closed == [True]
 
 
-def test_canonical_allocator_dispatches_sam31_dry_run_without_provider(
+def test_canonical_allocator_dispatches_sam31_read_only_preflight_dry_run(
     tmp_path: Path, monkeypatch
 ) -> None:
     observed: dict[str, object] = {}
@@ -633,6 +662,8 @@ def test_canonical_allocator_dispatches_sam31_dry_run_without_provider(
             "c" * 40,
             "--sam31-max-spend-usd",
             "1.0",
+            "--sam31-max-hourly-rate-usd",
+            "0.5",
             "--sam31-hard-ttl-seconds",
             "600",
             "--sam31-retry-cap",

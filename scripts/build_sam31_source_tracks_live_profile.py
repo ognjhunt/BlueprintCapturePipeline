@@ -183,7 +183,7 @@ def build_sam31_source_tracks_live_profile(
                 "--provider-launch-request",
                 str(request_file),
                 "--preflight-bundle",
-                f"{RUN_ROOT}/allocator/sam31-execution-preflight.json",
+                f"{RUN_ROOT}/allocator/sam31_execution_preflight.json",
                 "--sam31-input-bundle",
                 str(bundle_file),
                 "--sam31-input-bundle-receipt",
