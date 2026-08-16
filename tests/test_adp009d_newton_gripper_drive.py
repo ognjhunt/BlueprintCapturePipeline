@@ -21,8 +21,16 @@ def test_candidate_is_derived_from_sealed_speed_effort_and_timestep() -> None:
     assert validate_newton_gripper_drive_candidate(candidate) == []
     assert candidate["comparison_eligible"] is False
     assert candidate["candidate_drive"]["armature_kg_m2"] == pytest.approx(0.1375)
-    assert candidate["candidate_drive"]["maximum_target_step_rad"] == pytest.approx(1 / 15)
+    target_rate = candidate["candidate_drive"]["target_rate_limit_rad_s"]
+    assert target_rate == pytest.approx(0.654681991)
+    assert candidate["candidate_drive"]["maximum_target_step_rad"] == pytest.approx(
+        target_rate / 15
+    )
     assert candidate["derivation"]["explicit_stability_ratio"] < 2.0
+    assert candidate["native_acceptance"]["maximum_abs_joint_velocity_rad_s"] == 1.05
+    assert candidate["derivation"]["retained_native_transient_readback_rad_s"] == (
+        pytest.approx(1.4434489011764526)
+    )
     assert 0.020 <= candidate["derivation"]["rated_fingertip_speed_m_s"] <= 0.150
 
 
@@ -124,7 +132,10 @@ def test_runtime_configuration_is_newton_only_and_rate_limits_target(
     action._joint_ids = [0]
     action.process_actions(None)
     assert converted_values == [joint_pos]
-    assert action._processed_actions == pytest.approx(0.2 + 1 / 15)
+    target_rate = build_newton_gripper_drive_candidate()["candidate_drive"][
+        "target_rate_limit_rad_s"
+    ]
+    assert action._processed_actions == pytest.approx(0.2 + target_rate / 15)
 
 
 def test_native_probe_reads_body_names_from_pinned_articulation_data_api() -> None:
