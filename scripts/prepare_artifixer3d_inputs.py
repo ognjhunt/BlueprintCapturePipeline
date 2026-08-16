@@ -42,6 +42,7 @@ from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
 )
 from blueprint_pipeline.public_scene_artifixer3d_dual_target_inputs import (
     materialize_dual_target_artifixer3d_inputs,
+    materialize_semantic_teacher_artifixer_handoff,
     materialize_whole_frame_semantic_teacher_receipt,
 )
 
@@ -112,6 +113,23 @@ STEPS: dict[str, Step] = {
             "selected_task_ids": Param(
                 "--task-id", "Repeatable; omit for every task.", accumulate=True
             ),
+        },
+    ),
+    "from-semantic-result": Step(
+        "Seal a paid semantic result into per-task receipts and one paired packet.",
+        materialize_semantic_teacher_artifixer_handoff,
+        {
+            "result_import_path": Param("--result-import", required=True),
+            "semantic_teacher_packet_path": Param(
+                "--semantic-teacher-packet", required=True
+            ),
+            "source_candidate_inputs_receipt_path": Param(
+                "--source-candidate-inputs", required=True
+            ),
+            "transition_radius_pixels": Param(
+                "--transition-radius-pixels", required=True, type=int
+            ),
+            "output_root": Param("--output-root", required=True),
         },
     ),
     "use-attestation": Step(
