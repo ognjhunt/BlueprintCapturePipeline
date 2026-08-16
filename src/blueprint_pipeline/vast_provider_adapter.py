@@ -4774,6 +4774,17 @@ def _instance_status(instance_payload: Mapping[str, Any]) -> str:
     instances = instance_payload.get("instances")
     if isinstance(instances, Mapping):
         data = instances
+    elif isinstance(instances, list) and not instances:
+        # The instance-detail endpoint returns an empty `instances` collection
+        # after the specific contract has disappeared. This is positive absence,
+        # unlike a transport error or a payload that merely omits status fields.
+        return "absent"
+    elif (
+        isinstance(instances, list)
+        and len(instances) == 1
+        and isinstance(instances[0], Mapping)
+    ):
+        data = instances[0]
     else:
         data = instance_payload
     uptime = _number(data.get("uptime"))
@@ -5080,25 +5091,53 @@ def _poll_instance(
     observations: list[dict[str, Any]] = []
     last_payload: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        status_code, payload = _api_json(
-            method="GET",
-            path=f"/instances/{instance_id}/",
-            api_key=api_key,
-            timeout_seconds=30,
-        )
+        try:
+            status_code, payload = _api_json(
+                method="GET",
+                path=f"/instances/{instance_id}/",
+                api_key=api_key,
+                timeout_seconds=30,
+            )
+        except Exception as exc:
+            observations.append(
+                {
+                    "observed_at": utc_now_iso(),
+                    "http_status_code": None,
+                    "status": "unknown",
+                    "actual_status": None,
+                    "cur_state": None,
+                    "specific_instance_absent": False,
+                    "probe_error": _redact_text(
+                        f"{type(exc).__name__}: {str(exc)[:200]}", [api_key]
+                    ),
+                }
+            )
+            time.sleep(poll_interval_seconds)
+            continue
         last_payload = payload
-        status = _instance_status(payload)
+        # Only a successful, well-formed detail response can prove absence. A
+        # non-2xx response body that happens to contain `instances: []` is an API
+        # failure, not lifecycle evidence.
+        status = _instance_status(payload) if 200 <= status_code < 300 else "unknown"
+        instances = payload.get("instances")
+        instance_data = (
+            instances
+            if isinstance(instances, Mapping)
+            else instances[0]
+            if isinstance(instances, list)
+            and len(instances) == 1
+            and isinstance(instances[0], Mapping)
+            else payload
+        )
         observations.append(
             {
                 "observed_at": utc_now_iso(),
                 "http_status_code": status_code,
                 "status": status,
-                "actual_status": _mapping(payload.get("instances")).get("actual_status")
-                if isinstance(payload.get("instances"), Mapping)
-                else payload.get("actual_status"),
-                "cur_state": _mapping(payload.get("instances")).get("cur_state")
-                if isinstance(payload.get("instances"), Mapping)
-                else payload.get("cur_state"),
+                "actual_status": instance_data.get("actual_status"),
+                "cur_state": instance_data.get("cur_state"),
+                "specific_instance_absent": status == "absent",
+                "probe_error": None,
             }
         )
         if status.lower() in {
@@ -5107,6 +5146,7 @@ def _poll_instance(
             "stopped",
             "stopped_before_start",
             "failed",
+            "absent",
         }:
             return status, observations, last_payload
         time.sleep(poll_interval_seconds)
