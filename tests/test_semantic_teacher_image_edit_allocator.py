@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import blueprint_pipeline.paid_resource_allocator as allocator
 
 
@@ -132,6 +134,54 @@ def test_allocator_refuses_execute_without_bound_dry_run_and_token(
     assert "semantic_teacher_token_file_missing" in blocked["blockers"]
     assert "semantic_teacher_dry_run_receipt_missing" in blocked["blockers"]
     assert blocked["provider_mutations_performed"] == 0
+
+
+def test_semantic_capacity_preflight_uses_authority_and_openai_geography(
+    tmp_path: Path,
+) -> None:
+    observed: dict[str, object] = {}
+
+    class Provider:
+        def build_request(self, spec, job_dir):
+            observed["spec"] = spec
+            observed["job_dir"] = job_dir
+            return {
+                "max_hourly_rate_usd": spec.max_hourly_rate_usd,
+                "min_gpu_ram_mb": spec.min_gpu_ram_mb,
+                "allowed_geolocation_country_codes": list(
+                    spec.allowed_geolocation_country_codes
+                ),
+            }
+
+        def capacity_preflight(self, request):
+            observed["request"] = request
+            return {
+                "status": "available",
+                "selected_offer": {
+                    "hourly_rate_usd": 0.24,
+                    "gpu_ram_mb": 48_000,
+                },
+            }
+
+    result = allocator._semantic_teacher_capacity_preflight(
+        provider=Provider(),
+        authority={"maximum_hourly_rate_usd": 0.40},
+        runtime_image_identity="registry.example/teacher@sha256:" + "a" * 64,
+        job_dir=tmp_path,
+        watchdog={"status": "armed"},
+        excluded_machine_ids=(76546,),
+    )
+
+    spec = observed["spec"]
+    assert spec.max_hourly_rate_usd == pytest.approx(0.40)
+    assert spec.min_gpu_ram_mb == 16_000
+    assert spec.excluded_machine_ids == (76546,)
+    assert "us" in spec.allowed_geolocation_country_codes
+    assert "cn" not in spec.allowed_geolocation_country_codes
+    assert observed["request"]["allowed_geolocation_country_codes"]
+    assert result["status"] == "ready"
+    assert result["on_demand_price_usd_per_hour"] == pytest.approx(0.24)
+    assert result["gpu_memory_bytes"] == 48_000_000_000
 
 
 def test_allocator_execute_arms_watchdog_then_routes_exact_adapter(

@@ -179,6 +179,10 @@ class RenderLaunchSpec:
     # Kept in the neutral request so capacity preflight and paid selection apply
     # the same exclusion set.
     excluded_machine_ids: tuple[int, ...] = ()
+    # Optional fail-closed country allowlist for workers that call a
+    # geography-restricted external API. Vast applies this during both the
+    # advisory capacity probe and the authoritative live offer selection.
+    allowed_geolocation_country_codes: tuple[str, ...] = ()
 
     @property
     def bootstrap_script(self) -> str:
@@ -1924,6 +1928,9 @@ class VastRenderProvider(GpuRenderProvider):
             "vast_launch_mode": launch_mode,
             "require_direct_port": require_direct_port,
             "excluded_machine_ids": list(spec.excluded_machine_ids),
+            "allowed_geolocation_country_codes": list(
+                spec.allowed_geolocation_country_codes
+            ),
             "bootstrap_transport": script_transport,
             "bootstrap_transport_env_keys": sorted(bootstrap_env),
             "entrypoint_override": entrypoint_override,
@@ -2025,6 +2032,13 @@ class VastRenderProvider(GpuRenderProvider):
         excluded_machine_ids = _string_list(req.get("excluded_machine_ids"))
         if excluded_machine_ids:
             selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
+        allowed_geolocation_country_codes = _string_list(
+            req.get("allowed_geolocation_country_codes")
+        )
+        if allowed_geolocation_country_codes:
+            selection_kwargs["allowed_geolocation_country_codes"] = (
+                allowed_geolocation_country_codes
+            )
         selected = _select_offer(offers, **selection_kwargs)
         viable: list[dict[str, Any]] = []
         for offer in offers:
@@ -2057,7 +2071,12 @@ class VastRenderProvider(GpuRenderProvider):
             "offer_count": len(offers),
             "viable_gpu_types": viable,
             "selected_offer": viable[0] if viable else None,
-            "selection_policy": vcc.capacity_selection_policy(req, selection_kwargs),
+            "selection_policy": {
+                **vcc.capacity_selection_policy(req, selection_kwargs),
+                "allowed_geolocation_country_codes": sorted(
+                    allowed_geolocation_country_codes
+                ),
+            },
             "reservation_proven": False,
             "capacity_confidence": "advisory" if selected else "unavailable",
             "authoritative_capacity_source": "provider_create_response",
@@ -2123,6 +2142,9 @@ class VastRenderProvider(GpuRenderProvider):
         excluded_machine_ids = _string_list(
             request.get("excluded_machine_ids")
         )
+        allowed_geolocation_country_codes = _string_list(
+            request.get("allowed_geolocation_country_codes")
+        )
         if require_avx:
             search_payload = {**search_payload, "has_avx": {"eq": True}}
         try:
@@ -2170,6 +2192,10 @@ class VastRenderProvider(GpuRenderProvider):
             }
             if excluded_machine_ids:
                 selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
+            if allowed_geolocation_country_codes:
+                selection_kwargs["allowed_geolocation_country_codes"] = (
+                    allowed_geolocation_country_codes
+                )
             offer = _select_offer(remaining, **selection_kwargs)
             if not offer:
                 break
