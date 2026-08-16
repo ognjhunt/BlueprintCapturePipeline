@@ -529,7 +529,14 @@ def _camera_contract(path: Path) -> tuple[list[dict[str, Any]], int, int]:
 def _git_identity(repo: Path) -> dict[str, Any]:
     def run(*arguments: str) -> str:
         result = subprocess.run(
-            ["git", "-C", str(repo), *arguments],
+            [
+                "git",
+                "-c",
+                f"safe.directory={repo}",
+                "-C",
+                str(repo),
+                *arguments,
+            ],
             capture_output=True,
             text=True,
             check=False,
