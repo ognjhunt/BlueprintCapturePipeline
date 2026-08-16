@@ -16,6 +16,26 @@ DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/adp009d-native-microcheck"
 MINIMUM_DRIVER_VERSION = "580.65.06"
 
 
+def controls_only_max_compute_cap(prepared_bundle: Mapping[str, Any]) -> int | None:
+    """Lift the TensorRT ceiling only for a sealed Newton controls-only bundle.
+
+    Blackwell is incompatible with the pinned TensorRT policy engine, so the
+    shared Vast adapter defaults to ``sm_90``.  Newton controls-only runs never
+    build or query that engine.  Keep the opt-out fail-closed: any policy
+    identity, missing controls binding, or ambiguous query status retains the
+    shared ceiling.
+    """
+
+    if (
+        prepared_bundle.get("physics_backend") == "newton"
+        and prepared_bundle.get("controls_requested") is True
+        and prepared_bundle.get("candidate_policy_queried") is False
+        and not str(prepared_bundle.get("policy_candidate_id") or "").strip()
+    ):
+        return 0
+    return None
+
+
 def run_adp009d_native_microcheck_vast(
     *,
     job_dir: str | Path,
@@ -30,6 +50,8 @@ def run_adp009d_native_microcheck_vast(
     allowed_active_instance_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     """Run one zero-retry native infrastructure check through the shared transport."""
+
+    max_compute_cap = controls_only_max_compute_cap(prepared_bundle)
 
     return run_arena_native_control_vast(
         approval_path=".",
@@ -54,6 +76,7 @@ def run_adp009d_native_microcheck_vast(
         instance_label_prefix="blueprint-adp009d-",
         blocker_prefix="adp009d",
         min_gpu_ram_mb=46_000,
+        max_compute_cap=max_compute_cap,
         require_independent_watchdog=True,
         forward_hf_token=authorize_gated_backbone,
         allowed_active_instance_ids=allowed_active_instance_ids,
@@ -68,5 +91,6 @@ def run_adp009d_native_microcheck_vast(
 __all__ = [
     "MINIMUM_DRIVER_VERSION",
     "PROBE_KIND",
+    "controls_only_max_compute_cap",
     "run_adp009d_native_microcheck_vast",
 ]

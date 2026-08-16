@@ -333,6 +333,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
         hard_cap_usd=1.0,
         hard_ttl_seconds=3600,
         require_independent_watchdog=True,
+        max_compute_cap=0,
     )
 
     assert result["status"] == "completed"
@@ -343,6 +344,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
         == watchdog_handle.started_instance_id_path
     )
     assert observed_adapter["retention_watchdog_handoff"]["status"] == "armed"
+    assert observed_adapter["max_compute_cap"] == 0
     manifest_path = Path(result["artifact_manifest_path"])
     manifest = json.loads(manifest_path.read_text())
     assert manifest["status"] == "completed"
