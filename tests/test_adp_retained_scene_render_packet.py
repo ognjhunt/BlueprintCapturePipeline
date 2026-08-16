@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import blueprint_pipeline.adp_retained_scene_render_packet as render_packet
 from blueprint_pipeline.adp_retained_scene_render_packet import (
     RetainedSceneRenderPacketError,
     build_retained_scene_gpu_render_bundle,
@@ -62,6 +63,35 @@ def _write_json(path: Path, value: dict[str, object]) -> None:
 
 def _digest(character: str) -> str:
     return "sha256:" + character * 64
+
+
+def test_repository_identity_scopes_safe_directory_to_exact_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo = tmp_path.resolve()
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        if command[-2:] == ["rev-parse", "HEAD"]:
+            return SimpleNamespace(returncode=0, stdout="a" * 40 + "\n")
+        if command[-2:] == ["rev-parse", "HEAD^{tree}"]:
+            return SimpleNamespace(returncode=0, stdout="b" * 40 + "\n")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(render_packet.subprocess, "run", fake_run)
+
+    assert render_packet._git_identity(repo) == {
+        "commit": "a" * 40,
+        "tree": "b" * 40,
+        "tracked_files_clean": True,
+    }
+    assert calls
+    assert all(
+        command[:5]
+        == ["git", "-c", f"safe.directory={repo}", "-C", str(repo)]
+        for command in calls
+    )
 
 
 def test_retained_scene_render_authority_environment_restores_retry_setting(
