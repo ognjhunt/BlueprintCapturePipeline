@@ -221,7 +221,13 @@ def _immutable_inputs(link: ArenaLink):
     return inputs
 
 
-def _spec(link: ArenaLink, *, with_avoidlist: bool) -> LaneLiveProfileSpec:
+def _spec(
+    link: ArenaLink | str, *, with_avoidlist: bool = False
+) -> LaneLiveProfileSpec:
+    if isinstance(link, str):
+        # Shared builder-contract probes call candidate factories with a
+        # placeholder string. Real launches pass the exact ArenaLink below.
+        link = LINKS.get(link, LINKS["construction"])
     return LaneLiveProfileSpec(
         profile_id_prefix=link.profile_id_prefix,
         profile_builder="build_native_task_arena_live_profile.py",
