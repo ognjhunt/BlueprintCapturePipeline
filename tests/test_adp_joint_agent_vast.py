@@ -768,6 +768,7 @@ def test_live_run_arms_watchdog_before_adapter_and_constrains_openai_geography(
     monkeypatch, tmp_path: Path, model_backend: str, secret_env: str
 ) -> None:
     events: list[str] = []
+    bound: dict[str, str] = {}
     started_path = tmp_path / "started_instance.txt"
     staging = tmp_path / "job/object_store_staging"
 
@@ -784,10 +785,17 @@ def test_live_run_arms_watchdog_before_adapter_and_constrains_openai_geography(
     def fake_arm(**kwargs):
         events.append("watchdog")
         assert kwargs["allowed_active_instance_ids"] == ()
-        return {"status": "armed"}, SimpleNamespace(started_instance_id_path=started_path)
+        bound["watchdog_pod_name_prefix"] = kwargs["pod_name_prefix"]
+        # A real handle carries the prefix it armed on. Stubbing it away is how
+        # the lane's watchdog came to watch a name family it never creates.
+        return {"status": "armed"}, SimpleNamespace(
+            started_instance_id_path=started_path,
+            pod_name_prefix=kwargs["pod_name_prefix"] + "0f1e2d3c-",
+        )
 
     def fake_adapter(**kwargs):
         events.append("adapter")
+        bound["instance_label_prefix"] = kwargs["instance_label_prefix"]
         assert kwargs["started_instance_id_path"] == started_path
         assert kwargs["provider_bundle_kind"] == "adp_joint_agent"
         assert bool(kwargs["allowed_geolocation_country_codes"]) is (
@@ -865,6 +873,15 @@ def test_live_run_arms_watchdog_before_adapter_and_constrains_openai_geography(
     )
 
     assert events == ["watchdog", "adapter"]
+    # The watchdog's name-scoped arm can only reap what this lane labels, so
+    # the armed prefix and the instance label must be the same string. The lane
+    # previously armed on the GR00T name family while labelling its instances
+    # `blueprint-adp-joint-agent-`, which left that arm sweeping an empty set
+    # while still reporting provider zero.
+    assert bound["watchdog_pod_name_prefix"] == joint_vast.JOINT_AGENT_INSTANCE_LABEL_PREFIX
+    assert bound["instance_label_prefix"].startswith(
+        bound["watchdog_pod_name_prefix"]
+    )
     assert result["status"] == "completed"
     assert result["continuing_spend_from_this_run"] is False
     assert result["retry_cap"] == 0
