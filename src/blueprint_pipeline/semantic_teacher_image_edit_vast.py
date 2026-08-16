@@ -1622,12 +1622,18 @@ def _execute_semantic_teacher_image_edit_vast(
                 output_archive: bytes | None = None
                 provider_absence_confirmations = 0
                 provider_absence_confirmed = False
+                last_output_fetch_failure = ""
                 liveness_checked_at = float(clock())
                 while float(clock()) - started_at <= hard_ttl:
                     try:
                         output_archive = result_fetcher(output_get_url)
                         break
-                    except (FileNotFoundError, TimeoutError):
+                    except (OSError, SemanticTeacherImageEditVastError) as exc:
+                        # This retries only a read of the immutable output for
+                        # the already-bound instance; it cannot allocate again.
+                        # Retain no raw exception text because signed URLs and
+                        # credentials can appear in transport failures.
+                        last_output_fetch_failure = redacted_failure_detail(exc)
                         now = float(clock())
                         if now - started_at >= hard_ttl:
                             break
@@ -1662,6 +1668,8 @@ def _execute_semantic_teacher_image_edit_vast(
                     blockers.append("semantic_teacher_output_timeout")
                     runtime_gap_type = "runtime_timeout"
                     runtime_gap_reason = "output_download_timed_out_after_allocation"
+                    if last_output_fetch_failure:
+                        runtime_gap_reason += f":{last_output_fetch_failure}"
                 else:
                     try:
                         runtime_result = _extract_and_validate_output(
