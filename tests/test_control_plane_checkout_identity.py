@@ -121,6 +121,70 @@ def test_clean_checkout_reports_no_blockers(monkeypatch) -> None:
     assert identity["orchestrator_source_commit"] == commit
 
 
+def _prepare_main(monkeypatch, *, checkout: str, tip: str, merged: bool) -> None:
+    monkeypatch.setattr(
+        allocator, "_current_checkout_source_state", lambda: (checkout, True, True)
+    )
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: tip)
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: tip)
+    monkeypatch.setattr(
+        allocator, "_commit_is_merged_into", lambda commit, ref: merged
+    )
+
+
+def test_a_commit_already_merged_into_main_may_still_launch(monkeypatch) -> None:
+    """Production regression: merging a later fix invalidated a ready release.
+
+    The gate needs the launched code to be public and reviewed, which every
+    ancestor of main satisfies. Demanding the tip meant any merge landing after
+    a release was prepared discarded a promoted deploy and its whole
+    commit-bound artifact rebuild.
+    """
+
+    _prepare_main(monkeypatch, checkout="a" * 40, tip="b" * 40, merged=True)
+
+    blockers, commit = allocator._source_checkout_blockers("a" * 40)
+
+    assert blockers == []
+    assert commit == "a" * 40
+
+
+def test_a_commit_outside_main_history_is_still_refused(monkeypatch) -> None:
+    _prepare_main(monkeypatch, checkout="a" * 40, tip="b" * 40, merged=False)
+
+    blockers, _ = allocator._source_checkout_blockers("a" * 40)
+
+    assert "gpu_canary_checkout_not_origin_main" in blockers
+    assert "gpu_canary_checkout_not_remote_main" in blockers
+
+
+def test_the_main_tip_is_accepted_without_consulting_ancestry(monkeypatch) -> None:
+    """The tip must not depend on a merge-base probe that could fail closed."""
+
+    tip = "b" * 40
+    _prepare_main(monkeypatch, checkout=tip, tip=tip, merged=False)
+
+    blockers, commit = allocator._source_checkout_blockers(tip)
+
+    assert blockers == []
+    assert commit == tip
+
+
+def test_a_dirty_ancestor_checkout_still_blocks(monkeypatch) -> None:
+    """Relaxing which commit may launch must not relax whether it is intact."""
+
+    monkeypatch.setattr(
+        allocator, "_current_checkout_source_state", lambda: ("a" * 40, False, True)
+    )
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "b" * 40)
+    monkeypatch.setattr(allocator, "_commit_is_merged_into", lambda commit, ref: True)
+
+    blockers, _ = allocator._source_checkout_blockers("a" * 40)
+
+    assert "gpu_canary_checkout_not_clean" in blockers
+
+
 def test_source_checkout_blockers_also_separate_probe_failure_from_dirty(monkeypatch) -> None:
     """The expected-source-commit gate reads the same probe, so it must make the
     same distinction or it will report an unobserved checkout state too."""

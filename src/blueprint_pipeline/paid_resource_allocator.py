@@ -424,6 +424,34 @@ def _current_checkout_source_state() -> tuple[str, bool, bool]:
     return (commit if commit_valid else ""), clean, True
 
 
+def _commit_is_merged_into(commit: str, ref: str) -> bool:
+    """Is this commit already part of ``ref``'s history?
+
+    A launch needs its code to be public and reviewed, which merging into main
+    establishes and which every ancestor of main satisfies equally. It does not
+    need to be main's *newest* commit. Requiring the tip means merging any later
+    fix silently invalidates an already prepared release: on 2026-08-16 that
+    discarded a promoted deploy plus a full commit-bound artifact rebuild, and
+    the only way to launch again was to redo both for a commit whose worker code
+    had not changed. Ancestry keeps the property that matters and drops the one
+    that only served to make fixes and launches race each other.
+    """
+
+    if not commit or not ref:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit, ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _current_origin_main_commit() -> str:
     try:
         result = subprocess.run(
@@ -548,11 +576,15 @@ def _source_checkout_blockers(
         remote_main_commit = _current_remote_main_commit()
         if not origin_main_commit:
             blockers.append("gpu_canary_origin_main_commit_unavailable")
-        elif checkout_commit != origin_main_commit:
+        elif checkout_commit != origin_main_commit and not _commit_is_merged_into(
+            checkout_commit, "origin/main"
+        ):
             blockers.append("gpu_canary_checkout_not_origin_main")
         if not remote_main_commit:
             blockers.append("gpu_canary_remote_main_commit_unavailable")
-        elif checkout_commit != remote_main_commit:
+        elif checkout_commit != remote_main_commit and not _commit_is_merged_into(
+            checkout_commit, remote_main_commit
+        ):
             blockers.append("gpu_canary_checkout_not_remote_main")
     if not checkout_clean:
         blockers.append("gpu_canary_checkout_not_clean")
