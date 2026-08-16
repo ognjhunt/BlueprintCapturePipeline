@@ -38,6 +38,9 @@ ARTIFIXER_CANDIDATE_REQUEST_SCHEMA = (
 SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA = (
     "fresh_scene_semantic_teacher_image_edit_request.v1"
 )
+SEMANTIC_TEACHER_HANDOFF_REQUEST_SCHEMA = (
+    "fresh_scene_semantic_teacher_artifixer_handoff_request.v1"
+)
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAX_BOUND_INPUT_FILES = 1024
 MAX_BOUND_INPUT_BYTES = 2 * 1024**3
@@ -376,6 +379,136 @@ def _request_input_paths(
                     ),
                 )
             )
+    elif schema == SEMANTIC_TEACHER_HANDOFF_REQUEST_SCHEMA:
+        named_paths: dict[str, Path] = {}
+        for key in (
+            "result_import_path",
+            "semantic_teacher_packet_path",
+            "source_candidate_inputs_receipt_path",
+        ):
+            named_paths[key] = _resident_path(
+                str(request.get(key) or ""),
+                roots=roots,
+                kind="file",
+                code=f"fresh_scene_tool_request_input_not_host_resident:{key}",
+            )
+            paths.append(named_paths[key])
+        imported = _read_object(
+            named_paths["result_import_path"],
+            code="fresh_scene_semantic_teacher_handoff_result_invalid",
+        )
+        runtime_result_path: Path | None = None
+        for key in ("runtime_request", "runtime_result"):
+            record = imported.get(key)
+            if not isinstance(record, Mapping):
+                raise FreshSceneSupervisorBindingError(
+                    "fresh_scene_semantic_teacher_handoff_result_invalid"
+                )
+            resident = _resident_path(
+                str(record.get("path") or ""),
+                roots=roots,
+                kind="file",
+                code="fresh_scene_semantic_teacher_handoff_transitive_input_not_host_resident",
+            )
+            paths.append(resident)
+            if key == "runtime_result":
+                runtime_result_path = resident
+        if runtime_result_path is None:  # pragma: no cover - guarded above
+            raise FreshSceneSupervisorBindingError(
+                "fresh_scene_semantic_teacher_handoff_result_invalid"
+            )
+        for record in imported.get("teacher_frames") or []:
+            if not isinstance(record, Mapping):
+                raise FreshSceneSupervisorBindingError(
+                    "fresh_scene_semantic_teacher_handoff_result_invalid"
+                )
+            paths.append(
+                _resident_path(
+                    runtime_result_path.parent / str(record.get("relative_path") or ""),
+                    roots=roots,
+                    kind="file",
+                    code=(
+                        "fresh_scene_semantic_teacher_handoff_transitive_input_"
+                        "not_host_resident"
+                    ),
+                )
+            )
+        candidate_path = named_paths["source_candidate_inputs_receipt_path"]
+        candidate = _read_object(
+            candidate_path,
+            code="fresh_scene_semantic_teacher_handoff_candidate_invalid",
+        )
+        for record in (
+            candidate.get("shared_retained_scene"),
+            candidate.get("shared_colmap_initialization_points3D"),
+        ):
+            if not isinstance(record, Mapping):
+                raise FreshSceneSupervisorBindingError(
+                    "fresh_scene_semantic_teacher_handoff_candidate_invalid"
+                )
+            paths.append(
+                _resident_path(
+                    str(record.get("path") or ""),
+                    roots=roots,
+                    kind="file",
+                    code=(
+                        "fresh_scene_semantic_teacher_handoff_transitive_input_"
+                        "not_host_resident"
+                    ),
+                )
+            )
+        for task in candidate.get("tasks") or []:
+            if not isinstance(task, Mapping):
+                raise FreshSceneSupervisorBindingError(
+                    "fresh_scene_semantic_teacher_handoff_candidate_invalid"
+                )
+            scene_root = _resident_path(
+                str(task.get("scene_directory") or ""),
+                roots=roots,
+                kind="directory",
+                code=(
+                    "fresh_scene_semantic_teacher_handoff_transitive_input_"
+                    "not_host_resident"
+                ),
+            )
+            transforms = task.get("transforms")
+            if not isinstance(transforms, Mapping):
+                raise FreshSceneSupervisorBindingError(
+                    "fresh_scene_semantic_teacher_handoff_candidate_invalid"
+                )
+            paths.append(
+                _resident_path(
+                    str(transforms.get("path") or ""),
+                    roots=roots,
+                    kind="file",
+                    code=(
+                        "fresh_scene_semantic_teacher_handoff_transitive_input_"
+                        "not_host_resident"
+                    ),
+                )
+            )
+            for frame in task.get("frames") or []:
+                if not isinstance(frame, Mapping):
+                    raise FreshSceneSupervisorBindingError(
+                        "fresh_scene_semantic_teacher_handoff_candidate_invalid"
+                    )
+                for key in ("rendered_rgb", "exact_repair_mask"):
+                    record = frame.get(key)
+                    if not isinstance(record, Mapping):
+                        raise FreshSceneSupervisorBindingError(
+                            "fresh_scene_semantic_teacher_handoff_candidate_invalid"
+                        )
+                    paths.append(
+                        _resident_path(
+                            scene_root / str(record.get("relative_path") or ""),
+                            roots=roots,
+                            kind="file",
+                            code=(
+                                "fresh_scene_semantic_teacher_handoff_transitive_input_"
+                                "not_host_resident"
+                            ),
+                        )
+                    )
     else:  # pragma: no cover - every accepted schema is handled above
         raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
     unique = sorted(set(paths))
@@ -494,6 +627,15 @@ def _validate_request(
                 selected is not None
                 and (not isinstance(selected, list) or not 1 <= len(selected) <= 5)
             )
+        ):
+            raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
+        _request_input_paths(request, schema=schema, roots=roots)
+    elif schema == SEMANTIC_TEACHER_HANDOFF_REQUEST_SCHEMA:
+        radius = request.get("transition_radius_pixels")
+        if (
+            not isinstance(radius, int)
+            or isinstance(radius, bool)
+            or radius < 0
         ):
             raise FreshSceneSupervisorBindingError("fresh_scene_tool_request_invalid")
         _request_input_paths(request, schema=schema, roots=roots)
@@ -798,6 +940,45 @@ def materialize_fresh_scene_semantic_teacher_edit_request(
     )
 
 
+def materialize_fresh_scene_semantic_teacher_handoff_request(
+    *,
+    result_import_path: str | Path,
+    semantic_teacher_packet_path: str | Path,
+    source_candidate_inputs_receipt_path: str | Path,
+    transition_radius_pixels: int,
+    output_path: str | Path,
+    roots: Sequence[Path] | None = None,
+) -> dict[str, Any]:
+    """Seal the exact retained result and immutable ArtiFixer transition support."""
+
+    resident_roots = tuple(
+        configured_launch_input_roots() if roots is None else roots
+    )
+    return _write_tool_request(
+        value={
+            "result_import_path": _request_path(
+                result_import_path,
+                roots=resident_roots,
+                field="result_import_path",
+            ),
+            "semantic_teacher_packet_path": _request_path(
+                semantic_teacher_packet_path,
+                roots=resident_roots,
+                field="semantic_teacher_packet_path",
+            ),
+            "source_candidate_inputs_receipt_path": _request_path(
+                source_candidate_inputs_receipt_path,
+                roots=resident_roots,
+                field="source_candidate_inputs_receipt_path",
+            ),
+            "transition_radius_pixels": transition_radius_pixels,
+        },
+        schema=SEMANTIC_TEACHER_HANDOFF_REQUEST_SCHEMA,
+        output_path=output_path,
+        roots=resident_roots,
+    )
+
+
 def materialize_fresh_scene_supervisor_bindings(
     *,
     preparation_status_path: str | Path,
@@ -808,6 +989,7 @@ def materialize_fresh_scene_supervisor_bindings(
     segment_cutout_request_path: str | Path | None = None,
     artifixer_candidate_request_path: str | Path | None = None,
     semantic_teacher_edit_request_path: str | Path | None = None,
+    semantic_teacher_handoff_request_path: str | Path | None = None,
     roots: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     """Seal the exact non-spend tool inputs available on this host."""
@@ -863,6 +1045,12 @@ def materialize_fresh_scene_supervisor_bindings(
             "materialize_fresh_scene_semantic_teacher_edit_packet",
             SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA,
             semantic_teacher_edit_request_path,
+        ),
+        (
+            "fresh_scene_semantic_teacher_handoff_request",
+            "materialize_fresh_scene_semantic_teacher_artifixer_handoff",
+            SEMANTIC_TEACHER_HANDOFF_REQUEST_SCHEMA,
+            semantic_teacher_handoff_request_path,
         ),
     ):
         if raw_path is None:
@@ -970,6 +1158,9 @@ def compile_fresh_scene_supervisor_bindings(
         "fresh_scene_semantic_teacher_edit_request": (
             SEMANTIC_TEACHER_EDIT_REQUEST_SCHEMA
         ),
+        "fresh_scene_semantic_teacher_handoff_request": (
+            SEMANTIC_TEACHER_HANDOFF_REQUEST_SCHEMA
+        ),
     }
     records = manifest.get("tool_requests")
     if not isinstance(records, Mapping) or set(records) - set(schema_by_field):
@@ -984,6 +1175,9 @@ def compile_fresh_scene_supervisor_bindings(
         ),
         "fresh_scene_semantic_teacher_edit_request": (
             "materialize_fresh_scene_semantic_teacher_edit_packet"
+        ),
+        "fresh_scene_semantic_teacher_handoff_request": (
+            "materialize_fresh_scene_semantic_teacher_artifixer_handoff"
         ),
     }
     expected_tools = {"inspect_fresh_scene_preparation"}
@@ -1077,6 +1271,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     teacher.add_argument("--output-format", default="png")
     teacher.add_argument("--retry-count", type=int, default=0)
     teacher.add_argument("--output", required=True)
+    handoff = commands.add_parser("request-semantic-teacher-handoff")
+    handoff.add_argument("--result-import", required=True)
+    handoff.add_argument("--semantic-teacher-packet", required=True)
+    handoff.add_argument("--source-candidate-inputs-receipt", required=True)
+    handoff.add_argument("--transition-radius-pixels", type=int, required=True)
+    handoff.add_argument("--output", required=True)
     build = commands.add_parser("build")
     build.add_argument("--preparation-status", required=True)
     build.add_argument("--sam31-task-input-request")
@@ -1085,6 +1285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build.add_argument("--segment-cutout-request")
     build.add_argument("--artifixer-candidate-request")
     build.add_argument("--semantic-teacher-edit-request")
+    build.add_argument("--semantic-teacher-handoff-request")
     build.add_argument("--output", required=True)
     run = commands.add_parser("run")
     run.add_argument("--binding-manifest", required=True)
@@ -1146,6 +1347,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             retry_count=args.retry_count,
             output_path=args.output,
         )
+    elif args.command == "request-semantic-teacher-handoff":
+        result = materialize_fresh_scene_semantic_teacher_handoff_request(
+            result_import_path=args.result_import,
+            semantic_teacher_packet_path=args.semantic_teacher_packet,
+            source_candidate_inputs_receipt_path=(
+                args.source_candidate_inputs_receipt
+            ),
+            transition_radius_pixels=args.transition_radius_pixels,
+            output_path=args.output,
+        )
     elif args.command == "build":
         result = materialize_fresh_scene_supervisor_bindings(
             preparation_status_path=args.preparation_status,
@@ -1155,6 +1366,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             segment_cutout_request_path=args.segment_cutout_request,
             artifixer_candidate_request_path=args.artifixer_candidate_request,
             semantic_teacher_edit_request_path=args.semantic_teacher_edit_request,
+            semantic_teacher_handoff_request_path=(
+                args.semantic_teacher_handoff_request
+            ),
             output_path=args.output,
         )
     else:
@@ -1184,6 +1398,7 @@ __all__ = [
     "materialize_fresh_scene_removal_freeze_request",
     "materialize_fresh_scene_segment_cutout_request",
     "materialize_fresh_scene_semantic_teacher_edit_request",
+    "materialize_fresh_scene_semantic_teacher_handoff_request",
     "materialize_fresh_scene_supervisor_bindings",
 ]
 

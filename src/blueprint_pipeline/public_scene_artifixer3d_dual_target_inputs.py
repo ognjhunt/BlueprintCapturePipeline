@@ -33,12 +33,21 @@ from .public_scene_artifixer3d_candidate_inputs import (
     CAMERA_CONVENTION_FLIP,
     SCHEMA_VERSION as SOURCE_CANDIDATE_SCHEMA,
 )
+from .fresh_scene_semantic_teacher_image_edit import (
+    PACKET_SCHEMA_VERSION as SEMANTIC_TEACHER_PACKET_SCHEMA,
+)
+from .semantic_teacher_image_edit_paid_lane import RESULT_IMPORT_SCHEMA_VERSION
+from .semantic_teacher_image_edit_worker import (
+    RUNTIME_REQUEST_SCHEMA_VERSION,
+    RUNTIME_RESULT_SCHEMA_VERSION,
+)
 
 
 SCHEMA_VERSION = "public_scene_artifixer3d_dual_target_inputs.v1"
 SEMANTIC_TEACHER_SCHEMA = "public_scene_whole_frame_semantic_teacher_candidates.v1"
 CAMERA_INDEX_SCHEMA = "public_scene_artifixer3d_dual_target_camera_index.v1"
 TRANSITION_MORPHOLOGY = "euclidean_disk_inclusive_radius_constant_zero_border"
+HANDOFF_SCHEMA_VERSION = "semantic_teacher_artifixer_handoff.v1"
 
 
 class DualTargetInputError(ValueError):
@@ -480,6 +489,357 @@ def materialize_whole_frame_semantic_teacher_receipt(
     return receipt
 
 
+def _ordered_task_camera_rows(
+    value: Mapping[str, Any], *, code: str
+) -> list[tuple[str, list[str]]]:
+    tasks = value.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise DualTargetInputError([code])
+    rows: list[tuple[str, list[str]]] = []
+    task_ids: set[str] = set()
+    for task in tasks:
+        frames = task.get("frames") if isinstance(task, Mapping) else None
+        task_id = str(task.get("task_id") or "") if isinstance(task, Mapping) else ""
+        if (
+            not task_id
+            or task_id in task_ids
+            or not isinstance(frames, list)
+            or not frames
+            or task.get("camera_count") != len(frames)
+        ):
+            raise DualTargetInputError([code])
+        task_ids.add(task_id)
+        camera_ids: list[str] = []
+        for expected_index, frame in enumerate(frames):
+            if not isinstance(frame, Mapping):
+                raise DualTargetInputError([code])
+            camera_id = str(frame.get("camera_id") or "")
+            if (
+                frame.get("frame_index") != expected_index
+                or not camera_id
+                or camera_id in camera_ids
+            ):
+                raise DualTargetInputError([code])
+            camera_ids.append(camera_id)
+        rows.append((task_id, camera_ids))
+    return rows
+
+
+def _semantic_result_handoff_inputs(
+    *,
+    result_import_path: str | Path,
+    semantic_teacher_packet_path: str | Path,
+    source_candidate_inputs_receipt_path: str | Path,
+    transition_radius_pixels: int,
+) -> dict[str, Any]:
+    """Reopen every semantic result byte before any handoff output is written."""
+
+    if (
+        not isinstance(transition_radius_pixels, int)
+        or isinstance(transition_radius_pixels, bool)
+        or transition_radius_pixels < 0
+    ):
+        raise DualTargetInputError(["semantic_teacher_handoff_transition_radius_invalid"])
+    import_path = _file(result_import_path, code="semantic_teacher_handoff_result_import_missing")
+    packet_path = _file(
+        semantic_teacher_packet_path, code="semantic_teacher_handoff_packet_missing"
+    )
+    source_path = _file(
+        source_candidate_inputs_receipt_path,
+        code="semantic_teacher_handoff_source_candidate_missing",
+    )
+    imported = _read(import_path, code="semantic_teacher_handoff_result_import_invalid")
+    packet = _read(packet_path, code="semantic_teacher_handoff_packet_invalid")
+    source = _validated_source(source_path)
+    if (
+        imported.get("schema_version") != RESULT_IMPORT_SCHEMA_VERSION
+        or imported.get("status") != "retained_unreviewed_semantic_teacher_candidates"
+        or imported.get("result_import_digest")
+        != canonical_digest(imported, digest_field="result_import_digest")
+        or imported.get("all_generated_teacher_pngs_retained") is not True
+        or imported.get("continuing_spend_from_this_run") is not False
+        or imported.get("visual_reviewed") is not False
+        or imported.get("appearance_qualified") is not False
+    ):
+        raise DualTargetInputError(["semantic_teacher_handoff_result_import_invalid"])
+    if (
+        packet.get("schema_version") != SEMANTIC_TEACHER_PACKET_SCHEMA
+        or packet.get("status")
+        != "semantic_teacher_image_edit_packet_prepared_no_upload_no_execution"
+        or packet.get("packet_digest") != canonical_digest(packet, digest_field="packet_digest")
+    ):
+        raise DualTargetInputError(["semantic_teacher_handoff_packet_invalid"])
+    source_record = packet.get("source_candidate_inputs_receipt")
+    if not isinstance(source_record, Mapping):
+        raise DualTargetInputError(["semantic_teacher_handoff_source_binding_invalid"])
+    bound_source = _bound_record(
+        source_record, code="semantic_teacher_handoff_source_binding_invalid"
+    )
+    if (
+        bound_source != source_path
+        or source_record.get("receipt_digest") != source.get("receipt_digest")
+        or source_record.get("sha256") != _sha256(source_path)
+        or source_record.get("size_bytes") != source_path.stat().st_size
+    ):
+        raise DualTargetInputError(["semantic_teacher_handoff_source_binding_invalid"])
+
+    runtime_request_path = _bound_record(
+        imported.get("runtime_request"),
+        code="semantic_teacher_handoff_runtime_request_invalid",
+    )
+    runtime_request = _read(
+        runtime_request_path, code="semantic_teacher_handoff_runtime_request_invalid"
+    )
+    runtime_result_path = _bound_record(
+        imported.get("runtime_result"),
+        code="semantic_teacher_handoff_runtime_result_invalid",
+    )
+    runtime_result = _read(
+        runtime_result_path, code="semantic_teacher_handoff_runtime_result_invalid"
+    )
+    backend = runtime_request.get("backend")
+    execution = backend.get("execution") if isinstance(backend, Mapping) else None
+    registry_entry = backend.get("registry_entry") if isinstance(backend, Mapping) else None
+    if (
+        runtime_request.get("schema_version") != RUNTIME_REQUEST_SCHEMA_VERSION
+        or runtime_request.get("request_digest")
+        != canonical_digest(runtime_request, digest_field="request_digest")
+        or runtime_request.get("source_packet_digest") != packet.get("packet_digest")
+        or not isinstance(backend, Mapping)
+        or not isinstance(execution, Mapping)
+        or not isinstance(registry_entry, Mapping)
+        or backend.get("backend_entry_digest") != canonical_digest(registry_entry)
+        or not str(runtime_request.get("prompt_policy") or "").strip()
+    ):
+        raise DualTargetInputError(["semantic_teacher_handoff_runtime_request_invalid"])
+    if (
+        runtime_result.get("schema_version") != RUNTIME_RESULT_SCHEMA_VERSION
+        or runtime_result.get("status") != "completed_unreviewed_semantic_teacher_candidates"
+        or runtime_result.get("result_digest")
+        != canonical_digest(runtime_result, digest_field="result_digest")
+        or runtime_result.get("source_runtime_request_digest")
+        != runtime_request.get("request_digest")
+        or runtime_result.get("backend_entry_digest") != backend.get("backend_entry_digest")
+    ):
+        raise DualTargetInputError(["semantic_teacher_handoff_runtime_result_invalid"])
+
+    order = _ordered_task_camera_rows(
+        runtime_request, code="semantic_teacher_handoff_task_camera_order_invalid"
+    )
+    if (
+        _ordered_task_camera_rows(packet, code="semantic_teacher_handoff_task_camera_order_invalid")
+        != order
+        or _ordered_task_camera_rows(
+            runtime_result, code="semantic_teacher_handoff_task_camera_order_invalid"
+        )
+        != order
+        or _ordered_task_camera_rows(
+            source, code="semantic_teacher_handoff_task_camera_order_invalid"
+        )
+        != order
+        or packet.get("task_count") != len(order)
+        or imported.get("task_count") != len(order)
+        or runtime_result.get("task_count") != len(order)
+        or packet.get("request_count") != sum(len(cameras) for _, cameras in order)
+        or imported.get("camera_count") != packet.get("request_count")
+        or runtime_result.get("request_count") != packet.get("request_count")
+    ):
+        raise DualTargetInputError(["semantic_teacher_handoff_task_camera_order_invalid"])
+
+    runtime_root = runtime_result_path.parent
+    retained_records = imported.get("teacher_frames")
+    if not isinstance(retained_records, list):
+        raise DualTargetInputError(["semantic_teacher_handoff_frame_inventory_invalid"])
+    retained = {
+        str(record.get("relative_path") or ""): record
+        for record in retained_records
+        if isinstance(record, Mapping)
+    }
+    expected: dict[str, Mapping[str, Any]] = {}
+    result_tasks = runtime_result.get("tasks") or []
+    source_tasks = {str(task["task_id"]): task for task in source["tasks"]}
+    _bound_record(
+        source.get("shared_retained_scene"),
+        code="semantic_teacher_handoff_source_candidate_invalid",
+    )
+    _bound_record(
+        source.get("shared_colmap_initialization_points3D"),
+        code="semantic_teacher_handoff_source_candidate_invalid",
+    )
+    for task_row in result_tasks:
+        task_id = str(task_row["task_id"])
+        source_frames = _source_task_frames(source_tasks[task_id])
+        _validated_transforms(source_tasks[task_id], source_frames)
+        for frame, source_frame in zip(task_row["frames"], source_frames):
+            record = frame.get("semantic_teacher_frame")
+            if not isinstance(record, Mapping):
+                raise DualTargetInputError(["semantic_teacher_handoff_frame_inventory_invalid"])
+            relative = str(record.get("relative_path") or "")
+            if relative != f"tasks/{task_id}/{frame['frame_index']:05d}.png":
+                raise DualTargetInputError(["semantic_teacher_handoff_frame_inventory_invalid"])
+            teacher_path = _bound_record(
+                record,
+                root=runtime_root,
+                code="semantic_teacher_handoff_frame_inventory_invalid",
+            )
+            teacher = _image(
+                teacher_path,
+                mode="RGB",
+                code="semantic_teacher_handoff_frame_inventory_invalid",
+            )
+            if teacher.shape != source_frame["rgb"].shape:
+                raise DualTargetInputError(["semantic_teacher_handoff_frame_inventory_invalid"])
+            expected[relative] = record
+    if (
+        len(retained) != len(retained_records)
+        or set(retained) != set(expected)
+        or any(
+            retained[path].get("size_bytes") != expected[path].get("size_bytes")
+            or retained[path].get("sha256") != expected[path].get("sha256")
+            or _bound_record(
+                retained[path],
+                root=runtime_root,
+                code="semantic_teacher_handoff_frame_inventory_invalid",
+            )
+            != runtime_root / path
+            for path in expected
+        )
+    ):
+        raise DualTargetInputError(["semantic_teacher_handoff_frame_inventory_invalid"])
+
+    editor_identity = {
+        "backend_id": str(registry_entry.get("backend_id") or ""),
+        "backend_entry_digest": str(backend.get("backend_entry_digest") or ""),
+        "adapter_id": str(execution.get("adapter_id") or ""),
+        "model_snapshot": str(execution.get("model_snapshot") or ""),
+        "source_runtime_request_digest": str(runtime_request["request_digest"]),
+    }
+    if any(not value for value in editor_identity.values()):
+        raise DualTargetInputError(["semantic_teacher_handoff_editor_identity_invalid"])
+    return {
+        "import_path": import_path,
+        "imported": imported,
+        "packet_path": packet_path,
+        "packet": packet,
+        "source_path": source_path,
+        "source": source,
+        "runtime_request": runtime_request,
+        "runtime_result_path": runtime_result_path,
+        "runtime_result": runtime_result,
+        "runtime_root": runtime_root,
+        "order": order,
+        "editor_identity": editor_identity,
+    }
+
+
+def materialize_semantic_teacher_artifixer_handoff(
+    *,
+    result_import_path: str | Path,
+    semantic_teacher_packet_path: str | Path,
+    source_candidate_inputs_receipt_path: str | Path,
+    transition_radius_pixels: int,
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Convert one sealed paid result into exact no-spend ArtiFixer inputs."""
+
+    validated = _semantic_result_handoff_inputs(
+        result_import_path=result_import_path,
+        semantic_teacher_packet_path=semantic_teacher_packet_path,
+        source_candidate_inputs_receipt_path=source_candidate_inputs_receipt_path,
+        transition_radius_pixels=transition_radius_pixels,
+    )
+    unresolved = Path(output_root).expanduser()
+    if unresolved.is_symlink():
+        raise DualTargetInputError(["semantic_teacher_handoff_output_not_empty"])
+    output = unresolved.resolve()
+    if output.exists() and any(output.iterdir()):
+        raise DualTargetInputError(["semantic_teacher_handoff_output_not_empty"])
+    output.mkdir(parents=True, exist_ok=True)
+    receipt_root = output / "semantic_teacher_receipts"
+    receipt_root.mkdir()
+    semantic_paths: list[Path] = []
+    semantic_rows: list[dict[str, Any]] = []
+    for task_id, _camera_ids in validated["order"]:
+        path = receipt_root / f"{task_id}.json"
+        receipt = materialize_whole_frame_semantic_teacher_receipt(
+            source_candidate_inputs_receipt_path=validated["source_path"],
+            task_id=task_id,
+            semantic_teacher_frames_root=validated["runtime_root"] / "tasks" / task_id,
+            editor_identity=validated["editor_identity"],
+            prompt_policy=str(validated["runtime_request"]["prompt_policy"]),
+            output_path=path,
+        )
+        semantic_paths.append(path)
+        semantic_rows.append(
+            {
+                "task_id": task_id,
+                **_relative_record(path, root=output),
+                "receipt_digest": receipt["receipt_digest"],
+            }
+        )
+    dual_root = output / "dual_target_inputs"
+    dual = materialize_dual_target_artifixer3d_inputs(
+        source_candidate_inputs_receipt_path=validated["source_path"],
+        semantic_teacher_receipt_paths=semantic_paths,
+        output_root=dual_root,
+        transition_radius_pixels=transition_radius_pixels,
+        selected_task_ids=[task_id for task_id, _ in validated["order"]],
+    )
+    receipt: dict[str, Any] = {
+        "schema_version": HANDOFF_SCHEMA_VERSION,
+        "status": "semantic_teacher_artifixer_handoff_materialized_no_execution",
+        "result_import": {
+            **_absolute_record(validated["import_path"]),
+            "result_import_digest": validated["imported"]["result_import_digest"],
+        },
+        "semantic_teacher_packet": {
+            **_absolute_record(validated["packet_path"]),
+            "packet_digest": validated["packet"]["packet_digest"],
+        },
+        "source_candidate_inputs_receipt": {
+            **_absolute_record(validated["source_path"]),
+            "receipt_digest": validated["source"]["receipt_digest"],
+        },
+        "runtime_request_digest": validated["runtime_request"]["request_digest"],
+        "runtime_result_digest": validated["runtime_result"]["result_digest"],
+        "editor_identity": validated["editor_identity"],
+        "prompt_policy": validated["runtime_request"]["prompt_policy"],
+        "transition_radius_pixels": transition_radius_pixels,
+        "task_count": len(semantic_rows),
+        "camera_count": sum(len(cameras) for _, cameras in validated["order"]),
+        "semantic_teacher_receipts": semantic_rows,
+        "dual_target_inputs": {
+            **_relative_record(dual_root / f"{SCHEMA_VERSION}.json", root=output),
+            "receipt_digest": dual["receipt_digest"],
+        },
+        "paid_execution_started": False,
+        "provider_mutations_performed": 0,
+        "visual_reviewed": False,
+        "appearance_qualified": False,
+        "physical_evidence_claimed": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _write_json(output / f"{HANDOFF_SCHEMA_VERSION}.json", receipt)
+    return receipt
+
+
+def _materialize_semantic_teacher_artifixer_handoff_from_tool_request(
+    *, request: Mapping[str, Any], output_root: str | Path
+) -> dict[str, Any]:
+    """Execute one already-sealed supervisor request without model-authored paths."""
+
+    return materialize_semantic_teacher_artifixer_handoff(
+        result_import_path=str(request.get("result_import_path") or ""),
+        semantic_teacher_packet_path=str(request.get("semantic_teacher_packet_path") or ""),
+        source_candidate_inputs_receipt_path=str(
+            request.get("source_candidate_inputs_receipt_path") or ""
+        ),
+        transition_radius_pixels=request.get("transition_radius_pixels"),
+        output_root=output_root,
+    )
+
+
 def materialize_dual_target_artifixer3d_inputs(
     *,
     source_candidate_inputs_receipt_path: str | Path,
@@ -896,9 +1256,11 @@ def materialize_dual_target_artifixer3d_inputs(
 __all__ = [
     "CAMERA_INDEX_SCHEMA",
     "DualTargetInputError",
+    "HANDOFF_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "SEMANTIC_TEACHER_SCHEMA",
     "TRANSITION_MORPHOLOGY",
     "materialize_dual_target_artifixer3d_inputs",
+    "materialize_semantic_teacher_artifixer_handoff",
     "materialize_whole_frame_semantic_teacher_receipt",
 ]
