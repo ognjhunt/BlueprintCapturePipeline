@@ -28,7 +28,9 @@ Reads and writes retained bytes only; performs no provider mutation.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -212,11 +214,85 @@ def record_launch(
     try:
         with path.open("x", encoding="utf-8") as handle:
             handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        directory_descriptor = os.open(root, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     except FileExistsError as exc:
         raise StandingAuthorizationError(
             f"standing_authorization_launch_already_recorded:{launch_id}"
         ) from exc
     return path
+
+
+def consume_standing_authorization_once(
+    *,
+    profile: Mapping[str, Any],
+    directory: str | Path,
+    launch_id: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Atomically validate and consume one profile-bound launch allowance.
+
+    Validation and recording must share one lock.  Otherwise two distinct
+    website launch ids can both observe ``launches_consumed == 0`` under a
+    one-launch authority and then create two different consumption records.
+    The per-profile lock serializes that check-and-create boundary across
+    dispatcher processes; the durable exclusive record remains the replay
+    guard for one exact launch id.
+    """
+
+    profile_id = str(profile.get("profile_id") or "")
+    if not profile_id or not launch_id:
+        raise StandingAuthorizationError("standing_authorization_consumption_identity_invalid")
+    consumed_root = (
+        Path(directory).expanduser() / _CONSUMED_DIRECTORY / profile_id
+    )
+    consumed_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = consumed_root / ".consume.lock"
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        with os.fdopen(descriptor, "r+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            launches, spend = consumption_totals(
+                directory=directory, profile_id=profile_id
+            )
+            decision = standing_authorization_admits(
+                profile=profile,
+                directory=directory,
+                launches_consumed=launches,
+                spend_consumed_usd=spend,
+                now=now,
+            )
+            if not decision.get("admitted"):
+                return {**decision, "consumed": False}
+            max_spend = _positive_number(
+                (profile.get("allocator") or {}).get("max_spend_usd")
+            )
+            if max_spend is None:
+                raise StandingAuthorizationError(
+                    "standing_authorization_profile_spend_invalid"
+                )
+            record = record_launch(
+                directory=directory,
+                profile_id=profile_id,
+                launch_id=launch_id,
+                max_spend_usd=max_spend,
+            )
+            return {
+                **decision,
+                "consumed": True,
+                "launches_consumed": launches + 1,
+                "spend_consumed_usd": spend + max_spend,
+                "consumption_record": record.name,
+            }
+    except OSError as exc:
+        raise StandingAuthorizationError(
+            "standing_authorization_consumption_lock_failed"
+        ) from exc
 
 
 def standing_authorization_admits(
@@ -271,6 +347,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "STANDING_AUTHORIZATION_DIR_ENV",
     "StandingAuthorizationError",
+    "consume_standing_authorization_once",
     "consumption_totals",
     "load_standing_authorization",
     "record_launch",

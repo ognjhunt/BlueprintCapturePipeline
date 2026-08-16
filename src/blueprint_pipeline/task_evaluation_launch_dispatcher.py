@@ -24,8 +24,8 @@ from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .task_evaluation_standing_launch_authorization import (
     STANDING_AUTHORIZATION_DIR_ENV,
     StandingAuthorizationError,
+    consume_standing_authorization_once,
     consumption_totals,
-    record_launch,
     standing_authorization_admits,
 )
 
@@ -450,6 +450,19 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
             blockers.append(f"launch_profile_control_missing:{field}")
     if controls.get("retry_cap") != 0:
         blockers.append("launch_profile_control_missing:retry_cap")
+    standing_requirement = profile.get("standing_launch_authorization")
+    if standing_requirement is not None:
+        requirement = _mapping(standing_requirement)
+        expected_requirement = {
+            "schema_version": (
+                "task_evaluation_standing_launch_authorization_requirement.v1"
+            ),
+            "required_for_live_execution": True,
+            "maximum_launches": 1,
+            "consumption_must_precede_allocator": True,
+        }
+        if requirement != expected_requirement:
+            blockers.append("launch_profile_standing_authorization_requirement_invalid")
     if profile.get("claim_ceiling") not in {
         "development_only",
         "partner_run_pending_physical_join",
@@ -862,6 +875,15 @@ def dispatch_launch_request(
     # so a launch carrying a matching id is admitted exactly as before and a
     # launch carrying neither is still refused.
     standing = _standing_authorization_decision(profile, live_requested, state_root)
+    standing_requirement = _mapping(profile.get("standing_launch_authorization"))
+    one_use_standing_required = bool(standing_requirement)
+    if live_requested and one_use_standing_required:
+        if not standing.get("admitted"):
+            blockers.append("one_use_standing_authorization_required")
+        elif standing.get("max_launches") != standing_requirement.get(
+            "maximum_launches"
+        ):
+            blockers.append("one_use_standing_authorization_launch_limit_mismatch")
     if live_requested and not standing.get("admitted"):
         if not execution_scope_launch_id:
             blockers.append("execute_launch_id_required")
@@ -983,14 +1005,18 @@ def dispatch_launch_request(
         # `max_total_spend_usd` were declared and never consumed, which made a
         # bounded authorization unbounded in practice.
         try:
-            record_launch(
+            consumed = consume_standing_authorization_once(
+                profile=profile,
                 directory=standing_authorization_directory(state_root),
-                profile_id=str(profile.get("profile_id") or ""),
                 launch_id=str(request.get("launch_id") or ""),
-                max_spend_usd=float(
-                    _mapping(profile.get("allocator")).get("max_spend_usd") or 0.0
-                ),
             )
+            if not consumed.get("consumed"):
+                blockers.append("standing_authorization_consumption_not_recorded")
+                blockers.extend(consumed.get("blockers") or [])
+            elif one_use_standing_required and consumed.get(
+                "max_launches"
+            ) != standing_requirement.get("maximum_launches"):
+                blockers.append("one_use_standing_authorization_launch_limit_mismatch")
         except (OSError, StandingAuthorizationError, TypeError, ValueError):
             blockers.append("standing_authorization_consumption_not_recorded")
 
