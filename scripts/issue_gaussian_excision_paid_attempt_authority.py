@@ -119,7 +119,13 @@ def issue_gaussian_excision_paid_attempt_authority(
         "authority_reference": authority_reference.strip(),
         "authorized_by": authorized_by.strip(),
         "authorized_on": authorized_on or datetime.now(timezone.utc).date().isoformat(),
-        "purpose": "released_code_gaussian_ownership_audit",
+        # Bind the grant to the exact purpose declared by the prepared bundle.
+        # Current removal freezes use the repair-supported segment-contribution
+        # sweep, while legacy ownership-audit bundles omit this field.
+        "purpose": str(
+            bundle.get("execution_purpose")
+            or "released_code_gaussian_ownership_audit"
+        ),
         "provider": "vast",
         "paid_compute_authorized": True,
         "parent_execution_authority_digest": bundle.get("execution_authority_digest"),
