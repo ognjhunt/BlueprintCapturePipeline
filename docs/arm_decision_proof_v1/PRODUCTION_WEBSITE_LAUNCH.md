@@ -218,20 +218,18 @@ Pipeline host:
 - set `BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH` to the publisher's
   generated catalog path;
 - set `BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER=true` to accept and
-  dispatch signed dry routes. Keep `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE`
-  unset or `false` in the canonical environment file for dry proof. A systemd
-  `Environment=...EXECUTE=false` drop-in is not a valid spend stop because
-  `EnvironmentFile` values win. For an independently testable temporary stop
-  while that canonical file still permits execution, set
+  dispatch signed routes. For an independently testable temporary dry-only
+  stop, set
   `BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN=true` in a runtime dispatcher
   drop-in; the service must omit `--execute` and retain a dry receipt;
-- set `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true` only alongside
-  `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID=<exact immutable launch_id>`,
-  after selecting a profile whose `execution_admission.live_enabled` is true
-  and separately confirming current rights, execution, and spend authority.
-  The dispatcher refuses a global execute request and only claims the named
-  pending launch; it leaves every other pending launch untouched. Clear both
-  values as soon as that launch has retained its binding.
+- the production unit is execute-capable by default, but that flag is not
+  spend authority. A live request must still match either
+  `BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID=<exact immutable launch_id>` or
+  a digest-bound, expiring standing authorization with launch-count and spend
+  bounds. Without either, the dispatcher refuses the request before the
+  allocator. Use `BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN=true` for a
+  host-wide temporary spend stop. Clear an exact launch ID as soon as its
+  binding is retained; a standing authorization is consumed atomically.
 
 WebApp:
 

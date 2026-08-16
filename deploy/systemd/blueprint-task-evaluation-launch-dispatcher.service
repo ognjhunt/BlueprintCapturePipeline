@@ -51,6 +51,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipel
 # dispatcher could consult it, so every paid run still needed a hand-edited
 # env var and a unit restart. A bare --execute is still not a blanket
 # authority; the dispatcher refuses a launch carrying neither.
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID=
 # The hardened service cannot read a user home. Bind every allocator/runtime
 # credential to the canonical read-only secret directory. The allocator still

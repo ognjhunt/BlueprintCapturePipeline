@@ -63,6 +63,7 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "--execute-launch-id" in dispatcher
     assert "--public-catalog" in dispatcher
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID" in dispatcher
+    assert "Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true" in dispatcher
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in dispatcher
     assert "task-evaluation-launch-profile-catalog.json" in dispatcher
     # Execution is armed by the execute flag; the launch id narrows the window
@@ -187,7 +188,8 @@ def test_installer_and_environment_enable_durable_queue_and_independent_recovery
     assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python" in environment
     assert "# BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID=canonical-vast-adp" in environment
     assert "# BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER=true" in environment
-    assert "# BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true" in environment
+    assert "The production unit enables the execute-capable dispatcher" in environment
+    assert "# BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true" not in environment
     assert "# BLUEPRINT_TASK_EVALUATION_AGENT_SUPERVISOR_ENABLED=true" in environment
     for binding in (
         "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
