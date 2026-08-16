@@ -10,6 +10,7 @@ contains only the public descriptor needed to select that exact profile.
 from __future__ import annotations
 
 import argparse
+import grp
 import hashlib
 import json
 import os
@@ -28,6 +29,7 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
 )
 
 DEFAULT_SERVICE_ACCOUNT = "blueprint"
+DEFAULT_SERVICE_GROUP = "blueprint"
 RUNUSER_PATH = "/usr/sbin/runuser"
 SHA256SUM_PATH = "/usr/bin/sha256sum"
 
@@ -59,7 +61,11 @@ def _under_production_root(path: Path) -> bool:
     )
 
 
-def _service_identity(target_root: Path, service_account: str | None) -> tuple[str, int, int]:
+def _service_identity(
+    target_root: Path,
+    service_account: str | None,
+    service_group: str | None,
+) -> tuple[str, str, int, int]:
     """Resolve the consumer account without weakening production defaults.
 
     Library callers publish into temporary directories in tests and local
@@ -82,7 +88,96 @@ def _service_identity(target_root: Path, service_account: str | None) -> tuple[s
         raise TaskEvaluationLaunchError(
             f"launch_profile_service_account_missing:{account}"
         ) from exc
-    return account, entry.pw_uid, entry.pw_gid
+    group = service_group
+    if group is None:
+        group = (
+            DEFAULT_SERVICE_GROUP
+            if _under_production_root(target_root)
+            else grp.getgrgid(entry.pw_gid).gr_name
+        )
+    try:
+        group_entry = grp.getgrnam(group)
+    except KeyError as exc:
+        raise TaskEvaluationLaunchError(
+            f"launch_profile_service_group_missing:{group}"
+        ) from exc
+    if entry.pw_gid != group_entry.gr_gid and account not in group_entry.gr_mem:
+        raise TaskEvaluationLaunchError(
+            f"launch_profile_service_account_group_mismatch:{account}:{group}"
+        )
+    return account, group, entry.pw_uid, group_entry.gr_gid
+
+
+def _production_root_for(path: Path) -> Path | None:
+    resolved = path.resolve()
+    for value in PRODUCTION_LAUNCH_INPUT_ROOTS:
+        root = Path(value).resolve()
+        if resolved == root or root in resolved.parents:
+            return root
+    return None
+
+
+def _install_parent_traversal(path: Path, *, boundary: Path, gid: int, name: str) -> None:
+    """Grant group traversal on exact ancestors without touching sibling bytes."""
+
+    directories: list[Path] = []
+    current = path.parent
+    while current != boundary:
+        if boundary not in current.parents:
+            raise TaskEvaluationLaunchError(
+                f"launch_profile_immutable_input_outside_control_plane:{name}"
+            )
+        directories.append(current)
+        current = current.parent
+    for directory in reversed(directories):
+        try:
+            if directory.is_symlink() or not directory.is_dir():
+                raise OSError(f"unsafe input parent: {directory}")
+            mode = stat.S_IMODE(directory.stat().st_mode)
+            os.chown(directory, -1, gid)
+            directory.chmod(mode | stat.S_IXGRP)
+        except OSError as exc:
+            raise TaskEvaluationLaunchError(
+                f"launch_profile_immutable_input_parent_permission_install_failed:{name}"
+            ) from exc
+
+
+def _install_service_directory(path: Path, *, gid: int) -> None:
+    """Seal one named directory; never recursively re-own existing contents."""
+
+    try:
+        if path.is_symlink() or not path.is_dir():
+            raise OSError(f"unsafe service directory: {path}")
+        os.chown(path, -1, gid)
+        path.chmod(stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+    except OSError as exc:
+        raise TaskEvaluationLaunchError(
+            "launch_profile_directory_permission_install_failed"
+        ) from exc
+
+
+def _seal_published_profile(
+    path: Path, *, expected_digest: str, account: str, uid: int, gid: int
+) -> None:
+    """Make the final profile service-readable and prove its exact bytes reopen."""
+
+    try:
+        os.chown(path, -1, gid)
+        path.chmod(stat.S_IRUSR | stat.S_IRGRP)
+    except OSError as exc:
+        raise TaskEvaluationLaunchError(
+            f"launch_profile_permission_install_failed:{path.name}"
+        ) from exc
+    observed = _digest_as_account(path, account=account, uid=uid)
+    metadata = path.stat()
+    if (
+        observed != expected_digest
+        or metadata.st_gid != gid
+        or stat.S_IMODE(metadata.st_mode) != stat.S_IRUSR | stat.S_IRGRP
+    ):
+        raise TaskEvaluationLaunchError(
+            f"launch_profile_consumer_unreadable:{path.name}"
+        )
 
 
 def _digest_as_account(path: Path, *, account: str, uid: int) -> str:
@@ -106,11 +201,15 @@ def _digest_as_account(path: Path, *, account: str, uid: int) -> str:
 
 
 def _seal_immutable_input_permissions(
-    profile: Mapping[str, Any], *, target_root: Path, service_account: str | None
+    profile: Mapping[str, Any],
+    *,
+    target_root: Path,
+    account: str,
+    uid: int,
+    gid: int,
 ) -> None:
     """Make exact profile inputs read-only and prove the service can read them."""
 
-    account, uid, gid = _service_identity(target_root, service_account)
     inputs: dict[Path, tuple[str, str]] = {}
     for item in profile.get("immutable_inputs") or []:
         if not isinstance(item, Mapping):
@@ -127,6 +226,13 @@ def _seal_immutable_input_permissions(
         inputs[resolved] = (name, str(item.get("digest") or ""))
 
     for path, (name, expected_digest) in inputs.items():
+        boundary = _production_root_for(path)
+        if _under_production_root(target_root):
+            if boundary is None:
+                raise TaskEvaluationLaunchError(
+                    f"launch_profile_immutable_input_outside_control_plane:{name}"
+                )
+            _install_parent_traversal(path, boundary=boundary, gid=gid, name=name)
         try:
             os.chown(path, -1, gid)
             path.chmod(stat.S_IRUSR | stat.S_IRGRP)
@@ -152,10 +258,15 @@ def publish_profiles(
     profile_dir: str | Path,
     webapp_catalog_out: str | Path,
     service_account: str | None = None,
+    service_group: str | None = None,
 ) -> dict[str, Any]:
     published: list[dict[str, Any]] = []
     target_root = Path(profile_dir).expanduser().resolve()
     target_root.mkdir(parents=True, exist_ok=True)
+    account, _group, uid, gid = _service_identity(
+        target_root, service_account, service_group
+    )
+    _install_service_directory(target_root, gid=gid)
     for source_value in profile_paths:
         source_input = Path(source_value).expanduser()
         if source_input.is_symlink():
@@ -169,7 +280,11 @@ def publish_profiles(
         if blockers:
             raise TaskEvaluationLaunchError(",".join(sorted(set(blockers))))
         _seal_immutable_input_permissions(
-            profile, target_root=target_root, service_account=service_account
+            profile,
+            target_root=target_root,
+            account=account,
+            uid=uid,
+            gid=gid,
         )
         # Permission installation is metadata-only. Reopen every input after
         # it so a partial or racy handoff cannot publish changed bytes.
@@ -179,6 +294,13 @@ def publish_profiles(
         payload = (json.dumps(profile, sort_keys=True, separators=(",", ":")) + "\n").encode()
         target = target_root / f"{profile['profile_id']}.json"
         created = _write_exact(target, payload)
+        _seal_published_profile(
+            target,
+            expected_digest="sha256:" + hashlib.sha256(payload).hexdigest(),
+            account=account,
+            uid=uid,
+            gid=gid,
+        )
         published.append(
             {
                 "profile_id": profile["profile_id"],
@@ -226,6 +348,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "for production roots and the invoking account elsewhere."
         ),
     )
+    parser.add_argument(
+        "--service-group",
+        help=(
+            "Group that receives exact read/traverse access. Defaults to blueprint "
+            "for production roots and the account's primary group elsewhere."
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         result = publish_profiles(
@@ -233,6 +362,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             profile_dir=args.profile_dir,
             webapp_catalog_out=args.webapp_catalog_out,
             service_account=args.service_account,
+            service_group=args.service_group,
         )
     except (OSError, json.JSONDecodeError, TaskEvaluationLaunchError) as exc:
         print(

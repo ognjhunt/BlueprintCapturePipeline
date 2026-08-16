@@ -7,6 +7,10 @@ ordering and fail-closed contract is exercised without running a real command.
 from __future__ import annotations
 
 import json
+import os
+import pwd
+import grp
+import stat
 from pathlib import Path
 from typing import Sequence
 
@@ -176,6 +180,8 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         "runtime_image_identity",
         "profile_dir",
         "webapp_catalog_out",
+        "service_account",
+        "service_group",
         "pod_name",
         "revision",
         "authorization_reference",
@@ -237,6 +243,14 @@ def test_semantic_teacher_lane_passes_each_tool_the_argument_shape_it_wants() ->
     assert "." in lane_module and "/" not in lane_module
     assert not lane_module.startswith("blueprint_pipeline")
 
+    publication_argv = list(steps["profile_publication"].argv)
+    assert publication_argv[publication_argv.index("--service-account") + 1] == (
+        "{service_account}"
+    )
+    assert publication_argv[publication_argv.index("--service-group") + 1] == (
+        "{service_group}"
+    )
+
 
 def test_semantic_retry_inputs_reach_authority_and_profile() -> None:
     steps = {step.step_id: step for step in prep.LANES["semantic_teacher_image_edit"]}
@@ -280,3 +294,73 @@ def test_semantic_retry_inputs_reach_authority_and_profile() -> None:
 def test_optional_retry_inputs_emit_no_empty_arguments() -> None:
     assert prep._repeated_values([]) == ()
     assert prep._repeated_values(None) == ()
+
+
+def test_root_style_set_root_is_handed_to_service_group_without_touching_token(
+    tmp_path: Path,
+) -> None:
+    """Exact production regression: root's set root blocked later traversal.
+
+    Only the named preparation root is handed off.  A credential below it must
+    remain owner-private, and an unrelated sibling must not be re-permissioned.
+    """
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    group = grp.getgrgid(pwd.getpwnam(account).pw_gid).gr_name
+    set_root = tmp_path / "task-evaluation-inputs" / "semantic-r6"
+    set_root.mkdir(parents=True)
+    set_root.chmod(0o700)
+    token = set_root / "openai_api_key"
+    token.write_text("secret", encoding="utf-8")
+    token.chmod(0o600)
+    sibling = set_root.parent / "unrelated-retained-run"
+    sibling.mkdir()
+    sibling.chmod(0o700)
+
+    observed = prep._prepare_set_root_for_service(
+        set_root,
+        service_account=account,
+        service_group=group,
+    )
+
+    assert observed == set_root.resolve()
+    assert stat.S_IMODE(set_root.stat().st_mode) == 0o750
+    assert set_root.stat().st_gid == grp.getgrnam(group).gr_gid
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600
+    assert token.read_text(encoding="utf-8") == "secret"
+    assert stat.S_IMODE(sibling.stat().st_mode) == 0o700
+
+
+def test_set_root_symlink_is_refused_before_any_lane_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    group = grp.getgrgid(pwd.getpwnam(account).pw_gid).gr_name
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    lane = (
+        prep.LaneStep(
+            step_id="must-not-run",
+            argv=("command",),
+            produces=str(real_root / "receipt.json"),
+        ),
+    )
+    monkeypatch.setitem(prep.LANES, "hostile", lane)
+    calls: list[list[str]] = []
+
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError, match="paid_lane_set_root_symlink"
+    ):
+        prep.prepare_paid_lane_launch(
+            "hostile",
+            {
+                "set_root": str(linked_root),
+                "service_account": account,
+                "service_group": group,
+            },
+            runner=lambda argv: calls.append(list(argv)) or 0,
+        )
+
+    assert calls == []
