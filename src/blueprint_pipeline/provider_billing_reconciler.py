@@ -33,6 +33,12 @@ VAST_CHARGES_URL = "https://console.vast.ai/api/v0/charges/"
 DIGITALOCEAN_API_URL = "https://api.digitalocean.com/v2"
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_PAGES = 100
+# DigitalOcean documents its current invoice preview as a daily artifact.  A
+# strict 24-hour wall-clock cutoff therefore races that provider cadence: the
+# same official response becomes inadmissible in the interval between crossing
+# 24 hours and the next daily refresh.  Keep the fail-closed bound, but allow
+# one complete daily refresh interval of scheduling tolerance.
+DIGITALOCEAN_BALANCE_MAX_AGE = timedelta(hours=48)
 
 
 class ProviderBillingReconciliationError(RuntimeError):
@@ -264,7 +270,7 @@ def _digitalocean_total(
     generated_at = _parse_time(
         balance.get("generated_at"), field="digitalocean_balance_generated_at"
     )
-    if generated_at > end_at or end_at - generated_at > timedelta(hours=24):
+    if generated_at > end_at or end_at - generated_at > DIGITALOCEAN_BALANCE_MAX_AGE:
         raise ProviderBillingReconciliationError("digitalocean_balance_stale")
 
     total = 0.0
