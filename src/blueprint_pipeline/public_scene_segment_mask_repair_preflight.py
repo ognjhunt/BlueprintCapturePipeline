@@ -104,6 +104,32 @@ def _bound_record(root: Path, value: Any, *, code: str) -> Path:
     return _bound_relative(root, value, code=code)
 
 
+def _relative_mask_root(sweep_path: Path, sweep: Mapping[str, Any], *, task_id: str) -> Path:
+    """Recover the producer-declared root for inherited relative mask records."""
+    contribution = sweep.get("segment_contribution_sweep")
+    if not isinstance(contribution, Mapping):
+        return sweep_path.parent
+    source_record = contribution.get("source_excision_freeze")
+    if not isinstance(source_record, Mapping):
+        return sweep_path.parent
+    source_path = _bound_absolute(
+        source_record, code="segment_repair_source_excision_freeze_invalid"
+    )
+    source = _read(source_path, code="segment_repair_source_excision_freeze_invalid")
+    scene = source.get("scene")
+    if (
+        source.get("freeze_digest") != source_record.get("freeze_digest")
+        or source.get("freeze_digest")
+        != canonical_digest(source, digest_field="freeze_digest")
+        or not isinstance(scene, Mapping)
+        or scene.get("task_id") != task_id
+    ):
+        raise SegmentMaskRepairPreflightError(
+            ["segment_repair_source_excision_freeze_invalid"]
+        )
+    return source_path.parent
+
+
 def _camera_rows(path: Path) -> dict[str, dict[str, Any]]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -215,9 +241,10 @@ def _task_inputs(
         raise SegmentMaskRepairPreflightError(["segment_repair_camera_set_invalid"])
     camera_inputs: list[dict[str, Any]] = []
     mask_pixel_counts: list[int] = []
+    relative_mask_root = _relative_mask_root(sweep_path, sweep, task_id=task_id)
     for camera_id in sorted(cameras):
         mask_path = _bound_record(
-            sweep_path.parent,
+            relative_mask_root,
             masks[camera_id].get("historical_outer_mask"),
             code="segment_repair_exact_segment_mask_invalid",
         )
