@@ -261,6 +261,20 @@ def _paid_terminal_receipt(
     return receipt
 
 
+def test_live_profile_accepts_full_readback_r2_manifest_uri(tmp_path: Path) -> None:
+    profile = _profile(tmp_path)
+    identity = "f" * 64
+    uri = f"r2://blueprint/task-evaluation/sha256/ff/{identity}.json"
+    profile["source_bundle"]["uri"] = uri
+    profile["evaluation_run_spec"]["uri"] = uri
+    profile["execution_admission"]["readiness_receipt"]["uri"] = uri
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+
+    assert validate_launch_profile(profile) == []
+
+
 def test_contract_binds_web_authority_to_pipeline_owned_profile(tmp_path: Path) -> None:
     profile = _profile(tmp_path)
     request = _request(profile)
