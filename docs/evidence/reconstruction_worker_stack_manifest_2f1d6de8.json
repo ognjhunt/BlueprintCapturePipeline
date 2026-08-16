@@ -1,0 +1,171 @@
+{
+  "worker_family": "blueprint-reconstruction-worker",
+  "runnable_platform": "linux/amd64",
+  "headless_required": true,
+  "display_required": false,
+  "source_commit_sha": "2f1d6de8148b244930835e96f1bdc44298b72857",
+  "qualification_status": "candidate_unbuilt",
+  "minimum_vram_gb": 24,
+  "supported_compute_capabilities": [
+    75,
+    80,
+    86,
+    89
+  ],
+  "tested_driver_range": {
+    "status": "not_yet_tested"
+  },
+  "model_assets": [
+    {
+      "model_id": "colmap-aliked-n16rot-3.13.0",
+      "url": "https://github.com/colmap/colmap/releases/download/3.13.0/aliked-n16rot.onnx",
+      "digest": "sha256:39c423d0a6f03d39ec89d3d1d61853765c2fb6a8b8381376c703e5758778a547",
+      "license": "COLMAP release asset;redistribution_review_required"
+    },
+    {
+      "model_id": "colmap-aliked-lightglue-3.13.0",
+      "url": "https://github.com/colmap/colmap/releases/download/3.13.0/aliked-lightglue.onnx",
+      "digest": "sha256:b9a5de7204648b18a8cf5dcac819f9d30de1a5961ef03756803c8b86c2dceb8d",
+      "license": "COLMAP release asset;redistribution_review_required"
+    },
+    {
+      "model_id": "colmap-sift-lightglue-3.13.0",
+      "url": "https://github.com/colmap/colmap/releases/download/3.13.0/sift-lightglue.onnx",
+      "digest": "sha256:e0500228472b43f92b3d36881a09b3310d3b058b56187b246cc7b9ab6429096e",
+      "license": "COLMAP release asset;redistribution_review_required"
+    },
+    {
+      "model_id": "colmap-bruteforce-matcher-3.13.0",
+      "url": "https://github.com/colmap/colmap/releases/download/3.13.0/bruteforce-matcher.onnx",
+      "digest": "sha256:3c1282f96d83f5ffc861a873298d08bbe5219f59af59223f5ceab5c41a182a47",
+      "license": "COLMAP release asset;redistribution_review_required"
+    }
+  ],
+  "hidden_heldout_access": false,
+  "trainer_self_grading": false,
+  "components": [
+    {
+      "component_id": "linux_base",
+      "name": "nvidia/cuda",
+      "version": "12.4.1-devel-ubuntu22.04",
+      "source_url": "https://hub.docker.com/r/nvidia/cuda",
+      "source_revision": "sha256:da6791294b0b04d7e65d87b7451d6f2390b4d36225ab0701ee7dfec5769829f5",
+      "linux_amd64_digest": "sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749",
+      "license": "NVIDIA Deep Learning Container License",
+      "redistribution": "review_required_before_distribution"
+    },
+    {
+      "component_id": "nvidia_driver_contract",
+      "name": "NVIDIA Linux Driver",
+      "version": ">=550.54,<580",
+      "source_url": "https://docs.nvidia.com/deploy/cuda-compatibility/",
+      "source_revision": "runtime_compatibility_contract_v1",
+      "license": "host_runtime_not_redistributed",
+      "redistribution": "not_embedded"
+    },
+    {
+      "component_id": "compiler_toolchain",
+      "name": "GCC/CMake/Ninja",
+      "version": "gcc-11.4.0;cmake-3.28.3;ninja-1.11.1",
+      "source_url": "https://gcc.gnu.org/;https://cmake.org/;https://ninja-build.org/",
+      "source_revision": "candidate_lock_v1",
+      "license": "GPL-3.0-with-GCC-exception;BSD-3-Clause;Apache-2.0",
+      "redistribution": "review_required_before_distribution"
+    },
+    {
+      "component_id": "ffmpeg",
+      "name": "FFmpeg/ffprobe",
+      "version": "6.1.1",
+      "source_url": "https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz",
+      "source_revision": "n6.1.1;source-sha256:8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968",
+      "license": "LGPL-2.1-or-later;configuration_dependent",
+      "redistribution": "build_configuration_license_review_required"
+    },
+    {
+      "component_id": "colmap",
+      "name": "COLMAP",
+      "version": "4.0.4",
+      "source_url": "https://github.com/colmap/colmap",
+      "source_revision": "9c23f6942fe69962e06030905e77067c8673382f",
+      "license": "BSD-3-Clause",
+      "redistribution": "dependency_license_review_required",
+      "build_options": {
+        "CUDA_ENABLED": true,
+        "ONNX_ENABLED": true,
+        "FETCH_ONNX": true,
+        "GUI_ENABLED": false,
+        "CMAKE_CUDA_ARCHITECTURES": [
+          75,
+          80,
+          86,
+          89
+        ]
+      }
+    },
+    {
+      "component_id": "onnxruntime",
+      "name": "ONNX Runtime GPU",
+      "version": "1.24.4",
+      "source_url": "https://github.com/microsoft/onnxruntime",
+      "source_revision": "sha256:c5f804ff5d239b436fa59e9f2fb288a39f7eb9552f6a636c8b71e792e91a8808",
+      "license": "MIT",
+      "redistribution": "permitted_with_notices"
+    },
+    {
+      "component_id": "gsplat",
+      "name": "gsplat",
+      "version": "1.5.3",
+      "source_url": "https://github.com/nerfstudio-project/gsplat",
+      "source_revision": "937e29912570c372bed6747a5c9bf85fed877bae",
+      "license": "Apache-2.0",
+      "redistribution": "permitted_with_notices"
+    },
+    {
+      "component_id": "python_ml_runtime",
+      "name": "Python/PyTorch/NumPy/OpenCV/Trimesh",
+      "version": "python-3.11.9;torch-2.4.1+cu124;numpy-1.26.4;opencv-python-headless-4.10.0.84;trimesh-4.4.9",
+      "source_url": "https://www.python.org/;https://pytorch.org/;https://pypi.org/",
+      "source_revision": "python-3.11.9-source-sha256:9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87;build-requirements-lock-sha256:d8a89e2d09515945f7553e12e314404b15340b128784ba3f699a64a5fb524811;requirements-lock-sha256:3b8318ac331d0c453aa7f3e0bbff653b315ddd0ae072bfb86e4b51494ecabdff",
+      "license": "PSF-2.0;BSD-3-Clause;BSD-3-Clause;Apache-2.0;MIT",
+      "redistribution": "wheel_hash_lock_and_notice_bundle_required"
+    },
+    {
+      "component_id": "openusd",
+      "name": "OpenUSD usd-core",
+      "version": "26.3",
+      "source_url": "https://github.com/PixarAnimationStudios/OpenUSD",
+      "source_revision": "v26.03",
+      "license": "Apache-2.0",
+      "redistribution": "permitted_with_notices"
+    },
+    {
+      "component_id": "threedgrut",
+      "name": "NVIDIA 3DGRUT",
+      "version": "1.1.0",
+      "source_url": "https://github.com/nv-tlabs/3DGRUT",
+      "source_revision": "0a5832248698ab8456b181d6ea17fe02eda58637",
+      "license": "Apache-2.0",
+      "redistribution": "dependency_and_model_review_required"
+    },
+    {
+      "component_id": "fused_ssim",
+      "name": "fused-ssim CUDA extension",
+      "version": "upstream_commit_1272e21",
+      "source_url": "https://github.com/rahul-goel/fused-ssim",
+      "source_revision": "1272e21a282342e89537159e4bad508b19b34157",
+      "license": "MIT",
+      "redistribution": "permitted_with_notices"
+    },
+    {
+      "component_id": "deterministic_qa",
+      "name": "image/depth QA runtime",
+      "version": "scikit-image-0.24.0;imageio-2.35.1;lpips-0.1.4",
+      "source_url": "https://pypi.org/",
+      "source_revision": "requirements-lock-sha256:3b8318ac331d0c453aa7f3e0bbff653b315ddd0ae072bfb86e4b51494ecabdff",
+      "license": "BSD-3-Clause;BSD-2-Clause;BSD-2-Clause",
+      "redistribution": "wheel_hash_lock_and_notice_bundle_required"
+    }
+  ],
+  "schema_version": "reconstruction_worker_stack_manifest.v1",
+  "worker_stack_manifest_digest": "sha256:7f0fbe5125e158170f6dfef5090f21aa522a63c521947aa3c9f8056d6dedf5ff"
+}

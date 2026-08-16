@@ -18,7 +18,7 @@ from scripts.build_container_production_evidence import (
 from scripts.build_cpu_full_lane_evidence import build_cpu_full_lane_evidence
 from scripts.build_gpu_provider_canary_evidence import build_gpu_provider_canary_evidence
 from scripts.build_release_evidence_bundle import build_bundle
-from scripts.build_supply_chain_evidence import build_evidence
+from scripts.build_supply_chain_evidence import build_evidence, read_reviewed_lock_keys
 from scripts.run_pubsub_emulator_integration import _validated_emulator_host
 from scripts.validate_release_signature_evidence import validate_signature_evidence
 from scripts.verify_bandit_policy import finding_fingerprint, validate_policy
@@ -969,6 +969,83 @@ def test_supply_chain_evidence_requires_exact_reviewed_component_versions(
     )[3]
     assert "license_review_missing:demo==1.1" in blocked["blockers"]
     assert "orphaned_license_review:demo==1.0" in blocked["blockers"]
+
+
+def test_worker_lock_reviewed_components_are_not_orphans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Policy rows pinned by a reviewed image lock stay outside the SBOM orphan gate."""
+
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    for name in ("uv.lock", "requirements.txt", "requirements-geometry.txt"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo-project"\nversion = "1.0"\nlicense = "MIT"\n',
+        encoding="utf-8",
+    )
+    artifact = tmp_path / "package.whl"
+    artifact.write_bytes(b"wheel")
+    sdist = tmp_path / "package.tar.gz"
+    sdist.write_bytes(b"sdist")
+    cdx = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "metadata": {},
+        "components": [
+            {
+                "type": "library",
+                "bom-ref": "demo@1",
+                "name": "demo",
+                "version": "1.0",
+                "purl": "pkg:pypi/demo@1.0",
+            }
+        ],
+    }
+    review = {
+        "license_expression": "MIT",
+        "approved": True,
+        "owner": "@legal",
+        "reviewed_on": "2026-07-09",
+        "expires_on": "2027-07-09",
+        "source": "distribution license metadata",
+    }
+    policy = {
+        "schema_version": "blueprint.runtime_dependency_license_policy.v1",
+        "components": {
+            "demo==1.0": dict(review),
+            "torch==2.4.1+cu124": dict(review, license_expression="BSD-3-Clause"),
+        },
+    }
+    kwargs = dict(
+        root=tmp_path,
+        cyclonedx=cdx,
+        license_policy=policy,
+        repository_sha=SHA,
+        image_digest=IMAGE,
+        artifact_paths=[artifact, sdist],
+        today=date(2026, 7, 9),
+    )
+
+    without_lock = build_evidence(**kwargs)[3]
+    assert "orphaned_license_review:torch==2.4.1+cu124" in without_lock["blockers"]
+
+    lock = tmp_path / "worker-requirements.lock"
+    lock.write_text(
+        "Torch==2.4.1+cu124 \\\n    --hash=sha256:" + "1" * 64 + "\n",
+        encoding="utf-8",
+    )
+    lock_keys = read_reviewed_lock_keys([lock, tmp_path / "absent.lock"])
+    assert lock_keys == frozenset({"torch==2.4.1+cu124"})
+
+    report = build_evidence(
+        **kwargs, additional_reviewed_component_keys=lock_keys
+    )[3]
+    assert report["status"] == "passed"
+    assert not any(
+        blocker.startswith("orphaned_license_review:")
+        for blocker in report["blockers"]
+    )
 
 
 def _retention_policy(groups: list[str]) -> dict[str, object]:

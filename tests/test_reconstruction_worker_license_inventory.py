@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -108,7 +109,16 @@ def test_actual_worker_lock_emits_non_authorizing_review_inventory() -> None:
         row["review_status"] == "approved"
         for row in inventory["dependency_reviews"]
     )
-    assert "license_review_missing:numpy==1.26.4" in inventory["blockers"]
+    assert not any(
+        blocker.startswith("license_review_missing:")
+        for blocker in inventory["blockers"]
+    )
+    numpy_row = next(
+        row
+        for row in inventory["dependency_reviews"]
+        if row["exact_requirement"] == "numpy==1.26.4"
+    )
+    assert numpy_row["review_status"] == "approved"
     assert (
         "source_component_license_review_required:linux_base"
         in inventory["blockers"]
@@ -126,6 +136,50 @@ def test_actual_worker_lock_emits_non_authorizing_review_inventory() -> None:
     assert inventory["license_inventory_digest"] == canonical_digest(
         inventory, digest_field="license_inventory_digest"
     )
+
+
+def test_license_policy_covers_worker_lock_without_version_skew() -> None:
+    """Every worker-locked pin has an exact policy review with a real license.
+
+    This pins the family-9 closure: version skew between the worker lock and
+    the policy may not silently reopen ``license_review_missing`` blockers,
+    and copyleft findings stay fail-closed until a human flips them.
+    """
+
+    canonical: dict[str, dict] = {}
+    for key, entry in _policy()["components"].items():
+        name, version = key.split("==", 1)
+        canonical[f"{re.sub(r'[-_.]+', '-', name).lower()}=={version}"] = entry
+    rows = parse_hashed_requirements_lock(LOCK_PATH.read_text(encoding="utf-8"))
+
+    missing = [
+        row["exact_requirement"]
+        for row in rows
+        if row["exact_requirement"] not in canonical
+    ]
+    assert missing == []
+    for row in rows:
+        entry = canonical[row["exact_requirement"]]
+        expression = entry.get("license_expression")
+        assert isinstance(expression, str) and expression.strip(), row[
+            "exact_requirement"
+        ]
+
+    # GPL-3.0-or-later plyfile is recorded verbatim but held for an explicit
+    # human verdict; nothing else in the lock is left unapproved.
+    assert canonical["plyfile==1.1.3"]["license_expression"] == "GPL-3.0-or-later"
+    assert canonical["plyfile==1.1.3"]["approved"] is False
+
+    inventory = _inventory()
+    locked = {row["exact_requirement"] for row in rows}
+    dependency_blockers = [
+        blocker
+        for blocker in inventory["blockers"]
+        if blocker.split(":", 1)[-1] in locked
+    ]
+    assert dependency_blockers == [
+        "license_review_invalid_or_expired:plyfile==1.1.3"
+    ]
 
 
 def test_inventory_conforms_to_versioned_schema() -> None:
