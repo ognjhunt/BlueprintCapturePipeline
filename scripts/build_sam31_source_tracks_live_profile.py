@@ -54,6 +54,7 @@ def build_sam31_source_tracks_live_profile(
     input_bundle_path: str | Path,
     input_bundle_receipt_path: str | Path,
     attempt_authority_path: str | Path,
+    preflight_bundle_path: str | Path,
     hf_token_file: str | Path,
     source_commit: str,
     raw_manifest_uri: str,
@@ -65,6 +66,7 @@ def build_sam31_source_tracks_live_profile(
     bundle_file = Path(input_bundle_path).expanduser().resolve()
     receipt_file = Path(input_bundle_receipt_path).expanduser().resolve()
     authority_file = Path(attempt_authority_path).expanduser().resolve()
+    preflight_file = Path(preflight_bundle_path).expanduser().resolve()
     token_file = Path(hf_token_file).expanduser().resolve()
     blockers: list[str] = []
     for label, path in (
@@ -183,7 +185,7 @@ def build_sam31_source_tracks_live_profile(
                 "--provider-launch-request",
                 str(request_file),
                 "--preflight-bundle",
-                f"{RUN_ROOT}/allocator/sam31-execution-preflight.json",
+                str(preflight_file),
                 "--sam31-input-bundle",
                 str(bundle_file),
                 "--sam31-input-bundle-receipt",
@@ -252,6 +254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--input-bundle", required=True)
     parser.add_argument("--input-bundle-receipt", required=True)
     parser.add_argument("--attempt-authority", required=True)
+    parser.add_argument("--preflight-bundle", required=True)
     parser.add_argument("--hf-token-file", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument(
@@ -268,6 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             input_bundle_path=args.input_bundle,
             input_bundle_receipt_path=args.input_bundle_receipt,
             attempt_authority_path=args.attempt_authority,
+            preflight_bundle_path=args.preflight_bundle,
             hf_token_file=args.hf_token_file,
             source_commit=args.source_commit,
             raw_manifest_uri=args.raw_manifest_uri,

@@ -83,12 +83,17 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
     token = tmp_path / "hf-token.txt"
     token.write_text("fixture-secret", encoding="utf-8")
     token.chmod(0o600)
+    preflight_path = tmp_path / "sam31-execution-preflight.json"
+    preflight_path.write_text(
+        json.dumps({"schema_version": "sam31_execution_preflight.v1"}), encoding="utf-8"
+    )
     return {
         "request": request_path,
         "bundle": bundle,
         "receipt": receipt_path,
         "authority": authority_path,
         "token": token,
+        "preflight": preflight_path,
     }
 
 
@@ -98,6 +103,7 @@ def _build(paths: dict[str, Path], **overrides):
         input_bundle_path=paths["bundle"],
         input_bundle_receipt_path=paths["receipt"],
         attempt_authority_path=paths["authority"],
+        preflight_bundle_path=paths["preflight"],
         hf_token_file=paths["token"],
         source_commit=COMMIT,
         raw_manifest_uri=URI,
@@ -157,3 +163,27 @@ def test_profile_refuses_bundle_tamper(tmp_path: Path) -> None:
     paths["bundle"].write_bytes(b"tampered")
     with pytest.raises(TaskEvaluationLaunchError, match="sam31_paid_authority_invalid"):
         _build(paths)
+
+
+def test_published_preflight_bundle_names_a_file_that_exists_before_the_launch(
+    tmp_path: Path,
+) -> None:
+    """The dry run reads this path, so it cannot be a launch-run placeholder.
+
+    Production regression: the profile published
+    `{launch_run_root}/allocator/sam31-execution-preflight.json`, but the only
+    code that writes a SAM execution preflight writes `sam31_execution_preflight`
+    (underscores) and only on the `--execute` path. The dispatcher creates the
+    run root empty, so the dry run could never find the file and every dry
+    dispatch blocked on `sam31_dry_run_preflight_missing_or_unsafe` -- leaving
+    the lane's only no-spend rehearsal permanently unreachable.
+    """
+
+    paths = _fixture(tmp_path)
+    argv = _build(paths)["allocator"]["argv"]
+
+    published = argv[argv.index("--preflight-bundle") + 1]
+
+    assert "{" not in published, published
+    assert Path(published).is_file()
+    assert Path(published) == paths["preflight"].resolve()
