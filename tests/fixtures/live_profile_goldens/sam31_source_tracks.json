@@ -18,7 +18,7 @@
    "--provider-launch-request",
    "{ROOT}/sam31-request.json",
    "--preflight-bundle",
-   "{launch_run_root}/allocator/sam31-execution-preflight.json",
+   "{ROOT}/sam31-execution-preflight.json",
    "--sam31-input-bundle",
    "{ROOT}/sam31-input.zip",
    "--sam31-input-bundle-receipt",
