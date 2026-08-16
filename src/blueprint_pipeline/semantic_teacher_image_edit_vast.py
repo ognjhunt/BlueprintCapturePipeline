@@ -1513,12 +1513,23 @@ def _execute_semantic_teacher_image_edit_vast(
                 output_archive: bytes | None = None
                 provider_absence_confirmations = 0
                 provider_absence_confirmed = False
+                last_transport_error = ""
                 liveness_checked_at = float(clock())
                 while float(clock()) - started_at <= hard_ttl:
                     try:
                         output_archive = result_fetcher(output_get_url)
                         break
-                    except (FileNotFoundError, TimeoutError):
+                    # Every read failure is retried until the TTL, not just a
+                    # missing object. Narrowing this to FileNotFoundError meant
+                    # one transient 503 or reset out of the ~360 polls a full
+                    # TTL performs escaped the lane entirely: the enclosing
+                    # block has only a `finally`, so the instance was torn down
+                    # but every terminal artifact -- billing, provider zero,
+                    # teardown manifest, artifact manifest -- went unwritten,
+                    # and the allocator recorded the run as `allocation_count:
+                    # 0` when it had in fact allocated and spent.
+                    except (OSError, TimeoutError, SemanticTeacherImageEditVastError) as exc:
+                        last_transport_error = f"{type(exc).__name__}:{exc}"
                         now = float(clock())
                         if now - started_at >= hard_ttl:
                             break
@@ -1552,7 +1563,13 @@ def _execute_semantic_teacher_image_edit_vast(
                 elif output_archive is None:
                     blockers.append("semantic_teacher_output_timeout")
                     runtime_gap_type = "runtime_timeout"
-                    runtime_gap_reason = "output_download_timed_out_after_allocation"
+                    # The last read failure is retained so an operator can tell
+                    # "the worker never uploaded" from "we could never read it".
+                    runtime_gap_reason = (
+                        f"output_download_timed_out_after_allocation:{last_transport_error}"
+                        if last_transport_error
+                        else "output_download_timed_out_after_allocation"
+                    )
                 else:
                     try:
                         runtime_result = _extract_and_validate_output(

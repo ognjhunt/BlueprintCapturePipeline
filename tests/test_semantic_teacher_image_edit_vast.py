@@ -1155,3 +1155,81 @@ def test_default_result_fetcher_treats_object_store_404_as_not_ready(
 
     with pytest.raises(FileNotFoundError, match="semantic_teacher_output_not_ready"):
         _default_result_fetcher(GET_URL)
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        urllib.error.HTTPError(GET_URL, 503, "Service Unavailable", {}, None),
+        urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")),
+        vast.SemanticTeacherImageEditVastError("semantic_teacher_output_http:403"),
+    ],
+    ids=["http_503", "connection_reset", "typed_output_http"],
+)
+def test_transient_object_store_error_does_not_destroy_terminal_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport_error: Exception
+) -> None:
+    """A read failure mid-poll must be retried, not escape the lane.
+
+    Production regression: the poll caught only FileNotFoundError, and the
+    enclosing block has no `except` -- only a `finally`. So one transient 503
+    or reset out of the ~360 polls a full TTL performs tore the instance down
+    and then skipped every terminal seal, while the allocator recorded the run
+    as `allocation_count: 0` despite having allocated and spent.
+    """
+
+    calls = {"n": 0}
+
+    def flaky(_url: str) -> bytes:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise transport_error
+        receipt = json.loads(
+            Path(_inputs(tmp_path).semantic_teacher_bundle_receipt).read_text()
+        )
+        return _runtime_archive(
+            runtime_request_digest=receipt["runtime_request_digest"],
+            backend_entry_digest=receipt["backend_entry_digest"],
+        )
+
+    result, _provider, _store, _calls = _run(
+        tmp_path, monkeypatch, result_fetcher=flaky
+    )
+
+    assert calls["n"] == 2
+    assert result["status"] == "completed"
+    assert result["allocation_count"] == 1
+    assert Path(result["artifact_manifest_path"]).is_file()
+
+
+def test_unreadable_output_for_the_whole_ttl_still_seals_every_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persistent read failure must land on the sealed timeout path, not an exception."""
+
+    def always_503(_url: str) -> bytes:
+        raise urllib.error.HTTPError(GET_URL, 503, "Service Unavailable", {}, None)
+
+    result, _provider, _store, _calls = _run(
+        tmp_path, monkeypatch, result_fetcher=always_503
+    )
+
+    assert result["status"] == "blocked"
+    assert result["allocation_count"] == 1
+    assert result["continuing_spend_from_this_run"] is False
+    job = Path(_inputs(tmp_path).semantic_teacher_job_dir)
+    for receipt in (
+        "billing_receipt.json",
+        "provider_zero_receipt.json",
+        "teardown_receipt.json",
+    ):
+        assert (job / receipt).is_file(), receipt
+    gap = json.loads(
+        (
+            job
+            / "runtime_output"
+            / "semantic_teacher_image_edit_runtime_media_gap.v1.json"
+        ).read_text()
+    )
+    assert gap["gap_type"] == "runtime_timeout"
+    assert "HTTPError" in gap["reason_code"]
