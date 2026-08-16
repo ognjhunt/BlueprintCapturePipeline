@@ -71,7 +71,7 @@ def _materialize_generated_manifest_publication_fixture(
         if (
             "raw.githubusercontent.com/example/repo/" not in reference
             or LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS.get(builder)
-            != "gcs_content_addressed_full_readback"
+            != "content_addressed_full_readback"
         ):
             return original(**kwargs)
         digest = str(kwargs["run_spec_digest"])
@@ -97,7 +97,7 @@ def _materialize_generated_manifest_publication_fixture(
                 "sha256": digest,
             },
             "profile_builder": builder,
-            "publication_seam": "gcs_content_addressed_full_readback",
+            "publication_seam": "content_addressed_full_readback",
             "published_uri": f"gs://fixture/sha256/{identity[:2]}/{identity}.json",
             "storage_scheme": "gs",
             "remote_size_bytes": source.stat().st_size,

@@ -288,7 +288,9 @@ def test_upload_helpers_cover_supported_schemes_and_error_classification(
         "unsupported_upload_uri_scheme:ftp"
     ]
 
-    def denied_upload(path: Path, destination_uri: str) -> dict[str, object]:
+    def denied_upload(
+        path: Path, destination_uri: str, *, exclusive: bool = False
+    ) -> dict[str, object]:
         raise RuntimeError("AccessDenied")
 
     monkeypatch.setattr(setup, "_upload_file_to_s3_compatible", denied_upload)
@@ -353,6 +355,49 @@ def test_s3_validation_streams_full_bytes_with_bare_internal_digest(
     assert validation["full_byte_readback_performed"] is True
     assert observed["bucket"] == "fixture-bucket"
     assert observed["key"] == "path/source.bin"
+
+
+def test_s3_content_addressed_publication_is_exclusive_and_fully_read_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "request.json"
+    source.write_text('{"schema_version":"request.v1"}\n', encoding="utf-8")
+    objects: dict[tuple[str, str], bytes] = {}
+    observed: list[dict[str, object]] = []
+
+    class Client:
+        def put_object(self, **kwargs: object) -> None:
+            observed.append(dict(kwargs))
+            identity = (str(kwargs["Bucket"]), str(kwargs["Key"]))
+            if identity in objects:
+                raise RuntimeError("PreconditionFailed")
+            assert kwargs["IfNoneMatch"] == "*"
+            objects[identity] = bytes(kwargs["Body"])
+
+        def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+            return {"Body": io.BytesIO(objects[(Bucket, Key)])}
+
+    class Boto3:
+        @staticmethod
+        def client(service: str, **kwargs: object) -> Client:
+            assert service == "s3"
+            return Client()
+
+    monkeypatch.setitem(sys.modules, "boto3", Boto3())
+    receipt = setup.publish_content_addressed_manifest(
+        source=source,
+        destination_prefix="s3://fixture-bucket/launch-manifests",
+        receipt_path=tmp_path / "publication.json",
+        profile_builder="build_retained_scene_render_live_profile.py",
+    )
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert receipt["published_uri"].endswith(f"/sha256/{digest[:2]}/{digest}.json")
+    assert receipt["storage_scheme"] == "s3"
+    assert receipt["provider_full_byte_readback_verified"] is True
+    assert observed[0]["IfNoneMatch"] == "*"
+
+    blocked = setup.upload_file(source, receipt["published_uri"], exclusive=True)
+    assert blocked["status"] == "blocked"
 
 
 def test_content_addressed_publication_requires_full_digest_readback(
@@ -420,9 +465,6 @@ def test_content_addressed_publication_requires_full_digest_readback(
             receipt_path=tmp_path / "tampered-publication.json",
             profile_builder="build_retained_scene_render_live_profile.py",
         )
-    assert setup.upload_file(
-        source, "s3://fixture-bucket/key", exclusive=True
-    )["blockers"] == ["exclusive_create_unsupported_for_scheme:s3"]
     assert setup._dedupe([" a ", "a", "", "b"]) == ["a", "b"]
     assert setup._storage_upload_commands(source="/tmp/a", destination_uri="gs://bucket/a") == [
         'test -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" || { echo "missing GOOGLE_APPLICATION_CREDENTIALS" >&2; exit 2; }',

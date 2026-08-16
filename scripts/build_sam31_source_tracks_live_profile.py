@@ -257,7 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--raw-manifest-uri",
         required=True,
-        help="Local digest-bound GCS publication receipt for this run spec.",
+        help="Local digest-bound content-addressed publication receipt for this run spec.",
     )
     parser.add_argument("--revision")
     parser.add_argument("--output", required=True)

@@ -145,7 +145,7 @@ PARAMS: dict[str, Param] = {
     "source_commit": Param("--source-commit", required=True),
     "raw_manifest_uri": Param(
         "--raw-manifest-uri",
-        "Local digest-bound GCS publication receipt for this run spec.",
+        "Local digest-bound content-addressed publication receipt for this run spec.",
         required=True,
     ),
     "revision": Param(

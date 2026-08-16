@@ -274,7 +274,7 @@ FLAGS: dict[str, Flag] = {
     ),
     "--raw-manifest-uri": Flag(
         "raw_manifest_uri",
-        "Local digest-bound GCS publication receipt for this run spec.",
+        "Local digest-bound content-addressed publication receipt for this run spec.",
         required=True,
     ),
     "--machine-avoidlist": Flag(

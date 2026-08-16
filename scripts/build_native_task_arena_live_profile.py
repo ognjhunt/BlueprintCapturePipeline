@@ -257,7 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         target.add_argument(
             "--raw-manifest-uri",
             required=True,
-            help="Local digest-bound GCS publication receipt for this run spec.",
+            help="Local digest-bound content-addressed publication receipt for this run spec.",
         )
         target.add_argument("--machine-avoidlist")
         target.add_argument(

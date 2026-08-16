@@ -114,7 +114,7 @@ PARAMETERS: dict[str, dict[str, Any]] = {
     "raw_manifest_uri": {
         "flag": "--raw-manifest-uri",
         "required": True,
-        "help": "Local digest-bound GCS publication receipt for this run spec.",
+        "help": "Local digest-bound content-addressed publication receipt for this run spec.",
     },
     "max_hourly_rate_usd": {
         "flag": "--max-hourly-rate-usd",

@@ -67,20 +67,20 @@ S3_REGION_ENV_VAR_ALTERNATIVES = ("AWS_REGION", "AWS_DEFAULT_REGION")
 # content-addressed, full-byte-readback publication contract.
 LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS = {
     LEGACY_LIVE_PROFILE_BUILDER: "exact_commit_raw_github",
-    "build_arena_native_control_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_artifixer3d_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_content_agents_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_gaussian_excision_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_joint_agent_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_native_task_arena_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_new_site_diagnostic_canary_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_new_site_native_camera_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_paired_target_native_import_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_reconstruction_worker_smoke_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_retained_scene_render_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_sam31_source_tracks_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_semantic_teacher_image_edit_live_profile.py": "gcs_content_addressed_full_readback",
-    "build_simready_isaac_live_profile.py": "gcs_content_addressed_full_readback",
+    "build_arena_native_control_live_profile.py": "content_addressed_full_readback",
+    "build_artifixer3d_live_profile.py": "content_addressed_full_readback",
+    "build_content_agents_live_profile.py": "content_addressed_full_readback",
+    "build_gaussian_excision_live_profile.py": "content_addressed_full_readback",
+    "build_joint_agent_live_profile.py": "content_addressed_full_readback",
+    "build_native_task_arena_live_profile.py": "content_addressed_full_readback",
+    "build_new_site_diagnostic_canary_live_profile.py": "content_addressed_full_readback",
+    "build_new_site_native_camera_live_profile.py": "content_addressed_full_readback",
+    "build_paired_target_native_import_live_profile.py": "content_addressed_full_readback",
+    "build_reconstruction_worker_smoke_live_profile.py": "content_addressed_full_readback",
+    "build_retained_scene_render_live_profile.py": "content_addressed_full_readback",
+    "build_sam31_source_tracks_live_profile.py": "content_addressed_full_readback",
+    "build_semantic_teacher_image_edit_live_profile.py": "content_addressed_full_readback",
+    "build_simready_isaac_live_profile.py": "content_addressed_full_readback",
 }
 
 
@@ -265,7 +265,9 @@ def _upload_file_to_gs(
     }
 
 
-def _upload_file_to_s3_compatible(source: Path, destination_uri: str) -> Dict[str, Any]:
+def _upload_file_to_s3_compatible(
+    source: Path, destination_uri: str, *, exclusive: bool = False
+) -> Dict[str, Any]:
     try:
         import boto3  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - environment dependent
@@ -284,7 +286,18 @@ def _upload_file_to_s3_compatible(source: Path, destination_uri: str) -> Dict[st
         kwargs["aws_access_key_id"] = access_key
         kwargs["aws_secret_access_key"] = secret_key
     client = boto3.client("s3", **kwargs)
-    client.upload_file(str(source), parsed.netloc, parsed.path.lstrip("/"))
+    if exclusive:
+        # A content-addressed publication must never silently replace an
+        # object. S3-compatible stores expose this conditional PutObject
+        # contract in the same role as GCS generation-match-zero.
+        client.put_object(
+            Bucket=parsed.netloc,
+            Key=parsed.path.lstrip("/"),
+            Body=source.read_bytes(),
+            IfNoneMatch="*",
+        )
+    else:
+        client.upload_file(str(source), parsed.netloc, parsed.path.lstrip("/"))
     return {
         "status": "uploaded",
         "source": str(source),
@@ -450,7 +463,7 @@ def upload_file(
 ) -> Dict[str, Any]:
     path = Path(source).resolve()
     scheme = urlparse(destination_uri).scheme
-    if exclusive and scheme != "gs":
+    if exclusive and scheme not in {"gs", "s3", "r2"}:
         return {
             "status": "blocked",
             "source": str(path),
@@ -474,7 +487,9 @@ def upload_file(
                 {**result, "post_upload_validation": validation}, source=path
             )
         if scheme in {"s3", "r2"}:
-            result = _upload_file_to_s3_compatible(path, destination_uri)
+            result = _upload_file_to_s3_compatible(
+                path, destination_uri, exclusive=exclusive
+            )
             validation = _validate_uploaded_object(path, destination_uri)
             if validation.get("status") != "validated":
                 return {
@@ -547,7 +562,7 @@ def publish_content_addressed_manifest(
         raise ValueError("immutable_manifest_profile_builder_unregistered")
     if (
         LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS[profile_builder]
-        != "gcs_content_addressed_full_readback"
+        != "content_addressed_full_readback"
     ):
         raise ValueError("immutable_manifest_profile_builder_not_generated")
     if path.is_symlink() or not path.is_file():
@@ -562,7 +577,7 @@ def publish_content_addressed_manifest(
         raise ValueError("immutable_manifest_source_not_object")
     prefix = str(destination_prefix or "").strip().rstrip("/")
     parsed = urlparse(prefix)
-    if parsed.scheme != "gs" or not parsed.netloc:
+    if parsed.scheme not in {"gs", "s3", "r2"} or not parsed.netloc:
         raise ValueError("immutable_manifest_destination_prefix_invalid")
     source_sha256 = "sha256:" + _sha256_file(path)
     identity = source_sha256.removeprefix("sha256:")

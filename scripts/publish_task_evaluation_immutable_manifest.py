@@ -48,7 +48,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Website-reachable live-profile builder that will consume this URI.",
     )
     destination = parser.add_mutually_exclusive_group()
-    destination.add_argument("--destination-prefix")
+    destination.add_argument(
+        "--destination-prefix",
+        help="Explicit gs://, s3://, or r2:// content-addressed destination prefix.",
+    )
     destination.add_argument("--bucket-file")
     parser.add_argument(
         "--key-prefix",
