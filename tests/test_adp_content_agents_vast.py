@@ -153,6 +153,101 @@ def _reference_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+def _sha(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _record(path: Path, *, canonical: str | None = None) -> dict[str, object]:
+    value: dict[str, object] = {
+        "path": str(path.resolve()),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha(path),
+    }
+    if canonical is not None:
+        value["canonical_digest"] = canonical
+    return value
+
+
+def _paired_target_content_agents_evidence(
+    tmp_path: Path,
+) -> tuple[Path, list[Path], Path, Path]:
+    root = tmp_path / "paired-target"
+    root.mkdir()
+    usd = root / "registered.usda"
+    usd.write_text(
+        "#usda 1.0\n"
+        "(defaultPrim = \"Asset\")\n"
+        "def Xform \"Asset\" {\n"
+        " def Mesh \"body\" {\n"
+        "  point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]\n"
+        "  int[] faceVertexCounts = [3]\n"
+        "  int[] faceVertexIndices = [0,1,2]\n"
+        " }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    task_freeze = root / "task-freeze.json"
+    task_freeze.write_text("{}\n", encoding="utf-8")
+    registered = root / "registered.json"
+    registered.write_text("{}\n", encoding="utf-8")
+    probe = root / "native-import.json"
+    probe.write_text("{}\n", encoding="utf-8")
+    task_digest = "sha256:" + "1" * 64
+    registered_digest = "sha256:" + "2" * 64
+    probe_digest = "sha256:" + "3" * 64
+    payload = {
+        "schema_version": "paired_target_native_construction_bindings.v1",
+        "status": "paired_targets_admitted_for_native_construction",
+        "scene_id": "840920",
+        "task_freeze_set_digest": "sha256:" + "4" * 64,
+        "replacement_object_count": 1,
+        "bindings": [
+            {
+                "task_id": "task_a_washer_door_open",
+                "asset_id": "840920_registered_washer",
+                "task_freeze_digest": task_digest,
+                "registered_asset_receipt_digest": registered_digest,
+                "replacement_asset_sha256": _sha(usd),
+                "native_import_probe_result_digest": probe_digest,
+                "native_simulator_import_qualified": True,
+                "evidence_receipts": {
+                    "task_freeze": _record(task_freeze, canonical=task_digest),
+                    "registered_asset": _record(
+                        registered, canonical=registered_digest
+                    ),
+                    "registered_usd": _record(usd),
+                    "native_import_probe": _record(probe, canonical=probe_digest),
+                },
+            }
+        ],
+        "native_camera_readback_qualified": False,
+        "native_reachability_qualified": False,
+        "controls_executed": False,
+        "learned_policies_executed": False,
+        "construction_digest": "",
+    }
+    payload["construction_digest"] = canonical_digest(
+        payload, digest_field="construction_digest"
+    )
+    bindings = root / "construction-bindings.json"
+    write_json(bindings, payload)
+    references = [root / "front.png", root / "oblique.png"]
+    for index, reference in enumerate(references):
+        reference.write_bytes(b"\x89PNG\r\n\x1a\n" + f"reference-{index}".encode())
+    rights = root / "reference-rights.json"
+    write_json(
+        rights,
+        {
+            "schema_version": "public_scene_rights_authority.v1",
+            "status": "approved_for_internal_use",
+            "agent_accepted_terms": False,
+            "authorized_source_sha256": [_sha(path) for path in references],
+            "use_ceiling": "internal_noncommercial_validation",
+        },
+    )
+    return bindings, references, rights, usd
+
+
 def _write_receipt(path: Path, payload: dict) -> dict:
     payload = dict(payload)
     payload["receipt_digest"] = canonical_digest(payload, digest_field="receipt_digest")
@@ -747,6 +842,150 @@ def test_agent_cad_bundle_uses_mesh_only_input_without_historical_replay(
         "../input/reference.png",
         "../input/reference_0002.png",
     ]
+
+
+def test_paired_target_registered_bundle_binds_exact_native_predecessor_and_rights(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    bindings, references, rights, registered_usd = (
+        _paired_target_content_agents_evidence(tmp_path)
+    )
+
+    receipt = content_agents.build_content_agents_vast_bundle(
+        repo_root=ROOT,
+        content_agents_root=source,
+        job_dir=tmp_path / "paired-target-bundle",
+        input_variant="paired_target_registered_v1",
+        reference_image_paths=references,
+        paired_target_construction_bindings_path=bindings,
+        paired_target_task_id="task_a_washer_door_open",
+        reference_rights_authority_path=rights,
+        generated_at="fixed",
+    )
+
+    predecessor = receipt["input_variant_bindings"]
+    assert receipt["status"] == "ready"
+    assert receipt["input_variant"] == "paired_target_registered_v1"
+    assert receipt["input_usd_normalization"][
+        "paired_target_registered_working_copy"
+    ] is True
+    assert receipt["input_usd_normalization"]["source_input_usd_sha256"] == _sha(
+        registered_usd
+    )
+    assert predecessor["paired_target_scene_id"] == "840920"
+    assert predecessor["task_id"] == "task_a_washer_door_open"
+    assert predecessor["asset_id"] == "840920_registered_washer"
+    assert predecessor["replacement_asset_sha256"] == _sha(registered_usd)
+    assert predecessor["native_simulator_import_qualified"] is True
+    assert predecessor["paired_target_construction_bindings"] == _record(bindings)
+    assert predecessor["paired_target_reference_rights_authority"] == _record(rights)
+    assert (
+        predecessor["paired_target_reference_rights_scope"]
+        == "internal_noncommercial_validation"
+    )
+    assert predecessor["paired_target_reference_images"] == [
+        _record(path) for path in references
+    ]
+    assert receipt["input_native_simulator_import_qualified"] is True
+    assert receipt["allowed_use_ceiling"] == "internal_noncommercial_validation"
+    assert receipt["agent_output_is_simready_authority"] is False
+    assert receipt["deterministic_usd_construction_remains_primary"] is True
+    assert receipt["canonical_simready_construction_unresolved"] is False
+    assert receipt["joint_agent_plan"]["reason"] == (
+        "paired_target_registered_candidate_has_no_articulation_task"
+    )
+    assert receipt["runtime_reference_image_bindings"] == [
+        {
+            "relative_path": "input/reference.png",
+            "sha256": _sha(references[0]),
+        },
+        {
+            "relative_path": "input/reference_0002.png",
+            "sha256": _sha(references[1]),
+        },
+    ]
+
+
+def test_paired_target_registered_bundle_rejects_tampered_registered_usd_before_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    bindings, references, rights, registered_usd = (
+        _paired_target_content_agents_evidence(tmp_path)
+    )
+    registered_usd.write_text(
+        registered_usd.read_text(encoding="utf-8") + "# tampered\n",
+        encoding="utf-8",
+    )
+    job = tmp_path / "must-not-exist"
+
+    with pytest.raises(
+        ValueError, match="paired_target_registered_usd_invalid"
+    ):
+        content_agents.build_content_agents_vast_bundle(
+            repo_root=ROOT,
+            content_agents_root=source,
+            job_dir=job,
+            input_variant="paired_target_registered_v1",
+            reference_image_paths=references,
+            paired_target_construction_bindings_path=bindings,
+            paired_target_task_id="task_a_washer_door_open",
+            reference_rights_authority_path=rights,
+        )
+
+    assert not job.exists()
+
+
+@pytest.mark.parametrize(
+    "defect,expected",
+    [
+        ("task", "paired_target_task_selection_invalid"),
+        ("rights", "paired_target_reference_rights_invalid"),
+        ("missing_reference", "paired_target_input_not_host_resident"),
+        ("claim", "paired_target_bindings_invalid"),
+    ],
+)
+def test_paired_target_registered_bundle_fails_closed_on_hostile_predecessors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    defect: str,
+    expected: str,
+) -> None:
+    source = _fake_source(tmp_path, monkeypatch)
+    bindings, references, rights, _registered_usd = (
+        _paired_target_content_agents_evidence(tmp_path)
+    )
+    task_id = "task_a_washer_door_open"
+    if defect == "task":
+        task_id = "task_b_notebook_relocation"
+    elif defect == "rights":
+        rights_value = json.loads(rights.read_text(encoding="utf-8"))
+        rights_value["authorized_source_sha256"] = [_sha(references[0])]
+        write_json(rights, rights_value)
+    elif defect == "missing_reference":
+        references[0] = tmp_path / "laptop-only-reference.png"
+    elif defect == "claim":
+        binding_value = json.loads(bindings.read_text(encoding="utf-8"))
+        binding_value["bindings"][0]["native_simulator_import_qualified"] = False
+        binding_value["construction_digest"] = canonical_digest(
+            binding_value, digest_field="construction_digest"
+        )
+        write_json(bindings, binding_value)
+
+    with pytest.raises(ValueError, match=expected):
+        content_agents.build_content_agents_vast_bundle(
+            repo_root=ROOT,
+            content_agents_root=source,
+            job_dir=tmp_path / "hostile-bundle",
+            input_variant="paired_target_registered_v1",
+            reference_image_paths=references,
+            paired_target_construction_bindings_path=bindings,
+            paired_target_task_id=task_id,
+            reference_rights_authority_path=rights,
+        )
 
 
 def test_agent_cad_bundle_rejects_a_codex_only_route_before_provider_bundle(

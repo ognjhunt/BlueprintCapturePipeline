@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.paired_target_native_import_vast import MAX_HARD_CAP_USD
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "issue_appearance_chain_paid_attempt_authority.py"
 
@@ -110,6 +112,12 @@ def test_the_import_gate_can_pin_which_instances_may_already_be_running() -> Non
 
     assert param.accumulate and param.type is int
     assert param.default == ()
+
+
+def test_the_import_authority_default_uses_the_allocator_hard_cap() -> None:
+    assert issuer.LINKS["paired-target"].params["hard_cap_usd"].default == (
+        MAX_HARD_CAP_USD
+    )
 
 
 def test_a_supplied_repeatable_flag_does_not_crash_the_parser() -> None:
