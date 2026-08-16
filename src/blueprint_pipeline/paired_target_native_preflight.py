@@ -144,15 +144,18 @@ def materialize_paired_target_native_preflight(
 
     if not 1 <= len(task_records) <= MAX_REPLACEMENT_OBJECTS:
         raise PairedTargetNativePreflightError("native_preflight_task_count_invalid")
+    task_ids = [
+        str(raw.get("task_id") or "") if isinstance(raw, Mapping) else ""
+        for raw in task_records
+    ]
+    if any(not task_id for task_id in task_ids) or len(task_ids) != len(set(task_ids)):
+        raise PairedTargetNativePreflightError("native_preflight_task_id_invalid")
     collision = Path(collision_scene_path).expanduser().resolve()
     collision_record = _record(collision)
     tasks: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw in task_records:
-        task_id = str(raw.get("task_id") or "")
-        if not task_id or task_id in seen:
-            raise PairedTargetNativePreflightError("native_preflight_task_id_invalid")
-        seen.add(task_id)
+    dual_receipt_mode: str | None = None
+    combined_dual_binding: tuple[Path, str] | None = None
+    for task_id, raw in zip(task_ids, task_records):
         appearance_path, appearance = _read(
             raw.get("appearance_export_receipt_path", ""),
             "native_preflight_appearance_receipt_invalid",
@@ -184,15 +187,41 @@ def materialize_paired_target_native_preflight(
             raw.get("dual_target_inputs_receipt_path", ""),
             "native_preflight_dual_inputs_invalid",
         )
+        selected_task_ids = dual.get("selected_task_ids")
+        dual_tasks = dual.get("tasks")
+        dual_task_ids = [
+            str(task.get("task_id") or "") if isinstance(task, Mapping) else ""
+            for task in dual_tasks or []
+        ]
+        legacy_receipt = selected_task_ids == [task_id] and dual_task_ids == [task_id]
+        combined_receipt = (
+            len(task_ids) > 1
+            and selected_task_ids == task_ids
+            and dual_task_ids == task_ids
+        )
         if (
             dual.get("schema_version") != DUAL_INPUT_SCHEMA
             or not _digest_valid(dual, "receipt_digest")
             or dual.get("publisher_scene_id") != scene_id
-            or dual.get("selected_task_ids") != [task_id]
-            or len(dual.get("tasks") or []) != 1
+            or not isinstance(dual_tasks, list)
+            or not (legacy_receipt or combined_receipt)
         ):
             raise PairedTargetNativePreflightError("native_preflight_dual_inputs_invalid")
-        dual_task = dual["tasks"][0]
+        current_mode = "combined" if combined_receipt else "legacy"
+        if dual_receipt_mode not in {None, current_mode}:
+            raise PairedTargetNativePreflightError("native_preflight_dual_inputs_invalid")
+        dual_receipt_mode = current_mode
+        if combined_receipt:
+            binding = (dual_path, str(dual["receipt_digest"]))
+            if combined_dual_binding not in {None, binding}:
+                raise PairedTargetNativePreflightError(
+                    "native_preflight_combined_dual_binding_mismatch"
+                )
+            combined_dual_binding = binding
+        matches = [task for task in dual_tasks if task.get("task_id") == task_id]
+        if len(matches) != 1:
+            raise PairedTargetNativePreflightError("native_preflight_dual_inputs_invalid")
+        dual_task = matches[0]
         if (
             dual_task.get("task_id") != task_id
             or dual_task.get("physical_camera_count") != 8
@@ -325,6 +354,10 @@ def materialize_paired_target_native_preflight(
                     **_record(camera_index),
                     "camera_index_digest": camera_rows["camera_index_digest"],
                     "camera_ids": camera_ids,
+                },
+                "dual_target_inputs_receipt": {
+                    **_record(dual_path),
+                    "receipt_digest": dual["receipt_digest"],
                 },
                 "simready_asset_receipt": {
                     **_record(cad_path),

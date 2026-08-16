@@ -25,7 +25,10 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from blueprint_pipeline.paired_target_native_import_vast import PROBE_KIND
+from blueprint_pipeline.paired_target_native_import_vast import (
+    MAX_HARD_CAP_USD,
+    PROBE_KIND,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
     LaneLiveProfileContext,
@@ -126,7 +129,7 @@ def build_paired_target_native_import_live_profile(
     raw_manifest_uri: str,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
-    max_spend_usd: float = 3.0,
+    max_spend_usd: float = MAX_HARD_CAP_USD,
     hard_ttl_seconds: int = 7_200,
 ) -> dict[str, Any]:
     """Derive a live profile from the bundle receipt it will run."""
@@ -159,7 +162,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Distinguish a rebuilt profile whose inputs changed at the same commit.",
     )
     parser.add_argument("--max-hourly-rate-usd", type=float, default=1.0)
-    parser.add_argument("--max-spend-usd", type=float, default=3.0)
+    parser.add_argument("--max-spend-usd", type=float, default=MAX_HARD_CAP_USD)
     parser.add_argument("--hard-ttl-seconds", type=int, default=7_200)
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)

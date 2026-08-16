@@ -20,7 +20,13 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.adp009d_native_microcheck_bundle import (
+    DEFAULT_IMAGE as QUALIFIED_ADP_IMAGE,
+)
+from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+import blueprint_pipeline.native_task_arena_paid_authority as paid
+import blueprint_pipeline.task_evaluation_live_profile as live_profile
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 
 pytestmark = pytest.mark.usefixtures(
@@ -45,57 +51,286 @@ def _load():
 builder = _load()
 
 
-@pytest.fixture()
-def lane(tmp_path: Path) -> dict:
-    packet = tmp_path / "packet"
-    packet.mkdir()
-    packet_archive = packet / "native_task_arena_packet.zip"
-    packet_archive.write_bytes(b"arena-packet")
-    (packet / builder.PACKET_RECEIPT_NAME).write_text(
-        json.dumps(
-            {
-                "status": "construction_packet_completed",
-                "implementation_commit": COMMIT,
-            }
-        ),
-        encoding="utf-8",
-    )
-    bundle = tmp_path / "native_task_arena_provider_bundle.zip"
-    bundle.write_bytes(b"arena-provider-bundle")
-    bundle_digest = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
-    bundle_receipt = tmp_path / "native_task_arena_provider_bundle.v1.json"
-    bundle_receipt.write_text(
-        json.dumps(
-            {
-                "status": "ready",
-                "implementation_commit": COMMIT,
-                "bundle_path": str(bundle),
-                "bundle_sha256": bundle_digest,
-            }
-        ),
-        encoding="utf-8",
-    )
+def _sha(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _record(path: Path) -> dict[str, object]:
+    return {"path": str(path), "size_bytes": path.stat().st_size, "sha256": _sha(path)}
+
+
+def _predecessor(root: Path) -> dict[str, Path]:
+    root.mkdir()
     authority = {
-        "schema_version": "native_task_arena_paid_attempt_authority.v1",
-        "blueprint_commit": COMMIT,
-        "bundle_sha256": bundle_digest,
-        "bundle_receipt": {
-            "path": str(bundle_receipt.resolve()),
-            "size_bytes": bundle_receipt.stat().st_size,
-            "sha256": "sha256:"
-            + hashlib.sha256(bundle_receipt.read_bytes()).hexdigest(),
-        },
-        "maximum_hourly_rate_usd": 1.0,
-        "hard_attempt_spend_cap_usd": 2.0,
-        "maximum_single_resource_ttl_seconds": 7_200,
+        "schema_version": "paired_target_native_import_paid_attempt_authority.v1",
+        "bundle_sha256": "sha256:" + "b" * 64,
+        "hard_attempt_spend_cap_usd": 0.75,
+        "maximum_single_resource_ttl_seconds": 3_600,
+        "aggregate_goal_spend_before_attempt_usd": 0.0,
+        "aggregate_goal_spend_cap_usd": 12.0,
+        "authorization_digest": "",
     }
     authority["authorization_digest"] = canonical_digest(
         authority, digest_field="authorization_digest"
     )
-    authority_path = tmp_path / "native_task_arena_paid_authority.v1.json"
-    authority_path.write_text(json.dumps(authority), encoding="utf-8")
+    authority_path = root / "authority.json"
+    write_json(authority_path, authority)
+    result = {
+        "schema_version": "paired_target_native_import_vast_run.v1",
+        "status": "completed",
+        "bundle_sha256": authority["bundle_sha256"],
+        "estimated_cost_usd": 0.05,
+        "hard_cap_usd": 0.75,
+        "hard_ttl_seconds": 3_600,
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "authorization_consumption": {
+            "authorization_digest": authority["authorization_digest"]
+        },
+    }
+    result_path = root / "result.json"
+    write_json(result_path, result)
+    zero = {
+        "schema_version": "paired_target_native_import_provider_zero.v1",
+        "status": "completed",
+        "attempt_authority_digest": authority["authorization_digest"],
+        "terminal_result": _record(result_path),
+        "provider_zero_confirmed": True,
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "receipt_digest": "",
+    }
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    zero_path = root / "provider_zero.json"
+    write_json(zero_path, zero)
+    return {"authority": authority_path, "result": result_path, "zero": zero_path}
+
+
+def _provider_bundle(
+    root: Path, *, link: str, packet_digest: str, runtime_source_digest: str
+) -> Path:
+    root.mkdir()
+    bundle = root / "native_task_arena_provider_bundle.zip"
+    bundle.write_bytes(f"production-shaped-{link}-bundle".encode())
+    mode = {
+        "construction": "construction_canary",
+        "controls": "controls",
+        "policy": "policy",
+    }[link]
+    bound_names = {
+        "construction": (),
+        "controls": (
+            "native_task_arena_construction_result.v1.json",
+            "adp_task_control_plan.v1.json",
+        ),
+        "policy": (
+            "native_task_arena_construction_result.v1.json",
+            "native_task_arena_control_result.v1.json",
+            "native_task_arena_policy_execution_spec.v1.json",
+        ),
+    }[link]
+    manifest = {
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "generated_at": "2026-08-16T00:00:00+00:00",
+        "status": "ready",
+        "program_id": "arm-decision-proof-v1",
+        "execution_mode": mode,
+        "implementation_commit": COMMIT,
+        "container_image": QUALIFIED_ADP_IMAGE,
+        "packet_receipt_digest": packet_digest,
+        "arena_scene_plan_digest": "sha256:" + "1" * 64,
+        "runtime_contract_digest": "sha256:" + "2" * 64,
+        "scenario_instance_digest": "sha256:" + "3" * 64,
+        "packet_files": [],
+        "packet_file_count": 0,
+        "worker_source_sha256": "sha256:" + "4" * 64,
+        "runtime_modules": [],
+        "bound_runtime_inputs": [
+            {
+                "relative_path": f"runtime_inputs/{name}",
+                "size_bytes": 1,
+                "sha256": "sha256:" + "5" * 64,
+            }
+            for name in bound_names
+        ],
+        "runtime_source_packet": {
+            "receipt_digest": runtime_source_digest,
+            "packet_sha256": "sha256:" + "6" * 64,
+            "packet_size_bytes": 1,
+            "install_roots": [],
+            "runtime_dependency_wheels": [],
+            "redistribution_permitted": True,
+        },
+        "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "expected_output_filename": {
+            "construction": "native_task_arena_construction_result.v1.json",
+            "controls": "native_task_arena_control_result.v1.json",
+            "policy": "native_task_arena_policy_result.v1.json",
+        }[link],
+        "policy_candidate_id": "pi05_droid" if link == "policy" else None,
+        "candidate_policy_queried": False,
+        "candidate_outcomes_accessed": False,
+        "packet_bytes_mutated": False,
+        "scene_reconstructed_by_bundle": False,
+        "native_application_claimed": False,
+        "retry_cap": 0,
+        "provider_zero_required_after_return": True,
+        "blockers": [],
+        "input_digest": "",
+    }
+    manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
+    receipt = {
+        **manifest,
+        "bundle_path": str(bundle),
+        "bundle_size_bytes": bundle.stat().st_size,
+        "bundle_sha256": _sha(bundle),
+    }
+    receipt_path = root / "native_task_arena_provider_bundle_receipt.v1.json"
+    write_json(receipt_path, receipt)
+    return receipt_path
+
+
+def _attempt_authority(
+    path: Path,
+    *,
+    bundle_receipt: Path,
+    predecessor: dict[str, Path],
+) -> Path:
+    bundle = json.loads(bundle_receipt.read_text(encoding="utf-8"))
+    predecessor_authority = json.loads(
+        predecessor["authority"].read_text(encoding="utf-8")
+    )
+    reconciliation_path = path.parent / "reconciliation.json"
+    if not reconciliation_path.exists():
+        write_json(reconciliation_path, {"fixture": "validated-by-ledger-contract-stub"})
+    reconciliation_record = {
+        **_record(reconciliation_path),
+        "receipt_digest": "sha256:" + "8" * 64,
+        "entry_count": 0,
+        "total_cost_usd": 0.05,
+    }
+    prior_spend = {
+        "prior_terminal_attempts": [{"result": _record(predecessor["result"])}],
+        "reconciliation": reconciliation_record,
+        "actual_total_usd": 0.05,
+    }
+    authority = {
+        "schema_version": paid.AUTHORITY_SCHEMA_VERSION,
+        "authority_kind": "explicit_user_direction_in_current_goal",
+        "authority_reference": "scene-840920-production-goal",
+        "authorized_by": "nijelhunt_1",
+        "authorized_on": "2026-08-16",
+        "purpose": "one_shot_native_task_arena_execution",
+        "provider": "vast",
+        "paid_compute_authorized": True,
+        "maximum_paid_attempts": 1,
+        "maximum_provider_allocations": 1,
+        "maximum_automatic_retries": 0,
+        "automatic_paid_retry_authorized": False,
+        "zero_retry": True,
+        "bundle_receipt": _record(bundle_receipt),
+        "bundle_sha256": bundle["bundle_sha256"],
+        "bundle_input_digest": bundle["input_digest"],
+        "packet_receipt_digest": bundle["packet_receipt_digest"],
+        "runtime_source_packet_receipt_digest": bundle["runtime_source_packet"][
+            "receipt_digest"
+        ],
+        "execution_mode": bundle["execution_mode"],
+        "policy_candidate_id": bundle["policy_candidate_id"],
+        "blueprint_commit": COMMIT,
+        "container_image": bundle["container_image"],
+        "hard_attempt_spend_cap_usd": 2.0,
+        "maximum_hourly_rate_usd": 1.0,
+        "maximum_single_resource_ttl_seconds": 7_200,
+        "aggregate_goal_spend_before_attempt_usd": 0.05,
+        "aggregate_goal_spend_cap_usd": 12.0,
+        "prior_terminal_attempt": {
+            "authority": _record(predecessor["authority"]),
+            "terminal_result": _record(predecessor["result"]),
+            "provider_zero": _record(predecessor["zero"]),
+            "authority_digest": predecessor_authority["authorization_digest"],
+            "attempt_cost_usd": 0.05,
+            "actual_provider_charge_usd": 0.05,
+        },
+        "prior_terminal_attempts": prior_spend["prior_terminal_attempts"],
+        "prior_spend_reconciliation": prior_spend["reconciliation"],
+        "prior_actual_provider_spend_usd": 0.05,
+        "active_instance_allowlist": {
+            "external_provider_owned": [],
+            "same_goal_concurrent": [],
+        },
+        "raw_nonredistributable_bytes_uploaded": False,
+        "canonical_interiorgs_uploaded_or_mutated": False,
+        "simulator_output_is_not_physical_evidence": True,
+        "authorization_digest": "",
+    }
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(path, authority)
+    return path
+
+
+@pytest.fixture()
+def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    packet_archive = packet / "native_task_arena_packet.zip"
+    packet_archive.write_bytes(b"arena-packet")
+    packet_receipt = {
+        "schema_version": "native_task_arena_packet_receipt.v1",
+        "status": "construction_packet_completed",
+        "implementation_commit": COMMIT,
+        "receipt_digest": "",
+    }
+    packet_receipt["receipt_digest"] = canonical_digest(
+        packet_receipt, digest_field="receipt_digest"
+    )
+    write_json(packet / builder.PACKET_RECEIPT_NAME, packet_receipt)
     source_packet = tmp_path / "runtime_source_packet.json"
-    source_packet.write_text(json.dumps({"status": "ready"}), encoding="utf-8")
+    runtime_source = {
+        "schema_version": "native_task_runtime_source_packet.v1",
+        "status": "ready",
+        "receipt_digest": "",
+    }
+    runtime_source["receipt_digest"] = canonical_digest(
+        runtime_source, digest_field="receipt_digest"
+    )
+    write_json(source_packet, runtime_source)
+    predecessor = _predecessor(tmp_path / "predecessor")
+    reconciled = {
+        "prior_terminal_attempts": [{"result": _record(predecessor["result"])}],
+        "reconciliation": None,
+        "actual_total_usd": 0.05,
+    }
+    monkeypatch.setattr(
+        paid, "validate_bound_lane_prior_spend", lambda *_args, **_kwargs: reconciled
+    )
+    bundle_receipts = {}
+    authorities = {}
+    for link in builder.LINKS:
+        bundle_receipt = _provider_bundle(
+            tmp_path / f"{link}-bundle",
+            link=link,
+            packet_digest=packet_receipt["receipt_digest"],
+            runtime_source_digest=runtime_source["receipt_digest"],
+        )
+        bundle_receipts[link] = bundle_receipt
+        authorities[link] = _attempt_authority(
+            tmp_path / f"{link}-authority.json",
+            bundle_receipt=bundle_receipt,
+            predecessor=predecessor,
+        )
+    reconciliation_record = json.loads(
+        authorities["construction"].read_text(encoding="utf-8")
+    )["prior_spend_reconciliation"]
+    reconciled["reconciliation"] = reconciliation_record
+    monkeypatch.setattr(
+        live_profile,
+        "validate_same_goal_spend_reconciliation",
+        lambda *_args, **_kwargs: ({"entries": []}, reconciliation_record),
+    )
     construction = tmp_path / "construction_result.json"
     construction.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
     control = tmp_path / "control_result.json"
@@ -104,8 +339,8 @@ def lane(tmp_path: Path) -> dict:
     policy_spec.write_text(json.dumps({"candidates": []}), encoding="utf-8")
     return {
         "packet": packet,
-        "bundle_receipt": bundle_receipt,
-        "authority": authority_path,
+        "bundle_receipts": bundle_receipts,
+        "authorities": authorities,
         "source_packet": source_packet,
         "construction": construction,
         "control": control,
@@ -117,8 +352,8 @@ def _build(lane, link: str, **overrides):
     arguments = {
         "link": link,
         "packet_dir": lane["packet"],
-        "bundle_receipt_path": lane["bundle_receipt"],
-        "attempt_authority_path": lane["authority"],
+        "bundle_receipt_path": lane["bundle_receipts"][link],
+        "attempt_authority_path": lane["authorities"][link],
         "runtime_source_packet_path": lane["source_packet"],
         "source_commit": overrides.pop("source_commit", COMMIT),
         "raw_manifest_uri": URI,
@@ -147,10 +382,10 @@ def test_each_link_routes_its_own_probe_kind(lane, link: str, probe_kind: str) -
     assert "--native-task-arena-packet" in argv
     assert "--native-task-arena-runtime-source-packet" in argv
     assert argv[argv.index("--native-task-arena-bundle-receipt") + 1] == str(
-        lane["bundle_receipt"].resolve()
+        lane["bundle_receipts"][link].resolve()
     )
     assert argv[argv.index("--native-task-arena-attempt-authority") + 1] == str(
-        lane["authority"].resolve()
+        lane["authorities"][link].resolve()
     )
 
 
@@ -163,6 +398,45 @@ def test_default_budget_matches_the_attempt_authority(lane) -> None:
 def test_authority_budget_mismatch_is_refused_before_allocation(lane) -> None:
     with pytest.raises(TaskEvaluationLaunchError, match="attempt_authority_invalid"):
         _build(lane, "construction", max_spend_usd=1.5)
+
+
+def test_bundle_receipt_and_packet_receipt_remain_distinct_predecessors(lane) -> None:
+    profile = _build(lane, "construction")
+    inputs = {row["name"]: row for row in profile["immutable_inputs"]}
+
+    assert inputs["source_bundle_manifest"]["path"] == str(
+        lane["bundle_receipts"]["construction"].resolve()
+    )
+    assert inputs["evaluation_run_spec"]["path"] == str(
+        (lane["packet"] / builder.PACKET_RECEIPT_NAME).resolve()
+    )
+    assert inputs["native_task_arena_attempt_authority"]["path"] == str(
+        lane["authorities"]["construction"].resolve()
+    )
+    assert inputs["source_bundle_manifest"] != inputs["evaluation_run_spec"]
+
+
+def test_provider_bundle_byte_tamper_is_refused_before_allocation(lane) -> None:
+    receipt = json.loads(
+        lane["bundle_receipts"]["construction"].read_text(encoding="utf-8")
+    )
+    Path(receipt["bundle_path"]).write_bytes(b"tampered-provider-bundle")
+
+    with pytest.raises(TaskEvaluationLaunchError, match="provider_bundle_invalid"):
+        _build(lane, "construction")
+
+
+def test_permissive_attempt_authority_is_refused_before_allocation(lane) -> None:
+    authority_path = lane["authorities"]["construction"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["maximum_provider_allocations"] = 2
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+
+    with pytest.raises(TaskEvaluationLaunchError, match="attempt_authority_invalid"):
+        _build(lane, "construction")
 
 
 @pytest.mark.parametrize("link", ["construction", "controls", "policy"])
