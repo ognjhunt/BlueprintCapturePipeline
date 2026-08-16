@@ -22,6 +22,11 @@ DEFAULT_IMAGE = (
     "nvcr.io/nvidia/isaac-sim:6.0.1@"
     "sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9"
 )
+#: The probes this bundle's stages define, named on the receipt so the retained
+#: execution adjudicator can read the expected set from the bundle it is
+#: adjudicating rather than from a value only a test ever supplied.
+RIGID_PROBE_NAMES = frozenset({"drop", "slide", "tip", "gripper"})
+
 REQUIRED_NATIVE_FILES = (
     "adp009b_simready_native_probe_manifest.json",
     "drop_stage.usda",
@@ -241,6 +246,7 @@ def build_simready_isaac_bundle(
         "candidate_usd_sha256": _sha256(candidate_usd),
         "container_image": DEFAULT_IMAGE,
         "probe_spec_sha256": _sha256(source / "isaac_probe_spec.json"),
+        "probe_names": sorted(RIGID_PROBE_NAMES),
         "native_probe_manifest_sha256": _sha256(native_probe_manifest),
         "native_probe_manifest_digest": manifest["manifest_digest"],
         "input_files": input_records,
