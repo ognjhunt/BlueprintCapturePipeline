@@ -373,7 +373,7 @@ verify_clean_release_source() {
     current_sha="$(current_git_sha)"
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_info "[DRY-RUN] Would require a clean main checkout at origin/main before deployment"
+        log_info "[DRY-RUN] Would require a clean, promoted checkout already merged into origin/main"
         return
     fi
     if [[ -z "$current_sha" || ! "$current_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -391,12 +391,12 @@ verify_clean_release_source() {
     fi
     git -C "$PROJECT_ROOT" fetch --quiet origin main
     origin_main_sha="$(git -C "$PROJECT_ROOT" rev-parse refs/remotes/origin/main)"
-    if [[ "$current_sha" != "$origin_main_sha" ]]; then
-        log_error "Checked-out source ${current_sha} is not in exact parity with origin/main ${origin_main_sha}."
+    if ! git -C "$PROJECT_ROOT" merge-base --is-ancestor "$current_sha" refs/remotes/origin/main; then
+        log_error "Checked-out source ${current_sha} is not merged into origin/main ${origin_main_sha}."
         exit 2
     fi
     GIT_SHA="$current_sha"
-    log_success "Clean source and origin/main parity verified at ${current_sha}"
+    log_success "Clean promoted source ${current_sha} is merged into origin/main ${origin_main_sha}"
 }
 
 # =============================================================================

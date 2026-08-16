@@ -311,6 +311,14 @@ from .task_evaluation_terminal_resource_release import dispatch_terminal_resourc
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CONTROL_PLANE_RELEASE_STATE_ROOT = Path(
+    os.environ.get(
+        "BLUEPRINT_CONTROL_PLANE_RELEASE_STATE_ROOT",
+        "/var/lib/blueprint/pipeline-control-plane/"
+        "task-evaluation-control-plane-releases",
+    )
+).expanduser()
+DEPLOY_RELEASE_PROVENANCE_NAME = "deploy-release-provenance.json"
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
 MIN_RECONCILED_CAMPAIGN_SPEND_USD = 14.557003
 MIN_RECONCILED_GPU_SECONDS = 15_624
@@ -422,6 +430,82 @@ def _current_checkout_source_state() -> tuple[str, bool, bool]:
     )
     clean = not status_result.stdout.strip()
     return (commit if commit_valid else ""), clean, True
+
+
+def _commit_is_merged_into(commit: str, ref: str) -> bool:
+    """Is this commit already part of ``ref``'s history?
+
+    A launch needs its code to be public and reviewed, which merging into main
+    establishes and which every ancestor of main satisfies equally. It does not
+    need to be main's *newest* commit. Requiring the tip means merging any later
+    fix silently invalidates an already prepared release: on 2026-08-16 that
+    discarded a promoted deploy plus a full commit-bound artifact rebuild, and
+    the only way to launch again was to redo both for a commit whose worker code
+    had not changed. Ancestry keeps the property that matters and drops the one
+    that only served to make fixes and launches race each other.
+    """
+
+    if not commit or not ref:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit, ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _commit_has_verified_production_promotion(commit: str) -> bool:
+    """Require the exact canonical Full Test Lane receipt for an old release.
+
+    Ancestry proves that the bytes were merged; it does not prove that those
+    exact bytes passed the authoritative production-promotion lane.  The
+    canonical deploy installs the already-live-verified GitHub receipt beside
+    the release state, outside the clean Git checkout.  This local check keeps
+    paid admission offline and prevents a merely merged ancestor from gaining
+    the stronger status of a promoted release.
+    """
+
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        return False
+    path = (
+        CONTROL_PLANE_RELEASE_STATE_ROOT
+        / commit
+        / DEPLOY_RELEASE_PROVENANCE_NAME
+    )
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        metadata = path.stat()
+        if metadata.st_mode & 0o022:
+            return False
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(value, Mapping):
+        return False
+    collection = value.get("collection")
+    claim_boundary = value.get("claim_boundary")
+    return bool(
+        value.get("schema_version") == "blueprint.deploy_release_provenance.v1"
+        and value.get("status") == "verified"
+        and value.get("git_sha") == commit
+        and value.get("workflow_name") == "Full Test Lane"
+        and value.get("workflow_path") == ".github/workflows/full-test-lane.yml"
+        and value.get("job_name") == "Full pytest lane on CPU runner"
+        and type(value.get("run_id")) is int
+        and value.get("run_id", 0) > 0
+        and isinstance(collection, Mapping)
+        and type(collection.get("test_count")) is int
+        and collection.get("test_count", 0) > 0
+        and isinstance(claim_boundary, Mapping)
+        and claim_boundary.get("canonical_full_lane_verified") is True
+    )
 
 
 def _current_origin_main_commit() -> str:
@@ -546,14 +630,40 @@ def _source_checkout_blockers(
     else:
         origin_main_commit = _current_origin_main_commit()
         remote_main_commit = _current_remote_main_commit()
+        accepted_by_origin = False
+        accepted_by_remote = False
         if not origin_main_commit:
             blockers.append("gpu_canary_origin_main_commit_unavailable")
-        elif checkout_commit != origin_main_commit:
-            blockers.append("gpu_canary_checkout_not_origin_main")
+        elif checkout_commit == origin_main_commit:
+            accepted_by_origin = True
+        else:
+            accepted_by_origin = _commit_is_merged_into(checkout_commit, "origin/main")
+            if not accepted_by_origin:
+                blockers.append("gpu_canary_checkout_not_origin_main")
         if not remote_main_commit:
             blockers.append("gpu_canary_remote_main_commit_unavailable")
-        elif checkout_commit != remote_main_commit:
-            blockers.append("gpu_canary_checkout_not_remote_main")
+        elif checkout_commit == remote_main_commit:
+            accepted_by_remote = True
+        else:
+            accepted_by_remote = _commit_is_merged_into(checkout_commit, remote_main_commit)
+            if not accepted_by_remote:
+                blockers.append("gpu_canary_checkout_not_remote_main")
+        ancestor_release = bool(
+            checkout_commit
+            and origin_main_commit
+            and remote_main_commit
+            and (
+                checkout_commit != origin_main_commit
+                or checkout_commit != remote_main_commit
+            )
+        )
+        if (
+            ancestor_release
+            and accepted_by_origin
+            and accepted_by_remote
+            and not _commit_has_verified_production_promotion(checkout_commit)
+        ):
+            blockers.append("gpu_canary_checkout_promotion_provenance_invalid")
     if not checkout_clean:
         blockers.append("gpu_canary_checkout_not_clean")
     return blockers, checkout_commit

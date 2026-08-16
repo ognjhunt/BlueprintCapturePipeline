@@ -1,12 +1,44 @@
 from __future__ import annotations
 
 import subprocess
+import json
+from pathlib import Path
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 
 
 def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=["git"], returncode=returncode, stdout=stdout, stderr="")
+
+
+def test_ancestor_promotion_receipt_must_bind_the_exact_full_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
+    commit = "a" * 40
+    monkeypatch.setattr(allocator, "CONTROL_PLANE_RELEASE_STATE_ROOT", tmp_path)
+    path = tmp_path / commit / allocator.DEPLOY_RELEASE_PROVENANCE_NAME
+    path.parent.mkdir(parents=True)
+    receipt = {
+        "schema_version": "blueprint.deploy_release_provenance.v1",
+        "status": "verified",
+        "git_sha": commit,
+        "run_id": 123,
+        "workflow_name": "Full Test Lane",
+        "workflow_path": ".github/workflows/full-test-lane.yml",
+        "job_name": "Full pytest lane on CPU runner",
+        "collection": {"test_count": 100},
+        "claim_boundary": {"canonical_full_lane_verified": True},
+    }
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    path.chmod(0o440)
+
+    assert allocator._commit_has_verified_production_promotion(commit) is True
+
+    receipt["git_sha"] = "b" * 40
+    path.chmod(0o640)
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    path.chmod(0o440)
+    assert allocator._commit_has_verified_production_promotion(commit) is False
 
 
 def test_identity_probe_failure_is_not_reported_as_a_dirty_checkout(monkeypatch) -> None:
@@ -119,6 +151,102 @@ def test_clean_checkout_reports_no_blockers(monkeypatch) -> None:
     assert identity["identity_probe_ran"] is True
     assert identity["checkout_clean"] is True
     assert identity["orchestrator_source_commit"] == commit
+
+
+def _prepare_main(
+    monkeypatch, *, checkout: str, tip: str, merged: bool, promoted: bool = False
+) -> None:
+    monkeypatch.setattr(
+        allocator, "_current_checkout_source_state", lambda: (checkout, True, True)
+    )
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: tip)
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: tip)
+    monkeypatch.setattr(
+        allocator, "_commit_is_merged_into", lambda commit, ref: merged
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_commit_has_verified_production_promotion",
+        lambda commit: promoted,
+    )
+
+
+def test_a_commit_already_merged_into_main_may_still_launch(monkeypatch) -> None:
+    """Production regression: merging a later fix invalidated a ready release.
+
+    The gate needs the launched code to be public and reviewed, which every
+    ancestor of main satisfies. Demanding the tip meant any merge landing after
+    a release was prepared discarded a promoted deploy and its whole
+    commit-bound artifact rebuild.
+    """
+
+    _prepare_main(
+        monkeypatch,
+        checkout="a" * 40,
+        tip="b" * 40,
+        merged=True,
+        promoted=True,
+    )
+
+    blockers, commit = allocator._source_checkout_blockers("a" * 40)
+
+    assert blockers == []
+    assert commit == "a" * 40
+
+
+def test_a_commit_outside_main_history_is_still_refused(monkeypatch) -> None:
+    _prepare_main(monkeypatch, checkout="a" * 40, tip="b" * 40, merged=False)
+
+    blockers, _ = allocator._source_checkout_blockers("a" * 40)
+
+    assert "gpu_canary_checkout_not_origin_main" in blockers
+    assert "gpu_canary_checkout_not_remote_main" in blockers
+
+
+def test_a_merged_but_unpromoted_commit_is_still_refused(monkeypatch) -> None:
+    _prepare_main(
+        monkeypatch,
+        checkout="a" * 40,
+        tip="b" * 40,
+        merged=True,
+        promoted=False,
+    )
+
+    blockers, _ = allocator._source_checkout_blockers("a" * 40)
+
+    assert blockers == ["gpu_canary_checkout_promotion_provenance_invalid"]
+
+
+def test_the_main_tip_is_accepted_without_consulting_ancestry(monkeypatch) -> None:
+    """The tip must not depend on a merge-base probe that could fail closed."""
+
+    tip = "b" * 40
+    _prepare_main(monkeypatch, checkout=tip, tip=tip, merged=False)
+
+    blockers, commit = allocator._source_checkout_blockers(tip)
+
+    assert blockers == []
+    assert commit == tip
+
+
+def test_a_dirty_ancestor_checkout_still_blocks(monkeypatch) -> None:
+    """Relaxing which commit may launch must not relax whether it is intact."""
+
+    monkeypatch.setattr(
+        allocator, "_current_checkout_source_state", lambda: ("a" * 40, False, True)
+    )
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "b" * 40)
+    monkeypatch.setattr(allocator, "_commit_is_merged_into", lambda commit, ref: True)
+    monkeypatch.setattr(
+        allocator,
+        "_commit_has_verified_production_promotion",
+        lambda commit: True,
+    )
+
+    blockers, _ = allocator._source_checkout_blockers("a" * 40)
+
+    assert "gpu_canary_checkout_not_clean" in blockers
 
 
 def test_source_checkout_blockers_also_separate_probe_failure_from_dirty(monkeypatch) -> None:

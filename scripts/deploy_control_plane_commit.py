@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import stat
@@ -67,10 +68,90 @@ DEFAULT_INTAKE_RUNTIME_DROP_IN = (
     "90-blueprint-deploy-identity.conf"
 )
 DEFAULT_INTAKE_VERSION_URL = "http://127.0.0.1:8765/api/live-pipeline/version"
+DEPLOY_RELEASE_PROVENANCE_NAME = "deploy-release-provenance.json"
 
 
 class ControlPlaneDeployError(ValueError):
     """A surface did not reach the requested commit, or cannot say that it did."""
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _validated_release_provenance(
+    path: str | Path, *, source_commit: str
+) -> tuple[Path, bytes, dict[str, Any]]:
+    """Open the exact live-verified production-promotion receipt."""
+
+    raw_source = Path(path).expanduser()
+    try:
+        if raw_source.is_symlink():
+            raise ControlPlaneDeployError("deploy_release_provenance_invalid")
+        source = raw_source.resolve()
+        if not source.is_file():
+            raise ControlPlaneDeployError("deploy_release_provenance_invalid")
+        payload = source.read_bytes()
+        value = json.loads(payload)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ControlPlaneDeployError("deploy_release_provenance_invalid") from exc
+    if not isinstance(value, Mapping):
+        raise ControlPlaneDeployError("deploy_release_provenance_invalid")
+    collection = value.get("collection")
+    claim_boundary = value.get("claim_boundary")
+    if not (
+        value.get("schema_version") == "blueprint.deploy_release_provenance.v1"
+        and value.get("status") == "verified"
+        and value.get("git_sha") == source_commit
+        and value.get("workflow_name") == "Full Test Lane"
+        and value.get("workflow_path") == ".github/workflows/full-test-lane.yml"
+        and value.get("job_name") == "Full pytest lane on CPU runner"
+        and type(value.get("run_id")) is int
+        and value.get("run_id", 0) > 0
+        and isinstance(collection, Mapping)
+        and type(collection.get("test_count")) is int
+        and collection.get("test_count", 0) > 0
+        and isinstance(claim_boundary, Mapping)
+        and claim_boundary.get("canonical_full_lane_verified") is True
+    ):
+        raise ControlPlaneDeployError("deploy_release_provenance_mismatch")
+    return source, payload, dict(value)
+
+
+def _install_release_provenance(
+    *, payload: bytes, state_root: Path, source_commit: str, receipt: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Install immutable promotion proof where paid admission can reopen it."""
+
+    destination = state_root / source_commit / DEPLOY_RELEASE_PROVENANCE_NAME
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        raise ControlPlaneDeployError("deploy_release_provenance_destination_symlink")
+    try:
+        if destination.exists():
+            if not destination.is_file() or destination.read_bytes() != payload:
+                raise ControlPlaneDeployError("deploy_release_provenance_conflict")
+        else:
+            with destination.open("xb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.chmod(destination, 0o440)
+        reopened = destination.read_bytes()
+    except OSError as exc:
+        raise ControlPlaneDeployError("deploy_release_provenance_install_failed") from exc
+    if reopened != payload:
+        raise ControlPlaneDeployError("deploy_release_provenance_readback_mismatch")
+    return {
+        "path": str(destination),
+        "sha256": _sha256_bytes(reopened),
+        "size_bytes": len(reopened),
+        "git_sha": source_commit,
+        "run_id": receipt.get("run_id"),
+        "run_url": receipt.get("run_url"),
+        "canonical_full_lane_verified": True,
+        "mode": "0440",
+    }
 
 
 def _expanded_slots(lock_paths: Sequence[str]) -> list[Path]:
@@ -427,6 +508,7 @@ def deploy_control_plane_commit(
     release_root: str | Path,
     state_root: str | Path,
     active_link: str | Path,
+    release_provenance: str | Path,
     restart_units: Sequence[str] = DEFAULT_RESTART_UNITS,
     paid_launch_locks: Sequence[str] = DEFAULT_PAID_LAUNCH_LOCKS,
     intake_runtime_drop_in: str | Path = DEFAULT_INTAKE_RUNTIME_DROP_IN,
@@ -436,10 +518,39 @@ def deploy_control_plane_commit(
 
     source = Path(source_repo).expanduser().resolve()
     active = Path(active_link).expanduser()
+    releases = Path(release_root).expanduser().resolve()
+    raw_state = Path(state_root).expanduser()
+    if (
+        len(source_commit) != 40
+        or any(character not in "0123456789abcdef" for character in source_commit)
+    ):
+        raise ControlPlaneDeployError("deploy_source_commit_invalid")
+    if not raw_state.is_absolute():
+        raise ControlPlaneDeployError("deploy_state_root_must_be_absolute")
+    state = raw_state.resolve()
+    if (
+        state == source
+        or state in source.parents
+        or source in state.parents
+        or state == releases
+        or state in releases.parents
+    ):
+        raise ControlPlaneDeployError("deploy_state_root_overlaps_checkout")
+    _provenance_source, provenance_payload, provenance_receipt = (
+        _validated_release_provenance(
+            release_provenance, source_commit=source_commit
+        )
+    )
 
     # Held for the whole deploy, not sampled before it: a launch that starts
     # mid-deploy would read a release being swapped underneath it.
     with _holding_paid_launch_locks(paid_launch_locks):
+        installed_provenance = _install_release_provenance(
+            payload=provenance_payload,
+            state_root=state,
+            source_commit=source_commit,
+            receipt=provenance_receipt,
+        )
         _move_source_checkout(source, source_commit)
         release = stage_task_evaluation_control_plane_release(
             source_repo=source,
@@ -502,6 +613,7 @@ def deploy_control_plane_commit(
             for name, path in sorted(surfaces.items())
         ],
         "release_path": release["release_path"],
+        "release_provenance": installed_provenance,
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
         "intake_runtime_binding": runtime_binding,
@@ -536,6 +648,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--active-link", required=True)
     parser.add_argument(
+        "--release-provenance",
+        required=True,
+        help=(
+            "Exact verified blueprint.deploy_release_provenance.v1 receipt "
+            "for --source-commit."
+        ),
+    )
+    parser.add_argument(
         "--restart-unit",
         action="append",
         default=None,
@@ -567,6 +687,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             release_root=args.release_root,
             state_root=args.state_root,
             active_link=args.active_link,
+            release_provenance=args.release_provenance,
             restart_units=tuple(args.restart_unit or ()),
             paid_launch_locks=tuple(args.paid_launch_lock or DEFAULT_PAID_LAUNCH_LOCKS),
             intake_runtime_drop_in=args.intake_runtime_drop_in,

@@ -586,6 +586,8 @@ def test_full_test_lane_is_explicit_or_nightly_and_gates_deploy_contract():
     assert "status --porcelain=v1 --untracked-files=all" in deploy_script
     assert "fetch --quiet origin main" in deploy_script
     assert "refs/remotes/origin/main" in deploy_script
+    assert 'merge-base --is-ancestor "$current_sha" refs/remotes/origin/main' in deploy_script
+    assert "not in exact parity with origin/main" not in deploy_script
     assert "FULL_TEST_LANE_BYPASS_REASON" not in deploy_script
     assert "this deploy path has no text-only CI bypass" in deploy_script
     assert (
