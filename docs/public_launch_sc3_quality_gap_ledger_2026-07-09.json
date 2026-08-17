@@ -5710,7 +5710,7 @@
             {
               "artifact_id": "RUN-10-AC-01-EV-01",
               "path": "scripts/verify_deploy_release_provenance.py",
-              "sha256": "sha256:0ad745e6cd65d6101472dc5b51a91997bf53bd9d941a5656e4b51456c7f3b9f2",
+              "sha256": "sha256:7251ec9f5b2a37bb638a7dfe7d1a944f7b3197cc919041ed81c339ecc60fa1b7",
               "role": "executable_control",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5726,7 +5726,7 @@
             {
               "artifact_id": "RUN-10-AC-01-EV-02",
               "path": "tests/test_deploy_release_provenance.py",
-              "sha256": "sha256:d88f83682ce2d3f1c5bb6a27115795d36c53299216f4a59ff54d86964b435bb9",
+              "sha256": "sha256:596093ad0d6f853a778d4a8e2fc54dc4bc31012da086fe62b33e214ecb66bd81",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12887,7 +12887,7 @@
             {
               "artifact_id": "RUN-24-AC-01-EV-01",
               "path": "scripts/verify_deploy_release_provenance.py",
-              "sha256": "sha256:0ad745e6cd65d6101472dc5b51a91997bf53bd9d941a5656e4b51456c7f3b9f2",
+              "sha256": "sha256:7251ec9f5b2a37bb638a7dfe7d1a944f7b3197cc919041ed81c339ecc60fa1b7",
               "role": "executable_control",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12919,7 +12919,7 @@
             {
               "artifact_id": "RUN-24-AC-01-EV-03",
               "path": "tests/test_deploy_release_provenance.py",
-              "sha256": "sha256:d88f83682ce2d3f1c5bb6a27115795d36c53299216f4a59ff54d86964b435bb9",
+              "sha256": "sha256:596093ad0d6f853a778d4a8e2fc54dc4bc31012da086fe62b33e214ecb66bd81",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
