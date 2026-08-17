@@ -362,6 +362,18 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+#: Fields that legitimately differ between two deliveries of the same capture.
+#: A Pub/Sub redelivery arrives at a later wall-clock time but is the same job;
+#: everything outside this set differing means the paid work itself changed.
+_VOLATILE_REQUEST_FIELDS = frozenset({"requested_at", "request_digest"})
+
+
+def _stable_request_view(value: Mapping[str, Any]) -> str:
+    return canonical_json(
+        {k: v for k, v in dict(value).items() if k not in _VOLATILE_REQUEST_FIELDS}
+    )
+
+
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
     payload = (canonical_json(dict(value)) + "\n").encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -370,11 +382,20 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> bool:
             stream.write(payload)
         return True
     except FileExistsError:
-        if path.read_bytes() != payload:
+        if path.read_bytes() == payload:
+            return False
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
             raise CaptureReconstructionLaunchError(
                 f"immutable_capture_reconstruction_launch_conflict:{path.name}"
-            )
-        return False
+            ) from exc
+        if _stable_request_view(existing) == _stable_request_view(value):
+            # Same capture, same policy, same paid authority, later delivery.
+            return False
+        raise CaptureReconstructionLaunchError(
+            f"immutable_capture_reconstruction_launch_conflict:{path.name}"
+        )
 
 
 def stage_launch_request(
@@ -417,6 +438,184 @@ def stage_launch_request(
         "queue_path": str(path),
         "provider_mutation_performed": False,
     }
+
+
+def compute_capture_digest(raw_root: str | Path) -> str:
+    """Digest every immutable raw byte via the device's own hash manifest.
+
+    ``raw/hashes.json`` is written on device and is already required to cover
+    every raw file exactly; the completion marker is removed if it does not.
+    Recomputing that agreement here means a capture whose bytes were altered
+    after hashing, or which carries a file the manifest never listed, cannot
+    acquire a digest at all.
+    """
+
+    raw = Path(raw_root).expanduser().resolve()
+    hashes_path = raw / "hashes.json"
+    if not hashes_path.is_file():
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_missing_hash_manifest"
+        )
+    try:
+        payload = json.loads(hashes_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_hash_manifest_unreadable"
+        ) from exc
+    artifacts = payload.get("artifacts") if isinstance(payload, Mapping) else None
+    if not isinstance(artifacts, Mapping) or not artifacts:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_hash_manifest_empty"
+        )
+
+    observed: dict[str, str] = {}
+    for path in sorted(raw.rglob("*")):
+        if not path.is_file() or path.name == "hashes.json":
+            continue
+        relative = str(path.relative_to(raw)).replace("\\", "/")
+        observed[relative] = _sha256_file(path)
+
+    uncovered = sorted(set(observed) - {str(k) for k in artifacts})
+    if uncovered:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_hash_coverage_missing:" + ",".join(uncovered[:8])
+        )
+    missing = sorted({str(k) for k in artifacts} - set(observed))
+    if missing:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_hash_target_missing:" + ",".join(missing[:8])
+        )
+    mismatched = sorted(
+        relative
+        for relative, digest in observed.items()
+        if str(artifacts[relative]).lower().removeprefix(_DIGEST_PREFIX) != digest
+    )
+    if mismatched:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_hash_mismatch:" + ",".join(mismatched[:8])
+        )
+    return canonical_digest(
+        {"artifacts": {key: observed[key] for key in sorted(observed)}},
+        digest_field="capture_digest",
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _first_identity(sources: Sequence[Mapping[str, Any]], keys: Sequence[str]) -> str:
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def resolve_capture_identity(
+    *, capture_root: str | Path, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Read this capture's own identity and digests, or abstain.
+
+    Site and task are never inferred from a nearby capture, a default, or a
+    task *hypothesis*: an unbound capture abstains and says which binding is
+    missing.
+    """
+
+    root = Path(capture_root).expanduser().resolve()
+    raw = root / "raw"
+    if not (raw / "capture_upload_complete.json").is_file():
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_capture_upload_complete_absent"
+        )
+
+    def _read(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    sources: list[Mapping[str, Any]] = [
+        _mapping(payload),
+        _read(raw / "capture_context.json"),
+        _read(raw / "manifest.json"),
+        _read(root / "pipeline_handoff.json"),
+    ]
+    site_id = _first_identity(sources, ("site_id", "siteId", "site_slug", "siteSlug"))
+    if not site_id:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_site_id_binding_absent"
+        )
+    task_id = _first_identity(sources, ("task_id", "taskId"))
+    if not task_id:
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_task_id_binding_absent"
+        )
+
+    candidate_manifest = _read(raw / "downstream_candidate_manifest.json")
+    candidate_manifest_digest = str(candidate_manifest.get("manifest_digest") or "")
+    if not _is_digest(candidate_manifest_digest):
+        raise CaptureReconstructionLaunchError(
+            "capture_reconstruction_candidate_manifest_digest_absent"
+        )
+
+    return {
+        "site_id": site_id,
+        "task_id": task_id,
+        "capture_id": _first_identity(sources, ("capture_id", "captureId"))
+        or root.name,
+        "scene_id": _first_identity(sources, ("scene_id", "sceneId")),
+        "capture_digest": compute_capture_digest(raw),
+        "candidate_manifest_digest": candidate_manifest_digest,
+        "raw_root": str(raw),
+    }
+
+
+def enqueue_capture_reconstruction(
+    *,
+    capture_root: str | Path,
+    payload: Mapping[str, Any],
+    policy_root: str | Path,
+    queue_root: str | Path,
+    source_commit_sha: str,
+    requested_at: str,
+) -> dict[str, Any]:
+    """Turn one staged capture into exactly one queued reconstruction launch.
+
+    Every abstention happens before the queue is touched, so a capture that
+    cannot legitimately proceed leaves no billable trace.
+    """
+
+    identity = resolve_capture_identity(capture_root=capture_root, payload=payload)
+    policy = resolve_site_task_policy(
+        policy_root=policy_root,
+        site_id=identity["site_id"],
+        task_id=identity["task_id"],
+    )
+    request = build_launch_request(
+        policy=policy,
+        capture_id=identity["capture_id"],
+        scene_id=identity["scene_id"] or identity["capture_id"],
+        intake_id=identity["capture_id"],
+        capture_digest=identity["capture_digest"],
+        candidate_manifest_digest=identity["candidate_manifest_digest"],
+        capture_root_uri=str(_mapping(payload).get("raw_prefix_uri") or identity["raw_root"]),
+        source_commit_sha=source_commit_sha,
+        rights_evidence_digest=str(
+            _mapping(policy.get("rights_authority")).get("rights_evidence_digest")
+        ),
+        revocation_check_status="clear",
+        requested_at=requested_at,
+    )
+    return stage_launch_request(value=request, queue_root=queue_root)
 
 
 def process_launch_queue(
@@ -503,7 +702,10 @@ __all__ = [
     "QUEUE_RUN_SCHEMA_VERSION",
     "SELECTION_PROFILE_SCHEMA_VERSION",
     "build_launch_request",
+    "compute_capture_digest",
+    "enqueue_capture_reconstruction",
     "mint_frame_selection_profile",
+    "resolve_capture_identity",
     "process_launch_queue",
     "resolve_site_task_policy",
     "stage_launch_request",

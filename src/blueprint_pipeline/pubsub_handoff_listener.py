@@ -444,6 +444,71 @@ _PROVIDER_STATUS_FIELD_NAMES = {
 }
 
 
+RECONSTRUCTION_POLICY_ROOT_ENV = "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT"
+RECONSTRUCTION_QUEUE_ROOT_ENV = "BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT"
+RECONSTRUCTION_SOURCE_COMMIT_ENV = "BLUEPRINT_CAPTURE_RECONSTRUCTION_SOURCE_COMMIT_SHA"
+
+
+def _enqueue_capture_reconstruction_if_configured(
+    *,
+    handoff: HandoffMessage,
+    capture_root: Path,
+) -> dict[str, Any]:
+    """Queue this capture's 3DGS launch when a site/task policy admits it.
+
+    Abstention is an ordinary outcome, not a delivery failure: a capture whose
+    site/task has no registered policy, or whose raw bytes disagree with the
+    device hash manifest, is recorded and left alone.  Nacking here would
+    dead-letter a message the listener actually handled correctly, and the
+    queue itself is idempotent, so a genuine redelivery cannot double-book.
+    """
+
+    policy_root = str(os.getenv(RECONSTRUCTION_POLICY_ROOT_ENV) or "").strip()
+    queue_root = str(os.getenv(RECONSTRUCTION_QUEUE_ROOT_ENV) or "").strip()
+    if not policy_root or not queue_root:
+        return {"status": "not_configured", "enqueued": False}
+
+    from .capture_reconstruction_launch_dispatcher import (
+        CaptureReconstructionLaunchError,
+        enqueue_capture_reconstruction,
+    )
+
+    payload = {
+        "bucket": handoff.bucket,
+        "scene_id": handoff.scene_id,
+        "capture_id": handoff.capture_id,
+        "raw_prefix_uri": handoff.raw_prefix_uri,
+    }
+    try:
+        receipt = enqueue_capture_reconstruction(
+            capture_root=capture_root,
+            payload=payload,
+            policy_root=policy_root,
+            queue_root=queue_root,
+            source_commit_sha=str(
+                os.getenv(RECONSTRUCTION_SOURCE_COMMIT_ENV) or ""
+            ).strip(),
+            requested_at=utc_now_iso(),
+        )
+    except CaptureReconstructionLaunchError as exc:
+        return {
+            "status": "abstained",
+            "enqueued": False,
+            "capture_id": handoff.capture_id,
+            "blockers": [str(exc)],
+        }
+    return {
+        "status": receipt["status"],
+        "enqueued": not receipt["already_exists"],
+        "already_exists": receipt["already_exists"],
+        "capture_id": receipt["capture_id"],
+        "capture_digest": receipt["capture_digest"],
+        "idempotency_key": receipt["idempotency_key"],
+        "queue_path": receipt["queue_path"],
+        "provider_mutation_performed": False,
+    }
+
+
 def _read_job_ledger(capture_root: Path) -> dict[str, Any]:
     ledger_path = capture_root / JOB_LEDGER_FILENAME
     if not ledger_path.is_file():
@@ -1169,6 +1234,7 @@ def process_handoff_payload(
             "job_ledger": completed_ledger,
         }
     control_plane_staging: dict[str, Any] | None = None
+    reconstruction_enqueue: dict[str, Any] | None = None
     failure_stage = "stage_handoff_capture"
     try:
         with _JobLeaseHeartbeat(
@@ -1233,6 +1299,11 @@ def process_handoff_payload(
                     work_dir=control_plane_work_dir,
                     staged_inputs_path=control_plane_staged_inputs_path,
                     overwrite=overwrite_control_plane_input,
+                )
+                failure_stage = "reconstruction_launch_enqueue"
+                reconstruction_enqueue = _enqueue_capture_reconstruction_if_configured(
+                    handoff=handoff,
+                    capture_root=staged_capture_root,
                 )
             failure_stage = "run_e2e"
             result = (
@@ -1359,6 +1430,7 @@ def process_handoff_payload(
         "capture_root": str(capture_root),
         "run_e2e": result,
         "control_plane_staging": control_plane_staging,
+        "reconstruction_enqueue": reconstruction_enqueue,
         "output_commit": output_commit,
     }
 
