@@ -83,6 +83,69 @@ def _fixture(root: Path) -> dict:
     evidence.mkdir(parents=True)
     collision = evidence / "scene_collision.usda"
     collision.write_text('#usda 1.0\ndef Xform "Scene" {}\n', encoding="utf-8")
+    removed_collision = evidence / "collider_removal" / "scene_without_source_colliders.usda"
+    removed_collision.parent.mkdir(parents=True)
+    removed_collision.write_text(
+        '#usda 1.0\ndef Xform "RetainedScene" {}\n', encoding="utf-8"
+    )
+    target_removals = []
+    for index in range(len(TASKS)):
+        removal_id = f"remove_source_{index}"
+        target_prim_path = f"/Root/source_{index}"
+        child = _write(
+            removed_collision.parent / "independent" / f"{removal_id}.json",
+            {
+                "schema_version": "source_collider_subtree_removal.v1",
+                "status": "exact_source_collider_subtree_removed",
+                "removal_id": removal_id,
+                "sage_collision_usd_sha256": _sha(collision),
+                "removed_prim_path": target_prim_path,
+                "removed_prim_count": 1,
+                "source_bytes_unchanged": True,
+                "unrelated_prim_inventory_unchanged": True,
+                "remaining_target_collision_prim_count": 0,
+                "replacement_inserted": False,
+                "receipt_digest": "",
+            },
+            "receipt_digest",
+        )
+        target_removals.append(
+            {
+                "removal_id": removal_id,
+                "target_prim_path": target_prim_path,
+                "source_scene_sha256": _sha(collision),
+                "removed_prim_count": 1,
+                "receipt_digest": json.loads(child.read_text())["receipt_digest"],
+                "receipt": {
+                    "relative_path": child.relative_to(removed_collision.parent).as_posix(),
+                    "size_bytes": child.stat().st_size,
+                    "sha256": _sha(child),
+                },
+            }
+        )
+    collider_batch = _write(
+        removed_collision.parent / "source_collider_batch_removal.v1.json",
+        {
+            "schema_version": "source_collider_batch_removal.v1",
+            "status": "independent_and_shared_source_colliders_removed",
+            "source_scene_usd": _record(collision),
+            "shared_removed_scene_usd": {
+                "relative_path": removed_collision.name,
+                "size_bytes": removed_collision.stat().st_size,
+                "sha256": _sha(removed_collision),
+            },
+            "target_count": len(TASKS),
+            "target_removals": target_removals,
+            "source_bytes_unchanged": True,
+            "unrelated_prim_inventory_unchanged": True,
+            "remaining_target_collision_prim_count": 0,
+            "replacement_inserted": False,
+            "independent_receipts_share_exact_source_digest": True,
+            "independent_removed_scenes_are_distinct": True,
+            "receipt_digest": "",
+        },
+        "receipt_digest",
+    )
     appearance = evidence / "scene_appearance.usdz"
     appearance.write_bytes(b"development-only appearance fixture")
 
@@ -379,6 +442,7 @@ def _fixture(root: Path) -> dict:
         "evidence": evidence,
         "paired": paired,
         "native_import": native_import,
+        "collider_batch": collider_batch,
         "manipulation_tasks": manipulation_tasks,
         "arena_inputs": arena_inputs,
     }
@@ -403,6 +467,7 @@ def test_two_task_chain_orders_pre_arena_construction_arena_then_full_gate(
     construction_path = tmp_path / "construction.json"
     construction = materialize_paired_target_native_construction_bindings(
         manipulation_preflight_path=pre_arena_path,
+        source_collider_batch_removal_path=fixture["collider_batch"],
         output_path=construction_path,
     )
     assert construction["replacement_object_count"] == 2

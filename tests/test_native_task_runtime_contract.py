@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -27,6 +28,10 @@ from blueprint_pipeline.paired_target_native_construction_bindings import (
 
 def _sha(character: str) -> str:
     return "sha256:" + character * 64
+
+
+def _file_sha(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _evidence_record(name: str, digest: str, schema_version: str) -> dict:
@@ -499,7 +504,9 @@ def test_two_tasks_select_distinct_subjects_from_one_shared_replacement_set() ->
     )
 
 
-def test_runtime_accepts_paired_target_construction_binding_without_legacy_receipts() -> None:
+def test_runtime_accepts_paired_target_construction_binding_without_legacy_receipts(
+    tmp_path: Path,
+) -> None:
     articulated = _articulated_fixture()
     rigid = _rigid_fixture()
     rows = []
@@ -542,12 +549,110 @@ def test_runtime_accepts_paired_target_construction_binding_without_legacy_recei
                 },
             }
         )
+    source_collision = tmp_path / "source_collision.usda"
+    source_collision.write_text('#usda 1.0\ndef Xform "Source" {}\n')
+    removal_root = tmp_path / "collider_removal"
+    removal_root.mkdir()
+    removed_collision = removal_root / "scene_without_source_colliders.usda"
+    removed_collision.write_text('#usda 1.0\ndef Xform "Retained" {}\n')
+    target_removals = []
+    for index in range(2):
+        removal_id = f"remove_source_{index}"
+        target_path = f"/Root/source_{index}"
+        child = {
+            "schema_version": "source_collider_subtree_removal.v1",
+            "status": "exact_source_collider_subtree_removed",
+            "removal_id": removal_id,
+            "sage_collision_usd_sha256": _file_sha(source_collision),
+            "removed_prim_path": target_path,
+            "removed_prim_count": 1,
+            "source_bytes_unchanged": True,
+            "unrelated_prim_inventory_unchanged": True,
+            "remaining_target_collision_prim_count": 0,
+            "replacement_inserted": False,
+            "receipt_digest": "",
+        }
+        child["receipt_digest"] = canonical_digest(
+            child, digest_field="receipt_digest"
+        )
+        child_path = removal_root / f"child_{index}.json"
+        child_path.write_text(json.dumps(child, sort_keys=True))
+        target_removals.append(
+            {
+                "removal_id": removal_id,
+                "target_prim_path": target_path,
+                "source_scene_sha256": _file_sha(source_collision),
+                "removed_prim_count": 1,
+                "receipt_digest": child["receipt_digest"],
+                "receipt": {
+                    "relative_path": child_path.name,
+                    "size_bytes": child_path.stat().st_size,
+                    "sha256": _file_sha(child_path),
+                },
+            }
+        )
+    batch = {
+        "schema_version": "source_collider_batch_removal.v1",
+        "status": "independent_and_shared_source_colliders_removed",
+        "source_scene_usd": {
+            "path": str(source_collision),
+            "size_bytes": source_collision.stat().st_size,
+            "sha256": _file_sha(source_collision),
+        },
+        "shared_removed_scene_usd": {
+            "relative_path": removed_collision.name,
+            "size_bytes": removed_collision.stat().st_size,
+            "sha256": _file_sha(removed_collision),
+        },
+        "target_count": 2,
+        "target_removals": target_removals,
+        "source_bytes_unchanged": True,
+        "unrelated_prim_inventory_unchanged": True,
+        "remaining_target_collision_prim_count": 0,
+        "replacement_inserted": False,
+        "independent_receipts_share_exact_source_digest": True,
+        "independent_removed_scenes_are_distinct": True,
+        "receipt_digest": "",
+    }
+    batch["receipt_digest"] = canonical_digest(batch, digest_field="receipt_digest")
+    batch_path = removal_root / "source_collider_batch_removal.v1.json"
+    batch_path.write_text(json.dumps(batch, sort_keys=True))
+    preflight = {
+        "schema_version": "paired_target_native_preflight.v1",
+        "scene_id": articulated["scene_id"],
+        "collision_scene": batch["source_scene_usd"],
+        "receipt_digest": "",
+    }
+    preflight["receipt_digest"] = canonical_digest(
+        preflight, digest_field="receipt_digest"
+    )
+    preflight_path = tmp_path / "paired_preflight.json"
+    preflight_path.write_text(json.dumps(preflight, sort_keys=True))
     paired = {
         "schema_version": "paired_target_native_construction_bindings.v1",
         "status": "paired_targets_admitted_for_native_construction",
         "scene_id": articulated["scene_id"],
         "task_freeze_set_digest": _sha("2"),
         "replacement_object_count": 2,
+        "source_collision_scene": batch["source_scene_usd"],
+        "collision_scene": {
+            "path": str(removed_collision),
+            "size_bytes": removed_collision.stat().st_size,
+            "sha256": _file_sha(removed_collision),
+        },
+        "source_collider_batch_removal": {
+            "path": str(batch_path),
+            "size_bytes": batch_path.stat().st_size,
+            "sha256": _file_sha(batch_path),
+            "schema_version": "source_collider_batch_removal.v1",
+            "canonical_digest": batch["receipt_digest"],
+        },
+        "paired_target_preflight": {
+            "path": str(preflight_path),
+            "size_bytes": preflight_path.stat().st_size,
+            "sha256": _file_sha(preflight_path),
+            "receipt_digest": preflight["receipt_digest"],
+        },
         "bindings": sorted(rows, key=lambda row: row["asset_id"]),
         "native_camera_readback_qualified": False,
         "native_reachability_qualified": False,

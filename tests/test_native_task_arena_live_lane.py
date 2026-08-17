@@ -36,6 +36,8 @@ pytestmark = pytest.mark.usefixtures(
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "a" * 40
 URI = f"https://raw.githubusercontent.com/example/repo/{COMMIT}/arena.json"
+SCENE_ID = "840920"
+TASK_ID = "task_a_washer_door_open"
 
 
 def _load():
@@ -108,7 +110,14 @@ def _predecessor(root: Path) -> dict[str, Path]:
 
 
 def _provider_bundle(
-    root: Path, *, link: str, packet_digest: str, runtime_source_digest: str
+    root: Path,
+    *,
+    link: str,
+    packet_digest: str,
+    runtime_source_digest: str,
+    request_digest: str,
+    scene_plan_digest: str,
+    bound_paths: dict[str, Path],
 ) -> Path:
     root.mkdir()
     bundle = root / "native_task_arena_provider_bundle.zip"
@@ -138,8 +147,11 @@ def _provider_bundle(
         "execution_mode": mode,
         "implementation_commit": COMMIT,
         "container_image": QUALIFIED_ADP_IMAGE,
+        "scene_id": SCENE_ID,
+        "task_id": TASK_ID,
+        "request_digest": request_digest,
         "packet_receipt_digest": packet_digest,
-        "arena_scene_plan_digest": "sha256:" + "1" * 64,
+        "arena_scene_plan_digest": scene_plan_digest,
         "runtime_contract_digest": "sha256:" + "2" * 64,
         "scenario_instance_digest": "sha256:" + "3" * 64,
         "packet_files": [],
@@ -149,8 +161,14 @@ def _provider_bundle(
         "bound_runtime_inputs": [
             {
                 "relative_path": f"runtime_inputs/{name}",
-                "size_bytes": 1,
-                "sha256": "sha256:" + "5" * 64,
+                "size_bytes": (
+                    bound_paths[name].stat().st_size if name in bound_paths else 1
+                ),
+                "sha256": (
+                    _sha(bound_paths[name])
+                    if name in bound_paths
+                    else "sha256:" + "5" * 64
+                ),
             }
             for name in bound_names
         ],
@@ -278,10 +296,35 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     packet.mkdir()
     packet_archive = packet / "native_task_arena_packet.zip"
     packet_archive.write_bytes(b"arena-packet")
+    request = {
+        "schema_version": "native_task_arena_packet_request.v1",
+        "scene_id": SCENE_ID,
+        "task_id": TASK_ID,
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    write_json(packet / "native_task_arena_packet_request.v1.json", request)
+    scene_plan = {
+        "schema_version": "native_task_arena_scene_plan.v1",
+        "scene_id": SCENE_ID,
+        "task_id": TASK_ID,
+        "scenario": {"cell_id": "canonical.seed_1"},
+        "plan_digest": "",
+    }
+    scene_plan["plan_digest"] = canonical_digest(
+        scene_plan, digest_field="plan_digest"
+    )
+    write_json(packet / "native_task_arena_scene_plan.v1.json", scene_plan)
     packet_receipt = {
         "schema_version": "native_task_arena_packet_receipt.v1",
         "status": "construction_packet_completed",
         "implementation_commit": COMMIT,
+        "scene_id": SCENE_ID,
+        "task_id": TASK_ID,
+        "request_digest": request["request_digest"],
+        "arena_scene_plan_digest": scene_plan["plan_digest"],
         "receipt_digest": "",
     }
     packet_receipt["receipt_digest"] = canonical_digest(
@@ -307,6 +350,56 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(
         paid, "validate_bound_lane_prior_spend", lambda *_args, **_kwargs: reconciled
     )
+    construction = tmp_path / "construction_result.json"
+    construction_value = {
+        "schema_version": "native_task_arena_construction_result.v1",
+        "status": "completed",
+        "construction_gate_qualified": True,
+        "scene_plan_digest": scene_plan["plan_digest"],
+        "result_digest": "",
+    }
+    construction_value["result_digest"] = canonical_digest(
+        construction_value, digest_field="result_digest"
+    )
+    write_json(construction, construction_value)
+    control = tmp_path / "control_result.json"
+    control_value = {
+        "schema_version": "native_task_arena_control_result.v1",
+        "status": "completed",
+        "controls_qualified": True,
+        "scene_plan_digest": scene_plan["plan_digest"],
+        "construction_result_digest": construction_value["result_digest"],
+        "control_pair": {
+            "cell_id": "canonical.seed_1",
+            "cell_admitted_for_policy_execution": True,
+            "pair_digest": "sha256:" + "7" * 64,
+        },
+        "result_digest": "",
+    }
+    control_value["result_digest"] = canonical_digest(
+        control_value, digest_field="result_digest"
+    )
+    write_json(control, control_value)
+    policy_spec = tmp_path / "policy_execution_spec.json"
+    policy_value = {
+        "schema_version": "native_task_arena_policy_execution_spec.v1",
+        "task_id": TASK_ID,
+        "cell_id": "canonical.seed_1",
+        "scene_plan_digest": scene_plan["plan_digest"],
+        "construction_result_digest": construction_value["result_digest"],
+        "control_result_digest": control_value["result_digest"],
+        "control_pair_digest": control_value["control_pair"]["pair_digest"],
+        "execution_spec_digest": "",
+    }
+    policy_value["execution_spec_digest"] = canonical_digest(
+        policy_value, digest_field="execution_spec_digest"
+    )
+    write_json(policy_spec, policy_value)
+    bound_paths = {
+        "native_task_arena_construction_result.v1.json": construction,
+        "native_task_arena_control_result.v1.json": control,
+        "native_task_arena_policy_execution_spec.v1.json": policy_spec,
+    }
     bundle_receipts = {}
     authorities = {}
     for link in builder.LINKS:
@@ -315,6 +408,9 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             link=link,
             packet_digest=packet_receipt["receipt_digest"],
             runtime_source_digest=runtime_source["receipt_digest"],
+            request_digest=request["request_digest"],
+            scene_plan_digest=scene_plan["plan_digest"],
+            bound_paths=bound_paths,
         )
         bundle_receipts[link] = bundle_receipt
         authorities[link] = _attempt_authority(
@@ -331,12 +427,6 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "validate_same_goal_spend_reconciliation",
         lambda *_args, **_kwargs: ({"entries": []}, reconciliation_record),
     )
-    construction = tmp_path / "construction_result.json"
-    construction.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
-    control = tmp_path / "control_result.json"
-    control.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
-    policy_spec = tmp_path / "policy_execution_spec.json"
-    policy_spec.write_text(json.dumps({"candidates": []}), encoding="utf-8")
     return {
         "packet": packet,
         "bundle_receipts": bundle_receipts,
@@ -357,6 +447,8 @@ def _build(lane, link: str, **overrides):
         "runtime_source_packet_path": lane["source_packet"],
         "source_commit": overrides.pop("source_commit", COMMIT),
         "raw_manifest_uri": URI,
+        "expected_scene_id": SCENE_ID,
+        "expected_task_id": TASK_ID,
     }
     if link in {"controls", "policy"}:
         arguments["construction_result_path"] = lane["construction"]
@@ -393,6 +485,54 @@ def test_default_budget_matches_the_attempt_authority(lane) -> None:
     profile = _build(lane, "construction")
 
     assert profile["allocator"]["max_spend_usd"] == 2.0
+
+
+def test_scene_and_task_are_part_of_the_profile_and_source_identity(lane) -> None:
+    profile = _build(lane, "construction")
+
+    assert SCENE_ID in profile["profile_id"]
+    assert TASK_ID in profile["profile_id"]
+    assert SCENE_ID in profile["source_bundle"]["bundle_id"]
+    assert TASK_ID in profile["source_bundle"]["bundle_id"]
+
+
+@pytest.mark.parametrize(
+    "field,value,blocker",
+    [
+        ("expected_scene_id", "840313", "scene_identity_mismatch"),
+        ("expected_task_id", "other_task", "task_identity_mismatch"),
+    ],
+)
+def test_wrong_scene_or_task_is_refused_before_allocation(
+    lane, field: str, value: str, blocker: str
+) -> None:
+    with pytest.raises(TaskEvaluationLaunchError, match=blocker):
+        _build(lane, "construction", **{field: value})
+
+
+def test_packet_request_identity_mutation_is_refused_before_allocation(lane) -> None:
+    request_path = lane["packet"] / "native_task_arena_packet_request.v1.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["scene_id"] = "840313"
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    write_json(request_path, request)
+
+    with pytest.raises(TaskEvaluationLaunchError, match="scene_identity_mismatch"):
+        _build(lane, "construction")
+
+
+def test_wrong_scene_plan_predecessor_is_refused_before_allocation(lane) -> None:
+    construction = json.loads(lane["construction"].read_text(encoding="utf-8"))
+    construction["scene_plan_digest"] = "sha256:" + "9" * 64
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
+    write_json(lane["construction"], construction)
+
+    with pytest.raises(TaskEvaluationLaunchError, match="construction_result_invalid"):
+        _build(lane, "controls")
 
 
 def test_authority_budget_mismatch_is_refused_before_allocation(lane) -> None:

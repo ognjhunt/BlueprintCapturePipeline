@@ -8,6 +8,7 @@ resource admission grant and an already-armed independent watchdog.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -24,6 +25,11 @@ from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
 from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
+from .openai_official_cost_gate import (
+    OpenAIOfficialCostGateError,
+    OpenAIOfficialCostRunGate,
+    build_openai_official_cost_run_gate,
+)
 from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
@@ -84,6 +90,8 @@ OBJECT_STORE_KEY_PREFIX = "blueprint/adp009d/semantic-teacher-image-edit"
 INPUT_GET_ENV = "BLUEPRINT_SEMANTIC_TEACHER_INPUT_BUNDLE_GET_URL"
 OUTPUT_PUT_ENV = "BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_PUT_URL"
 TOKEN_ENV = "BLUEPRINT_IMAGE_EDITOR_TOKEN"
+OPENAI_COST_PROVIDER_ID = "openai"
+OPENAI_COST_RESOURCE_CLASS = "semantic_teacher_image_edit"
 MAX_RESULT_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 # Poll the exact provider contract separately from the object-store result. Two
 # consecutive API-confirmed absences leave a final grace window for a just-
@@ -155,6 +163,27 @@ def _read(path: Path, *, code: str) -> dict[str, Any]:
         raise SemanticTeacherImageEditVastError(code) from exc
     if path.is_symlink() or not isinstance(value, dict):
         raise SemanticTeacherImageEditVastError(code)
+    return value
+
+
+def _validated_launch_binding(job_root: Path) -> dict[str, Any]:
+    """Reopen the website launch identity that owns this allocator job."""
+
+    run_root = job_root.parent.parent.resolve()
+    path = run_root / "launch_binding.json"
+    value = _read(path, code="semantic_teacher_launch_binding_invalid")
+    if (
+        value.get("schema_version") != "task_evaluation_launch_binding.v1"
+        or value.get("binding_digest")
+        != canonical_digest(value, digest_field="binding_digest")
+        or value.get("launch_id") != run_root.name
+        or not str(value.get("run_id") or "").strip()
+        or not str(value.get("request_digest") or "").startswith("sha256:")
+        or len(str(value.get("request_digest") or "")) != 71
+    ):
+        raise SemanticTeacherImageEditVastError(
+            "semantic_teacher_launch_binding_invalid"
+        )
     return value
 
 
@@ -1232,6 +1261,10 @@ def _execute_semantic_teacher_image_edit_vast(
     job_dir: str | Path,
     token_file: str | Path,
     runtime_image_identity: str,
+    openai_cost_scope_attestation_path: str | Path,
+    openai_admin_api_key_file: str | Path,
+    openai_project_id: str,
+    openai_api_key_id: str,
     preflight: Mapping[str, Any],
     provider: GpuRenderProvider,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
@@ -1251,6 +1284,10 @@ def _execute_semantic_teacher_image_edit_vast(
     ),
     watchdog_closer: Callable[..., Mapping[str, Any]] | None = None,
     excluded_machine_ids: Sequence[int] = (),
+    openai_cost_transport: Callable[..., Mapping[str, Any]] | None = None,
+    openai_cost_wall_clock: Callable[[], datetime] = lambda: datetime.now(
+        timezone.utc
+    ),
 ) -> dict[str, Any]:
     """Run one immutable bundle; always tear down compute and staged objects."""
 
@@ -1259,6 +1296,7 @@ def _execute_semantic_teacher_image_edit_vast(
     )
     root = Path(job_dir).expanduser().resolve()
     ensure_dir(root)
+    launch_binding = _validated_launch_binding(root)
     authority_file = Path(authority_path).expanduser().resolve()
     bundle = Path(bundle_path).expanduser().resolve()
     receipt_file = Path(bundle_receipt_path).expanduser().resolve()
@@ -1538,6 +1576,9 @@ def _execute_semantic_teacher_image_edit_vast(
     watchdog_close: dict[str, Any] = {}
     scoped_after: dict[str, Any] = {}
     global_after: dict[str, Any] = {}
+    openai_cost_gate: OpenAIOfficialCostRunGate | None = None
+    openai_cost_reservation: dict[str, Any] | None = None
+    openai_cost_completion: dict[str, Any] | None = None
     try:
         price = float(preflight.get("on_demand_price_usd_per_hour") or 0)
         if not 0 < price <= float(hourly_cap):
@@ -1577,6 +1618,33 @@ def _execute_semantic_teacher_image_edit_vast(
             else:
                 write_json(root / "prelaunch_scoped_inventory.json", scoped_launch)
                 write_json(root / "prelaunch_global_inventory.json", global_launch)
+        if not blockers:
+            try:
+                openai_cost_gate = build_openai_official_cost_run_gate(
+                    scope_attestation_path=openai_cost_scope_attestation_path,
+                    admin_api_key_file=openai_admin_api_key_file,
+                    project_id=openai_project_id,
+                    api_key_id=openai_api_key_id,
+                    lane_id=PAID_LANE,
+                    run_id=str(launch_binding["run_id"]),
+                    request_digest=str(launch_binding["request_digest"]),
+                    candidate_digest=request_digest,
+                    authorization_receipt_digest=str(
+                        authority.get("authorization_digest") or ""
+                    ),
+                    max_cost_usd=float(hosted_spend_upper_bound),
+                    output_root=root / "official_openai_cost",
+                    provider_id=OPENAI_COST_PROVIDER_ID,
+                    paid_resource_class=OPENAI_COST_RESOURCE_CLASS,
+                    transport=openai_cost_transport,
+                    wall_clock=openai_cost_wall_clock,
+                )
+                openai_cost_reservation = openai_cost_gate.reserve()
+            except OpenAIOfficialCostGateError as exc:
+                blockers.append(
+                    "semantic_teacher_openai_cost_attribution_unavailable:"
+                    + str(exc)
+                )
         if not blockers:
             env = {
                 INPUT_GET_ENV: input_url,
@@ -1931,6 +1999,29 @@ def _execute_semantic_teacher_image_edit_vast(
             blockers.append("semantic_teacher_teardown_verification_failed")
         if instance_id is not None and release.get("released") is not True:
             blockers.append("semantic_teacher_paid_lane_release_blocked")
+        if openai_cost_gate is not None and openai_cost_reservation is not None:
+            try:
+                openai_cost_completion = openai_cost_gate.complete(
+                    provider_call_performed=instance_id is not None,
+                    runtime_result_digest=(
+                        str(runtime_result.get("result_digest"))
+                        if isinstance(runtime_result, Mapping)
+                        and runtime_result.get("result_digest")
+                        else None
+                    ),
+                    runtime_exception_type=(
+                        None
+                        if runtime_result is not None
+                        else (
+                            runtime_gap_type
+                            or "provider_call_outcome_unavailable"
+                        )
+                    ),
+                )
+            except OpenAIOfficialCostGateError as exc:
+                blockers.append(
+                    "semantic_teacher_openai_cost_completion_failed:" + str(exc)
+                )
 
     runtime_output_root = root / "runtime_output"
     terminal_result_path = runtime_output_root / f"{RUNTIME_RESULT_SCHEMA_VERSION}.json"
@@ -2047,6 +2138,21 @@ def _execute_semantic_teacher_image_edit_vast(
             "hosted_editor_actual_cost_usd": (
                 float(hosted_actual) if hosted_actual_valid else None
             ),
+            "hosted_editor_cost_source": (
+                "candidate_reported_usage_not_official_cost_authority"
+            ),
+            "hosted_editor_cost_is_official": False,
+            "official_openai_cost_completion_digest": (
+                openai_cost_completion.get("completion_receipt_digest")
+                if openai_cost_completion
+                else None
+            ),
+            "official_openai_billing_status": (
+                openai_cost_completion.get("status")
+                if openai_cost_completion
+                else "unavailable"
+            ),
+            "strict_official_openai_billing_satisfied": False,
             "hosted_editor_spend_upper_bound_usd": float(
                 hosted_spend_upper_bound
             ),
@@ -2215,6 +2321,9 @@ def _execute_semantic_teacher_image_edit_vast(
             else "blocked"
         ),
         "source_commit_sha": checkout_source_commit,
+        "launch_id": launch_binding["launch_id"],
+        "run_id": launch_binding["run_id"],
+        "launch_request_digest": launch_binding["request_digest"],
         "authorization_digest": authority.get("authorization_digest"),
         "authorization_consumption": dict(consumption),
         "bundle_sha256": (receipt.get("bundle") or {}).get("sha256"),
@@ -2254,6 +2363,22 @@ def _execute_semantic_teacher_image_edit_vast(
             retained_result.get("result_import_digest") if retained_result else None
         ),
         "billing_digest": billing["billing_digest"],
+        "official_openai_cost_reservation_digest": (
+            openai_cost_reservation.get("reservation_receipt_digest")
+            if openai_cost_reservation
+            else None
+        ),
+        "official_openai_cost_completion_digest": (
+            openai_cost_completion.get("completion_receipt_digest")
+            if openai_cost_completion
+            else None
+        ),
+        "official_openai_billing_status": (
+            openai_cost_completion.get("status")
+            if openai_cost_completion
+            else "unavailable"
+        ),
+        "strict_official_openai_billing_satisfied": False,
         "cost_usd": cost,
         "teardown_digest": teardown["teardown_digest"],
         "provider_zero_digest": (
@@ -2293,6 +2418,14 @@ def _execute_semantic_teacher_image_edit_vast(
         "result_import": (
             root / "semantic_teacher_image_edit_result_import.v1.json"
         ),
+        "official_openai_cost_reservation": (
+            root
+            / "official_openai_cost/openai_official_cost_run_reservation.v1.json"
+        ),
+        "official_openai_cost_completion": (
+            root
+            / "official_openai_cost/openai_official_cost_run_completion.v1.json"
+        ),
     }
     return _seal_terminal_execution(
         root=root,
@@ -2327,6 +2460,10 @@ def run_semantic_teacher_image_edit_vast(
     watchdog_instance_binder: Callable[[Path, int], None] = (
         write_started_vast_instance_id
     ),
+    openai_cost_transport: Callable[..., Mapping[str, Any]] | None = None,
+    openai_cost_wall_clock: Callable[[], datetime] = lambda: datetime.now(
+        timezone.utc
+    ),
 ) -> dict[str, Any]:
     """Allocator-facing adapter for ``gpu-canary semantic-teacher-image-edit``.
 
@@ -2343,6 +2480,14 @@ def run_semantic_teacher_image_edit_vast(
         job_dir=args.semantic_teacher_job_dir,
         token_file=args.semantic_teacher_token_file,
         runtime_image_identity=args.semantic_teacher_runtime_image_identity,
+        openai_cost_scope_attestation_path=(
+            args.semantic_teacher_openai_cost_scope_attestation
+        ),
+        openai_admin_api_key_file=(
+            args.semantic_teacher_openai_admin_api_key_file
+        ),
+        openai_project_id=args.semantic_teacher_openai_project_id,
+        openai_api_key_id=args.semantic_teacher_openai_api_key_id,
         preflight=preflight,
         provider=provider,
         paid_resource_admission_grant=paid_resource_admission_grant,
@@ -2354,6 +2499,8 @@ def run_semantic_teacher_image_edit_vast(
         watchdog_validator=watchdog_validator,
         watchdog_instance_binder=watchdog_instance_binder,
         watchdog_closer=watchdog_closer,
+        openai_cost_transport=openai_cost_transport,
+        openai_cost_wall_clock=openai_cost_wall_clock,
         excluded_machine_ids=getattr(
             args, "semantic_teacher_excluded_machine_id", []
         ),

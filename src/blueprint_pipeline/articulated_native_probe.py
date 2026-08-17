@@ -28,7 +28,9 @@ from .decision_evidence_contracts import canonical_digest
 
 
 ARTICULATED_NATIVE_PROBE_SCHEMA_VERSION = "articulated_native_probe_spec.v1"
-REQUIRED_READBACKS = (
+COMMANDED_ARTICULATION_MODE = "commanded_articulation"
+LOCKED_HINGE_RIGID_MODE = "locked_hinge_rigid_validation"
+COMMANDED_REQUIRED_READBACKS = (
     "articulation_root_identity",
     "joint_count_and_types",
     "task_joint_identity",
@@ -41,6 +43,20 @@ REQUIRED_READBACKS = (
     "reset_replay_within_tolerance",
     "deterministic_final_state",
 )
+LOCKED_REQUIRED_READBACKS = (
+    "articulation_root_identity",
+    "joint_count_and_types",
+    "locked_joint_identity",
+    "locked_joint_axes_and_limits",
+    "no_joint_command_issued",
+    "locked_joint_motion_within_tolerance",
+    "contact_stability",
+    "initial_state_matches_frozen_reset",
+    "reset_replay_within_tolerance",
+    "deterministic_final_state",
+)
+# Compatibility export for existing commanded-articulation callers.
+REQUIRED_READBACKS = COMMANDED_REQUIRED_READBACKS
 _BLANK_STAGE = """#usda 1.0
 (
     defaultPrim = "World"
@@ -147,6 +163,9 @@ def materialize_articulated_native_probe(
     probe_drive_damping: float = 0.0,
     probe_drive_max_force: float = 0.0,
     fixed_step_seconds: float = 1.0 / 120.0,
+    validation_mode: str = COMMANDED_ARTICULATION_MODE,
+    scene_id: str | None = None,
+    paired_native_predecessor: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write the frozen native probe stages and spec for one articulated asset."""
 
@@ -163,6 +182,21 @@ def materialize_articulated_native_probe(
         raise ArticulatedNativeProbeError(["articulated_native_probe_candidate_missing"])
 
     errors: list[str] = []
+    normalized_scene_id = str(scene_id or "").strip()
+    predecessor = dict(paired_native_predecessor or {})
+    if bool(normalized_scene_id) != bool(predecessor):
+        errors.append("articulated_native_probe_scene_predecessor_pair_required")
+    elif predecessor:
+        if (
+            Path(normalized_scene_id).name != normalized_scene_id
+            or predecessor.get("schema_version")
+            != "paired_native_simready_predecessor_binding.v1"
+            or predecessor.get("scene_id") != normalized_scene_id
+            or predecessor.get("candidate_usd_sha256") != _sha256(candidate)
+            or predecessor.get("binding_digest")
+            != canonical_digest(predecessor, digest_field="binding_digest")
+        ):
+            errors.append("articulated_native_probe_predecessor_binding_invalid")
     stage = Usd.Stage.Open(str(candidate))
     if stage is None:
         raise ArticulatedNativeProbeError(
@@ -182,16 +216,24 @@ def materialize_articulated_native_probe(
         errors.append(
             f"articulated_native_probe_articulation_root_count_invalid:{len(roots)}"
         )
-    task_joint = joints.get(str(task_joint_prim_path))
-    if task_joint is None:
+    mode = str(validation_mode or "").strip()
+    if mode not in {COMMANDED_ARTICULATION_MODE, LOCKED_HINGE_RIGID_MODE}:
+        errors.append("articulated_native_probe_validation_mode_invalid")
+    task_joint = joints.get(str(task_joint_prim_path)) if task_joint_prim_path else None
+    if mode == COMMANDED_ARTICULATION_MODE and task_joint is None:
         errors.append(
             f"articulated_native_probe_task_joint_not_found:{task_joint_prim_path}"
         )
+    if mode == LOCKED_HINGE_RIGID_MODE and task_joint_prim_path:
+        errors.append("articulated_native_probe_locked_mode_task_joint_forbidden")
     locked = [str(path) for path in locked_joint_prim_paths]
     for path in locked:
         if path not in joints:
             errors.append(f"articulated_native_probe_locked_joint_not_found:{path}")
-    if set(locked) | {str(task_joint_prim_path)} != set(joints):
+    partition = set(locked)
+    if mode == COMMANDED_ARTICULATION_MODE:
+        partition.add(str(task_joint_prim_path))
+    if partition != set(joints):
         errors.append("articulated_native_probe_joint_partition_incomplete")
 
     sweep: list[float] = []
@@ -201,8 +243,18 @@ def materialize_articulated_native_probe(
             sweep = []
             break
         sweep.append(float(value))
-    if sweep and (sweep[0] != 0.0 or any(b <= a for a, b in zip(sweep, sweep[1:]))):
+    if mode == LOCKED_HINGE_RIGID_MODE and sweep:
+        errors.append("articulated_native_probe_locked_mode_sweep_forbidden")
+    elif sweep and (
+        sweep[0] != 0.0 or any(b <= a for a, b in zip(sweep, sweep[1:]))
+    ):
         errors.append("articulated_native_probe_sweep_invalid")
+    if mode == LOCKED_HINGE_RIGID_MODE and (
+        float(probe_drive_stiffness) > 0.0
+        or float(probe_drive_damping) > 0.0
+        or float(probe_drive_max_force) > 0.0
+    ):
+        errors.append("articulated_native_probe_locked_mode_drive_forbidden")
 
     limits_deg: list[float] = []
     axis_token = ""
@@ -298,12 +350,38 @@ def materialize_articulated_native_probe(
         )
         for path, prim in sorted(joints.items())
     }
+    locked_joint_axes_and_limits: dict[str, dict[str, Any]] = {}
+    for path in sorted(locked):
+        prim = joints[path]
+        axis_attribute = prim.GetAttribute("physics:axis")
+        row: dict[str, Any] = {
+            "type": joint_types[path],
+            "axis": (
+                str(axis_attribute.Get())
+                if axis_attribute and axis_attribute.HasAuthoredValue()
+                else ""
+            ),
+        }
+        if prim.IsA(UsdPhysics.RevoluteJoint):
+            joint = UsdPhysics.RevoluteJoint(prim)
+            row["limits"] = [
+                joint.GetLowerLimitAttr().Get(),
+                joint.GetUpperLimitAttr().Get(),
+            ]
+        elif prim.IsA(UsdPhysics.PrismaticJoint):
+            joint = UsdPhysics.PrismaticJoint(prim)
+            row["limits"] = [
+                joint.GetLowerLimitAttr().Get(),
+                joint.GetUpperLimitAttr().Get(),
+            ]
+        locked_joint_axes_and_limits[path] = row
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
     bound = cache.ComputeWorldBound(stage.GetDefaultPrim()).ComputeAlignedRange()
 
     receipt: dict[str, Any] = {
         "schema_version": ARTICULATED_NATIVE_PROBE_SCHEMA_VERSION,
         "status": "frozen_not_executed",
+        "validation_mode": mode,
         "candidate_usd_path": str(candidate),
         "candidate_usd_sha256": _sha256(candidate),
         "spec_path": str(output / "articulated_native_probe_spec.json"),
@@ -328,10 +406,19 @@ def materialize_articulated_native_probe(
             "articulation_root_prim_path": roots[0],
             "assembly_joint_count": len(joints),
             "joint_types": joint_types,
-            "task_joint_prim_path": str(task_joint_prim_path),
+            "task_joint_prim_path": (
+                str(task_joint_prim_path)
+                if mode == COMMANDED_ARTICULATION_MODE
+                else None
+            ),
             "locked_joint_prim_paths": sorted(locked),
-            "task_joint_axis": axis_token,
-            "task_joint_limits_deg": limits_deg,
+            "locked_joint_axes_and_limits": locked_joint_axes_and_limits,
+            "task_joint_axis": (
+                axis_token if mode == COMMANDED_ARTICULATION_MODE else None
+            ),
+            "task_joint_limits_deg": (
+                limits_deg if mode == COMMANDED_ARTICULATION_MODE else None
+            ),
             "commanded_sweep_degrees": sweep,
             "maximum_commanded_degrees": sweep[-1] if sweep else None,
             "reset_joint_positions_rad": dict(sorted(resets.items())),
@@ -350,15 +437,24 @@ def materialize_articulated_native_probe(
             "fixed_step_seconds": step,
         },
         "probe_drive": probe_drive,
-        "required_readbacks": list(REQUIRED_READBACKS),
+        "required_readbacks": list(
+            LOCKED_REQUIRED_READBACKS
+            if mode == LOCKED_HINGE_RIGID_MODE
+            else COMMANDED_REQUIRED_READBACKS
+        ),
         "claim_boundary": {
             "frozen_before_execution": True,
             "native_simulator_qualified": False,
             "physical_equivalence_proven": False,
             "spec_is_not_a_result": True,
+            "task_joint_commanded": mode == COMMANDED_ARTICULATION_MODE,
+            "locked_hinge_only": mode == LOCKED_HINGE_RIGID_MODE,
         },
         "receipt_digest": "",
     }
+    if predecessor:
+        receipt["scene_id"] = normalized_scene_id
+        receipt["paired_native_predecessor"] = predecessor
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     write_json(Path(receipt["spec_path"]), receipt)
     return json.loads(json.dumps(receipt))
@@ -367,6 +463,10 @@ def materialize_articulated_native_probe(
 __all__ = [
     "ARTICULATED_NATIVE_PROBE_SCHEMA_VERSION",
     "ArticulatedNativeProbeError",
+    "COMMANDED_ARTICULATION_MODE",
+    "COMMANDED_REQUIRED_READBACKS",
+    "LOCKED_HINGE_RIGID_MODE",
+    "LOCKED_REQUIRED_READBACKS",
     "REQUIRED_READBACKS",
     "materialize_articulated_native_probe",
 ]

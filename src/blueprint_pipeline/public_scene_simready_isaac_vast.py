@@ -287,6 +287,7 @@ def validate_simready_isaac_paid_attempt_authority(
     value = dict(authority)
     errors: list[str] = []
     structured_allowlist = "active_instance_allowlist" in value
+    predecessor = prepared_bundle.get("paired_native_predecessor") or {}
     authority_allowlist = normalize_active_instance_allowlist(
         value.get("active_instance_allowlist", value.get("external_instance_allowlist"))
     )
@@ -327,6 +328,19 @@ def validate_simready_isaac_paid_attempt_authority(
         "native_probe_manifest_digest"
     ):
         errors.append("native_probe_manifest_digest_mismatch")
+    if (
+        not isinstance(predecessor, Mapping)
+        or predecessor.get("binding_digest")
+        != canonical_digest(predecessor, digest_field="binding_digest")
+        or predecessor.get("scene_id") != prepared_bundle.get("scene_id")
+        or predecessor.get("candidate_usd_sha256")
+        != prepared_bundle.get("candidate_usd_sha256")
+        or predecessor.get("binding_digest")
+        != prepared_bundle.get("predecessor_binding_digest")
+        or value.get("predecessor_binding_digest")
+        != prepared_bundle.get("predecessor_binding_digest")
+    ):
+        errors.append("predecessor_binding_digest_mismatch")
     if value.get("container_image") != DEFAULT_IMAGE:
         errors.append("container_image_mismatch")
     if value.get("maximum_paid_attempts") != 1:

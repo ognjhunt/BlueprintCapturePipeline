@@ -30,7 +30,84 @@ def _write(path: Path, value: dict, *, digest_field: str) -> dict:
     }
 
 
+def _source_collider_batch(root: Path, *, count: int) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    source = root / "collision.usda"
+    source.write_text('#usda 1.0\ndef Xform "source_scene" {}\n', encoding="utf-8")
+    removed = root / "collider_removal" / "scene_without_source_colliders.usda"
+    removed.parent.mkdir(parents=True, exist_ok=True)
+    removed.write_text('#usda 1.0\ndef Xform "retained_scene" {}\n', encoding="utf-8")
+    removals = []
+    for index in range(count):
+        removal_id = f"remove_source_{index}"
+        target_prim_path = f"/Root/source_{index}"
+        child = _write(
+            removed.parent / "independent" / f"{removal_id}.receipt.json",
+            {
+                "schema_version": "source_collider_subtree_removal.v1",
+                "status": "exact_source_collider_subtree_removed",
+                "removal_id": removal_id,
+                "sage_collision_usd_sha256": _sha(source),
+                "removed_prim_path": target_prim_path,
+                "removed_prim_count": 1,
+                "source_bytes_unchanged": True,
+                "unrelated_prim_inventory_unchanged": True,
+                "remaining_target_collision_prim_count": 0,
+                "replacement_inserted": False,
+                "receipt_digest": "",
+            },
+            digest_field="receipt_digest",
+        )
+        child_path = Path(child["path"])
+        removals.append(
+            {
+                "removal_id": removal_id,
+                "target_prim_path": target_prim_path,
+                "source_scene_sha256": _sha(source),
+                "removed_prim_count": 1,
+                "receipt_digest": child["receipt_digest"],
+                "receipt": {
+                    "relative_path": child_path.relative_to(removed.parent).as_posix(),
+                    "size_bytes": child_path.stat().st_size,
+                    "sha256": _sha(child_path),
+                },
+            }
+        )
+    batch = {
+        "schema_version": "source_collider_batch_removal.v1",
+        "status": "independent_and_shared_source_colliders_removed",
+        "source_scene_usd": {
+            "path": str(source),
+            "size_bytes": source.stat().st_size,
+            "sha256": _sha(source),
+        },
+        "shared_removed_scene_usd": {
+            "relative_path": removed.name,
+            "size_bytes": removed.stat().st_size,
+            "sha256": _sha(removed),
+        },
+        "target_count": count,
+        "target_removals": removals,
+        "source_bytes_unchanged": True,
+        "unrelated_prim_inventory_unchanged": True,
+        "remaining_target_collision_prim_count": 0,
+        "replacement_inserted": False,
+        "independent_receipts_share_exact_source_digest": True,
+        "independent_removed_scenes_are_distinct": True,
+        "receipt_digest": "",
+    }
+    return Path(
+        _write(
+            removed.parent / "source_collider_batch_removal.v1.json",
+            batch,
+            digest_field="receipt_digest",
+        )["path"]
+    )
+
+
 def _fixture(root: Path, *, count: int) -> Path:
+    batch = _source_collider_batch(root, count=count)
+    source_collision = root / "collision.usda"
     preflight_tasks = []
     manipulation_tasks = []
     import_rows = []
@@ -115,9 +192,9 @@ def _fixture(root: Path, *, count: int) -> Path:
             "scene_id": "scene_fixture",
             "replacement_object_count": count,
             "collision_scene": {
-                "path": str(root / "collision.usda"),
-                "size_bytes": 1,
-                "sha256": "sha256:" + "a" * 64,
+                "path": str(source_collision),
+                "size_bytes": source_collision.stat().st_size,
+                "sha256": _sha(source_collision),
             },
             "tasks": preflight_tasks,
             "receipt_digest": "",
@@ -164,7 +241,12 @@ def _fixture(root: Path, *, count: int) -> Path:
         },
         digest_field="receipt_digest",
     )
+    assert batch.is_file()
     return Path(manipulation_record["path"])
+
+
+def _batch_for(manipulation_path: Path) -> Path:
+    return manipulation_path.parent / "collider_removal" / "source_collider_batch_removal.v1.json"
 
 
 @pytest.mark.parametrize("count", [1, 2, 5])
@@ -176,6 +258,7 @@ def test_materializes_one_to_five_path_backed_bindings(
 
     result = materialize_paired_target_native_construction_bindings(
         manipulation_preflight_path=source,
+        source_collider_batch_removal_path=_batch_for(source),
         output_path=output,
     )
 
@@ -184,6 +267,12 @@ def test_materializes_one_to_five_path_backed_bindings(
     assert len(result["bindings"]) == count
     assert result["native_reachability_qualified"] is False
     assert result["controls_executed"] is False
+    assert result["collision_scene"]["path"].endswith(
+        "collider_removal/scene_without_source_colliders.usda"
+    )
+    assert result["source_collider_batch_removal"]["canonical_digest"].startswith(
+        "sha256:"
+    )
 
 
 def test_rejects_tampered_native_import_probe(tmp_path: Path) -> None:
@@ -197,6 +286,7 @@ def test_rejects_tampered_native_import_probe(tmp_path: Path) -> None:
     ):
         materialize_paired_target_native_construction_bindings(
             manipulation_preflight_path=source,
+            source_collider_batch_removal_path=_batch_for(source),
             output_path=tmp_path / "binding.json",
         )
 
@@ -205,6 +295,7 @@ def test_rejects_qualified_boundary_claim_tamper(tmp_path: Path) -> None:
     source = _fixture(tmp_path / "evidence", count=1)
     result = materialize_paired_target_native_construction_bindings(
         manipulation_preflight_path=source,
+        source_collider_batch_removal_path=_batch_for(source),
         output_path=tmp_path / "binding.json",
     )
     result["native_reachability_qualified"] = True
@@ -217,3 +308,48 @@ def test_rejects_qualified_boundary_claim_tamper(tmp_path: Path) -> None:
         match="boundary_invalid:native_reachability_qualified",
     ):
         validate_paired_target_native_construction_bindings(result)
+
+
+def test_refuses_the_original_collision_scene_as_the_shared_removed_scene(
+    tmp_path: Path,
+) -> None:
+    source = _fixture(tmp_path / "evidence", count=2)
+    batch_path = _batch_for(source)
+    batch = json.loads(batch_path.read_text(encoding="utf-8"))
+    original = Path(batch["source_scene_usd"]["path"])
+    disguised_original = batch_path.parent / "original_collision.usda"
+    disguised_original.write_bytes(original.read_bytes())
+    batch["shared_removed_scene_usd"] = {
+        "relative_path": disguised_original.name,
+        "size_bytes": disguised_original.stat().st_size,
+        "sha256": _sha(disguised_original),
+    }
+    batch["receipt_digest"] = canonical_digest(batch, digest_field="receipt_digest")
+    batch_path.write_text(json.dumps(batch, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(
+        PairedTargetNativeConstructionBindingsError,
+        match="shared_scene_not_removed",
+    ):
+        materialize_paired_target_native_construction_bindings(
+            manipulation_preflight_path=source,
+            source_collider_batch_removal_path=batch_path,
+            output_path=tmp_path / "must_not_exist.json",
+        )
+
+
+def test_refuses_tampered_shared_removed_scene_bytes(tmp_path: Path) -> None:
+    source = _fixture(tmp_path / "evidence", count=2)
+    batch_path = _batch_for(source)
+    removed = batch_path.parent / "scene_without_source_colliders.usda"
+    removed.write_text(removed.read_text(encoding="utf-8") + "# tampered\n")
+
+    with pytest.raises(
+        PairedTargetNativeConstructionBindingsError,
+        match="shared_scene_invalid",
+    ):
+        materialize_paired_target_native_construction_bindings(
+            manipulation_preflight_path=source,
+            source_collider_batch_removal_path=batch_path,
+            output_path=tmp_path / "must_not_exist.json",
+        )

@@ -21,6 +21,13 @@ from blueprint_pipeline.semantic_teacher_image_edit_paid_lane import (
     DRY_RUN_SCHEMA_VERSION,
 )
 from blueprint_pipeline.semantic_teacher_image_edit_vast import PROBE_KIND
+from blueprint_pipeline.semantic_teacher_image_edit_vast import (
+    OPENAI_COST_PROVIDER_ID,
+    OPENAI_COST_RESOURCE_CLASS,
+)
+from blueprint_pipeline.task_evaluation_supervisor.openai_cost_authority import (
+    validate_openai_cost_scope_attestation,
+)
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     canonical_digest,
@@ -109,14 +116,27 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
     authority_path = context.extra_paths["attempt_authority"]
     dry_run_path = context.extra_paths["dry_run_receipt"]
     token_path = context.extra_paths["token_file"]
+    cost_scope_path = context.extra_paths["openai_cost_scope_attestation"]
+    admin_key_path = context.extra_paths["openai_admin_api_key_file"]
     if any(
         path.is_symlink() or not path.is_file()
-        for path in (authority_path, dry_run_path, token_path)
+        for path in (
+            authority_path,
+            dry_run_path,
+            token_path,
+            cost_scope_path,
+            admin_key_path,
+        )
     ):
         return ["semantic_teacher_profile_input_missing_or_unsafe"]
     token_mode = token_path.stat().st_mode
     if not stat.S_ISREG(token_mode) or token_mode & 0o077:
         blockers.append("semantic_teacher_profile_token_permissions_not_0600")
+    admin_mode = admin_key_path.stat().st_mode
+    if not stat.S_ISREG(admin_mode) or admin_mode & 0o077:
+        blockers.append(
+            "semantic_teacher_profile_openai_admin_key_permissions_not_0600"
+        )
     authority = _read(authority_path)
     dry_run = _read(dry_run_path)
     try:
@@ -145,6 +165,16 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
         source_commit=context.source_commit,
     ):
         blockers.append("semantic_teacher_profile_dry_run_unbound")
+    try:
+        validate_openai_cost_scope_attestation(
+            _read(cost_scope_path),
+            provider_id=OPENAI_COST_PROVIDER_ID,
+            paid_resource_class=OPENAI_COST_RESOURCE_CLASS,
+            project_id=str(context.extra_values["openai_project_id"]),
+            api_key_id=str(context.extra_values["openai_api_key_id"]),
+        )
+    except ValueError as exc:
+        blockers.append(str(exc))
     return blockers
 
 
@@ -159,6 +189,14 @@ def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
         str(context.extra_paths["attempt_authority"]),
         "--semantic-teacher-token-file",
         str(context.extra_paths["token_file"]),
+        "--semantic-teacher-openai-cost-scope-attestation",
+        str(context.extra_paths["openai_cost_scope_attestation"]),
+        "--semantic-teacher-openai-admin-api-key-file",
+        str(context.extra_paths["openai_admin_api_key_file"]),
+        "--semantic-teacher-openai-project-id",
+        str(context.extra_values["openai_project_id"]),
+        "--semantic-teacher-openai-api-key-id",
+        str(context.extra_values["openai_api_key_id"]),
         "--semantic-teacher-runtime-image-identity",
         str(authority["runtime_image_identity"]),
         "--semantic-teacher-job-dir",
@@ -201,6 +239,15 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
         },
     ]
     prior_spend = _prior_spend_path(authority)
+    immutable.append(
+        {
+            "name": "semantic_teacher_openai_cost_scope_attestation",
+            "path": str(context.extra_paths["openai_cost_scope_attestation"]),
+            "digest": file_digest(
+                context.extra_paths["openai_cost_scope_attestation"]
+            ),
+        }
+    )
     if prior_spend is not None:
         immutable.append(
             {
@@ -223,7 +270,13 @@ SPEC = LaneLiveProfileSpec(
     lane_argv=_lane_argv,
     immutable_inputs=_immutable_inputs,
     lane_blockers=_lane_blockers,
-    extra_path_names=("attempt_authority", "dry_run_receipt", "token_file"),
+    extra_path_names=(
+        "attempt_authority",
+        "dry_run_receipt",
+        "token_file",
+        "openai_cost_scope_attestation",
+        "openai_admin_api_key_file",
+    ),
 )
 
 
@@ -233,6 +286,10 @@ def build_semantic_teacher_image_edit_live_profile(
     attempt_authority_path: str | Path,
     dry_run_receipt_path: str | Path,
     token_file_path: str | Path,
+    openai_cost_scope_attestation_path: str | Path,
+    openai_admin_api_key_file: str | Path,
+    openai_project_id: str,
+    openai_api_key_id: str,
     source_commit: str,
     raw_manifest_uri: str,
     revision: str | None = None,
@@ -261,9 +318,13 @@ def build_semantic_teacher_image_edit_live_profile(
             "attempt_authority": attempt_authority_path,
             "dry_run_receipt": dry_run_receipt_path,
             "token_file": token_file_path,
+            "openai_cost_scope_attestation": openai_cost_scope_attestation_path,
+            "openai_admin_api_key_file": openai_admin_api_key_file,
         },
         extra_values={
             "excluded_machine_ids": sorted(set(normalized_exclusions)),
+            "openai_project_id": openai_project_id,
+            "openai_api_key_id": openai_api_key_id,
         },
     )
 
@@ -274,6 +335,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--attempt-authority", required=True)
     parser.add_argument("--dry-run-receipt", required=True)
     parser.add_argument("--token-file", required=True)
+    parser.add_argument("--openai-cost-scope-attestation", required=True)
+    parser.add_argument("--openai-admin-api-key-file", required=True)
+    parser.add_argument("--openai-project-id", required=True)
+    parser.add_argument("--openai-api-key-id", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument(
         "--raw-manifest-uri",
@@ -296,6 +361,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             attempt_authority_path=args.attempt_authority,
             dry_run_receipt_path=args.dry_run_receipt,
             token_file_path=args.token_file,
+            openai_cost_scope_attestation_path=(
+                args.openai_cost_scope_attestation
+            ),
+            openai_admin_api_key_file=args.openai_admin_api_key_file,
+            openai_project_id=args.openai_project_id,
+            openai_api_key_id=args.openai_api_key_id,
             source_commit=args.source_commit,
             raw_manifest_uri=args.raw_manifest_uri,
             revision=args.revision,
