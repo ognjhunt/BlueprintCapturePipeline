@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -37,6 +38,9 @@ from blueprint_pipeline.public_scene_sam31_track_selection_review import (
 )
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     canonical_json_digest,
+)
+from blueprint_pipeline.task_evaluation_supervisor.openai_cost_authority import (
+    OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
 )
 from blueprint_pipeline.scene_placement.semantic_source_track_import import (
     MASK_ENCODING,
@@ -380,6 +384,8 @@ def _run_production_ai_review(
     candidate_path: Path,
     output_root: Path,
     decision: str,
+    openai_cost_baseline: float = 0.0,
+    capture: dict | None = None,
 ) -> tuple[dict, dict]:
     import agents
 
@@ -414,7 +420,7 @@ def _run_production_ai_review(
         }
         context_wrapper = type("Context", (), {"usage": _Usage()})()
 
-    captured: dict = {}
+    captured: dict = capture if capture is not None else {}
 
     def _run_sync(agent, input_value, **kwargs):
         captured["input"] = input_value
@@ -437,10 +443,81 @@ def _run_production_ai_review(
         output_path=rights_path,
     )
     captured["rights_path"] = rights_path
+    cost_root = output_root.parent / f"{output_root.name}-cost"
+    cost_root.mkdir()
+    admin_key = cost_root / "admin-key"
+    admin_key.write_text("sk-admin-hermetic-fixture", encoding="utf-8")
+    admin_key.chmod(0o600)
+    cost_attestation = {
+        "schema_version": OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
+        "status": "approved",
+        "operator_id": "fixture-independent-cost-owner",
+        "issued_by_agent": False,
+        "provider_id": "openai",
+        "paid_resource_class": "sam31_ai_visual_review",
+        "project_id": "proj_scene840920_sam_review",
+        "api_key_id": "key_scene840920_sam_review",
+        "exclusive_use": True,
+        "exclusive_from": "2026-08-15T00:00:00Z",
+        "exclusive_until": "2026-08-18T00:00:00Z",
+        "candidate_reported_usage_is_authoritative": False,
+        "proof_effect": "none",
+        "scope_attestation_digest": "",
+    }
+    cost_attestation["scope_attestation_digest"] = canonical_digest(
+        cost_attestation, digest_field="scope_attestation_digest"
+    )
+    cost_attestation_path = cost_root / "scope-attestation.json"
+    cost_attestation_path.write_text(json.dumps(cost_attestation), encoding="utf-8")
+    cost_queries = 0
+
+    def _cost_transport(url: str, _headers, _timeout: float) -> dict:
+        nonlocal cost_queries
+        from urllib.parse import parse_qs, urlparse
+
+        cost_queries += 1
+        query = parse_qs(urlparse(url).query)
+        start = int(query["start_time"][0])
+        end = int(query["end_time"][0])
+        return {
+            "object": "page",
+            "data": [
+                {
+                    "object": "bucket",
+                    "start_time": start,
+                    "end_time": end,
+                    "results": [
+                        {
+                            "object": "organization.costs.result",
+                            "amount": {
+                                "value": (
+                                    openai_cost_baseline
+                                    if cost_queries == 1
+                                    else 0.02
+                                ),
+                                "currency": "usd",
+                            },
+                            "project_id": "proj_scene840920_sam_review",
+                            "api_key_id": "key_scene840920_sam_review",
+                        }
+                    ],
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
     result = run_sam31_ai_visual_review(
         candidate_path=candidate_path,
         rights_attestation_path=rights_path,
         output_root=output_root,
+        openai_cost_scope_attestation_path=cost_attestation_path,
+        openai_admin_api_key_file=admin_key,
+        openai_project_id="proj_scene840920_sam_review",
+        openai_api_key_id="key_scene840920_sam_review",
+        openai_cost_transport=_cost_transport,
+        openai_cost_wall_clock=lambda: datetime(
+            2026, 8, 15, 13, 30, tzinfo=timezone.utc
+        ),
     )
     return result, captured
 
@@ -516,6 +593,14 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
     execution_path = tmp_path / "production-ai-review" / EXECUTION_RECEIPT_NAME
     original_execution = execution_path.read_bytes()
     execution = json.loads(original_execution)
+    assert execution["official_openai_billing_status"] == (
+        "official_cost_reporting_pending"
+    )
+    assert execution["strict_official_billing_satisfied"] is False
+    assert execution["official_openai_cost_reservation"][
+        "zero_cost_baseline_confirmed"
+    ] is True
+    assert execution["official_openai_cost_completion"]["cost_is_final"] is False
     empty_decision = next(
         row
         for row in execution["structured_output"]["frames"]
@@ -699,6 +784,39 @@ def test_ai_review_separates_empty_observation_identity_from_visible_target() ->
     )
     assert decision == "rejected"
     assert "mask_observation_status_invalid:task_b_notebook_relocation:front_left" in blockers
+
+
+def test_ai_visual_review_nonzero_cost_scope_blocks_before_agents_sdk_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, camera_count=8, empty_laptop_camera="camera_0")
+    candidate_root = tmp_path / "ai-review-candidate"
+    materialize_sam31_track_selection_review_candidate(
+        task_freeze_paths=fixture["tasks"],
+        task_inputs=fixture["task_inputs"],
+        selected_track_ids_by_task={
+            "task_a": ["washer-track"],
+            "task_b": ["laptop-track"],
+        },
+        output_root=candidate_root,
+    )
+    captured: dict = {}
+
+    with pytest.raises(Exception, match="openai_cost_scope_baseline_not_zero"):
+        _run_production_ai_review(
+            monkeypatch=monkeypatch,
+            candidate_path=(
+                candidate_root
+                / "public_scene_sam31_track_selection_review_candidate.v1.json"
+            ),
+            output_root=tmp_path / "blocked-ai-review",
+            decision="accepted",
+            openai_cost_baseline=0.01,
+            capture=captured,
+        )
+
+    assert "input" not in captured
 
 
 def test_ai_visual_review_rejection_and_missing_identity_fail_closed(

@@ -21,6 +21,10 @@ from PIL import Image, ImageChops
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .dual_task_rehearsal_contract import validate_task_freeze
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
+from .openai_official_cost_gate import (
+    RUN_COMPLETION_SCHEMA_VERSION,
+    RUN_RESERVATION_SCHEMA_VERSION,
+)
 from .task_evaluation_supervisor.inference_reservations import (
     INFERENCE_COMPLETION_SCHEMA_VERSION,
     INFERENCE_RESERVATION_MANIFEST_SCHEMA_VERSION,
@@ -548,6 +552,14 @@ def _validate_ai_execution_receipt(
     manifest = execution.get("inference_reservation_manifest")
     manifest_record = execution.get("inference_reservation_manifest_record")
     rights_record = execution.get("rights_attestation")
+    official_cost_reservation = execution.get("official_openai_cost_reservation")
+    official_cost_reservation_record = execution.get(
+        "official_openai_cost_reservation_record"
+    )
+    official_cost_completion = execution.get("official_openai_cost_completion")
+    official_cost_completion_record = execution.get(
+        "official_openai_cost_completion_record"
+    )
     if (
         execution.get("schema_version") != AI_EXECUTION_SCHEMA_VERSION
         or execution.get("status") != "ai_visual_review_execution_completed"
@@ -591,6 +603,13 @@ def _validate_ai_execution_receipt(
         or not isinstance(manifest, Mapping)
         or not isinstance(manifest_record, Mapping)
         or not isinstance(rights_record, Mapping)
+        or not isinstance(official_cost_reservation, Mapping)
+        or not isinstance(official_cost_reservation_record, Mapping)
+        or not isinstance(official_cost_completion, Mapping)
+        or not isinstance(official_cost_completion_record, Mapping)
+        or execution.get("official_openai_billing_status")
+        != "official_cost_reporting_pending"
+        or execution.get("strict_official_billing_satisfied") is not False
     ):
         raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
 
@@ -607,6 +626,68 @@ def _validate_ai_execution_receipt(
         _record(rights_path)
         != {key: rights_record.get(key) for key in ("path", "size_bytes", "sha256")}
         or rights.get("attestation_digest") != rights_record.get("attestation_digest")
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
+
+    cost_reservation_path = _contained_evidence_path(
+        execution_root=execution_path.parent.resolve(),
+        relative_path="official_openai_cost/openai_official_cost_run_reservation.v1.json",
+    )
+    cost_completion_path = _contained_evidence_path(
+        execution_root=execution_path.parent.resolve(),
+        relative_path="official_openai_cost/openai_official_cost_run_completion.v1.json",
+    )
+    if (
+        _record(cost_reservation_path) != dict(official_cost_reservation_record)
+        or _record(cost_completion_path) != dict(official_cost_completion_record)
+        or _read(
+            cost_reservation_path,
+            code="sam31_review_execution_receipt_invalid",
+        )[1]
+        != official_cost_reservation
+        or _read(
+            cost_completion_path,
+            code="sam31_review_execution_receipt_invalid",
+        )[1]
+        != official_cost_completion
+        or official_cost_reservation.get("schema_version")
+        != RUN_RESERVATION_SCHEMA_VERSION
+        or official_cost_reservation.get("status")
+        != "reserved_before_openai_call"
+        or official_cost_reservation.get("reservation_receipt_digest")
+        != canonical_digest(
+            official_cost_reservation,
+            digest_field="reservation_receipt_digest",
+        )
+        or official_cost_reservation.get("run_id") != execution["run_id"]
+        or official_cost_reservation.get("request_digest")
+        != execution["input_digest"]
+        or official_cost_reservation.get("candidate_digest")
+        != candidate["candidate_digest"]
+        or official_cost_reservation.get("authorization_receipt_digest")
+        != rights["attestation_digest"]
+        or official_cost_reservation.get("zero_cost_baseline_confirmed") is not True
+        or official_cost_reservation.get("strict_official_billing_satisfied") is not False
+        or official_cost_completion.get("schema_version")
+        != RUN_COMPLETION_SCHEMA_VERSION
+        or official_cost_completion.get("status")
+        != "official_cost_reporting_pending"
+        or official_cost_completion.get("completion_receipt_digest")
+        != canonical_digest(
+            official_cost_completion,
+            digest_field="completion_receipt_digest",
+        )
+        or official_cost_completion.get("run_id") != execution["run_id"]
+        or official_cost_completion.get("request_digest") != execution["input_digest"]
+        or official_cost_completion.get("candidate_digest")
+        != candidate["candidate_digest"]
+        or official_cost_completion.get("authorization_receipt_digest")
+        != rights["attestation_digest"]
+        or official_cost_completion.get("runtime_result_digest")
+        != execution["structured_output_digest"]
+        or official_cost_completion.get("provider_call_performed") is not True
+        or official_cost_completion.get("cost_is_final") is not False
+        or official_cost_completion.get("strict_official_billing_satisfied") is not False
     ):
         raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
 

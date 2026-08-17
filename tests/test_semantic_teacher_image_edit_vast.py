@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from io import BytesIO
 import json
 import os
@@ -30,6 +31,9 @@ from blueprint_pipeline.semantic_teacher_image_edit_vast import (
 )
 from blueprint_pipeline.semantic_teacher_image_edit_worker import (
     RUNTIME_RESULT_SCHEMA_VERSION,
+)
+from blueprint_pipeline.task_evaluation_supervisor.openai_cost_authority import (
+    OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
 )
 
 
@@ -219,13 +223,55 @@ def _inputs(tmp_path: Path) -> SimpleNamespace:
     token_path = tmp_path / "openai_token"
     token_path.write_text(TOKEN)
     token_path.chmod(0o600)
+    admin_key = tmp_path / "openai_admin_key"
+    admin_key.write_text("sk-admin-hermetic-fixture")
+    admin_key.chmod(0o600)
+    scope = {
+        "schema_version": OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
+        "status": "approved",
+        "operator_id": "fixture-independent-cost-owner",
+        "issued_by_agent": False,
+        "provider_id": "openai",
+        "paid_resource_class": "semantic_teacher_image_edit",
+        "project_id": "proj_semantic_teacher_fixture",
+        "api_key_id": "key_semantic_teacher_fixture",
+        "exclusive_use": True,
+        "exclusive_from": "2026-08-17T00:00:00Z",
+        "exclusive_until": "2026-08-20T00:00:00Z",
+        "candidate_reported_usage_is_authoritative": False,
+        "proof_effect": "none",
+        "scope_attestation_digest": "",
+    }
+    scope["scope_attestation_digest"] = canonical_digest(
+        scope, digest_field="scope_attestation_digest"
+    )
+    scope_path = tmp_path / "openai_cost_scope.json"
+    _write_json(scope_path, scope)
+    launch_root = tmp_path / "launch-fixture"
+    job_root = launch_root / "allocator" / "semantic-teacher-job"
+    launch_binding = {
+        "schema_version": "task_evaluation_launch_binding.v1",
+        "launch_id": launch_root.name,
+        "run_id": "scene840920-semantic-teacher-fixture-run",
+        "request_digest": "sha256:" + "8" * 64,
+        "profile_digest": "sha256:" + "7" * 64,
+        "binding_digest": "",
+    }
+    launch_binding["binding_digest"] = canonical_digest(
+        launch_binding, digest_field="binding_digest"
+    )
+    _write_json(launch_root / "launch_binding.json", launch_binding)
     return SimpleNamespace(
         semantic_teacher_attempt_authority=str(authority_path),
         semantic_teacher_bundle=str(bundle),
         semantic_teacher_bundle_receipt=str(receipt_path),
-        semantic_teacher_job_dir=str(tmp_path / "job"),
+        semantic_teacher_job_dir=str(job_root),
         semantic_teacher_token_file=str(token_path),
         semantic_teacher_runtime_image_identity=IMAGE,
+        semantic_teacher_openai_cost_scope_attestation=str(scope_path),
+        semantic_teacher_openai_admin_api_key_file=str(admin_key),
+        semantic_teacher_openai_project_id="proj_semantic_teacher_fixture",
+        semantic_teacher_openai_api_key_id="key_semantic_teacher_fixture",
     )
 
 
@@ -715,6 +761,7 @@ def _run(
     store_override: _ObjectStore | None = None,
     result_fetcher=None,
     watchdog_closer=None,
+    openai_cost_baseline: float = 0.0,
 ):
     args = _inputs(tmp_path)
     receipt = json.loads(Path(args.semantic_teacher_bundle_receipt).read_text())
@@ -723,6 +770,43 @@ def _run(
     consumption_calls: list[dict] = []
     _consume(monkeypatch, consumption_calls)
     ticks = iter(float(value) for value in range(1000, 1100))
+    cost_queries = 0
+
+    def cost_transport(url: str, _headers, _timeout: float) -> dict:
+        nonlocal cost_queries
+        from urllib.parse import parse_qs, urlparse
+
+        cost_queries += 1
+        query = parse_qs(urlparse(url).query)
+        start = int(query["start_time"][0])
+        end = int(query["end_time"][0])
+        return {
+            "object": "page",
+            "data": [
+                {
+                    "object": "bucket",
+                    "start_time": start,
+                    "end_time": end,
+                    "results": [
+                        {
+                            "object": "organization.costs.result",
+                            "amount": {
+                                "value": (
+                                    openai_cost_baseline
+                                    if cost_queries == 1
+                                    else 0.05
+                                ),
+                                "currency": "usd",
+                            },
+                            "project_id": "proj_semantic_teacher_fixture",
+                            "api_key_id": "key_semantic_teacher_fixture",
+                        }
+                    ],
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
 
     def bind(path: Path, instance_id: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -758,6 +842,10 @@ def _run(
         clock=lambda: next(ticks),
         watchdog_validator=lambda _watchdog, _now, _ttl: True,
         watchdog_instance_binder=bind,
+        openai_cost_transport=cost_transport,
+        openai_cost_wall_clock=lambda: datetime(
+            2026, 8, 17, 10, 0, tzinfo=timezone.utc
+        ),
     )
     return result, selected_provider, store, consumption_calls
 
@@ -1044,6 +1132,30 @@ def test_one_instance_run_retains_output_and_proves_every_zero(
     assert (job / "runtime_output/tasks/task_a/00000.png").is_file()
     assert (job / "semantic_teacher_image_edit_result_import.v1.json").is_file()
     billing = json.loads((job / "billing_receipt.json").read_text())
+    assert result["official_openai_billing_status"] == (
+        "official_cost_reporting_pending"
+    )
+    assert result["launch_id"] == "launch-fixture"
+    assert result["run_id"] == "scene840920-semantic-teacher-fixture-run"
+    assert result["launch_request_digest"] == "sha256:" + "8" * 64
+    assert result["strict_official_openai_billing_satisfied"] is False
+    assert (
+        job
+        / "official_openai_cost/openai_official_cost_run_reservation.v1.json"
+    ).is_file()
+    assert (
+        job
+        / "official_openai_cost/openai_official_cost_run_completion.v1.json"
+    ).is_file()
+    cost_reservation = json.loads(
+        (
+            job
+            / "official_openai_cost/openai_official_cost_run_reservation.v1.json"
+        ).read_text()
+    )
+    assert cost_reservation["run_id"] == result["run_id"]
+    assert cost_reservation["request_digest"] == result["launch_request_digest"]
+    assert cost_reservation["candidate_digest"] == result["runtime_request_digest"]
     assert billing["editor_request_cost_usd"] == 0.2
     assert billing["compute_cost_usd"] == pytest.approx(0.5 * 60 / 3600)
     assert billing["cost_usd"] == pytest.approx(0.2 + 0.5 * 60 / 3600)
@@ -1055,6 +1167,26 @@ def test_one_instance_run_retains_output_and_proves_every_zero(
     )
     for secret in (TOKEN, INPUT_URL, PUT_URL, GET_URL):
         assert secret.encode() not in persisted
+
+
+def test_nonzero_openai_cost_scope_blocks_before_provider_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, provider, store, consumption_calls = _run(
+        tmp_path,
+        monkeypatch,
+        openai_cost_baseline=0.01,
+    )
+
+    assert result["status"] == "blocked"
+    assert provider.launch_calls == 0
+    assert provider.terminate_calls == 0
+    assert len(consumption_calls) == 1
+    assert store.cleanup_calls == 1
+    assert any(
+        "openai_cost_scope_baseline_not_zero" in blocker
+        for blocker in result["blockers"]
+    )
 
 
 def test_global_nonzero_refuses_before_consumption_staging_or_launch(

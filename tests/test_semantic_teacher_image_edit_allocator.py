@@ -191,6 +191,11 @@ def test_allocator_execute_arms_watchdog_then_routes_exact_adapter(
     token = tmp_path / "token"
     token.write_text("secret", encoding="utf-8")
     token.chmod(0o600)
+    admin_key = tmp_path / "admin-key"
+    admin_key.write_text("sk-admin-fixture", encoding="utf-8")
+    admin_key.chmod(0o600)
+    cost_scope = tmp_path / "cost-scope.json"
+    _write(cost_scope, {"fixture": True})
     dry_run = tmp_path / "dry-run.json"
     _write(dry_run, {"fixture": True})
     preflight_output = tmp_path / "preflight.json"
@@ -255,6 +260,14 @@ def test_allocator_execute_arms_watchdog_then_routes_exact_adapter(
             "76546",
             "--semantic-teacher-token-file",
             str(token),
+            "--semantic-teacher-openai-cost-scope-attestation",
+            str(cost_scope),
+            "--semantic-teacher-openai-admin-api-key-file",
+            str(admin_key),
+            "--semantic-teacher-openai-project-id",
+            "proj_fixture",
+            "--semantic-teacher-openai-api-key-id",
+            "key_fixture",
             "--semantic-teacher-dry-run-receipt",
             str(dry_run),
             "--semantic-teacher-preflight-output",

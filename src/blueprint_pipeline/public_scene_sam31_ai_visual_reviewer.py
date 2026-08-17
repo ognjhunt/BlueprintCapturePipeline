@@ -8,7 +8,7 @@ existing AI selection receipt without a Codex, Claude, or human decision seam.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
@@ -34,6 +34,9 @@ from .public_scene_sam31_track_selection_review import (
     validate_sam31_ai_visual_review_rights,
 )
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
+from .openai_official_cost_gate import (
+    build_openai_official_cost_run_gate,
+)
 from .task_evaluation_supervisor.agents_sdk import (
     AgentsSDKAgentSpec,
     OpenAIAgentsSDKConfig,
@@ -47,6 +50,8 @@ AI_REVIEW_RECEIPT_NAME = "public_scene_sam31_track_selection_ai_visual_review.v1
 DEFAULT_MAX_INPUT_TOKENS = AI_REVIEW_INPUT_TOKEN_CEILING
 DEFAULT_MAX_OUTPUT_TOKENS = 3_000
 DEFAULT_MAX_COST_USD = AI_REVIEW_MAX_COST_USD
+OPENAI_COST_PROVIDER_ID = "openai"
+OPENAI_COST_RESOURCE_CLASS = "sam31_ai_visual_review"
 
 
 class Sam31AIVisualReviewError(RuntimeError):
@@ -94,6 +99,14 @@ def run_sam31_ai_visual_review(
     max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     max_cost_usd: float = DEFAULT_MAX_COST_USD,
+    openai_cost_scope_attestation_path: str | Path | None = None,
+    openai_admin_api_key_file: str | Path | None = None,
+    openai_project_id: str = "",
+    openai_api_key_id: str = "",
+    openai_cost_transport: Callable[..., Mapping[str, Any]] | None = None,
+    openai_cost_wall_clock: Callable[[], datetime] = lambda: datetime.now(
+        timezone.utc
+    ),
 ) -> dict[str, Any]:
     """Execute and retain one production, digest-bound AI visual review."""
 
@@ -103,6 +116,15 @@ def run_sam31_ai_visual_review(
         raise Sam31AIVisualReviewError("sam31_ai_review_cost_cap_must_be_fixed")
     if model != AI_REVIEW_MODEL:
         raise Sam31AIVisualReviewError("sam31_ai_review_model_must_be_fixed")
+    if (
+        openai_cost_scope_attestation_path is None
+        or openai_admin_api_key_file is None
+        or not openai_project_id.strip()
+        or not openai_api_key_id.strip()
+    ):
+        raise Sam31AIVisualReviewError(
+            "sam31_ai_review_official_cost_config_missing"
+        )
     candidate_file, candidate = load_validated_sam31_track_selection_review_candidate(
         candidate_path
     )
@@ -120,6 +142,25 @@ def run_sam31_ai_visual_review(
     if len(frame_inventory) != AI_REVIEW_FRAME_COUNT:
         raise Sam31AIVisualReviewError("sam31_ai_review_requires_exactly_16_overlays")
     run_id = f"sam31-ai-visual-review-{candidate['candidate_digest'].removeprefix('sha256:')[:16]}"
+    input_digest = canonical_digest({"input": input_value})
+    cost_gate = build_openai_official_cost_run_gate(
+        scope_attestation_path=openai_cost_scope_attestation_path,
+        admin_api_key_file=openai_admin_api_key_file,
+        project_id=openai_project_id,
+        api_key_id=openai_api_key_id,
+        lane_id=AI_REVIEW_CAPABILITY,
+        run_id=run_id,
+        request_digest=input_digest,
+        candidate_digest=candidate["candidate_digest"],
+        authorization_receipt_digest=rights["attestation_digest"],
+        max_cost_usd=max_cost_usd,
+        output_root=destination / "official_openai_cost",
+        provider_id=OPENAI_COST_PROVIDER_ID,
+        paid_resource_class=OPENAI_COST_RESOURCE_CLASS,
+        transport=openai_cost_transport,
+        wall_clock=openai_cost_wall_clock,
+    )
+    cost_reservation = cost_gate.reserve()
     audit = InferenceReservationAudit(run_root=destination, run_id=run_id)
     selected_invoker = OpenAIAgentsSDKInvoker(
         OpenAIAgentsSDKConfig(
@@ -153,14 +194,25 @@ def run_sam31_ai_visual_review(
     )
     try:
         invocation = selected_invoker.invoke(spec, input_value)
-    except Exception:
+    except Exception as exc:
         audit.write_manifest()
+        cost_gate.complete(
+            provider_call_performed=True,
+            runtime_result_digest=None,
+            runtime_exception_type=type(exc).__name__,
+        )
         raise
     reservation_manifest = audit.write_manifest()
     if invocation.provider != "openai" or invocation.model != model:
         raise Sam31AIVisualReviewError("sam31_ai_review_provider_identity_invalid")
     output = Sam31AIVisualReviewOutput.model_validate(invocation.output)
     structured_output = output.model_dump(mode="json")
+    structured_output_digest = canonical_digest(structured_output)
+    cost_completion = cost_gate.complete(
+        provider_call_performed=True,
+        runtime_result_digest=structured_output_digest,
+        runtime_exception_type=None,
+    )
     decision, blockers = validate_sam31_ai_structured_decision(
         structured_output=structured_output,
         frame_inventory=frame_inventory,
@@ -199,8 +251,8 @@ def run_sam31_ai_visual_review(
         "review_frame_count": len(frame_inventory),
         "frame_inventory": frame_inventory,
         "structured_output": structured_output,
-        "structured_output_digest": canonical_digest(structured_output),
-        "input_digest": canonical_digest({"input": input_value}),
+        "structured_output_digest": structured_output_digest,
+        "input_digest": input_digest,
         "input_transport": "digest_rehashed_png_data_urls",
         "provider_called": True,
         "provider": invocation.provider,
@@ -210,6 +262,16 @@ def run_sam31_ai_visual_review(
         "usage": dict(invocation.usage),
         "cost_usd": invocation.cost_usd,
         "cost_status": invocation.cost_status,
+        "official_openai_cost_reservation": cost_reservation,
+        "official_openai_cost_reservation_record": _record(
+            cost_gate.reservation_path
+        ),
+        "official_openai_cost_completion": cost_completion,
+        "official_openai_cost_completion_record": _record(
+            cost_gate.completion_path
+        ),
+        "official_openai_billing_status": cost_completion["status"],
+        "strict_official_billing_satisfied": False,
         "inference_reservation_manifest": reservation_manifest,
         "inference_reservation_manifest_record": _record(reservation_manifest_path),
         "blockers": blockers,
@@ -258,12 +320,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--rights-attestation", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
+    parser.add_argument("--openai-cost-scope-attestation", required=True)
+    parser.add_argument("--openai-admin-api-key-file", required=True)
+    parser.add_argument("--openai-project-id", required=True)
+    parser.add_argument("--openai-api-key-id", required=True)
     args = parser.parse_args(argv)
     result = run_sam31_ai_visual_review(
         candidate_path=args.candidate,
         rights_attestation_path=args.rights_attestation,
         output_root=args.output_root,
         max_output_tokens=args.max_output_tokens,
+        openai_cost_scope_attestation_path=args.openai_cost_scope_attestation,
+        openai_admin_api_key_file=args.openai_admin_api_key_file,
+        openai_project_id=args.openai_project_id,
+        openai_api_key_id=args.openai_api_key_id,
     )
     print(canonical_json(result))
     return 0 if result["decision"] == "accepted" else 2

@@ -12,6 +12,9 @@ from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
 from blueprint_pipeline.semantic_teacher_image_edit_bundle import (
     BUNDLE_RECEIPT_SCHEMA_VERSION,
 )
+from blueprint_pipeline.task_evaluation_supervisor.openai_cost_authority import (
+    OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
+)
 
 pytestmark = pytest.mark.usefixtures(
     "_materialize_generated_manifest_publication_fixture"
@@ -110,12 +113,38 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
     token = tmp_path / "token"
     token.write_text("fixture-secret", encoding="utf-8")
     token.chmod(0o600)
+    admin_key = tmp_path / "admin-key"
+    admin_key.write_text("sk-admin-hermetic-fixture", encoding="utf-8")
+    admin_key.chmod(0o600)
+    cost_scope = {
+        "schema_version": OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
+        "status": "approved",
+        "operator_id": "fixture-independent-cost-owner",
+        "issued_by_agent": False,
+        "provider_id": "openai",
+        "paid_resource_class": "semantic_teacher_image_edit",
+        "project_id": "proj_semantic_teacher_fixture",
+        "api_key_id": "key_semantic_teacher_fixture",
+        "exclusive_use": True,
+        "exclusive_from": "2026-08-17T00:00:00Z",
+        "exclusive_until": "2026-08-20T00:00:00Z",
+        "candidate_reported_usage_is_authoritative": False,
+        "proof_effect": "none",
+        "scope_attestation_digest": "",
+    }
+    cost_scope["scope_attestation_digest"] = canonical_digest(
+        cost_scope, digest_field="scope_attestation_digest"
+    )
+    cost_scope_path = tmp_path / "openai-cost-scope.json"
+    _write(cost_scope_path, cost_scope)
     return {
         "receipt": receipt_path,
         "authority": authority_path,
         "dry_run": dry_run_path,
         "token": token,
         "prior_spend": prior_spend,
+        "admin_key": admin_key,
+        "cost_scope": cost_scope_path,
     }
 
 
@@ -131,6 +160,10 @@ def _build(tmp_path: Path, monkeypatch, *, excluded_machine_ids=()):
         attempt_authority_path=paths["authority"],
         dry_run_receipt_path=paths["dry_run"],
         token_file_path=paths["token"],
+        openai_cost_scope_attestation_path=paths["cost_scope"],
+        openai_admin_api_key_file=paths["admin_key"],
+        openai_project_id="proj_semantic_teacher_fixture",
+        openai_api_key_id="key_semantic_teacher_fixture",
         source_commit=COMMIT,
         raw_manifest_uri=(
             f"https://raw.githubusercontent.com/example/repo/{COMMIT}/"
@@ -158,6 +191,7 @@ def test_profile_uses_admitted_dispatch_and_binds_private_inputs(
     assert "semantic_teacher_paid_attempt_authority" in immutable
     assert "semantic_teacher_prior_spend_reconciliation" in immutable
     assert "evaluation_run_spec" in immutable
+    assert "semantic_teacher_openai_cost_scope_attestation" in immutable
     assert all(str(paths["token"]) != row["path"] for row in profile["immutable_inputs"])
     prior = next(
         row
