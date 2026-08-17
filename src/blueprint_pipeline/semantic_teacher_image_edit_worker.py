@@ -4,13 +4,14 @@ The worker implements a transport adapter, not a model allowlist. Model identity
 snapshot, endpoint, options, prompt, and mask encoding arrive in the immutable
 runtime request. This first adapter speaks the OpenAI Images Edits multipart
 protocol and accepts only inline base64 PNG output, so no unbound second fetch is
-introduced. It performs exactly one request per calibrated frame and no retries.
+introduced. It performs at most one request per calibrated frame and no retries.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import hashlib
 import json
 import math
@@ -35,6 +36,11 @@ MAX_GENERATED_PNG_BYTES = 32 * 1024 * 1024
 MAX_INPUT_PNG_BYTES = 32 * 1024 * 1024
 MAX_IMAGE_PIXELS = 64 * 1024 * 1024
 MAX_PROVIDER_ERROR_BYTES = 64 * 1024
+LEGACY_DEFAULT_PARALLEL_REQUESTS = 1
+PRODUCTION_MAX_PARALLEL_REQUESTS = 4
+MAX_PARALLEL_REQUESTS = 4
+PROGRESS_MARKER_PREFIX = "BLUEPRINT_SEMANTIC_TEACHER_PROGRESS"
+PROGRESS_SCHEMA_VERSION = "semantic_teacher_image_edit_progress.v1"
 RESERVED_MULTIPART_FIELDS = frozenset(
     {"image", "mask", "model", "prompt", "response_format", "size"}
 )
@@ -362,14 +368,130 @@ def _decode_inline_png(
     return decoded, usage
 
 
+def _execute_frame_request(
+    *,
+    execution: Mapping[str, Any],
+    prompt: str,
+    request_digest: str,
+    image_bytes: bytes,
+    mask_bytes: bytes,
+    expected_size: tuple[int, int],
+    token: str,
+    opener: Callable[..., Any],
+) -> dict[str, Any]:
+    """Make one no-retry provider request and return only bounded result data."""
+
+    fields = {
+        **dict(execution["default_options"]),
+        "model": execution["model_snapshot"],
+        "prompt": prompt,
+        "size": f"{expected_size[0]}x{expected_size[1]}",
+    }
+    boundary = "blueprint" + request_digest.split(":", 1)[-1][:24]
+    body = _multipart(
+        fields=fields,
+        image_bytes=image_bytes,
+        mask_bytes=mask_bytes,
+        boundary=boundary,
+    )
+    http_request = Request(
+        str(execution["endpoint"]),
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with opener(http_request, timeout=300) as response:
+            if (
+                not hasattr(response, "geturl")
+                or response.geturl() != str(execution["endpoint"])
+            ):
+                raise SemanticTeacherImageEditWorkerError(
+                    "semantic_teacher_provider_redirect_rejected"
+                )
+            payload = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+            generated, usage = _decode_inline_png(payload, expected_size=expected_size)
+    except (HTTPError, OSError, SemanticTeacherImageEditWorkerError) as exc:
+        provider_failure = (
+            _sanitized_http_failure(exc, token=token)
+            if isinstance(exc, HTTPError)
+            else None
+        )
+        blocker = (
+            "semantic_teacher_provider_http_error"
+            if isinstance(exc, HTTPError)
+            else (
+                str(exc)
+                if isinstance(exc, SemanticTeacherImageEditWorkerError)
+                else "semantic_teacher_provider_request_failed"
+            )
+        )
+        return {
+            "succeeded": False,
+            "blocker": blocker,
+            "provider_failure": provider_failure,
+        }
+    return {
+        "succeeded": True,
+        "generated": generated,
+        "usage": usage,
+    }
+
+
+def _emit_progress_marker(
+    *,
+    progress_writer: Callable[[str], None],
+    global_frame_index: int,
+    task_index: int,
+    frame_index: int,
+    event: str,
+    terminal_state: str | None,
+    terminal_frame_count: int,
+    total_frame_count: int,
+    attempted_request_count: int,
+    successful_request_count: int,
+    failed_request_count: int,
+    outstanding_request_count: int,
+    maximum_parallel_requests: int,
+) -> None:
+    """Emit metadata-only progress; never include IDs, digests, prompts, or media."""
+
+    progress_writer(
+        f"{PROGRESS_MARKER_PREFIX} "
+        + _canonical_json(
+            {
+                "schema_version": PROGRESS_SCHEMA_VERSION,
+                "global_frame_index": global_frame_index,
+                "task_index": task_index,
+                "frame_index": frame_index,
+                "event": event,
+                "terminal_state": terminal_state,
+                "terminal_frame_count": terminal_frame_count,
+                "total_frame_count": total_frame_count,
+                "attempted_request_count": attempted_request_count,
+                "successful_request_count": successful_request_count,
+                "failed_request_count": failed_request_count,
+                "outstanding_request_count": outstanding_request_count,
+                "maximum_parallel_requests": maximum_parallel_requests,
+                "retry_count": 0,
+            }
+        )
+    )
+
+
 def execute_semantic_teacher_image_edits(
     *,
     runtime_request_path: str | Path,
     output_root: str | Path,
     token: str,
     opener: Callable[..., Any] = _open_no_redirect,
+    progress_writer: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Execute every bound frame exactly once through the selected adapter."""
+    """Execute every bound frame at most once through the selected adapter."""
 
     request_path = Path(runtime_request_path).expanduser().resolve()
     request = _read(request_path, "semantic_teacher_runtime_request_invalid")
@@ -381,6 +503,9 @@ def execute_semantic_teacher_image_edits(
     tasks = request.get("tasks")
     default_options = (
         execution.get("default_options") if isinstance(execution, Mapping) else None
+    )
+    max_parallel_requests = request.get(
+        "max_parallel_requests", LEGACY_DEFAULT_PARALLEL_REQUESTS
     )
     options_valid = _valid_default_options(default_options)
     pricing = execution.get("pricing_binding") if isinstance(execution, Mapping) else None
@@ -429,6 +554,9 @@ def execute_semantic_teacher_image_edits(
         or not token
         or "\n" in token
         or "\r" in token
+        or isinstance(max_parallel_requests, bool)
+        or not isinstance(max_parallel_requests, int)
+        or not 1 <= max_parallel_requests <= MAX_PARALLEL_REQUESTS
     ):
         raise SemanticTeacherImageEditWorkerError(
             "semantic_teacher_runtime_request_invalid"
@@ -521,185 +649,211 @@ def execute_semantic_teacher_image_edits(
             "semantic_teacher_runtime_output_not_empty"
         )
     output.mkdir(parents=True, exist_ok=True)
+    writer = progress_writer or (lambda line: print(line, flush=True))
+    frame_jobs: list[dict[str, Any]] = []
+    for task_index, (task_id, frames) in enumerate(prepared_tasks):
+        (output / "tasks" / task_id).mkdir(parents=True)
+        for frame_index, (frame, image_bytes, mask_bytes, expected_size) in enumerate(
+            frames
+        ):
+            frame_jobs.append(
+                {
+                    "global_frame_index": len(frame_jobs),
+                    "task_index": task_index,
+                    "task_id": task_id,
+                    "frame_index": frame_index,
+                    "frame": frame,
+                    "image_bytes": image_bytes,
+                    "mask_bytes": mask_bytes,
+                    "expected_size": expected_size,
+                }
+            )
+
+    outcomes: dict[int, dict[str, Any]] = {}
+    submitted: set[int] = set()
+    in_flight: dict[Future[dict[str, Any]], dict[str, Any]] = {}
+    next_job_index = 0
+    failure_observed = False
+    successful_terminal_count = 0
+    failed_terminal_count = 0
+    terminal_frame_count = 0
+
+    def submit_next(executor: ThreadPoolExecutor) -> None:
+        nonlocal next_job_index
+        job = frame_jobs[next_job_index]
+        next_job_index += 1
+        submitted.add(job["global_frame_index"])
+        future = executor.submit(
+            _execute_frame_request,
+            execution=execution,
+            prompt=request["prompt"],
+            request_digest=request["request_digest"],
+            image_bytes=job["image_bytes"],
+            mask_bytes=job["mask_bytes"],
+            expected_size=job["expected_size"],
+            token=token,
+            opener=opener,
+        )
+        in_flight[future] = job
+        _emit_progress_marker(
+            progress_writer=writer,
+            global_frame_index=job["global_frame_index"],
+            task_index=job["task_index"],
+            frame_index=job["frame_index"],
+            event="request_started",
+            terminal_state=None,
+            terminal_frame_count=terminal_frame_count,
+            total_frame_count=len(frame_jobs),
+            attempted_request_count=len(submitted),
+            successful_request_count=successful_terminal_count,
+            failed_request_count=failed_terminal_count,
+            outstanding_request_count=len(in_flight),
+            maximum_parallel_requests=max_parallel_requests,
+        )
+
+    with ThreadPoolExecutor(max_workers=max_parallel_requests) as executor:
+        while next_job_index < min(max_parallel_requests, len(frame_jobs)):
+            submit_next(executor)
+        while in_flight:
+            completed, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
+            completed = completed | {future for future in in_flight if future.done()}
+            for future in sorted(
+                completed,
+                key=lambda item: in_flight[item]["global_frame_index"],
+            ):
+                job = in_flight.pop(future)
+                outcome = future.result()
+                if outcome["succeeded"]:
+                    destination = (
+                        output
+                        / "tasks"
+                        / job["task_id"]
+                        / f"{job['frame_index']:05d}.png"
+                    )
+                    try:
+                        destination.write_bytes(outcome["generated"])
+                    except OSError:
+                        try:
+                            destination.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        outcome = {
+                            "succeeded": False,
+                            "blocker": "semantic_teacher_provider_request_failed",
+                            "provider_failure": None,
+                        }
+                    else:
+                        outcome["destination"] = destination
+                outcomes[job["global_frame_index"]] = outcome
+                terminal_frame_count += 1
+                if outcome["succeeded"]:
+                    successful_terminal_count += 1
+                    terminal_state = "completed_unreviewed_candidate"
+                else:
+                    failed_terminal_count += 1
+                    terminal_state = "failed_after_request_attempt"
+                    failure_observed = True
+                _emit_progress_marker(
+                    progress_writer=writer,
+                    global_frame_index=job["global_frame_index"],
+                    task_index=job["task_index"],
+                    frame_index=job["frame_index"],
+                    event="frame_terminal",
+                    terminal_state=terminal_state,
+                    terminal_frame_count=terminal_frame_count,
+                    total_frame_count=len(frame_jobs),
+                    attempted_request_count=len(submitted),
+                    successful_request_count=successful_terminal_count,
+                    failed_request_count=failed_terminal_count,
+                    outstanding_request_count=len(in_flight),
+                    maximum_parallel_requests=max_parallel_requests,
+                )
+            while (
+                not failure_observed
+                and next_job_index < len(frame_jobs)
+                and len(in_flight) < max_parallel_requests
+            ):
+                submit_next(executor)
+
+    for job in frame_jobs:
+        if job["global_frame_index"] in submitted:
+            continue
+        terminal_frame_count += 1
+        _emit_progress_marker(
+            progress_writer=writer,
+            global_frame_index=job["global_frame_index"],
+            task_index=job["task_index"],
+            frame_index=job["frame_index"],
+            event="frame_terminal",
+            terminal_state="not_attempted_after_terminal_failure",
+            terminal_frame_count=terminal_frame_count,
+            total_frame_count=len(frame_jobs),
+            attempted_request_count=len(submitted),
+            successful_request_count=successful_terminal_count,
+            failed_request_count=failed_terminal_count,
+            outstanding_request_count=0,
+            maximum_parallel_requests=max_parallel_requests,
+        )
+
     task_rows: list[dict[str, Any]] = []
     usage_rows: list[dict[str, int]] = []
     editor_costs: list[float] = []
-    request_count = 0
+    failed_rows: list[dict[str, Any]] = []
+    job_by_key = {
+        (job["task_index"], job["frame_index"]): job for job in frame_jobs
+    }
     for task_index, (task_id, frames) in enumerate(prepared_tasks):
-        task_output = output / "tasks" / task_id
-        task_output.mkdir(parents=True)
         frame_rows: list[dict[str, Any]] = []
-        for expected_index, (frame, image_bytes, mask_bytes, expected_size) in enumerate(frames):
-            fields = {
-                **dict(execution["default_options"]),
-                "model": execution["model_snapshot"],
-                "prompt": request["prompt"],
-                "size": f"{expected_size[0]}x{expected_size[1]}",
+        for frame_index, (frame, _image, _mask, _size) in enumerate(frames):
+            global_frame_index = job_by_key[(task_index, frame_index)][
+                "global_frame_index"
+            ]
+            common = {
+                "frame_index": frame_index,
+                "camera_id": str(frame.get("camera_id") or ""),
+                "source_rgb_sha256": frame["input_rgb"]["sha256"],
+                "edit_mask_sha256": frame["edit_mask"]["sha256"],
             }
-            boundary = "blueprint" + request["request_digest"].split(":", 1)[-1][:24]
-            body = _multipart(
-                fields=fields,
-                image_bytes=image_bytes,
-                mask_bytes=mask_bytes,
-                boundary=boundary,
-            )
-            http_request = Request(
-                str(execution["endpoint"]),
-                data=body,
-                method="POST",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
-                    "Accept": "application/json",
-                },
-            )
-            request_count += 1
-            try:
-                with opener(http_request, timeout=300) as response:
-                    if (
-                        not hasattr(response, "geturl")
-                        or response.geturl() != str(execution["endpoint"])
-                    ):
-                        raise SemanticTeacherImageEditWorkerError(
-                            "semantic_teacher_provider_redirect_rejected"
-                        )
-                    payload = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
-                    generated, usage = _decode_inline_png(
-                        payload, expected_size=expected_size
-                    )
-                destination = task_output / f"{expected_index:05d}.png"
-                destination.write_bytes(generated)
-            except (HTTPError, OSError, SemanticTeacherImageEditWorkerError) as exc:
-                provider_failure = (
-                    _sanitized_http_failure(exc, token=token)
-                    if isinstance(exc, HTTPError)
-                    else None
-                )
-                blocker = (
-                    "semantic_teacher_provider_http_error"
-                    if isinstance(exc, HTTPError)
-                    else (
-                        str(exc)
-                        if isinstance(exc, SemanticTeacherImageEditWorkerError)
-                        else "semantic_teacher_provider_request_failed"
-                    )
-                )
+            outcome = outcomes.get(global_frame_index)
+            if outcome is None:
                 frame_rows.append(
                     {
-                        "frame_index": expected_index,
-                        "camera_id": str(frame.get("camera_id") or ""),
-                        "terminal_state": "failed_after_request_attempt",
-                        "failure_code": blocker,
-                        "source_rgb_sha256": frame["input_rgb"]["sha256"],
-                        "edit_mask_sha256": frame["edit_mask"]["sha256"],
+                        **common,
+                        "terminal_state": "not_attempted_after_terminal_failure",
+                        "failure_code": None,
                         "semantic_teacher_frame": None,
                         "provider_usage": None,
                         "computed_editor_cost_usd": None,
                         "billing_qualified": False,
-                        "provider_failure": provider_failure,
+                        "provider_failure": None,
                     }
                 )
-                for pending_index in range(expected_index + 1, len(frames)):
-                    pending = frames[pending_index][0]
-                    frame_rows.append(
-                        {
-                            "frame_index": pending_index,
-                            "camera_id": str(pending.get("camera_id") or ""),
-                            "terminal_state": "not_attempted_after_terminal_failure",
-                            "failure_code": None,
-                            "source_rgb_sha256": pending["input_rgb"]["sha256"],
-                            "edit_mask_sha256": pending["edit_mask"]["sha256"],
-                            "semantic_teacher_frame": None,
-                            "provider_usage": None,
-                            "computed_editor_cost_usd": None,
-                            "billing_qualified": False,
-                            "provider_failure": None,
-                        }
-                    )
-                task_rows.append(
-                    {
-                        "task_id": task_id,
-                        "camera_count": len(frames),
-                        "frames": frame_rows,
-                    }
-                )
-                for pending_task_id, pending_frames in prepared_tasks[task_index + 1 :]:
-                    task_rows.append(
-                        {
-                            "task_id": pending_task_id,
-                            "camera_count": len(pending_frames),
-                            "frames": [
-                                {
-                                    "frame_index": pending_index,
-                                    "camera_id": str(pending[0].get("camera_id") or ""),
-                                    "terminal_state": "not_attempted_after_terminal_failure",
-                                    "failure_code": None,
-                                    "source_rgb_sha256": pending[0]["input_rgb"]["sha256"],
-                                    "edit_mask_sha256": pending[0]["edit_mask"]["sha256"],
-                                    "semantic_teacher_frame": None,
-                                    "provider_usage": None,
-                                    "computed_editor_cost_usd": None,
-                                    "billing_qualified": False,
-                                    "provider_failure": None,
-                                }
-                                for pending_index, pending in enumerate(pending_frames)
-                            ],
-                        }
-                    )
-                partial_frames = [
-                    _record
-                    for row in task_rows
-                    for terminal in row["frames"]
-                    if isinstance((_record := terminal.get("semantic_teacher_frame")), Mapping)
-                ]
-                failed: dict[str, Any] = {
-                    "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
-                    "status": "failed_with_retained_partial_inventory",
-                    "source_runtime_request_digest": request["request_digest"],
-                    "backend_id": backend["registry_entry"]["backend_id"],
-                    "backend_entry_digest": backend["backend_entry_digest"],
-                    "adapter_id": execution["adapter_id"],
-                    "model_snapshot": execution["model_snapshot"],
-                    "task_count": len(prepared_tasks),
-                    "request_count": request_count,
-                    "attempted_request_count": request_count,
-                    "successful_request_count": len(partial_frames),
-                    "retry_count": 0,
-                    "blockers": [blocker],
-                    "terminal_provider_failure": provider_failure,
-                    "tasks": task_rows,
-                    "partial_png_inventory": partial_frames,
-                    "provider_usage_totals": {
-                        field: sum(row[field] for row in usage_rows)
-                        for field in USAGE_TOKEN_FIELDS
-                    },
-                    "computed_editor_cost_usd": round(sum(editor_costs), 9),
-                    "billing_usage_required": pricing["usage_required"],
+                continue
+            if not outcome["succeeded"]:
+                failed_row = {
+                    **common,
+                    "terminal_state": "failed_after_request_attempt",
+                    "failure_code": outcome["blocker"],
+                    "semantic_teacher_frame": None,
+                    "provider_usage": None,
+                    "computed_editor_cost_usd": None,
                     "billing_qualified": False,
-                    "raw_secret_values_recorded": False,
-                    "canonical_source_altered": False,
-                    "appearance_qualified": False,
-                    "result_digest": "",
+                    "provider_failure": outcome["provider_failure"],
                 }
-                failed["result_digest"] = _canonical_digest(
-                    failed, field="result_digest"
-                )
-                (output / f"{RUNTIME_RESULT_SCHEMA_VERSION}.json").write_text(
-                    _canonical_json(failed) + "\n", encoding="utf-8"
-                )
-                raise SemanticTeacherImageEditWorkerError(blocker) from exc
+                failed_rows.append(failed_row)
+                frame_rows.append(failed_row)
+                continue
+            usage = outcome["usage"]
             usage_cost = _usage_cost(usage, pricing) if usage is not None else None
             if usage is not None:
                 usage_rows.append(usage)
                 editor_costs.append(float(usage_cost))
+            destination = outcome["destination"]
             frame_rows.append(
                 {
-                    "frame_index": expected_index,
-                    "camera_id": str(frame.get("camera_id") or ""),
+                    **common,
                     "terminal_state": "completed_unreviewed_candidate",
                     "failure_code": None,
-                    "source_rgb_sha256": frame["input_rgb"]["sha256"],
-                    "edit_mask_sha256": frame["edit_mask"]["sha256"],
                     "semantic_teacher_frame": {
                         "relative_path": destination.relative_to(output).as_posix(),
                         "size_bytes": destination.stat().st_size,
@@ -716,6 +870,52 @@ def execute_semantic_teacher_image_edits(
         task_rows.append(
             {"task_id": task_id, "camera_count": len(frame_rows), "frames": frame_rows}
         )
+
+    request_count = len(submitted)
+    partial_frames = [
+        record
+        for task in task_rows
+        for frame in task["frames"]
+        if isinstance((record := frame.get("semantic_teacher_frame")), Mapping)
+    ]
+    if failed_rows:
+        blockers = list(dict.fromkeys(row["failure_code"] for row in failed_rows))
+        failed: dict[str, Any] = {
+            "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
+            "status": "failed_with_retained_partial_inventory",
+            "source_runtime_request_digest": request["request_digest"],
+            "backend_id": backend["registry_entry"]["backend_id"],
+            "backend_entry_digest": backend["backend_entry_digest"],
+            "adapter_id": execution["adapter_id"],
+            "model_snapshot": execution["model_snapshot"],
+            "task_count": len(prepared_tasks),
+            "request_count": request_count,
+            "attempted_request_count": request_count,
+            "successful_request_count": len(partial_frames),
+            "failed_request_count": len(failed_rows),
+            "maximum_parallel_requests": max_parallel_requests,
+            "retry_count": 0,
+            "blockers": blockers,
+            "terminal_provider_failure": failed_rows[0]["provider_failure"],
+            "tasks": task_rows,
+            "partial_png_inventory": partial_frames,
+            "provider_usage_totals": {
+                field: sum(row[field] for row in usage_rows)
+                for field in USAGE_TOKEN_FIELDS
+            },
+            "computed_editor_cost_usd": round(math.fsum(editor_costs), 9),
+            "billing_usage_required": pricing["usage_required"],
+            "billing_qualified": False,
+            "raw_secret_values_recorded": False,
+            "canonical_source_altered": False,
+            "appearance_qualified": False,
+            "result_digest": "",
+        }
+        failed["result_digest"] = _canonical_digest(failed, field="result_digest")
+        (output / f"{RUNTIME_RESULT_SCHEMA_VERSION}.json").write_text(
+            _canonical_json(failed) + "\n", encoding="utf-8"
+        )
+        raise SemanticTeacherImageEditWorkerError(blockers[0])
     usage_required = pricing["usage_required"]
     billing_qualified = len(usage_rows) == request_count
     result: dict[str, Any] = {
@@ -734,10 +934,12 @@ def execute_semantic_teacher_image_edits(
         "request_count": request_count,
         "attempted_request_count": request_count,
         "successful_request_count": request_count,
+        "failed_request_count": 0,
+        "maximum_parallel_requests": max_parallel_requests,
         "provider_usage_totals": {
             field: sum(row[field] for row in usage_rows) for field in USAGE_TOKEN_FIELDS
         },
-        "computed_editor_cost_usd": round(sum(editor_costs), 9),
+        "computed_editor_cost_usd": round(math.fsum(editor_costs), 9),
         "billing_usage_required": usage_required,
         "billing_qualified": billing_qualified,
         "blockers": (

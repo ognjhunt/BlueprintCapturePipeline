@@ -4,6 +4,8 @@ import base64
 from io import BytesIO
 import json
 from pathlib import Path
+import threading
+import time
 import urllib.error
 
 import numpy as np
@@ -123,6 +125,37 @@ def _inline_response(image_bytes: bytes, *, usage: dict | None = None) -> bytes:
     return json.dumps(value).encode("utf-8")
 
 
+def _set_parallelism(request_path: Path, value: object) -> None:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["max_parallel_requests"] = value
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _split_runtime_tasks(request_path: Path, *, split_at: int) -> None:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    frames = request["tasks"][0]["frames"]
+    second = [dict(frame, frame_index=index) for index, frame in enumerate(frames[split_at:])]
+    request["tasks"] = [
+        {"task_id": "task_a", "frames": frames[:split_at]},
+        {"task_id": "task_b", "frames": second},
+    ]
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _frame_index_from_request(request, sources: list[Path]) -> int:
+    matches = [
+        index for index, source in enumerate(sources) if source.read_bytes() in request.data
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def test_executes_each_bound_frame_once_without_model_hardcoding(tmp_path: Path) -> None:
     request_path, source_paths = _runtime_request(tmp_path)
     calls = []
@@ -165,6 +198,303 @@ def test_executes_each_bound_frame_once_without_model_hardcoding(tmp_path: Path)
         assert output.read_bytes() == generated
     serialized = json.dumps(result)
     assert "fixture-secret-token" not in serialized
+    assert result["maximum_parallel_requests"] == 1
+
+
+def test_bounded_parallel_requests_finish_out_of_order_but_seal_in_frame_order(
+    tmp_path: Path,
+) -> None:
+    request_path, source_paths = _runtime_request(tmp_path, frame_count=8)
+    _split_runtime_tasks(request_path, split_at=4)
+    _set_parallelism(request_path, 4)
+    barrier = threading.Barrier(4)
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+    calls: list[int] = []
+    generated = {
+        index: _png_bytes(size=(6, 4), color=(index, 100, 110), mode="RGB")
+        for index in range(8)
+    }
+
+    def opener(request, *, timeout: int):
+        nonlocal active, maximum_active
+        index = _frame_index_from_request(request, source_paths)
+        with lock:
+            calls.append(index)
+            active += 1
+            maximum_active = max(maximum_active, active)
+        if index < 4:
+            barrier.wait(timeout=2)
+        time.sleep((7 - index) * 0.002)
+        with lock:
+            active -= 1
+        return _Response(_inline_response(generated[index]))
+
+    progress: list[str] = []
+    result = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "output",
+        token="fixture-secret-token",
+        opener=opener,
+        progress_writer=progress.append,
+    )
+
+    assert maximum_active == 4
+    assert sorted(calls) == list(range(8))
+    assert len(calls) == len(set(calls)) == 8
+    assert result["maximum_parallel_requests"] == 4
+    assert [task["task_id"] for task in result["tasks"]] == ["task_a", "task_b"]
+    assert [
+        row["frame_index"] for task in result["tasks"] for row in task["frames"]
+    ] == [0, 1, 2, 3, 0, 1, 2, 3]
+    assert [
+        row["semantic_teacher_frame"]["relative_path"]
+        for task in result["tasks"]
+        for row in task["frames"]
+    ] == [
+        *[f"tasks/task_a/{index:05d}.png" for index in range(4)],
+        *[f"tasks/task_b/{index:05d}.png" for index in range(4)],
+    ]
+    ordered_rows = [row for task in result["tasks"] for row in task["frames"]]
+    for index, row in enumerate(ordered_rows):
+        path = tmp_path / "output" / row["semantic_teacher_frame"]["relative_path"]
+        assert path.read_bytes() == generated[index]
+    assert len(progress) == 16
+    assert all(line.startswith("BLUEPRINT_SEMANTIC_TEACHER_PROGRESS ") for line in progress)
+    progress_rows = [json.loads(line.split(" ", 1)[1]) for line in progress]
+    started = [row for row in progress_rows if row["event"] == "request_started"]
+    terminal = [row for row in progress_rows if row["event"] == "frame_terminal"]
+    assert sorted(row["global_frame_index"] for row in started) == list(range(8))
+    assert len({row["global_frame_index"] for row in started}) == 8
+    completion_order = [row["global_frame_index"] for row in terminal]
+    assert completion_order != sorted(completion_order)
+    serialized_progress = "\n".join(progress)
+    for forbidden in (
+        "fixture-secret-token",
+        "Remove the task object",
+        "editor.example.invalid",
+        source_paths[0].read_bytes().hex(),
+    ):
+        assert forbidden not in serialized_progress
+
+
+def test_parallel_failure_drains_in_flight_without_dispatching_new_frames(
+    tmp_path: Path,
+) -> None:
+    request_path, source_paths = _runtime_request(tmp_path, frame_count=8)
+    _set_parallelism(request_path, 4)
+    barrier = threading.Barrier(4)
+    calls: list[int] = []
+    generated = _png_bytes(size=(6, 4), color=(1, 2, 3), mode="RGB")
+
+    def opener(request, **_kwargs):
+        index = _frame_index_from_request(request, source_paths)
+        calls.append(index)
+        barrier.wait(timeout=2)
+        if index == 1:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "provider-secret-prose",
+                {"x-request-id": "req_parallel1"},
+                BytesIO(
+                    json.dumps(
+                        {"error": {"type": "rate_limit_error", "code": "rate_limited"}}
+                    ).encode()
+                ),
+            )
+        time.sleep(0.02)
+        return _Response(_inline_response(generated))
+
+    output = tmp_path / "output"
+    progress: list[str] = []
+    with pytest.raises(
+        SemanticTeacherImageEditWorkerError,
+        match="semantic_teacher_provider_http_error",
+    ):
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=output,
+            token="fixture-secret-token",
+            opener=opener,
+            progress_writer=progress.append,
+        )
+    result = json.loads(
+        (output / "semantic_teacher_image_edit_runtime_result.v1.json").read_text()
+    )
+    assert sorted(calls) == [0, 1, 2, 3]
+    assert len(calls) == len(set(calls)) == 4
+    assert result["attempted_request_count"] == 4
+    assert result["successful_request_count"] == 3
+    assert result["failed_request_count"] == 1
+    assert [row["terminal_state"] for row in result["tasks"][0]["frames"]] == [
+        "completed_unreviewed_candidate",
+        "failed_after_request_attempt",
+        "completed_unreviewed_candidate",
+        "completed_unreviewed_candidate",
+        *(["not_attempted_after_terminal_failure"] * 4),
+    ]
+    assert len(result["partial_png_inventory"]) == 3
+    progress_rows = [json.loads(line.split(" ", 1)[1]) for line in progress]
+    started = [row for row in progress_rows if row["event"] == "request_started"]
+    terminal = [row for row in progress_rows if row["event"] == "frame_terminal"]
+    assert sorted(row["global_frame_index"] for row in started) == [0, 1, 2, 3]
+    assert len({row["global_frame_index"] for row in started}) == 4
+    assert len(terminal) == 8
+    assert terminal[-1]["terminal_frame_count"] == 8
+    assert "provider-secret-prose" not in "\n".join(progress)
+
+
+def test_parallel_multiple_in_flight_failures_are_all_retained_truthfully(
+    tmp_path: Path,
+) -> None:
+    request_path, source_paths = _runtime_request(tmp_path, frame_count=6)
+    _set_parallelism(request_path, 4)
+    barrier = threading.Barrier(4)
+    calls: list[int] = []
+    generated = _png_bytes(size=(6, 4), color=(1, 2, 3), mode="RGB")
+
+    def opener(request, **_kwargs):
+        index = _frame_index_from_request(request, source_paths)
+        calls.append(index)
+        barrier.wait(timeout=2)
+        if index in {1, 2}:
+            return _Response(b"invalid-provider-response")
+        time.sleep(0.02)
+        return _Response(_inline_response(generated))
+
+    output = tmp_path / "output"
+    with pytest.raises(SemanticTeacherImageEditWorkerError):
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=output,
+            token="fixture-token",
+            opener=opener,
+            progress_writer=lambda _line: None,
+        )
+    result = json.loads(
+        (output / "semantic_teacher_image_edit_runtime_result.v1.json").read_text()
+    )
+    assert sorted(calls) == [0, 1, 2, 3]
+    assert result["failed_request_count"] == 2
+    assert result["attempted_request_count"] == 4
+    assert result["successful_request_count"] == 2
+    assert [
+        row["frame_index"]
+        for row in result["tasks"][0]["frames"]
+        if row["terminal_state"] == "failed_after_request_attempt"
+    ] == [1, 2]
+    assert result["terminal_provider_failure"] is None
+
+
+def test_parallel_completion_order_does_not_change_receipt_digest_or_costs(
+    tmp_path: Path,
+) -> None:
+    request_path, source_paths = _runtime_request(tmp_path, frame_count=8)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["max_parallel_requests"] = 4
+    request["backend"]["execution"]["pricing_binding"] = {
+        "usage_required": True,
+        "usd_per_million_tokens": {"input_image_tokens": 8.0},
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+    generated = {
+        index: _png_bytes(size=(6, 4), color=(index, 30, 40), mode="RGB")
+        for index in range(8)
+    }
+
+    def opener_for(*, reverse: bool):
+        def opener(http_request, **_kwargs):
+            index = _frame_index_from_request(http_request, source_paths)
+            time.sleep(((7 - index) if reverse else index) * 0.001)
+            usage = {
+                "input_tokens": index + 1,
+                "output_tokens": 0,
+                "total_tokens": index + 1,
+                "input_tokens_details": {"text_tokens": 0, "image_tokens": index + 1},
+                "output_tokens_details": {"text_tokens": 0, "image_tokens": 0},
+            }
+            return _Response(_inline_response(generated[index], usage=usage))
+
+        return opener
+
+    first = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "first",
+        token="fixture-token",
+        opener=opener_for(reverse=False),
+        progress_writer=lambda _line: None,
+    )
+    second = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path,
+        output_root=tmp_path / "second",
+        token="fixture-token",
+        opener=opener_for(reverse=True),
+        progress_writer=lambda _line: None,
+    )
+    assert first["result_digest"] == second["result_digest"]
+    assert first["provider_usage_totals"] == second["provider_usage_totals"]
+    assert first["computed_editor_cost_usd"] == second["computed_editor_cost_usd"]
+    assert first["provider_usage_totals"]["input_image_tokens"] == sum(range(1, 9))
+
+
+def test_output_write_failure_removes_partial_png_and_seals_typed_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request_path, _source_paths = _runtime_request(tmp_path, frame_count=1)
+    generated = _png_bytes(size=(6, 4), color=(1, 2, 3), mode="RGB")
+    original_write_bytes = Path.write_bytes
+
+    def fail_frame_write(path: Path, data: bytes) -> int:
+        if path.name == "00000.png" and path.parent.name == "task_a":
+            original_write_bytes(path, b"partial-output")
+            raise OSError("fixture partial write")
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_frame_write)
+    output = tmp_path / "output"
+    with pytest.raises(
+        SemanticTeacherImageEditWorkerError,
+        match="semantic_teacher_provider_request_failed",
+    ):
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=output,
+            token="fixture-token",
+            opener=lambda *_args, **_kwargs: _Response(_inline_response(generated)),
+            progress_writer=lambda _line: None,
+        )
+    assert not list((output / "tasks").rglob("*.png"))
+    result = json.loads(
+        (output / "semantic_teacher_image_edit_runtime_result.v1.json").read_text()
+    )
+    assert result["tasks"][0]["frames"][0]["terminal_state"] == (
+        "failed_after_request_attempt"
+    )
+
+
+@pytest.mark.parametrize("parallelism", [True, 0, -1, 5, 1.5, "4"])
+def test_invalid_bound_parallelism_fails_before_network(
+    tmp_path: Path, parallelism: object
+) -> None:
+    request_path, _source_paths = _runtime_request(tmp_path, frame_count=2)
+    _set_parallelism(request_path, parallelism)
+    calls = []
+    with pytest.raises(
+        SemanticTeacherImageEditWorkerError,
+        match="semantic_teacher_runtime_request_invalid",
+    ):
+        execute_semantic_teacher_image_edits(
+            runtime_request_path=request_path,
+            output_root=tmp_path / "output",
+            token="fixture-token",
+            opener=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+    assert calls == []
 
 
 @pytest.mark.parametrize(

@@ -266,6 +266,7 @@ def test_bundle_supports_one_to_five_tasks_and_all_cameras(
     )
     assert receipt["task_count"] == task_count
     assert receipt["camera_count"] == task_count * 2
+    assert receipt["maximum_parallel_requests"] == 4
     assert receipt["rehearsal"]["token_lookup_performed"] is False
     assert receipt["rehearsal"]["upload_performed"] is False
     assert receipt["provider_mutations_performed"] == 0
@@ -274,12 +275,38 @@ def test_bundle_supports_one_to_five_tasks_and_all_cameras(
         assert ENTRYPOINT in names
         manifest_name = "provider_runtime/semantic_teacher_image_edit_provider_manifest.v1.json"
         manifest = json.loads(archive.read(manifest_name))
+        runtime_request = json.loads(
+            archive.read(
+                "provider_runtime/semantic_teacher_image_edit_runtime_request.v1.json"
+            )
+        )
         assert manifest["schema_version"] == MANIFEST_SCHEMA_VERSION
         assert manifest["classification"] == "private_derived_semantic_teacher_image_edit"
         assert manifest["environment"]["secret_values_stored"] is False
+        assert manifest["maximum_parallel_requests"] == 4
+        assert runtime_request["max_parallel_requests"] == 4
         assert "provider_zero_receipt.json" in manifest["output_allowlist"]
         assert len([name for name in names if name.endswith("/input_frames/00000.png")]) == task_count
         assert not any("publisher" in name.lower() or "token" in name.lower() for name in names)
+
+
+@pytest.mark.parametrize("max_parallel_requests", [True, 0, 5])
+def test_bundle_rejects_invalid_parallel_request_bound(
+    tmp_path: Path, max_parallel_requests: object
+) -> None:
+    packet_path = _packet(tmp_path / "packet", task_count=1)
+    repository, commit = _committed_repository(tmp_path / "repo")
+    with pytest.raises(
+        SemanticTeacherImageEditBundleError,
+        match="semantic_teacher_bundle_packet_invalid",
+    ):
+        build_semantic_teacher_image_edit_provider_bundle(
+            packet_path=packet_path,
+            repository_root=repository,
+            expected_source_commit=commit,
+            output_root=tmp_path / "bundle",
+            max_parallel_requests=max_parallel_requests,
+        )
 
 
 def test_bundle_is_byte_deterministic(tmp_path: Path) -> None:
@@ -375,6 +402,9 @@ def test_authority_binds_bundle_backend_cardinality_and_caps(tmp_path: Path) -> 
     assert validated["maximum_automatic_retries"] == 0
     assert validated["automatic_paid_retry_authorized"] is False
     assert validated["consumption_root_kind"] == "host_private_atomic_single_use"
+    assert validated["hosted_editor_spend_upper_bound_usd"] == pytest.approx(
+        receipt["camera_count"] * receipt["maximum_cost_per_request_usd"]
+    )
 
 
 def test_authority_admits_ten_dollar_hour_long_sixteen_frame_attempt(
@@ -405,6 +435,7 @@ def test_authority_admits_ten_dollar_hour_long_sixteen_frame_attempt(
     )
     assert authority["hard_total_spend_cap_usd"] == 10.0
     assert authority["hard_ttl_seconds"] == 3_600
+    assert authority["hosted_editor_spend_upper_bound_usd"] == pytest.approx(4.8)
     validation_kwargs = {
         "bundle_path": bundle,
         "bundle_receipt": receipt,

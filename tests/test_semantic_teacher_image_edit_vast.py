@@ -107,6 +107,7 @@ def _inputs(tmp_path: Path) -> SimpleNamespace:
                 ],
             }
         ],
+        "max_parallel_requests": 4,
         "retry_count": 0,
         "request_digest": "",
     }
@@ -122,6 +123,7 @@ def _inputs(tmp_path: Path) -> SimpleNamespace:
         "task_count": 1,
         "camera_count": 1,
         "automatic_retry_count": 0,
+        "maximum_parallel_requests": 4,
     }
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
@@ -150,6 +152,7 @@ def _inputs(tmp_path: Path) -> SimpleNamespace:
         "maximum_cost_per_request_usd": 0.2,
         "task_count": 1,
         "camera_count": 1,
+        "maximum_parallel_requests": 4,
         "rehearsal": {
             "status": "passed",
             "token_lookup_performed": False,
@@ -266,6 +269,8 @@ def _runtime_archive(
             "request_count": 1,
             "attempted_request_count": 1,
             "successful_request_count": 1,
+            "failed_request_count": 0,
+            "maximum_parallel_requests": 4,
             "retry_count": 0,
             "tasks": [
                 {
@@ -323,6 +328,8 @@ def _runtime_archive(
             "request_count": 1,
             "attempted_request_count": 1,
             "successful_request_count": 0,
+            "failed_request_count": 1,
+            "maximum_parallel_requests": 4,
             "blockers": ["semantic_teacher_provider_http_error"],
             "retry_count": 0,
             "tasks": [
@@ -338,6 +345,9 @@ def _runtime_archive(
                             "source_rgb_sha256": "sha256:" + "4" * 64,
                             "edit_mask_sha256": "sha256:" + "5" * 64,
                             "semantic_teacher_frame": None,
+                            "provider_usage": None,
+                            "computed_editor_cost_usd": None,
+                            "billing_qualified": False,
                             "provider_failure": provider_failure,
                         }
                     ],
@@ -362,6 +372,193 @@ def _runtime_archive(
         if status == "completed":
             archive.writestr("tasks/task_a/00000.png", frame)
     return payload.getvalue()
+
+
+def _parallel_failure_archive(
+    *, mutator=None
+) -> tuple[bytes, dict]:
+    frames = []
+    frame_payloads: dict[str, bytes] = {}
+    partial_inventory = []
+    provider_failure = {
+        "schema_version": "semantic_teacher_provider_failure.v1",
+        "transport_error_type": "http_error",
+        "http_status": 429,
+        "provider_error_type": "rate_limit_error",
+        "provider_error_code": "rate_limited",
+        "provider_request_id": "req_parallel_fixture",
+        "raw_provider_body_recorded": False,
+        "raw_provider_headers_recorded": False,
+        "raw_secret_values_recorded": False,
+        "failure_digest": "",
+    }
+    provider_failure["failure_digest"] = canonical_digest(
+        provider_failure, digest_field="failure_digest"
+    )
+    for index in range(6):
+        common = {
+            "frame_index": index,
+            "camera_id": f"camera_{index}",
+            "source_rgb_sha256": "sha256:" + f"{index + 1:x}" * 64,
+            "edit_mask_sha256": "sha256:" + f"{index + 7:x}" * 64,
+        }
+        if index in {0, 3}:
+            payload = f"fixture-frame-{index}".encode()
+            relative = f"tasks/task_a/{index:05d}.png"
+            record = {
+                "relative_path": relative,
+                "size_bytes": len(payload),
+                "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            }
+            frames.append(
+                {
+                    **common,
+                    "terminal_state": "completed_unreviewed_candidate",
+                    "failure_code": None,
+                    "semantic_teacher_frame": record,
+                    "provider_usage": None,
+                    "computed_editor_cost_usd": None,
+                    "billing_qualified": False,
+                    "provider_failure": None,
+                }
+            )
+            frame_payloads[relative] = payload
+            partial_inventory.append(record)
+        elif index in {1, 2}:
+            frames.append(
+                {
+                    **common,
+                    "terminal_state": "failed_after_request_attempt",
+                    "failure_code": "semantic_teacher_provider_http_error",
+                    "semantic_teacher_frame": None,
+                    "provider_usage": None,
+                    "computed_editor_cost_usd": None,
+                    "billing_qualified": False,
+                    "provider_failure": provider_failure if index == 1 else None,
+                }
+            )
+        else:
+            frames.append(
+                {
+                    **common,
+                    "terminal_state": "not_attempted_after_terminal_failure",
+                    "failure_code": None,
+                    "semantic_teacher_frame": None,
+                    "provider_usage": None,
+                    "computed_editor_cost_usd": None,
+                    "billing_qualified": False,
+                    "provider_failure": None,
+                }
+            )
+    runtime = {
+        "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
+        "status": "failed_with_retained_partial_inventory",
+        "source_runtime_request_digest": "sha256:" + "1" * 64,
+        "backend_id": "fixture-hosted-editor",
+        "backend_entry_digest": "sha256:" + "2" * 64,
+        "adapter_id": "openai_images_edits_v1",
+        "model_snapshot": "fixture-snapshot",
+        "task_count": 1,
+        "request_count": 4,
+        "attempted_request_count": 4,
+        "successful_request_count": 2,
+        "failed_request_count": 2,
+        "maximum_parallel_requests": 4,
+        "retry_count": 0,
+        "blockers": ["semantic_teacher_provider_http_error"],
+        "terminal_provider_failure": provider_failure,
+        "tasks": [{"task_id": "task_a", "camera_count": 6, "frames": frames}],
+        "partial_png_inventory": partial_inventory,
+        "provider_usage_totals": {},
+        "computed_editor_cost_usd": 0.0,
+        "billing_usage_required": False,
+        "billing_qualified": False,
+        "raw_secret_values_recorded": False,
+        "canonical_source_altered": False,
+        "appearance_qualified": False,
+        "result_digest": "",
+    }
+    if mutator is not None:
+        mutator(runtime)
+    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+    archive_payload = BytesIO()
+    with zipfile.ZipFile(
+        archive_payload, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr(
+            f"{RUNTIME_RESULT_SCHEMA_VERSION}.json",
+            json.dumps(runtime, sort_keys=True),
+        )
+        archive.writestr("runtime_stdout.log", "safe progress\n")
+        archive.writestr("runtime_stderr.log", "")
+        for relative, payload in frame_payloads.items():
+            archive.writestr(relative, payload)
+    expected_binding = {
+        "runtime_request_digest": "sha256:" + "1" * 64,
+        "backend_entry_digest": "sha256:" + "2" * 64,
+        "adapter_id": "openai_images_edits_v1",
+        "model_snapshot": "fixture-snapshot",
+        "maximum_parallel_requests": 4,
+        "task_camera_order": [
+            {"task_id": "task_a", "camera_ids": [f"camera_{i}" for i in range(6)]}
+        ],
+    }
+    expected_binding["task_camera_order_digest"] = canonical_digest(
+        {"tasks": expected_binding["task_camera_order"]}
+    )
+    return archive_payload.getvalue(), expected_binding
+
+
+def test_parallel_failure_archive_accepts_every_truthful_in_flight_outcome(
+    tmp_path: Path,
+) -> None:
+    archive, expected_binding = _parallel_failure_archive()
+    runtime = vast._extract_and_validate_output(
+        archive,
+        output_root=tmp_path / "output",
+        secret_values=(TOKEN,),
+        expected_task_count=1,
+        expected_camera_count=6,
+        expected_binding=expected_binding,
+    )
+    assert runtime["attempted_request_count"] == 4
+    assert runtime["failed_request_count"] == 2
+    assert [
+        frame["terminal_state"] for frame in runtime["tasks"][0]["frames"]
+    ] == [
+        "completed_unreviewed_candidate",
+        "failed_after_request_attempt",
+        "failed_after_request_attempt",
+        "completed_unreviewed_candidate",
+        "not_attempted_after_terminal_failure",
+        "not_attempted_after_terminal_failure",
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda result: result.__setitem__("attempted_request_count", 3),
+        lambda result: result.__setitem__("failed_request_count", 1),
+        lambda result: result.__setitem__("failed_request_count", True),
+        lambda result: result.__setitem__("terminal_provider_failure", None),
+        lambda result: result.__setitem__("maximum_parallel_requests", 2),
+        lambda result: result.__setitem__("maximum_parallel_requests", True),
+    ],
+)
+def test_parallel_failure_archive_rejects_false_accounting(
+    tmp_path: Path, mutator
+) -> None:
+    archive, expected_binding = _parallel_failure_archive(mutator=mutator)
+    with pytest.raises(SemanticTeacherImageEditVastError):
+        vast._extract_and_validate_output(
+            archive,
+            output_root=tmp_path / "output",
+            secret_values=(TOKEN,),
+            expected_task_count=1,
+            expected_camera_count=6,
+            expected_binding=expected_binding,
+        )
 
 
 class _Provider:
@@ -574,6 +771,10 @@ def test_probe_kind_and_bootstrap_are_single_attempt_and_ephemeral_secret() -> N
     assert 'rm -f "$secret_file"' in script
     assert "runtime_stdout.log" in script
     assert "runtime_stderr.log" in script
+    assert 'tee "$log_root/runtime_stdout.log" <"$stdout_pipe" &' in script
+    assert 'tee "$log_root/runtime_stderr.log" <"$stderr_pipe" >&2 &' in script
+    assert 'wait "$stdout_tee_pid"' in script
+    assert 'wait "$stderr_tee_pid"' in script
     assert "semantic_teacher_image_edit_runtime_output.zip" in script
     assert "retry" not in script.lower()
     worker = 'bash "$bundle_root/provider_runtime/run_semantic_teacher_image_edit.sh"'
@@ -588,6 +789,8 @@ def test_probe_kind_and_bootstrap_are_single_attempt_and_ephemeral_secret() -> N
     assert script.index(worker) < script.index(stage_stdout)
     assert script.index(worker) < script.index(stage_stderr)
     assert script.index("worker_status=$?") < script.index(stage_stdout)
+    assert script.index('wait "$stdout_tee_pid"') < script.index(stage_stdout)
+    assert script.index('wait "$stderr_tee_pid"') < script.index(stage_stderr)
     assert script.index(stage_stderr) < script.index('exit "$worker_status"')
 
 
@@ -683,6 +886,45 @@ printf '{}\n' > "$BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR/semantic_teacher_image_e
     assert (output_root / "runtime_stdout.log").read_text() == "worker-stdout\n"
     assert (output_root / "runtime_stderr.log").read_text() == "worker-stderr\n"
     assert not (tmp_path / "runtime-logs").exists()
+
+
+def test_worker_log_stream_waits_for_delayed_tee_before_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    delayed_tee = fake_bin / "tee"
+    delayed_tee.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+buffer="$(/usr/bin/mktemp)"
+trap 'rm -f "$buffer"' EXIT
+/bin/cat > "$buffer"
+/bin/sleep 0.15
+/bin/cat "$buffer" > "$1"
+/bin/cat "$buffer"
+""",
+        encoding="utf-8",
+    )
+    delayed_tee.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    completed, output_root = _run_worker_execution_fragment(
+        tmp_path,
+        worker_body=r'''
+echo delayed-worker-stdout
+echo delayed-worker-stderr >&2
+mkdir -p "$BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR"
+printf '{}\n' > "$BLUEPRINT_SEMANTIC_TEACHER_OUTPUT_DIR/semantic_teacher_image_edit_runtime_result.v1.json"
+''',
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert (output_root / "runtime_stdout.log").read_text() == (
+        "delayed-worker-stdout\n"
+    )
+    assert (output_root / "runtime_stderr.log").read_text() == (
+        "delayed-worker-stderr\n"
+    )
 
 
 def test_bootstrap_preserves_worker_failure_status_logs_and_real_artifacts(
@@ -868,6 +1110,57 @@ def test_reopened_bundle_rejects_changed_runtime_request_order(tmp_path: Path) -
         archive.writestr(
             "provider_runtime/semantic_teacher_image_edit_provider_manifest.v1.json",
             manifest,
+        )
+    with pytest.raises(
+        SemanticTeacherImageEditVastError, match="runtime_binding_invalid"
+    ):
+        _validate_bundle_runtime_bindings(
+            bundle,
+            receipt=receipt,
+            authority=authority,
+            checkout_source_commit=SOURCE_COMMIT,
+            runtime_image_identity=IMAGE,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["request", "manifest", "receipt", "bool"])
+def test_reopened_bundle_rejects_parallelism_binding_mismatch(
+    tmp_path: Path, mutation: str
+) -> None:
+    args = _inputs(tmp_path)
+    receipt = json.loads(Path(args.semantic_teacher_bundle_receipt).read_text())
+    authority = json.loads(Path(args.semantic_teacher_attempt_authority).read_text())
+    bundle = Path(args.semantic_teacher_bundle)
+    with zipfile.ZipFile(bundle) as archive:
+        request = json.loads(
+            archive.read(
+                "provider_runtime/semantic_teacher_image_edit_runtime_request.v1.json"
+            )
+        )
+        manifest = json.loads(
+            archive.read(
+                "provider_runtime/semantic_teacher_image_edit_provider_manifest.v1.json"
+            )
+        )
+    if mutation in {"request", "bool"}:
+        request["max_parallel_requests"] = True if mutation == "bool" else 2
+        request["request_digest"] = canonical_digest(
+            request, digest_field="request_digest"
+        )
+        manifest["runtime_request_digest"] = request["request_digest"]
+        receipt["runtime_request_digest"] = request["request_digest"]
+    if mutation in {"manifest", "bool"}:
+        manifest["maximum_parallel_requests"] = True if mutation == "bool" else 2
+    if mutation in {"receipt", "bool"}:
+        receipt["maximum_parallel_requests"] = True if mutation == "bool" else 2
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "provider_runtime/semantic_teacher_image_edit_runtime_request.v1.json",
+            json.dumps(request, sort_keys=True),
+        )
+        archive.writestr(
+            "provider_runtime/semantic_teacher_image_edit_provider_manifest.v1.json",
+            json.dumps(manifest, sort_keys=True),
         )
     with pytest.raises(
         SemanticTeacherImageEditVastError, match="runtime_binding_invalid"
