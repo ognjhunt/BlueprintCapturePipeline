@@ -143,6 +143,62 @@ PY
 WINDOWS_WORKER_PLATFORM = "windows"
 
 
+#: Env keys that switch the Windows host from "already baked" to "build me at
+#: boot".  Both installers are operator-supplied signed URLs with pinned
+#: digests: the driver is large and the Postshot MSI is licensed, so neither
+#: can be fetched from an arbitrary location.
+WINDOWS_DRIVER_URL_ENV = "BLUEPRINT_WINDOWS_NVIDIA_DRIVER_GET_URL"
+WINDOWS_INSTALLER_URL_ENV = "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_GET_URL"
+WINDOWS_INSTALLER_SHA256_ENV = "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256"
+
+
+def _windows_provisioning_block(spec: RenderLaunchSpec, *, marker: str) -> str:
+    """Verify a baked host, or build one at boot when none exists yet.
+
+    A baked AMI is the better steady state: it keeps a multi-GB driver download
+    and an MSI install out of every paid window.  But that image has to be
+    created before it can be used, so the first run has nowhere to start.
+    Install-at-boot removes that chicken-and-egg at the cost of ~30-45 minutes
+    of each paid window.
+
+    The installer digest is pinned either way.  An unverified MSI would decide
+    which binary a paid instance executes.
+    """
+
+    driver_url = str(spec.env.get(WINDOWS_DRIVER_URL_ENV) or "")
+    installer_url = str(spec.env.get(WINDOWS_INSTALLER_URL_ENV) or "")
+    installer_sha = str(spec.env.get(WINDOWS_INSTALLER_SHA256_ENV) or "").lower()
+
+    if not (driver_url or installer_url):
+        return f"""# The baked host image must already carry the exact worker identity.
+$markerPath = "C:\\blueprint\\worker-image-ref"
+if (-not (Test-Path $markerPath)) {{ throw "blueprint_worker_image_marker_missing" }}
+$marker = (Get-Content $markerPath -Raw).Trim()
+if ($marker -ne {marker}) {{ throw "blueprint_worker_image_marker_mismatch" }}"""
+
+    if not (driver_url and installer_url and installer_sha):
+        raise ValueError(
+            "windows_worker_install_at_boot_requires_driver_url_installer_url_and_digest"
+        )
+    if len(installer_sha) != 64 or any(c not in "0123456789abcdef" for c in installer_sha):
+        raise ValueError("windows_worker_installer_digest_invalid")
+
+    return f"""# No baked image yet: provision this host in the paid window.
+Invoke-WebRequest -Uri "{driver_url}" -OutFile C:\\work\\nvidia.exe -UseBasicParsing -TimeoutSec 900
+$d = Start-Process -FilePath C:\\work\\nvidia.exe -ArgumentList "-s","-noreboot" -PassThru
+Wait-Process -Id $d.Id -Timeout 1800 -ErrorAction SilentlyContinue | Out-Null
+if (-not (Test-Path "C:\\Windows\\System32\\nvidia-smi.exe")) {{ throw "nvidia_driver_install_failed" }}
+
+Invoke-WebRequest -Uri "{installer_url}" -OutFile C:\\work\\postshot.msi -UseBasicParsing -TimeoutSec 900
+$hash = (Get-FileHash C:\\work\\postshot.msi -Algorithm SHA256).Hash.ToLower()
+if ($hash -ne "{installer_sha}") {{ throw "postshot_installer_digest_mismatch" }}
+$m = Start-Process -FilePath msiexec.exe -ArgumentList "/i","C:\\work\\postshot.msi","/qn","/norestart" -PassThru
+Wait-Process -Id $m.Id -Timeout 900 -ErrorAction SilentlyContinue | Out-Null
+if (-not $m.HasExited) {{ Stop-Process -Id $m.Id -Force; throw "msiexec_timeout" }}
+if ($m.ExitCode -ne 0 -and $m.ExitCode -ne 3010) {{ throw "msiexec_exit_$($m.ExitCode)" }}
+if (-not (Test-Path "$Env:ProgramFiles\\Jawset Postshot\\bin\\postshot-cli.exe")) {{ throw "postshot_cli_not_found" }}"""
+
+
 def _windows_worker_bootstrap(spec: RenderLaunchSpec) -> str:
     """Build the PowerShell EC2 UserData for a pre-baked Windows GPU host.
 
@@ -185,6 +241,7 @@ def _windows_worker_bootstrap(spec: RenderLaunchSpec) -> str:
     argv_b64 = base64.b64encode(json.dumps(list(spec.bootstrap_argv)).encode()).decode()
     marker = json.dumps(spec.image)
     deadline_seconds = int(spec.env.get("BLUEPRINT_WORKER_HARD_TTL_SECONDS") or 0)
+    provision = _windows_provisioning_block(spec, marker=marker)
     return f"""<powershell>
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path C:\\work\\out | Out-Null
@@ -198,11 +255,7 @@ if ($deadline -gt 0) {{
     -Trigger $trigger -User "SYSTEM" -RunLevel Highest -Force | Out-Null
 }}
 
-# The baked host image must already carry the exact worker identity.
-$markerPath = "C:\\blueprint\\worker-image-ref"
-if (-not (Test-Path $markerPath)) {{ throw "blueprint_worker_image_marker_missing" }}
-$marker = (Get-Content $markerPath -Raw).Trim()
-if ($marker -ne {marker}) {{ throw "blueprint_worker_image_marker_mismatch" }}
+{provision}
 
 [IO.File]::WriteAllBytes("C:\\work\\blueprint_worker.env",
   [Convert]::FromBase64String("{env_b64}"))

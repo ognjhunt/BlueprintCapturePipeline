@@ -211,6 +211,77 @@ def test_rate_above_the_authorized_ceiling_blocks(
     assert "aws_hourly_rate_exceeds_cap" in request["configuration_blockers"]
 
 
+DRIVER_URL = "https://example.invalid/nvidia-datacenter.exe"
+INSTALLER_URL = "https://example.invalid/Postshot.msi"
+INSTALLER_SHA = "b" * 64
+
+
+def _install_at_boot_spec(**extra: str) -> RenderLaunchSpec:
+    from blueprint_pipeline.cloud_vm_render_providers import (
+        WINDOWS_DRIVER_URL_ENV,
+        WINDOWS_INSTALLER_SHA256_ENV,
+        WINDOWS_INSTALLER_URL_ENV,
+    )
+
+    env = {
+        WINDOWS_DRIVER_URL_ENV: DRIVER_URL,
+        WINDOWS_INSTALLER_URL_ENV: INSTALLER_URL,
+        WINDOWS_INSTALLER_SHA256_ENV: INSTALLER_SHA,
+    }
+    env.update(extra)
+    return _spec(**env)
+
+
+def test_without_installer_urls_the_host_must_already_be_baked() -> None:
+    script = _windows_worker_bootstrap(_spec())
+    assert "blueprint_worker_image_marker_missing" in script
+    assert "msiexec" not in script
+
+
+def test_install_at_boot_provisions_driver_and_postshot() -> None:
+    script = _windows_worker_bootstrap(_install_at_boot_spec())
+    assert DRIVER_URL in script
+    assert INSTALLER_URL in script
+    assert "nvidia_driver_install_failed" in script
+    assert "postshot_cli_not_found" in script
+    # A baked marker is meaningless on a host we are building right now.
+    assert "blueprint_worker_image_marker_missing" not in script
+
+
+def test_install_at_boot_pins_the_installer_digest() -> None:
+    """An unverified MSI decides which binary a paid instance executes."""
+    script = _windows_worker_bootstrap(_install_at_boot_spec())
+    assert INSTALLER_SHA in script
+    assert "postshot_installer_digest_mismatch" in script
+
+
+def test_installer_url_without_a_digest_is_refused() -> None:
+    from blueprint_pipeline.cloud_vm_render_providers import (
+        WINDOWS_INSTALLER_SHA256_ENV,
+    )
+
+    spec = _install_at_boot_spec()
+    del spec.env[WINDOWS_INSTALLER_SHA256_ENV]
+    with pytest.raises(ValueError) as excinfo:
+        _windows_worker_bootstrap(spec)
+    assert "requires_driver_url_installer_url_and_digest" in str(excinfo.value)
+
+
+def test_a_malformed_installer_digest_is_refused() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        _windows_worker_bootstrap(_install_at_boot_spec(**{
+            "BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_SHA256": "not-a-digest",
+        }))
+    assert "installer_digest_invalid" in str(excinfo.value)
+
+
+def test_install_at_boot_still_arms_the_hard_deadline() -> None:
+    """Provisioning eats the paid window; the deadline must still bound it."""
+    script = _windows_worker_bootstrap(_install_at_boot_spec())
+    assert "blueprint-hard-deadline" in script
+    assert "shutdown.exe" in script
+
+
 def test_windows_lane_needs_no_instance_profile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
