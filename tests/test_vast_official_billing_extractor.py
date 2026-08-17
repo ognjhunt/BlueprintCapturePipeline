@@ -28,6 +28,11 @@ INSTANCE_A = 47_912_530
 INSTANCE_B = 47_913_976
 LABEL_A = "blueprint-groot-oscar-canary-adp-artifixer3d-1786935680"
 LABEL_B = "blueprint-groot-oscar-canary-adp-artifixer3d-1786937589"
+PAIRED_INSTANCE = 47_933_056
+PAIRED_LABEL = "blueprint-adp-paired-native-import-1786959124"
+PAIRED_RUN_ID = (
+    "adp-paired-native-840920-846bce86-r3-api-20260817T093112Z-902a4451"
+)
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CLI_SCRIPT = REPOSITORY_ROOT / "scripts/materialize_vast_official_same_goal_reconciliation.py"
 
@@ -114,13 +119,20 @@ def _bound(path: Path) -> dict:
 
 
 def _terminal_fixture(
-    tmp_path: Path, *, instance_id: int, status: str
+    tmp_path: Path, *, instance_id: int, status: str, paired_native: bool = False
 ) -> Path:
-    run_id = f"adp-artifixer3d-fixture-{instance_id}"
-    profile_id = f"adp-artifixer3d-live-fixture-{instance_id}"
+    run_id = PAIRED_RUN_ID if paired_native else f"adp-artifixer3d-fixture-{instance_id}"
+    profile_id = (
+        "adp-paired-target-native-import-live-846bce86-r3"
+        if paired_native
+        else f"adp-artifixer3d-live-fixture-{instance_id}"
+    )
     run_root = tmp_path / "task-evaluation-launch-runs" / run_id
     allocator = run_root / "allocator"
-    provider_run = allocator / "artifixer3d-job" / "vast_provider_run"
+    job = allocator / (
+        "paired-target-native-import-job" if paired_native else "artifixer3d-job"
+    )
+    provider_run = job / "vast_provider_run"
 
     profile = {
         "schema_version": "task_evaluation_launch_profile.v1",
@@ -176,6 +188,10 @@ def _terminal_fixture(
     adapter = {
         "schema_version": "vast_provider_adapter_result.v1",
         "status": status,
+        "provider_bundle_kind": (
+            "paired_target_native_import" if paired_native else "public_scene_artifixer3d"
+        ),
+        "provider_create_attempted": True,
         "vast_instance_ids": [instance_id],
         "continuing_spend_from_this_run": False,
         "final_validation_status": "passed",
@@ -196,36 +212,109 @@ def _terminal_fixture(
         "zero_continuing_spend_scope": "all Vast instances created were destroyed",
     }
     teardown_path = _write(provider_run / "vast_teardown_manifest.json", teardown)
+    independent_watchdog = {
+        "schema_version": "vast_independent_watchdog_handoff.v1",
+        "status": "provider_terminal",
+        "instance_ids": [instance_id],
+        "provider_absence_confirmed": True,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+    }
     result = {
-        "schema_version": "public_scene_artifixer3d_vast_run.v1",
+        "schema_version": (
+            "paired_target_native_import_vast_run.v1"
+            if paired_native
+            else "public_scene_artifixer3d_vast_run.v1"
+        ),
         "status": status,
         "retry_cap": 0,
         "continuing_spend_from_this_run": False,
         "raw_secret_values_recorded": False,
         "adapter_result_path": str(adapter_path),
         "teardown_manifest_path": str(teardown_path),
-        "provider_closeout": {
+        "independent_watchdog": independent_watchdog,
+        "blockers": [] if status == "completed" else ["runtime_result_missing"],
+    }
+    if paired_native:
+        prefix = "blueprint-adp-paired-native-import-20260817t093112000000000-"
+        lane_zero = {
+            "status": "observed",
+            "provider": "vast",
+            "name_prefix": prefix,
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        }
+        global_zero = {**lane_zero, "name_prefix": ""}
+        inspect = {
+            "status": "absent",
+            "provider": "vast",
+            "instance_id": str(instance_id),
+            "http": 404,
+            "api_confirmed": True,
+            "provider_absence_confirmed": True,
+        }
+        watchdog_receipt = {
+            "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+            "status": "provider_terminal",
+            "provider": "vast",
+            "pod_name_prefix": prefix,
+            "provider_absence_confirmed": True,
+            "owner_teardown_cancel_requested": True,
+            "owner_teardown_cancel_request_valid": True,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+            "recorded_vast_instance_teardown": {
+                "status": "absent",
+                "instance_id": str(instance_id),
+                "provider_absence_confirmed": True,
+                "provider_mutations_performed": 0,
+                "inspect_attempts": [
+                    {**inspect, "attempt": 1},
+                    {**inspect, "attempt": 2},
+                ],
+            },
+            "initial_inventory": lane_zero,
+            "final_inventory": lane_zero,
+            "initial_global_inventory": global_zero,
+            "final_global_inventory": global_zero,
+        }
+        watchdog_path = _write(
+            job
+            / "independent_vast_watchdog"
+            / "groot_oscar_runpod_canary_watchdog.json",
+            watchdog_receipt,
+        )
+        cleanup_path = _write(
+            job
+            / "object_store_staging"
+            / "wam_provider_object_store_cleanup.json",
+            {
+                "schema_version": "wam_provider_object_store_cleanup.v1",
+                "status": "completed",
+                "all_objects_absent": True,
+                "signed_url_files_removed": True,
+                "blockers": [],
+            },
+        )
+        result.update(
+            {
+                "request_digest": "sha256:" + "9" * 64,
+                "replacement_count": 2,
+                "all_staged_objects_absent": True,
+                "watchdog_receipt_path": str(watchdog_path),
+                "object_store_cleanup_path": str(cleanup_path),
+            }
+        )
+        result_path = _write(job / "paired_target_native_import_vast_result.v1.json", result)
+    else:
+        result["provider_closeout"] = {
             "adapter_result": _bound(adapter_path),
             "teardown_manifest": _bound(teardown_path),
             "provider_zero_confirmed": True,
             "all_staged_objects_absent": True,
-        },
-        "independent_watchdog": {
-            "schema_version": "vast_independent_watchdog_handoff.v1",
-            "status": "provider_terminal",
-            "instance_ids": [instance_id],
-            "provider_absence_confirmed": True,
-            "provider_mutations_performed": 0,
-            "raw_secret_values_recorded": False,
-        },
-        "blockers": [] if status == "completed" else ["runtime_result_missing"],
-    }
-    result_path = _write(
-        allocator
-        / "artifixer3d-job"
-        / "public_scene_artifixer3d_vast_result.json",
-        result,
-    )
+        }
+        result_path = _write(job / "public_scene_artifixer3d_vast_result.json", result)
     allocator_result_path = _write(allocator / "result.json", result)
     terminal_status = "passed" if status == "completed" else "blocked"
     receipt = {
@@ -299,8 +388,9 @@ def _refresh_terminal_bindings(result_path: Path) -> None:
     result = json.loads(result_path.read_text(encoding="utf-8"))
     adapter_path = Path(result["adapter_result_path"])
     teardown_path = Path(result["teardown_manifest_path"])
-    result["provider_closeout"]["adapter_result"] = _bound(adapter_path)
-    result["provider_closeout"]["teardown_manifest"] = _bound(teardown_path)
+    if "provider_closeout" in result:
+        result["provider_closeout"]["adapter_result"] = _bound(adapter_path)
+        result["provider_closeout"]["teardown_manifest"] = _bound(teardown_path)
     _write(result_path, result)
     allocator_result_path = _write(run_root / "allocator" / "result.json", result)
     receipt_path = run_root / "launch_receipt.json"
@@ -411,6 +501,33 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         "receipt_value": receipt,
         "terminals": terminals,
     }
+
+
+def _paired_native_fixture(tmp_path: Path) -> dict[str, object]:
+    fixture = _fixture(tmp_path)
+    response = fixture["responses"][0]
+    assert isinstance(response, Path)
+    payload = json.loads(response.read_text(encoding="utf-8"))
+    payload["results"].append(
+        _charge(
+            instance_id=PAIRED_INSTANCE,
+            label=PAIRED_LABEL,
+            total=0.086,
+            gpu=0.081,
+            disk=0.005,
+        )
+    )
+    _write(response, payload)
+    _refresh_response_binding(fixture, 0)
+    terminals = fixture["terminals"]
+    assert isinstance(terminals, dict)
+    terminals[PAIRED_INSTANCE] = _terminal_fixture(
+        tmp_path,
+        instance_id=PAIRED_INSTANCE,
+        status="completed",
+        paired_native=True,
+    )
+    return fixture
 
 
 def _refresh_response_binding(fixture: dict[str, object], index: int) -> None:
@@ -528,6 +645,93 @@ def test_extracts_production_shaped_posted_instance_charges_exactly(
     serialized = output.read_text(encoding="utf-8")
     assert "raw-response-secret" not in serialized
     assert "production-shaped GPU line" not in serialized
+
+
+def test_accepts_exact_paired_native_terminal_layout_and_official_charge(
+    tmp_path: Path,
+) -> None:
+    fixture = _paired_native_fixture(tmp_path)
+    output = tmp_path / "paired-native-official.json"
+    terminal_path = _spec(fixture, PAIRED_INSTANCE, PAIRED_LABEL)[2]
+
+    value = _materialize(
+        fixture,
+        output,
+        expected=[(PAIRED_INSTANCE, PAIRED_LABEL, terminal_path)],
+    )
+
+    assert value["provider_instance_ids"] == [PAIRED_INSTANCE]
+    assert value["launch_labels"] == [PAIRED_LABEL]
+    assert value["official_total_usd"] == pytest.approx(0.086)
+    terminal = value["entries"][0]["terminal_execution_evidence"]
+    assert terminal["launch_id"] == PAIRED_RUN_ID
+    assert terminal["run_id"] == PAIRED_RUN_ID
+    assert terminal["profile_id"] == (
+        "adp-paired-target-native-import-live-846bce86-r3"
+    )
+    assert terminal["terminal_result"]["schema_version"] == (
+        "paired_target_native_import_vast_run.v1"
+    )
+    assert terminal["provider_adapter_result"]["status"] == "completed"
+    assert terminal["teardown_manifest"]["status"] == "completed"
+    assert terminal["independent_watchdog"]["status"] == "provider_terminal"
+    assert terminal["object_store_cleanup"]["status"] == "completed"
+    assert terminal["post_teardown_provider_zero"]["status"] == (
+        "provider_zero_confirmed"
+    )
+    assert validate_vast_official_same_goal_reconciliation(output) == value
+
+
+@pytest.mark.parametrize("mutation", ["path", "schema", "launch_digest"])
+def test_rejects_hostile_paired_native_path_schema_and_digest(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _paired_native_fixture(tmp_path)
+    terminal_path = _spec(fixture, PAIRED_INSTANCE, PAIRED_LABEL)[2]
+    run_root = terminal_path.parents[2]
+    if mutation == "launch_digest":
+        request_path = run_root / "launch_request.json"
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        request["launch_profile_id"] = "hostile-profile"
+        _write(request_path, request)
+    else:
+        result = json.loads(terminal_path.read_text(encoding="utf-8"))
+        if mutation == "path":
+            result["object_store_cleanup_path"] = str(
+                run_root / "allocator" / "hostile-cleanup.json"
+            )
+        else:
+            result["schema_version"] = "paired_target_native_import_vast_run.v2"
+        _write(terminal_path, result)
+        _refresh_terminal_bindings(terminal_path)
+
+    with pytest.raises(VastOfficialBillingExtractionError):
+        _materialize(
+            fixture,
+            tmp_path / "hostile-output.json",
+            expected=[(PAIRED_INSTANCE, PAIRED_LABEL, terminal_path)],
+        )
+
+
+def test_rejects_paired_native_watchdog_digest_drift_after_sealing(
+    tmp_path: Path,
+) -> None:
+    fixture = _paired_native_fixture(tmp_path)
+    terminal_path = _spec(fixture, PAIRED_INSTANCE, PAIRED_LABEL)[2]
+    output = tmp_path / "paired-native-official.json"
+    _materialize(
+        fixture,
+        output,
+        expected=[(PAIRED_INSTANCE, PAIRED_LABEL, terminal_path)],
+    )
+    result = json.loads(terminal_path.read_text(encoding="utf-8"))
+    watchdog_path = Path(result["watchdog_receipt_path"])
+    watchdog = json.loads(watchdog_path.read_text(encoding="utf-8"))
+    watchdog["completed_at"] = "2026-08-17T09:43:41+00:00"
+    _write(watchdog_path, watchdog)
+
+    with pytest.raises(VastOfficialBillingExtractionError):
+        validate_vast_official_same_goal_reconciliation(output)
 
 
 def test_prior_reconciliation_extends_without_repricing_prior_entry(
@@ -845,6 +1049,33 @@ def test_cli_materializes_without_provider_mutation(
     summary = json.loads(capsys.readouterr().out)
     assert summary["status"] == "materialized"
     assert summary["official_total_usd"] == pytest.approx(2.306)
+    assert summary["provider_mutation_performed"] is False
+
+
+def test_cli_accepts_production_paired_native_result_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = _paired_native_fixture(tmp_path)
+    output = tmp_path / "paired-cli.json"
+    terminal_path = _spec(fixture, PAIRED_INSTANCE, PAIRED_LABEL)[2]
+
+    assert (
+        main(
+            [
+                "--provider-billing-source-receipt",
+                str(fixture["receipt"]),
+                "--expected-instance",
+                f"{PAIRED_INSTANCE}={PAIRED_LABEL}={terminal_path}",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "materialized"
+    assert summary["entry_count"] == 1
+    assert summary["official_total_usd"] == pytest.approx(0.086)
     assert summary["provider_mutation_performed"] is False
 
 
