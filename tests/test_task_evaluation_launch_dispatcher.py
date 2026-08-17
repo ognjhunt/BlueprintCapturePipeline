@@ -1377,6 +1377,37 @@ def test_public_catalog_rejects_execution_fields_symlinks_and_duplicates(
         load_public_launch_profile_catalog(tmp_path / "catalog-link.json")
 
 
+def test_public_catalog_accepts_more_than_one_hundred_bounded_profiles(
+    tmp_path: Path,
+) -> None:
+    """Publishing the 101st immutable profile must not take every launch down."""
+
+    profile = _profile(tmp_path)
+    source = tmp_path / "staging" / "profile.json"
+    _write(source, profile)
+    publish_profiles(
+        profile_paths=[source],
+        profile_dir=tmp_path / "published",
+        webapp_catalog_out=tmp_path / "catalog.json",
+    )
+    descriptor = json.loads((tmp_path / "catalog.json").read_text())[0]
+    catalog = []
+    for index in range(101):
+        row = dict(descriptor)
+        row["profile_id"] = f"profile-{index:03d}"
+        row["profile_digest"] = "sha256:" + f"{index + 1:064x}"
+        catalog.append(row)
+    _write(tmp_path / "catalog-101.json", catalog)
+
+    loaded = load_public_launch_profile_catalog(tmp_path / "catalog-101.json")
+
+    assert len(loaded["profiles"]) == 101
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(
+            tmp_path / "catalog-101.json", max_profiles=100
+        )
+
+
 def test_public_descriptor_requires_bounded_authorization_projection(
     tmp_path: Path,
 ) -> None:

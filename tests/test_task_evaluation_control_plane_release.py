@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -108,6 +110,45 @@ def test_stages_clean_protected_main_ancestor_then_activates_atomically(tmp_path
     assert activation_receipt["status"] == "activated"
     assert activation_receipt["active_link_target"] == str(release.resolve())
     assert json.loads((state_root / first / "stage.json").read_text()) == stage_receipt
+
+
+def test_release_repairs_restrictive_umask_git_index_for_runtime_identity_probe(
+    tmp_path: Path,
+) -> None:
+    source, first, _second = _source_repo(tmp_path)
+    release_root = tmp_path / "releases"
+    prior_umask = os.umask(0o027)
+    try:
+        staged = releases.stage_task_evaluation_control_plane_release(
+            source_repo=source,
+            source_commit=first,
+            release_root=release_root,
+            state_root=tmp_path / "state",
+            active_link=tmp_path / "active",
+        )
+    finally:
+        os.umask(prior_umask)
+
+    release = release_root / first
+    index_path = Path(_git(release, "rev-parse", "--git-path", "index"))
+    assert stat.S_IMODE(index_path.stat().st_mode) == 0o644
+    assert staged["release_git_index"] == {
+        "git_index_path": str(index_path.resolve()),
+        "git_index_mode": "0644",
+        "runtime_readable": True,
+    }
+
+    # Existing releases created by an older deploy are repaired too.
+    index_path.chmod(0o640)
+    replay = releases.stage_task_evaluation_control_plane_release(
+        source_repo=source,
+        source_commit=first,
+        release_root=release_root,
+        state_root=tmp_path / "state",
+        active_link=tmp_path / "active",
+    )
+    assert replay["created_release_checkout"] is False
+    assert stat.S_IMODE(index_path.stat().st_mode) == 0o644
 
 
 def test_rejects_unmerged_source_commit_before_creating_a_release(tmp_path: Path) -> None:
