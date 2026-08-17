@@ -54,6 +54,10 @@ CANARY_NAME_PREFIXES = (
     # set while it still reported provider zero.
     "blueprint-adp-gaussian-excision-",
     "blueprint-adp-retained-render-",
+    # Content Agents uses this exact prefix for both the independent watchdog
+    # and the Vast adapter.  Omitting it makes the watchdog fail closed before
+    # allocation and burns the lane's one-use authority without renting a GPU.
+    "blueprint-adp-content-agents-",
     # Native Task Arena is one ordered production family with three separately
     # labelled paid stages. Each stage arms before create and hands the exact
     # started Vast instance id to this watchdog.
