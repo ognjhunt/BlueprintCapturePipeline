@@ -174,10 +174,19 @@ sleep 2
   echo "=== ovrtx renderer probe ==="
 } > "${OUTPUT_DIR}/ovrtx_daemon_probe.log" 2>&1
 if ! timeout 300 env -u PYTHONPATH "${WU_OVRTX_VENV_DIR}/bin/python" - >> "${OUTPUT_DIR}/ovrtx_daemon_probe.log" 2>&1 <<'PY'
+import os
+
 import ovrtx
 
 renderer = ovrtx.Renderer()
 print("ovrtx_renderer_constructed_ok", flush=True)
+# OvRTX releases native resources during interpreter shutdown.  A successful
+# constructor on Vast instance 47958762 proved the daemon works, but that
+# cleanup path then wedged until `timeout` reported a false startup failure.
+# The probe's only contract is constructor liveness, so preserve its flushed
+# success marker and bypass Python/native teardown after success.  Exceptions
+# before the marker still use normal Python shutdown and retain diagnostics.
+os._exit(0)
 PY
 then
   kill "${xvfb_pid}" >/dev/null 2>&1 || true

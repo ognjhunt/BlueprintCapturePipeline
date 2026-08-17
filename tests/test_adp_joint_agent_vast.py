@@ -5,6 +5,8 @@ import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 import zipfile
 
@@ -1445,6 +1447,103 @@ def test_runtime_script_probes_ovrtx_daemon_before_service() -> None:
     assert script.index("python_build_dependency_plan.json") < script.index(
         '"${SOURCE_DIR}/apps/joint_agent"'
     )
+
+
+def _ovrtx_probe_program() -> str:
+    """Return the exact Python program embedded in the provider entrypoint."""
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts/run_adp_joint_agent_provider_runtime.sh"
+    ).read_text(encoding="utf-8")
+    marker = '<<\'PY\'\n'
+    start = script.index(marker, script.index("ovrtx_daemon_probe.log")) + len(marker)
+    end = script.index("\nPY\nthen", start)
+    return script[start:end]
+
+
+def _write_fake_ovrtx(path: Path, body: str) -> None:
+    (path / "ovrtx.py").write_text(body, encoding="utf-8")
+
+
+def _run_ovrtx_probe(program: str, module_root: Path, *, timeout: float):
+    # The live probe uses an isolated venv with OvRTX installed.  This injects
+    # the fixture module by an explicit sys.path entry while executing the
+    # exact heredoc from the production shell script.
+    invocation = (
+        "import sys; "
+        f"sys.path.insert(0, {str(module_root)!r});\n"
+        + program
+    )
+    return subprocess.run(
+        [sys.executable, "-c", invocation],
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def test_ovrtx_probe_exits_promptly_after_successful_constructor_despite_teardown_hang(
+    tmp_path: Path,
+) -> None:
+    """A constructor success must not be turned into a 300s timeout by teardown."""
+    _write_fake_ovrtx(
+        tmp_path,
+        "import time\n"
+        "class Renderer:\n"
+        "    def __del__(self):\n"
+        "        time.sleep(30)\n",
+    )
+
+    started = time.monotonic()
+    completed = _run_ovrtx_probe(_ovrtx_probe_program(), tmp_path, timeout=1.0)
+
+    assert completed.returncode == 0
+    assert completed.stdout == b"ovrtx_renderer_constructed_ok\n"
+    assert time.monotonic() - started < 1.0
+
+
+def test_ovrtx_probe_constructor_failure_keeps_python_diagnostic(tmp_path: Path) -> None:
+    _write_fake_ovrtx(
+        tmp_path,
+        "class Renderer:\n"
+        "    def __init__(self):\n"
+        "        raise RuntimeError('fixture_renderer_constructor_failed')\n",
+    )
+
+    completed = _run_ovrtx_probe(_ovrtx_probe_program(), tmp_path, timeout=1.0)
+
+    assert completed.returncode != 0
+    assert b"fixture_renderer_constructor_failed" in completed.stderr
+    assert b"ovrtx_renderer_constructed_ok" not in completed.stdout
+
+
+def test_ovrtx_probe_times_out_only_before_success_marker(tmp_path: Path) -> None:
+    _write_fake_ovrtx(
+        tmp_path,
+        "import time\n"
+        "class Renderer:\n"
+        "    def __init__(self):\n"
+        "        time.sleep(30)\n",
+    )
+    program = _ovrtx_probe_program()
+    invocation = (
+        "import sys; "
+        f"sys.path.insert(0, {str(tmp_path)!r});\n"
+        + program
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", invocation],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.communicate(timeout=0.2)
+    finally:
+        process.kill()
+        stdout, _stderr = process.communicate()
+
+    assert b"ovrtx_renderer_constructed_ok" not in stdout
 
 
 def test_scene_optimizer_probe_retains_real_failure_diagnostics(
