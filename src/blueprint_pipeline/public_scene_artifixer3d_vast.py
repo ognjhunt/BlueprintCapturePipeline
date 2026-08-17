@@ -89,7 +89,35 @@ GPU_SELECTION_POLICY = {
         "A100 uses the released cuDNN SDPA fallback without Hopper-only kernels"
     ),
 }
-AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
+AUTHORIZATION_CONSUMPTION_ROOT_ENV = (
+    "BLUEPRINT_ARTIFIXER3D_AUTHORIZATION_CONSUMPTION_ROOT"
+)
+LAUNCH_STATE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT"
+
+
+def _default_authorization_consumption_root() -> Path:
+    """Resolve one writable, host-resident exactly-once receipt root.
+
+    The production dispatcher runs as the hardened ``blueprint`` account,
+    whose home is intentionally ``/nonexistent``. Its systemd unit already
+    exposes the writable launch-state root under ``/var/lib/blueprint``; keep
+    paid-attempt consumption beside that state instead of depending on a user
+    home that cannot exist in production.
+    """
+
+    explicit = str(os.environ.get(AUTHORIZATION_CONSUMPTION_ROOT_ENV) or "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    launch_state = str(os.environ.get(LAUNCH_STATE_ROOT_ENV) or "").strip()
+    if launch_state:
+        return (
+            Path(launch_state).expanduser().resolve().parent
+            / "artifixer3d-paid-authority-consumptions"
+        )
+    return Path.home() / ".blueprint-spend-authority" / "consumed"
+
+
+AUTHORIZATION_CONSUMPTION_ROOT = _default_authorization_consumption_root()
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 _RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 DUAL_TARGET_CANDIDATE_MEMBER = (
