@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.articulated_isaac_bundle import (
     ARTICULATED_ISAAC_BUNDLE_SCHEMA_VERSION,
     ArticulatedIsaacBundleError,
@@ -64,6 +65,27 @@ def _build(tmp_path: Path, **overrides):
     }
     arguments.update(overrides)
     return build_articulated_isaac_bundle(**arguments)
+
+
+def _scene_bind_probe(root: Path, *, scene_id: str = "840920") -> dict:
+    spec_path = root / "articulated_native_probe_spec.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    predecessor = {
+        "schema_version": "paired_native_simready_predecessor_binding.v1",
+        "scene_id": scene_id,
+        "task_id": "task_a_washer_door_open",
+        "asset_id": f"{scene_id}_simready_washer_candidate",
+        "candidate_usd_sha256": spec["candidate_usd_sha256"],
+        "binding_digest": "",
+    }
+    predecessor["binding_digest"] = canonical_digest(
+        predecessor, digest_field="binding_digest"
+    )
+    spec["scene_id"] = scene_id
+    spec["paired_native_predecessor"] = predecessor
+    spec["receipt_digest"] = canonical_digest(spec, digest_field="receipt_digest")
+    spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n")
+    return predecessor
 
 
 def test_bundle_ships_the_frozen_probe_and_the_articulated_worker(
@@ -125,6 +147,35 @@ def test_bundle_binds_the_exact_probe_and_candidate_digests(tmp_path: Path) -> N
     assert receipt["expected"]["maximum_commanded_degrees"] == 55.0
     assert receipt["required_readbacks"] == spec["required_readbacks"]
     assert receipt["probe_names"] == sorted(spec["required_readbacks"])
+
+
+def test_scene_bound_bundle_exposes_profile_and_authority_bindings(tmp_path: Path) -> None:
+    root = _probe_root(tmp_path)
+    predecessor = _scene_bind_probe(root)
+
+    receipt = _build(tmp_path, probe_root=root)
+
+    assert receipt["scene_id"] == "840920"
+    assert receipt["native_probe_manifest_sha256"] == _digest_of(
+        root / "articulated_native_probe_spec.json"
+    )
+    assert receipt["predecessor_binding_digest"] == predecessor["binding_digest"]
+    assert receipt["paired_native_predecessor"] == predecessor
+
+
+def test_scene_bound_bundle_refuses_a_wrong_scene_predecessor(tmp_path: Path) -> None:
+    root = _probe_root(tmp_path)
+    _scene_bind_probe(root)
+    spec_path = root / "articulated_native_probe_spec.json"
+    spec = json.loads(spec_path.read_text())
+    spec["scene_id"] = "840313"
+    spec["receipt_digest"] = canonical_digest(spec, digest_field="receipt_digest")
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    with pytest.raises(ArticulatedIsaacBundleError) as excinfo:
+        _build(tmp_path, probe_root=root)
+
+    assert "predecessor_binding_invalid" in str(excinfo.value)
 
 
 def test_a_probe_that_was_already_executed_is_refused(tmp_path: Path) -> None:

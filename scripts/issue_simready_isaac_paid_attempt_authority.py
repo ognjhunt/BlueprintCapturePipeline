@@ -109,6 +109,7 @@ def issue_simready_isaac_paid_attempt_authority(
         "native_probe_manifest_digest": bundle.get(
             "native_probe_manifest_digest"
         ),
+        "predecessor_binding_digest": bundle.get("predecessor_binding_digest"),
         "container_image": DEFAULT_IMAGE,
         "maximum_paid_attempts": 1,
         "maximum_automatic_retries": 0,

@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 RESULT_SCHEMA_VERSION = "adp009d_articulated_isaac_result.v1"
+COMMANDED_ARTICULATION_MODE = "commanded_articulation"
+LOCKED_HINGE_RIGID_MODE = "locked_hinge_rigid_validation"
 
 
 def _sha256(path: Path) -> str:
@@ -71,6 +73,23 @@ def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
         "provider_zero_required_after_return": True,
         **extra,
     }
+
+
+def _command_schedule(spec: Mapping[str, Any]) -> list[float]:
+    """Return the only joint-command schedule this frozen spec permits."""
+
+    mode = str(spec.get("validation_mode") or COMMANDED_ARTICULATION_MODE)
+    expected = spec.get("expected") or {}
+    sweep = [float(value) for value in expected.get("commanded_sweep_degrees") or []]
+    if mode == LOCKED_HINGE_RIGID_MODE:
+        if expected.get("task_joint_prim_path") or sweep or spec.get("probe_drive"):
+            raise ValueError("locked_hinge_probe_contains_joint_command")
+        return []
+    if mode != COMMANDED_ARTICULATION_MODE:
+        raise ValueError("articulated_isaac_validation_mode_invalid")
+    if not expected.get("task_joint_prim_path") or not sweep:
+        raise ValueError("commanded_articulation_schedule_missing")
+    return sweep
 
 
 def _simulation_app() -> Any:
@@ -143,6 +162,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             simulation_app.update()
         stage = context.get_stage()
         expected = spec.get("expected") or {}
+        validation_mode = str(
+            spec.get("validation_mode") or COMMANDED_ARTICULATION_MODE
+        )
+        sweep = _command_schedule(spec)
+        result["validation_mode"] = validation_mode
+        result["joint_command_issued"] = bool(sweep)
 
         roots = sorted(
             str(p.GetPath())
@@ -176,16 +201,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         task_path = str(expected.get("task_joint_prim_path") or "")
         locked_paths = [str(p) for p in (expected.get("locked_joint_prim_paths") or [])]
         task_prim = joints.get(task_path)
-        result["readbacks"]["task_joint_identity"] = {
-            "observed": task_path if task_prim else None,
-            "passed": task_prim is not None,
-        }
+        if validation_mode == COMMANDED_ARTICULATION_MODE:
+            result["readbacks"]["task_joint_identity"] = {
+                "observed": task_path if task_prim else None,
+                "passed": task_prim is not None,
+            }
         result["readbacks"]["locked_joint_identity"] = {
             "observed": [p for p in locked_paths if p in joints],
             "expected": locked_paths,
             "passed": all(p in joints for p in locked_paths),
         }
-        if task_prim is not None:
+        if validation_mode == COMMANDED_ARTICULATION_MODE and task_prim is not None:
             revolute = UsdPhysics.RevoluteJoint(task_prim)
             axis = task_prim.GetAttribute("physics:axis")
             observed_limits = [
@@ -200,6 +226,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "passed": str(axis.Get() if axis else "")
                 == str(expected.get("task_joint_axis"))
                 and observed_limits == list(expected.get("task_joint_limits_deg") or []),
+            }
+        if validation_mode == LOCKED_HINGE_RIGID_MODE:
+            observed_locked: dict[str, dict[str, Any]] = {}
+            for path in locked_paths:
+                prim = joints.get(path)
+                if prim is None:
+                    continue
+                axis = prim.GetAttribute("physics:axis")
+                row: dict[str, Any] = {
+                    "type": observed_types[path],
+                    "axis": str(axis.Get()) if axis and axis.HasAuthoredValue() else "",
+                }
+                if prim.IsA(UsdPhysics.RevoluteJoint):
+                    joint = UsdPhysics.RevoluteJoint(prim)
+                    row["limits"] = [
+                        joint.GetLowerLimitAttr().Get(),
+                        joint.GetUpperLimitAttr().Get(),
+                    ]
+                elif prim.IsA(UsdPhysics.PrismaticJoint):
+                    joint = UsdPhysics.PrismaticJoint(prim)
+                    row["limits"] = [
+                        joint.GetLowerLimitAttr().Get(),
+                        joint.GetUpperLimitAttr().Get(),
+                    ]
+                observed_locked[path] = row
+            result["readbacks"]["locked_joint_axes_and_limits"] = {
+                "observed": observed_locked,
+                "expected": expected.get("locked_joint_axes_and_limits"),
+                "passed": observed_locked
+                == (expected.get("locked_joint_axes_and_limits") or {}),
             }
 
         # 3. simulate: reset, drive the task joint, watch the locked ones
@@ -226,16 +282,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         import numpy as np  # type: ignore
 
         initial = np.asarray(view.get_joint_positions())[0]
-        result["readbacks"]["no_initial_penetration"] = {
+        reset_positions = expected.get("reset_joint_positions_rad") or {}
+        initial_errors = [
+            abs(float(initial[index[name]]) - float(value))
+            for path, value in reset_positions.items()
+            if (name := str(path).rsplit("/", 1)[-1]) in index
+        ]
+        initial_matches_reset = (
+            len(initial_errors) == len(reset_positions)
+            and max(initial_errors, default=0.0) <= 0.02
+        )
+        initial_key = (
+            "initial_state_matches_frozen_reset"
+            if validation_mode == LOCKED_HINGE_RIGID_MODE
+            else "no_initial_penetration"
+        )
+        result["readbacks"][initial_key] = {
             "observed_initial_positions_rad": [float(v) for v in initial],
-            "passed": bool(np.all(np.abs(initial) < 0.05)),
+            "maximum_reset_error_rad": max(initial_errors, default=None),
+            "passed": initial_matches_reset,
+            "claim_boundary": (
+                "joint_reset_readback_only_not_geometry_penetration_truth"
+            ),
         }
 
-        sweep = [float(v) for v in (expected.get("commanded_sweep_degrees") or [])]
         tolerance = float(expected.get("locked_joint_motion_tolerance_rad") or 0.001)
         settle = spec.get("settle") or {}
         reached = []
         locked_drift = 0.0
+        initial_by_dof = {
+            name: float(initial[position]) for name, position in index.items()
+        }
         for angle in sweep:
             target = np.asarray(view.get_joint_positions())
             if task_dof in index:
@@ -248,14 +325,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reached.append(math.degrees(float(current[index[task_dof]])))
             for name in locked_dofs:
                 if name in index:
-                    locked_drift = max(locked_drift, abs(float(current[index[name]])))
-
-        maximum = float(expected.get("maximum_commanded_degrees") or 0.0)
-        result["readbacks"]["commanded_sweep_reaches_maximum"] = {
-            "observed_degrees": reached,
-            "maximum_commanded_degrees": maximum,
-            "passed": bool(reached) and reached[-1] >= maximum - 2.0,
-        }
+                    locked_drift = max(
+                        locked_drift,
+                        abs(float(current[index[name]]) - initial_by_dof[name]),
+                    )
+        if not sweep:
+            for _ in range(int(settle.get("samples") or 40)):
+                world.step(render=False)
+            current = np.asarray(view.get_joint_positions())[0]
+            for name in locked_dofs:
+                if name in index:
+                    locked_drift = max(
+                        locked_drift,
+                        abs(float(current[index[name]]) - initial_by_dof[name]),
+                    )
+            result["readbacks"]["no_joint_command_issued"] = {
+                "command_schedule": [],
+                "position_target_command_count": 0,
+                "passed": validation_mode == LOCKED_HINGE_RIGID_MODE,
+            }
+        else:
+            maximum = float(expected.get("maximum_commanded_degrees") or 0.0)
+            result["readbacks"]["commanded_sweep_reaches_maximum"] = {
+                "observed_degrees": reached,
+                "maximum_commanded_degrees": maximum,
+                "passed": bool(reached) and reached[-1] >= maximum - 2.0,
+            }
         result["readbacks"]["locked_joint_motion_within_tolerance"] = {
             "observed_max_drift_rad": locked_drift,
             "tolerance_rad": tolerance,
@@ -269,7 +364,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
 
         # 4. reset replay and determinism
-        reset_positions = expected.get("reset_joint_positions_rad") or {}
         target = np.asarray(view.get_joint_positions())
         for path, value in reset_positions.items():
             name = str(path).rsplit("/", 1)[-1]
@@ -279,9 +373,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         for _ in range(30):
             world.step(render=False)
         after_reset = np.asarray(view.get_joint_positions())[0]
+        reset_errors = [
+            abs(float(after_reset[index[name]]) - float(value))
+            for path, value in reset_positions.items()
+            if (name := str(path).rsplit("/", 1)[-1]) in index
+        ]
         result["readbacks"]["reset_replay_within_tolerance"] = {
             "observed_positions_rad": [float(v) for v in after_reset],
-            "passed": bool(np.all(np.abs(after_reset) <= 0.02)),
+            "maximum_reset_error_rad": max(reset_errors, default=None),
+            "passed": len(reset_errors) == len(reset_positions)
+            and max(reset_errors, default=0.0) <= 0.02,
         }
         replay = []
         for _ in range(2):
@@ -298,10 +399,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         world.stop()
         result["native_isaac_executed"] = True
+        required_readbacks = [str(name) for name in spec.get("required_readbacks") or []]
         failed = [
             name
-            for name, row in result["readbacks"].items()
-            if isinstance(row, Mapping) and row.get("passed") is False
+            for name in required_readbacks
+            if not isinstance(result["readbacks"].get(name), Mapping)
+            or result["readbacks"][name].get("passed") is not True
         ]
         result["blockers"] = [f"articulated_isaac_readback_failed:{name}" for name in failed]
         result["articulation_qualified"] = not failed
@@ -310,9 +413,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         # articulated readbacks are reported through it rather than in a
         # parallel schema only this worker understands.
         result["probe_results"] = [
-            {"probe": name, "passed": bool(row.get("passed")), "observed": row}
-            for name, row in sorted(result["readbacks"].items())
-            if isinstance(row, Mapping) and "passed" in row
+            {
+                "probe": name,
+                "passed": bool((result["readbacks"].get(name) or {}).get("passed")),
+                "observed": result["readbacks"].get(name),
+            }
+            for name in sorted(required_readbacks)
         ]
         result["replacement_count"] = 1
         result["source_target_collider_active"] = False

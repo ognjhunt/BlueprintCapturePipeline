@@ -52,6 +52,35 @@ def lane(tmp_path: Path) -> dict:
     bundle.write_bytes(b"simready-isaac-bundle")
     candidate = tmp_path / "scene-840920-candidate.usda"
     candidate.write_text("#usda 1.0\n", encoding="utf-8")
+    predecessor_inputs = {}
+    for role in (
+        "bundle_receipt",
+        "request",
+        "terminal_result",
+        "runtime_result",
+        "candidate_probe",
+    ):
+        path = tmp_path / f"paired-{role}.json"
+        path.write_text(json.dumps({"role": role}), encoding="utf-8")
+        predecessor_inputs[role] = {
+            "path": str(path),
+            "size_bytes": path.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            "internal_digest": "sha256:" + "1" * 64,
+        }
+    predecessor = {
+        "schema_version": "paired_native_simready_predecessor_binding.v1",
+        "scene_id": "840920",
+        "task_id": "task-a",
+        "asset_id": "asset-a",
+        "candidate_usd_sha256": "sha256:"
+        + hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        **predecessor_inputs,
+        "binding_digest": "",
+    }
+    predecessor["binding_digest"] = canonical_digest(
+        predecessor, digest_field="binding_digest"
+    )
     native_manifest = {
         "schema_version": "adp009b_simready_native_probe.v1",
         "status": "ready",
@@ -61,6 +90,7 @@ def lane(tmp_path: Path) -> dict:
             "size_bytes": candidate.stat().st_size,
             "sha256": "sha256:" + hashlib.sha256(candidate.read_bytes()).hexdigest(),
         },
+        "paired_native_predecessor": predecessor,
         "manifest_digest": "",
     }
     native_manifest["manifest_digest"] = canonical_digest(
@@ -83,6 +113,8 @@ def lane(tmp_path: Path) -> dict:
                 "native_probe_manifest_sha256": "sha256:"
                 + hashlib.sha256(native_manifest_path.read_bytes()).hexdigest(),
                 "native_probe_manifest_digest": native_manifest["manifest_digest"],
+                "predecessor_binding_digest": predecessor["binding_digest"],
+                "paired_native_predecessor": predecessor,
                 "bundle_path": str(bundle),
                 "bundle_sha256": "sha256:"
                 + hashlib.sha256(bundle.read_bytes()).hexdigest(),
@@ -135,6 +167,9 @@ def test_the_issuer_derives_every_bound_value_from_the_receipt(lane) -> None:
     assert authority["candidate_usd_sha256"] == receipt["candidate_usd_sha256"]
     assert authority["native_probe_manifest_sha256"] == receipt[
         "native_probe_manifest_sha256"
+    ]
+    assert authority["predecessor_binding_digest"] == receipt[
+        "predecessor_binding_digest"
     ]
     assert authority["bundle_receipt_sha256"] == "sha256:" + hashlib.sha256(
         lane["receipt"].read_bytes()
@@ -245,6 +280,13 @@ def test_the_profile_binds_the_bundle_where_it_actually_resolved(lane) -> None:
     assert inputs["simready_paid_attempt_authority"]["path"] == str(
         lane["authority"]
     )
+    assert {
+        "simready_paired_native_bundle_receipt",
+        "simready_paired_native_request",
+        "simready_paired_native_terminal_result",
+        "simready_paired_native_runtime_result",
+        "simready_paired_native_candidate_probe",
+    }.issubset(inputs)
 
 
 @pytest.mark.parametrize(
@@ -303,4 +345,37 @@ def test_candidate_or_authority_identity_tamper_fails_before_launch(lane) -> Non
     authority["candidate_usd_sha256"] = "sha256:" + "9" * 64
     lane["authority"].write_text(json.dumps(authority), encoding="utf-8")
     with pytest.raises(TaskEvaluationLaunchError, match="attempt_authority_candidate_mismatch"):
+        _build(lane)
+
+
+def test_a_scene_840313_manifest_cannot_build_a_scene_840920_profile(lane) -> None:
+    manifest = json.loads(lane["native_manifest"].read_text(encoding="utf-8"))
+    manifest["scene_id"] = "840313"
+    manifest["paired_native_predecessor"]["scene_id"] = "840313"
+    manifest["paired_native_predecessor"]["binding_digest"] = canonical_digest(
+        manifest["paired_native_predecessor"], digest_field="binding_digest"
+    )
+    manifest["manifest_digest"] = canonical_digest(
+        manifest, digest_field="manifest_digest"
+    )
+    lane["native_manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(TaskEvaluationLaunchError) as excinfo:
+        _build(lane, scene_id="840920")
+
+    assert "native_probe_manifest_scene_mismatch" in str(excinfo.value)
+    assert "paired_native_predecessor_binding_invalid" in str(excinfo.value)
+
+
+def test_predecessor_bytes_cannot_change_after_profile_preflight(lane) -> None:
+    manifest = json.loads(lane["native_manifest"].read_text(encoding="utf-8"))
+    predecessor_path = Path(
+        manifest["paired_native_predecessor"]["runtime_result"]["path"]
+    )
+    predecessor_path.write_bytes(predecessor_path.read_bytes() + b"changed")
+
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="paired_native_predecessor_input_invalid:runtime_result",
+    ):
         _build(lane)

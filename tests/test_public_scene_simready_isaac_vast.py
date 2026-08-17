@@ -23,6 +23,15 @@ def _bundle(tmp_path: Path, *, commit: str = "a" * 40) -> dict:
     bundle = tmp_path / "bundle.zip"
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("provider_runtime/example.txt", "bound")
+    predecessor = {
+        "schema_version": "paired_native_simready_predecessor_binding.v1",
+        "scene_id": "840920",
+        "candidate_usd_sha256": "sha256:" + "d" * 64,
+        "binding_digest": "",
+    }
+    predecessor["binding_digest"] = canonical_digest(
+        predecessor, digest_field="binding_digest"
+    )
     return {
         "status": "ready",
         "source_commit_sha": commit,
@@ -34,6 +43,8 @@ def _bundle(tmp_path: Path, *, commit: str = "a" * 40) -> dict:
         "candidate_usd_sha256": "sha256:" + "d" * 64,
         "native_probe_manifest_sha256": "sha256:" + "e" * 64,
         "native_probe_manifest_digest": "sha256:" + "f" * 64,
+        "predecessor_binding_digest": predecessor["binding_digest"],
+        "paired_native_predecessor": predecessor,
         "bundle_path": str(bundle),
         "bundle_sha256": _sha256(bundle),
     }
@@ -67,6 +78,9 @@ def _paid_attempt_authority(
         ],
         "native_probe_manifest_digest": prepared_bundle[
             "native_probe_manifest_digest"
+        ],
+        "predecessor_binding_digest": prepared_bundle[
+            "predecessor_binding_digest"
         ],
         "container_image": DEFAULT_IMAGE,
         "maximum_paid_attempts": 1,
@@ -560,6 +574,10 @@ def test_simready_authority_binds_external_instance_allowlist(tmp_path: Path) ->
         (
             "native_probe_manifest_digest",
             "native_probe_manifest_digest_mismatch",
+        ),
+        (
+            "predecessor_binding_digest",
+            "predecessor_binding_digest_mismatch",
         ),
     ],
 )
