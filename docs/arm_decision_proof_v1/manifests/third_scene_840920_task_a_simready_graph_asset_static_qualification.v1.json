@@ -1,107 +1,109 @@
 {
-    "asset_id": "840920_simready_washer_candidate",
-    "authored_structure_statically_qualified": true,
-    "authoring_receipt": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/replacement_graph_v2/simready_graph_asset_receipt.v1.json",
-        "receipt_digest": "sha256:be6d8579eb620365585fc71476f9eb29c02e317a09d5bac5b5c445bb8da1dc18",
-        "sha256": "sha256:29691cff22e2ea7fcc8cf79919453f64c4732f4f0092b0dce6ed1d43e04c57cc"
+  "asset_id": "840920_simready_washer_candidate",
+  "authored_structure_statically_qualified": true,
+  "authoring_receipt": {
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/replacement_graph_v4/simready_graph_asset_receipt.v1.json",
+    "receipt_digest": "sha256:9c64560dd3faf27026008c1cc82aec29c6d2756c90e4a6e5f5f56d9a236f2b70",
+    "sha256": "sha256:00ded92f5ce7c0ab0e4abbd9d3277ae85fa13746ff5321ea26506c4adacec635"
+  },
+  "claim_boundary": {
+    "appearance_materially_qualified": false,
+    "authored_usd_structure_only": true,
+    "collision_approximation_qualified": false,
+    "contact_or_support_qualified": false,
+    "joint_physics_behavior_qualified": false,
+    "native_simulator_import_qualified": false,
+    "physical_equivalence_proven": false
+  },
+  "collision_pair_readback": {
+    "complete_pair_count": 15,
+    "declared_pair_count": 15,
+    "filtered_pairs": [
+      [
+        "door",
+        "latch"
+      ]
+    ]
+  },
+  "contract_blockers": [
+    "collision_approximation_contract_unbound",
+    "joint_physics_behavior_unexecuted",
+    "native_simulator_import_unexecuted",
+    "texture_artifact_unbound",
+    "visual_material_artifact_unbound"
+  ],
+  "joint_readback": [
+    {
+      "finding_codes": [],
+      "joint_id": "door_hinge"
     },
-    "claim_boundary": {
-        "appearance_materially_qualified": false,
-        "authored_usd_structure_only": true,
-        "collision_approximation_qualified": false,
-        "contact_or_support_qualified": false,
-        "joint_physics_behavior_qualified": false,
-        "native_simulator_import_qualified": false,
-        "physical_equivalence_proven": false
+    {
+      "finding_codes": [],
+      "joint_id": "latch_coupler"
     },
-    "collision_pair_readback": {
-        "complete_pair_count": 15,
-        "declared_pair_count": 15,
-        "filtered_pairs": [
-            [
-                "door",
-                "latch"
-            ]
-        ]
+    {
+      "finding_codes": [],
+      "joint_id": "drum_bearing"
     },
-    "contract_blockers": [
-        "collision_approximation_contract_unbound",
-        "joint_physics_behavior_unexecuted",
-        "native_simulator_import_unexecuted",
-        "texture_artifact_unbound",
-        "visual_material_artifact_unbound"
-    ],
-    "joint_readback": [
-        {
-            "finding_codes": [],
-            "joint_id": "door_hinge"
-        },
-        {
-            "finding_codes": [],
-            "joint_id": "latch_coupler"
-        },
-        {
-            "finding_codes": [],
-            "joint_id": "drum_bearing"
-        },
-        {
-            "finding_codes": [],
-            "joint_id": "selector_axis"
-        },
-        {
-            "finding_codes": [],
-            "joint_id": "drawer_slide"
-        }
-    ],
-    "link_readback": [
-        {
-            "center_of_mass_inside_collision_aabb": true,
-            "finding_codes": [],
-            "inertia_triangle_inequality_passed": true,
-            "link_id": "body"
-        },
-        {
-            "center_of_mass_inside_collision_aabb": true,
-            "finding_codes": [],
-            "inertia_triangle_inequality_passed": true,
-            "link_id": "door"
-        },
-        {
-            "center_of_mass_inside_collision_aabb": true,
-            "finding_codes": [],
-            "inertia_triangle_inequality_passed": true,
-            "link_id": "latch"
-        },
-        {
-            "center_of_mass_inside_collision_aabb": true,
-            "finding_codes": [],
-            "inertia_triangle_inequality_passed": true,
-            "link_id": "drum"
-        },
-        {
-            "center_of_mass_inside_collision_aabb": true,
-            "finding_codes": [],
-            "inertia_triangle_inequality_passed": true,
-            "link_id": "selector"
-        },
-        {
-            "center_of_mass_inside_collision_aabb": true,
-            "finding_codes": [],
-            "inertia_triangle_inequality_passed": true,
-            "link_id": "drawer"
-        }
-    ],
-    "receipt_digest": "sha256:939ca95f40f976d802f8c3a6a84deff0d889a1d7a1f973cf63b7c63f6d120515",
-    "replacement_usd": {
-        "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/replacement_graph_v2/replacement.usda",
-        "sha256": "sha256:4e5caad7fb233f0560ae91d84b1911f9c27eeb1ad85201236f41c0e9c9f2c9ad",
-        "size_bytes": 22261
+    {
+      "finding_codes": [],
+      "joint_id": "selector_axis"
     },
-    "schema_version": "simready_graph_asset_static_qualification.v1",
-    "spec_digest": "sha256:406f6162ae4c04266a7c6257a9c814fcc460bece32e39ed3ac2445de1f421fca",
-    "status": "authored_structure_statically_qualified",
-    "structural_findings": [],
-    "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
-    "task_id": "task_a_washer_door_open"
+    {
+      "finding_codes": [],
+      "joint_id": "drawer_slide"
+    }
+  ],
+  "link_readback": [
+    {
+      "center_of_mass_inside_collision_aabb": true,
+      "finding_codes": [],
+      "inertia_triangle_inequality_passed": true,
+      "link_id": "body"
+    },
+    {
+      "center_of_mass_inside_collision_aabb": true,
+      "finding_codes": [],
+      "inertia_triangle_inequality_passed": true,
+      "link_id": "door"
+    },
+    {
+      "center_of_mass_inside_collision_aabb": true,
+      "finding_codes": [],
+      "inertia_triangle_inequality_passed": true,
+      "link_id": "latch"
+    },
+    {
+      "center_of_mass_inside_collision_aabb": true,
+      "finding_codes": [],
+      "inertia_triangle_inequality_passed": true,
+      "link_id": "drum"
+    },
+    {
+      "center_of_mass_inside_collision_aabb": true,
+      "finding_codes": [],
+      "inertia_triangle_inequality_passed": true,
+      "link_id": "selector"
+    },
+    {
+      "center_of_mass_inside_collision_aabb": true,
+      "finding_codes": [],
+      "inertia_triangle_inequality_passed": true,
+      "link_id": "drawer"
+    }
+  ],
+  "receipt_digest": "sha256:8ee66a00539b0b20f8aa9c374affb0dbc0f744025fab861259b6c7c3df88fc06",
+  "registered_replacement_asset": null,
+  "registered_visual_readback": null,
+  "replacement_usd": {
+    "path": "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804/third_scene_dual_task_e2e/task_a/replacement_graph_v4/replacement.usda",
+    "sha256": "sha256:9a088c81ab040a26c937e73bbe37fb18d1fe4b91181ec7afbe20bf150d2232ec",
+    "size_bytes": 23880
+  },
+  "schema_version": "simready_graph_asset_static_qualification.v1",
+  "spec_digest": "sha256:6aa6fef20e287f238cfd789b8f0fd5ff4409714960dfec0c27590c668f2ebc62",
+  "status": "authored_structure_statically_qualified",
+  "structural_findings": [],
+  "task_freeze_digest": "sha256:fa3f422fb595badb3bedd11c56e4732a088bfff112b80b1f65d0c53d1927baa3",
+  "task_id": "task_a_washer_door_open"
 }
