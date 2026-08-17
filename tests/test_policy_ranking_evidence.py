@@ -442,6 +442,26 @@ def test_secret_redaction_and_scan(tmp_path: Path) -> None:
     assert "[REDACTED]" in text
 
 
+def test_secret_redaction_covers_google_aq_prefixed_keys(tmp_path: Path) -> None:
+    """Google's newer `AQ.`-prefixed API keys redact like the legacy `AIza` shape."""
+    leaked = "AQ.Ab8RN6" + "0aBcDeFgHiJkLmNoPqRsTuVwXyZ_-123456789012"
+    store = _store(tmp_path / "evidence")
+    store.append("preflight_failed", {"message": f"key {leaked} was rejected"})
+    assert scan_for_secrets(store.root) == []
+    text = "".join(path.read_text() for path in store.root.rglob("*.json"))
+    assert leaked not in text
+    assert "[REDACTED]" in text
+
+
+def test_secret_redaction_keeps_ordinary_prose_intact(tmp_path: Path) -> None:
+    """The `AQ.` shape must not swallow prose such as a trailing `FAQ.` sentence."""
+    prose = "See the FAQ.AbbreviatedGuidanceDocumentationSectionForDetails"
+    store = _store(tmp_path / "evidence")
+    store.append("preflight_failed", {"message": prose})
+    text = "".join(path.read_text() for path in store.root.rglob("*.json"))
+    assert prose in text
+
+
 def test_append_only_event_files_never_change(tmp_path: Path) -> None:
     store = _store(tmp_path / "evidence")
     existing = {path: path.read_bytes() for path in store.journal_dir.glob("*.json")}
