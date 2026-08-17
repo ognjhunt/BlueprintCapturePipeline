@@ -137,3 +137,11 @@ post-teardown provider-zero, WebApp binding, and one-use authority evidence.
 Its output is an append-only, self-digested checkpoint chain with the honest
 numerator and the next unproven checkpoint; the command has no allocation,
 publication, or authority-issuance interface.
+
+The supplied scene evidence root identifies the canonical task-input namespace;
+it is not a containment claim. Terminal launch bytes remain under the launch
+state root, while later exact-digest billing or predecessor receipts may live
+in a different lane's scene/task input root. The supervisor follows only
+canonical launch-profile digest edges and sibling roots whose scene and task
+identifiers are admitted by the requested audit. An arbitrary other directory,
+even if it contains a plausible receipt, is not part of the evidence catalog.

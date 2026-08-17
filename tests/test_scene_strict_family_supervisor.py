@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -51,9 +52,9 @@ def _record(path: Path, *, role: str, schema: str | None) -> dict:
     }
 
 
-def _profile_files(run_root: Path) -> tuple[Path, Path]:
-    source = _write(run_root / "inputs" / "source.json", {"scene_id": SCENE})
-    spec = _write(run_root / "inputs" / "spec.json", {"scene_id": SCENE})
+def _profile_files(input_root: Path) -> tuple[Path, Path]:
+    source = _write(input_root / "source.json", {"scene_id": SCENE})
+    spec = _write(input_root / "spec.json", {"scene_id": SCENE})
     return source, spec
 
 
@@ -63,11 +64,12 @@ def _make_launch(
     probe_kind: str,
     task_marker: str | None = None,
     scene_id: str = SCENE,
+    input_root: Path | None = None,
 ) -> Path:
     suffix = f"-{task_marker}" if task_marker else ""
     launch_id = f"scene{SCENE}-{probe_kind}{suffix}"
     run_root = launch_root / launch_id
-    source_manifest, evaluation_spec = _profile_files(run_root)
+    source_manifest, evaluation_spec = _profile_files(input_root or run_root / "inputs")
     source_bundle = {
         "bundle_id": f"scene{scene_id}-{probe_kind}{suffix}",
         "source_kind": "interiorgs_sage",
@@ -452,6 +454,61 @@ def scene_840920_five_family_fixture(tmp_path: Path) -> tuple[Path, Path, dict[s
     return evidence, launches, roots
 
 
+@pytest.fixture
+def scene_840920_host_layout_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, dict[str, Path], dict[str, Path]]:
+    """Mirror production: launches and lane input roots are disjoint siblings."""
+
+    launches = tmp_path / "pipeline-control-plane" / "task-evaluation-launch-runs"
+    inputs = tmp_path / "task-evaluation-inputs"
+    evidence = inputs / "scene840920-native-assets-53b84015-r1"
+    evidence.mkdir(parents=True)
+    roots: dict[str, Path] = {}
+    billings: dict[str, Path] = {}
+    for probe in (
+        "semantic-sam31-source-tracks",
+        "adp-gaussian-excision",
+        "adp-usd-content-agents",
+    ):
+        for marker in ("task-a", "task-b"):
+            key = f"{probe}:{marker}"
+            lane_input = inputs / f"{probe}-scene840920-{marker}-host-layout"
+            roots[key] = _make_launch(
+                launches,
+                probe_kind=probe,
+                task_marker=marker,
+                input_root=lane_input,
+            )
+            source = roots[key] / "official_billing" / "same_goal_reconciliation.json"
+            destination = lane_input / "terminal_official_reconciliation.v1.json"
+            source.rename(destination)
+            billings[key] = destination
+    for probe in (
+        "adp-retained-scene-gpu-render",
+        "adp-artifixer3d-exact-support",
+        "adp-paired-target-native-import",
+    ):
+        lane_input = (
+            evidence
+            if probe in {
+                "adp-artifixer3d-exact-support",
+                "adp-paired-target-native-import",
+            }
+            else inputs / f"retained-scene-render-{SCENE}-host-layout"
+        )
+        roots[probe] = _make_launch(
+            launches,
+            probe_kind=probe,
+            input_root=lane_input / probe,
+        )
+        source = roots[probe] / "official_billing" / "same_goal_reconciliation.json"
+        destination = lane_input / f"{probe}-terminal-official-reconciliation.v1.json"
+        source.rename(destination)
+        billings[probe] = destination
+    return evidence, launches, roots, billings
+
+
 def test_denominator_is_derived_as_fifteen_from_seventeen_reachable_probes() -> None:
     families, derivation = derive_governed_families()
 
@@ -503,6 +560,106 @@ def test_scene_840920_shape_reports_honest_five_of_fifteen_and_next_checkpoint(
         "usd_content_agents",
     }
     assert result["authority_boundary"]["provider_mutation_performed"] is False
+
+
+def test_exact_host_layout_discovers_five_families_outside_one_input_root(
+    scene_840920_host_layout_fixture: tuple[
+        Path, Path, dict[str, Path], dict[str, Path]
+    ],
+) -> None:
+    evidence, launches, _roots, _billings = scene_840920_host_layout_fixture
+
+    result = audit_scene_families(
+        scene_id=SCENE,
+        task_ids=TASKS,
+        evidence_root=evidence,
+        launch_state_root=launches,
+    )
+
+    assert result["strict_completed_family_count"] == 5
+    assert result["trusted_evidence_catalog"]["source"] == (
+        "canonical_launch_state_and_allowed_scene_task_roots"
+    )
+    assert result["trusted_evidence_catalog"]["arbitrary_evidence_root_files_admitted"] is False
+
+
+def test_other_root_billing_noise_cannot_replace_missing_allowed_scene_evidence(
+    scene_840920_host_layout_fixture: tuple[
+        Path, Path, dict[str, Path], dict[str, Path]
+    ],
+    tmp_path: Path,
+) -> None:
+    evidence, launches, _roots, billings = scene_840920_host_layout_fixture
+    target = billings["adp-retained-scene-gpu-render"]
+    noise = tmp_path / "arbitrary-other-root" / "copied-official-reconciliation.json"
+    noise.parent.mkdir()
+    shutil.copy2(target, noise)
+    target.unlink()
+
+    result = audit_scene_families(
+        scene_id=SCENE,
+        task_ids=TASKS,
+        evidence_root=evidence,
+        launch_state_root=launches,
+    )
+
+    assert result["strict_completed_family_count"] == 4
+    retained = next(
+        row for row in result["families"] if row["family_id"] == "retained_scene_render"
+    )
+    assert retained["status"] == "unproven"
+
+
+def test_digest_mismatched_allowed_root_billing_does_not_count(
+    scene_840920_host_layout_fixture: tuple[
+        Path, Path, dict[str, Path], dict[str, Path]
+    ],
+) -> None:
+    evidence, launches, _roots, billings = scene_840920_host_layout_fixture
+    target = billings["adp-retained-scene-gpu-render"]
+    value = json.loads(target.read_text())
+    value["total_cost_usd"] = 0.01
+    _write(target, value)
+
+    result = audit_scene_families(
+        scene_id=SCENE,
+        task_ids=TASKS,
+        evidence_root=evidence,
+        launch_state_root=launches,
+    )
+
+    assert result["strict_completed_family_count"] == 4
+    assert any(
+        "official_billing_entry_invalid" in row["blockers"]
+        for row in result["rejected_candidate_launches"]
+        if row["probe_kind"] == "adp-retained-scene-gpu-render"
+    )
+
+
+def test_completed_wrong_scene_and_task_launch_is_never_admitted(
+    scene_840920_host_layout_fixture: tuple[
+        Path, Path, dict[str, Path], dict[str, Path]
+    ],
+) -> None:
+    evidence, launches, _roots, _billings = scene_840920_host_layout_fixture
+    wrong_input = evidence.parent / "gaussian-excision-scene840313-task-c"
+    _make_launch(
+        launches,
+        probe_kind="adp-gaussian-excision",
+        task_marker="task-c",
+        scene_id="840313",
+        input_root=wrong_input,
+    )
+
+    result = audit_scene_families(
+        scene_id=SCENE,
+        task_ids=TASKS,
+        evidence_root=evidence,
+        launch_state_root=launches,
+    )
+
+    assert result["strict_completed_family_count"] == 5
+    assert all("task-c" not in row["qualified_launch_ids"] for row in result["families"])
 
 
 def test_missing_official_billing_refuses_one_task_split_family(
