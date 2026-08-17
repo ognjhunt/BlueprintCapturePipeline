@@ -66,11 +66,15 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             blockers.append("attempt_authority_ttl_mismatch")
         if authority.get("bundle_sha256") != receipt.get("bundle_sha256"):
             blockers.append("attempt_authority_bundle_mismatch")
+        if list(authority.get("excluded_vast_machine_ids") or []) != list(
+            context.extra_values.get("excluded_machine_ids") or []
+        ):
+            blockers.append("attempt_authority_machine_exclusions_mismatch")
     return blockers
 
 
 def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
-    return [
+    argv = [
         "--paired-target-native-import-bundle-receipt", str(context.receipt_path),
         "--paired-target-native-import-attempt-authority",
         str(context.extra_paths["attempt_authority"]),
@@ -79,6 +83,9 @@ def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
         "--adp-max-spend-usd", str(context.max_spend_usd),
         "--adp-hard-ttl-seconds", str(context.hard_ttl_seconds),
     ]
+    for machine_id in context.extra_values.get("excluded_machine_ids") or []:
+        argv += ["--adp-excluded-vast-machine-id", str(machine_id)]
+    return argv
 
 
 def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
@@ -98,6 +105,11 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             # The path the receipt resolved to here, not the one it was built at.
             "path": context.bundle_path,
             "digest": context.bundle_sha256,
+        },
+        {
+            "name": "paired_target_native_import_paid_attempt_authority",
+            "path": str(context.extra_paths["attempt_authority"]),
+            "digest": file_digest(context.extra_paths["attempt_authority"]),
         },
     ]
 
@@ -133,7 +145,9 @@ def build_paired_target_native_import_live_profile(
     hard_ttl_seconds: int = 7_200,
 ) -> dict[str, Any]:
     """Derive a live profile from the bundle receipt it will run."""
-
+    authority = json.loads(
+        Path(attempt_authority_path).expanduser().resolve().read_text(encoding="utf-8")
+    )
     return build_lane_live_profile(
         SPEC,
         bundle_receipt_path=bundle_receipt_path,
@@ -144,6 +158,11 @@ def build_paired_target_native_import_live_profile(
         revision=revision,
         max_spend_usd=max_spend_usd,
         extra_paths={"attempt_authority": attempt_authority_path},
+        extra_values={
+            "excluded_machine_ids": list(
+                authority.get("excluded_vast_machine_ids") or []
+            )
+        },
     )
 
 

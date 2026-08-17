@@ -1144,6 +1144,7 @@ def _provider_plan(
     provider_bundle_inline_transport: Mapping[str, Any] | None = None,
     require_known_supported_isaac_driver: bool = False,
     minimum_driver_version: str = "",
+    excluded_machine_ids: Iterable[Any] = (),
 ) -> dict[str, Any]:
     inline_transport = _mapping(provider_bundle_inline_transport)
     plan = {
@@ -1155,6 +1156,7 @@ def _provider_plan(
         "provider_bundle_path": str(provider_bundle) if provider_bundle else None,
         "provider_bundle_kind": provider_bundle_kind,
         "provider_bundle_present": bool(provider_bundle and provider_bundle.is_file()),
+        "excluded_machine_ids": sorted(_machine_id_set(excluded_machine_ids)),
         "budget": {
             "target_spend_usd": target_spend_usd,
             "hard_cap_usd": hard_cap_usd,
@@ -2384,7 +2386,6 @@ def _blueprint_bundle_preflight(
             "adp009d_articulated_native",
             "native_task_arena",
             "paired_target_native_import",
-            "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -3333,6 +3334,7 @@ def _resolve_launch_mode(
             "adp_aura_interiorgs",
             "adp_aura_exact_residual",
             "adp_artifixer3d",
+            "paired_target_native_import",
             "adp_inpaint360_interiorgs",
             "adp_retained_scene_render",
         }:
@@ -5713,6 +5715,14 @@ def _request_logs_and_fetch(
 def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
     """Allow digest-pinned ADP images the same bounded cold-pull window as WAM."""
 
+    if provider_bundle_kind == "paired_target_native_import":
+        return max(
+            30 * 60,
+            _env_int(
+                VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
+                DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
+            ),
+        )
     return (
         _env_int(
             VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
@@ -5737,6 +5747,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp_aura_interiorgs",
             "adp_aura_exact_residual",
             "adp_artifixer3d",
+            "paired_target_native_import",
             "adp_inpaint360_interiorgs",
         }
         else 60
@@ -6355,6 +6366,7 @@ def run_vast_provider_adapter(
     startup_timeout_seconds: int = 420,
     heartbeat_no_progress_seconds: int | None = None,
     machine_avoidlist_path: str | Path | None = None,
+    excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
     allowed_active_instance_ids: Iterable[Any] = (),
     session_budget_ledger_path: str | Path | None = None,
@@ -6457,7 +6469,9 @@ def run_vast_provider_adapter(
         else bool(prefer_isaac_rt)
     )
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
-    excluded_machine_ids = _avoidlist_machine_ids(resolved_machine_avoidlist_path)
+    excluded_machine_ids = _avoidlist_machine_ids(
+        resolved_machine_avoidlist_path
+    ) | _machine_id_set(excluded_machine_ids)
     resolved_allowed_machine_ids = _machine_id_set(allowed_machine_ids)
     resolved_allowed_active_instance_ids = _machine_id_set(allowed_active_instance_ids)
     launch_mode = _resolve_launch_mode(
@@ -6628,6 +6642,7 @@ def run_vast_provider_adapter(
         provider_bundle_inline_transport=inline_bundle_transport,
         require_known_supported_isaac_driver=require_known_supported_isaac_driver,
         minimum_driver_version=resolved_minimum_driver_version,
+        excluded_machine_ids=excluded_machine_ids,
     )
     _budget_ledger(
         job_dir=resolved_job_dir,

@@ -66,6 +66,7 @@ def lane(tmp_path: Path) -> dict:
                 "hard_attempt_spend_cap_usd": MAX_HARD_CAP_USD,
                 "maximum_single_resource_ttl_seconds": 7200,
                 "bundle_sha256": digest,
+                "excluded_vast_machine_ids": [140718],
             }
         ),
         encoding="utf-8",
@@ -90,6 +91,8 @@ def test_the_profile_routes_the_paired_target_probe_through_the_allocator(lane) 
     assert argv[argv.index("--probe-kind") + 1] == "adp-paired-target-native-import"
     assert "--paired-target-native-import-bundle-receipt" in argv
     assert "--paired-target-native-import-attempt-authority" in argv
+    exclusion = argv.index("--adp-excluded-vast-machine-id")
+    assert argv[exclusion + 1] == "140718"
     assert profile["allocator"]["retry_cap"] == 0
 
 

@@ -171,7 +171,7 @@ def cold_pull_aware_heartbeat_no_progress_seconds(
     """Keep the heartbeat window consistent with an admitted WAM cold pull."""
 
     resolved = max(0, int(configured_seconds))
-    if provider_bundle_kind != "wam" or not allow_cold_image_pull:
+    if provider_bundle_kind not in {"wam", "paired_target_native_import"} or not allow_cold_image_pull:
         return resolved
     admitted_cold_pull_seconds = min(
         max(0, int(min_cold_image_pull_live_minutes)) * 60,

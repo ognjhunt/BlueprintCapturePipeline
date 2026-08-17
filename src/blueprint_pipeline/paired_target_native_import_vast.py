@@ -27,6 +27,9 @@ from .paired_target_native_import_bundle import (
     RESULT_SCHEMA_VERSION as RUNTIME_RESULT_SCHEMA_VERSION,
     validate_paired_target_native_import_bundle,
 )
+from .paired_target_native_import_recovery import (
+    validate_paired_target_native_import_recovered_provider_zero,
+)
 from .public_scene_artifixer3d_vast import validate_artifixer3d_terminal_spend_chain
 from .spend_authority_consumption_root import consumption_root
 from .task_evaluation_artifact_manifest import (
@@ -462,6 +465,194 @@ def _validate_preallocation_provider_zero(path: Path) -> dict[str, Any]:
     return value
 
 
+def _validated_prior_paired_attempts(
+    paths: Sequence[str | Path],
+    *,
+    source_request_digest: str,
+) -> tuple[list[dict[str, Any]], float, tuple[int, ...]]:
+    entries: list[dict[str, Any]] = []
+    authority_digests: list[str] = []
+    instance_ids: list[int] = []
+    total = 0.0
+    exclusions: set[int] = set()
+    for value in paths:
+        path = Path(value).expanduser().resolve()
+        zero = validate_paired_target_native_import_recovered_provider_zero(path)
+        records = zero.get("records")
+        if not isinstance(records, Mapping):
+            raise ValueError("paired_target_prior_attempt_invalid")
+        authority_path = _bound_record(
+            records.get("attempt_authority"), "paired_target_prior_authority_unbound"
+        )[0]
+        authority = _read(authority_path, "paired_target_prior_authority_unreadable")
+        digest = authority.get("authorization_digest")
+        authority_source_request_digest = authority.get("source_request_digest")
+        instance_id = zero.get("provider_instance_id")
+        official_cost = zero.get("official_cost_usd")
+        declared_prior = authority.get("prior_paired_attempts") or []
+        declared_digests = [
+            row.get("attempt_authority_digest")
+            for row in declared_prior
+            if isinstance(row, Mapping)
+        ]
+        recommended = zero.get("recommended_excluded_machine_ids")
+        if (
+            authority.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION
+            or digest != canonical_digest(authority, digest_field="authorization_digest")
+            or digest != zero.get("attempt_authority_digest")
+            or authority_source_request_digest != source_request_digest
+            or declared_digests != authority_digests
+            or len(declared_digests) != len(declared_prior)
+            or isinstance(instance_id, bool)
+            or not isinstance(instance_id, int)
+            or instance_id <= 0
+            or isinstance(official_cost, bool)
+            or not isinstance(official_cost, (int, float))
+            or not math.isfinite(float(official_cost))
+            or float(official_cost) < 0
+            or not isinstance(recommended, list)
+            or not recommended
+            or any(
+                isinstance(machine_id, bool)
+                or not isinstance(machine_id, int)
+                or machine_id <= 0
+                for machine_id in recommended
+            )
+        ):
+            raise ValueError("paired_target_prior_attempt_invalid")
+        entry = {
+            **_record(path),
+            "receipt_digest": zero["receipt_digest"],
+            "attempt_authority_digest": digest,
+            "source_request_digest": authority_source_request_digest,
+            "provider_instance_id": instance_id,
+            "official_cost_usd": round(float(official_cost), 6),
+            "recommended_excluded_machine_ids": sorted(set(recommended)),
+        }
+        entries.append(entry)
+        authority_digests.append(str(digest))
+        instance_ids.append(instance_id)
+        total += float(official_cost)
+        exclusions.update(int(machine_id) for machine_id in recommended)
+    if (
+        len(authority_digests) != len(set(authority_digests))
+        or len(instance_ids) != len(set(instance_ids))
+    ):
+        raise ValueError("paired_target_prior_attempt_duplicate")
+    return entries, round(total, 6), tuple(sorted(exclusions))
+
+
+def _claim_paired_lineage_scope(
+    *, authority_digest: str, source_request_digest: str
+) -> None:
+    root = consumption_root()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if root.is_symlink() or root.stat().st_mode & 0o077:
+        raise ValueError("paired_target_consumption_root_invalid")
+    path = root / f"paired-target-lineage-scope-{authority_digest[7:]}.json"
+    value = {
+        "schema_version": "paired_target_native_import_lineage_scope.v1",
+        "authority_digest": authority_digest,
+        "source_request_digest": source_request_digest,
+        "claim_digest": "",
+    }
+    value["claim_digest"] = canonical_digest(value, digest_field="claim_digest")
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    temporary = root / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    except FileExistsError:
+        existing = _read(path, "paired_target_lineage_scope_already_claimed")
+        if existing != value:
+            raise ValueError("paired_target_lineage_scope_already_claimed")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _consumed_paired_authority_digests(*, source_request_digest: str) -> list[str]:
+    root = consumption_root()
+    if not root.exists():
+        return []
+    if root.is_symlink() or root.stat().st_mode & 0o077:
+        raise ValueError("paired_target_consumption_root_invalid")
+    rows: list[tuple[str, str]] = []
+    for path in root.glob("paired-target-native-import-*.json"):
+        value = _read(path, "paired_target_consumption_record_invalid")
+        digest = value.get("authorization_digest")
+        consumed_at = value.get("consumed_at")
+        record_scope = value.get("source_request_digest")
+        if (
+            value.get("schema_version")
+            != "paired_target_native_import_authority_consumption.v1"
+            or not isinstance(digest, str)
+            or not digest.startswith("sha256:")
+            or len(digest) != 71
+            or path.name != f"paired-target-native-import-{digest[7:]}.json"
+            or not isinstance(consumed_at, str)
+            or not consumed_at
+        ):
+            raise ValueError("paired_target_consumption_record_invalid")
+        if record_scope is None:
+            scope_path = root / f"paired-target-lineage-scope-{digest[7:]}.json"
+            if not scope_path.is_file() or scope_path.is_symlink():
+                raise ValueError("paired_target_unscoped_consumption_requires_recovery")
+            scope_claim = _read(scope_path, "paired_target_lineage_scope_invalid")
+            if (
+                scope_claim.get("schema_version")
+                != "paired_target_native_import_lineage_scope.v1"
+                or scope_claim.get("authority_digest") != digest
+                or scope_claim.get("claim_digest")
+                != canonical_digest(scope_claim, digest_field="claim_digest")
+            ):
+                raise ValueError("paired_target_lineage_scope_invalid")
+            record_scope = scope_claim.get("source_request_digest")
+        if record_scope != source_request_digest:
+            continue
+        rows.append((consumed_at, digest))
+    rows.sort()
+    digests = [digest for _consumed_at, digest in rows]
+    if len(digests) != len(set(digests)):
+        raise ValueError("paired_target_consumption_record_duplicate")
+    return digests
+
+
+def _claim_paired_lineage_successor(
+    *, predecessor_digest: str, successor_digest: str
+) -> None:
+    root = consumption_root()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if root.is_symlink() or root.stat().st_mode & 0o077:
+        raise ValueError("paired_target_consumption_root_invalid")
+    path = root / f"paired-target-lineage-successor-{predecessor_digest[7:]}.json"
+    value = {
+        "schema_version": "paired_target_native_import_lineage_successor_claim.v1",
+        "predecessor_authority_digest": predecessor_digest,
+        "successor_authority_digest": successor_digest,
+        "claim_digest": "",
+    }
+    value["claim_digest"] = canonical_digest(value, digest_field="claim_digest")
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    temporary = root / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    except FileExistsError:
+        existing = _read(path, "paired_target_lineage_successor_already_claimed")
+        if existing != value:
+            raise ValueError("paired_target_lineage_successor_already_claimed")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def materialize_paired_target_native_import_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
@@ -471,6 +662,7 @@ def materialize_paired_target_native_import_paid_attempt_authority(
     prior_artifixer_provider_zero_path: str | Path,
     supplemental_prior_spend_reconciliation_path: str | Path | None = None,
     prior_native_preallocation_provider_zero_path: str | Path | None = None,
+    prior_paired_attempt_provider_zero_paths: Sequence[str | Path] = (),
     authorization_reference: str,
     authorized_by: str,
     authorized_on: str,
@@ -517,6 +709,23 @@ def materialize_paired_target_native_import_paid_attempt_authority(
             "attempt_authority_digest": native_zero["attempt_authority_digest"],
             "attempt_cost_usd": 0.0,
         }
+    source_request_digest = str(bundle["source_request_digest"])
+    prior_paired, prior_paired_cost, excluded = _validated_prior_paired_attempts(
+        prior_paired_attempt_provider_zero_paths,
+        source_request_digest=source_request_digest,
+    )
+    for row in prior_paired:
+        _claim_paired_lineage_scope(
+            authority_digest=str(row["attempt_authority_digest"]),
+            source_request_digest=source_request_digest,
+        )
+    consumed_digests = _consumed_paired_authority_digests(
+        source_request_digest=source_request_digest
+    )
+    prior_digests = [row["attempt_authority_digest"] for row in prior_paired]
+    if prior_digests != consumed_digests:
+        raise ValueError("paired_target_prior_attempt_lineage_required")
+    prior_spend = round(prior_spend + prior_paired_cost, 6)
     aggregate_cap = min(
         AGGREGATE_GOAL_SPEND_CAP_USD,
         float(terminal["aggregate_goal_spend_cap_usd"]),
@@ -533,6 +742,7 @@ def materialize_paired_target_native_import_paid_attempt_authority(
         or hard_ttl_seconds * max_hourly_rate_usd / 3600 > hard_cap_usd
         or prior_spend + hard_cap_usd > aggregate_cap
         or any(value <= 0 for value in allowed)
+        or any(value <= 0 for value in excluded)
     ):
         raise ValueError("paired_target_native_import_authority_configuration_invalid")
     receipt = Path(str(bundle["receipt_path"])).resolve()
@@ -571,10 +781,13 @@ def materialize_paired_target_native_import_paid_attempt_authority(
         },
         "supplemental_prior_spend_reconciliation": supplemental,
         "prior_native_preallocation_attempt": prior_native,
+        "prior_paired_attempts": prior_paired,
+        "paired_attempt_ordinal": len(prior_paired) + 1,
         "active_instance_allowlist": {
             "external_provider_owned": list(allowed),
             "same_goal_concurrent": [],
         },
+        "excluded_vast_machine_ids": list(excluded),
         "native_simulator_import_probe_only": True,
         "candidate_policy_queried": False,
         "raw_nonredistributable_bytes_uploaded": False,
@@ -589,7 +802,6 @@ def materialize_paired_target_native_import_paid_attempt_authority(
     if output.exists() or output.is_symlink():
         raise ValueError("paired_target_native_import_authority_output_exists")
     ensure_dir(output.parent)
-    write_json(output, authority)
     validate_paired_target_native_import_paid_attempt_authority(
         authority,
         prepared_bundle=bundle,
@@ -597,7 +809,14 @@ def materialize_paired_target_native_import_paid_attempt_authority(
         hard_cap_usd=hard_cap_usd,
         hard_ttl_seconds=hard_ttl_seconds,
         allowed_active_instance_ids=allowed,
+        excluded_machine_ids=excluded,
     )
+    if consumed_digests:
+        _claim_paired_lineage_successor(
+            predecessor_digest=consumed_digests[-1],
+            successor_digest=authority["authorization_digest"],
+        )
+    write_json(output, authority)
     return authority
 
 
@@ -609,10 +828,12 @@ def validate_paired_target_native_import_paid_attempt_authority(
     hard_cap_usd: float,
     hard_ttl_seconds: int,
     allowed_active_instance_ids: Sequence[int] = (),
+    excluded_machine_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     value = dict(authority)
     allowlist = normalize_active_instance_allowlist(value.get("active_instance_allowlist"))
     expected = normalize_active_instance_allowlist(list(allowed_active_instance_ids))
+    expected_excluded = tuple(sorted({int(value) for value in excluded_machine_ids}))
     errors: list[str] = []
     if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION:
         errors.append("schema_invalid")
@@ -644,6 +865,8 @@ def validate_paired_target_native_import_paid_attempt_authority(
         "raw_nonredistributable_bytes_uploaded": False,
         "canonical_interiorgs_uploaded_or_mutated": False,
         "physical_success_established": False,
+        "excluded_vast_machine_ids": list(expected_excluded),
+        "paired_attempt_ordinal": len(value.get("prior_paired_attempts") or []) + 1,
     }
     errors.extend(f"{key}_mismatch" for key, expected_value in expected_fields.items() if value.get(key) != expected_value)
     if allowlist is None or expected is None or flatten_active_instance_allowlist(
@@ -654,6 +877,8 @@ def validate_paired_target_native_import_paid_attempt_authority(
         errors.append("active_instance_allowlist_mismatch")
     elif active_instance_allowlist_metadata_error(value, allowlist=allowlist) is not None:
         errors.append("active_instance_allowlist_metadata_invalid")
+    if any(value <= 0 for value in expected_excluded):
+        errors.append("excluded_machine_ids_invalid")
     if (
         not isinstance(value.get("aggregate_goal_spend_before_attempt_usd"), (int, float))
         or isinstance(value.get("aggregate_goal_spend_before_attempt_usd"), bool)
@@ -701,6 +926,35 @@ def validate_paired_target_native_import_paid_attempt_authority(
                 or supplemental_bound.get("sha256") != _sha256(supplemental_path)
             ):
                 errors.append("supplemental_prior_spend_mismatch")
+        prior_paired_records = value.get("prior_paired_attempts")
+        if not isinstance(prior_paired_records, list):
+            raise ValueError("prior_paired_attempts_invalid")
+        prior_paired_paths = [
+            _bound_record(row, "prior_paired_attempt_unbound")[0]
+            for row in prior_paired_records
+            if isinstance(row, Mapping)
+        ]
+        if len(prior_paired_paths) != len(prior_paired_records):
+            raise ValueError("prior_paired_attempts_invalid")
+        source_request_digest = str(prepared_bundle.get("source_request_digest") or "")
+        paired_entries, paired_cost, paired_exclusions = _validated_prior_paired_attempts(
+            prior_paired_paths,
+            source_request_digest=source_request_digest,
+        )
+        if prior_paired_records != paired_entries:
+            errors.append("prior_paired_attempts_mismatch")
+        if expected_excluded != paired_exclusions:
+            errors.append("excluded_machine_ids_lineage_mismatch")
+        consumed = _consumed_paired_authority_digests(
+            source_request_digest=source_request_digest
+        )
+        declared = [row["attempt_authority_digest"] for row in paired_entries]
+        current_digest = value.get("authorization_digest")
+        if tuple(consumed) not in {
+            tuple(declared),
+            tuple([*declared, current_digest]),
+        }:
+            errors.append("consumed_paired_attempt_lineage_mismatch")
         prior_native_record = value.get("prior_native_preallocation_attempt")
         if prior_native_record is not None:
             native_path, _ = _bound_record(
@@ -722,7 +976,8 @@ def validate_paired_target_native_import_paid_attempt_authority(
             or value.get("aggregate_goal_spend_before_attempt_usd")
             != round(
                 terminal["aggregate_goal_spend_after_attempt_usd"]
-                + supplemental_cost,
+                + supplemental_cost
+                + paired_cost,
                 6,
             )
             or value.get("aggregate_goal_spend_cap_usd")
@@ -755,6 +1010,7 @@ def consume_paired_target_native_import_authority_once(
             "schema_version": "paired_target_native_import_authority_consumption.v1",
             "authorization_digest": digest,
             "bundle_sha256": authority.get("bundle_sha256"),
+            "source_request_digest": authority.get("source_request_digest"),
             "blueprint_commit": blueprint_commit,
             "consumed_at": utc_now_iso(),
             "maximum_provider_allocations": 1,
@@ -839,6 +1095,7 @@ def run_paired_target_native_import_vast(
     hard_cap_usd: float = 1.0,
     hard_ttl_seconds: int = 3_600,
     allowed_active_instance_ids: Sequence[int] = (),
+    excluded_machine_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
@@ -857,6 +1114,7 @@ def run_paired_target_native_import_vast(
             hard_cap_usd=hard_cap_usd,
             hard_ttl_seconds=hard_ttl_seconds,
             allowed_active_instance_ids=allowed_active_instance_ids,
+            excluded_machine_ids=excluded_machine_ids,
         )
     else:
         authority = None
@@ -973,6 +1231,7 @@ def run_paired_target_native_import_vast(
                 preferred_gpu_keywords=("L40S", "RTX 4090", "RTX A6000"),
                 prefer_isaac_rt=True,
                 machine_avoidlist_path=machine_avoidlist_path,
+                excluded_machine_ids=excluded_machine_ids,
                 allowed_active_instance_ids=allowed,
                 vast_launch_lock_file=job.parent / "paired_target_native_import_paid_launch.lock",
                 instance_label_prefix=INSTANCE_LABEL_PREFIX,
@@ -1041,6 +1300,9 @@ def run_paired_target_native_import_vast(
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": 0,
+        "excluded_vast_machine_ids": sorted(
+            set(int(value) for value in excluded_machine_ids)
+        ),
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
         "authorization_consumption": consumption,

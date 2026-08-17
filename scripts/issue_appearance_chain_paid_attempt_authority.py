@@ -149,6 +149,12 @@ PAIRED_ONLY: dict[str, Param] = {
         "--prior-native-preallocation-provider-zero",
         "Provider zero observed before this lane allocates anything.",
     ),
+    "prior_paired_attempt_provider_zero_paths": Param(
+        "--prior-paired-attempt-provider-zero",
+        "Repeatable exact recovered provider-zero receipts for every prior paired attempt.",
+        default=(),
+        accumulate=True,
+    ),
     "allowed_active_instance_ids": Param(
         "--allow-active-instance",
         "Repeatable. Instances that may already be running when this attempt "
