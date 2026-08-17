@@ -618,6 +618,157 @@ def enqueue_capture_reconstruction(
     return stage_launch_request(value=request, queue_root=queue_root)
 
 
+def dispatch_launch_request(
+    *,
+    queue_path: str | Path,
+    state_root: str | Path,
+    derived_root: str | Path,
+    capture_store_root: str | Path,
+    execute: bool = False,
+) -> dict[str, Any]:
+    """Carry one queued capture as far as its authority allows.
+
+    Preparation is free and always runs: it validates the bundle and compiles
+    the depth-seeded candidate-only COLMAP dataset.  Allocation is the paid
+    boundary and is refused without explicit execute authority, so the ordinary
+    path produces a complete, digest-bound execution request and stops there.
+
+    Every stage is checkpointed before the next begins, and the paid stages are
+    guarded against repetition, so a crashed dispatch resumes rather than
+    re-spending.
+    """
+
+    from .canonical_3dgs_pipeline import (
+        Canonical3DGSPipelineError,
+        prepare_canonical_v32_training_dataset,
+    )
+    from .capture_reconstruction_checkpoints import (
+        assert_paid_stage_not_repeated,
+        read_checkpoints,
+        record_checkpoint,
+    )
+
+    path = Path(queue_path).expanduser().resolve()
+    request = json.loads(path.read_text(encoding="utf-8"))
+    blockers = validate_launch_request(request)
+    if blockers:
+        raise CaptureReconstructionLaunchError(",".join(blockers))
+
+    capture_digest = str(request["capture_digest"])
+    ledger = read_checkpoints(state_root=state_root, capture_digest=capture_digest)
+
+    record_checkpoint(
+        state_root=state_root,
+        capture_digest=capture_digest,
+        stage="upload_received",
+        evidence={
+            "capture_id": request["capture_id"],
+            "candidate_manifest_digest": request["candidate_manifest_digest"],
+        },
+    )
+
+    raw_root = Path(capture_store_root).expanduser().resolve()
+    derived = Path(derived_root).expanduser().resolve() / capture_digest[7:23]
+
+    # Preparation writes immutable artifacts and refuses to overwrite them, so
+    # a resumed dispatch must read its earlier result rather than recompute it.
+    already_prepared = "intake_validated" in ledger["recorded_stages"]
+    if already_prepared:
+        intake_evidence = _mapping(
+            next(
+                (
+                    row
+                    for row in ledger["checkpoints"]
+                    if row.get("stage") == "intake_validated"
+                ),
+                {},
+            ).get("evidence")
+        )
+    else:
+        try:
+            prepared = prepare_canonical_v32_training_dataset(
+                capture_root=raw_root,
+                output_root=derived,
+                intake_id=str(request["intake_id"]),
+                capture_digest=capture_digest,
+                rights_and_retention={
+                    "local_processing_authorized": True,
+                    # Preparation never authorizes upload or spend; those are
+                    # separate explicit control-plane inputs.
+                    "provider_upload_authorized": False,
+                    "paid_compute_authorized": False,
+                },
+                task_site_selection_profile=request["task_site_selection_profile"],
+            )
+        except Canonical3DGSPipelineError as exc:
+            return {
+                "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+                "status": "abstained",
+                "capture_digest": capture_digest,
+                "stage": "intake_validated",
+                "blockers": sorted(set(getattr(exc, "codes", [str(exc)]))),
+                "provider_mutation_performed": False,
+            }
+
+        preparation = _mapping(prepared.get("preparation"))
+        dataset = _mapping(prepared.get("dataset"))
+        intake_evidence = {
+            "preparation_status": preparation.get("status"),
+            "task_site_frame_selection_profile_digest": preparation.get(
+                "task_site_frame_selection_profile_digest"
+            ),
+            "selected_decoded_frame_ordinals": preparation.get(
+                "selected_decoded_frame_ordinals"
+            ),
+            "dataset_image_count": dataset.get("image_count"),
+            "hidden_heldout_pixels_included": dataset.get(
+                "hidden_heldout_pixels_included"
+            ),
+        }
+        record_checkpoint(
+            state_root=state_root,
+            capture_digest=capture_digest,
+            stage="intake_validated",
+            evidence=intake_evidence,
+        )
+
+    record_checkpoint(
+        state_root=state_root,
+        capture_digest=capture_digest,
+        stage="queued",
+        evidence={
+            "idempotency_key": request["idempotency_key"],
+            "arms": request["arms"],
+            "max_spend_usd": request["max_spend_usd"],
+            "hard_ttl_seconds": request["hard_ttl_seconds"],
+        },
+    )
+
+    if not execute:
+        return {
+            "schema_version": QUEUE_RUN_SCHEMA_VERSION,
+            "status": "prepared_awaiting_paid_authority",
+            "capture_digest": capture_digest,
+            "already_prepared": already_prepared,
+            "derived_root": str(derived),
+            "preparation_status": intake_evidence.get("preparation_status"),
+            "dataset_image_count": intake_evidence.get("dataset_image_count"),
+            "arms": request["arms"],
+            "paid_execution_boundary": CANONICAL_ALLOCATOR_ENTRYPOINT,
+            "provider_mutation_performed": False,
+        }
+
+    # Paid boundary.  Refuse before touching a provider if this capture already
+    # allocated, so a resumed dispatch cannot book a second instance.
+    assert_paid_stage_not_repeated(
+        state_root=state_root, capture_digest=capture_digest, stage="worker_allocated"
+    )
+    raise CaptureReconstructionLaunchError(
+        "capture_reconstruction_paid_dispatch_requires_allocator_admission:"
+        "run " + CANONICAL_ALLOCATOR_ENTRYPOINT
+    )
+
+
 def process_launch_queue(
     *,
     queue_root: str | Path,
