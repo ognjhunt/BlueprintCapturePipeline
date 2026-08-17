@@ -11,10 +11,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .watchdog_owner_teardown_contract import (
+    OWNER_TEARDOWN_CANCEL_NAME,
     WATCHDOG_EVIDENCE_NAME,
     write_owner_teardown_cancel_request,
 )
@@ -24,6 +25,8 @@ HANDOFF_SCHEMA = "vast_independent_watchdog_handoff.v1"
 HANDOFF_NAME = "vast_independent_watchdog_handoff.json"
 WATCHDOG_DIR_NAME = "independent_vast_watchdog"
 EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
+CALLER_EXIT_SURVIVAL_ENV = "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL"
+SYSTEMD_KILL_MODE_PROCESS_SURVIVAL = "systemd_dispatcher_kill_mode_process"
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,179 @@ class VastWatchdogHandle:
     deadline_epoch: float
     started_instance_id_path: Path
     allowed_active_instance_ids: tuple[int, ...]
+    caller_exit_survival_contract: str
+
+
+def _process_alive(process: subprocess.Popen[str]) -> bool:
+    return process.poll() is None
+
+
+def _caller_exit_survival_contract() -> str:
+    declared = str(os.environ.get(CALLER_EXIT_SURVIVAL_ENV) or "").strip()
+    under_systemd = bool(str(os.environ.get("INVOCATION_ID") or "").strip())
+    if under_systemd:
+        return (
+            SYSTEMD_KILL_MODE_PROCESS_SURVIVAL
+            if declared == SYSTEMD_KILL_MODE_PROCESS_SURVIVAL
+            else "systemd_cgroup_survival_unproven"
+        )
+    return "detached_posix_session"
+
+
+def _stop_terminal_watchdog_process(
+    process: subprocess.Popen[str], *, wait_seconds: float = 5.0
+) -> int | None:
+    """Reap a terminal watchdog so KillMode=process cannot leave an orphan."""
+
+    try:
+        return process.wait(timeout=max(0.1, wait_seconds))
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            return process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return process.wait(timeout=5)
+
+
+def _retained_watchdog_result(
+    *,
+    handle: VastWatchdogHandle,
+    reason: str,
+    instance_ids: Sequence[int] = (),
+) -> dict[str, Any]:
+    alive = _process_alive(handle.process)
+    survival_proven = handle.caller_exit_survival_contract in {
+        "detached_posix_session",
+        SYSTEMD_KILL_MODE_PROCESS_SURVIVAL,
+    }
+    retained = alive and survival_proven
+    return {
+        "schema_version": HANDOFF_SCHEMA,
+        "generated_at": utc_now_iso(),
+        "status": (
+            "retained_until_hard_ttl"
+            if retained
+            else "watchdog_process_not_live"
+            if not alive
+            else "watchdog_caller_exit_survival_unproven"
+        ),
+        "reason": reason,
+        "watchdog_armed_before_allocation": True,
+        "watchdog_pid": handle.process.pid,
+        "watchdog_deadline_epoch": handle.deadline_epoch,
+        "pod_name_prefix": handle.pod_name_prefix,
+        "watchdog_retention_liveness_confirmed": alive,
+        "watchdog_caller_exit_survival_confirmed": survival_proven,
+        "caller_exit_survival_contract": handle.caller_exit_survival_contract,
+        "watchdog_evidence_path": str(handle.out_dir / EVIDENCE_NAME),
+        "watchdog_out_dir": str(handle.out_dir),
+        "owner_cancel_path": str(handle.out_dir / OWNER_TEARDOWN_CANCEL_NAME),
+        "instance_ids": list(instance_ids),
+        "provider_mutations_performed": 0,
+        "blockers": (
+            []
+            if retained
+            else ["independent_vast_watchdog_process_not_live"]
+            if not alive
+            else ["independent_vast_watchdog_caller_exit_survival_unproven"]
+        ),
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _terminal_evidence_matches_handle(
+    evidence: Mapping[str, Any],
+    *,
+    handle: VastWatchdogHandle,
+    instance_id: str,
+) -> bool:
+    recorded = evidence.get("recorded_vast_instance_teardown")
+    recorded = recorded if isinstance(recorded, Mapping) else {}
+    inspect_attempts = recorded.get("inspect_attempts")
+    lane_inventories = (
+        evidence.get("initial_inventory"),
+        evidence.get("final_inventory"),
+    )
+    global_inventories = (
+        evidence.get("initial_global_inventory"),
+        evidence.get("final_global_inventory"),
+    )
+    allowed_ids = {str(value) for value in handle.allowed_active_instance_ids}
+    try:
+        observed_deadline = float(evidence.get("deadline_epoch") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        evidence.get("status") == "provider_terminal"
+        and evidence.get("provider") == "vast"
+        and evidence.get("provider_absence_confirmed") is True
+        and evidence.get("pod_name_prefix") == handle.pod_name_prefix
+        and evidence.get("pid") == handle.process.pid
+        and observed_deadline == handle.deadline_epoch
+        and evidence.get("owner_teardown_cancel_requested") is True
+        and evidence.get("owner_teardown_cancel_request_valid") is True
+        and str(recorded.get("instance_id") or "") == instance_id
+        and recorded.get("status") == "absent"
+        and recorded.get("provider_absence_confirmed") is True
+        and all(
+            isinstance(row, Mapping)
+            and row.get("status") == "observed"
+            and row.get("provider") == "vast"
+            and row.get("name_prefix") == handle.pod_name_prefix
+            and row.get("api_confirmed") is True
+            and row.get("live_resource_count") == 0
+            and row.get("resources") == []
+            for row in lane_inventories
+        )
+        and all(
+            isinstance(row, Mapping)
+            and _global_inventory_contains_only_allowed(row, allowed_ids=allowed_ids)
+            for row in global_inventories
+        )
+        and evidence.get("raw_secret_values_recorded") is False
+        and recorded.get("provider_mutations_performed") == 0
+        and isinstance(inspect_attempts, list)
+        and len(inspect_attempts) >= 2
+        and all(
+            isinstance(row, Mapping)
+            and row.get("status") == "absent"
+            and row.get("provider") == "vast"
+            and str(row.get("instance_id") or "") == instance_id
+            and row.get("http") in {200, 404, 410}
+            and row.get("api_confirmed") is True
+            and row.get("provider_absence_confirmed") is True
+            for row in inspect_attempts
+        )
+    )
+
+
+def _global_inventory_contains_only_allowed(
+    value: Mapping[str, Any], *, allowed_ids: set[str]
+) -> bool:
+    resources = value.get("resources")
+    count = value.get("live_resource_count")
+    if (
+        value.get("api_confirmed") is not True
+        or value.get("status") != "observed"
+        or value.get("provider") != "vast"
+        or value.get("name_prefix") != ""
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or not isinstance(resources, list)
+        or len(resources) != count
+    ):
+        return False
+    observed = {
+        str(row.get("instance_id") or "")
+        for row in resources
+        if isinstance(row, Mapping)
+    }
+    return (
+        len(observed) == count
+        and all(observed)
+        and observed.issubset(allowed_ids)
+    )
 
 
 def _safe_suffix(value: str) -> str:
@@ -86,6 +262,7 @@ def arm_independent_vast_watchdog(
         write_json(job_dir / HANDOFF_NAME, blocked)
         return blocked, None
     started_epoch = time.time()
+    caller_exit_survival = _caller_exit_survival_contract()
     deadline = started_epoch + max(1, int(max_live_minutes)) * 60
     log_path = out_dir / "watchdog.log"
     log_handle = log_path.open("a", encoding="utf-8")
@@ -169,6 +346,11 @@ def arm_independent_vast_watchdog(
         "watchdog_started_epoch": started_epoch,
         "watchdog_deadline_epoch": deadline,
         "watchdog_armed_before_allocation": passed,
+        "caller_exit_survival_contract": caller_exit_survival,
+        "systemd_dispatcher_kill_mode_required": (
+            "process" if caller_exit_survival == SYSTEMD_KILL_MODE_PROCESS_SURVIVAL else None
+        ),
+        "watchdog_evidence_path": str(evidence_path),
         "pod_name_prefix": prefix,
         "watchdog_out_dir": str(out_dir),
         "started_instance_id_path": str(out_dir / "started_vast_instance_id.txt"),
@@ -194,6 +376,7 @@ def arm_independent_vast_watchdog(
         deadline_epoch=deadline,
         started_instance_id_path=out_dir / "started_vast_instance_id.txt",
         allowed_active_instance_ids=allowed_ids,
+        caller_exit_survival_contract=caller_exit_survival,
     )
 
 
@@ -210,15 +393,10 @@ def close_independent_vast_watchdog(
 
     if not instance_ids:
         if not provider_allocation_impossible:
-            result = {
-                "schema_version": HANDOFF_SCHEMA,
-                "generated_at": utc_now_iso(),
-                "status": "retained_until_hard_ttl",
-                "reason": "provider_allocation_identity_ambiguous",
-                "watchdog_armed_before_allocation": True,
-                "provider_mutations_performed": 0,
-                "raw_secret_values_recorded": False,
-            }
+            result = _retained_watchdog_result(
+                handle=handle,
+                reason="provider_allocation_identity_ambiguous",
+            )
             write_json(job_dir / HANDOFF_NAME, result)
             return result
         handle.process.terminate()
@@ -238,15 +416,11 @@ def close_independent_vast_watchdog(
         write_json(job_dir / HANDOFF_NAME, result)
         return result
     if not provider_teardown_completed:
-        result = {
-            "schema_version": HANDOFF_SCHEMA,
-            "generated_at": utc_now_iso(),
-            "status": "retained_until_hard_ttl",
-            "watchdog_armed_before_allocation": True,
-            "instance_ids": instance_ids,
-            "provider_mutations_performed": 0,
-            "raw_secret_values_recorded": False,
-        }
+        result = _retained_watchdog_result(
+            handle=handle,
+            reason="provider_teardown_not_completed",
+            instance_ids=instance_ids,
+        )
         write_json(job_dir / HANDOFF_NAME, result)
         return result
     instance_id = str(instance_ids[-1])
@@ -265,21 +439,30 @@ def close_independent_vast_watchdog(
     terminal = _read_json(handle.out_dir / EVIDENCE_NAME)
     while time.monotonic() < wait_deadline:
         terminal = _read_json(handle.out_dir / EVIDENCE_NAME)
-        if (
-            terminal.get("status") == "provider_terminal"
-            and terminal.get("provider_absence_confirmed") is True
+        if _terminal_evidence_matches_handle(
+            terminal, handle=handle, instance_id=instance_id
         ):
             break
         if handle.process.poll() is not None:
             terminal = _read_json(handle.out_dir / EVIDENCE_NAME)
             break
         time.sleep(0.2)
-    status = (
-        "provider_terminal"
-        if terminal.get("status") == "provider_terminal"
-        and terminal.get("provider_absence_confirmed") is True
-        else "retained_until_hard_ttl"
+    terminal_valid = _terminal_evidence_matches_handle(
+        terminal, handle=handle, instance_id=instance_id
     )
+    status = "provider_terminal" if terminal_valid else "retained_until_hard_ttl"
+    if not terminal_valid:
+        result = _retained_watchdog_result(
+            handle=handle,
+            reason="terminal_evidence_not_exactly_bound",
+            instance_ids=instance_ids,
+        )
+        result["provider_absence_confirmed"] = False
+        write_json(job_dir / HANDOFF_NAME, result)
+        return result
+    process_exit_code = handle.process.poll()
+    if status == "provider_terminal":
+        process_exit_code = _stop_terminal_watchdog_process(handle.process)
     result = {
         "schema_version": HANDOFF_SCHEMA,
         "generated_at": utc_now_iso(),
@@ -287,7 +470,8 @@ def close_independent_vast_watchdog(
         "watchdog_armed_before_allocation": True,
         "instance_ids": instance_ids,
         "provider_absence_confirmed": terminal.get("provider_absence_confirmed") is True,
-        "watchdog_process_exit_code": handle.process.poll(),
+        "watchdog_process_exit_code": process_exit_code,
+        "watchdog_retention_liveness_confirmed": False,
         "provider_mutations_performed": terminal.get("provider_mutations_performed", 0),
         "raw_secret_values_recorded": False,
     }

@@ -8,6 +8,14 @@ After=network-online.target blueprint-gpu-spend-guard.service
 Type=oneshot
 User=blueprint
 Group=blueprint
+# The dispatcher may hand a retained paid allocation to its independently
+# armed hard-TTL watchdog.  setsid/nohup do not escape a systemd cgroup: with
+# the default KillMode=control-group systemd killed that watchdog child as soon
+# as this oneshot caller exited, despite a retained_until_hard_ttl handoff.
+# Preserve child watchdogs while stopping only the dispatcher main process;
+# normal terminal close still asks the exact child to exit and verifies it.
+KillMode=process
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
@@ -83,3 +91,7 @@ WorkingDirectory=/
 # values in systemd, so a separate positive dry interlock is required; never
 # rely on an Environment=...EXECUTE=false drop-in as a spend stop.
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_launch_dispatcher --queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT}" --profile-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR}" --public-catalog "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH}" --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --max-messages 10) && if [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_FORCE_DRY_RUN:-}" != true ] && [ "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE:-}" = true ]; then ARGS+=(--execute); if [ -n "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID:-}" ]; then ARGS+=(--execute-launch-id "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID}"); fi; fi; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'
+# KillMode=process deliberately preserves a valid hard-TTL watchdog. Reap every
+# other remaining allocator/provider descendant before the oneshot is closed or
+# restarted, and retain a secret-free reconciliation receipt.
+ExecStopPost=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup --state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --receipt-dir "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}/watchdog-cgroup-cleanup"'
