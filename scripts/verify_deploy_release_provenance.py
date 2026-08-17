@@ -4,16 +4,20 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import hashlib
+import io
 import json
 import os
+from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
+import zipfile
 
 from defusedxml import ElementTree as ET
 
@@ -93,6 +97,48 @@ def repository_from_remote(remote: str) -> str:
     raise ProvenanceError("origin_remote_is_not_canonical_github_repository")
 
 
+def _github_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+
+
+def _select_attempt_artifact(
+    *,
+    artifacts: Sequence[Mapping[str, Any]],
+    run_attempt: int,
+    upload_step: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], str | None]:
+    if run_attempt == 1 and len(artifacts) == 1:
+        return artifacts[0], None
+
+    upload_started_at = _github_timestamp(upload_step.get("started_at"))
+    upload_completed_at = _github_timestamp(upload_step.get("completed_at"))
+    if (
+        upload_started_at is None
+        or upload_completed_at is None
+        or upload_completed_at < upload_started_at
+    ):
+        return {}, "canonical_full_lane_artifact_attempt_metadata_invalid"
+    attempt_artifacts = [
+        artifact
+        for artifact in artifacts
+        if (
+            (created_at := _github_timestamp(artifact.get("created_at")))
+            is not None
+            and upload_started_at <= created_at <= upload_completed_at
+        )
+    ]
+    if not attempt_artifacts:
+        return {}, "canonical_full_lane_artifact_attempt_unresolved"
+    if len(attempt_artifacts) != 1:
+        return {}, "canonical_full_lane_artifact_attempt_ambiguous"
+    return attempt_artifacts[0], None
+
+
 def validate_run_metadata(
     *,
     run: Mapping[str, Any],
@@ -104,6 +150,10 @@ def validate_run_metadata(
     expected_run_id: int,
 ) -> Mapping[str, Any]:
     blockers: list[str] = []
+    run_attempt = run.get("run_attempt")
+    if not isinstance(run_attempt, int) or isinstance(run_attempt, bool) or run_attempt <= 0:
+        blockers.append("run_attempt_invalid")
+        run_attempt = 0
     if not SHA_PATTERN.fullmatch(expected_sha):
         blockers.append("expected_sha_invalid")
     if run.get("id") != expected_run_id:
@@ -155,8 +205,11 @@ def validate_run_metadata(
     ]
     if len(canonical_jobs) != 1:
         blockers.append("canonical_full_lane_job_count_invalid")
+        upload_step: Mapping[str, Any] = {}
     else:
         canonical_job = canonical_jobs[0]
+        if canonical_job.get("run_attempt") != run_attempt:
+            blockers.append("canonical_full_lane_job_attempt_mismatch")
         if canonical_job.get("status") != "completed":
             blockers.append("canonical_full_lane_job_not_completed")
         if canonical_job.get("conclusion") != "success":
@@ -168,6 +221,12 @@ def validate_run_metadata(
             for step in steps
             if isinstance(step, Mapping)
         }
+        upload_steps = [
+            step
+            for step in steps
+            if isinstance(step, Mapping) and step.get("name") == "Upload full lane report"
+        ]
+        upload_step = upload_steps[0] if len(upload_steps) == 1 else {}
         for step_name in sorted(REQUIRED_SUCCESSFUL_AGGREGATE_STEPS):
             if step_results.get(step_name) != "success":
                 blockers.append(f"required_step_not_success:{step_name}")
@@ -183,6 +242,8 @@ def validate_run_metadata(
     else:
         for job_name in sorted(shard_jobs):
             shard_job = shard_jobs[job_name]
+            if shard_job.get("run_attempt") != run_attempt:
+                blockers.append(f"canonical_full_lane_shard_attempt_mismatch:{job_name}")
             if shard_job.get("status") != "completed":
                 blockers.append(f"canonical_full_lane_shard_not_completed:{job_name}")
             if shard_job.get("conclusion") != "success":
@@ -208,11 +269,23 @@ def validate_run_metadata(
         for artifact in artifact_rows
         if isinstance(artifact, Mapping) and artifact.get("name") == artifact_name
     ]
-    if len(matching_artifacts) != 1:
+    if not matching_artifacts:
         blockers.append("canonical_full_lane_artifact_count_invalid")
         artifact: Mapping[str, Any] = {}
     else:
-        artifact = matching_artifacts[0]
+        artifact, artifact_selection_blocker = _select_attempt_artifact(
+            artifacts=matching_artifacts,
+            run_attempt=run_attempt,
+            upload_step=upload_step,
+        )
+        if artifact_selection_blocker:
+            blockers.append(artifact_selection_blocker)
+        workflow_run = artifact.get("workflow_run")
+        if isinstance(workflow_run, Mapping):
+            if workflow_run.get("id") != expected_run_id:
+                blockers.append("canonical_full_lane_artifact_run_id_mismatch")
+            if workflow_run.get("head_sha") != expected_sha:
+                blockers.append("canonical_full_lane_artifact_sha_mismatch")
         if artifact.get("expired") is not False:
             blockers.append("canonical_full_lane_artifact_expired")
         if (
@@ -337,6 +410,41 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def _download_artifact_by_id(
+    *, root: Path, repository: str, artifact_id: int, artifact_dir: Path
+) -> None:
+    completed = subprocess.run(
+        [
+            "gh",
+            "api",
+            "-H",
+            "Accept: application/vnd.github+json",
+            f"repos/{repository}/actions/artifacts/{artifact_id}/zip",
+        ],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", "replace").strip()
+        raise ProvenanceError("full_lane_artifact_download_failed:" + detail)
+    try:
+        with zipfile.ZipFile(io.BytesIO(completed.stdout)) as archive:
+            members = archive.infolist()
+            names = [member.filename for member in members]
+            if not members or len(names) != len(set(names)):
+                raise ProvenanceError("full_lane_artifact_archive_invalid")
+            for member in members:
+                path = PurePosixPath(member.filename)
+                mode = member.external_attr >> 16
+                if path.is_absolute() or ".." in path.parts or stat.S_ISLNK(mode):
+                    raise ProvenanceError("full_lane_artifact_archive_unsafe")
+            archive.extractall(artifact_dir)
+    except zipfile.BadZipFile as exc:
+        raise ProvenanceError("full_lane_artifact_archive_invalid") from exc
+
+
 def verify_live(
     *, root: Path, expected_sha: str, run_url: str, output_path: Path
 ) -> dict[str, Any]:
@@ -380,28 +488,17 @@ def verify_live(
         expected_run_id=run_id,
     )
     artifact_name = str(artifact["name"])
+    artifact_id = artifact.get("id")
+    if not isinstance(artifact_id, int) or artifact_id <= 0:
+        raise ProvenanceError("canonical_full_lane_artifact_id_invalid")
     with tempfile.TemporaryDirectory(prefix="blueprint-full-lane-") as temporary_dir:
         artifact_dir = Path(temporary_dir)
-        completed = subprocess.run(
-            [
-                "gh",
-                "run",
-                "download",
-                str(run_id),
-                "--repo",
-                expected_repository,
-                "--name",
-                artifact_name,
-                "--dir",
-                str(artifact_dir),
-            ],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
+        _download_artifact_by_id(
+            root=root,
+            repository=expected_repository,
+            artifact_id=artifact_id,
+            artifact_dir=artifact_dir,
         )
-        if completed.returncode != 0:
-            raise ProvenanceError("full_lane_artifact_download_failed:" + completed.stderr.strip())
         collection = validate_downloaded_artifact(artifact_dir, expected_sha=expected_sha)
 
     result = {
@@ -414,7 +511,7 @@ def verify_live(
         "workflow_name": CANONICAL_WORKFLOW_NAME,
         "workflow_path": CANONICAL_WORKFLOW_PATH,
         "job_name": CANONICAL_JOB_NAME,
-        "artifact_id": artifact["id"],
+        "artifact_id": artifact_id,
         "artifact_name": artifact_name,
         "collection": collection,
         "claim_boundary": {
