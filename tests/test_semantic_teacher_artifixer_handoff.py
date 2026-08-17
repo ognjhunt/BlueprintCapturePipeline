@@ -141,7 +141,16 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
             "backend": packet["backend"],
             "prompt_policy": "generic_masked_object_absent_background_completion_v2",
             "prompt": "Remove the selected object and reconstruct the empty room.",
-            "tasks": packet_tasks,
+            # This is the real production request shape: every frame and the
+            # aggregate request count are bound, without a redundant per-task
+            # camera_count field.
+            "tasks": [
+                {
+                    "task_id": task["task_id"],
+                    "frames": deepcopy(task["frames"]),
+                }
+                for task in packet_tasks
+            ],
             "retry_count": 0,
         },
         "request_digest",
@@ -233,6 +242,18 @@ def _reseal_runtime_result(fixture: dict[str, object]) -> None:
     runtime_result = fixture["runtime_result"]
     _sealed(fixture["runtime_result_path"], runtime_result, "result_digest")
     imported = fixture["imported"]
+    imported["runtime_result"] = _record(fixture["runtime_result_path"])
+    _sealed(fixture["import_path"], imported, "result_import_digest")
+
+
+def _reseal_runtime_request_and_dependents(fixture: dict[str, object]) -> None:
+    runtime_request = fixture["runtime_request"]
+    _sealed(fixture["runtime_request_path"], runtime_request, "request_digest")
+    runtime_result = fixture["runtime_result"]
+    runtime_result["source_runtime_request_digest"] = runtime_request["request_digest"]
+    _sealed(fixture["runtime_result_path"], runtime_result, "result_digest")
+    imported = fixture["imported"]
+    imported["runtime_request"] = _record(fixture["runtime_request_path"])
     imported["runtime_result"] = _record(fixture["runtime_result_path"])
     _sealed(fixture["import_path"], imported, "result_import_digest")
 
@@ -343,6 +364,20 @@ def test_handoff_rejects_runtime_camera_reorder_before_writing_output(
         frames[0]["camera_id"],
     )
     _reseal_runtime_result(fixture)
+    output = tmp_path / "must-not-write"
+
+    with pytest.raises(DualTargetInputError, match="task_camera_order_invalid"):
+        _run(fixture, output)
+
+    assert not output.exists()
+
+
+def test_handoff_rejects_present_wrong_runtime_request_camera_count(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    fixture["runtime_request"]["tasks"][0]["camera_count"] = 7
+    _reseal_runtime_request_and_dependents(fixture)
     output = tmp_path / "must-not-write"
 
     with pytest.raises(DualTargetInputError, match="task_camera_order_invalid"):

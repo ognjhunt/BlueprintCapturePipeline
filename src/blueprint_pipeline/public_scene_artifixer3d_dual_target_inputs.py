@@ -490,7 +490,7 @@ def materialize_whole_frame_semantic_teacher_receipt(
 
 
 def _ordered_task_camera_rows(
-    value: Mapping[str, Any], *, code: str
+    value: Mapping[str, Any], *, code: str, require_camera_count: bool = True
 ) -> list[tuple[str, list[str]]]:
     tasks = value.get("tasks")
     if not isinstance(tasks, list) or not tasks:
@@ -500,12 +500,17 @@ def _ordered_task_camera_rows(
     for task in tasks:
         frames = task.get("frames") if isinstance(task, Mapping) else None
         task_id = str(task.get("task_id") or "") if isinstance(task, Mapping) else ""
+        camera_count = task.get("camera_count") if isinstance(task, Mapping) else None
         if (
             not task_id
             or task_id in task_ids
             or not isinstance(frames, list)
             or not frames
-            or task.get("camera_count") != len(frames)
+            or (
+                camera_count != len(frames)
+                if require_camera_count
+                else camera_count not in {None, len(frames)}
+            )
         ):
             raise DualTargetInputError([code])
         task_ids.add(task_id)
@@ -623,8 +628,15 @@ def _semantic_result_handoff_inputs(
     ):
         raise DualTargetInputError(["semantic_teacher_handoff_runtime_result_invalid"])
 
+    # The admitted runtime-request schema binds each frame and the aggregate
+    # request count, but deliberately does not duplicate ``camera_count`` on
+    # each task row. Packet, result, and candidate receipts do carry that
+    # redundant count and must continue to prove it exactly. Accept an omitted
+    # request-side count, while still rejecting a present-but-wrong value.
     order = _ordered_task_camera_rows(
-        runtime_request, code="semantic_teacher_handoff_task_camera_order_invalid"
+        runtime_request,
+        code="semantic_teacher_handoff_task_camera_order_invalid",
+        require_camera_count=False,
     )
     if (
         _ordered_task_camera_rows(packet, code="semantic_teacher_handoff_task_camera_order_invalid")
