@@ -198,7 +198,18 @@ fi
   --host 127.0.0.1 --port 8001 >"${OUTPUT_DIR}/ovrtx_service.log" 2>&1 &
 renderer_pid=$!
 renderer_ready=0
-for _ in $(seq 1 180); do
+# 180 polls x 5s = 900s. On 2026-08-17 the renderer reported
+# "OVRTX renderer warmed up - GPU is ready" seconds AFTER that budget expired,
+# so a working GPU was killed and the run sealed
+# `joint_agent_local_ovrtx_renderer_not_ready` on a false negative -- the same
+# class 087125e0 fixed for the daemon probe, one step later in the same script.
+# Warm-up is GPU- and scene-dependent and has been observed at ~15 minutes, so
+# the budget must sit well clear of it rather than adjacent to it. `/health`
+# returns 200 while warm-up is still running (the service says so in its own
+# first log line), so `gpu_initialized` is the only real readiness signal and
+# polling longer costs nothing when the renderer is quick.
+OVRTX_RENDERER_READY_POLLS="${OVRTX_RENDERER_READY_POLLS:-300}"
+for _ in $(seq 1 "${OVRTX_RENDERER_READY_POLLS}"); do
   if curl -fsS "${RENDER_ENDPOINT}/health" | grep -q '"gpu_initialized":true'; then
     renderer_ready=1
     break

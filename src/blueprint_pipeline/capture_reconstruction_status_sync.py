@@ -25,7 +25,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .decision_evidence_contracts import canonical_digest, canonical_json
+from .decision_evidence_contracts import canonical_digest
 
 STATUS_SCHEMA_VERSION = "capture_reconstruction_status.v1"
 SYNC_RECEIPT_SCHEMA_VERSION = "capture_reconstruction_status_sync_receipt.v1"

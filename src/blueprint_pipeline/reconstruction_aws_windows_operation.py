@@ -176,7 +176,7 @@ def run_reconstruction_aws_windows_operation(
         # reason results are missing.
         destination = root / "output_bundle.zip"
         try:
-            transfer = output_fetcher(output_bundle_get_url, destination)
+            output_fetcher(output_bundle_get_url, destination)
             validated = output_validator(
                 bundle_path=destination,
                 allocator_admission=allocator_admission,
@@ -184,7 +184,6 @@ def run_reconstruction_aws_windows_operation(
             output_retrieved_before_teardown = True
         except Exception as exc:  # noqa: BLE001 - any retrieval failure is a blocker
             blockers.append(f"aws_windows_output_unavailable:{type(exc).__name__}")
-            transfer = None
 
     finally:
         if instance_id is not None:

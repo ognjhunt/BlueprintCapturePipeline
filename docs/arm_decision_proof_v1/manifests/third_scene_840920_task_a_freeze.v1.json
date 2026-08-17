@@ -1,301 +1,197 @@
 {
-  "scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
-  "candidate_ids": [
-    "pi05_droid",
-    "groot_n17_droid"
-  ],
-  "frozen_before_learned_policy_execution": true,
-  "learned_policy_outcomes_accessed": false,
-  "overview_camera_policy_input": false,
-  "overview_camera_deterministic_scoring_input": false,
-  "schema_version": "dual_task_task_freeze.v1",
-  "task_id": "task_a_washer_door_open",
-  "prompt": "Open the front-loading washer door and release it in the open target interval.",
-  "task_kind": "articulated_interaction",
-  "source_object": {
-    "instance_id": "165",
-    "semantic_label": "washing_machine",
-    "observed_bounds_world_m": {
-      "minimum": [
-        3.2154303,
-        9.456663998,
-        -1.3e-08
-      ],
-      "maximum": [
-        3.8155423,
-        10.060768002,
-        0.847564013
-      ]
-    },
-    "observed_pose_world": {
-      "position_world_m": [
-        3.5154863,
-        9.758716,
-        0.423782
-      ],
-      "orientation_xyzw": [
-        0,
-        0,
-        0,
-        1
-      ]
-    },
-    "support_or_attachment_id": "washer_body_observed_exterior_generated_mechanism",
-    "collision_identity_receipt_digest": "sha256:1bb74366fa8420d1eeacb200c9e4f08ee0cd1afd11249d477e12fe37c3c0fdd7",
-    "support_receipt_digest": "sha256:1bb74366fa8420d1eeacb200c9e4f08ee0cd1afd11249d477e12fe37c3c0fdd7",
-    "franka_placement_packet_digest": "sha256:badb6fd79eee161d546e514bdc4e2a130b72e3ade8b960f86f7a740eaa18cc31",
-    "visibility_receipt_digest": "sha256:d807864a2f057fe505e519ba2a5dda317cf8b867bef6d1022362a6ab9afc9347"
-  },
-  "removal_plan": {
-    "removal_id": "840920_removal_washer_165",
-    "mask_set_id": "840920_mask_set_washer_165",
-    "source_collider_prim_path": "/Root/ZFAVSKZVAJTGUPTUKM888888",
-    "collider_deletion_id": "840920_collider_delete_washer_165",
-    "replacement_asset_id": "840920_simready_washer_candidate",
-    "replacement_qualification_id": "840920_washer_native_qualification"
-  },
-  "cameras": {
-    "external": "task_a_external",
-    "wrist": "task_a_wrist",
-    "overview": "task_a_overview_review_only"
-  },
-  "execution_contract": {
-    "control_frequency_hz": 20,
-    "maximum_steps": 400,
-    "settle_window_steps": 20,
-    "seeds": [
-      3101,
-      3102
-    ],
-    "canonical_scenario_cell_id": "840920_task_a_canonical",
-    "reset_state": {
-      "robot": "task_a_base_home",
-      "washer": "all_joint_resets",
-      "notebook": "locked_hinge_source_pose",
-      "cameras": "task_a_calibrated"
-    }
-  },
-  "deterministic_success_predicates": [
-    "door_hinge_in_target_interval",
-    "task_contact_observed",
-    "released",
-    "stable_for_settle_window",
-    "retreated"
-  ],
-  "failure_rungs": [
-    "never_moved",
-    "actions_not_delivered",
-    "robot_moved_task_did_not",
-    "joint_below_interval",
-    "collision_failure",
-    "containment_failure",
-    "reset_failure"
-  ],
-  "target_configuration": {
-    "kind": "joint_interval",
-    "target_joint_ids": [
-      "door_hinge"
-    ],
-    "joint_intervals": {
-      "door_hinge": [
-        0.7,
-        0.95
-      ]
-    }
-  },
   "articulation_graph": {
-    "schema_version": "adp_articulation_graph.v1",
-    "links": [
+    "collision_pairs": [
       {
-        "link_id": "body",
-        "is_root": true,
-        "semantic_role": "fixed_body_generated_candidate"
+        "collision_enabled": true,
+        "link_a": "body",
+        "link_b": "door"
       },
       {
-        "link_id": "door",
-        "is_root": false,
-        "semantic_role": "target_door_observed_exterior_generated_mechanism"
+        "collision_enabled": false,
+        "link_a": "door",
+        "link_b": "latch"
       },
       {
-        "link_id": "latch",
-        "is_root": false,
-        "semantic_role": "dependent_latch_generated_candidate"
+        "collision_enabled": true,
+        "link_a": "body",
+        "link_b": "drum"
       },
       {
-        "link_id": "drum",
-        "is_root": false,
-        "semantic_role": "passive_drum_generated_candidate"
+        "collision_enabled": true,
+        "link_a": "body",
+        "link_b": "selector"
       },
       {
-        "link_id": "selector",
-        "is_root": false,
-        "semantic_role": "locked_selector_observed_exterior"
-      },
-      {
-        "link_id": "drawer",
-        "is_root": false,
-        "semantic_role": "locked_detergent_drawer_observed_exterior"
+        "collision_enabled": true,
+        "link_a": "body",
+        "link_b": "drawer"
       }
     ],
     "joints": [
       {
-        "joint_id": "door_hinge",
-        "parent_link_id": "body",
-        "child_link_id": "door",
-        "joint_type": "revolute",
-        "role": "target",
         "axis": [
           0,
           0,
-          1
+          -1
         ],
+        "child_link_id": "door",
+        "dependency": null,
+        "drive": {
+          "damping": 2,
+          "drive_type": "force",
+          "maximum_force": 80,
+          "stiffness": 0
+        },
+        "joint_id": "door_hinge",
+        "joint_type": "revolute",
         "limits": [
           0,
           1.2
         ],
+        "parent_link_id": "body",
         "reset_position": 0,
         "reset_tolerance": 0.001,
-        "drive": {
-          "drive_type": "force",
-          "stiffness": 0,
-          "damping": 2,
-          "maximum_force": 80
-        },
-        "dependency": null
+        "role": "target"
       },
       {
-        "joint_id": "latch_coupler",
-        "parent_link_id": "door",
-        "child_link_id": "latch",
-        "joint_type": "revolute",
-        "role": "dependent",
         "axis": [
           0,
           0,
           1
         ],
-        "limits": [
-          -0.1,
-          0.1
-        ],
-        "reset_position": 0,
-        "reset_tolerance": 0.001,
-        "drive": {
-          "drive_type": "force",
-          "stiffness": 4,
-          "damping": 1,
-          "maximum_force": 20
-        },
+        "child_link_id": "latch",
         "dependency": {
           "driver_joint_id": "door_hinge",
           "multiplier": 0.05,
           "offset": 0,
           "tolerance": 0.002
-        }
+        },
+        "drive": {
+          "damping": 1,
+          "drive_type": "force",
+          "maximum_force": 20,
+          "stiffness": 4
+        },
+        "joint_id": "latch_coupler",
+        "joint_type": "revolute",
+        "limits": [
+          -0.1,
+          0.1
+        ],
+        "parent_link_id": "door",
+        "reset_position": 0,
+        "reset_tolerance": 0.001,
+        "role": "dependent"
       },
       {
-        "joint_id": "drum_bearing",
-        "parent_link_id": "body",
+        "axis": [
+          0,
+          1,
+          0
+        ],
         "child_link_id": "drum",
+        "dependency": null,
+        "drive": {
+          "damping": 0.2,
+          "drive_type": "none",
+          "maximum_force": 0,
+          "stiffness": 0
+        },
+        "joint_id": "drum_bearing",
         "joint_type": "continuous",
-        "role": "passive",
-      "axis": [
-        0,
-        1,
-        0
-      ],
         "limits": [
           -100,
           100
         ],
+        "parent_link_id": "body",
         "reset_position": 0,
         "reset_tolerance": 0.01,
-        "drive": {
-          "drive_type": "none",
-          "stiffness": 0,
-          "damping": 0.2,
-          "maximum_force": 0
-        },
-        "dependency": null
+        "role": "passive"
       },
       {
-        "joint_id": "selector_axis",
-        "parent_link_id": "body",
-        "child_link_id": "selector",
-        "joint_type": "revolute",
-        "role": "locked",
         "axis": [
           0,
           1,
           0
         ],
+        "child_link_id": "selector",
+        "dependency": null,
+        "drive": {
+          "damping": 10,
+          "drive_type": "force",
+          "maximum_force": 20,
+          "stiffness": 100
+        },
+        "joint_id": "selector_axis",
+        "joint_type": "revolute",
         "limits": [
           -3.2,
           3.2
         ],
+        "parent_link_id": "body",
         "reset_position": 0,
         "reset_tolerance": 0.001,
-        "drive": {
-          "drive_type": "force",
-          "stiffness": 100,
-          "damping": 10,
-          "maximum_force": 20
-        },
-        "dependency": null
+        "role": "locked"
       },
       {
-        "joint_id": "drawer_slide",
-        "parent_link_id": "body",
-        "child_link_id": "drawer",
-        "joint_type": "prismatic",
-        "role": "locked",
         "axis": [
           0,
           1,
           0
         ],
+        "child_link_id": "drawer",
+        "dependency": null,
+        "drive": {
+          "damping": 10,
+          "drive_type": "force",
+          "maximum_force": 100,
+          "stiffness": 100
+        },
+        "joint_id": "drawer_slide",
+        "joint_type": "prismatic",
         "limits": [
           0,
           0.2
         ],
+        "parent_link_id": "body",
         "reset_position": 0,
         "reset_tolerance": 0.001,
-        "drive": {
-          "drive_type": "force",
-          "stiffness": 100,
-          "damping": 10,
-          "maximum_force": 100
-        },
-        "dependency": null
+        "role": "locked"
       }
     ],
-    "collision_pairs": [
+    "links": [
       {
-        "link_a": "body",
-        "link_b": "door",
-        "collision_enabled": true
+        "is_root": true,
+        "link_id": "body",
+        "semantic_role": "fixed_body_generated_candidate"
       },
       {
-        "link_a": "door",
-        "link_b": "latch",
-        "collision_enabled": false
+        "is_root": false,
+        "link_id": "door",
+        "semantic_role": "target_door_observed_exterior_generated_mechanism"
       },
       {
-        "link_a": "body",
-        "link_b": "drum",
-        "collision_enabled": true
+        "is_root": false,
+        "link_id": "latch",
+        "semantic_role": "dependent_latch_generated_candidate"
       },
       {
-        "link_a": "body",
-        "link_b": "selector",
-        "collision_enabled": true
+        "is_root": false,
+        "link_id": "drum",
+        "semantic_role": "passive_drum_generated_candidate"
       },
       {
-        "link_a": "body",
-        "link_b": "drawer",
-        "collision_enabled": true
+        "is_root": false,
+        "link_id": "selector",
+        "semantic_role": "locked_selector_observed_exterior"
+      },
+      {
+        "is_root": false,
+        "link_id": "drawer",
+        "semantic_role": "locked_detergent_drawer_observed_exterior"
       }
     ],
+    "schema_version": "adp_articulation_graph.v1",
     "success_predicate": {
       "combination": "all",
       "joint_intervals": {
@@ -306,6 +202,132 @@
       }
     }
   },
+  "cameras": {
+    "external": "task_a_external",
+    "overview": "task_a_overview_review_only",
+    "wrist": "task_a_wrist"
+  },
+  "candidate_ids": [
+    "pi05_droid",
+    "groot_n17_droid"
+  ],
+  "deterministic_success_predicates": [
+    "door_hinge_in_target_interval",
+    "task_contact_observed",
+    "released",
+    "stable_for_settle_window",
+    "retreated"
+  ],
+  "execution_contract": {
+    "canonical_scenario_cell_id": "840920_task_a_canonical",
+    "control_frequency_hz": 20,
+    "maximum_steps": 400,
+    "reset_state": {
+      "cameras": "task_a_calibrated",
+      "notebook": "locked_hinge_source_pose",
+      "robot": "task_a_base_home",
+      "washer": "all_joint_resets"
+    },
+    "seeds": [
+      3101,
+      3102
+    ],
+    "settle_window_steps": 20
+  },
+  "failure_rungs": [
+    "never_moved",
+    "actions_not_delivered",
+    "robot_moved_task_did_not",
+    "joint_below_interval",
+    "collision_failure",
+    "containment_failure",
+    "reset_failure"
+  ],
+  "freeze_amendments": [
+    {
+      "amended_at": "2026-08-17",
+      "authorized_by": "operator",
+      "claim_boundary": "This corrects the handedness of a frozen joint axis so the frozen task is physically performable. It does not change the task, the target object, the commanded range, or any success criterion.",
+      "field": "articulation_graph.joints[door_hinge].axis",
+      "from": [
+        0,
+        0,
+        1
+      ],
+      "learned_policy_outcomes_accessed": false,
+      "reason": "The freeze as sealed encoded a task that cannot be performed. door_hinge is vertical at the door's left edge with limits [0, 1.2], so positive rotation is the freeze's own declaration of 'open', but axis [0,0,+1] sweeps the door's far edge from y=-0.302 toward the cabinet face at y=-0.240. The door opened into the machine and wedged after ~6 degrees. Observed on paid runs adp-simready-isaac-840920-task-a-5ca3bd4c-r1 and -99741f78-r1, which commanded 15/30/45/55 degrees and read back 6.01 every time.",
+      "superseded_task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152",
+      "task_semantics_changed": false,
+      "to": [
+        0,
+        0,
+        -1
+      ]
+    }
+  ],
+  "frozen_before_learned_policy_execution": true,
+  "learned_policy_outcomes_accessed": false,
   "mechanism_provenance": "observed washer exterior and circular door; all hidden hinge latch drum and interior geometry are generated candidate content",
-  "task_freeze_digest": "sha256:8290bfb4e4cc6ade4a79937157efda88c4ef6abdfc7a10489e3f854766bbd152"
+  "overview_camera_deterministic_scoring_input": false,
+  "overview_camera_policy_input": false,
+  "prompt": "Open the front-loading washer door and release it in the open target interval.",
+  "removal_plan": {
+    "collider_deletion_id": "840920_collider_delete_washer_165",
+    "mask_set_id": "840920_mask_set_washer_165",
+    "removal_id": "840920_removal_washer_165",
+    "replacement_asset_id": "840920_simready_washer_candidate",
+    "replacement_qualification_id": "840920_washer_native_qualification",
+    "source_collider_prim_path": "/Root/ZFAVSKZVAJTGUPTUKM888888"
+  },
+  "scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c",
+  "schema_version": "dual_task_task_freeze.v1",
+  "source_object": {
+    "collision_identity_receipt_digest": "sha256:1bb74366fa8420d1eeacb200c9e4f08ee0cd1afd11249d477e12fe37c3c0fdd7",
+    "franka_placement_packet_digest": "sha256:badb6fd79eee161d546e514bdc4e2a130b72e3ade8b960f86f7a740eaa18cc31",
+    "instance_id": "165",
+    "observed_bounds_world_m": {
+      "maximum": [
+        3.8155423,
+        10.060768002,
+        0.847564013
+      ],
+      "minimum": [
+        3.2154303,
+        9.456663998,
+        -1.3e-08
+      ]
+    },
+    "observed_pose_world": {
+      "orientation_xyzw": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "position_world_m": [
+        3.5154863,
+        9.758716,
+        0.423782
+      ]
+    },
+    "semantic_label": "washing_machine",
+    "support_or_attachment_id": "washer_body_observed_exterior_generated_mechanism",
+    "support_receipt_digest": "sha256:1bb74366fa8420d1eeacb200c9e4f08ee0cd1afd11249d477e12fe37c3c0fdd7",
+    "visibility_receipt_digest": "sha256:d807864a2f057fe505e519ba2a5dda317cf8b867bef6d1022362a6ab9afc9347"
+  },
+  "target_configuration": {
+    "joint_intervals": {
+      "door_hinge": [
+        0.7,
+        0.95
+      ]
+    },
+    "kind": "joint_interval",
+    "target_joint_ids": [
+      "door_hinge"
+    ]
+  },
+  "task_freeze_digest": "sha256:fa3f422fb595badb3bedd11c56e4732a088bfff112b80b1f65d0c53d1927baa3",
+  "task_id": "task_a_washer_door_open",
+  "task_kind": "articulated_interaction"
 }

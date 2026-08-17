@@ -14,7 +14,6 @@ from blueprint_pipeline.capture_reconstruction_launch_dispatcher import (
 )
 from blueprint_pipeline.capture_reconstruction_status_sync import (
     RECONSTRUCTION_FIELD,
-    CaptureReconstructionStatusError,
 )
 
 
