@@ -1537,6 +1537,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--semantic-teacher-bundle-receipt")
     gpu.add_argument("--semantic-teacher-attempt-authority")
     gpu.add_argument("--semantic-teacher-token-file")
+    gpu.add_argument("--semantic-teacher-openai-cost-scope-attestation")
+    gpu.add_argument("--semantic-teacher-openai-admin-api-key-file")
+    gpu.add_argument("--semantic-teacher-openai-project-id")
+    gpu.add_argument("--semantic-teacher-openai-api-key-id")
     gpu.add_argument("--semantic-teacher-runtime-image-identity")
     gpu.add_argument("--semantic-teacher-job-dir")
     gpu.add_argument("--semantic-teacher-dry-run-output")
@@ -1995,6 +1999,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     name
                     for name in (
                         "semantic_teacher_token_file",
+                        "semantic_teacher_openai_cost_scope_attestation",
+                        "semantic_teacher_openai_admin_api_key_file",
+                        "semantic_teacher_openai_project_id",
+                        "semantic_teacher_openai_api_key_id",
                         "semantic_teacher_dry_run_receipt",
                         "semantic_teacher_preflight_output",
                         "adapter_output",
