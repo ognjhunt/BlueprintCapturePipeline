@@ -18,6 +18,9 @@ SAME_GOAL_ENTRY_SCHEMA = "adp_same_goal_spend_entry.v1"
 SAME_GOAL_RECONCILIATION_STATUS = (
     "all_same_goal_paid_attempts_terminal_and_provider_zero"
 )
+JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA = (
+    "joint_agent_same_goal_spend_lineage.v1"
+)
 _DIGEST_FIELDS = (
     "receipt_digest",
     "result_digest",
@@ -555,6 +558,7 @@ def active_instance_allowlist_metadata_error(
 
 __all__ = [
     "ALLOWLIST_GROUPS",
+    "JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA",
     "SAME_GOAL_ENTRY_SCHEMA",
     "SAME_GOAL_RECONCILIATION_SCHEMA",
     "SAME_GOAL_RECONCILIATION_STATUS",

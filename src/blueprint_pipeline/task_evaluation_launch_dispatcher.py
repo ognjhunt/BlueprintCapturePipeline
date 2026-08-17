@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .host_resident_launch_inputs import launch_profile_residency_blockers
+from .paid_attempt_authority import (
+    JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
+    validate_bound_lane_prior_spend,
+)
 from .task_evaluation_standing_launch_authorization import (
     STANDING_AUTHORIZATION_DIR_ENV,
     StandingAuthorizationError,
@@ -347,6 +351,41 @@ def validate_launch_profile(value: Mapping[str, Any]) -> list[str]:
         blockers.append("launch_profile_execute_flag_forbidden")
     elif any(_has_unknown_placeholder(item) for item in argv):
         blockers.append("launch_profile_allocator_argv_placeholder_invalid")
+    elif "--probe-kind" in argv:
+        probe_index = argv.index("--probe-kind")
+        probe_kind = (
+            argv[probe_index + 1] if probe_index + 1 < len(argv) else None
+        )
+        if probe_kind == "adp-usd-joint-agent":
+            lineage = profile.get("same_goal_spend_lineage")
+            if not isinstance(lineage, Mapping):
+                blockers.append("joint_agent_prior_spend_lineage_missing")
+            elif (
+                lineage.get("schema_version")
+                != JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA
+            ):
+                blockers.append("joint_agent_prior_spend_lineage_invalid")
+            else:
+                ordinal = lineage.get("attempt_ordinal")
+                if (
+                    isinstance(ordinal, bool)
+                    or not isinstance(ordinal, int)
+                    or ordinal < 1
+                ):
+                    blockers.append("joint_agent_prior_spend_lineage_invalid")
+                else:
+                    try:
+                        observed = validate_bound_lane_prior_spend(
+                            lineage, lane="joint_agent"
+                        )
+                    except ValueError:
+                        blockers.append("joint_agent_prior_spend_lineage_invalid")
+                    else:
+                        expected_prior_count = ordinal - 1
+                        if len(observed["prior_terminal_attempts"]) != expected_prior_count:
+                            blockers.append(
+                                "joint_agent_prior_spend_lineage_ordinal_mismatch"
+                            )
     max_spend = allocator.get("max_spend_usd")
     if not isinstance(max_spend, (int, float)) or isinstance(max_spend, bool) or max_spend <= 0:
         blockers.append("launch_profile_max_spend_invalid")

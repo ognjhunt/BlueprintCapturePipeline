@@ -26,7 +26,14 @@ from blueprint_pipeline.adp_joint_agent_vast import (
     SOURCE_TREE as JOINT_AGENT_SOURCE_TREE,
 )
 
-from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
+from blueprint_pipeline.task_evaluation_launch_dispatcher import (
+    TaskEvaluationLaunchError,
+    validate_launch_profile,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.same_goal_spend_reconciliation import (
+    materialize_same_goal_spend_reconciliation,
+)
 
 pytestmark = pytest.mark.usefixtures(
     "_materialize_generated_manifest_publication_fixture"
@@ -75,7 +82,113 @@ def lane(tmp_path: Path) -> dict:
         ),
         encoding="utf-8",
     )
-    return {"receipt": receipt, "bundle": bundle}
+    result = tmp_path / "prior-launch" / "allocator" / "result.json"
+    result.parent.mkdir(parents=True)
+    result.write_text(
+        json.dumps(
+            {
+                "schema_version": "adp_joint_agent_vast_run.v1",
+                "status": "blocked",
+                "launch_id": "adp-joint-agent-840920-task-a-r1",
+                "estimated_cost_usd": 0.140048,
+                "continuing_spend_from_this_run": False,
+                "bundle_sha256": "sha256:" + "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    allocation = {
+        "program_id": "arm-decision-proof-v1",
+        "probe_kind": "adp-usd-joint-agent",
+        "orchestrator_source_commit": COMMIT,
+        "expected_source_commit": COMMIT,
+        "bundle_sha256": "sha256:" + "b" * 64,
+    }
+    admission = result.with_name("admission.json")
+    admission.write_text(
+        json.dumps(
+            {
+                "schema_version": "paid_lane_admission.v1",
+                "status": "admitted",
+                "resource_class": "vast_provider_adapter",
+                "blockers": [],
+                "provider_mutations_performed": 0,
+                "program_id": "arm-decision-proof-v1",
+                "probe_kind": "adp-usd-joint-agent",
+                "authority": "user_authorized_bounded_joint_agent_gpu_compute",
+                "allocation_binding": allocation,
+                "allocation_binding_digest": canonical_digest(allocation),
+                "control_plane_identity": {
+                    "orchestrator_source_commit": COMMIT,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    teardown = tmp_path / "prior-launch" / "teardown.json"
+    teardown.write_text(
+        json.dumps(
+            {
+                "schema_version": "vast_teardown_manifest.v1",
+                "status": "completed",
+                "vast_instance_ids": [47958762],
+                "continuing_spend_from_this_run": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    zero = tmp_path / "prior-launch" / "provider-zero.json"
+    zero_value = {
+        "schema_version": "task_evaluation_post_teardown_provider_zero.v1",
+        "status": "provider_zero_confirmed",
+        "provider_zero_verified": True,
+        "continuing_spend_from_this_run": False,
+    }
+    zero_value["provider_zero_receipt_digest"] = canonical_digest(
+        zero_value, digest_field="provider_zero_receipt_digest"
+    )
+    zero.write_text(json.dumps(zero_value), encoding="utf-8")
+    billing = tmp_path / "prior-launch" / "response-004-vast.json"
+    billing.write_text(
+        json.dumps({"results": [{"source": "instance-47958762", "amount": 0.169}]}),
+        encoding="utf-8",
+    )
+    billing_source = tmp_path / "prior-launch" / "billing-source.json"
+    billing_source_value = {
+        "schema_version": "blueprint.provider_billing_source_receipt.v1",
+        "status": "reconciled",
+        "sources": [
+            {
+                "provider": "vast",
+                "retained_path": str(billing.resolve()),
+                "response_digest": "sha256:"
+                + hashlib.sha256(billing.read_bytes()).hexdigest(),
+                "response_size_bytes": billing.stat().st_size,
+            }
+        ],
+    }
+    billing_source_value["receipt_digest"] = canonical_digest(
+        billing_source_value, digest_field="receipt_digest"
+    )
+    billing_source.write_text(json.dumps(billing_source_value), encoding="utf-8")
+    reconciliation = tmp_path / "prior-launch" / "same-goal-spend.json"
+    materialize_same_goal_spend_reconciliation(
+        lane="joint_agent",
+        terminal_result_paths=[result],
+        teardown_manifest_paths=[teardown],
+        provider_zero_paths=[zero],
+        official_billing_response_paths=[billing],
+        provider_billing_source_receipt_paths=[billing_source],
+        output_path=reconciliation,
+    )
+    return {
+        "receipt": receipt,
+        "bundle": bundle,
+        "prior_result": result,
+        "prior_reconciliation": reconciliation,
+        "billing": billing,
+        "zero": zero,
+    }
 
 
 def _build(lane, **overrides):
@@ -83,6 +196,11 @@ def _build(lane, **overrides):
         bundle_receipt_path=lane["receipt"],
         source_commit=overrides.pop("source_commit", COMMIT),
         raw_manifest_uri=URI,
+        attempt_ordinal=overrides.pop("attempt_ordinal", 2),
+        prior_result_paths=overrides.pop("prior_result_paths", (lane["prior_result"],)),
+        prior_spend_reconciliation_path=overrides.pop(
+            "prior_spend_reconciliation_path", lane["prior_reconciliation"]
+        ),
         **overrides,
     )
 
@@ -104,6 +222,106 @@ def test_builds_a_profile_with_one_use_website_authority(lane) -> None:
         "maximum_launches": 1,
         "consumption_must_precede_allocator": True,
     }
+    lineage = profile["same_goal_spend_lineage"]
+    assert lineage["attempt_ordinal"] == 2
+    assert lineage["prior_actual_provider_spend_usd"] == 0.169
+    assert lineage["prior_terminal_attempts"][0]["provider_instance_id"] == 47958762
+    input_names = {item["name"] for item in profile["immutable_inputs"]}
+    assert {
+        "joint_agent_prior_spend_reconciliation",
+        "joint_agent_prior_spend_0_terminal_result",
+        "joint_agent_prior_spend_0_teardown_manifest",
+        "joint_agent_prior_spend_0_provider_zero",
+        "joint_agent_prior_spend_0_official_billing_response",
+        "joint_agent_prior_spend_0_provider_billing_source_receipt",
+        "joint_agent_prior_spend_0_admission",
+    }.issubset(input_names)
+
+
+def test_first_attempt_requires_an_explicit_ordinal_and_no_prior_evidence(lane) -> None:
+    profile = _build(
+        lane,
+        attempt_ordinal=1,
+        prior_result_paths=(),
+        prior_spend_reconciliation_path=None,
+    )
+    assert profile["same_goal_spend_lineage"] == {
+        "schema_version": "joint_agent_same_goal_spend_lineage.v1",
+        "attempt_ordinal": 1,
+        "prior_terminal_attempts": [],
+        "prior_spend_reconciliation": None,
+        "prior_actual_provider_spend_usd": 0.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("omit", "joint_agent_prior_spend_lineage_missing"),
+        ("branch", "joint_agent_prior_spend_lineage_invalid"),
+        ("estimate", "joint_agent_prior_spend_lineage_invalid"),
+    ],
+)
+def test_dispatcher_refuses_a_retry_profile_without_exact_linear_official_lineage(
+    lane, mutation: str, expected: str
+) -> None:
+    profile = _build(lane)
+    if mutation == "omit":
+        profile.pop("same_goal_spend_lineage")
+    elif mutation == "branch":
+        lineage = profile["same_goal_spend_lineage"]
+        lineage["prior_terminal_attempts"].append(
+            dict(lineage["prior_terminal_attempts"][0])
+        )
+    else:
+        profile["same_goal_spend_lineage"]["prior_actual_provider_spend_usd"] = (
+            profile["same_goal_spend_lineage"]["prior_terminal_attempts"][0][
+                "estimated_cost_usd"
+            ]
+        )
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    assert expected in validate_launch_profile(profile)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ("omit", "prior_spend_reconciliation_required"),
+        ("wrong_ordinal", "ordinal_mismatch"),
+        ("wrong_instance", "same_goal_spend_source_unbound"),
+        ("billing", "same_goal_spend_source_unbound"),
+        ("zero", "same_goal_spend_source_unbound"),
+    ],
+)
+def test_retry_profile_refuses_missing_or_unofficial_predecessor_evidence(
+    lane, mutation: str, match: str
+) -> None:
+    if mutation == "omit":
+        with pytest.raises(TaskEvaluationLaunchError, match=match):
+            _build(lane, prior_spend_reconciliation_path=None)
+        return
+    if mutation == "wrong_ordinal":
+        with pytest.raises(TaskEvaluationLaunchError, match=match):
+            _build(lane, attempt_ordinal=3)
+        return
+    if mutation == "wrong_instance":
+        billing = json.loads(lane["billing"].read_text(encoding="utf-8"))
+        billing["results"][0]["source"] = "instance-99999999"
+        lane["billing"].write_text(json.dumps(billing), encoding="utf-8")
+    elif mutation == "billing":
+        billing = json.loads(lane["billing"].read_text(encoding="utf-8"))
+        billing["results"][0]["amount"] = 0.0
+        lane["billing"].write_text(json.dumps(billing), encoding="utf-8")
+    else:
+        zero = json.loads(lane["zero"].read_text(encoding="utf-8"))
+        zero["provider_zero_verified"] = False
+        zero["provider_zero_receipt_digest"] = canonical_digest(
+            zero, digest_field="provider_zero_receipt_digest"
+        )
+        lane["zero"].write_text(json.dumps(zero), encoding="utf-8")
+
+    with pytest.raises(TaskEvaluationLaunchError, match=match):
+        _build(lane)
 
 
 def test_the_controls_are_the_shared_ones(lane) -> None:

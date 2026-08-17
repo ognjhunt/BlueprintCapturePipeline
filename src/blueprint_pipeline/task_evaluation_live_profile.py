@@ -299,6 +299,13 @@ class LaneLiveProfileSpec:
     lane_blockers: Callable[[LaneLiveProfileContext], list[str]] = (
         lambda context: []
     )
+    #: A narrow lane-specific field covered by the launch-profile digest. This
+    #: is deliberately data, never argv: providers receive only the bytes they
+    #: need, while the dispatcher can reopen the governed evidence before a
+    #: standing authorization is consumed.
+    profile_fields: Callable[[LaneLiveProfileContext], Mapping[str, Any]] = (
+        lambda context: {}
+    )
     #: Overrides the declared spend. Defaults to rate x TTL -- the worst case
     #: this profile can actually reach, not a lane's lifetime ceiling.
     declared_spend: Callable[[LaneLiveProfileContext], float] | None = None
@@ -578,6 +585,12 @@ def build_lane_live_profile(
         "runtime_environment": {},
         **shared_control_surface(required_providers=spec.required_providers),
     }
+    lane_profile_fields = spec.profile_fields(context)
+    if not isinstance(lane_profile_fields, Mapping) or set(profile).intersection(
+        lane_profile_fields
+    ):
+        raise TaskEvaluationLaunchError("lane_live_profile_fields_invalid")
+    profile.update(dict(lane_profile_fields))
     if spec.one_use_standing_authority_required:
         profile["standing_launch_authorization"] = {
             "schema_version": (
