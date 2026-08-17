@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -220,6 +221,8 @@ def test_live_run_requires_all_four_native_probes_and_provider_zero(
         prepared_bundle, bundle_receipt_sha256=bundle_receipt_sha256
     )
     monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
+    events: list[str] = []
+    bound: dict[str, object] = {}
 
     def fake_stage(**kwargs):
         staging = Path(kwargs["job_dir"])
@@ -233,6 +236,10 @@ def test_live_run_requires_all_four_native_probes_and_provider_zero(
         return {"status": "completed", "blockers": []}
 
     def fake_adapter(**kwargs):
+        events.append("adapter")
+        bound["instance_label_prefix"] = kwargs["instance_label_prefix"]
+        bound["started_instance_id_path"] = kwargs["started_instance_id_path"]
+        Path(kwargs["started_instance_id_path"]).write_text("42\n", encoding="utf-8")
         output = Path(kwargs["provider_runtime_output_zip"])
         output.parent.mkdir(parents=True)
         with zipfile.ZipFile(output, "w") as archive:
@@ -242,12 +249,56 @@ def test_live_run_requires_all_four_native_probes_and_provider_zero(
             )
         write_json(
             Path(kwargs["job_dir"]) / "vast_teardown_manifest.json",
-            {"continuing_spend_from_this_run": False},
+            {
+                "continuing_spend_from_this_run": False,
+                "vast_instance_ids": [42],
+            },
         )
-        return {"status": "completed", "blockers": [], "estimated_cost_usd": 0.12}
+        return {
+            "status": "completed",
+            "blockers": [],
+            "estimated_cost_usd": 0.12,
+            "provider_create_attempted": True,
+            "vast_instance_ids": [42],
+            "provider_mutations_performed": 1,
+        }
+
+    def fake_arm(**kwargs):
+        events.append("watchdog")
+        assert kwargs["max_live_minutes"] == 180
+        assert kwargs["pod_name_prefix"] == runtime.INSTANCE_LABEL_PREFIX
+        assert kwargs["allowed_active_instance_ids"] == ()
+        evidence = Path(kwargs["job_dir"]) / "independent_vast_watchdog"
+        evidence.mkdir(parents=True)
+        write_json(evidence / "watchdog.json", {"status": "armed"})
+        started = evidence / "started_vast_instance_id.txt"
+        prefix = f"{kwargs['pod_name_prefix']}exact-attempt-"
+        bound["watchdog_prefix"] = prefix
+        return {"status": "armed", "pod_name_prefix": prefix}, SimpleNamespace(
+            pod_name_prefix=prefix,
+            started_instance_id_path=started,
+        )
+
+    def fake_close(**kwargs):
+        events.append("close")
+        assert kwargs["instance_ids"] == [42]
+        assert kwargs["provider_teardown_completed"] is True
+        assert kwargs["provider_allocation_impossible"] is False
+        write_json(
+            Path(kwargs["job_dir"])
+            / "independent_vast_watchdog"
+            / "watchdog.json",
+            {"status": "provider_terminal", "provider_absence_confirmed": True},
+        )
+        return {
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+        }
 
     monkeypatch.setattr(runtime, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(runtime, "arm_independent_vast_watchdog", fake_arm)
     monkeypatch.setattr(runtime, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(runtime, "close_independent_vast_watchdog", fake_close)
     monkeypatch.setattr(
         runtime,
         "cleanup_staged_wam_provider_objects",
@@ -268,6 +319,164 @@ def test_live_run_requires_all_four_native_probes_and_provider_zero(
     assert result["authorization_consumption"]["status"] == "consumed"
     assert result["continuing_spend_from_this_run"] is False
     assert result["all_staged_objects_absent"] is True
+    assert result["independent_watchdog"]["status"] == "provider_terminal"
+    assert events == ["watchdog", "adapter", "close"]
+    assert bound["instance_label_prefix"] == bound["watchdog_prefix"]
+    assert bound["started_instance_id_path"] == (
+        tmp_path
+        / "job"
+        / "attempts"
+        / "attempt_001"
+        / "independent_vast_watchdog"
+        / "started_vast_instance_id.txt"
+    )
+    manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
+    assert "independent_watchdog" in manifest["observed_roles"]
+
+
+def test_watchdog_refusal_blocks_before_provider_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared_bundle = _bundle(tmp_path)
+    receipt_sha = "sha256:" + "c" * 64
+    authority = _paid_attempt_authority(
+        prepared_bundle, bundle_receipt_sha256=receipt_sha
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent)
+    )
+
+    def fake_stage(**kwargs):
+        staging = Path(kwargs["job_dir"])
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text(
+                "https://example.invalid/bound", encoding="utf-8"
+            )
+        return {"status": "completed", "blockers": []}
+
+    monkeypatch.setattr(runtime, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(
+        runtime,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: (
+            {"status": "blocked", "blockers": ["synthetic_watchdog_refusal"]},
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "run_vast_provider_adapter",
+        lambda **_kwargs: pytest.fail("provider mutated without an armed watchdog"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "cleanup_staged_wam_provider_objects",
+        lambda _path: {"all_objects_absent": True},
+    )
+
+    result = runtime.run_simready_isaac_vast(
+        job_dir=tmp_path / "job",
+        prepared_bundle=prepared_bundle,
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        paid_attempt_authority=authority,
+        bundle_receipt_sha256=receipt_sha,
+        execute=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["all_staged_objects_absent"] is True
+    assert result["independent_watchdog"]["status"] == "blocked"
+    assert result["blockers"] == ["simready_isaac_independent_watchdog_not_armed"]
+
+
+def test_adapter_failure_after_started_id_retains_watchdog_until_hard_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exception cannot turn a known allocation into a no-allocation close."""
+
+    prepared_bundle = _bundle(tmp_path)
+    receipt_sha = "sha256:" + "c" * 64
+    authority = _paid_attempt_authority(
+        prepared_bundle, bundle_receipt_sha256=receipt_sha
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent)
+    )
+
+    def fake_stage(**kwargs):
+        staging = Path(kwargs["job_dir"])
+        staging.mkdir(parents=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text(
+                "https://example.invalid/bound", encoding="utf-8"
+            )
+        return {"status": "completed", "blockers": []}
+
+    def fake_arm(**kwargs):
+        evidence = Path(kwargs["job_dir"]) / "independent_vast_watchdog"
+        evidence.mkdir(parents=True)
+        started = evidence / "started_vast_instance_id.txt"
+        return {"status": "armed"}, SimpleNamespace(
+            pod_name_prefix=runtime.INSTANCE_LABEL_PREFIX + "ambiguous-",
+            started_instance_id_path=started,
+        )
+
+    def fail_after_create(**kwargs):
+        Path(kwargs["job_dir"]).mkdir(parents=True, exist_ok=True)
+        Path(kwargs["started_instance_id_path"]).write_text("51\n", encoding="utf-8")
+        raise RuntimeError("synthetic failure after create")
+
+    observed_close: dict[str, object] = {}
+
+    def fake_close(**kwargs):
+        observed_close.update(kwargs)
+        return {"status": "retained_until_hard_ttl"}
+
+    monkeypatch.setattr(runtime, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(runtime, "arm_independent_vast_watchdog", fake_arm)
+    monkeypatch.setattr(runtime, "run_vast_provider_adapter", fail_after_create)
+    monkeypatch.setattr(runtime, "close_independent_vast_watchdog", fake_close)
+    monkeypatch.setattr(
+        runtime,
+        "cleanup_staged_wam_provider_objects",
+        lambda _path: {"all_objects_absent": True},
+    )
+
+    result = runtime.run_simready_isaac_vast(
+        job_dir=tmp_path / "job",
+        prepared_bundle=prepared_bundle,
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        paid_attempt_authority=authority,
+        bundle_receipt_sha256=receipt_sha,
+        execute=True,
+    )
+
+    assert observed_close["instance_ids"] == [51]
+    assert observed_close["provider_teardown_completed"] is False
+    assert observed_close["provider_allocation_impossible"] is False
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 1
+    assert result["vast_instance_ids"] == [51]
+    assert result["independent_watchdog"]["status"] == "retained_until_hard_ttl"
+    assert "simready_isaac_independent_watchdog_not_closed" in result["blockers"]
+    assert not (
+        tmp_path
+        / "job"
+        / "attempts"
+        / "attempt_001"
+        / "vast_provider_run"
+        / "vast_teardown_manifest.json"
+    ).exists()
 
 
 def test_live_run_consumes_paid_attempt_authority_once_before_staging(

@@ -12,8 +12,11 @@ import shutil
 from typing import Any, Mapping, Sequence
 import zipfile
 
-from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
-from .common import ensure_dir, utc_now_iso, write_json
+from .task_evaluation_artifact_manifest import (
+    seal_lane_terminal_artifacts,
+    seal_unallocated_provider_teardown,
+)
+from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_attempt_authority import (
     active_instance_allowlist_metadata_error,
@@ -27,6 +30,11 @@ from .public_scene_simready_isaac_bundle import (
     RIGID_PROBE_NAMES,
 )
 from .vast_provider_adapter import run_vast_provider_adapter
+from .vast_independent_watchdog_control import (
+    WATCHDOG_DIR_NAME,
+    arm_independent_vast_watchdog,
+    close_independent_vast_watchdog,
+)
 from .vast_session_budget_contract import attempt_estimated_cost, attempt_runtime_seconds
 from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
@@ -40,6 +48,7 @@ PROBE_KIND = "adp009b-exact-simready-isaac"
 RESULT_SCHEMA_VERSION = "adp009b_simready_isaac_vast_run.v1"
 PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp_simready_isaac_paid_attempt_authority.v1"
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/exact-simready-isaac"
+INSTANCE_LABEL_PREFIX = "blueprint-adp009b-simready-"
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
 
 
@@ -583,6 +592,34 @@ def run_simready_isaac_vast(
         if machine_avoidlist_path is not None
         else local_avoidlist
     )
+    watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
+        job_dir=attempt_root,
+        max_live_minutes=remaining,
+        generated_at=generated,
+        pod_name_prefix=INSTANCE_LABEL_PREFIX,
+        allowed_active_instance_ids=allowed_active_instance_ids,
+    )
+    if watchdog_handle is None:
+        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "attempt_number": number,
+            "attempt_root": str(attempt_root),
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "paid_attempt_authority_digest": validated_attempt_authority.get(
+                "authorization_digest"
+            ),
+            "authorization_consumption": authorization_consumption,
+            "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+            "independent_watchdog": watchdog_handoff,
+            "blockers": ["simready_isaac_independent_watchdog_not_armed"],
+        }
+        write_json(attempt_root / "adp009b_simready_isaac_vast_result.json", result)
+        write_json(job / "adp009b_simready_isaac_vast_result.json", result)
+        return result
     adapter: dict[str, Any] = {}
     try:
         with _mutation_authority():
@@ -622,15 +659,77 @@ def run_simready_isaac_vast(
                 prefer_isaac_rt=True,
                 allowed_active_instance_ids=allowed_active_instance_ids,
                 machine_avoidlist_path=resolved_avoidlist,
-                instance_label_prefix="blueprint-adp009b-simready-",
+                # The exact collision-free label the independent process
+                # watches, not merely the same broad lane family.
+                instance_label_prefix=watchdog_handle.pod_name_prefix,
+                started_instance_id_path=watchdog_handle.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
+            )
+    except (OSError, RuntimeError, ValueError) as exc:
+        recorded_adapter = _read_json(provider_run / "vast_provider_adapter_result.json")
+        adapter = {
+            **recorded_adapter,
+            "status": "blocked",
+            "blockers": sorted(
+                {
+                    *(str(item) for item in recorded_adapter.get("blockers") or []),
+                    "simready_isaac_vast_adapter_failed:"
+                    + redacted_failure_detail(exc),
+                }
+            ),
+            "raw_secret_values_recorded": False,
+        }
+        if (
+            adapter.get("provider_create_attempted") is False
+            and not watchdog_handle.started_instance_id_path.exists()
+        ):
+            seal_unallocated_provider_teardown(
+                provider_run, reason="simready_isaac_vast_adapter_failed_before_create"
             )
     finally:
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     extracted = _extract_result(output_zip, attempt_root / "immutable_execution")
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")
+    instance_ids: list[int] = []
+    for value in (
+        teardown.get("vast_instance_ids") or adapter.get("vast_instance_ids") or []
+    ):
+        if isinstance(value, bool):
+            continue
+        try:
+            instance_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if instance_id > 0 and instance_id not in instance_ids:
+            instance_ids.append(instance_id)
+    started_instance_path = watchdog_handle.started_instance_id_path
+    if (
+        not started_instance_path.is_symlink()
+        and started_instance_path.is_file()
+    ):
+        try:
+            started_instance_id = int(
+                started_instance_path.read_text(encoding="utf-8").strip()
+            )
+        except (OSError, ValueError):
+            started_instance_id = 0
+        if started_instance_id > 0 and started_instance_id not in instance_ids:
+            instance_ids.append(started_instance_id)
+    watchdog_close = close_independent_vast_watchdog(
+        job_dir=attempt_root,
+        handle=watchdog_handle,
+        instance_ids=instance_ids,
+        provider_teardown_completed=(
+            teardown.get("continuing_spend_from_this_run") is False
+        ),
+        provider_allocation_impossible=(
+            not instance_ids
+            and not started_instance_path.exists()
+            and adapter.get("provider_create_attempted") is False
+        ),
+    )
     blockers = [
         *(adapter.get("blockers") or []),
         *(extracted.get("blockers") or []),
@@ -650,6 +749,19 @@ def run_simready_isaac_vast(
         blockers.append("simready_isaac_provider_zero_not_proven")
     if cleanup.get("all_objects_absent") is not True:
         blockers.append("simready_isaac_object_store_zero_not_proven")
+    if watchdog_close.get("status") not in {
+        "provider_terminal",
+        "cancelled_no_allocation",
+    }:
+        blockers.append("simready_isaac_independent_watchdog_not_closed")
+    recorded_provider_mutations = adapter.get("provider_mutations_performed")
+    provider_mutations_performed = (
+        recorded_provider_mutations
+        if isinstance(recorded_provider_mutations, int)
+        and not isinstance(recorded_provider_mutations, bool)
+        and recorded_provider_mutations >= 0
+        else (1 if instance_ids else 0)
+    )
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "generated_at": generated,
@@ -662,6 +774,8 @@ def run_simready_isaac_vast(
             "authorization_digest"
         ),
         "authorization_consumption": authorization_consumption,
+        "provider_mutations_performed": provider_mutations_performed,
+        "vast_instance_ids": instance_ids,
         "native_result_path": extracted.get("result_path"),
         "estimated_cost_usd": adapter.get("estimated_cost_usd"),
         "hard_cap_usd": hard_cap_usd,
@@ -669,6 +783,7 @@ def run_simready_isaac_vast(
         "retry_cap": 0,
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "all_staged_objects_absent": cleanup.get("all_objects_absent"),
+        "independent_watchdog": watchdog_close,
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "raw_secret_values_recorded": False,
     }
@@ -685,6 +800,9 @@ def run_simready_isaac_vast(
         # torn-down instance and no terminal artifacts.
         attempt_root=attempt_root,
         lane="public_scene_simready_isaac",
+        extra_artifact_roots={
+            "independent_watchdog": attempt_root / WATCHDOG_DIR_NAME,
+        },
         binding={"provider": "vast"},
     )
     write_json(job / "adp009b_simready_isaac_vast_result.json", result)
@@ -693,6 +811,7 @@ def run_simready_isaac_vast(
 
 __all__ = [
     "PAID_ATTEMPT_AUTHORITY_SCHEMA",
+    "INSTANCE_LABEL_PREFIX",
     "PROBE_KIND",
     "consume_simready_isaac_paid_attempt_authority_once",
     "run_simready_isaac_vast",

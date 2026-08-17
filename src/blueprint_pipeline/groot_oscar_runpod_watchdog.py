@@ -65,6 +65,9 @@ CANARY_NAME_PREFIXES = (
     # than mislabeling the production execution as a generic canary.
     "blueprint-semantic-teacher-",
     "blueprint-adp-arena-",
+    # Exact SimReady Isaac probes are independently watched under the same
+    # collision-free prefix passed to their Vast adapter.
+    "blueprint-adp009b-simready-",
     "blueprint-adp009d-",
 )
 CAMPAIGN_PENDING_TEARDOWN_LANES = {
