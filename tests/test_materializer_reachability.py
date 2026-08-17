@@ -182,6 +182,8 @@ def test_every_input_step_can_supply_its_materializer(step: str) -> None:
 @pytest.mark.parametrize(
     "step",
     [
+        "simready-graph-asset",
+        "simready-static-qualification",
         "visual-binding",
         "visual-composition",
         "registered-asset",

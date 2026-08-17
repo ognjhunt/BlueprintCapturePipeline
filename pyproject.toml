@@ -82,6 +82,11 @@ cloud = [
 ]
 runtime = [
     "opencv-python-headless>=4.10.0",
+    # Host-side STEP extraction for the paired-target SimReady handoff. This
+    # runs in the production control-plane venv before any provider mutation,
+    # so leaving build123d in an agent-only harness makes a fresh scene
+    # unreproducible even though historical mesh packets still validate.
+    "build123d==0.11.1",
     # Optional COLLADA loader discovered by trimesh; no direct package import.
     "pycollada>=0.8",
     "trimesh>=4.4.0",

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -26,6 +29,9 @@ from blueprint_pipeline.cad_agent_review_media import (
     seal_cad_agent_visual_reference_review,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.replacement_asset_frame_registration import (
+    seal_replacement_asset_frame_registration,
+)
 from blueprint_pipeline.simready_cad_agent_contract import (
     INSPECTION_SCHEMA_VERSION,
     file_record,
@@ -38,6 +44,7 @@ from blueprint_pipeline.simready_cad_agent_contract import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+NATIVE_INPUTS_CLI = REPO_ROOT / "scripts/materialize_paired_target_native_inputs.py"
 FREEZE_A = (
     REPO_ROOT / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
@@ -66,6 +73,18 @@ def _write_png(path: Path, color: tuple[int, int, int]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (40, 30), color).save(path)
     return path
+
+
+def _run_native_inputs_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(REPO_ROOT / "src")
+    return subprocess.run(
+        [sys.executable, str(NATIVE_INPUTS_CLI), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
 
 
 def _backend(tmp_path: Path, backend_id: str = "earthtojake_text_to_cad") -> dict:
@@ -424,6 +443,174 @@ def test_agent_cad_visuals_are_composed_without_promoting_collision_meshes(
     proxy = stage.GetPrimAtPath("/Asset/links/body/geometry/proxy")
     assert UsdGeom.Imageable(proxy).ComputePurpose() == UsdGeom.Tokens.guide
     assert UsdGeom.Imageable(proxy).ComputeVisibility() == UsdGeom.Tokens.invisible
+
+
+def test_native_inputs_cli_static_qualification_reopens_registered_asset_bytes(
+    tmp_path: Path,
+) -> None:
+    """Registered mode follows the real graph->visual->registration chain."""
+
+    source_asset = _write(tmp_path / "source.usda", "#usda 1.0\n")
+    source_receipt = {
+        "schema_version": "articulated_source_asset.v1",
+        "status": "materialized",
+        "source_collision_prim_path": "/Root/ZFAVSKZVAJTGUPTUKM888888",
+        "target": {"interiorgs_instance_id": "165"},
+        "output_asset": {
+            "relative_path": source_asset.name,
+            "size_bytes": source_asset.stat().st_size,
+            "sha256": _record(source_asset)["sha256"],
+        },
+        "receipt_digest": "",
+    }
+    source_receipt["receipt_digest"] = canonical_digest(
+        source_receipt, digest_field="receipt_digest"
+    )
+    source_receipt_path = _write(
+        tmp_path / "source.receipt.json",
+        json.dumps(source_receipt, indent=2, sort_keys=True) + "\n",
+    )
+    graph_spec = json.loads(
+        (
+            REPO_ROOT
+            / "docs/arm_decision_proof_v1/manifests/"
+            "third_scene_840920_task_a_simready_graph_asset_spec.v1.json"
+        ).read_text()
+    )
+    graph_spec["source_asset_receipt_digest"] = source_receipt["receipt_digest"]
+    graph_spec["spec_digest"] = canonical_digest(
+        graph_spec, digest_field="spec_digest"
+    )
+    graph_spec_path = _write(
+        tmp_path / "graph-spec.json",
+        json.dumps(graph_spec, indent=2, sort_keys=True) + "\n",
+    )
+    graph_usd = tmp_path / "graph.usda"
+    graph_receipt = tmp_path / "graph.receipt.json"
+    graph_process = _run_native_inputs_cli(
+        "simready-graph-asset",
+        "--spec",
+        str(graph_spec_path),
+        "--task-freeze",
+        str(FREEZE_A),
+        "--source-asset-receipt",
+        str(source_receipt_path),
+        "--output-usd",
+        str(graph_usd),
+        "--output-receipt",
+        str(graph_receipt),
+    )
+    assert graph_process.returncode == 0, graph_process.stderr + graph_process.stdout
+    assert json.loads(graph_process.stdout)["provider_mutation_performed"] is False
+
+    step, projection = _mesh_projection(tmp_path / "projection")
+    cad_output = _cad_output(tmp_path / "cad", step=step)
+    visual_review = _visual_review_for_candidate(
+        tmp_path / "visual-review", candidate_path=cad_output, step=step
+    )
+    link_bindings = [
+        {
+            "agent_link_id": link_id,
+            "graph_link_id": link_id,
+            "transform_mode": "explicit_rigid_transform",
+            "T_graph_link_from_agent_asset": _identity(),
+        }
+        for link_id in ("body", "door")
+    ]
+    unmapped = {
+        link_id: "no selected agent-authored visual mesh for this graph link"
+        for link_id in ("drawer", "drum", "latch", "selector")
+    }
+    binding_path = tmp_path / "binding.json"
+    seal_agent_cad_visual_binding(
+        graph_authoring_receipt_path=graph_receipt,
+        cad_agent_output_receipt_path=cad_output,
+        cad_agent_visual_review_path=visual_review,
+        mesh_projection_receipt_path=projection,
+        link_bindings=link_bindings,
+        unmapped_graph_link_reasons=unmapped,
+        output_path=binding_path,
+    )
+    composed_usd = tmp_path / "composed.usda"
+    composition = materialize_agent_cad_visual_composition(
+        binding_path=binding_path,
+        destination_usd_path=composed_usd,
+    )
+    composition_receipt = composed_usd.with_suffix(".receipt.json")
+    assert composition["visual_mesh_count"] == 2
+
+    references = [
+        _write_png(tmp_path / "registration" / f"view-{index}.png", color)
+        for index, color in enumerate(((20, 30, 40), (50, 60, 70)))
+    ]
+    registration_path = tmp_path / "frame-registration.json"
+    seal_replacement_asset_frame_registration(
+        scene_id="fixture_scene",
+        task_id=TASK_ID,
+        asset_id=ASSET_ID,
+        asset_local_forward_axis=[1.0, 0.0, 0.0],
+        asset_local_up_axis=[0.0, 0.0, 1.0],
+        observed_world_forward_axis=[1.0, 0.0, 0.0],
+        observed_world_up_axis=[0.0, 0.0, 1.0],
+        reference_image_paths=references,
+        reviewed_by="fixture-independent-reviewer",
+        output_path=registration_path,
+    )
+    registered_usd = tmp_path / "registered.usda"
+    registered_receipt = tmp_path / "registered.receipt.json"
+    registered_process = _run_native_inputs_cli(
+        "registered-asset",
+        "--visual-composition-receipt",
+        str(composition_receipt),
+        "--frame-registration",
+        str(registration_path),
+        "--output-usd",
+        str(registered_usd),
+        "--output-receipt",
+        str(registered_receipt),
+    )
+    assert registered_process.returncode == 0, (
+        registered_process.stderr + registered_process.stdout
+    )
+    assert json.loads(registered_process.stdout)["provider_mutation_performed"] is False
+
+    qualification_path = tmp_path / "registered-static-qualification.json"
+    qualification_process = _run_native_inputs_cli(
+        "simready-static-qualification",
+        "--spec",
+        str(graph_spec_path),
+        "--authoring-receipt",
+        str(graph_receipt),
+        "--registered-asset-receipt",
+        str(registered_receipt),
+        "--output",
+        str(qualification_path),
+    )
+    assert qualification_process.returncode == 0, (
+        qualification_process.stderr + qualification_process.stdout
+    )
+    qualification_summary = json.loads(qualification_process.stdout)
+    assert qualification_summary["provider_mutation_performed"] is False
+    qualification = json.loads(qualification_path.read_text())
+    registered = json.loads(registered_receipt.read_text())
+    assert qualification["status"] == "authored_structure_statically_qualified"
+    assert qualification["structural_findings"] == []
+    assert qualification["replacement_usd"] == registered["output_usd"]
+    assert qualification["registered_replacement_asset"]["receipt_digest"] == registered[
+        "receipt_digest"
+    ]
+    assert qualification["registered_visual_readback"] == {
+        "render_visible_visual_mesh_count": 2,
+        "bound_material_visual_mesh_count": 2,
+        "agent_authored_color_visual_mesh_count": 2,
+        "expected_visual_mesh_count": 2,
+        "asset_frame_registration_digest": json.loads(
+            registration_path.read_text()
+        )["registration_digest"],
+    }
+    assert qualification["receipt_digest"] == canonical_digest(
+        qualification, digest_field="receipt_digest"
+    )
 
 
 def test_binding_rejects_nonrigid_agent_to_graph_transform(tmp_path: Path) -> None:
