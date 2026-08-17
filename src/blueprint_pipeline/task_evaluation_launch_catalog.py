@@ -31,6 +31,8 @@ from typing import Any
 
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .task_evaluation_launch_dispatcher import (
+    PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES,
+    PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
     TaskEvaluationLaunchError,
     public_launch_profile_descriptor,
     validate_launch_profile,
@@ -104,7 +106,9 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             descriptor["execution_admission"] = admission
         descriptors.append(descriptor)
 
-    return (
+    if len(descriptors) > PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES:
+        raise LaunchCatalogError("published_profile_catalog_profile_limit_exceeded")
+    payload = (
         json.dumps(
             sorted(descriptors, key=lambda row: str(row["profile_id"])),
             sort_keys=True,
@@ -112,6 +116,9 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
         )
         + "\n"
     ).encode()
+    if len(payload) > PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES:
+        raise LaunchCatalogError("published_profile_catalog_size_limit_exceeded")
+    return payload
 
 
 def _catalog_ids(payload: bytes) -> set[str]:

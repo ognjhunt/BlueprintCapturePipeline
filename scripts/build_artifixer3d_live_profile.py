@@ -71,6 +71,8 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             blockers.append("attempt_authority_ttl_mismatch")
         if authority.get("bundle_sha256") != receipt.get("bundle_sha256"):
             blockers.append("attempt_authority_bundle_mismatch")
+        if authority.get("campaign_spend_anchor_kind") != "measured_campaign_start":
+            blockers.append("attempt_authority_measured_campaign_start_required")
     return blockers
 
 

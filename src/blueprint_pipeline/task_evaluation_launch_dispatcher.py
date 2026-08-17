@@ -585,8 +585,15 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
     return sorted(set(blockers))
 
 
+PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES = 4 * 1024 * 1024
+PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES = 2048
+
+
 def load_public_launch_profile_catalog(
-    path_value: str | Path, *, max_bytes: int = 512 * 1024, max_profiles: int = 100
+    path_value: str | Path,
+    *,
+    max_bytes: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES,
+    max_profiles: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
 ) -> dict[str, Any]:
     """Load a publisher-generated catalog without exposing its filesystem path."""
 

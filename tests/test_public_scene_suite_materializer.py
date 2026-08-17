@@ -1887,3 +1887,33 @@ def test_rights_units_and_collider_identity_fail_closed(
         monkeypatch.setattr(module, "_inspect_usd", changed)
     with pytest.raises(PublicSceneSuiteMaterializationError, match=message):
         _run(paths)
+
+
+@pytest.mark.parametrize(
+    "leaked",
+    [
+        "sk-" + "abcdefghijklmnopqrstuvwxyz012345",
+        "AIza" + "SyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "AQ.Ab8RN6" + "0aBcDeFgHiJkLmNoPqRsTuVwXyZ_-123456789012",
+    ],
+)
+def test_execution_text_guard_rejects_every_known_api_key_shape(
+    tmp_path: Path, leaked: str
+) -> None:
+    """Legacy `AIza` and newer `AQ.` Google keys both fail the retained-secret gate."""
+    (tmp_path / "execution.log").write_text(f"GEMINI_API_KEY={leaked}\n")
+    with pytest.raises(
+        PublicSceneSuiteMaterializationError,
+        match="content_agents_secret_like_value_retained",
+    ):
+        materializer._reject_secret_like_execution_text(tmp_path)
+
+
+def test_execution_text_guard_accepts_prose_resembling_a_key_prefix(
+    tmp_path: Path,
+) -> None:
+    """`FAQ.`-style prose must not trip the fail-closed retained-secret gate."""
+    (tmp_path / "execution.log").write_text(
+        "See the FAQ.AbbreviatedGuidanceDocumentationSectionForDetails\n"
+    )
+    materializer._reject_secret_like_execution_text(tmp_path)

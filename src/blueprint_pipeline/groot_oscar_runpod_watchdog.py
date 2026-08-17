@@ -54,6 +54,12 @@ CANARY_NAME_PREFIXES = (
     # set while it still reported provider zero.
     "blueprint-adp-gaussian-excision-",
     "blueprint-adp-retained-render-",
+    # Native Task Arena is one ordered production family with three separately
+    # labelled paid stages. Each stage arms before create and hands the exact
+    # started Vast instance id to this watchdog.
+    "blueprint-native-task-arena-",
+    "blueprint-native-task-controls-",
+    "blueprint-native-task-policy-",
     "blueprint-native-warehouse-camera-",
     "blueprint-reconstruction-",
     "blueprint-measurement-isaac-",
@@ -65,6 +71,9 @@ CANARY_NAME_PREFIXES = (
     # than mislabeling the production execution as a generic canary.
     "blueprint-semantic-teacher-",
     "blueprint-adp-arena-",
+    # Exact SimReady Isaac probes are independently watched under the same
+    # collision-free prefix passed to their Vast adapter.
+    "blueprint-adp009b-simready-",
     "blueprint-adp009d-",
 )
 CAMPAIGN_PENDING_TEARDOWN_LANES = {

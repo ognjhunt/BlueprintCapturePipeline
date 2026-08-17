@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import subprocess  # nosec B404 - fixed git argv over operator-supplied paths
 import tempfile
 from pathlib import Path
@@ -224,6 +225,52 @@ def _create_release_checkout(*, source_repo: Path, release_path: Path, source_co
     return True
 
 
+def _install_release_git_index_readability(
+    *, source_repo: Path, release_path: Path
+) -> dict[str, Any]:
+    """Make the detached worktree index readable by the runtime account.
+
+    Production deploys run as root while the allocator runs as ``blueprint``.
+    A restrictive deploy umask made Git create a root:root 0640 worktree index:
+    ``rev-parse`` still worked, but the required clean-checkout ``git status``
+    failed before allocation. Git's normal index mode is 0644 and it contains
+    only tree metadata, so install that exact read-only posture here.
+    """
+
+    index_value = _run_git(release_path, "rev-parse", "--git-path", "index")
+    candidate = Path(index_value)
+    index_path = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (release_path / candidate).resolve()
+    )
+    admin_root = (source_repo.resolve() / ".git" / "worktrees").resolve()
+    if (
+        index_path.name != "index"
+        or admin_root not in index_path.parents
+        or index_path.is_symlink()
+        or not index_path.is_file()
+    ):
+        raise ControlPlaneReleaseError(
+            "task_evaluation_control_plane_release_git_index_invalid"
+        )
+    try:
+        index_path.chmod(0o644)
+    except OSError as exc:
+        raise ControlPlaneReleaseError(
+            "task_evaluation_control_plane_release_git_index_unreadable"
+        ) from exc
+    if stat.S_IMODE(index_path.stat().st_mode) != 0o644:
+        raise ControlPlaneReleaseError(
+            "task_evaluation_control_plane_release_git_index_unreadable"
+        )
+    return {
+        "git_index_path": str(index_path),
+        "git_index_mode": "0644",
+        "runtime_readable": True,
+    }
+
+
 def _activate_release(*, active_link: Path, release_path: Path) -> None:
     if active_link.exists() and not active_link.is_symlink():
         raise ControlPlaneReleaseError(
@@ -278,6 +325,9 @@ def stage_task_evaluation_control_plane_release(
         source_repo=source, release_path=release_path, source_commit=commit
     )
     release_path = release_path.resolve()
+    git_index = _install_release_git_index_readability(
+        source_repo=source, release_path=release_path
+    )
     stage_path = state / commit / "stage.json"
     if stage_path.exists():
         stage_receipt = _read_exact_receipt(stage_path)
@@ -327,6 +377,7 @@ def stage_task_evaluation_control_plane_release(
         _write_exact(state / commit / "activation.json", activation_receipt)
     result = dict(stage_receipt)
     result["created_release_checkout"] = created
+    result["release_git_index"] = git_index
     result["activated"] = activate
     result["active_link"] = str(active)
     return result

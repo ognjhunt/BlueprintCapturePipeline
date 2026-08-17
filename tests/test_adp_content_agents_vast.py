@@ -10,7 +10,9 @@ import subprocess
 import sys
 import zipfile
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -2688,6 +2690,236 @@ def _content_agents_attempt_authority(
         authority, digest_field="authorization_digest"
     )
     return authority
+
+
+def _watchdog_execution_bundle(tmp_path: Path) -> dict[str, object]:
+    _receipt, bundle = _allocator_bundle(tmp_path)
+    bundle["exact_bundle_entrypoint_rehearsal"] = {
+        "status": "passed",
+        "bundle_sha256": bundle["bundle_sha256"],
+    }
+    return bundle
+
+
+def _install_content_agents_execution_fakes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    adapter_result: Mapping[str, object],
+    teardown: Mapping[str, object],
+    watchdog_close: Mapping[str, object],
+) -> tuple[list[str], dict[str, object]]:
+    events: list[str] = []
+    observed: dict[str, object] = {}
+
+    def fake_stage(*, job_dir: str | Path, **_kwargs):
+        staging = Path(job_dir)
+        staging.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (staging / name).write_text(
+                f"https://example.com/{name}\n", encoding="utf-8"
+            )
+        return {"status": "completed", "blockers": []}
+
+    def fake_arm(**kwargs):
+        events.append("arm")
+        observed["arm"] = kwargs
+        handle = SimpleNamespace(
+            pod_name_prefix="blueprint-adp-content-agents-fixture-",
+            started_instance_id_path=(
+                Path(kwargs["job_dir"])
+                / "independent_vast_watchdog/started_vast_instance_id.txt"
+            ),
+        )
+        return {"status": "armed", "watchdog_armed_before_allocation": True}, handle
+
+    def fake_adapter(**kwargs):
+        events.append("adapter")
+        observed["adapter"] = kwargs
+        provider_run = Path(kwargs["job_dir"])
+        provider_run.mkdir(parents=True, exist_ok=True)
+        write_json(provider_run / "vast_teardown_manifest.json", dict(teardown))
+        return dict(adapter_result)
+
+    def fake_cleanup(_staging_dir):
+        events.append("cleanup")
+        return {"status": "completed", "all_objects_absent": True}
+
+    def fake_close(**kwargs):
+        events.append("close")
+        observed["close"] = kwargs
+        return dict(watchdog_close)
+
+    monkeypatch.setattr(
+        content_agents, "provider_bundle_rehearsal_blockers", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(content_agents, "_remaining_minutes", lambda **_kwargs: 120)
+    monkeypatch.setattr(content_agents, "_authority_environment", nullcontext)
+    monkeypatch.setattr(content_agents, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(content_agents, "arm_independent_vast_watchdog", fake_arm)
+    monkeypatch.setattr(content_agents, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(content_agents, "cleanup_staged_wam_provider_objects", fake_cleanup)
+    monkeypatch.setattr(content_agents, "close_independent_vast_watchdog", fake_close)
+    monkeypatch.setattr(
+        content_agents,
+        "_extract",
+        lambda *_args, **_kwargs: {
+            "execution": {"status": "completed", "blockers": []},
+            "blockers": [],
+            "result_path": str(tmp_path / "immutable_execution/result.json"),
+        },
+    )
+    monkeypatch.setattr(
+        content_agents,
+        "seal_lane_terminal_artifacts",
+        lambda result, **_kwargs: result,
+    )
+    return events, observed
+
+
+def test_content_agents_execute_binds_watchdog_to_exact_adapter_identity_and_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events, observed = _install_content_agents_execution_fakes(
+        tmp_path,
+        monkeypatch,
+        adapter_result={
+            "status": "completed",
+            "vast_instance_ids": [321],
+            "provider_create_attempted": True,
+            "estimated_cost_usd": 0.1,
+            "blockers": [],
+        },
+        teardown={
+            "status": "completed",
+            "vast_instance_ids": [321],
+            "continuing_spend_from_this_run": False,
+        },
+        watchdog_close={
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+        },
+    )
+
+    result = content_agents.run_content_agents_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=_watchdog_execution_bundle(tmp_path),
+        hard_ttl_seconds=7200,
+        allowed_active_instance_ids=[17],
+    )
+
+    arm = observed["arm"]
+    adapter = observed["adapter"]
+    close = observed["close"]
+    assert events == ["arm", "adapter", "cleanup", "close"]
+    assert arm["pod_name_prefix"] == content_agents.CONTENT_AGENTS_INSTANCE_LABEL_PREFIX
+    assert arm["max_live_minutes"] == 120
+    assert arm["allowed_active_instance_ids"] == [17]
+    assert adapter["instance_label_prefix"] == (
+        "blueprint-adp-content-agents-fixture-"
+    )
+    assert adapter["started_instance_id_path"] == (
+        tmp_path
+        / "job/independent_vast_watchdog/started_vast_instance_id.txt"
+    )
+    assert adapter["max_live_minutes"] == 120
+    assert adapter["session_max_live_minutes"] == 120
+    assert close["instance_ids"] == [321]
+    assert close["provider_teardown_completed"] is True
+    assert close["provider_allocation_impossible"] is False
+    assert result["status"] == "completed"
+    assert result["independent_watchdog"]["status"] == "provider_terminal"
+    assert result["blockers"] == []
+
+
+def test_content_agents_refuses_allocation_when_watchdog_does_not_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+
+    def fake_stage(*, job_dir: str | Path, **_kwargs):
+        Path(job_dir).mkdir(parents=True, exist_ok=True)
+        return {"status": "completed", "blockers": []}
+
+    monkeypatch.setattr(
+        content_agents, "provider_bundle_rehearsal_blockers", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(content_agents, "_remaining_minutes", lambda **_kwargs: 120)
+    monkeypatch.setattr(content_agents, "stage_wam_provider_bundle_object_store", fake_stage)
+    monkeypatch.setattr(
+        content_agents,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: (
+            {"status": "blocked", "watchdog_armed_before_allocation": False},
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        content_agents,
+        "run_vast_provider_adapter",
+        lambda **_kwargs: events.append("adapter") or {},
+    )
+    monkeypatch.setattr(
+        content_agents,
+        "cleanup_staged_wam_provider_objects",
+        lambda _path: {"status": "completed", "all_objects_absent": True},
+    )
+
+    result = content_agents.run_content_agents_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=_watchdog_execution_bundle(tmp_path),
+    )
+
+    assert events == []
+    assert result["provider_mutations_performed"] == 0
+    assert result["all_staged_objects_absent"] is True
+    assert result["blockers"] == [
+        "adp_content_agents_independent_watchdog_not_armed"
+    ]
+
+
+def test_content_agents_retains_watchdog_when_created_instance_identity_is_ambiguous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _events, observed = _install_content_agents_execution_fakes(
+        tmp_path,
+        monkeypatch,
+        adapter_result={
+            "status": "blocked",
+            "provider_create_attempted": True,
+            "vast_instance_ids": [],
+            "blockers": ["fixture_adapter_failed_after_create"],
+        },
+        teardown={
+            "status": "blocked",
+            "vast_instance_ids": [],
+            "continuing_spend_from_this_run": False,
+        },
+        watchdog_close={"status": "retained_until_hard_ttl"},
+    )
+
+    result = content_agents.run_content_agents_vast(
+        job_dir=tmp_path / "job",
+        paid_resource_admission_grant=object(),  # type: ignore[arg-type]
+        execute=True,
+        prepared_bundle=_watchdog_execution_bundle(tmp_path),
+        hard_ttl_seconds=7200,
+    )
+
+    close = observed["close"]
+    assert close["instance_ids"] == []
+    assert close["provider_allocation_impossible"] is False
+    assert result["status"] == "blocked"
+    assert "adp_content_agents_independent_watchdog_not_closed" in result["blockers"]
+    assert result["independent_watchdog"]["status"] == "retained_until_hard_ttl"
 
 
 @pytest.mark.parametrize("execute", [False, True])

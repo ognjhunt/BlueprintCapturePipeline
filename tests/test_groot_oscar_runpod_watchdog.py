@@ -178,6 +178,56 @@ def test_watchdog_rejects_unadmitted_semantic_editor_prefix(
             provider_name="vast",
         )
 
+
+@pytest.mark.parametrize(
+    "prefix",
+    (
+        "blueprint-native-task-arena-bound-run-",
+        "blueprint-native-task-controls-bound-run-",
+        "blueprint-native-task-policy-bound-run-",
+    ),
+)
+def test_watchdog_arms_each_exact_native_task_arena_stage_prefix(
+    prefix, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
+
+    result = arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=3_000.0,
+        pid=os.getpid(),
+        provider_name="vast",
+    )
+
+    assert result["status"] == "armed"
+    assert result["pod_name_prefix"] == prefix
+    assert result["provider"] == "vast"
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    (
+        "blueprint-native-task-bound-run-",
+        "blueprint-native-task-control-bound-run-",
+        "blueprint-native-task-policies-bound-run-",
+    ),
+)
+def test_watchdog_rejects_near_miss_native_task_arena_prefixes(
+    prefix, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
+
+    with pytest.raises(ValueError, match="watchdog_pod_name_prefix_not_canary_scoped"):
+        arm_watchdog(
+            out_dir=tmp_path,
+            pod_name_prefix=prefix,
+            deadline_epoch=3_000.0,
+            pid=os.getpid(),
+            provider_name="vast",
+        )
+
+
 def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence(
     monkeypatch,
 ) -> None:

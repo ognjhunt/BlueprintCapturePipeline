@@ -34,7 +34,11 @@ _SECRET_KEY = re.compile(
     re.I,
 )
 _SECRET_VALUE = re.compile(
-    r"(?:sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{20,}|Bearer\s+[A-Za-z0-9._~+/=-]{12,})"
+    r"(?:sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{20,}"
+    # Google's newer API-key shape (`AQ.` + ~49 chars).  The leading boundary
+    # keeps prose such as "FAQ.Something" out; 30 is far below real key length.
+    r"|\bAQ\.[A-Za-z0-9_-]{30,}"
+    r"|Bearer\s+[A-Za-z0-9._~+/=-]{12,})"
 )
 
 

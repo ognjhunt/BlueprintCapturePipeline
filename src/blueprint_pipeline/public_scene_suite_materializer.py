@@ -138,6 +138,9 @@ def _reject_secret_like_execution_text(root: Path) -> None:
     patterns = (
         re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
         re.compile(r"AIza[A-Za-z0-9_-]{20,}"),
+        # Google's newer API-key shape (`AQ.` + ~49 chars).  The leading boundary
+        # keeps prose such as "FAQ.Something" out; 30 is far below real key length.
+        re.compile(r"\bAQ\.[A-Za-z0-9_-]{30,}"),
     )
     for path in root.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in {

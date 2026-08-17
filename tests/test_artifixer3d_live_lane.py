@@ -66,6 +66,7 @@ def lane(tmp_path: Path) -> dict:
                 "maximum_hourly_rate_usd": 1.0,
                 "maximum_single_resource_ttl_seconds": 10800,
                 "bundle_sha256": digest,
+                "campaign_spend_anchor_kind": "measured_campaign_start",
             }
         ),
         encoding="utf-8",
@@ -142,6 +143,17 @@ def test_an_authority_that_disagrees_is_refused_before_it_is_consumed(
         _build(lane)
 
     assert expected in str(excinfo.value)
+
+
+def test_retired_campaign_anchor_cannot_enter_a_new_live_profile(lane) -> None:
+    authority = json.loads(lane["authority"].read_text(encoding="utf-8"))
+    authority["campaign_spend_anchor_kind"] = "prior_aura_terminal_attempt"
+    lane["authority"].write_text(json.dumps(authority), encoding="utf-8")
+
+    with pytest.raises(TaskEvaluationLaunchError) as excinfo:
+        _build(lane)
+
+    assert "attempt_authority_measured_campaign_start_required" in str(excinfo.value)
 
 
 def test_the_bundle_is_bound_where_it_resolved(lane) -> None:
