@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_simready_isaac_vast import PROBE_KIND
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
 from blueprint_pipeline.task_evaluation_live_profile import (
@@ -60,6 +61,9 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
         blockers.append("native_probe_manifest_missing")
     else:
         native_manifest = json.loads(native_manifest_path.read_text(encoding="utf-8"))
+        manifest_identity = native_manifest.get(
+            "manifest_digest", native_manifest.get("receipt_digest")
+        )
         if native_manifest.get("scene_id") != scene_id:
             blockers.append("native_probe_manifest_scene_mismatch")
         if (
@@ -67,11 +71,38 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             != receipt.get("native_probe_manifest_sha256")
         ):
             blockers.append("native_probe_manifest_digest_mismatch")
-        if (
-            native_manifest.get("manifest_digest")
-            != receipt.get("native_probe_manifest_digest")
-        ):
+        if manifest_identity != receipt.get("native_probe_manifest_digest"):
             blockers.append("native_probe_manifest_identity_mismatch")
+        predecessor = native_manifest.get("paired_native_predecessor") or {}
+        if (
+            not isinstance(predecessor, dict)
+            or predecessor.get("binding_digest")
+            != canonical_digest(predecessor, digest_field="binding_digest")
+            or predecessor.get("scene_id") != scene_id
+            or predecessor.get("candidate_usd_sha256")
+            != receipt.get("candidate_usd_sha256")
+            or predecessor.get("binding_digest")
+            != receipt.get("predecessor_binding_digest")
+            or receipt.get("paired_native_predecessor") != predecessor
+        ):
+            blockers.append("paired_native_predecessor_binding_invalid")
+        else:
+            for role in (
+                "bundle_receipt",
+                "request",
+                "terminal_result",
+                "runtime_result",
+                "candidate_probe",
+            ):
+                record = predecessor.get(role) or {}
+                path = Path(str(record.get("path") or "")).expanduser().resolve()
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                    or path.stat().st_size != record.get("size_bytes")
+                    or file_digest(path) != record.get("sha256")
+                ):
+                    blockers.append(f"paired_native_predecessor_input_invalid:{role}")
     if candidate_usd_path is None or not candidate_usd_path.is_file():
         blockers.append("candidate_usd_missing")
     elif file_digest(candidate_usd_path) != receipt.get("candidate_usd_sha256"):
@@ -111,6 +142,10 @@ def _lane_blockers(context: LaneLiveProfileContext) -> list[str]:
             "native_probe_manifest_digest"
         ):
             blockers.append("attempt_authority_native_manifest_identity_mismatch")
+        if authority.get("predecessor_binding_digest") != receipt.get(
+            "predecessor_binding_digest"
+        ):
+            blockers.append("attempt_authority_predecessor_mismatch")
     return blockers
 
 
@@ -127,7 +162,7 @@ def _lane_argv(context: LaneLiveProfileContext) -> list[str]:
 
 
 def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
-    return [
+    inputs = [
         {
             "name": "source_bundle_manifest",
             "path": str(context.receipt_path),
@@ -160,6 +195,26 @@ def _immutable_inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             "digest": file_digest(context.extra_paths["attempt_authority"]),
         },
     ]
+    manifest = json.loads(
+        context.extra_paths["native_probe_manifest"].read_text(encoding="utf-8")
+    )
+    predecessor = manifest.get("paired_native_predecessor") or {}
+    for role in (
+        "bundle_receipt",
+        "request",
+        "terminal_result",
+        "runtime_result",
+        "candidate_probe",
+    ):
+        record = predecessor[role]
+        inputs.append(
+            {
+                "name": f"simready_paired_native_{role}",
+                "path": str(Path(record["path"]).expanduser().resolve()),
+                "digest": record["sha256"],
+            }
+        )
+    return inputs
 
 
 SPEC = LaneLiveProfileSpec(

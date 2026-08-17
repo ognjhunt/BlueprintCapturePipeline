@@ -123,6 +123,27 @@ def build_articulated_isaac_bundle(
         errors.append("articulated_isaac_bundle_probe_not_frozen")
     if spec.get("schema_version") != str(probe_spec_schema_version):
         errors.append("articulated_isaac_bundle_probe_schema_invalid")
+    if spec.get("receipt_digest") is not None and spec.get(
+        "receipt_digest"
+    ) != canonical_digest(spec, digest_field="receipt_digest"):
+        errors.append("articulated_isaac_bundle_probe_receipt_digest_invalid")
+    predecessor = spec.get("paired_native_predecessor") or {}
+    scene_id = str(spec.get("scene_id") or "").strip()
+    if predecessor:
+        if (
+            not scene_id
+            or Path(scene_id).name != scene_id
+            or predecessor.get("schema_version")
+            != "paired_native_simready_predecessor_binding.v1"
+            or predecessor.get("scene_id") != scene_id
+            or predecessor.get("candidate_usd_sha256")
+            != spec.get("candidate_usd_sha256")
+            or predecessor.get("binding_digest")
+            != canonical_digest(predecessor, digest_field="binding_digest")
+        ):
+            errors.append("articulated_isaac_bundle_predecessor_binding_invalid")
+    elif scene_id:
+        errors.append("articulated_isaac_bundle_predecessor_binding_missing")
 
     stages = spec.get("stages") or {}
     staged: dict[str, Path] = {}
@@ -251,6 +272,16 @@ def build_articulated_isaac_bundle(
         },
         "receipt_digest": "",
     }
+    if predecessor:
+        receipt.update(
+            {
+                "scene_id": scene_id,
+                "native_probe_manifest_sha256": _sha256(spec_path),
+                "native_probe_manifest_digest": spec.get("receipt_digest"),
+                "predecessor_binding_digest": predecessor.get("binding_digest"),
+                "paired_native_predecessor": predecessor,
+            }
+        )
     if generated_at is not None:
         receipt["generated_at"] = generated_at
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
