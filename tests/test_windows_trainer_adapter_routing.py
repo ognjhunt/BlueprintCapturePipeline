@@ -71,19 +71,21 @@ def test_selection_grants_nothing_without_execute(tmp_path: Path) -> None:
     )
 
 
-def test_allocator_blocks_a_windows_trainer_instead_of_running_it_on_linux() -> None:
-    """The executor is not qualified yet; blocking must cost nothing."""
+def test_allocator_routes_a_windows_trainer_to_its_own_executor() -> None:
+    """It must reach the Windows executor, never the Linux Vast operation."""
     import inspect
 
     from blueprint_pipeline import paid_resource_allocator
 
     source = inspect.getsource(paid_resource_allocator)
-    guard = source.split("WINDOWS_TRAINER_ADAPTER_IDS:", 1)[1][:900]
-    assert "windows_trainer_executor_not_qualified" in guard
-    assert '"status": "blocked"' in guard
-    assert '"provider_mutations_performed": 0' in guard
-    assert '"cost_usd": 0.0' in guard
-    # The guard must sit ahead of the Vast branch, not after it.
+    # Slice exactly the Windows branch: from its guard to the next elif.
+    after = source.split("WINDOWS_TRAINER_ADAPTER_IDS:", 1)[1]
+    branch = after.split("elif operation in", 1)[0]
+    assert "run_reconstruction_aws_windows_operation(" in branch
+    assert "run_reconstruction_vast_operation(" not in branch
+    # The paid grant must reach the provider or every launch comes back blocked.
+    assert "paid_resource_admission_grant=grant" in branch
+    # The Windows branch must sit ahead of the Vast branch, not after it.
     assert source.index("WINDOWS_TRAINER_ADAPTER_IDS:") < source.index(
         "run_reconstruction_vast_operation("
     )
